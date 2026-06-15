@@ -44,8 +44,15 @@ uv run pre-commit run --all-files           # all gates incl. gitleaks
 - `experiments/a1-segmentation/` - prior Page Stream Segmentation spike for the chunking fix (#4/#5).
 - `docs/RUNBOOK.md` - how to run + retrieve outputs.
 
+## Structure
+
+`app.py` is a thin entry (`app = create_app()`); the application lives in the `mrr_ai/`
+package: `config.py`, `extensions.py` (genai + openai clients), `state.py` (shared globals -
+keeps the app single-process), `services/` (pdf, ocr, gemini, categorization, files),
+`blueprints/` (routes grouped by area), `templates/`, `static/`. Route-smoke tests in `tests/`.
+
 ## Status / focus
 
-Segmentation B1 fixes done (temp 0, JSON schema, robust parser) on google-genai. Next:
-modularize `app.py` into an `mrr_ai` package (application factory + blueprints + services,
-with route-smoke tests); then categorization cascade (B5) + taxonomy curation (B6); then CI fixes.
+Done: modularized into the `mrr_ai` package (factory + blueprints + services + route-smoke
+tests); segmentation B1 fixes (temp 0, JSON schema, robust parser) on google-genai. Next:
+categorization cascade (B5) + taxonomy curation (B6); then fix the deferred CI issues.
