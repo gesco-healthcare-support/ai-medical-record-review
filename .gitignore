@@ -10,6 +10,10 @@ all_data_temp.txt
 *.pdf
 *.TRIAL.csv
 *.TRIAL2.csv
+# Experiment spikes derive OCR text/labels from real records - keep caches out.
+experiments/**/cache/
+experiments/**/outputs/
+*.jsonl
 
 # ---- Virtual environments (disposable; recreated via uv) ----
 .venv/

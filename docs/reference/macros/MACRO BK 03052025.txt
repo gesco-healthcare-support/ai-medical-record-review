@@ -1,0 +1,93 @@
+Sub ApplyBoldAndUnderlineGlobally()
+    Dim doc As Document
+    Dim rng As Range
+
+    ' Loop through all open documents or just apply to the active document
+    For Each doc In Application.Documents
+        With doc.Content.Find
+            .Text = "\*\*\*\*(*)\*\*\*\*"
+            .Replacement.Text = "\1"
+            .Replacement.Font.Bold = True
+            .Replacement.Font.Underline = wdUnderlineSingle
+            .Replacement.Font.Color = wdColorBlue ' Set the font color to blue
+            .Forward = True
+            .Wrap = wdFindContinue
+            .Format = True
+            .MatchWildcards = True
+            .Execute Replace:=wdReplaceAll
+        End With
+    Next doc
+
+    For Each doc In Application.Documents
+        With doc.Content.Find
+            .Text = "\*\*(*)\*\*"
+            .Replacement.Text = "\1"
+            .Replacement.Font.Bold = True
+            .Replacement.Font.Underline = wdUnderlineSingle
+            .Forward = True
+            .Wrap = wdFindContinue
+            .Format = True
+            .MatchWildcards = True
+            .Execute Replace:=wdReplaceAll
+        End With
+    Next doc
+
+        For Each doc In Application.Documents
+        With doc.Content.Find
+            .Text = "\_(*)\_"
+            .Replacement.Text = "\1"
+            .Replacement.Font.Bold = False
+            .Replacement.Font.Underline = False
+            .Forward = True
+            .Wrap = wdFindContinue
+            .Format = True
+            .MatchWildcards = True
+            .Execute Replace:=wdReplaceAll
+        End With
+    Next doc
+
+    Dim section As section
+    Dim headerRange As Range
+
+    ' Turn off field code display
+    ActiveWindow.View.ShowFieldCodes = False
+
+    ' Loop through each section in the document
+    For Each section In ActiveDocument.Sections
+        ' Access the primary header of the section
+        Set headerRange = section.Headers(wdHeaderFooterPrimary).Range
+
+        ' Move to the end of the existing header content
+        headerRange.Collapse Direction:=wdCollapseEnd
+
+        ' Insert the page number field on the new line
+        headerRange.Collapse Direction:=wdCollapseEnd
+        headerRange.Fields.Add Range:=headerRange, Type:=wdFieldPage
+
+        ' Update fields in this header to display the page number correctly
+        section.Headers(wdHeaderFooterPrimary).Range.Fields.Update
+    Next section
+
+    ' Update all fields in the document to display page numbers
+    ActiveDocument.Fields.Update
+
+    Dim para As paragraph
+    Dim sec As section
+    Dim hdr As HeaderFooter
+    Dim ftr As HeaderFooter
+
+    ' Set font for all paragraphs in the main document body
+    For Each para In ActiveDocument.Paragraphs
+        para.Range.Font.Name = "Times New Roman"
+    Next para
+
+    ' Set font for all headers and footers
+    For Each sec In ActiveDocument.Sections
+        For Each hdr In sec.Headers
+            hdr.Range.Font.Name = "Times New Roman"
+        Next hdr
+        For Each ftr In sec.Footers
+            ftr.Range.Font.Name = "Times New Roman"
+        Next ftr
+    Next sec
+End Sub
