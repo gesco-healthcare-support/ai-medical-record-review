@@ -32,6 +32,7 @@ dev = [
     "pyright",
     "pre-commit",
     "pytest",
+    "pytest-cov",
 ]
 
 [tool.ruff]
@@ -67,3 +68,20 @@ exclude = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+# Measure the application package only; the smoke/baseline harness and tests are
+# excluded so coverage reflects exercised production code, not test scaffolding.
+source = ["mrr_ai"]
+omit = ["tests/*", "*/__pycache__/*"]
+# Relative paths so SonarCloud can resolve files from coverage.xml in CI.
+relative_files = true
+
+[tool.coverage.report]
+# Lines that never need coverage: defensive guards and the script entry point.
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+show_missing = true
