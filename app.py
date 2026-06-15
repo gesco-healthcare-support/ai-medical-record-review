@@ -1751,6 +1751,64 @@ def segmentPDF():
     return {"pages": "File segmentation finalyzed. You can get the files from the MRR folder."}
 
 
+SEGMENTATION_PROMPT = """Title: Extract Subdocument Metadata from a PDF
+
+I have a large PDF document containing multiple subdocuments, each of which can vary in type (e.g., diagnostic reports, doctor's notes, legal forms, etc.).
+Your task is to analyze the PDF and return a structured JSON array containing key metadata for each subdocument. Use EXACTLY these keys for every element:
+
+1) "id" (subdocument ID): A unique identifier for each subdocument (e.g., Doc1, Doc2, etc.).
+2) "s" (start page): The page number where the subdocument begins (integer).
+3) "e" (end page): The page number where the subdocument ends (integer).
+4) "t" (title): The title or header of the subdocument, if available. Do not invent titles; if needed, infer from the document type. DO NOT use commas; convert any comma to a dash (-). For example: WORK ACTIVITY STATUS
+5) "d" (date of the document/encounter): The visit/encounter date as MM/DD/YYYY, else "-". If there are several dates, pick the one labeled visit or encounter. The date can be near the signature at the end.
+6) "i" (date of injury): The injury date as MM/DD/YYYY, else "-".
+7) "m" (manual check): Return "x" if the document (1) has handwriting other than a signature, (2) has many checkboxes with x/ticks, (3) is a work status report, or (4) is a QME/AME report; otherwise "-".
+
+## Guidelines for Extraction:
+- Cover every page; do not skip any page.
+- Use contextual clues such as headers, bold titles, or consistent formatting to identify boundaries and titles.
+- Link pages together using page counts to figure out where documents start and end.
+- Distinguish the document/encounter date from the injury date.
+- A title can sometimes be next to a word such as 'Notes'.
+- If a field is unavailable, use "-" (never None or null).
+- Ignore fax/resend dates; use the encounter/visit date or the day the document was created.
+- If a title contains "X vs Y", it is most likely a deposition; set "t" to "Deposition".
+- If the only handwriting is a signature, return "-" not "x".
+- If a page is empty, set "t" to "Empty Page".
+- Do not split a single document into two, and do not merge two documents into one.
+- QME/PQME/AME evaluations can be long and often quote other records; treat the entire evaluation as ONE record with the correct start and end pages.
+- Different QME/PQME/AME supplemental reports are separate documents.
+- Treat the first page of a document as part of that document.
+
+Example JSON output for a 10-page PDF:
+[
+  {"id": "Doc1", "s": 1, "e": 5, "t": "WORK ACTIVITY STATUS", "d": "12/03/2021", "i": "05/07/2018", "m": "x"},
+  {"id": "Doc2", "s": 6, "e": 10, "t": "ACUPUNCTURE THERAPY NOTES", "d": "11/11/2022", "i": "-", "m": "-"}
+]
+
+## IMPORTANT: Return ONLY the JSON array, with no markdown fences and no other explanation."""
+
+
+def parse_segment_item(item):
+    """Tolerantly extract one subdocument record from a Gemini JSON element.
+
+    Handles the t/title key alias, missing keys, and type coercion so a single
+    malformed element raises (to be skipped by the caller) rather than the old
+    behavior of a KeyError aborting the entire batch.
+    """
+    title = item.get("t") or item.get("title") or "-"
+    if not isinstance(title, str):
+        title = str(title)
+    return (
+        int(item["s"]),
+        int(item["e"]),
+        title.strip(),
+        str(item.get("d", "-")).strip(),
+        str(item.get("i", "-")).strip(),
+        str(item.get("m", "-")).strip(),
+    )
+
+
 # Automatic segmentation upload
 @app.route("/getPages", methods=["POST"])
 def getPages():
@@ -1780,10 +1838,10 @@ def getPages():
 
     segmentation_model = "gemini-flash-latest"
     generation_config = types.GenerateContentConfig(
-        temperature=1.5,
+        temperature=0.0,
         top_p=0.95,
         top_k=40,
-        response_mime_type="text/plain",
+        response_mime_type="application/json",
         system_instruction="You are an assistant that segments a large document into subdocuments and provide their metadata.",
     )
 
@@ -1804,9 +1862,7 @@ def getPages():
             print("Preparing for the AI")
 
             # gemini change here
-            prompt = (
-                'Title: Extract Subdocument Metadata from a PDF\n\nI have a large PDF document containing multiple subdocuments, each of which can vary in type (e.g., diagnostic reports, doctor\'s notes, legal forms, etc.). \nYour task is to analyze the PDF and return a structured JSON output containing key metadata for each subdocument. Each subdocument may have unique formatting or structure, but your output should consistently provide the following information:\n\n1) id (subdocument ID): A unique identifier for each subdocument (e.g., Doc1, Doc2, etc.).\n2) s (start page): The page number where the subdocument begins.\n3) e (end page): The page number where the subdocument ends.\n4) t (title): The title or header of the subdocument, if available. Be very careful and do not create titles from your own end. If needed, comprehend from the document type. DO NOT use comma. If there is comma, convert it to dash (-). For example: WORK ACTIVITY STATUS\n5) d (Date of the Document/Encounter): The date of the visit if applicable, else, return \'-\'. Convert the data to the following format: MM/DD/YYYY. In case there are several dates, pick the one with the label visit or encounter next to it. Sometimes, the date can be at the end of the document, near the signature. \n6) i (date of injury): The date of the injury mentioned in the subdocument if applicable, else, return \'-\' . Convert the data to the following format: MM/DD/YYYY\n7) m (To manual check or no): If the document contains (1) handwriting (other than signature), or (2) there are many boxes that contain x or ticks, or (3) is a work status report, or (4) is a QME/AME report, this should return \'x\', otherwise, return \'-\'.\n\n## Guidelines for Extraction:\n- Ensure the JSON output is properly structured and contains all the required fields for each subdocument.\n- Use contextual clues such as headers, bold titles, or consistent formatting patterns to identify the boundaries and titles of subdocuments.\n- You can link pages together by using the number of pages on each document and figure out when documents start and end.\n- Extract dates accurately, distinguishing between the date of the document/encounter and the injury date.\n- Sometime the title can be at the beginning of the document next to specific words, such as: \'Notes\'\n- If any of the above fields are not available in a subdocument, indicate their absence with a \'-\' value in the JSON output. Do not write None or Null, instead write \'-\'\n- As mentioned, if the document contains too much handwriting and it is hard to get the text, return \'x\' for the value of manual_check\n- A document might have several dates on it, sometimes from being faxed or sent again. We do not want those dates. We want the date of the encounter or the actual visit, or the day the document was originally created. This is usually the date that is found next to the wording \'visit\' from the left, right, up or down to it.\n- If the title of a document contains the term Someone vs Someone than it is most probably a deposition. Deposition can be of many types, such as Zoom Deposition, or live deposition. In all cases, make the title be \'Deposition\'\n- If the only handwriting in the document is a signature, then return \'-\' and not \'x\'\n- If a page is empty, make the title \'Empty Page\'\n- Sometimes you are segmenting a single document and returning them as two different ones. Be careful for those. Do not segment same document.\n- Be careful for medical-legal evaluations, QME, PQME, AME reports, as these records can be long and often contain summary of other records. Treat the entirety as a single record and provide the correct start and end pages.\n- Also note that different QME, PQME or AME supplemental reports are different documents and treat it as a separated segmentation.\n- Treat the first page of a document as part of the document. \n- I noticed that sometimes when the document is large, you are mistaking the pages and not including the first page of the document as part of the segmentation and are including the first page of the next document as the last page. Be careful for that.\n- DO NOT SKIP ANY PAGES. GO THROUGH ALL THE PAGES IN YOUR OUTPUT. MY LIFE DEPENDS ON IT.\n\nExample JSON Output for a document of 10 pages:\n[\n    {\n        "i": "Doc1",\n        "s": 1,\n        "e": 5,\n        "title": "WORK ACTIVITY STATUS",\n        "d": "12/03/2021",\n        "i": "05/07/2018",\n\t"m": \'x\'\n    },\n    {\n        "id": "Doc2",\n        "s": 6,\n        "e": 10,\n        "t": "ACUPUNCTURE THERAPY NOTES",\n        "d": "11/11/2022",\n        "i": "-",\n        "m": \'-\'\n    }\n]\n\n## Notes:\n- If subdocuments are not clearly titled, infer the title from the first line or prominent text in the subdocument.\n- All dates should follow the format: MM/DD/YYYY.\n- Handle subdocuments of varying lengths, even if a subdocument spans only a single page.\n- Please parse the PDF carefully and ensure high accuracy in the identification of subdocuments and metadata extraction.\n- Cover all the pages. Do not skip any page.\n\n## IMPORTANT: Return only the JSON without any other explanation.',
-            )
+            prompt = SEGMENTATION_PROMPT
 
             try:
                 response = genai_client.models.generate_content(
@@ -1834,15 +1890,14 @@ def getPages():
             print("Response formatted.")
 
             for item in clean_response_json:
-                subdoc_id = item["id"]
-                start_page = item["s"]
-                end_page = item["e"]
-                title = item["t"].strip()
-                date = item["d"].strip()
-                injury_date = item["i"].strip()
-                manual_check = item["m"]
+                try:
+                    start_page, end_page, title, date, injury_date, manual_check = (
+                        parse_segment_item(item)
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    print(f"Skipping malformed segment: {exc}")
+                    continue
 
-                # Categorize documents
                 title_group = categorize_documents(title, groups)
 
                 # Create the line
@@ -1867,9 +1922,7 @@ def getPages():
         print("AI Process Starting ....")
 
         # gemini change here
-        prompt = (
-            'Title: Extract Subdocument Metadata from a PDF\n\nI have a large PDF document containing multiple subdocuments, each of which can vary in type (e.g., diagnostic reports, doctor\'s notes, legal forms, etc.). \nYour task is to analyze the PDF and return a structured JSON output containing key metadata for each subdocument. Each subdocument may have unique formatting or structure, but your output should consistently provide the following information:\n\n1) id (subdocument ID): A unique identifier for each subdocument (e.g., Doc1, Doc2, etc.).\n2) s (start page): The page number where the subdocument begins.\n3) e (end page): The page number where the subdocument ends.\n4) t (title): The title or header of the subdocument, if available. Be very careful and do not create titles from your own end. If needed, comprehend from the document type. DO NOT use comma. If there is comma, convert it to dash (-). For example: WORK ACTIVITY STATUS\n5) d (Date of the Document/Encounter): The date of the visit if applicable, else, return \'-\'. Convert the data to the following format: MM/DD/YYYY. In case there are several dates, pick the one with the label visit or encounter next to it. Sometimes, the date can be at the end of the document, near the signature. \n6) i (date of injury): The date of the injury mentioned in the subdocument if applicable, else, return \'-\' . Convert the data to the following format: MM/DD/YYYY\n7) m (To manual check or no): If the document contains (1) handwriting (other than signature), or (2) there are many boxes that contain x or ticks, or (3) is a work status report, or (4) is a QME/AME report, this should return \'x\', otherwise, return \'-\'.\n\n## Guidelines for Extraction:\n- Ensure the JSON output is properly structured and contains all the required fields for each subdocument.\n- Use contextual clues such as headers, bold titles, or consistent formatting patterns to identify the boundaries and titles of subdocuments.\n- You can link pages together by using the number of pages on each document and figure out when documents start and end.\n- Extract dates accurately, distinguishing between the date of the document/encounter and the injury date.\n- Sometime the title can be at the beginning of the document next to specific words, such as: \'Notes\'\n- If any of the above fields are not available in a subdocument, indicate their absence with a \'-\' value in the JSON output. Do not write None or Null, instead write \'-\'\n- As mentioned, if the document contains too much handwriting and it is hard to get the text, return \'x\' for the value of manual_check\n- A document might have several dates on it, sometimes from being faxed or sent again. We do not want those dates. We want the date of the encounter or the actual visit, or the day the document was originally created. This is usually the date that is found next to the wording \'visit\' from the left, right, up or down to it.\n- If the title of a document contains the term Someone vs Someone than it is most probably a deposition. Deposition can be of many types, such as Zoom Deposition, or live deposition. In all cases, make the title be \'Deposition\'\n- If the only handwriting in the document is a signature, then return \'-\' and not \'x\'\n- If a page is empty, make the title \'Empty Page\'\n- Sometimes you are segmenting a single document and returning them as two different ones. Be careful for those. Do not segment same document.\n- Be careful for medical-legal evaluations, QME, PQME, AME reports, as these records can be long and often contain summary of other records. Treat the entirety as a single record and provide the correct start and end pages.\n- Also note that different QME, PQME or AME supplemental reports are different documents and treat it as a separated segmentation.\n- Treat the first page of a document as part of the document. \n- I noticed that sometimes when the document is large, you are mistaking the pages and not including the first page of the document as part of the segmentation and are including the first page of the next document as the last page. Be careful for that.\n- DO NOT SKIP ANY PAGES. GO THROUGH ALL THE PAGES IN YOUR OUTPUT. MY LIFE DEPENDS ON IT.\n\nExample JSON Output for a document of 10 pages:\n[\n    {\n        "i": "Doc1",\n        "s": 1,\n        "e": 5,\n        "title": "WORK ACTIVITY STATUS",\n        "d": "12/03/2021",\n        "i": "05/07/2018",\n\t"m": \'x\'\n    },\n    {\n        "id": "Doc2",\n        "s": 6,\n        "e": 10,\n        "t": "ACUPUNCTURE THERAPY NOTES",\n        "d": "11/11/2022",\n        "i": "-",\n        "m": \'-\'\n    }\n]\n\n## Notes:\n- If subdocuments are not clearly titled, infer the title from the first line or prominent text in the subdocument.\n- All dates should follow the format: MM/DD/YYYY.\n- Handle subdocuments of varying lengths, even if a subdocument spans only a single page.\n- Please parse the PDF carefully and ensure high accuracy in the identification of subdocuments and metadata extraction.\n- Cover all the pages. Do not skip any page.\n\n## IMPORTANT: Return only the JSON without any other explanation.',
-        )
+        prompt = SEGMENTATION_PROMPT
 
         try:
             response = genai_client.models.generate_content(
@@ -1897,15 +1950,14 @@ def getPages():
         print("Response is formatted.")
 
         for item in clean_response_json:
-            subdoc_id = item["id"]  # noqa: F841
-            start_page = item["s"]
-            end_page = item["e"]
-            title = item["t"].strip()
-            date = item["d"].strip()
-            injury_date = item["i"].strip()
-            manual_check = item["m"]
+            try:
+                start_page, end_page, title, date, injury_date, manual_check = parse_segment_item(
+                    item
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                print(f"Skipping malformed segment: {exc}")
+                continue
 
-            # Categorize documents
             title_group = categorize_documents(title, groups)
 
             # Create the line
