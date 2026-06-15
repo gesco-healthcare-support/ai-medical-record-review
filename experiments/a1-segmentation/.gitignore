@@ -1,0 +1,8 @@
+# PHI hygiene: OCR'd text and any page-level artifacts derive from real records.
+# Keep them out of version control even though processing is internal.
+cache/
+outputs/
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
