@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request
 
 from mrr_ai import state
 from mrr_ai.config import UPLOAD_BASE_DIR
+from mrr_ai.services.files import safe_name
 
 bp = Blueprint("individual_mrr", __name__)
 
@@ -17,12 +18,14 @@ def create_patient_folder():
     folder_name = data.get("folder_name")
     patientName = data.get("patient_name")
 
+    # patientNameGlobal is a display value (used in document text), kept raw.
     state.patientNameGlobal = patientName
 
     if not folder_name:
         return jsonify({"error": "Invalid folder name"}), 400
 
-    folder_path = os.path.join(UPLOAD_BASE_DIR, folder_name)
+    # Sanitize before building a path (prevents traversal via the folder name).
+    folder_path = os.path.join(UPLOAD_BASE_DIR, safe_name(folder_name))
 
     try:
         os.makedirs(folder_path, exist_ok=True)  # Create the directory if it doesn't exist
@@ -41,9 +44,8 @@ def upload_files():
     if not patient_folder:
         return jsonify({"error": "Missing patient folder name"}), 400
 
-    folder_path = os.path.join(UPLOAD_BASE_DIR, patient_folder)
+    folder_path = os.path.join(UPLOAD_BASE_DIR, safe_name(patient_folder))
     state.indiv_mrr_folder_path = folder_path
-    print("22", state.indiv_mrr_folder_path)
 
     if not os.path.exists(folder_path):
         return jsonify({"error": "Patient folder does not exist"}), 400
@@ -53,7 +55,7 @@ def upload_files():
     saved_files = []
     for file in files:
         if file:
-            filename = file.filename  # Use original filename
+            filename = safe_name(file.filename)  # Sanitize each uploaded filename
             file_path = os.path.join(folder_path, filename)  # Save in the patient folder
             file.save(file_path)
             saved_files.append(filename)

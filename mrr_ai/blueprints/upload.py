@@ -7,7 +7,7 @@ from flask import Blueprint, current_app, request
 from pypdf import PdfReader
 
 from mrr_ai import state
-from mrr_ai.services.files import count_lines_in_file, is_valid_date
+from mrr_ai.services.files import count_lines_in_file, is_valid_date, safe_name
 
 bp = Blueprint("upload", __name__)
 
@@ -18,7 +18,9 @@ def upload():
 
     file = request.files["pdf"]
     if file:
-        filepath = os.path.join(current_app.config["UPLOAD_FOLDER"], file.filename)
+        # Sanitize the user-supplied filename before building a path (prevents traversal).
+        filename = safe_name(file.filename)
+        filepath = os.path.join(current_app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
         # Read PDF and extract page count
@@ -26,16 +28,13 @@ def upload():
         state.num_pages = len(reader.pages)
 
         state.pdf_filepath = filepath
-        state.main_filename = file.filename
+        state.main_filename = filename
         state.main_filename = str(state.main_filename.replace(".pdf", ""))
 
         print("num_pages", state.num_pages)
-        print("filepath", filepath)
         print("main_filename", state.main_filename)
 
-        print("pdf_filepathfff", state.pdf_filepath)
-
-        return {"filepath": file.filename, "num_pages": state.num_pages}
+        return {"filepath": filename, "num_pages": state.num_pages}
 
 
 @bp.route("/uploadAndCheckCSV", methods=["POST"])
@@ -46,11 +45,12 @@ def uploadAndCheckCSV():
     output_messages = []  # Accumulate messages here
 
     if file:
-        filepath = os.path.join(current_app.config["UPLOAD_FOLDER"], file.filename)
+        filename = safe_name(file.filename)
+        filepath = os.path.join(current_app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
         state.txt_filepath = filepath
-        state.main_txt_filename = file.filename
+        state.main_txt_filename = filename
         state.main_txt_filename = str(state.main_filename.replace(".txt", ""))
 
         # Read and validate the CSV file
@@ -130,11 +130,12 @@ def uploadAndCheckCSV():
 def uploadPages():
     file = request.files["txt"]
     if file:
-        filepath = os.path.join(current_app.config["UPLOAD_FOLDER"], file.filename)
+        filename = safe_name(file.filename)
+        filepath = os.path.join(current_app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
         state.txt_filepath = filepath
-        state.main_txt_filename = file.filename
+        state.main_txt_filename = filename
         state.main_txt_filename = str(state.main_filename.replace(".txt", ""))
 
         line_count = count_lines_in_file(state.txt_filepath)
