@@ -1,0 +1,37 @@
+# ---- Secrets / environment ----
+.env
+.env.*
+!.env.example
+
+# ---- PHI: NEVER commit patient data ----
+# Uploaded medical records, generated outputs, and any extracted page maps.
+uploads/
+all_data_temp.txt
+*.pdf
+*.TRIAL.csv
+*.TRIAL2.csv
+
+# ---- Virtual environments (disposable; recreated via uv) ----
+.venv/
+.venv-trial/
+myenv/
+venv/
+env/
+
+# ---- Exploratory spikes (carry a hardcoded key fallback; revisit before committing) ----
+gemini_trial.py
+gemini_trial2.py
+diag_slice.py
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Tooling / OS ----
+.playwright-mcp/
+.DS_Store
+Thumbs.db

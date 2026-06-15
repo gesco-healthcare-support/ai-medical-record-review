@@ -1,0 +1,4 @@
+{
+  "_comment": "Project-level Claude Code settings for MRR AI. Extends ~/.claude/settings.json (global). Add overrides here as needed: commit scope enum, project-specific skills, permission changes.",
+  "_hipaa_note": "This project handles raw medical record content sent to OpenAI and Gemini. Stricter PHI review required on all PRs."
+}

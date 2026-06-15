@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+
+
+<head>
+    <meta charset="UTF-8">
+    <title>Page Segmenter</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/css/select2.min.css" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
+</head>
+
+
+<body>
+
+    <div class="containerbig">
+        <div class="section">
+            <h1>Page Segmenter</h1>
+            <form id="uploadForm" enctype="multipart/form-data" class="upload-form">
+                <input type="file" name="pdf" accept="application/pdf">
+                <button type="submit" class="primary-button">Upload</button>
+                <span id="uploadPDFStatus" style="display: none;"></span>
+            </form>
+
+            </form>
+
+            <br>
+
+            <div id="documentedUploadedSuccessfully"></div>
+            <div id="pageInfo"></div>
+
+            <div class="button-group">
+                <button id="getPagesButton" class="primary-button">Segment PDF</button>
+            </div>
+            <br> <br> <br>
+
+            <div id="showingUploadedDocs" class="loading">   
+                <br><br>
+            </div>       
+
+            <div id="loadingIconPages" class="loading" style="display: none;">
+                <br>Getting page segmentations... Do not refresh or close the page.<br><br>
+                Time elapsed: <span id="timer">0:00</span>
+            </div>
+                        
+            <br> <br> <br>
+            <button id="resetButton" class="red-button">Start Again</button>
+
+            <br>
+        </div>
+    </div>
+
+
+
+
+
+
+
+
+
+
+
+
+    <script>
+
+    let timerInterval; // Variable to store the timer interval
+    let secondsElapsed = 0; // Counter for elapsed seconds
+
+    function startTimer() {
+        const timerElement = document.getElementById("timer");
+        secondsElapsed = 0;
+
+        // Start the interval to update the timer every second
+        timerInterval = setInterval(() => {
+            secondsElapsed++;
+            const minutes = Math.floor(secondsElapsed / 60);
+            const seconds = secondsElapsed % 60;
+            timerElement.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }, 1000);
+    }
+
+    function stopTimer() {
+        clearInterval(timerInterval); // Stop the interval
+        const timerElement = document.getElementById("timer");
+        const minutes = Math.floor(secondsElapsed / 60);
+        const seconds = secondsElapsed % 60;
+        timerElement.textContent = `Total time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+
+    function UpdateshowingUploadedDocs(newText) {
+        const showingUploadedDocs = document.getElementById("showingUploadedDocs");
+        showingUploadedDocs.innerHTML = `
+            <br>${newText}`;
+            
+    }
+
+    function updateLoadingTextPages(newText) {
+        const loadingIconPages = document.getElementById("loadingIconPages");
+        loadingIconPages.innerHTML = `
+            <br>${newText}`;
+    }
+
+
+    $("#resetButton").on("click", function (event) {
+        event.preventDefault(); // Prevent default action
+        const confirmation = confirm("Are you sure you want to start again?");
+        if (confirmation) {
+            location.reload(); // Standard reload
+        }
+    }); 
+
+
+    $("#uploadForm").on("submit", function(event) {
+        event.preventDefault();
+        let formData = new FormData(this);
+
+        $.ajax({
+            url: "/upload",
+            type: "POST",
+            data: formData,
+            processData: false,
+            contentType: false,
+            success: function(response) {
+                let numPages = response.num_pages;
+                num_pages_global = numPages
+                isDocumentUploaded = true; // Set the flag to true once upload succeeds
+
+                $("#uploadPDFStatus").text("Uploaded (" + numPages + " pages)").show();
+            }
+        });
+    });
+
+       
+    $("#getPagesButton").on("click", function() {
+
+        event.preventDefault();
+
+        if (!isDocumentUploaded) {
+            alert("Please upload a document before summarizing.");
+            return;
+        }
+
+        $("#loadingIconPages").show();
+        startTimer();
+
+        $.ajax({
+            url: "/segmentPDF",
+            type: "POST",
+            contentType: "application/json",
+            data: JSON.stringify({ }),
+            success: function(response) {
+                // $("#loadingIconPages").hide();
+                // $("#loadingIconPages").val();
+                // $("#PagesText").val(response.pages);     
+                // stopTimer();
+                // const loadingIconPages = document.getElementById("loadingIconPages");
+                loadingIconPages.style.display = "block";
+                updateLoadingTextPages(response.pages);
+            }
+        });
+    });
+
+
+
+    $("#exportResultsToCSVFile").on("click", function() {
+            console.log("Export TXT button clicked");
+            
+            let TXTText = $("#PagesText").val();
+
+            // Prepare the data to be sent to the server
+            let dataToSend = {
+                TXTText: TXTText
+            };
+
+            $.ajax({
+                url: "/exportresultstoCSV",
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(dataToSend),
+                success: function(response) {
+                    console.log("Data sent to save as TXT successfully!");
+                    alert("Info is saved to TXT document successfully!");
+                }
+            });
+        });
+
+
+
+
+
+
+    </script>
+
+
+</body>
+
+</html>
+

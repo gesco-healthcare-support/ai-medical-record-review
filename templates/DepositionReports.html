@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+
+
+<head>
+    <meta charset="UTF-8">
+    <title>MRR Builder</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/css/select2.min.css" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.0.13/js/select2.min.js"></script>
+</head>
+
+
+<body>
+
+
+    <div class="containerbig">
+        <div class="section">
+            <h1>Deposition Reports Builder</h1>
+            <form id="uploadForm" enctype="multipart/form-data" class="upload-form">
+                <input type="file" name="pdf" accept="application/pdf">
+                <button type="submit" class="primary-button">Upload</button>
+                <span id="uploadPDFStatus" style="display: none;"></span>
+
+            </form>
+
+            <br>
+
+            <form id="uploadFormPages" enctype="multipart/form-data" class="upload-form">
+                <input type="file" name="txt" accept=".txt, .csv">                
+                <button type="submit" class="primary-button">Upload TXT</button>
+                <span id="uploadTXTStatus" style="display: none;"></span>
+            </form>
+
+            <br>
+
+            <div id="documentedUploadedSuccessfully"></div>
+            <div id="pageInfo"></div>
+
+            <!-- <br> -->
+
+
+
+
+            <br>
+            
+            <div class="button-group">
+                <button id="getDepositionOpRepButton" class="primary-button">Get Deposition Reports</button>
+                <!-- <button id="patientNameDOB" class="green-button">Get Patient Name & DOB</button>
+                <button id="lawfirm" class="green-button">Get Lawfirm</button>
+                <button id="resetButton" class="red-button">Start Again</button> -->
+            </div>
+
+
+            <div id="loadingIcon" class="loading" style="display: none;">
+                <br>Summarizing... Do not refresh or close the page.<br><br>
+                Time elapsed: <span id="timer">0:00</span>
+            </div>   
+            <br>
+        
+
+            
+        </div>
+
+
+
+
+
+
+
+        <!-- <div class="section">
+            <div class="summary-container">
+                <div class="header-container">
+                    <h2>Full MRR</h2>
+                    <button id="exportResultsToWordFile" class="primary-button-summ-mrr">Export To Word</button>
+                </div>
+                <div class="input-group">
+                    <input type="text" id="patientName" placeholder="Patient Name">
+                    <input type="text" id="Patientdob" placeholder="Patient DOB">
+                </div>
+                <input type="text" id="QMEorAME" placeholder="Evaluation Type">
+                <input type="text" id="lawfirm-input" placeholder="Attorney Law Firm">
+        
+                <textarea id="MRRText" rows="8" placeholder="MRR text..."></textarea>
+            </div>
+        </div>
+    </div> -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    <script>
+
+
+
+        $(document).ready(function() {
+                $('#optionDropdown').select2({
+                    placeholder: "Please select a document type",
+                    allowClear: true,
+                });
+
+                // Set the dropdown max height to show 10 options
+                $('#optionDropdown').on('select2:open', function() {
+                    let select2Dropdown = $('.select2-dropdown .select2-results__options');
+                    select2Dropdown.css('max-height', '400px'); // Adjust to fit approximately 10 items
+                });
+            });
+
+        // Global Variables
+        let selectedPages = [];
+        let num_pages_global = 1
+        let isDocumentUploaded = false; // Global flag to track if a document is uploaded
+
+
+        $(document).ready(function() {
+        // Clear all input fields and text areas
+        $("#summaryText").val('');
+        $("#summaryDate").val('');
+        $("#summaryTitle").val('');
+        $("#MRRText").val('');
+        $("#documentedUploadedSuccessfully").val('')
+        $("#pageInfo").val('')
+
+        // Clear the selected pages array
+        selectedPages = [];
+
+        // Remove green borders from all previewed pages
+        $(".page").removeClass("selected");
+
+        // Clear the preview container
+        $("#pdfPreview").empty();
+
+        // Reset the dropdown to the default option (optional)
+        $("#optionDropdown").prop('selectedIndex', 0);
+
+        // Remove the uploaded file reference
+        // Note: To clear uploaded files, you may need to reset the file input field manually if applicable.
+        $("#uploadForm")[0].reset();
+
+        // You may add an AJAX call to notify the server to clear any session data if needed.
+        $.ajax({
+            url: "/reset",
+            type: "POST",
+            success: function() {
+                console.log("Server-side reset completed.");
+            },
+            error: function() {
+                console.error("Error during server-side reset.");
+            }
+        });
+
+        $("#loadingIcon").hide();
+    });
+
+
+
+
+    document.addEventListener("DOMContentLoaded", function() {
+        // Check the QME box
+        const qmeCheckbox = document.getElementById("qmeCheckbox");
+        qmeCheckbox.checked = true;
+
+        // Automatically fill the QMEorAME field
+        const qmeOrAmeField = document.getElementById("QMEorAME");
+        qmeOrAmeField.value = "PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)";
+    });
+
+
+
+
+
+
+        // JavaScript for handling uploads and page selection
+        $("#uploadForm").on("submit", function(event) {
+            event.preventDefault();
+            let formData = new FormData(this);
+            formData.append('model', $('#modelSelect').val()); // Append the selected model to the form data
+
+            $.ajax({
+                url: "/upload",
+                type: "POST",
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    let numPages = response.num_pages;
+                    num_pages_global = numPages
+                    isDocumentUploaded = true; // Set the flag to true once upload succeeds
+
+                    // Update the upload status
+                    $("#uploadPDFStatus").text("Uploaded (" + numPages + " pages)").show();
+
+                    // $("#pageInfo").text(`The document is ${numPages} pages`);
+                    // $("#documentedUploadedSuccessfully").text(`PDF uploaded succesfully`);
+                }
+            });
+        });
+
+        // JavaScript for handling uploads and page selection
+        $("#uploadFormPages").on("submit", function(event) {
+        event.preventDefault();
+        let formData = new FormData(this);
+        formData.append('model', $('#modelSelect').val()); // Append the selected model to the form data
+
+        $.ajax({
+            url: "/uploadPages",
+            type: "POST",
+            data: formData,
+            processData: false,
+            contentType: false,
+            success: function(response) {
+                let line_count = response.line_count;
+                // Update the upload status
+                $("#uploadTXTStatus").text("Uploaded (" + line_count + " documents)").show();
+
+            }
+        });
+    });
+
+
+
+
+
+
+
+
+
+
+
+
+
+    function selectOnlyOne(checkbox) {
+        // Get all checkboxes in the group with the same name
+        const checkboxes = document.getElementsByName('reportType');
+        
+        // Uncheck all checkboxes except the one clicked
+        checkboxes.forEach((box) => {
+            if (box !== checkbox) {
+                box.checked = false;
+            }
+        });
+
+        // Update the value based on the selected checkbox
+        if (checkbox.value === 'QME') {
+            $("#QMEorAME").val('PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)');
+        } else {
+            $("#QMEorAME").val('AGREED MEDICAL EVALUATION (ML-10*-)');
+}
+    }
+
+
+
+
+
+
+
+
+        
+    $("#getDepositionOpRepButton").on("click", function() {
+
+        event.preventDefault();
+
+        let option = $("#optionDropdown").val();
+        let model = $("#modelSelect").val(); 
+
+        
+        let totalPages = num_pages_global;
+
+        // Check if a document is uploaded
+        if (!isDocumentUploaded) {
+            alert("Please upload a document before summarizing.");
+            return; // Prevent further action if no document is uploaded
+        }
+
+        $("#loadingIcon").show();
+        startTimer();
+
+        $.ajax({
+            url: "/getDepoRep",
+            type: "POST",
+            contentType: "application/json",
+            data: JSON.stringify({ 
+                    option: option,
+                    model: model,
+                    }),
+            success: function(response) {
+                $("#loadingIcon").hide();
+                // $("#MRRText").val(response.summaryText);  
+                $("#loadingIcon").val();     
+                stopTimer();
+                let resp = response.summaryText
+                const loadingIcon = document.getElementById("loadingIcon");
+                loadingIcon.style.display = "block";
+                updateLoadingText(resp);
+
+            }
+        });
+    });
+
+
+
+
+
+
+
+
+    $("#addToMRR").on("click", function() {
+
+            console.log("Button clicked");
+            // Get the values from the input fields
+            let summaryText = $("#summaryText").val();
+            let summaryDate = $("#summaryDate").val();
+            let summaryTitle = $("#summaryTitle").val();
+
+            // Prepare the data to be sent to the server
+            let dataToSend = {
+                summaryText: summaryText,
+                summaryDate: summaryDate,
+                summaryTitle: summaryTitle
+            };
+
+            $.ajax({
+                url: "/addtomrr",
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(dataToSend),
+                success: function(response) {
+                    $("#MRRText").val(response.big_text);                
+                }
+            });
+    });
+
+
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        // Getting name and DOB button functionality
+        $("#patientNameDOB").on("click", function() {
+            console.log("patientNameDOB button clicked");
+
+            // Check if a document is uploaded
+            if (!isDocumentUploaded) {
+                alert("Please upload a document before getting its page segmentation.");
+                return; // Prevent further action if no document is uploaded
+            }
+
+            // Prepare the data to be sent to the server
+            let dataToSend = {
+                
+            };
+
+            $.ajax({
+                url: "/getpatientnameanddob",
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(dataToSend),
+                success: function(response) {
+
+                console.log('response.name', response.name)
+                console.log('response.DOB', response.dob)
+                console.log(response)
+
+                $("#patientName").val(response.name); 
+                $("#Patientdob").val(response.dob);
+
+                }
+            });
+        });
+
+
+
+
+        // Getting name and DOB button functionality
+        $("#getPages").on("click", function() {
+            console.log("getPages button clicked");
+
+            // Check if a document is uploaded
+            if (!isDocumentUploaded) {
+                alert("Please upload a document before getting its info.");
+                return; // Prevent further action if no document is uploaded
+            }
+
+            // Prepare the data to be sent to the server
+            let dataToSend = {
+                
+            };
+
+            $.ajax({
+                url: "/getPages",
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(dataToSend),
+                success: function(response) {
+
+                console.log(response.pages)
+
+                $("#PagesText").val(response.pages);
+
+                }
+            });
+        });
+
+
+
+
+
+
+
+            // Getting Attorney and lawfirm
+            $("#lawfirm").on("click", function() {
+            console.log("lawfirm button clicked");
+
+            // Check if a document is uploaded
+            if (!isDocumentUploaded) {
+                alert("Please upload a document before getting its info.");
+                return; // Prevent further action if no document is uploaded
+            }
+
+            // Prepare the data to be sent to the server
+            let dataToSend = {
+                
+            };
+
+            $.ajax({
+                url: "/getlawfirm",
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(dataToSend),
+                success: function(response) {
+
+                console.log('response.name', response.lawfirm)
+                console.log(response)
+
+                $("#lawfirm-input").val(response.lawfirm); 
+
+                }
+            });
+        });
+
+
+
+
+
+
+
+
+    $("#exportResultsToWordFile").on("click", function() {
+            console.log("Export button clicked");
+
+            // let summaryText = ''
+            let patientName = $("#patientName").val();
+            let patientdob = $("#Patientdob").val();
+            let QMEorAME = $("#QMEorAME").val();
+            let summaryText = $("#summaryText").val();
+            let lawfirm = $("#lawfirm-input").val();
+
+            // Prepare the data to be sent to the server
+            let dataToSend = {
+                summaryText: summaryText,
+                patientName: patientName,
+                patientdob: patientdob,
+                QMEorAME: QMEorAME,
+                lawfirm: lawfirm
+            };
+
+            $.ajax({
+                url: "/exportresultstoword",
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(dataToSend),
+                success: function(response) {
+                    console.log("Data sent successfully!");
+                    alert("MRR is saved to WORD document successfully!");
+                }
+            });
+        });
+
+
+
+
+
+
+
+
+        // Clear button functionality
+        $("#clearButton").on("click", function() {
+            $("#summaryText").val(''); 
+            $("#startPage").val(''); 
+            $("#endPage").val(''); 
+            $("#optionDropdown").prop('selectedIndex', 0);
+            $("#summaryDate").val(''); 
+            $("#summaryTitle").val(''); 
+    });
+
+
+
+
+
+
+    
+
+    $("#resetButton").on("click", function (event) {
+        event.preventDefault(); // Prevent default action
+        const confirmation = confirm("Are you sure you want to start again?");
+        if (confirmation) {
+            location.reload(); // Standard reload
+        }
+    }); 
+
+
+
+
+
+
+    let timerInterval; // Variable to store the timer interval
+    let secondsElapsed = 0; // Counter for elapsed seconds
+
+    function startTimer() {
+        const timerElement = document.getElementById("timer");
+        secondsElapsed = 0;
+
+        // Start the interval to update the timer every second
+        timerInterval = setInterval(() => {
+            secondsElapsed++;
+            const minutes = Math.floor(secondsElapsed / 60);
+            const seconds = secondsElapsed % 60;
+            timerElement.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }, 1000);
+    }
+
+    function stopTimer() {
+        clearInterval(timerInterval); // Stop the interval
+        const timerElement = document.getElementById("timer");
+        const minutes = Math.floor(secondsElapsed / 60);
+        const seconds = secondsElapsed % 60;
+        timerElement.textContent = `Total time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+    function updateLoadingText(newText) {
+        const loadingIcon = document.getElementById("loadingIcon");
+        loadingIcon.innerHTML = `
+            <br>${newText}`;
+    }
+
+
+
+
+
+    </script>
+
+
+
+
+
+
+</body>
+</html>
+

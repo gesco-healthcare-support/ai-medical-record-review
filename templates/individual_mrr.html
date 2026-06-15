@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Multi PDF Upload</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+        .containerbig {
+            display: flex;
+            justify-content: center;
+            padding: 20px;
+        }
+        .section {
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            width: 80%;
+            text-align: center;
+        }
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        .upload-form {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .primary-button {
+            background-color: #007bff;
+            color: white;
+            padding: 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        .primary-button:hover {
+            background-color: #0056b3;
+        }
+        .delete-button {
+            background-color: red;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        .delete-button:hover {
+            background-color: darkred;
+        }
+        .hidden {
+            display: none;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        table th, table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        table th {
+            background-color: #007bff;
+            color: white;
+        }
+        input[type="text"] {
+            width: 250px;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 14px;
+            height: 30px;
+        }
+        input[type="file"] {
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="containerbig">
+        <div class="section">
+            <h1>Upload Multiple PDFs</h1>
+            <input type="text" id="patientName" placeholder="Patient Name">
+
+            <form id="uploadForm" enctype="multipart/form-data" class="upload-form">
+                <input type="file" id="pdfFiles" name="pdfs" accept="application/pdf" multiple>
+                <button type="submit" class="primary-button">Upload</button>
+                <span id="uploadStatus" style="display: none;"></span>
+            </form>
+            <button id="ComputePageRanges" class="primary-button hidden">Get Pages & Single PDF</button>
+            </br>
+            <span id="status">-</span>
+            <span id="timer">0:00</span>
+            
+
+            <div class="section">
+                <div class="summary-container">
+                    <!-- <h2>Case Details</h2> -->
+                    <input type="text" id="Patientdob" placeholder="Patient DOB">
+                    <input type="text" id="QMEorAME" placeholder="Evaluation Type">
+                    <input type="text" id="lawfirm-input" placeholder="Attorney Law Firm">
+            
+                    <!-- <textarea id="MRRText" rows="8" placeholder="MRR text..."></textarea> -->
+                </div>
+            </div>
+
+            <button id="SummarizeIndivRecord" class="primary-button hidden">Summarize</button>
+            <button id="exportResultsToWordFileIndivRecords" class="primary-button-summ-mrr hidden">Export To Word</button>
+
+
+            <br>
+            <div id="uploadedFilesTable">
+                <table border="1" id="pdfTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Action</th>
+                            <th>Filename</th>
+                            <th>Category</th>
+                            <th>Encounter Date</th>
+                            <th>Injury Date</th>
+                            <th>Manual Review</th>
+                            <th>Pages</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    $(document).ready(function () {
+    let fileCounter = 1;
+    let patientFolder = ""; // Store patient folder name globally
+
+    $("#exportResultsToWordFileIndivRecords").on("click", function() {
+            console.log("Export button clicked");
+
+            // let summaryText = ''
+            let patientName = $("#patientName").val();
+            let patientdob = $("#Patientdob").val();
+            let QMEorAME = $("#QMEorAME").val();
+            let summaryText = $("#summaryText").val();
+            let lawfirm = $("#lawfirm-input").val();
+
+            // Prepare the data to be sent to the server
+            let dataToSend = {
+                summaryText: summaryText,
+                patientName: patientName,
+                patientdob: patientdob,
+                QMEorAME: QMEorAME,
+                lawfirm: lawfirm
+            };
+
+            $.ajax({
+                url: "/exportResultsToWordFileIndivRecords",
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(dataToSend),
+                success: function(response) {
+                    console.log("Data sent successfully!");
+                    alert("MRR is saved to WORD document successfully!");
+                }
+            });
+        });
+
+    function updateRowNumbers() {
+        $("#pdfTable tbody tr").each(function (index) {
+            $(this).find("td:first").text(index + 1);
+        });
+    }
+
+    $("#uploadForm").on("submit", function (event) {
+        event.preventDefault();
+        let files = $("#pdfFiles")[0].files;
+
+        let patientName = $("#patientName").val();
+
+        if (files.length === 0) {
+            alert("Please select at least one PDF file.");
+            return;
+        }
+
+        let timestamp = Math.floor(Date.now() / 1000);
+        patientFolder = "patient" + timestamp;
+
+        $.ajax({
+            url: "/create_patient_folder_indiv_mrr",
+            type: "POST",
+            contentType: "application/json",
+            data: JSON.stringify({ folder_name: patientFolder, patient_name: patientName }),
+            success: function (response) {
+                console.log("Folder Created: ", response.folder_path);
+
+                let formData = new FormData();
+                formData.append("folder_name", patientFolder);
+                for (let i = 0; i < files.length; i++) {
+                    formData.append("pdfs", files[i]);
+                }
+
+                $.ajax({
+                    url: "/upload_files",
+                    type: "POST",
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function (response) {
+                        console.log("Files Uploaded:", response.saved_files);
+                        $("#pdfTable tbody").empty();
+
+                        for (let i = 0; i < response.saved_files.length; i++) {
+                            let fileName = response.saved_files[i];
+                            let row = `<tr>
+                                <td>${fileCounter++}</td>
+                                <td><button class='delete-button'>X</button></td>
+                                <td><input type='text' value='${fileName}' readonly style='width: 250px;'></td>
+                                <td><input type='text' class='category'></td>
+                                <td><input type='text' class='encounter-date'></td>
+                                <td><input type='text' class='injury-date'></td>
+                                <td><input type='text' class='manual-review'></td>
+                                <td><input type='text' class='pages'></td>
+                            </tr>`;
+                            $("#pdfTable tbody").append(row);
+                        }
+
+                        $("#ComputePageRanges").removeClass("hidden");
+                    }
+                });
+            }
+        });
+    });
+
+    let timerInterval; // Variable to store the timer interval
+    let secondsElapsed = 0; // Counter for elapsed seconds
+
+    function startTimer() {
+        const timerElement = document.getElementById("timer");
+        secondsElapsed = 0;
+
+        // Start the interval to update the timer every second
+        timerInterval = setInterval(() => {
+            secondsElapsed++;
+            const minutes = Math.floor(secondsElapsed / 60);
+            const seconds = secondsElapsed % 60;
+            timerElement.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }, 1000);
+    }
+
+    function stopTimer() {
+        clearInterval(timerInterval); // Stop the interval
+        const timerElement = document.getElementById("timer");
+        const minutes = Math.floor(secondsElapsed / 60);
+        const seconds = secondsElapsed % 60;
+        timerElement.textContent = `Total time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+    function updateLoadingText(newText) {
+        const loadingIcon = document.getElementById("loadingIcon");
+        loadingIcon.innerHTML = `
+            <br>${newText}`;
+    }
+
+    $(document).on("click", ".delete-button", function () {
+        $(this).closest("tr").remove();
+        updateRowNumbers();
+    });
+
+    $("#ComputePageRanges").on("click", function () {
+        $.ajax({
+            url: "/compute_page_ranges",
+            type: "POST",
+            contentType: "application/json",
+            data: JSON.stringify({ folder_name: patientFolder }),
+            success: function (response) {
+                if (response.status === "success") {
+                    let page_ranges = response.page_ranges;
+                    console.log("Page Ranges:", page_ranges);
+
+                    $("#pdfTable tbody tr").each(function (index) {
+                        $(this).find("td:eq(7) input").val(page_ranges[index]); // Update Pages textbox
+                    });
+
+                    $("#SummarizeIndivRecord").removeClass("hidden");
+                    $("#status").text("You can now summarize the document.").show();
+                } else {
+                    alert("Error computing page ranges.");
+                }
+            },
+            error: function () {
+                alert("Error processing page ranges.");
+            }
+        });
+    });
+
+    $("#SummarizeIndivRecord").on("click", function () {
+        let records = [];
+        $("#pdfTable tbody tr").each(function () {
+            records.push({
+                filename: $(this).find("td:eq(2) input").val(),
+                category: $(this).find("td:eq(3) input").val(),
+                encounter_date: $(this).find("td:eq(4) input").val(),
+                injury_date: $(this).find("td:eq(5) input").val(),
+                manual_review: $(this).find("td:eq(6) input").val(),
+                pages: $(this).find("td:eq(7) input").val() // Send pages information
+            });
+        });
+
+        if (records.length === 0) {
+            alert("No records to summarize.");
+            return;
+        }
+
+        startTimer();
+        $("#status").text("Summarization has started ...").show();
+        $.ajax({
+            url: "/summarize_indiv_record",
+            type: "POST",
+            contentType: "application/json",
+            data: JSON.stringify({ folder_name: patientFolder, records: records }), // Send records with pages
+            success: function (response) {
+                // alert("Summarization Complete. You can not export to word!");
+                $("#status").text("Summarization Complete. You can now export to word!").show();
+                stopTimer();
+                $("#timer").hide();
+                $("#exportResultsToWordFileIndivRecords").show();
+                
+                console.log(response.records); // View processed records in the console
+            },
+            error: function () {
+                alert("Error processing records.");
+            }
+        });
+    });
+});
+
+    </script>
+// </body>
+// </html>

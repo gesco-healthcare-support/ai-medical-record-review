@@ -1,0 +1,428 @@
+/* General Styling */
+body {
+    font-family: 'Roboto', sans-serif;
+    background-color: #f4f7fa;
+    color: #333;
+    margin: 0;
+    padding: 0;
+}
+
+h1 {
+    font-size: 2em;
+    color: #2c3e50;
+    text-align: center;
+    margin-bottom: 1em;
+}
+
+h2 {
+    font-size: 1.5em;
+    color: #34495e;
+    margin-bottom: 0.5em;
+}
+
+.containerbig {
+    display: flex;
+    gap: 2em;
+    padding: 2em;
+    justify-content: center;
+}
+
+.section {
+    flex: 1;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    padding: 2em;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.upload-form {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+input[type="file"] {
+    padding: 5px;
+}
+
+/* Page Range and Dropdown */
+.page-range, .model-selection, .controls {
+    margin: 15px 0;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.checkbox-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 15px 0;
+}
+
+.inline-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+/* Button Styles */
+.button-group {
+    display: flex;
+    gap: 10px;
+}
+
+button {
+    font-size: 1em;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.3s;
+}
+
+.primary-button {
+    background-color: #3498db;
+    color: #fff;
+    text-align: center;
+}
+
+.primary-button-summ-mrr {
+    background-color: #3498db;
+    color: #fff;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    display: block;
+    width: 150px; /* Set a fixed width to center the button */
+    margin: 10px auto 0; /* Center the button and add some space from textarea */
+    text-align: center;
+    box-sizing: border-box;
+}
+
+.primary-button:hover {
+    background-color: #2980b9;
+}
+
+.secondary-button {
+    background-color: #ecf0f1;
+    color: #7f8c8d;
+}
+
+.secondary-button:hover {
+    background-color: #bdc3c7;
+}
+
+.orange-button {
+    background-color: #e49329;
+    color: #ffffff;
+}
+
+.orange-button:hover {
+    background-color: #d69429;
+}
+
+.red-button {
+    background-color: #ec3f3f;
+    color: #ffffff;
+}
+
+.red-button:hover {
+    background-color: #ff4242;
+}
+
+.blue-button {
+    background-color: #2980b9;
+    color: #edefef;
+}
+
+.blue-button:hover {
+    background-color: #a4d7a5;
+}
+
+.green-button {
+    background-color: #45e250;
+    color: #edefef;
+}
+
+.green-button:hover {
+    background-color: #7cd236;
+}
+
+/* Text Areas */
+textarea, input[type="text"] {
+    width: 100%;
+    max-width: 500px;
+    padding: 10px;
+    font-size: 1em;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+    margin: 10px 0;
+    resize: none;
+}
+
+
+
+/* Loading Icon */
+.loading {
+    font-size: 1em;
+    color: #555;
+    margin-top: 10px;
+    text-align: center;
+}
+
+/* Styling for input and textarea fields to ensure consistent height */
+.summary-container input[type="text"],
+.summary-container textarea {
+    width: 100%;
+    max-width: 500px;
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    margin: 10px 0;
+    box-sizing: border-box;
+}
+
+
+
+#summarizeButton {
+    flex-basis: 100%; /* Take the full row */
+    padding: 20px; /* Increase padding for larger size */
+    font-size: 1.2em; /* Make the font larger */
+}
+
+
+#getPagesButton {
+    flex-basis: 100%; /* Take the full row */
+    padding: 20px; /* Increase padding for larger size */
+    font-size: 1.2em; /* Make the font larger */
+}
+
+.lower-button-group {
+    margin-top: 30px; /* Add spacing from the previous group */
+    display: flex;
+    justify-content: space-between; /* Spread buttons across the row */
+    gap: 10px;
+}
+
+/* Flexbox styling for Patient Name and DOB fields */
+.input-group {
+    display: flex;
+    gap: 10px;
+    width: 100%;
+    max-width: 500px;
+
+}
+
+#patientName {
+    flex: 3;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+}
+
+#Patientdob {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+}
+
+/* Consistent height for text areas in both sections */
+#summaryText, #MRRText {
+    width: 500px;
+    max-width: 500px;
+    height: 600px;
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    resize: none;
+    box-sizing: border-box;
+    display: block;
+    margin: 0 auto;
+}
+
+#PagesText {
+    width: 1500px;
+    max-width: 700px;
+    height:  500px;
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    resize: none;
+    box-sizing: border-box;
+    display: block;
+    margin: 0 auto;
+}
+
+#CSVcheckedTextArea {
+    width: 1500px;
+    max-width: 700px;
+    height:  500px;
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    resize: none;
+    box-sizing: border-box;
+    display: block;
+    margin: 0 auto;
+}
+
+
+/* Useful Tools Section */
+.useful-tools {
+    margin-top: 20px;
+}
+
+.useful-tools-label {
+    display: block;
+    font-size: 1.1em;
+    color: #2c3e50;
+    text-align: center; /* Center the label */
+    margin-bottom: 10px;
+}
+
+#pdfMergerButton {
+    background-color: #2d6306;
+    color: #fff;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    display: block; /* Ensures the button is on its own line */
+    width: auto;
+    margin-left: 0; /* Aligns the button to the left */
+    transition: background 0.3s;
+}
+
+#pdfMergerButton:hover {
+    background-color: #a4d7a5;
+}
+
+
+#documentedUploadedSuccessfully {
+    color: green; /* Set text color to green */
+    font-weight: bold; /* Optional: Make it bold for emphasis */
+}
+
+#pageInfo {
+    color: blue; /* Set text color to blue */
+    font-weight: bold; /* Optional: Make it bold for emphasis */
+}
+
+.pages-not-counting {
+    margin: 10px 0;
+    display: flex;
+    align-items: center;
+    gap: 10px; /* Add space between label and input */
+}
+
+#pagesNotCounting {
+    width: 50px; /* Adjust width for a compact input field */
+    padding: 5px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+}
+
+
+
+.button-group {
+    display: flex;
+    flex-wrap: wrap; /* Allows buttons to wrap into rows */
+    justify-content: space-between; /* Adjusts spacing between buttons */
+    gap: 10px; /* Adds space between buttons */
+}
+
+.button-group button {
+    flex: 0 1 calc(50% - 10px); /* Each button takes 50% of the row width minus gap */
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    text-align: center;
+}
+
+#uploadPDFStatus,
+#uploadTXTStatus {
+    color: green;
+    font-weight: bold;
+}
+
+.header-container {
+    display: flex;
+    justify-content: space-between; /* Push items to far ends */
+    align-items: center; /* Align vertically */
+    margin-bottom: 10px; /* Optional: Add spacing below the header */
+}
+
+.header-container h2 {
+    margin: 0; /* Remove default margin for proper alignment */
+    font-size: 1.5em; /* Adjust font size if needed */
+}
+
+.primary-button-summ-mrr {
+    margin-left: auto; /* Push the button to the far right */
+    padding: 10px 20px;
+    font-size: 1em;
+    cursor: pointer;
+    background-color: #3498db;
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    transition: background 0.3s;
+}
+
+.primary-button-summ-mrr:hover {
+    background-color: #2980b9;
+}
+
+#timer {
+    font-weight: bold;
+    color: #3498db; /* Matches the primary button color */
+}
+
+.main-header {
+    /* display: flex; */
+    /* justify-content: space-between; */
+    align-items: center; 
+    padding: 10px 20px;
+    background-color: #c6dfe7;
+    color: white;
+    border-bottom: 2px solid #2980b9;
+}
+
+.header-title {
+    font-size: 1.5em;
+    margin: 0;
+}
+
+.header-button {
+    padding: 10px 15px;
+    background-color: #2980b9;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1em;
+    transition: background-color 0.3s;
+}
+
+.header-button:hover {
+    background-color: #1f6fa4;
+}
+
+.form-group {
+    margin-bottom: 1rem;
+}
+textarea {
+    width: 40%; /* Makes textarea take full width */
+    max-width: 400px; /* Optional: restrict maximum width */
+}
