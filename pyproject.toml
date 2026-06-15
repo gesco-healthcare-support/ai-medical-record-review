@@ -1,0 +1,27 @@
+[project]
+name = "ai-medical-record-review"
+version = "0.1.0"
+description = "Segments, categorizes, and summarizes medical-record PDFs into review reports."
+readme = "README.md"
+# Pinned to 3.12 for now: the deprecated google-generativeai SDK has no 3.13 support.
+# The refactor/migrate-sdks PR moves to google-genai and bumps this to 3.13.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "flask",
+    "openai",
+    "google-generativeai",
+    "pymupdf",
+    "pypdf2",
+    "pandas",
+    "numpy",
+    "python-docx",
+    "pytesseract",
+    "pdf2image",
+    "pillow",
+    "httplib2",
+    "python-dotenv",
+]
+
+[tool.uv]
+# This is a flat Flask app, not an installable package; only manage dependencies.
+package = false
