@@ -8,6 +8,7 @@ from pypdf import PdfReader, PdfWriter
 
 from mrr_ai import state
 from mrr_ai.config import UPLOAD_BASE_DIR
+from mrr_ai.services.files import safe_name
 
 bp = Blueprint("reports", __name__)
 
@@ -164,7 +165,8 @@ def compute_page_ranges():
     if not folder_name:
         return jsonify({"error": "Missing folder name"}), 400
 
-    folder_path = os.path.join(UPLOAD_BASE_DIR, folder_name)
+    # Sanitize before building a path (prevents traversal via the folder name).
+    folder_path = os.path.join(UPLOAD_BASE_DIR, safe_name(folder_name))
 
     if not os.path.exists(folder_path):
         return jsonify({"error": f"Folder '{folder_path}' does not exist"}), 400

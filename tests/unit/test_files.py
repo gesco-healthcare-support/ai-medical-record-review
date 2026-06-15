@@ -2,7 +2,13 @@
 
 from datetime import datetime
 
-from mrr_ai.services.files import allowed_file, count_lines_in_file, is_valid_date, parse_date
+from mrr_ai.services.files import (
+    allowed_file,
+    count_lines_in_file,
+    is_valid_date,
+    parse_date,
+    safe_name,
+)
 
 
 def test_allowed_file_accepts_only_pdf_case_insensitive():
@@ -26,6 +32,23 @@ def test_is_valid_date():
     # "-" is the explicit "no date" sentinel and is treated as valid.
     assert is_valid_date("-") is True
     assert is_valid_date("  -  ") is True
+
+
+def test_safe_name_neutralizes_path_traversal():
+    # The security property: no path separators or traversal sequences survive.
+    for malicious in ["../../etc/passwd", "a/b/c.pdf", "..\\..\\win.ini", "/abs/path.pdf"]:
+        cleaned = safe_name(malicious)
+        assert "/" not in cleaned
+        assert "\\" not in cleaned
+        assert ".." not in cleaned
+    # Ordinary filenames pass through unchanged.
+    assert safe_name("report.pdf") == "report.pdf"
+
+
+def test_safe_name_falls_back_when_empty():
+    assert safe_name("") == "upload"
+    assert safe_name(None) == "upload"
+    assert safe_name("...", fallback="x") == "x"
 
 
 def test_count_lines_in_file(tmp_path):

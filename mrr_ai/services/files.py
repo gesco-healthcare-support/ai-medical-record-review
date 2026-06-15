@@ -2,11 +2,23 @@
 
 from datetime import datetime
 
+from werkzeug.utils import secure_filename
+
 from mrr_ai.config import ALLOWED_EXTENSIONS
 
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def safe_name(filename, fallback="upload"):
+    """Return a filesystem-safe basename for a user-supplied filename or folder name.
+
+    Wraps werkzeug.secure_filename to strip path separators and traversal sequences
+    (e.g. ``../``); falls back to a fixed name when sanitization yields an empty string.
+    Use at every boundary where request data is used to build a filesystem path.
+    """
+    return secure_filename(filename or "") or fallback
 
 
 def parse_date(date_str):
