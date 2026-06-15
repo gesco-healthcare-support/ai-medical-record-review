@@ -38,15 +38,15 @@
             </div>
             <br> <br> <br>
 
-            <div id="showingUploadedDocs" class="loading">   
+            <div id="showingUploadedDocs" class="loading">
                 <br><br>
-            </div>       
+            </div>
 
             <div id="loadingIconPages" class="loading" style="display: none;">
                 <br>Getting page segmentations... Do not refresh or close the page.<br><br>
                 Time elapsed: <span id="timer">0:00</span>
             </div>
-                        
+
             <br> <br> <br>
             <button id="resetButton" class="red-button">Start Again</button>
 
@@ -96,7 +96,7 @@
         const showingUploadedDocs = document.getElementById("showingUploadedDocs");
         showingUploadedDocs.innerHTML = `
             <br>${newText}`;
-            
+
     }
 
     function updateLoadingTextPages(newText) {
@@ -112,7 +112,7 @@
         if (confirmation) {
             location.reload(); // Standard reload
         }
-    }); 
+    });
 
 
     $("#uploadForm").on("submit", function(event) {
@@ -135,7 +135,7 @@
         });
     });
 
-       
+
     $("#getPagesButton").on("click", function() {
 
         event.preventDefault();
@@ -156,7 +156,7 @@
             success: function(response) {
                 // $("#loadingIconPages").hide();
                 // $("#loadingIconPages").val();
-                // $("#PagesText").val(response.pages);     
+                // $("#PagesText").val(response.pages);
                 // stopTimer();
                 // const loadingIconPages = document.getElementById("loadingIconPages");
                 loadingIconPages.style.display = "block";
@@ -169,7 +169,7 @@
 
     $("#exportResultsToCSVFile").on("click", function() {
             console.log("Export TXT button clicked");
-            
+
             let TXTText = $("#PagesText").val();
 
             // Prepare the data to be sent to the server
@@ -200,4 +200,3 @@
 </body>
 
 </html>
-

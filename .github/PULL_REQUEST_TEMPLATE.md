@@ -10,7 +10,7 @@ Every change must be evaluated for PHI exposure in prompts, logs, and cached res
 
 ## Summary
 <!-- 1-3 bullets. Plain language, readable by a non-technical stakeholder. -->
-- 
+-
 
 ## Motivation / Context
 <!-- Why now? Link to ticket, incident, or vault Decision-Log entry. Keep brief. -->
@@ -27,8 +27,8 @@ Every change must be evaluated for PHI exposure in prompts, logs, and cached res
 - [ ] Manual testing performed (describe what was tested)
 
 ## Risk / Rollback
-Blast radius: 
-Rollback: 
+Blast radius:
+Rollback:
 
 ## Screenshots
 <!-- `N/A (no UI change)` unless Flask templates or JS/CSS changed. Otherwise attach before/after. -->

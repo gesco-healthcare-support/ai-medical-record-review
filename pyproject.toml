@@ -25,3 +25,38 @@ dependencies = [
 [tool.uv]
 # This is a flat Flask app, not an installable package; only manage dependencies.
 package = false
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "pyright",
+    "pre-commit",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# Errors, pyflakes, import-sort, pyupgrade, bugbear. Complexity/type rules are
+# deferred on the inherited code per the "flag when touched" policy; expand later.
+select = ["E", "F", "I", "UP", "B"]
+# The formatter owns line length; E501 mostly flags long prompt string literals
+# it cannot wrap, so linting it is noise (Ruff's own recommendation).
+ignore = ["E501"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+# Advisory while the inherited code is untyped; tighten as annotations are added.
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+exclude = [
+    ".venv",
+    ".venv-trial",
+    "myenv",
+    "gemini_trial.py",
+    "gemini_trial2.py",
+    "diag_slice.py",
+    "**/__pycache__",
+]

@@ -22,8 +22,8 @@
             <h1>CSV Checker</h1>
             <form id="uploadForm" enctype="multipart/form-data" class="upload-form">
                 <!-- PDF File Input -->
-                <input type="file" name="txt" accept=".txt, .csv">                
-                    
+                <input type="file" name="txt" accept=".txt, .csv">
+
                 <!-- Upload Button -->
                 <button type="submit" class="primary-button">Upload & Check</button>
                 <span id="uploadPDFStatus" style="display: none;"></span>
@@ -39,10 +39,10 @@
             </div> -->
             <br> <br> <br>
 
-            <div id="showingUploadedDocs" class="loading">   
+            <div id="showingUploadedDocs" class="loading">
                 <br><br>
             </div>
-            
+
 
 
 
@@ -52,7 +52,7 @@
                 Time elapsed: <span id="timer">0:00</span>
             </div>
 
-                        
+
             <br> <br> <br>
             <button id="resetButton" class="red-button">Start Again</button>
 
@@ -106,7 +106,7 @@
         const showingUploadedDocs = document.getElementById("showingUploadedDocs");
         showingUploadedDocs.innerHTML = `
             <br>${newText}`;
-            
+
     }
 
 
@@ -123,7 +123,7 @@
         if (confirmation) {
             location.reload(); // Standard reload
         }
-    }); 
+    });
 
 
     // JavaScript for handling uploads and page selection
@@ -141,14 +141,14 @@
                 let numPages = response.num_pages;
                 num_pages_global = numPages
                 isDocumentUploaded = true; // Set the flag to true once upload succeeds
-                $("#CSVcheckedTextArea").val(response.errors_and_duplicates);     
+                $("#CSVcheckedTextArea").val(response.errors_and_duplicates);
 
                 // Update the upload status
                 $("#uploadPDFStatus").text("Uploaded (" + numPages + " pages)").show();
             }
         });
     });
-       
+
     $("#getPagesButton").on("click", function() {
 
         event.preventDefault();
@@ -179,7 +179,7 @@
             success: function(response) {
                 // $("#loadingIconPages").hide();
                 // $("#loadingIconPages").val();
-                $("#PagesText").val(response.errors_and_duplicates);     
+                $("#PagesText").val(response.errors_and_duplicates);
                 // stopTimer();
                 // const loadingIconPages = document.getElementById("loadingIconPages");
                 // loadingIconPages.style.display = "block";
@@ -192,7 +192,7 @@
 
     $("#exportResultsToCSVFile").on("click", function() {
             console.log("Export TXT button clicked");
-            
+
             let TXTText = $("#PagesText").val();
 
             // Prepare the data to be sent to the server
@@ -224,4 +224,3 @@
 </body>
 
 </html>
-
