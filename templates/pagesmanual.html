@@ -38,10 +38,10 @@
             <br> <br> <br>
 
             <!-- <div id="showingUploadedDocs" class="loading" style="display: none;"> -->
-            <div id="showingUploadedDocs" class="loading">   
+            <div id="showingUploadedDocs" class="loading">
                 <br><br>
             </div>
-            
+
 
 
 
@@ -51,7 +51,7 @@
                 Time elapsed: <span id="timer">0:00</span>
             </div>
 
-                        
+
             <br> <br> <br>
             <button id="resetButton" class="red-button">Start Again</button>
 
@@ -108,7 +108,7 @@
         const showingUploadedDocs = document.getElementById("showingUploadedDocs");
         showingUploadedDocs.innerHTML = `
             <br>${newText}`;
-            
+
     }
 
 
@@ -129,7 +129,7 @@
         if (confirmation) {
             location.reload(); // Standard reload
         }
-    }); 
+    });
 
 
     // JavaScript for handling uploads and page selection
@@ -171,7 +171,7 @@
     //                 let lines = response.lines;
     //                 $("#uploadPDFStatus").text("Uploaded: " + numDocs + " docs").show();
     //                 // UpdateshowingUploadedDocs(lines);
-                    
+
     //             },
     //         error: function () {
     //             $("#uploadPDFStatus").text("An error occurred during the upload.").show();
@@ -179,7 +179,7 @@
     //     });
     // });
 
-       
+
     $("#getPagesButton").on("click", function() {
 
         event.preventDefault();
@@ -200,7 +200,7 @@
             success: function(response) {
                 $("#loadingIconPages").hide();
                 $("#loadingIconPages").val();
-                $("#PagesText").val(response.pages);     
+                $("#PagesText").val(response.pages);
                 stopTimer();
                 const loadingIconPages = document.getElementById("loadingIconPages");
                 loadingIconPages.style.display = "block";
@@ -213,7 +213,7 @@
 
     $("#exportResultsToCSVFile").on("click", function() {
             console.log("Export TXT button clicked");
-            
+
             let TXTText = $("#PagesText").val();
 
             // Prepare the data to be sent to the server
@@ -245,4 +245,3 @@
 </body>
 
 </html>
-

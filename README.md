@@ -65,6 +65,22 @@ docker build -t ai-medical-record-review .
 docker run --env-file .env -p 5010:5010 ai-medical-record-review
 ```
 
+## Development
+
+Quality gates run via pre-commit and CI:
+
+```bash
+uv sync                      # installs dev tools (ruff, pyright, pre-commit)
+uv run pre-commit install    # enable git hooks
+uv run ruff check .          # lint
+uv run ruff format .         # format
+uv run pyright               # type check (advisory while code is untyped)
+```
+
+Pre-commit also runs gitleaks, detect-private-key, and a large-file check to keep
+secrets and patient PDFs out of git. CI (GitHub Actions) runs the same lint / format /
+type / secret checks on every PR.
+
 ## Status
 
 Pre-MVP, working toward MVP. Done: repo + secret externalization, uv/Docker tooling.

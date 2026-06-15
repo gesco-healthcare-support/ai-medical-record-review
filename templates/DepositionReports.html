@@ -31,7 +31,7 @@
             <br>
 
             <form id="uploadFormPages" enctype="multipart/form-data" class="upload-form">
-                <input type="file" name="txt" accept=".txt, .csv">                
+                <input type="file" name="txt" accept=".txt, .csv">
                 <button type="submit" class="primary-button">Upload TXT</button>
                 <span id="uploadTXTStatus" style="display: none;"></span>
             </form>
@@ -47,7 +47,7 @@
 
 
             <br>
-            
+
             <div class="button-group">
                 <button id="getDepositionOpRepButton" class="primary-button">Get Deposition Reports</button>
                 <!-- <button id="patientNameDOB" class="green-button">Get Patient Name & DOB</button>
@@ -59,11 +59,11 @@
             <div id="loadingIcon" class="loading" style="display: none;">
                 <br>Summarizing... Do not refresh or close the page.<br><br>
                 Time elapsed: <span id="timer">0:00</span>
-            </div>   
+            </div>
             <br>
-        
 
-            
+
+
         </div>
 
 
@@ -84,7 +84,7 @@
                 </div>
                 <input type="text" id="QMEorAME" placeholder="Evaluation Type">
                 <input type="text" id="lawfirm-input" placeholder="Attorney Law Firm">
-        
+
                 <textarea id="MRRText" rows="8" placeholder="MRR text..."></textarea>
             </div>
         </div>
@@ -247,7 +247,7 @@
     function selectOnlyOne(checkbox) {
         // Get all checkboxes in the group with the same name
         const checkboxes = document.getElementsByName('reportType');
-        
+
         // Uncheck all checkboxes except the one clicked
         checkboxes.forEach((box) => {
             if (box !== checkbox) {
@@ -270,15 +270,15 @@
 
 
 
-        
+
     $("#getDepositionOpRepButton").on("click", function() {
 
         event.preventDefault();
 
         let option = $("#optionDropdown").val();
-        let model = $("#modelSelect").val(); 
+        let model = $("#modelSelect").val();
 
-        
+
         let totalPages = num_pages_global;
 
         // Check if a document is uploaded
@@ -294,14 +294,14 @@
             url: "/getDepoRep",
             type: "POST",
             contentType: "application/json",
-            data: JSON.stringify({ 
+            data: JSON.stringify({
                     option: option,
                     model: model,
                     }),
             success: function(response) {
                 $("#loadingIcon").hide();
-                // $("#MRRText").val(response.summaryText);  
-                $("#loadingIcon").val();     
+                // $("#MRRText").val(response.summaryText);
+                $("#loadingIcon").val();
                 stopTimer();
                 let resp = response.summaryText
                 const loadingIcon = document.getElementById("loadingIcon");
@@ -340,7 +340,7 @@
                 contentType: "application/json",
                 data: JSON.stringify(dataToSend),
                 success: function(response) {
-                    $("#MRRText").val(response.big_text);                
+                    $("#MRRText").val(response.big_text);
                 }
             });
     });
@@ -348,7 +348,7 @@
 
 
 
-    
+
 
 
 
@@ -378,7 +378,7 @@
 
             // Prepare the data to be sent to the server
             let dataToSend = {
-                
+
             };
 
             $.ajax({
@@ -392,7 +392,7 @@
                 console.log('response.DOB', response.dob)
                 console.log(response)
 
-                $("#patientName").val(response.name); 
+                $("#patientName").val(response.name);
                 $("#Patientdob").val(response.dob);
 
                 }
@@ -414,7 +414,7 @@
 
             // Prepare the data to be sent to the server
             let dataToSend = {
-                
+
             };
 
             $.ajax({
@@ -450,7 +450,7 @@
 
             // Prepare the data to be sent to the server
             let dataToSend = {
-                
+
             };
 
             $.ajax({
@@ -463,7 +463,7 @@
                 console.log('response.name', response.lawfirm)
                 console.log(response)
 
-                $("#lawfirm-input").val(response.lawfirm); 
+                $("#lawfirm-input").val(response.lawfirm);
 
                 }
             });
@@ -516,12 +516,12 @@
 
         // Clear button functionality
         $("#clearButton").on("click", function() {
-            $("#summaryText").val(''); 
-            $("#startPage").val(''); 
-            $("#endPage").val(''); 
+            $("#summaryText").val('');
+            $("#startPage").val('');
+            $("#endPage").val('');
             $("#optionDropdown").prop('selectedIndex', 0);
-            $("#summaryDate").val(''); 
-            $("#summaryTitle").val(''); 
+            $("#summaryDate").val('');
+            $("#summaryTitle").val('');
     });
 
 
@@ -529,7 +529,7 @@
 
 
 
-    
+
 
     $("#resetButton").on("click", function (event) {
         event.preventDefault(); // Prevent default action
@@ -537,7 +537,7 @@
         if (confirmation) {
             location.reload(); // Standard reload
         }
-    }); 
+    });
 
 
 
@@ -587,4 +587,3 @@
 
 </body>
 </html>
-
