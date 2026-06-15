@@ -9,9 +9,9 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "flask",
     "openai",
-    "google-generativeai",
+    "google-genai",
     "pymupdf",
-    "pypdf2",
+    "pypdf",
     "pandas",
     "numpy",
     "python-docx",

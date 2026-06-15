@@ -6,18 +6,18 @@ import time
 from datetime import datetime
 from difflib import SequenceMatcher
 
-import google.generativeai as genai
 import httplib2
-import PyPDF2
 import pytesseract
 from docx import Document
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.shared import Pt
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, send_file
+from google import genai
+from google.genai import types
 from openai import OpenAI
 from pdf2image import convert_from_path
-from PyPDF2 import PdfMerger, PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter
 
 from groups import groups
 from prompts import prompts
@@ -37,7 +37,7 @@ if _missing_env:
         + ". Copy .env.example to .env and fill in the values."
     )
 
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+genai_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 app = Flask(__name__)
 
@@ -152,10 +152,10 @@ def get_pdf_page_count(pdf_file):
 
 #     # Open the PDF file
 #     with open(pdf_path, 'rb') as pdf_file:
-#         pdf_reader = PyPDF2.PdfReader(pdf_file)
+#         pdf_reader = PdfReader(pdf_file)
 #         total_pages = len(pdf_reader.pages)
 
-#         current_writer = PyPDF2.PdfWriter()
+#         current_writer = PdfWriter()
 #         current_file_index = 1
 #         current_output_path = os.path.join(segmented_folder, f"{pdf_basename}_{current_file_index}.pdf")
 
@@ -173,7 +173,7 @@ def get_pdf_page_count(pdf_file):
 #                 # Start a new file
 #                 current_file_index += 1
 #                 current_output_path = os.path.join(segmented_folder, f"{pdf_basename}_{current_file_index}.pdf")
-#                 current_writer = PyPDF2.PdfWriter()
+#                 current_writer = PdfWriter()
 
 #     print(f"PDF segmented into {current_file_index - 1} file(s) in folder: {segmented_folder}")
 
@@ -247,7 +247,7 @@ def upload_to_gemini(path, mime_type=None):
     """Uploads the given file to Gemini.
     See https://ai.google.dev/gemini-api/docs/prompting_with_media
     """
-    file = genai.upload_file(path, mime_type=mime_type)
+    file = genai_client.files.upload(file=path)
     print()
     print(f"Uploaded file '{file.display_name}' as: {file.uri}")
     return file
@@ -265,11 +265,11 @@ def wait_for_files_active(files):
     """
     print("Waiting for file processing...")
     for name in (file.name for file in files):
-        file = genai.get_file(name)
+        file = genai_client.files.get(name=name)
         while file.state.name == "PROCESSING":
             print(".", end="", flush=True)
             time.sleep(3)
-            file = genai.get_file(name)
+            file = genai_client.files.get(name=name)
         if file.state.name != "ACTIVE":
             raise Exception(f"File {file.name} failed to process")
     print("...all files ready")
@@ -809,8 +809,8 @@ def getDiagOpRep():
 
                     # Extract pages from PDF
                     with open(pdf_file, "rb") as pdf:
-                        reader = PyPDF2.PdfReader(pdf)
-                        writer = PyPDF2.PdfWriter()
+                        reader = PdfReader(pdf)
+                        writer = PdfWriter()
 
                         for page_num in range(start_page, end_page):
                             writer.add_page(reader.pages[page_num])
@@ -832,11 +832,11 @@ def getDiagOpRep():
 
     # Combine all extracted PDFs into a single PDF
     if extracted_pdfs:
-        final_writer = PyPDF2.PdfWriter()
+        final_writer = PdfWriter()
 
         for pdf_path in extracted_pdfs:
             with open(pdf_path, "rb") as pdf_file:
-                reader = PyPDF2.PdfReader(pdf_file)
+                reader = PdfReader(pdf_file)
                 for page in reader.pages:
                     final_writer.add_page(page)
 
@@ -890,8 +890,8 @@ def getDepoRep():
 
                     # Extract pages from PDF
                     with open(pdf_file, "rb") as pdf:
-                        reader = PyPDF2.PdfReader(pdf)
-                        writer = PyPDF2.PdfWriter()
+                        reader = PdfReader(pdf)
+                        writer = PdfWriter()
 
                         for page_num in range(start_page, end_page):
                             writer.add_page(reader.pages[page_num])
@@ -1505,7 +1505,7 @@ def compute_page_ranges():
 
     page_ranges = []
     current_page = 1
-    merger = PdfMerger()
+    merger = PdfWriter()
 
     for pdf_file in pdf_files:
         pdf_path = os.path.join(folder_path, pdf_file)
@@ -1778,17 +1778,12 @@ def getPages():
     pdf_pages = get_pdf_page_count(pdf_filepath)
     print(f"PDF Size: {pdf_size} MB, PDF Pages: {pdf_pages}")
 
-    generation_config = {
-        "temperature": 1.5,
-        "top_p": 0.95,
-        "top_k": 40,
-        # "max_output_tokens": 999999,
-        "response_mime_type": "text/plain",
-    }
-
-    model = genai.GenerativeModel(
-        model_name="gemini-flash-latest",
-        generation_config=generation_config,
+    segmentation_model = "gemini-flash-latest"
+    generation_config = types.GenerateContentConfig(
+        temperature=1.5,
+        top_p=0.95,
+        top_k=40,
+        response_mime_type="text/plain",
         system_instruction="You are an assistant that segments a large document into subdocuments and provide their metadata.",
     )
 
@@ -1806,15 +1801,6 @@ def getPages():
             wait_for_files_active(files)
             print("The file has been uploaded to sucessfully.")
 
-            chat_session = model.start_chat(
-                history=[
-                    {
-                        "role": "user",
-                        "parts": [files[0]],
-                    },
-                ]
-            )
-
             print("Preparing for the AI")
 
             # gemini change here
@@ -1823,7 +1809,11 @@ def getPages():
             )
 
             try:
-                response = chat_session.send_message(prompt)
+                response = genai_client.models.generate_content(
+                    model=segmentation_model,
+                    contents=[files[0], prompt],
+                    config=generation_config,
+                )
                 print(f"Response received: {response}")
             except Exception as e:
                 print(f"An error occurred while sending the message: {e}")
@@ -1874,15 +1864,6 @@ def getPages():
         wait_for_files_active(files)
         print("The file has been uploaded to sucessfully.")
 
-        chat_session = model.start_chat(
-            history=[
-                {
-                    "role": "user",
-                    "parts": [files[0]],
-                },
-            ]
-        )
-
         print("AI Process Starting ....")
 
         # gemini change here
@@ -1891,7 +1872,11 @@ def getPages():
         )
 
         try:
-            response = chat_session.send_message(prompt)
+            response = genai_client.models.generate_content(
+                model=segmentation_model,
+                contents=[files[0], prompt],
+                config=generation_config,
+            )
             print(f"Response received: {response}")
         except Exception as e:
             print(f"An error occurred while sending the message: {e}")
