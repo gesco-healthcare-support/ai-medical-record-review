@@ -1,0 +1,31 @@
+# VCS and virtual environments
+.git
+.gitignore
+.venv
+.venv-trial
+myenv
+env
+
+# Secrets (injected at runtime via --env-file)
+.env
+.env.*
+
+# PHI / data - never bake into an image
+uploads
+*.pdf
+all_data_temp.txt
+*.TRIAL*.csv
+
+# Python caches
+__pycache__
+*.py[cod]
+
+# Exploratory spikes and docs not needed at runtime
+gemini_trial*.py
+diag_slice.py
+docs
+*.md
+
+# Docker meta
+Dockerfile
+.dockerignore
