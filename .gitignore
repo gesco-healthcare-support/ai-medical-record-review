@@ -18,9 +18,8 @@ myenv/
 venv/
 env/
 
-# ---- Exploratory spikes (carry a hardcoded key fallback; revisit before committing) ----
-gemini_trial.py
-gemini_trial2.py
+# ---- Exploratory spikes (carry hardcoded key fallbacks and/or PHI sample paths) ----
+gemini_trial*.py
 diag_slice.py
 
 # ---- Python ----
