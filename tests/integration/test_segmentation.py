@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from mrr_ai import state
 from mrr_ai.blueprints import segmentation as seg
 from mrr_ai.services import pdf as pdf_service
+from mrr_ai.services.classification import Classification
 
 
 def _patch_gemini(monkeypatch, fake_client):
@@ -78,6 +79,60 @@ def test_get_pages_handles_gemini_error(client, make_pdf, tmp_path, monkeypatch,
 
     assert resp.status_code == 200
     assert "gemini unavailable" in resp.get_json()["pages"]
+
+
+def test_get_pages_low_confidence_escalates_and_flags(
+    client, make_pdf, tmp_path, monkeypatch, fake_genai
+):
+    state.pdf_filepath = make_pdf(tmp_path / "small.pdf", pages=2)
+    payload = json.dumps(
+        [{"s": 1, "e": 2, "t": "Ambiguous Document", "d": "-", "i": "-", "m": "-"}]
+    )
+    _patch_gemini(monkeypatch, fake_genai(payload))
+
+    ocr_calls = []
+    monkeypatch.setattr(
+        seg,
+        "extract_text_from_selected_pages",
+        lambda path, pages: ocr_calls.append(pages) or "first page text",
+    )
+    # Stays low-confidence even after escalation -> row gets flagged for review.
+    monkeypatch.setattr(
+        seg, "classify", lambda title, page_text=None: Classification("3", "low", "disagree", True)
+    )
+
+    resp = client.post("/getPages", json={})
+
+    assert resp.status_code == 200
+    assert resp.get_json()["pages"] == "1,2,3,-,-,x"
+    assert ocr_calls == [[1]]  # escalated by OCR-ing the sub-document's first page
+
+
+def test_get_pages_escalation_can_resolve_and_clear_flag(
+    client, make_pdf, tmp_path, monkeypatch, fake_genai
+):
+    state.pdf_filepath = make_pdf(tmp_path / "small.pdf", pages=2)
+    payload = json.dumps(
+        [{"s": 1, "e": 2, "t": "Ambiguous Document", "d": "-", "i": "-", "m": "-"}]
+    )
+    _patch_gemini(monkeypatch, fake_genai(payload))
+    monkeypatch.setattr(seg, "extract_text_from_selected_pages", lambda path, pages: "page text")
+
+    calls = {"n": 0}
+
+    def fake_classify(title, page_text=None):
+        calls["n"] += 1
+        if page_text is None:  # title alone is inconclusive
+            return Classification("100", "low", "disagree", True)
+        return Classification("8", "high", "llm+embedding", False)  # escalation resolves it
+
+    monkeypatch.setattr(seg, "classify", fake_classify)
+
+    resp = client.post("/getPages", json={})
+
+    assert resp.status_code == 200
+    assert resp.get_json()["pages"] == "1,2,8,-,-,-"
+    assert calls["n"] == 2  # title classify, then escalation classify
 
 
 def test_segment_pdf_route_writes_chunks(client, make_pdf, tmp_path, home_tmp):
