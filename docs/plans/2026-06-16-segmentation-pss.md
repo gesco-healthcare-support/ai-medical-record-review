@@ -156,6 +156,25 @@ largest page that still belongs to doc(s):
    cases). Score boundary P/R/F1, exact-span Doc-F1, total tokens/$, #calls, vs `chunk_upper`.
 4. Pick the winner by Doc-F1 at acceptable $; promote it into `/getPages` in a later PR.
 
+## Follow-up findings (2026-06-16, experiment/segmentation-prep branch)
+
+- **Gold is NOT a clean partition.** Validating all 11 cases showed every case leaves pages
+  uncovered and a few double-covered (the 3 hand-typed cases: 60-76 uncovered pages, 1 small
+  overlap each). The CSV marks the documents the reviewer chose to summarize, not every
+  physical document. So: boundary-START P/R/F1 is the trustworthy signal; exact-span Doc-F1 is
+  a lower bound (a perfect tiler loses points where the gold has gaps); ROR cases are reported
+  as a separate secondary tier, never pooled into the verdict.
+- **Production sizing (from Adrian):** records average 600-800pp with 7-10pp documents
+  (~70-115 docs each). At ~8pp/doc, Solution 4's logarithmic-probe edge over per-page Solution
+  2 is small (log2(8)~3); its advantage grows with length, so the long QME reports (gold max
+  doc length 100-177pp) are where range-probe should win. The bake-off quantifies this.
+- **Cues refined + measured offline:** strict page-number pre-cut (precision ~0.7-0.85 on
+  clean) vs broad candidate (recall, Case 2 0.62->0.73); header threshold 0.35->0.45. Footer-
+  only band and bare "Page X" were tried and rejected on evidence (see the prep plan).
+- **Solution 4 hardened:** cue-seeded segments + near-boundary confirmation (relocate / veto),
+  self-tested under systematic oracle error. Confirmation only nets a gain if the adjacent
+  oracle is more reliable than range-probe - a go/no-go that 0b must measure.
+
 ## Open items / risks
 
 - BAA path for Gemini (above) - settle before production.

@@ -1,5 +1,5 @@
 ---
-status: in progress
+status: done (all 5 tasks implemented + validated offline; bake-off still gated on paid Gemini)
 feature: Gemini-free prep for the PSS bake-off (5 tasks)
 branch: experiment/segmentation-prep (off experiment/segmentation-pss)
 approach: per-task flags below; all work validated offline (no Gemini spend)
@@ -117,3 +117,37 @@ each on a branch off the current one.
 - Running 0b oracle reliability and the real 4-solution bake-off on records.
 - Actually OCR-ing scans through markitdown (needs a paid vision key).
 - Promoting a winner into `mrr_ai/blueprints/segmentation.py` (a later PR).
+
+## Results (2026-06-16) - all five done, validated offline
+
+- **Task 1.** `validate_labels.py` runs on all 11; `run_phase0 cues all` + `bake_off run all`
+  target the full set, tagged csv|ror. Key finding (load-bearing): the gold is NOT a clean
+  partition - even the 3 hand-typed cases leave 60-76 pages uncovered and double-cover a few
+  (Case 1: 7 interior gaps incl. 17pp + 21pp, one 5pp overlap). So the CSV marks the documents
+  the reviewer chose to summarize, not every physical document. Consequence: boundary-START
+  metrics are the trustworthy signal; exact-span Doc-F1 is a lower bound; ROR stays a secondary
+  tier reported separately.
+- **Task 2.** Page-number cue now has a strict tier (precision pre-cut: Case 1 0.40/0.71, Case
+  2 0.62/0.85 - = baseline) and a broad tier (recall: Case 2 0.62->0.73, Manual Case 2
+  0.00->0.31). Header threshold 0.35->0.45 (recall +0.07 clean / +0.12 ROR, same precision).
+  Two plan hypotheses were REJECTED by evidence: a footer-only band (whole-text recalls more)
+  and bare "Page X" (it was global Bates pagination, not per-document -> 0 boundary value).
+- **Task 3.** `sol4b_range_probe_cued`: cue pre-cuts shrink the search (selftest: 69->61
+  probes) and near-boundary confirmation cross-checks each boundary with the independent
+  adjacent oracle - RELOCATE fixes off-by-one, VETO removes a false split (interior-looks-like-
+  new-letterhead). Selftest proves both repair gold under systematic error. Honest caveat:
+  under random-per-call noise confirmation can hurt (a corrector as noisy as the primary), but
+  that model is unrealistic for temperature-0 (deterministic per page); 0b measures the real
+  per-page oracle agreement that decides whether confirmation nets a gain.
+- **Task 4.** `client.aio` + `gather_bounded` (semaphore-capped) async path for sol2/sol3
+  (`--concurrency=N`); same tokens, less wall-clock. sol4/4b stay sequential by nature.
+  Selftest: async sol2 recovers gold at peak concurrency 4 (cap honored).
+- **Task 5.** `markdown.py` wires MarkItDown's OCR backend from env (openai | gemini-via-
+  OpenAI-compat | none); `config_check` reports it with no network call and never prints the
+  key. `markitdown-ocr>=0.1.0` added to the experiment group + lockfile. OCR runs only once a
+  paid vision key is set.
+
+Cost note (your sizing: ~600-800pp records, 7-10pp docs -> ~70-115 docs): at ~8pp/doc
+Solution 4's logarithmic-probe advantage over per-page Solution 2 is modest (log2(8)~3); its
+edge grows with document length, so the long QME reports (validation saw max doc lengths of
+100-177pp) are where range-probe should pay off. The bake-off will quantify this per case.
