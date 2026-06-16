@@ -79,11 +79,17 @@ Findings:
 - UNION recall 0.41-0.87 at precision ~0.3: cues can NARROW where boundaries are (and pre-cut
   high-confidence page-number resets) but cannot stand alone.
 
-**0b oracle reliability: DEFERRED.** Blocked by the Gemini free-tier cap (20
+**0b oracle reliability: DEFERRED (full run).** Blocked by the Gemini free-tier cap (~20
 generate_content req/day; `gemini-flash-latest` -> `gemini-3.5-flash`). The oracle code is
-implemented + smoke-verified (reaches the API, rides out 503s, counts tokens). Running 0b +
-the bake-off needs a PAID Gemini tier or Vertex (also the BAA path for real PHI) - a hard
-prerequisite for ALL real-record processing, not just the experiment.
+implemented + smoke-verified. Running full 0b + the bake-off needs a PAID Gemini tier or
+Vertex (also the BAA path for real PHI) - a hard prerequisite for ALL real-record processing.
+
+**First spot-check (9 known-answer probes, Case 3, via `sample_oracle.py`): 9/9 correct** -
+adjacent 5/5 (NEW at gold starts, SAME mid-doc), range-probe 4/4 (SAME_DOC in-doc, NEW_DOC
+past-end). Directional only (n=9), but no sign of the noisy-oracle risk; the range-probe
+oracle works -> Solution 4 (binary search) is viable. Cost calibration: ~2,285 tokens/2-image
+call at 150 DPI ~= $0.0002/call, so full 0b (~346 calls) ~= $0.08 - the blocker is the
+free-tier REQUEST cap, not dollars.
 
 ## Finalized formulation (refined by 0a)
 
