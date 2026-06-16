@@ -5,6 +5,7 @@ app's .env (not hard-coded). Every call records usage_metadata so we can report 
 Gemini bill per method (cost objective = total tokens, per the plan).
 """
 
+import asyncio
 import json
 import os
 import time
@@ -17,6 +18,11 @@ from google.genai import errors, types
 load_dotenv(r"P:\MRR_AI_Source\mrr-line_source\.env")
 
 MODEL = "gemini-flash-latest"
+
+# Max Gemini requests in flight at once for the async bake-off path. Async cuts wall-clock for
+# the embarrassingly-parallel solutions (1/2/3); it does NOT change token cost, and sol4's
+# galloping/binary search is inherently sequential so it stays synchronous.
+DEFAULT_CONCURRENCY = 8
 
 # Gemini Flash standard-tier rates ($ per token), 2026-06. Centralized so a model/tier
 # change is one edit. Source: https://ai.google.dev/gemini-api/docs/pricing
@@ -139,3 +145,58 @@ def upload_file(path):
     if f.state.name != "ACTIVE":
         raise RuntimeError(f"file upload failed: {f.state.name}")
     return f
+
+
+# ----- async path (wall-clock speedup for the parallel solutions) ---------------------------
+
+
+async def _generate_with_retry_async(**kwargs):
+    """Async twin of _generate_with_retry using client.aio (the documented async API)."""
+    delay = 2.0
+    last = None
+    for _ in range(6):
+        try:
+            return await client().aio.models.generate_content(**kwargs)
+        except errors.ServerError as exc:  # 5xx incl. 503 high-demand
+            last = exc
+        except errors.ClientError as exc:  # retry only transient 429 rate limiting
+            if getattr(exc, "code", None) != 429:
+                raise
+            if "PerDay" in str(exc) or "free_tier" in str(exc):  # quota won't recover: fail fast
+                raise
+            last = exc
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 32.0)
+    raise last
+
+
+async def classify_enum_async(contents, enum_values, system_instruction, cost):
+    """Async constrained-enum call; identical semantics to classify_enum, cost-tracked."""
+    response = await _generate_with_retry_async(
+        model=MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            temperature=0.0,
+            response_mime_type="text/x.enum",
+            response_schema={"type": "STRING", "enum": list(enum_values)},
+            system_instruction=system_instruction,
+        ),
+    )
+    cost.add(response.usage_metadata)
+    value = (response.text or "").strip()
+    return value if value in enum_values else None
+
+
+async def gather_bounded(factories, limit=DEFAULT_CONCURRENCY):
+    """Run zero-arg coroutine factories with at most `limit` in flight at once, preserving order.
+
+    factories: a list of callables each returning a fresh coroutine (e.g. lambda: call(...)).
+    A semaphore caps concurrency so a 700-page record does not open 700 sockets at once.
+    """
+    sem = asyncio.Semaphore(limit)
+
+    async def _run(make):
+        async with sem:
+            return await make()
+
+    return await asyncio.gather(*(_run(f) for f in factories))

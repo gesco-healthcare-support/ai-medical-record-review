@@ -37,6 +37,9 @@ dev = [
 ]
 experiment = [
     "markitdown>=0.1.6",
+    # LLM-vision OCR plugin: lets Solution 3 turn scanned pages into markdown (no local OCR
+    # path exists in markitdown). Needs a paid vision key wired via markdown.py's env backend.
+    "markitdown-ocr>=0.1.0",
 ]
 
 [tool.ruff]
