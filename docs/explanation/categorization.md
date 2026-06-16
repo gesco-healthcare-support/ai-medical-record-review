@@ -60,15 +60,18 @@ final manual-review flag (CSV column 6) is `"x"` when **either** the classifier 
 
 `taxonomy.py` holds `CATEGORIES`: for each id, a human name, a description, and example
 document-type titles. The `.corpus` property joins these into the text that the embedding and
-LLM stages compare against. This is deliberately a **lightweight catalog**, not the curated
-"B6" taxonomy (that cleanup is deferred):
+LLM stages compare against. Its example titles **mirror the hand-authored business taxonomy in
+[`groups.py`](../../mrr_ai/groups.py) in full** - every title there appears under its category -
+enriched with a per-category name + description. It is not yet the curated "B6" taxonomy:
 
-- **Category `6` is omitted** because it is undefined in the legacy taxonomy (empty in
-  `groups.py`) and was never assignable before. (Note: a `category_06` summarization prompt
-  still exists for the manual path - see [summarization.md](summarization.md).)
-- Generic **section names** ("History of Present Illness", "Physical Examination",
-  "Diagnosis") are excluded from the example titles: they appear in nearly every report and
-  caused the old matcher to mis-bucket documents. Cleaning the full taxonomy is B6.
+- **Category `6` is omitted** because it is empty in `groups.py` (no titles) and was never
+  assignable. (Note: a `category_06` summarization prompt still exists for the manual path -
+  see [summarization.md](summarization.md).)
+- Some group-5 entries are **section headers** ("History of Present Illness", "Physical
+  Examination", "Diagnosis") rather than document types. They are **included to mirror
+  `groups.py`** (business decision); because they appear in nearly every report they can bias
+  the category-5 embedding vote, which the embedding-vs-LLM cross-check is relied on to dampen.
+  Refining this is B6.
 - `ALLOWED_IDS` (the enum given to Gemini) and `DEFAULT_ID = "100"` are derived here, so the
   catalog is the single source of truth for what a valid category is.
 
