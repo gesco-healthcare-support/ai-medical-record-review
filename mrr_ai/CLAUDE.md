@@ -12,7 +12,9 @@ The Flask application, built by `create_app()` in `__init__.py`. Full picture:
   globals are why the app must run **single-process**.
 - **blueprints/** - HTTP routes (see `blueprints/CLAUDE.md`).
 - **services/** - business logic, no Flask (see `services/CLAUDE.md`).
-- **groups.py** - category taxonomy; **prompts.py** - per-category prompts.
+- **taxonomy.py** - category catalog (ids/names/corpora) driving the B5 cascade
+  (`services/classification.py`). **groups.py** - legacy taxonomy, superseded and unused.
+  **prompts.py** - per-category summarization prompts.
 
 How-to: add a route -> `../docs/how-to/add-a-blueprint.md`; add a category ->
 `../docs/how-to/add-a-category.md`.
