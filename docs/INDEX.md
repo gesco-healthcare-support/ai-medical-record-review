@@ -4,6 +4,10 @@ Docs follow the [Diataxis](https://diataxis.fr/) split: explanation, how-to, ref
 
 ## Explanation (understand)
 - [architecture.md](architecture.md) - package layout, request lifecycle, the 4-stage pipeline, state model, PHI data flow.
+- [explanation/segmentation.md](explanation/segmentation.md) - stage 1: the Gemini and manual paths that produce the page-map CSV, and the chunking limitation.
+- [explanation/categorization.md](explanation/categorization.md) - stage 2: the B5 cascade (rules -> embeddings -> Gemini enum) and the category taxonomy.
+- [explanation/summarization.md](explanation/summarization.md) - stages 3-4: OCR + OpenAI per-category summaries, and the MRR Word export.
+- [explanation/frontend-ui.md](explanation/frontend-ui.md) - how the UI is built and what a backend/frontend repo split requires.
 
 ## How-to (do a task)
 - [RUNBOOK.md](RUNBOOK.md) - run the app and retrieve outputs.
