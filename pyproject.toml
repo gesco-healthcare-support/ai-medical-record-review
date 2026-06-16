@@ -35,6 +35,9 @@ dev = [
     "pytest",
     "pytest-cov",
 ]
+experiment = [
+    "markitdown>=0.1.6",
+]
 
 [tool.ruff]
 target-version = "py312"

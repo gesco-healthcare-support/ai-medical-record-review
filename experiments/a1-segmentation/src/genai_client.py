@@ -5,6 +5,7 @@ app's .env (not hard-coded). Every call records usage_metadata so we can report 
 Gemini bill per method (cost objective = total tokens, per the plan).
 """
 
+import json
 import os
 import time
 
@@ -105,3 +106,36 @@ def classify_enum(contents, enum_values, system_instruction, cost):
     cost.add(response.usage_metadata)
     value = (response.text or "").strip()
     return value if value in enum_values else None
+
+
+def generate_json(contents, system_instruction, cost):
+    """One JSON-mode call (for the window oracle that returns many boundaries); cost-tracked.
+
+    Returns the parsed object, or None on a parse failure (degrade, don't crash).
+    """
+    response = _generate_with_retry(
+        model=MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            temperature=0.0,
+            response_mime_type="application/json",
+            system_instruction=system_instruction,
+        ),
+    )
+    cost.add(response.usage_metadata)
+    text = (response.text or "").replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        return None
+
+
+def upload_file(path):
+    """Upload a (sub-)PDF and block until it is ACTIVE (for the window oracle)."""
+    f = client().files.upload(file=path)
+    while f.state.name == "PROCESSING":
+        time.sleep(2)
+        f = client().files.get(name=f.name)
+    if f.state.name != "ACTIVE":
+        raise RuntimeError(f"file upload failed: {f.state.name}")
+    return f
