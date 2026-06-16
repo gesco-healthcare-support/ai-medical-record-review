@@ -20,7 +20,7 @@ import cues
 import images
 import metrics
 import oracles
-from cases import by_id, CSV_CASE_IDS
+from cases import by_id, CSV_CASE_IDS, ALL_CASE_IDS
 from config import OUTPUTS
 from genai_client import Cost, MODEL
 from pipeline import load_labels, load_pages, starts_to_spans
@@ -86,7 +86,8 @@ def run_cues(case_ids):
         union = set().union(*detectors.values()) if detectors else set()
         detectors["UNION(all cues)"] = union
 
-        header = f"\n### {cid}: {c['n']} pages, {len(c['gold_starts'])} gold docs"
+        tier = by_id(cid)["source"]
+        header = f"\n### {cid} [{tier}]: {c['n']} pages, {len(c['gold_starts'])} gold docs"
         print(header)
         lines.append(header)
         row = f"{'cue':18}{'recall':>8}{'prec':>8}{'F1':>8}{'WindowDiff':>12}{'#pred':>7}"
@@ -164,14 +165,21 @@ def run_oracle(case_ids):
     return "\n".join(lines)
 
 
+def _resolve(rest, default):
+    """'all' -> every registered case; otherwise the named cases, or the default."""
+    if rest == ["all"]:
+        return ALL_CASE_IDS
+    return rest or default
+
+
 def main(argv):
     cmd = argv[0] if argv else "all"
     rest = argv[1:]
     sections = ["# Phase 0 report\n"]
     if cmd in ("cues", "all"):
-        sections.append(run_cues(rest or CSV_CASE_IDS))
+        sections.append(run_cues(_resolve(rest, CSV_CASE_IDS)))
     if cmd in ("oracle", "all"):
-        sections.append(run_oracle(rest or ["Case 3"]))
+        sections.append(run_oracle(_resolve(rest, ["Case 3"])))
     os.makedirs(OUTPUTS, exist_ok=True)
     out = os.path.join(OUTPUTS, "phase0.md")
     with open(out, "w", encoding="utf-8") as f:

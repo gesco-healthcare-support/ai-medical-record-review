@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import metrics
 import oracles
 import solutions
-from cases import CSV_CASE_IDS
+from cases import CSV_CASE_IDS, ALL_CASE_IDS, by_id
 from config import CHUNK_SIZE, OUTPUTS
 from genai_client import Cost
 from pipeline import starts_to_spans
@@ -62,7 +62,8 @@ def run(case_ids, only=None):
     lines = ["# Phase 1 bake-off\n"]
     for cid in case_ids:
         c = _case(cid)
-        head = f"\n=== {cid}: {c['n']} pages, {len(c['gold_starts'])} gold docs ==="
+        tier = by_id(cid)["source"]
+        head = f"\n=== {cid} [{tier}]: {c['n']} pages, {len(c['gold_starts'])} gold docs ==="
         print(head)
         lines.append(head)
         lines.append("```")
@@ -150,7 +151,8 @@ def main(argv):
     for a in argv[1:]:
         if a.startswith("--only"):
             only = set(a.split("=", 1)[1].split(",")) if "=" in a else None
-    run(rest or CSV_CASE_IDS, only)
+    case_ids = ALL_CASE_IDS if rest == ["all"] else (rest or CSV_CASE_IDS)
+    run(case_ids, only)
 
 
 if __name__ == "__main__":
