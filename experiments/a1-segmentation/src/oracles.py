@@ -17,7 +17,7 @@ from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
 import images
-from genai_client import classify_enum, generate_json, upload_file
+from genai_client import classify_enum, classify_enum_async, generate_json, upload_file
 
 # Reuse the production segmentation prompt + tolerant parser for the window oracle (Solution 1),
 # so it faithfully reproduces the current /getPages behavior within a window.
@@ -76,6 +76,30 @@ def adjacent_text(prev_markdown, cur_markdown, cost):
         "Does the current page start a NEW document or continue the SAME one?"
     ]
     return classify_enum(contents, ("NEW", "SAME"), _ADJACENT_SYS, cost)
+
+
+# --- async oracle variants (for the concurrent bake-off path) --------------------------------
+
+
+async def adjacent_async(pdf_path, page_number, cost, dpi=150):
+    """Async twin of adjacent(). Page rendering is local/inline; only the Gemini call awaits."""
+    contents = [
+        "First image = previous page. Second image = current page. "
+        "Does the current page start a NEW document or continue the SAME one?",
+        _part(pdf_path, page_number - 1, dpi),
+        _part(pdf_path, page_number, dpi),
+    ]
+    return await classify_enum_async(contents, ("NEW", "SAME"), _ADJACENT_SYS, cost)
+
+
+async def adjacent_text_async(prev_markdown, cur_markdown, cost):
+    """Async twin of adjacent_text() (Solution 3)."""
+    contents = [
+        f"PREVIOUS PAGE (markdown):\n{prev_markdown}\n\n"
+        f"CURRENT PAGE (markdown):\n{cur_markdown}\n\n"
+        "Does the current page start a NEW document or continue the SAME one?"
+    ]
+    return await classify_enum_async(contents, ("NEW", "SAME"), _ADJACENT_SYS, cost)
 
 
 def window_segment(pdf_path, start_page, end_page, cost):

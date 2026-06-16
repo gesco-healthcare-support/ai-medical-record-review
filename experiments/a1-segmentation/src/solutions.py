@@ -9,6 +9,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import genai_client
 import oracles
 from pipeline import starts_to_spans
 
@@ -159,10 +160,41 @@ def sol4b_range_probe_cued(pdf_path, n, cost, precuts=None, confirm=True, dpi=15
     return _spans(starts, n)
 
 
+async def sol2_adjacent_image_async(pdf_path, n, cost, dpi=150,
+                                    concurrency=genai_client.DEFAULT_CONCURRENCY):
+    """Async sol2: the per-page NEW/SAME probes are independent, so run them concurrently (same
+    result and token cost as sol2, far less wall-clock)."""
+    pages = list(range(2, n + 1))
+    factories = [(lambda p=p: oracles.adjacent_async(pdf_path, p, cost, dpi=dpi)) for p in pages]
+    results = await genai_client.gather_bounded(factories, limit=concurrency)
+    starts = [1] + [p for p, r in zip(pages, results) if r == "NEW"]
+    return _spans(starts, n)
+
+
+async def sol3_adjacent_markdown_async(pdf_path, n, cost,
+                                       concurrency=genai_client.DEFAULT_CONCURRENCY):
+    """Async sol3: markdown conversion stays local/sequential; the boundary calls run concurrently."""
+    import markdown  # lazy: pulls in markitdown only for this solution
+
+    mds = [markdown.page_markdown(pdf_path, p) for p in range(1, n + 1)]
+    pages = list(range(2, n + 1))
+    factories = [(lambda p=p: oracles.adjacent_text_async(mds[p - 2], mds[p - 1], cost))
+                 for p in pages]
+    results = await genai_client.gather_bounded(factories, limit=concurrency)
+    starts = [1] + [p for p, r in zip(pages, results) if r == "NEW"]
+    return _spans(starts, n)
+
+
 SOLUTIONS = {
     "1_windows": sol1_overlapping_windows,
     "2_adjacent_image": sol2_adjacent_image,
     "3_adjacent_markdown": sol3_adjacent_markdown,
     "4_range_probe": sol4_range_probe,
     "4b_range_probe_cued": sol4b_range_probe_cued,
+}
+
+# Solutions with an async (concurrent) implementation; sol4/4b are inherently sequential.
+ASYNC_SOLUTIONS = {
+    "2_adjacent_image": sol2_adjacent_image_async,
+    "3_adjacent_markdown": sol3_adjacent_markdown_async,
 }

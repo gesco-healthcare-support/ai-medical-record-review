@@ -10,6 +10,7 @@ Usage:
   python src/bake_off.py run ["Case 3" ...] [--only 2_adjacent_image,4_range_probe]
 """
 
+import asyncio
 import os
 import sys
 
@@ -59,7 +60,7 @@ def _chunk_upper(c):
     return starts_to_spans(sorted(starts), c["n"])
 
 
-def run(case_ids, only=None):
+def run(case_ids, only=None, concurrency=0):
     lines = ["# Phase 1 bake-off\n"]
     for cid in case_ids:
         c = _case(cid)
@@ -79,7 +80,11 @@ def run(case_ids, only=None):
                 continue
             cost = Cost()
             try:
-                if name == "4b_range_probe_cued":
+                if concurrency > 1 and name in solutions.ASYNC_SOLUTIONS:
+                    # Run the embarrassingly-parallel solutions concurrently (same tokens, less time).
+                    afn = solutions.ASYNC_SOLUTIONS[name]
+                    spans = asyncio.run(afn(c["pdf"], c["n"], cost, concurrency=concurrency))
+                elif name == "4b_range_probe_cued":
                     # Seed the search with high-confidence (strict) page-number pre-cuts.
                     precuts = cues.starts_from_page_numbers(c["pages_text"], broad=False)
                     spans = fn(c["pdf"], c["n"], cost, precuts=precuts)
@@ -236,6 +241,28 @@ def selftest():
         conf_errs.append(metrics.mean_boundary_offset(sorted({s for s, _ in sc}), gold_starts))
     rand_plain, rand_conf = sum(plain_errs) / trials, sum(conf_errs) / trials
 
+    # (5) async path: sol2_async recovers gold AND respects the concurrency cap (no Gemini).
+    inflight = {"cur": 0, "max": 0}
+
+    async def fake_adjacent_async(pdf, page, cost, dpi=150):
+        inflight["cur"] += 1
+        inflight["max"] = max(inflight["max"], inflight["cur"])
+        await asyncio.sleep(0.001)  # force overlap so concurrency is actually exercised
+        cost.add(None)
+        inflight["cur"] -= 1
+        return "NEW" if page in gold_start_set else "SAME"
+
+    orig_async = oracles.adjacent_async
+    oracles.adjacent_async = fake_adjacent_async
+    try:
+        ca = Cost()
+        s_async = asyncio.run(solutions.sol2_adjacent_image_async(None, n, ca, concurrency=4))
+    finally:
+        oracles.adjacent_async = orig_async
+    assert s_async == spans, f"sol2_async did not recover gold: {s_async}"
+    assert inflight["max"] <= 4, f"concurrency cap breached: {inflight['max']} > 4"
+    assert inflight["max"] > 1, "async path never ran calls concurrently (cap not exercised)"
+
     print(f"selftest OK over {n} pages, {len(spans)} gold docs (mean ~7.6pp):")
     print(f"  (1) perfect oracle: sol2/sol4/sol4b all recover gold "
           f"(calls sol2={c2.calls} sol4={c4.calls} sol4b={c4b.calls})")
@@ -245,6 +272,7 @@ def selftest():
           f"(plain over-segments to {len(plain_b)} docs)")
     print(f"  (4) random-per-call noise (unrealistic for temp-0): plain offset={rand_plain:.2f} "
           f"confirm={rand_conf:.2f} -- needs the better oracle; 0b decides")
+    print(f"  (5) async sol2 recovers gold; peak concurrency {inflight['max']} (cap 4)")
 
 
 def main(argv):
@@ -253,12 +281,14 @@ def main(argv):
         selftest()
         return
     rest = [a for a in argv[1:] if not a.startswith("--")]
-    only = None
+    only, concurrency = None, 0
     for a in argv[1:]:
-        if a.startswith("--only"):
-            only = set(a.split("=", 1)[1].split(",")) if "=" in a else None
+        if a.startswith("--only") and "=" in a:
+            only = set(a.split("=", 1)[1].split(","))
+        elif a.startswith("--concurrency") and "=" in a:
+            concurrency = int(a.split("=", 1)[1])
     case_ids = ALL_CASE_IDS if rest == ["all"] else (rest or CSV_CASE_IDS)
-    run(case_ids, only)
+    run(case_ids, only, concurrency)
 
 
 if __name__ == "__main__":
