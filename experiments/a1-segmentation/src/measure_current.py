@@ -12,26 +12,26 @@ Then scores predicted (start, end, category) against the gold CSVs:
 
 Run:  python src/measure_current.py "Case 1" "Case 2" "Case 3"
 """
-import os
-import sys
-import re
-import csv
 import ast
+import csv
 import json
-import time
+import os
+import re
+import sys
 import tempfile
-
-import numpy as np
-import fitz
+import time
 from difflib import SequenceMatcher
-from PyPDF2 import PdfReader, PdfWriter
+
+import fitz
 import google.generativeai as genai
+import numpy as np
+from PyPDF2 import PdfReader, PdfWriter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, r"P:\MRR_AI_Source\mrr-line_source")  # groups.py lives with the app
+from cases import CSV_CASE_IDS, by_id
 from groups import groups
-from cases import by_id, CSV_CASE_IDS
-from pipeline import prf, doc_f1
+from pipeline import doc_f1, prf
 
 APP = r"P:\MRR_AI_Source\mrr-line_source\app.py"
 

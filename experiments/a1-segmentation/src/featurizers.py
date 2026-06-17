@@ -54,7 +54,7 @@ class EmbeddingFeaturizer:
         if uniq:
             vecs = EmbeddingFeaturizer._model.encode(
                 uniq, batch_size=64, normalize_embeddings=True, show_progress_bar=False)
-            for t, v in zip(uniq, vecs):
+            for t, v in zip(uniq, vecs, strict=True):
                 cache[t] = np.asarray(v, dtype=np.float32)
         return np.vstack([cache[t] for t in texts])
 

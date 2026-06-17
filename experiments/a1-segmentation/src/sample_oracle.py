@@ -29,7 +29,6 @@ def main():
     _, spans = load_labels(by_id(CASE)["label_csv"], n)
     spans = sorted(spans)
     starts = sorted({s for s, _ in spans})
-    end_of = {p: e for s, e in spans for p in range(s, e + 1)}
 
     adj_new = [("adj", p, "NEW") for p in starts if p > 1][:5]
     adj_same = [("adj", (s + e) // 2, "SAME") for s, e in spans if e > s][:5]
@@ -37,7 +36,7 @@ def main():
     rng_new = [("rng", (s, e + 1), "NEW_DOC") for s, e in spans if e + 1 <= n][:5]
 
     plan = []
-    for quad in zip(adj_new, adj_same, rng_same, rng_new):
+    for quad in zip(adj_new, adj_same, rng_same, rng_new, strict=False):
         plan.extend(quad)
     plan = plan[:BUDGET]
 

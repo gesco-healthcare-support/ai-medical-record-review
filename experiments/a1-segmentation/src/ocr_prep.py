@@ -8,9 +8,9 @@ cache/ocr/<case_id>.jsonl with {"page": int, "text": str} per line.
 Run:  python src/ocr_prep.py                 # all cases (skips already-cached)
       python src/ocr_prep.py "Manual Case 2" # specific case ids
 """
+import json
 import os
 import sys
-import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,8 +19,8 @@ import pytesseract
 from pdf2image import convert_from_path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import TESSERACT_CMD, OCR_CACHE, OCR_THREADS
 from cases import CASES, by_id
+from config import OCR_CACHE, OCR_THREADS, TESSERACT_CMD
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 

@@ -11,20 +11,19 @@ A featurizer is any object with sklearn-style methods:
 TF-IDF fits on the training fold; embeddings are stateless. The pipeline never
 mixes pages from one case across train/test (split is by whole case).
 """
+import csv
+import json
 import os
 import sys
-import json
-import csv
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import precision_recall_fscore_support, average_precision_score
+from sklearn.metrics import average_precision_score, precision_recall_fscore_support
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import OCR_CACHE, CHUNK_SIZE, EXP_ROOT
-from cases import by_id
 import report_lib
-
+from cases import by_id
+from config import CHUNK_SIZE, EXP_ROOT, OCR_CACHE
 
 # ----- data -----
 

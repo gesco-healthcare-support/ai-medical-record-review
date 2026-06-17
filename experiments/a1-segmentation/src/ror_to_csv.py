@@ -12,10 +12,10 @@ separate, lower-confidence step we do not need for A1).
 
 Run:  python src/ror_to_csv.py
 """
-import os
-import sys
 import csv
 import glob
+import os
+import sys
 
 import fitz  # PyMuPDF
 

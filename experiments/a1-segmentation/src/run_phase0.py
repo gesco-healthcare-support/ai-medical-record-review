@@ -20,9 +20,9 @@ import cues
 import images
 import metrics
 import oracles
-from cases import by_id, CSV_CASE_IDS, ALL_CASE_IDS
+from cases import ALL_CASE_IDS, CSV_CASE_IDS, by_id
 from config import OUTPUTS
-from genai_client import Cost, MODEL
+from genai_client import MODEL, Cost
 from pipeline import load_labels, load_pages, starts_to_spans
 
 # Cost guards for 0b (Gemini spend). Adjacent runs every page; range-probe is sampled.
