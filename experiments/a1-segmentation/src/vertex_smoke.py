@@ -24,10 +24,10 @@ def main():
     print("-" * 60)
 
     cost = gc.Cost()
-    # 1) plain generation (mirrors generate_json / window oracle call shape)
+    # 1) plain generation (mirrors generate_json / window oracle call shape). Uses the retry path
+    # so a transient 429 (dynamic shared quota) doesn't make the smoke spuriously fail.
     try:
-        client = gc.client()
-        r = client.models.generate_content(model=gc.MODEL, contents="Reply with exactly: PONG")
+        r = gc._generate_with_retry(model=gc.MODEL, contents="Reply with exactly: PONG")
         print(f"generate_content: OK  reply={(r.text or '').strip()[:20]!r}")
     except Exception as e:
         code = getattr(e, "code", getattr(e, "status_code", None))
