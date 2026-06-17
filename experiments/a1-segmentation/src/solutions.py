@@ -11,6 +11,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import genai_client
 import oracles
+from config import CHUNK_SIZE
 from pipeline import starts_to_spans
 
 
@@ -160,28 +161,50 @@ def sol4b_range_probe_cued(pdf_path, n, cost, precuts=None, confirm=True, dpi=15
     return _spans(starts, n)
 
 
+def naive_chunk_production(pdf_path, n, cost, chunk=CHUNK_SIZE):
+    """The ACTUAL current approach (production /getPages): segment the PDF in non-overlapping
+    `chunk`-page windows, each handled INDEPENDENTLY by the production prompt, with page numbers
+    offset to absolute. Because chunks never see each other, a document straddling a chunk edge is
+    severed -- so every chunk boundary is a HARD cut. This is the real baseline the candidate
+    solutions must beat; it differs from chunk_upper (the gold-informed ceiling of this same
+    chunking scheme) only in using the model's within-chunk starts instead of gold's.
+    """
+    starts = {1}
+    for chunk_start in range(1, n + 1, chunk):
+        chunk_end = min(chunk_start + chunk - 1, n)
+        if chunk_start > 1:
+            starts.add(chunk_start)  # independent chunks guarantee a boundary at every edge
+        for s, _e in oracles.window_segment(pdf_path, chunk_start, chunk_end, cost):
+            starts.add(s)
+    return _spans(starts, n)
+
+
 async def sol2_adjacent_image_async(pdf_path, n, cost, dpi=150,
                                     concurrency=genai_client.DEFAULT_CONCURRENCY):
     """Async sol2: the per-page NEW/SAME probes are independent, so run them concurrently (same
-    result and token cost as sol2, far less wall-clock)."""
-    pages = list(range(2, n + 1))
-    factories = [(lambda p=p: oracles.adjacent_async(pdf_path, p, cost, dpi=dpi)) for p in pages]
-    results = await genai_client.gather_bounded(factories, limit=concurrency)
-    starts = [1] + [p for p, r in zip(pages, results) if r == "NEW"]
+    result and token cost as sol2, far less wall-clock). The async_client_scope binds a fresh client
+    to this loop so a multi-case bake-off does not hit "Event loop is closed" on the second case."""
+    async with genai_client.async_client_scope():
+        pages = list(range(2, n + 1))
+        factories = [(lambda p=p: oracles.adjacent_async(pdf_path, p, cost, dpi=dpi)) for p in pages]
+        results = await genai_client.gather_bounded(factories, limit=concurrency)
+    starts = [1] + [p for p, r in zip(pages, results, strict=True) if r == "NEW"]
     return _spans(starts, n)
 
 
 async def sol3_adjacent_markdown_async(pdf_path, n, cost,
                                        concurrency=genai_client.DEFAULT_CONCURRENCY):
-    """Async sol3: markdown conversion stays local/sequential; the boundary calls run concurrently."""
+    """Async sol3: markdown conversion stays local/sequential; the boundary calls run concurrently.
+    Wrapped in async_client_scope for the same per-loop-client reason as sol2."""
     import markdown  # lazy: pulls in markitdown only for this solution
 
     mds = [markdown.page_markdown(pdf_path, p) for p in range(1, n + 1)]
-    pages = list(range(2, n + 1))
-    factories = [(lambda p=p: oracles.adjacent_text_async(mds[p - 2], mds[p - 1], cost))
-                 for p in pages]
-    results = await genai_client.gather_bounded(factories, limit=concurrency)
-    starts = [1] + [p for p, r in zip(pages, results) if r == "NEW"]
+    async with genai_client.async_client_scope():
+        pages = list(range(2, n + 1))
+        factories = [(lambda p=p: oracles.adjacent_text_async(mds[p - 2], mds[p - 1], cost))
+                     for p in pages]
+        results = await genai_client.gather_bounded(factories, limit=concurrency)
+    starts = [1] + [p for p, r in zip(pages, results, strict=True) if r == "NEW"]
     return _spans(starts, n)
 
 

@@ -9,15 +9,13 @@ is cost-tracked via the shared Cost accountant.
                          SAME_DOC | NEW_DOC. This is the oracle the binary search would call.
 """
 
-import os
+import io
 import sys
-import tempfile
-
-from google.genai import types
-from pypdf import PdfReader, PdfWriter
 
 import images
-from genai_client import classify_enum, classify_enum_async, generate_json, upload_file
+from genai_client import classify_enum, classify_enum_async, generate_json
+from google.genai import types
+from pypdf import PdfReader, PdfWriter
 
 # Reuse the production segmentation prompt + tolerant parser for the window oracle (Solution 1),
 # so it faithfully reproduces the current /getPages behavior within a window.
@@ -102,22 +100,39 @@ async def adjacent_text_async(prev_markdown, cur_markdown, cost):
     return await classify_enum_async(contents, ("NEW", "SAME"), _ADJACENT_SYS, cost)
 
 
+# Vertex caps a single request at 20 MB AFTER base64 expansion (inline data is base64-encoded, +~33%).
+# Window sub-PDFs go INLINE (the Files API is Gemini-Developer-only and rejected on Vertex --
+# python-genai #1803), so guard the *encoded* size with a margin for the prompt/JSON envelope. This
+# fails an oversized window loud here, with a clear message, instead of an opaque API rejection.
+_INLINE_REQUEST_CAP_BYTES = 20 * 1024 * 1024
+_INLINE_ENVELOPE_MARGIN_BYTES = 256 * 1024  # prompt + response-schema + request framing headroom
+
+
 def window_segment(pdf_path, start_page, end_page, cost):
     """Window oracle (Solution 1): segment pages [start_page, end_page] in one call.
 
-    Extracts the page range to a temp PDF, uploads it, and runs the production segmentation
-    prompt; returns absolute (start, end) spans. Local page numbers are offset to absolute.
+    Builds the page range into an in-memory PDF and sends it INLINE (types.Part.from_bytes,
+    application/pdf) with the production segmentation prompt; returns absolute (start, end) spans.
+    Local page numbers are offset to absolute. Inline -- not client.files.upload -- because the Files
+    API is unsupported on Vertex AI, the BAA-covered endpoint (python-genai #1803).
     """
     reader = PdfReader(pdf_path)
     writer = PdfWriter()
     for p in range(start_page - 1, end_page):
         writer.add_page(reader.pages[p])
-    tmp = os.path.join(tempfile.gettempdir(), f"pss_win_{start_page}_{end_page}.pdf")
-    with open(tmp, "wb") as fh:
-        writer.write(fh)
+    buf = io.BytesIO()
+    writer.write(buf)
+    pdf_bytes = buf.getvalue()
+    encoded_bytes = (len(pdf_bytes) + 2) // 3 * 4  # base64 expands 3 raw bytes -> 4 encoded
+    if encoded_bytes > _INLINE_REQUEST_CAP_BYTES - _INLINE_ENVELOPE_MARGIN_BYTES:
+        raise RuntimeError(
+            f"window {start_page}-{end_page} is {len(pdf_bytes) / 1048576:.1f} MB raw "
+            f"(~{encoded_bytes / 1048576:.1f} MB base64), over the 20 MB inline request cap; "
+            f"shrink the window/chunk or route this segment via a GCS gs:// URI"
+        )
 
-    uploaded = upload_file(tmp)
-    data = generate_json([uploaded, SEGMENTATION_PROMPT], _SEG_SYS, cost) or []
+    part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+    data = generate_json([part, SEGMENTATION_PROMPT], _SEG_SYS, cost) or []
     spans = []
     for item in data:
         try:
