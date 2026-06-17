@@ -17,25 +17,48 @@ from google.genai import errors, types
 # The app's .env holds GEMINI_API_KEY (fail-fast validated by the app at runtime).
 load_dotenv(r"P:\MRR_AI_Source\mrr-line_source\.env")
 
-MODEL = "gemini-flash-latest"
+# Route to Vertex AI (BAA-covered, aiplatform.googleapis.com) when GOOGLE_GENAI_USE_VERTEXAI is
+# truthy; otherwise the AI Studio Developer API (generativelanguage.googleapis.com, which is NOT
+# under a Google Cloud BAA). PHI runs MUST use Vertex. Vertex model ids differ from AI Studio's
+# "-latest" aliases, so the default model is chosen per endpoint (override with GENAI_MODEL).
+USE_VERTEX = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower() in ("1", "true", "yes")
+MODEL = os.environ.get("GENAI_MODEL") or ("gemini-2.5-flash" if USE_VERTEX else "gemini-flash-latest")
 
 # Max Gemini requests in flight at once for the async bake-off path. Async cuts wall-clock for
 # the embarrassingly-parallel solutions (1/2/3); it does NOT change token cost, and sol4's
 # galloping/binary search is inherently sequential so it stays synchronous.
 DEFAULT_CONCURRENCY = 8
 
-# Gemini Flash standard-tier rates ($ per token), 2026-06. Centralized so a model/tier
-# change is one edit. Source: https://ai.google.dev/gemini-api/docs/pricing
-USD_PER_INPUT_TOKEN = 0.10 / 1_000_000
-USD_PER_OUTPUT_TOKEN = 0.40 / 1_000_000
+# Per-token rates ($/token). Defaults are Gemini Flash; the Vertex gemini-2.5-flash tier differs,
+# so allow an env override (GENAI_USD_PER_INPUT_TOKEN / _OUTPUT_TOKEN) when reporting Vertex cost.
+# Sources: https://ai.google.dev/gemini-api/docs/pricing , https://cloud.google.com/vertex-ai/generative-ai/pricing
+USD_PER_INPUT_TOKEN = float(os.environ.get("GENAI_USD_PER_INPUT_TOKEN", 0.10 / 1_000_000))
+USD_PER_OUTPUT_TOKEN = float(os.environ.get("GENAI_USD_PER_OUTPUT_TOKEN", 0.40 / 1_000_000))
 
 _client = None
 
 
 def client():
+    """Build the google-genai client once, routed per GOOGLE_GENAI_USE_VERTEXAI.
+
+    Vertex (BAA): set GOOGLE_GENAI_USE_VERTEXAI=true. Auth is either
+      - service account / ADC: set GOOGLE_CLOUD_PROJECT [+ GOOGLE_CLOUD_LOCATION] and point
+        GOOGLE_APPLICATION_CREDENTIALS at the SA JSON; or
+      - a GCP API key: leave GOOGLE_CLOUD_PROJECT unset and it uses GEMINI_API_KEY against the
+        Vertex endpoint (the key carries its own project).
+    AI Studio (non-PHI dev only): leave the flag unset; uses GEMINI_API_KEY on the Developer API.
+    """
     global _client
     if _client is None:
-        _client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+        if USE_VERTEX:
+            project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+            if project:  # service-account / ADC path
+                location = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+                _client = genai.Client(vertexai=True, project=project, location=location)
+            else:  # GCP API-key path (key carries its project)
+                _client = genai.Client(vertexai=True, api_key=os.environ["GEMINI_API_KEY"])
+        else:
+            _client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     return _client
 
 
