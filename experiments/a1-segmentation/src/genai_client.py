@@ -13,6 +13,7 @@ import random
 import time
 from contextvars import ContextVar
 
+import httpx
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors, types
@@ -178,6 +179,12 @@ def _generate_with_retry(**kwargs):
             if "PerDay" in str(exc) or "free_tier" in str(exc):
                 raise
             last = exc
+        except httpx.TransportError as exc:  # transient transport disconnect (carries no HTTP status)
+            # e.g. RemoteProtocolError "server disconnected" or ReadError (TCP reset). Vertex under
+            # dynamic shared quota sometimes drops the connection instead of returning 429; without
+            # this, a single disconnect in a long sequential loop aborts the whole run (the docstring
+            # promise to "ride those out rather than crash").
+            last = exc
         if attempt < MAX_RETRIES - 1:
             time.sleep(_backoff_delay(attempt))
     raise last
@@ -242,6 +249,8 @@ async def _generate_with_retry_async(**kwargs):
                 raise
             if "PerDay" in str(exc) or "free_tier" in str(exc):  # quota won't recover: fail fast
                 raise
+            last = exc
+        except httpx.TransportError as exc:  # transient transport disconnect (see sync twin)
             last = exc
         if attempt < MAX_RETRIES - 1:
             await asyncio.sleep(_backoff_delay(attempt))
