@@ -53,6 +53,9 @@ Your task is to analyze the PDF and return a structured JSON array containing ke
 
 ## Guidelines for Extraction:
 - Cover every page; do not skip any page.
+- A subdocument STARTS at its first physical page, INCLUDING any fax cover sheet, transmittal or cover letter, or routing slip that belongs to it. Never list a cover page as its own subdocument, and never start a subdocument on the page after its cover.
+- Continuation pages (a "page N of M" footer, lab-result table pages, signature pages) never start a new subdocument, even when the letterhead or page-number sequence changes mid-document.
+- Consecutive subdocuments of the same type (e.g., several progress reports or letters back-to-back) are SEPARATE subdocuments when the visit/encounter date, author, or facility changes; do not merge them, and do not split one visit's report into multiple subdocuments.
 - Use contextual clues such as headers, bold titles, or consistent formatting to identify boundaries and titles.
 - Link pages together using page counts to figure out where documents start and end.
 - Distinguish the document/encounter date from the injury date.
