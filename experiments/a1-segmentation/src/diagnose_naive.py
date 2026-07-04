@@ -217,12 +217,16 @@ def run_case_sol1(alias, window=80, overlap=30, byte_budget_mb=RAW_BUDGET_MB):
         print(f" {len(spans)} sub-docs in {time.time() - t1:.1f}s", flush=True)
         return spans
 
+    vote = os.environ.get("SOL1_VOTE", "0") != "0"
+    if vote:
+        print("  [ablation] overlap-zone vote ENABLED (SOL1_VOTE=1; default off)", flush=True)
     oracles.window_segment = traced
     cost = Cost()
     t0 = time.time()
     try:
         spans = solutions.sol1_overlapping_windows(
-            c["pdf"], n, cost, window=window, overlap=overlap, byte_budget_mb=byte_budget_mb)
+            c["pdf"], n, cost, window=window, overlap=overlap, byte_budget_mb=byte_budget_mb,
+            vote=vote)
     finally:
         oracles.window_segment = orig
     wall = time.time() - t0

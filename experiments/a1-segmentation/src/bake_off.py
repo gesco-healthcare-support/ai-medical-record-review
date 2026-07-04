@@ -415,6 +415,34 @@ def selftest():
     except ValueError:
         pass
 
+    # (9b) overlap-zone vote: a start that only ONE of two covering windows reported is variance
+    # noise -> vetoed; singly-seen territory is never vetoed (recall there rests on one view).
+    # Windows for n=91/w=80/ov=30 are (1,80),(51,91): 66 is doubly-seen (window 1 has no start
+    # within +-VOTE_TOL of it) -> veto; 85 is beyond window 1 -> singly-seen -> keep.
+    def _fake_window_noisy(pdf, cs, ce, cost):
+        cost.add(None)
+        within = sorted({cs} | {g for g in gold_starts if cs < g <= ce})
+        out = [(st, (within[i + 1] - 1) if i + 1 < len(within) else ce)
+               for i, st in enumerate(within)]
+        if cs > 1:  # inject uncorroborated starts into the SECOND window's report only
+            out += [(66, 67), (85, 86)]
+        return out
+
+    oracles.window_segment = _fake_window_noisy
+    try:
+        s1n = solutions.sol1_overlapping_windows(None, n, Cost(), window=80, overlap=30, vote=True)
+    finally:
+        oracles.window_segment = orig_ws1
+    s1n_starts = {st for st, _ in s1n}
+    assert 66 not in s1n_starts, f"vote failed to veto the doubly-seen variance start: {s1n}"
+    assert 85 in s1n_starts, f"vote wrongly vetoed a singly-seen start: {s1n}"
+    assert {g for g in gold_starts} <= s1n_starts, f"vote dropped corroborated gold starts: {s1n}"
+
+    # (9c) overlap cap: dense windows step by >= ~2/3 window instead of crawling; big windows keep
+    # the full overlap (Case 1's live windows (1,102) -> next start 73 must be preserved).
+    assert solutions._next_window_start(292, 333, 30) == 320, "dense window should cap overlap"
+    assert solutions._next_window_start(1, 102, 30) == 73, "large window should keep full overlap"
+
     print(f"selftest OK over {n} pages, {len(spans)} gold docs (mean ~7.6pp):")
     print(f"  (1) perfect oracle: sol2/sol4/sol4b all recover gold "
           f"(calls sol2={c2.calls} sol4={c4.calls} sol4b={c4b.calls})")
@@ -434,6 +462,10 @@ def selftest():
           "(actual current approach)")
     print("  (9) sol1 overlapping windows: ownership drops the window-start artifact -> recovers "
           "gold exactly + un-severs the doc straddling the seam (no false cut at 51)")
+    print("  (9b) overlap-zone vote: uncorroborated doubly-seen start vetoed (66), singly-seen "
+          "kept (85), gold intact")
+    print("  (9c) overlap cap: dense windows step >= ~2/3 window (no crawl); large windows "
+          "keep the full overlap")
 
 
 def main(argv):

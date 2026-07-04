@@ -21,6 +21,12 @@ def _spans(starts, n):
     return starts_to_spans(sorted(set(starts)), n)
 
 
+# Corroboration tolerance for the sol1 overlap-zone vote: the second window must have reported a
+# start within this many pages. Matches the measured +-2pp boundary-localization scatter, so the
+# vote kills single-view variance noise without punishing mere localization disagreement.
+VOTE_TOL = 2
+
+
 def _page_raw_sizes(pdf_path, n):
     """Per-page single-page-PDF byte size. A multi-page window's real size is slightly LESS than the
     sum of these (per-page structural overhead is not shared), so greedy packing to a budget stays
@@ -48,12 +54,23 @@ def _fixed_page_windows(n, window, overlap):
     return windows
 
 
+def _next_window_start(s, e, overlap):
+    """Start of the window after (s, e): the overlap is CAPPED at a third of the window so the
+    step never collapses. With a fixed overlap, a dense region (~260 KB/page) packs windows of
+    ~30-45 pages and step = window - overlap degenerates to a 2-4 page crawl: the same pages get
+    re-judged by many windows and temperature-0 variance accumulates false splits (measured live
+    on Case 2, 2026-07-04). Capping at window//3 keeps the step >= ~2/3 of the window."""
+    eff = min(overlap, max(1, (e - s + 1) // 3))
+    return max(s + 1, e - eff + 1)
+
+
 def _byte_budgeted_windows(pdf_path, n, overlap, budget_bytes):
     """Overlapping windows packed to a raw-byte budget, so each fits Vertex's 20 MB inline cap even
     when page byte-density varies (60-260 KB/page) -- a fixed page count cannot bound request size.
-    Each window after the first starts `overlap` pages before the previous window's last page, giving
-    the next window real left-context across the seam. Assumes no single page exceeds the budget
-    (pages are ~60-260 KB; a ~12.5 MB budget holds dozens); fails fast if one does."""
+    Each window after the first starts before the previous window's last page (see
+    _next_window_start for the overlap cap), giving the next window real left-context across the
+    seam. Assumes no single page exceeds the budget (pages are ~60-260 KB; a ~12.5 MB budget holds
+    dozens); fails fast if one does."""
     sizes = _page_raw_sizes(pdf_path, n)
     windows, s = [], 1
     while True:
@@ -68,11 +85,12 @@ def _byte_budgeted_windows(pdf_path, n, overlap, budget_bytes):
         windows.append((s, e))
         if e == n:
             break
-        s = max(s + 1, e - overlap + 1)
+        s = _next_window_start(s, e, overlap)
     return windows
 
 
-def sol1_overlapping_windows(pdf_path, n, cost, window=80, overlap=30, byte_budget_mb=12.5):
+def sol1_overlapping_windows(pdf_path, n, cost, window=80, overlap=30, byte_budget_mb=12.5,
+                             vote=False):
     """Window oracle with OWNERSHIP-based seam handling.
 
     Splits the PDF into overlapping windows and asks the segmentation oracle for document starts in
@@ -89,6 +107,14 @@ def sol1_overlapping_windows(pdf_path, n, cost, window=80, overlap=30, byte_budg
     the 20 MB inline cap) so dense scans don't trip the size guard. Falls back to FIXED page-count
     windows (`window`/`overlap`) when byte_budget_mb is None or pdf_path is None (e.g. the synthetic
     selftest, which has no PDF to measure).
+
+    OVERLAP-ZONE VOTE (opt-in, default OFF): pages in (window_start, prev_window_end] were judged
+    by TWO windows but are owned by the later one. With vote=True, a start the owner reports there
+    that the previous window did not corroborate (no start within +-VOTE_TOL) is dropped. Live
+    ablation on Case 2 (2026-07-04): identical bF1 and cost, doc-level F1 up (0.57 -> 0.62), but
+    outright MISSED boundaries doubled (2 -> 4) - the veto turns near-boundary disagreements into
+    merges, the worst error class for MRR (a merged doc silently loses its summary). Off by
+    default; a future variant should flag uncorroborated starts for review instead of dropping.
     """
     if not 1 <= overlap < window:
         raise ValueError(f"overlap must satisfy 1 <= overlap < window (got overlap={overlap}, "
@@ -97,12 +123,18 @@ def sol1_overlapping_windows(pdf_path, n, cost, window=80, overlap=30, byte_budg
         windows = _fixed_page_windows(n, window, overlap)
     else:
         windows = _byte_budgeted_windows(pdf_path, n, overlap, int(byte_budget_mb * 1024 * 1024))
+    reports = [oracles.window_segment(pdf_path, ws, we, cost) for ws, we in windows]
     starts = {1}
     for k, (ws, we) in enumerate(windows):
         owned_cap = n if k == len(windows) - 1 else windows[k + 1][0]
-        for a, _b in oracles.window_segment(pdf_path, ws, we, cost):
-            if ws < a <= owned_cap:  # ws< drops the first-page artifact; <=owned_cap is this window's turf
-                starts.add(a)
+        prev_we = windows[k - 1][1] if k else 0
+        prev_starts = {a for a, _b in reports[k - 1]} if k else set()
+        for a, _b in reports[k]:
+            if not (ws < a <= owned_cap):  # ws< drops the first-page artifact; <=owned_cap = our turf
+                continue
+            if vote and a <= prev_we and not any(abs(a - p) <= VOTE_TOL for p in prev_starts):
+                continue  # doubly-seen page, single-view start -> variance noise, veto
+            starts.add(a)
     return _spans(starts, n)
 
 
