@@ -10,6 +10,11 @@ Verdict bands and metric meanings: `docs/01-GLOSSARY.md`.
 
 ## Notes
 
+- 2026-07-04 (fix round): overlap cap (window//3) kills the dense-crawl regression (Case 2:
+  15 -> 7 calls, bF1 0.70 -> 0.74, best measured); overlap-zone vote ablated live -> defaults
+  OFF (turns near-misses into outright merges); prompt start-page rules added but NO measurable
+  effect (R3 scatter = gold-convention mismatch). Fast test subset fixed as Case 2 + Case 3 + R3.
+  Details: `outputs/sol1-diagnosis/COMPARISON.md` (fix-round section).
 - 2026-07-04 (later, same branch): sol1_overlapping_windows LIVE head-to-head on the same
   8 cases (~$0.12): seam severance ELIMINATED corpus-wide (16 severed docs -> 0, false
   seam cuts 17 -> 0; Case 1's two merges recovered), bF1 +0.02..+0.07 on clean-gold cases.
