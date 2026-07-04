@@ -32,6 +32,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import oracles
+import solutions
 from bake_off import _score_spans
 from cases import ALL_CASE_IDS, by_id
 from config import CHUNK_SIZE, OUTPUTS
@@ -183,6 +184,66 @@ def run_case(alias):
     report += [f"cost: {cost.summary()}", f"wall-clock: {wall:.1f}s"]
     with open(os.path.join(case_dir, "report.md"), "w", encoding="utf-8") as f:
         f.write(f"# naive-chunk diagnosis: {alias}\n\n```\n" + "\n".join(report) + "\n```\n")
+    print("\n".join(report), flush=True)
+    print(f"saved: {case_dir}", flush=True)
+
+
+def run_case_sol1(alias, window=80, overlap=30, byte_budget_mb=RAW_BUDGET_MB):
+    """Run sol1_overlapping_windows (ownership seams, byte-budgeted) on one case and score it
+    with the SAME taxonomy as the naive run, saved under sol1-diagnosis/<alias>/.
+
+    sol1 is boundary-only (its window oracle discards titles/dates), so the pred.csv rows
+    carry '-' metadata and the raw-CSV quality lines do not apply (spans tile by construction).
+    """
+    cid, alias = resolve(alias)
+    c = _case(cid)
+    n = c["n"]
+    if n > PAGE_CAP:
+        raise SystemExit(f"{alias}: {n} pages > {PAGE_CAP}-page cap; skipped by design")
+
+    print(f"=== {alias} [sol1]: {n} pages, {len(c['gold_starts'])} gold docs | model={MODEL} "
+          f"vertex={USE_VERTEX} window<= {byte_budget_mb} MB raw, overlap={overlap}pp, "
+          f"retries={MAX_RETRIES}/{RETRY_MAX_DELAY}s", flush=True)
+
+    orig = oracles.window_segment
+    seen = {"k": 0, "windows": []}
+
+    def traced(pdf, ws, we, cost):
+        seen["k"] += 1
+        seen["windows"].append((ws, we))
+        print(f"  [window {seen['k']}: pages {ws}-{we}] calling ...", end="", flush=True)
+        t1 = time.time()
+        spans = orig(pdf, ws, we, cost)
+        print(f" {len(spans)} sub-docs in {time.time() - t1:.1f}s", flush=True)
+        return spans
+
+    oracles.window_segment = traced
+    cost = Cost()
+    t0 = time.time()
+    try:
+        spans = solutions.sol1_overlapping_windows(
+            c["pdf"], n, cost, window=window, overlap=overlap, byte_budget_mb=byte_budget_mb)
+    finally:
+        oracles.window_segment = orig
+    wall = time.time() - t0
+
+    rows = [dict(s=s, e=e, t="-", d="-", i="-", m="-", chunk=(1, n)) for s, e in spans]
+    case_dir = os.path.join(OUTPUTS, "sol1-diagnosis", alias)
+    os.makedirs(case_dir, exist_ok=True)
+    with open(os.path.join(case_dir, "pred.csv"), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        for r in rows:
+            w.writerow([r["s"], r["e"], "-", r["d"], r["i"], r["m"]])
+    with open(os.path.join(case_dir, "pred_rows.json"), "w", encoding="utf-8") as f:
+        json.dump(dict(windows=seen["windows"], cap_seams=[], malformed=0, rows=rows), f, indent=1)
+
+    # windows=[(1,n)]: sol1 has no hard seams by construction (ownership handles every overlap),
+    # so nothing may be attributed to a seam bucket.
+    report = analyze(alias, c, rows, [(1, n)], [], 0)
+    report += [f"sol1 windows used: {seen['windows']}",
+               f"cost: {cost.summary()}", f"wall-clock: {wall:.1f}s"]
+    with open(os.path.join(case_dir, "report.md"), "w", encoding="utf-8") as f:
+        f.write(f"# sol1 diagnosis: {alias}\n\n```\n" + "\n".join(report) + "\n```\n")
     print("\n".join(report), flush=True)
     print(f"saved: {case_dir}", flush=True)
 
@@ -340,5 +401,7 @@ if __name__ == "__main__":
     arg = sys.argv[1] if len(sys.argv) > 1 else "list"
     if arg == "list":
         list_cases()
+    elif arg == "sol1":
+        run_case_sol1(sys.argv[2])
     else:
         run_case(arg)
