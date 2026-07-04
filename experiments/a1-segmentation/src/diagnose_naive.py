@@ -27,6 +27,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 import time
 
@@ -254,6 +255,120 @@ def run_case_sol1(alias, window=80, overlap=30, byte_budget_mb=RAW_BUDGET_MB):
     print(f"saved: {case_dir}", flush=True)
 
 
+# ----- boundary verification (computed suspicion + adjacent-oracle check) -------------------
+
+# Coarse document-type buckets from the model's own titles. Only used to detect the model
+# CONTRADICTING ITSELF (same type+date pieces / an alien sliver inside one type run) - the
+# two over-split signatures measured on the clean-gold cases. Never used for categorization.
+_TYPE_BUCKETS = (
+    ("pt/chiro/acu", re.compile(r"physical therapy|chiro|acupunct|\bpt\b|therapy")),
+    ("progress/visit", re.compile(r"progress|office visit|follow|visit|pr-?2|clinic note|physician note")),
+    ("imaging/lab", re.compile(r"mri|x-?ray|\bct\b|imaging|radiol|lab|ncs|emg|patholog|ultrasound|results")),
+    ("qme/ame", re.compile(r"qme|ame|pqme|medical-?legal")),
+    ("deposition", re.compile(r"deposition")),
+    ("work status", re.compile(r"work (activity )?status|work restriction")),
+    ("form/claim", re.compile(r"form|claim|adjudicat|rfa|authoriz|application")),
+    ("letter/fax", re.compile(r"letter|correspond|fax|transmittal|cover")),
+    ("empty page", re.compile(r"empty page")),
+)
+
+
+def _bucket(title):
+    t = (title or "").lower()
+    for name, pattern in _TYPE_BUCKETS:
+        if pattern.search(t):
+            return name
+    return "other"
+
+
+def run_case_verify(alias):
+    """Post-process the LAST saved naive run: find suspicious boundaries by COMPUTED signals,
+    verify each with one adjacent-pages call, and merge the refuted ones.
+
+    Self-reported model confidence was trialled and is useless (231/232 'high'), so suspicion
+    is computed from the rows themselves: (a) a piece with the same type AND date as its
+    predecessor (the model's own titles say 'one document'); (b) a short alien-type sliver
+    sandwiched inside one type run (the embedded lab/status/letter pages of a report).
+    The adjacent oracle measured recall 1.00 (never denied a true boundary) at precision 0.66,
+    so using it to MERGE suspicious starts is recall-safe in expectation and each check is a
+    ~$0.0002 two-image call. This same pass is the production confidence mechanism: rows have
+    no gold on real jobs, but suspicion + verification need none.
+    """
+    cid, alias = resolve(alias)
+    c = _case(cid)
+    src = os.path.join(OUT_DIR, alias, "pred_rows.json")
+    with open(src, encoding="utf-8") as f:
+        data = json.load(f)
+    rows = sorted(data["rows"], key=lambda r: r["s"])
+    windows = [tuple(w) for w in data["windows"]]
+    cap_seams = data.get("cap_seams", [])
+    seams = {w[0] for w in windows[1:]}
+
+    suspicious, reasons = [], {}
+    for i, r in enumerate(rows):
+        if i == 0 or r["s"] in seams:  # seam cuts are structural, not model claims
+            continue
+        prev = rows[i - 1]
+        nxt = rows[i + 1] if i + 1 < len(rows) else None
+        b, pb = _bucket(r["t"]), _bucket(prev["t"])
+        same_type_date = b == pb and r["d"] == prev["d"] and r["d"] not in ("", "-")
+        enclosure = (
+            nxt is not None
+            and _bucket(nxt["t"]) == pb
+            and b != pb
+            and (r["e"] - r["s"] + 1) <= 5
+        )
+        if same_type_date or enclosure:
+            suspicious.append(r["s"])
+            reasons[r["s"]] = "same-type+date" if same_type_date else "enclosure"
+
+    print(f"=== {alias} [verify]: {len(rows)} rows from {src}", flush=True)
+    print(f"  suspicious starts ({len(suspicious)}): "
+          f"{[(p, reasons[p]) for p in suspicious]}", flush=True)
+
+    cost = Cost()
+    vetoed = []
+    for p in suspicious:
+        answer = oracles.adjacent(c["pdf"], p, cost, dpi=150)
+        keep = answer != "SAME"
+        print(f"  [verify] start {p} ({reasons[p]}): adjacent says {answer} -> "
+              f"{'keep' if keep else 'MERGE'}", flush=True)
+        if not keep:
+            vetoed.append(p)
+
+    veto_set = set(vetoed)
+    merged = []
+    for r in rows:
+        if merged and r["s"] in veto_set:
+            merged[-1] = dict(merged[-1], e=r["e"],
+                              m="x" if "x" in (merged[-1]["m"], r["m"]) else merged[-1]["m"])
+        else:
+            merged.append(dict(r))
+
+    true_vetoed = sorted(veto_set & set(c["gold_starts"]))  # dev-only recall-damage counter
+
+    case_dir = os.path.join(OUTPUTS, "verify-diagnosis", alias)
+    os.makedirs(case_dir, exist_ok=True)
+    with open(os.path.join(case_dir, "pred.csv"), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        for r in merged:
+            w.writerow([r["s"], r["e"], "-", r["d"], r["i"], r["m"]])
+
+    report = analyze(alias, c, merged, windows, cap_seams, 0)
+    report += [
+        "",
+        f"[verify] suspicious={len(suspicious)} vetoed={len(vetoed)} -> merged rows="
+        f"{len(merged)} (from {len(rows)})",
+        f"  vetoed starts: {sorted(vetoed)}",
+        f"  TRUE gold starts wrongly vetoed (recall damage): {len(true_vetoed)} {true_vetoed}",
+        f"  verify cost: {cost.summary()}",
+    ]
+    with open(os.path.join(case_dir, "report.md"), "w", encoding="utf-8") as f:
+        f.write(f"# verified naive diagnosis: {alias}\n\n```\n" + "\n".join(report) + "\n```\n")
+    print("\n".join(report), flush=True)
+    print(f"saved: {case_dir}", flush=True)
+
+
 # ----- the failure taxonomy ------------------------------------------------------------------
 
 
@@ -409,5 +524,7 @@ if __name__ == "__main__":
         list_cases()
     elif arg == "sol1":
         run_case_sol1(sys.argv[2])
+    elif arg == "verify":
+        run_case_verify(sys.argv[2])
     else:
         run_case(arg)
