@@ -5,6 +5,7 @@ all Gemini usage recorded on the Cost accountant (cost objective = total tokens)
 these run on the current free-tier Gemini key; the bake-off runs once a paid path exists.
 """
 
+import io
 import os
 import sys
 
@@ -13,28 +14,95 @@ import genai_client
 import oracles
 from config import CHUNK_SIZE
 from pipeline import starts_to_spans
+from pypdf import PdfReader, PdfWriter
 
 
 def _spans(starts, n):
     return starts_to_spans(sorted(set(starts)), n)
 
 
-def sol1_overlapping_windows(pdf_path, n, cost, window=80, overlap=30):
-    """Window oracle + seam reconciliation: overlapping windows, trust each window's interior
-    and let the next window own the overlap zone (so a doc straddling a seam is never severed).
-    """
-    starts = {1}
-    s = 1
-    while s <= n:
+def _page_raw_sizes(pdf_path, n):
+    """Per-page single-page-PDF byte size. A multi-page window's real size is slightly LESS than the
+    sum of these (per-page structural overhead is not shared), so greedy packing to a budget stays
+    conservatively under the inline cap."""
+    reader = PdfReader(pdf_path)
+    sizes = []
+    for p in range(n):
+        w = PdfWriter()
+        w.add_page(reader.pages[p])
+        buf = io.BytesIO()
+        w.write(buf)
+        sizes.append(len(buf.getvalue()))
+    return sizes
+
+
+def _fixed_page_windows(n, window, overlap):
+    """Overlapping windows of a FIXED page count, stepping (window - overlap) pages each time."""
+    windows, s = [], 1
+    while True:
         e = min(s + window - 1, n)
-        last = e == n
-        cutoff = e if last else e - overlap
-        for a, _b in oracles.window_segment(pdf_path, s, e, cost):
-            if 1 < a <= cutoff:
-                starts.add(a)
-        if last:
+        windows.append((s, e))
+        if e == n:
             break
-        s = e - overlap + 1
+        s += window - overlap
+    return windows
+
+
+def _byte_budgeted_windows(pdf_path, n, overlap, budget_bytes):
+    """Overlapping windows packed to a raw-byte budget, so each fits Vertex's 20 MB inline cap even
+    when page byte-density varies (60-260 KB/page) -- a fixed page count cannot bound request size.
+    Each window after the first starts `overlap` pages before the previous window's last page, giving
+    the next window real left-context across the seam. Assumes no single page exceeds the budget
+    (pages are ~60-260 KB; a ~12.5 MB budget holds dozens); fails fast if one does."""
+    sizes = _page_raw_sizes(pdf_path, n)
+    windows, s = [], 1
+    while True:
+        if sizes[s - 1] > budget_bytes:
+            raise RuntimeError(
+                f"page {s} is {sizes[s - 1] / 1048576:.1f} MB raw, larger than the "
+                f"{budget_bytes / 1048576:.1f} MB window budget; raise the budget or route via GCS")
+        e, acc = s, sizes[s - 1]
+        while e < n and acc + sizes[e] <= budget_bytes:
+            acc += sizes[e]
+            e += 1
+        windows.append((s, e))
+        if e == n:
+            break
+        s = max(s + 1, e - overlap + 1)
+    return windows
+
+
+def sol1_overlapping_windows(pdf_path, n, cost, window=80, overlap=30, byte_budget_mb=12.5):
+    """Window oracle with OWNERSHIP-based seam handling.
+
+    Splits the PDF into overlapping windows and asks the segmentation oracle for document starts in
+    each, but trusts each window only for the pages it has real left-context for, so a document
+    straddling a seam is never severed. window_segment always reports its window's FIRST page as a
+    start -- an ARTIFACT, since that page has no predecessor inside the window to judge it against.
+    Accepting it would force a hard cut at every window start, defeating the overlap (the original
+    bug). Instead each window OWNS the decisions in (window_start, next_window_start]: it drops its
+    own first-page artifact and decides the next window's start page here, where it has left-context.
+    With overlap >= 1 every owned page is interior to its window, so every page in 2..n is judged
+    exactly once, by a window that saw the page before it.
+
+    Windows are BYTE-BUDGETED by default (packed to ~byte_budget_mb raw, ~33% larger as base64, under
+    the 20 MB inline cap) so dense scans don't trip the size guard. Falls back to FIXED page-count
+    windows (`window`/`overlap`) when byte_budget_mb is None or pdf_path is None (e.g. the synthetic
+    selftest, which has no PDF to measure).
+    """
+    if not 1 <= overlap < window:
+        raise ValueError(f"overlap must satisfy 1 <= overlap < window (got overlap={overlap}, "
+                         f"window={window})")
+    if pdf_path is None or byte_budget_mb is None:
+        windows = _fixed_page_windows(n, window, overlap)
+    else:
+        windows = _byte_budgeted_windows(pdf_path, n, overlap, int(byte_budget_mb * 1024 * 1024))
+    starts = {1}
+    for k, (ws, we) in enumerate(windows):
+        owned_cap = n if k == len(windows) - 1 else windows[k + 1][0]
+        for a, _b in oracles.window_segment(pdf_path, ws, we, cost):
+            if ws < a <= owned_cap:  # ws< drops the first-page artifact; <=owned_cap is this window's turf
+                starts.add(a)
     return _spans(starts, n)
 
 

@@ -92,7 +92,8 @@ def run(case_ids, only=None, concurrency=0):
                 nm = _score_spans(nc_spans, c)
                 nc_row = (
                     f"  {'naive_chunk (actual)':22} DocF1={nm['doc_f1']:.2f} wDocF1={nm['wdoc_f1']:.2f} "
-                    f"bF1={nm['f1']:.2f} WD={nm['windowdiff']:.3f} over={nm['over_seg']:.2f} "
+                    f"bF1={nm['f1']:.2f} R={nm['recall']:.2f} P={nm['precision']:.2f} "
+                    f"WD={nm['windowdiff']:.3f} over={nm['over_seg']:.2f} "
                     f"valid={nm['partition']['valid']} | {nc_cost.summary()}"
                 )
             except Exception as exc:  # baseline failure must not abort the bake-off
@@ -126,7 +127,8 @@ def run(case_ids, only=None, concurrency=0):
             m = _score_spans(spans, c)
             row = (
                 f"  {name:22} DocF1={m['doc_f1']:.2f} wDocF1={m['wdoc_f1']:.2f} "
-                f"bF1={m['f1']:.2f} WD={m['windowdiff']:.3f} over={m['over_seg']:.2f} "
+                f"bF1={m['f1']:.2f} R={m['recall']:.2f} P={m['precision']:.2f} "
+                f"WD={m['windowdiff']:.3f} over={m['over_seg']:.2f} "
                 f"valid={m['partition']['valid']} | {cost.summary()}"
             )
             print(row)
@@ -387,6 +389,32 @@ def selftest():
     assert {4, 14, 24}.issubset(nc_starts), f"naive_chunk dropped within-chunk starts: {nc_starts}"
     assert nc[0][0] == 1 and nc[-1][1] == 25, f"naive_chunk must tile pages 1..25: {nc}"
 
+    # (9) sol1 overlapping windows: window_segment ALWAYS reports its window's first page as a start
+    # (no left-context there) -- an artifact that, if trusted, force-cuts every window seam and severs
+    # a doc straddling it. The ownership fix drops that artifact and lets the window WITH left-context
+    # decide the seam page. A perfect-but-for-the-artifact oracle must recover gold exactly: the
+    # synthetic doc (47..55) straddles the window=80/overlap=30 seam at page 51, so a correct sol1
+    # must NOT cut there. Fake window_segment ({cs} + the gold starts interior to the window), no Gemini.
+    def _fake_window_perfect(pdf, cs, ce, cost):
+        cost.add(None)
+        within = sorted({cs} | {g for g in gold_starts if cs < g <= ce})
+        return [(st, (within[i + 1] - 1) if i + 1 < len(within) else ce)
+                for i, st in enumerate(within)]
+
+    orig_ws1 = oracles.window_segment
+    oracles.window_segment = _fake_window_perfect
+    try:
+        s1 = solutions.sol1_overlapping_windows(None, n, Cost(), window=80, overlap=30)
+    finally:
+        oracles.window_segment = orig_ws1
+    assert s1 == spans, f"sol1 did not recover gold (window-start artifact not dropped?): {s1}"
+    assert 51 not in {st for st, _ in s1}, f"sol1 force-cut the straddled window seam at 51: {s1}"
+    try:  # the overlap validator must fail fast on a degenerate (overlap >= window) config
+        solutions.sol1_overlapping_windows(None, n, Cost(), window=80, overlap=80)
+        raise AssertionError("sol1 accepted overlap >= window (fail-fast validator missing)")
+    except ValueError:
+        pass
+
     print(f"selftest OK over {n} pages, {len(spans)} gold docs (mean ~7.6pp):")
     print(f"  (1) perfect oracle: sol2/sol4/sol4b all recover gold "
           f"(calls sol2={c2.calls} sol4={c4.calls} sol4b={c4b.calls})")
@@ -404,6 +432,8 @@ def selftest():
           f"absolute: {win_spans}")
     print("  (8) naive_chunk forces hard cuts at every chunk edge + keeps within-chunk starts "
           "(actual current approach)")
+    print("  (9) sol1 overlapping windows: ownership drops the window-start artifact -> recovers "
+          "gold exactly + un-severs the doc straddling the seam (no false cut at 51)")
 
 
 def main(argv):
