@@ -85,13 +85,17 @@ def page_features(pages_text):
     return feats
 
 
-def _dhash(png_bytes):
-    img = Image.open(io.BytesIO(png_bytes)).convert("L").resize((9, 8), Image.Resampling.LANCZOS)
+def _dhash(png_bytes, size=8):
+    img = (
+        Image.open(io.BytesIO(png_bytes))
+        .convert("L")
+        .resize((size + 1, size), Image.Resampling.LANCZOS)
+    )
     px = list(img.getdata())
     bits = 0
-    for row in range(8):
-        for col in range(8):
-            bits = (bits << 1) | (px[row * 9 + col] > px[row * 9 + col + 1])
+    for row in range(size):
+        for col in range(size):
+            bits = (bits << 1) | (px[row * (size + 1) + col] > px[row * (size + 1) + col + 1])
     return bits
 
 
@@ -99,10 +103,11 @@ def _hamming(a, b):
     return (a ^ b).bit_count()
 
 
-def page_hashes(alias, pdf_path, n, dpi=60):
+def page_hashes(alias, pdf_path, n, dpi=60, size=8):
     """dHash per page, cached to disk (rendering 100s of pages is the slow part)."""
     os.makedirs(CACHE_DIR, exist_ok=True)
-    cache = os.path.join(CACHE_DIR, f"{alias}.json")
+    suffix = "" if (dpi, size) == (60, 8) else f"-{dpi}dpi-{size}"
+    cache = os.path.join(CACHE_DIR, f"{alias}{suffix}.json")
     if os.path.exists(cache):
         with open(cache, encoding="utf-8") as f:
             stored = json.load(f)
@@ -110,7 +115,7 @@ def page_hashes(alias, pdf_path, n, dpi=60):
             return stored
     hashes = []
     for p in range(1, n + 1):
-        hashes.append(_dhash(images.render_png(pdf_path, p, dpi)))
+        hashes.append(_dhash(images.render_png(pdf_path, p, dpi), size=size))
         if p % 50 == 0:
             print(f"  [phash] {p}/{n} pages hashed", flush=True)
     with open(cache, "w", encoding="utf-8") as f:
@@ -222,8 +227,133 @@ def eval_case(alias):
     return dict(alias=alias, sig=sig)
 
 
+# ----- tuning iteration: continuous features, AUC ranking, LOO logistic combo ---------------
+
+
+def transition_features(feats, hashes16, sizes, p):
+    """Continuous evidence for the transition into page p (higher = more start-like except
+    where noted). No thresholds here: the evaluation measures threshold-free separability."""
+    cur, prev = feats[p - 1], feats[p - 2]
+    both_headers = bool(cur["header"] and prev["header"])
+    shared = len(cur["dates"] & prev["dates"])
+    pn = cur["pagenum"]
+    return dict(
+        header_sim=SequenceMatcher(None, cur["header"], prev["header"]).ratio()
+        if both_headers
+        else 0.5,  # anti-start when high
+        phash_dist=_hamming(hashes16[p - 1], hashes16[p - 2]) / 256.0,  # pro-start when high
+        bytes_rel=abs(sizes[p - 1] - sizes[p - 2]) / max(sizes[p - 1], sizes[p - 2], 1),
+        dates_shared=float(min(shared, 3)),  # anti-start when high
+        dates_new=1.0 if (cur["dates"] and prev["dates"] and not shared) else 0.0,
+        pagenum_first=1.0 if pn and pn[0] == 1 else 0.0,
+        pagenum_cont=1.0 if pn and pn[0] > 1 else 0.0,  # anti-start
+    )
+
+
+def _auc(y, score):
+    from sklearn.metrics import roc_auc_score
+
+    if len(set(y)) < 2:
+        return None
+    return roc_auc_score(y, score)
+
+
+def _case_frames(alias):
+    """(split_X, split_y, merge_X, merge_y, feature_names) for one case. split task:
+    universe = predicted non-seam starts, y=1 for FALSE starts (+-1 tolerant). merge task:
+    universe = interior transitions, y=1 where a gold start hides inside a predicted span."""
+    cid, alias = resolve(alias)
+    c = _case(cid)
+    n = c["n"]
+    with open(
+        os.path.join(OUTPUTS, "naive-diagnosis", alias, "pred_rows.json"), encoding="utf-8"
+    ) as f:
+        data = json.load(f)
+    seams = {tuple(w)[0] for w in data["windows"][1:]}
+    pred_starts = sorted({r["s"] for r in data["rows"]} - {1} - seams)
+    gold = set(c["gold_starts"])
+    near_gold = {g + d for g in gold for d in (-1, 0, 1)}
+
+    feats = page_features(c["pages_text"])
+    hashes16 = page_hashes(alias, c["pdf"], n, dpi=120, size=16)
+    sizes = page_sizes(c["pdf"], n)
+    fx = {p: transition_features(feats, hashes16, sizes, p) for p in range(2, n + 1)}
+    names = sorted(next(iter(fx.values())).keys())
+
+    def frame(universe, positives):
+        X = [[fx[p][k] for k in names] for p in universe]
+        y = [1 if p in positives else 0 for p in universe]
+        return X, y
+
+    interior = [p for p in range(2, n + 1) if p not in set(pred_starts) and p not in seams]
+    split_X, split_y = frame(pred_starts, {p for p in pred_starts if p not in near_gold})
+    merge_X, merge_y = frame(interior, {g for g in gold if g in set(interior)})
+    return alias, split_X, split_y, merge_X, merge_y, names
+
+
+def eval2(aliases):
+    """Threshold-free per-feature AUCs + leave-one-case-out logistic combination.
+
+    Success bar (fixed before running): consistent per-case AUC >= 0.70 (either direction)
+    for some feature or the LOO combo; else the signal library is declared not viable."""
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+
+    frames = [_case_frames(a) for a in aliases]
+    names = frames[0][5]
+
+    print("\n### Per-feature AUC, SPLIT task (separating FALSE predicted starts; "
+          "0.5 = chance, <0.5 = inverse direction)")
+    print(f"{'feature':14}" + "".join(f"{f[0]:>10}" for f in frames))
+    for i, name in enumerate(names):
+        row = f"{name:14}"
+        for _a, X, y, *_ in frames:
+            auc = _auc(y, [r[i] for r in X])
+            row += f"{auc:>10.2f}" if auc is not None else f"{'n/a':>10}"
+        print(row)
+
+    print("\n### Per-feature AUC, MERGE task (finding gold starts hidden inside spans)")
+    print(f"{'feature':14}" + "".join(f"{f[0]:>10}" for f in frames))
+    for i, name in enumerate(names):
+        row = f"{name:14}"
+        for _a, _sx, _sy, X, y, _n in frames:
+            auc = _auc(y, [r[i] for r in X])
+            row += f"{auc:>10.2f}" if auc is not None else f"{'n/a':>10}"
+        print(row)
+
+    print("\n### Leave-one-case-out logistic combo, SPLIT task")
+    for hold in range(len(frames)):
+        train = [f for j, f in enumerate(frames) if j != hold]
+        test = frames[hold]
+        Xtr = np.array(sum((f[1] for f in train), []))
+        ytr = np.array(sum((f[2] for f in train), []))
+        Xte, yte = np.array(test[1]), np.array(test[2])
+        scaler = StandardScaler().fit(Xtr)
+        clf = LogisticRegression(max_iter=2000, class_weight="balanced")
+        clf.fit(scaler.transform(Xtr), ytr)
+        score = clf.predict_proba(scaler.transform(Xte))[:, 1]
+        auc = _auc(list(yte), list(score))
+        base = float(yte.mean())
+        # precision when flagging the top half of the recall range
+        order = np.argsort(-score)
+        take = max(1, int(0.5 * yte.sum()))
+        hits, flagged = 0, 0
+        for idx in order:
+            flagged += 1
+            hits += yte[idx]
+            if hits >= take:
+                break
+        prec = hits / flagged if flagged else 0.0
+        print(f"  test={test[0]:8} AUC={auc:.2f}  base-rate={base:.2f}  "
+              f"precision@50%-recall={prec:.2f} ({hits}/{flagged} flags)")
+
+
 if __name__ == "__main__":
-    if sys.argv[1:2] != ["eval"]:
-        raise SystemExit('usage: python -u src/signals.py eval "Case 3" ["Case 1" ...]')
-    for alias in sys.argv[2:] or ["Case 3"]:
-        eval_case(alias)
+    if sys.argv[1:2] == ["eval"]:
+        for alias in sys.argv[2:] or ["Case 3"]:
+            eval_case(alias)
+    elif sys.argv[1:2] == ["eval2"]:
+        eval2(sys.argv[2:] or ["Case 3", "Case 1", "Case 2"])
+    else:
+        raise SystemExit('usage: python -u src/signals.py eval|eval2 "Case 3" ["Case 1" ...]')

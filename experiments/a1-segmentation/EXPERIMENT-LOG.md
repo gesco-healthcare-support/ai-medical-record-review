@@ -7,8 +7,20 @@ Verdict bands and metric meanings: `docs/01-GLOSSARY.md`.
 |---|---|---|---|---|---|
 | EXP-001-tfidf-lr (TF-IDF + Logistic Regression) | 2026-06-12 | 0.231 | 0.151 | 0.046 | AT CHANCE |
 | EXP-002-embed-lr (MiniLM embeddings + Logistic Regression) | 2026-06-12 | 0.233 | 0.152 | 0.046 | AT CHANCE |
+| SIGNALS-v1/v2 (local cues: pagenum/banner/header/dates/bytes/phash as verification-targeting signals; hard flags then continuous + LOO logistic combo) | 2026-07-04 | split-AUC 0.57-0.69 (bar 0.70) | - | - | NOT VIABLE |
 
 ## Notes
+
+- 2026-07-04 (signals verdict): local structural signals are NOT VIABLE for verification
+  targeting on these documents (pre-declared bar: consistent AUC >= 0.70). Best single
+  feature was the 256-bit dHash at 0.76 on Case 3 but 0.58-0.59 elsewhere; dates_shared
+  FLIPS direction between cases; fax banners are absent from these scans; LOO logistic
+  combo peaked at 0.69/0.62/0.57. Same small-sample-promise-then-collapse pattern as
+  EXP-002. Verification targeting stays on the model-self-contradiction suspicion
+  (same-type+date, enclosure slivers), which remains measured recall-safe. Tooling:
+  `src/signals.py` (eval + eval2). Answer keys: R4 shifted -5 (confirmed twice);
+  R3/R2/Manual Case 3 offset-suspect (thin evidence, not applied); adjudication sheets
+  in `outputs/key-repair/`.
 
 - 2026-07-04 (fix round): overlap cap (window//3) kills the dense-crawl regression (Case 2:
   15 -> 7 calls, bF1 0.70 -> 0.74, best measured); overlap-zone vote ablated live -> defaults
