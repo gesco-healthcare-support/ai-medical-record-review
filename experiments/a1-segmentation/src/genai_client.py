@@ -211,9 +211,11 @@ def classify_enum(contents, enum_values, system_instruction, cost):
     return value if value in enum_values else None
 
 
-def generate_json(contents, system_instruction, cost):
+def generate_json(contents, system_instruction, cost, response_schema=None):
     """One JSON-mode call (for the window oracle that returns many boundaries); cost-tracked.
 
+    `response_schema` (optional) enforces the output shape server-side - the reliable path per
+    the structured-output docs; prose-only JSON instructions stay as the fallback when None.
     Returns the parsed object, or None on a parse failure (degrade, don't crash).
     """
     response = _generate_with_retry(
@@ -222,6 +224,7 @@ def generate_json(contents, system_instruction, cost):
         config=types.GenerateContentConfig(
             temperature=0.0,
             response_mime_type="application/json",
+            response_schema=response_schema,
             system_instruction=system_instruction,
         ),
     )

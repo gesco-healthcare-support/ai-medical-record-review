@@ -17,14 +17,19 @@ from genai_client import classify_enum, classify_enum_async, generate_json
 from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
-# Reuse the production segmentation prompt + tolerant parser for the window oracle (Solution 1),
-# so it faithfully reproduces the current /getPages behavior within a window.
+# Reuse the production segmentation prompt + schema + tolerant parser for the window oracle
+# (Solution 1), so it faithfully reproduces the current /getPages behavior within a window.
 sys.path.insert(0, r"P:\MRR_AI_Source\mrr-line_source")
-from mrr_ai.services.gemini import SEGMENTATION_PROMPT, parse_segment_item  # noqa: E402
+from mrr_ai.services.gemini import (  # noqa: E402
+    SEGMENT_RESPONSE_SCHEMA,
+    SEGMENTATION_PROMPT,
+    parse_segment_item,
+)
 
 _SEG_SYS = (
-    "You are an assistant that segments a large document into subdocuments and provide "
-    "their metadata."
+    "You are an expert medical-records clerk. You split scanned workers' compensation "
+    "medical-record files into their component documents and report exact page ranges "
+    "and metadata."
 )
 
 _ADJACENT_SYS = (
@@ -132,7 +137,8 @@ def window_segment(pdf_path, start_page, end_page, cost):
         )
 
     part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
-    data = generate_json([part, SEGMENTATION_PROMPT], _SEG_SYS, cost) or []
+    data = generate_json([part, SEGMENTATION_PROMPT], _SEG_SYS, cost,
+                         response_schema=SEGMENT_RESPONSE_SCHEMA) or []
     spans = []
     for item in data:
         try:

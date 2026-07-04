@@ -9,6 +9,7 @@ from mrr_ai import state
 from mrr_ai.extensions import genai_client
 from mrr_ai.services.classification import classify
 from mrr_ai.services.gemini import (
+    SEGMENT_RESPONSE_SCHEMA,
     SEGMENTATION_PROMPT,
     parse_segment_item,
     upload_to_gemini,
@@ -96,7 +97,13 @@ def getPages():
         top_p=0.95,
         top_k=40,
         response_mime_type="application/json",
-        system_instruction="You are an assistant that segments a large document into subdocuments and provide their metadata.",
+        # The schema (not prose) guarantees parseable, typed records; values still get validated.
+        response_schema=SEGMENT_RESPONSE_SCHEMA,
+        system_instruction=(
+            "You are an expert medical-records clerk. You split scanned workers' compensation "
+            "medical-record files into their component documents and report exact page ranges "
+            "and metadata."
+        ),
     )
 
     # Large documents are split into page-bounded chunks; each chunk's page numbers are local

@@ -121,7 +121,8 @@ def _segment_window_full(pdf_path, cs, ce, cost):
     buf = io.BytesIO()
     writer.write(buf)
     part = types.Part.from_bytes(data=buf.getvalue(), mime_type="application/pdf")
-    data = oracles.generate_json([part, oracles.SEGMENTATION_PROMPT], oracles._SEG_SYS, cost) or []
+    data = oracles.generate_json([part, oracles.SEGMENTATION_PROMPT], oracles._SEG_SYS, cost,
+                                 response_schema=oracles.SEGMENT_RESPONSE_SCHEMA) or []
     rows, malformed = [], 0
     for item in data:
         try:
@@ -129,7 +130,8 @@ def _segment_window_full(pdf_path, cs, ce, cost):
         except (KeyError, TypeError, ValueError):
             malformed += 1
             continue
-        rows.append(dict(s=s + cs - 1, e=e + cs - 1, t=title, d=d, i=i, m=m, chunk=(cs, ce)))
+        rows.append(dict(s=s + cs - 1, e=e + cs - 1, t=title, d=d, i=i, m=m,
+                         c=str(item.get("c", "-")), chunk=(cs, ce)))
     return rows, malformed
 
 

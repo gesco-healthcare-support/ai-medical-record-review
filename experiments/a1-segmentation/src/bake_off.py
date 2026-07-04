@@ -351,8 +351,9 @@ def selftest():
 
     captured = {}
 
-    def _fake_generate_json(contents, system_instruction, cost):
+    def _fake_generate_json(contents, system_instruction, cost, response_schema=None):
         captured["contents"] = contents
+        captured["schema"] = response_schema
         cost.add(None)
         return [{"s": 1, "e": 2, "t": "A", "d": "-", "i": "-", "m": "-"},
                 {"s": 3, "e": 5, "t": "B", "d": "-", "i": "-", "m": "-"}]
@@ -368,6 +369,7 @@ def selftest():
                   and p.inline_data.mime_type == "application/pdf"]
     assert inline_pdf, "window_segment must inline an application/pdf Part (not files.upload)"
     assert win_spans == [(2, 3), (4, 6)], f"window offsets not absolute: {win_spans}"
+    assert captured.get("schema") is not None, "window_segment must pass the response schema"
 
     # (8) naive_chunk (T3): the actual production approach -- independent chunks force a HARD cut at
     # every chunk edge AND keep each chunk's within-chunk starts. Fake window_segment (no Gemini).

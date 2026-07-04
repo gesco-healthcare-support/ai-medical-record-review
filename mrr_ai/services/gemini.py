@@ -38,45 +38,72 @@ def wait_for_files_active(files):
     print()
 
 
-SEGMENTATION_PROMPT = """Title: Extract Subdocument Metadata from a PDF
+SEGMENTATION_PROMPT = """The document above is one scanned medical-record file from a California workers' compensation case. It is a continuous excerpt of a larger record: it may begin in the middle of one document and end in the middle of another.
 
-I have a large PDF document containing multiple subdocuments, each of which can vary in type (e.g., diagnostic reports, doctor's notes, legal forms, etc.).
-Your task is to analyze the PDF and return a structured JSON array containing key metadata for each subdocument. Use EXACTLY these keys for every element:
+Split the file into its component sub-documents and return one JSON record per sub-document, in page order.
 
-1) "id" (subdocument ID): A unique identifier for each subdocument (e.g., Doc1, Doc2, etc.).
-2) "s" (start page): The page number where the subdocument begins (integer).
-3) "e" (end page): The page number where the subdocument ends (integer).
-4) "t" (title): The title or header of the subdocument, if available. Do not invent titles; if needed, infer from the document type. DO NOT use commas; convert any comma to a dash (-). For example: WORK ACTIVITY STATUS
-5) "d" (date of the document/encounter): The visit/encounter date as MM/DD/YYYY, else "-". If there are several dates, pick the one labeled visit or encounter. The date can be near the signature at the end.
-6) "i" (date of injury): The injury date as MM/DD/YYYY, else "-".
-7) "m" (manual check): Return "x" if the document (1) has handwriting other than a signature, (2) has many checkboxes with x/ticks, (3) is a work status report, or (4) is a QME/AME report; otherwise "-".
+## What a sub-document is
+One document produced by one author or facility for one encounter, report, or form - the unit a records reviewer would summarize as a single item (a progress report, an imaging report, a deposition, a claim form, one therapy visit note, etc.).
 
-## Guidelines for Extraction:
-- Cover every page; do not skip any page.
-- A subdocument STARTS at its first physical page, INCLUDING any fax cover sheet, transmittal or cover letter, or routing slip that belongs to it. Never list a cover page as its own subdocument, and never start a subdocument on the page after its cover.
-- Continuation pages (a "page N of M" footer, lab-result table pages, signature pages) never start a new subdocument, even when the letterhead or page-number sequence changes mid-document.
-- Consecutive subdocuments of the same type (e.g., several progress reports or letters back-to-back) are SEPARATE subdocuments when the visit/encounter date, author, or facility changes; do not merge them, and do not split one visit's report into multiple subdocuments.
-- Use contextual clues such as headers, bold titles, or consistent formatting to identify boundaries and titles.
-- Link pages together using page counts to figure out where documents start and end.
-- Distinguish the document/encounter date from the injury date.
-- A title can sometimes be next to a word such as 'Notes'.
-- If a field is unavailable, use "-" (never None or null).
-- Ignore fax/resend dates; use the encounter/visit date or the day the document was created.
-- If a title contains "X vs Y", it is most likely a deposition; set "t" to "Deposition".
-- If the only handwriting is a signature, return "-" not "x".
-- If a page is empty, set "t" to "Empty Page".
-- Do not split a single document into two, and do not merge two documents into one.
-- QME/PQME/AME evaluations can be long and often quote other records; treat the entire evaluation as ONE record with the correct start and end pages.
-- Different QME/PQME/AME supplemental reports are separate documents.
-- Treat the first page of a document as part of that document.
+## Page numbers
+"Page N" means the N-th page of THIS file, counting from 1. Ignore page numbers printed on the pages: scanned bundles restart and repeat their printed numbering, so printed numbers do not identify positions in this file.
 
-Example JSON output for a 10-page PDF:
+## Coverage - the output is used to slice the file, so it must tile it exactly
+- Every page belongs to exactly one sub-document: records must be in order, must not overlap, and must not leave gaps; together they cover page 1 through the last page.
+- If the file starts or ends mid-document, still report that partial document with the page range visible here.
+- If a page is entirely blank, report it as its own record titled "Empty Page".
+
+## Where a sub-document starts
+- At its first physical page, INCLUDING any fax cover sheet, transmittal letter, or routing slip that travels with it. A cover page is never its own record, and a document never starts on the page after its cover.
+- Strong start signals: a new letterhead or form header together with a new document title; the first page of a form; a new visit/encounter date or author within a run of same-type documents (consecutive progress notes from the same clinic are SEPARATE records, one per visit).
+- NOT starts: "page N of M" continuation pages; lab tables, signature pages, or attachments that belong to the report they follow; a letterhead change INSIDE one report. Long medico-legal evaluations (QME/PQME/AME) quote many other records - keep the entire evaluation as ONE record. A distinct QME/AME supplemental report is its own record.
+
+## Fields (use "-" whenever a value is unavailable; never null)
+- "t" title: the document's own title or header wording if visible (it may sit next to a label such as "Notes"); otherwise the document type. Replace any comma with a dash so the value stays CSV-safe. A title of the form "X vs Y" is almost always a deposition: use "Deposition".
+- "d" document date: the visit/encounter date of THIS document as MM/DD/YYYY (it may be near the signature at the end); ignore fax, print, and re-send dates. Distinguish it from the injury date.
+- "i" injury date: the date of injury as MM/DD/YYYY if stated.
+- "m" manual check: "x" if a human should review the document - substantial handwriting (more than a signature), checkbox-style forms, work-status reports, or QME/PQME/AME reports; otherwise "-".
+
+Example output for a 10-page file (format reference):
 [
   {"id": "Doc1", "s": 1, "e": 5, "t": "WORK ACTIVITY STATUS", "d": "12/03/2021", "i": "05/07/2018", "m": "x"},
   {"id": "Doc2", "s": 6, "e": 10, "t": "ACUPUNCTURE THERAPY NOTES", "d": "11/11/2022", "i": "-", "m": "-"}
 ]
 
-## IMPORTANT: Return ONLY the JSON array, with no markdown fences and no other explanation."""
+Return ONLY the JSON array."""
+
+
+# Structured-output schema for SEGMENTATION_PROMPT. Enforcing the shape via response_schema
+# (not prose) guarantees parseable, correctly-typed records per the Gemini structured-output
+# guidance; field descriptions steer the model, and the app still validates values.
+SEGMENT_RESPONSE_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "id": {"type": "STRING", "description": "Sequential id: Doc1, Doc2, ..."},
+            "s": {
+                "type": "INTEGER",
+                "description": "First page of the sub-document: 1-based position in THIS file",
+            },
+            "e": {"type": "INTEGER", "description": "Last page of the sub-document, inclusive"},
+            "t": {"type": "STRING", "description": "Title or document type; no commas"},
+            "d": {"type": "STRING", "description": "Visit/encounter date MM/DD/YYYY, or '-'"},
+            "i": {"type": "STRING", "description": "Injury date MM/DD/YYYY, or '-'"},
+            "m": {
+                "type": "STRING",
+                "enum": ["x", "-"],
+                "description": "'x' when the document needs human review",
+            },
+        },
+        "required": ["s", "e", "t", "d", "i", "m"],
+        "propertyOrdering": ["id", "s", "e", "t", "d", "i", "m"],
+    },
+}
+# NOTE: a self-reported per-row boundary-confidence enum was trialled here (2026-07-04) and
+# removed: the model answered "high" on 231 of 232 rows across the two most error-dense cases,
+# including every known near-miss. Boundary confidence must be COMPUTED (row tiling, cross-window
+# disagreement), not asked of the model.
 
 
 def parse_segment_item(item):
