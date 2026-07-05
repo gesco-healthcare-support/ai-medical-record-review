@@ -13,11 +13,12 @@ silent lost-pages defect found in diagnosis.
 
 import io
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
-from mrr_ai.config import GENAI_MODEL, WINDOW_BUDGET_MB, WINDOW_OVERLAP
+from mrr_ai.config import CLASSIFY_WORKERS, GENAI_MODEL, WINDOW_BUDGET_MB, WINDOW_OVERLAP
 from mrr_ai.extensions import genai_client
 from mrr_ai.services.classification import classify
 from mrr_ai.services.gemini import (
@@ -145,7 +146,13 @@ def run_segmentation(pdf_path, total_pages, progress=None):
 
     rows = merge_window_rows(reports, windows, total_pages)
 
-    for i, row in enumerate(rows, start=1):
-        _categorize(pdf_path, row)
-        report("categorizing", i, len(rows))
+    # Rows are independent, so categorize on a small pool: sequential rows measured
+    # 1-2h on a 294-page case under quota congestion. Each worker owns its row (no
+    # shared mutation); progress is reported from THIS thread as futures complete.
+    report("categorizing", 0, len(rows))
+    with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as pool:
+        futures = [pool.submit(_categorize, pdf_path, row) for row in rows]
+        for i, future in enumerate(as_completed(futures), start=1):
+            future.result()  # a worker failure must fail the job loudly, not vanish
+            report("categorizing", i, len(rows))
     return rows

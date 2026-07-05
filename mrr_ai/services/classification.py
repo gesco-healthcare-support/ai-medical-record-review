@@ -89,19 +89,26 @@ def match_rules(title):
 
 # --- embedding stage (lazy: torch is only imported/loaded when this runs) -------------------
 
+import threading  # noqa: E402  (stdlib; placed with the stage it guards)
+
 _model = None
 _category_ids = None
 _category_matrix = None
+# classify() now runs on a thread pool; SentenceTransformer.encode is not documented as
+# thread-safe, so the whole encode path is serialized. Encoding is milliseconds - the
+# LLM call dominates - so this lock costs nothing while preventing races on first load.
+_embed_lock = threading.Lock()
 
 
 def _encode(texts):
     """Encode texts into L2-normalized vectors using the local sentence-transformers model."""
     global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
+    with _embed_lock:
+        if _model is None:
+            from sentence_transformers import SentenceTransformer
 
-        _model = SentenceTransformer(_EMBED_MODEL_NAME)
-    return np.asarray(_model.encode(list(texts), normalize_embeddings=True))
+            _model = SentenceTransformer(_EMBED_MODEL_NAME)
+        return np.asarray(_model.encode(list(texts), normalize_embeddings=True))
 
 
 def _category_vectors():

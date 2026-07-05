@@ -50,6 +50,11 @@ GENAI_RETRY_MAX_DELAY = float(os.environ.get("GENAI_RETRY_MAX_DELAY", 30.0))
 WINDOW_BUDGET_MB = float(os.environ.get("WINDOW_BUDGET_MB", 12.5))
 WINDOW_OVERLAP = int(os.environ.get("WINDOW_OVERLAP", 30))
 
+# Per-row categorization runs on a small thread pool: sequential rows took 1-2h on a
+# 294-page case under quota congestion (measured 2026-07-05). Kept modest so the
+# shared Gemini quota pool is not stormed; raise cautiously.
+CLASSIFY_WORKERS = int(os.environ.get("CLASSIFY_WORKERS", 4))
+
 
 def validate_env():
     """Raise if required secrets are missing (see .env.example)."""
