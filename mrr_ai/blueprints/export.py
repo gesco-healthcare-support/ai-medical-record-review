@@ -156,8 +156,10 @@ def exportresultstoword():
 
     doc = _build_mrr_document(patientName, patientdob, QMEorAME, lawfirm)
 
-    file_path_int = os.path.join(os.path.expanduser("~"), "MRRs", state.main_filename + "_int.docx")
-    file_path_rep = os.path.join(os.path.expanduser("~"), "MRRs", state.main_filename + "_rep.docx")
+    out_dir = os.path.join(os.path.expanduser("~"), "MRRs")
+    os.makedirs(out_dir, exist_ok=True)  # fresh machines lack ~/MRRs; export must not 500
+    file_path_int = os.path.join(out_dir, state.main_filename + "_int.docx")
+    file_path_rep = os.path.join(out_dir, state.main_filename + "_rep.docx")
 
     doc.save(file_path_int)
     response_int = send_file(file_path_int, as_attachment=True, mimetype=_DOCX_MIMETYPE)
