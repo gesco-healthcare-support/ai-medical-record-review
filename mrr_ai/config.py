@@ -19,6 +19,30 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_FOLDER = os.path.join(_REPO_ROOT, "uploads")
 
 
+# --- Gemini routing -------------------------------------------------------------------
+# Vertex AI is the BAA-covered Gemini platform (BAA signed 2026-07); the AI Studio
+# Developer API is NOT covered - PHI processing requires GOOGLE_GENAI_USE_VERTEXAI=true.
+USE_VERTEX = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# Vertex has no "-latest" model aliases, so the default is chosen per endpoint.
+GENAI_MODEL = os.environ.get("GENAI_MODEL") or (
+    "gemini-2.5-flash" if USE_VERTEX else "gemini-flash-latest"
+)
+
+# Retry tuning for transient 429 (Vertex dynamic shared quota) and 5xx overload.
+GENAI_MAX_RETRIES = int(os.environ.get("GENAI_MAX_RETRIES", 6))
+GENAI_RETRY_BASE_DELAY = float(os.environ.get("GENAI_RETRY_BASE_DELAY", 2.0))
+GENAI_RETRY_MAX_DELAY = float(os.environ.get("GENAI_RETRY_MAX_DELAY", 30.0))
+
+# Sliding-window segmentation: windows are packed to a raw-byte budget (Vertex inline
+# requests cap at ~20 MB after base64) and overlap so no document is severed at a seam.
+WINDOW_BUDGET_MB = float(os.environ.get("WINDOW_BUDGET_MB", 12.5))
+WINDOW_OVERLAP = int(os.environ.get("WINDOW_OVERLAP", 30))
+
+
 def validate_env():
     """Raise if required secrets are missing (see .env.example)."""
     missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
