@@ -22,11 +22,12 @@ from dataclasses import dataclass
 import numpy as np
 from google.genai import types
 
+from mrr_ai.config import GENAI_MODEL
 from mrr_ai.extensions import genai_client
+from mrr_ai.services.genai_retry import generate_with_retry
 from mrr_ai.taxonomy import ALLOWED_IDS, CATEGORIES, DEFAULT_ID
 
 _EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
-_LLM_MODEL = "gemini-flash-latest"
 
 # Ordered high-precision rules; first match wins. Specific categories precede the
 # categories they could be confused with (e.g. supplemental QME/AME -> 12 before QME/AME -> 13).
@@ -141,8 +142,8 @@ def llm_classify(text):
         ),
     )
     try:
-        response = genai_client.models.generate_content(
-            model=_LLM_MODEL, contents=prompt, config=config
+        response = generate_with_retry(
+            genai_client, model=GENAI_MODEL, contents=prompt, config=config
         )
     except Exception as exc:
         print(f"LLM classification failed: {exc}")

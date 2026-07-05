@@ -1,42 +1,8 @@
-"""Gemini segmentation: file upload, readiness polling, prompt, and response parsing."""
+"""Gemini segmentation assets: prompt, response schema, and tolerant row parsing.
 
-import time
-
-from mrr_ai.extensions import genai_client
-
-
-def upload_to_gemini(path, mime_type=None):
-    """Uploads the given file to Gemini.
-    See https://ai.google.dev/gemini-api/docs/prompting_with_media
-    """
-    file = genai_client.files.upload(file=path)
-    print()
-    print(f"Uploaded file '{file.display_name}' as: {file.uri}")
-    return file
-
-
-def wait_for_files_active(files):
-    """Waits for the given files to be active.
-
-    Some files uploaded to the Gemini API need to be processed before they can be
-    used as prompt inputs. The status can be seen by querying the file's "state"
-    field.
-
-    This implementation uses a simple blocking polling loop. Production code
-    should probably employ a more sophisticated approach.
-    """
-    print("Waiting for file processing...")
-    for name in (file.name for file in files):
-        file = genai_client.files.get(name=name)
-        while file.state.name == "PROCESSING":
-            print(".", end="", flush=True)
-            time.sleep(3)
-            file = genai_client.files.get(name=name)
-        if file.state.name != "ACTIVE":
-            raise Exception(f"File {file.name} failed to process")
-    print("...all files ready")
-    print()
-
+PDF delivery is INLINE (see services/segment_engine.py): the Files API existed only on
+the non-BAA Developer endpoint and was removed with the Vertex port.
+"""
 
 SEGMENTATION_SYSTEM = (
     "You are an expert medical-records clerk. You split scanned workers' compensation "
