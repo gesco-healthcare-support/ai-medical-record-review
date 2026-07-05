@@ -23,13 +23,14 @@ One document produced by one author or facility for one encounter, report, or fo
 ## Coverage - the output is used to slice the file, so it must tile it exactly
 - Every page belongs to exactly one sub-document: records must be in order, must not overlap, and must not leave gaps; together they cover page 1 through the last page.
 - If the file starts or ends mid-document, still report that partial document with the page range visible here.
-- If a page is entirely blank, report it as its own record titled "Empty Page".
+- Blank pages NEVER form their own record: scanners emit blank backsides and separators. Attach a blank page to the document BEFORE it; blank pages before the first document belong to the first document.
 
 ## Where a sub-document starts
 - At its first physical page, INCLUDING any fax cover sheet, transmittal letter, or routing slip that travels with it. A cover page is never its own record, and a document never starts on the page after its cover.
 - Strong start signals: a new letterhead or form header together with a new document title; the first page of a form; a new visit/encounter date or author within a run of same-type documents (consecutive progress notes from the same clinic are SEPARATE records, one per visit).
 - NOT starts: "page N of M" continuation pages; lab tables, signature pages, or attachments that belong to the report they follow; a letterhead change INSIDE one report. Long medico-legal evaluations (QME/PQME/AME) quote many other records - keep the entire evaluation as ONE record. A distinct QME/AME supplemental report is its own record.
 - A report often EMBEDS a few pages that look like a different document type (lab tables, an imaging summary, a work-status form, a copied letter). If those pages carry the report's date or are referenced by the surrounding text, they are part of the report - do not split them out as their own record.
+- A document's FIRST or LAST pages often look unlike its body: certification or notary stamps, letterhead-only or branding pages, terms-and-conditions or disclaimer pages, distribution/cc lists. These belong to the document they accompany - never report them as separate records.
 - Consistency check before you output: if two consecutive records you produced have the same document type AND the same date, and the second one does not begin with a fresh letterhead or a form's first page, they are ONE document - merge them into a single record.
 
 ## Fields (use "-" whenever a value is unavailable; never null)

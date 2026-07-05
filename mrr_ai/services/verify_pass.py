@@ -24,14 +24,17 @@ from mrr_ai.config import CLASSIFY_WORKERS, GENAI_MODEL
 from mrr_ai.extensions import genai_client
 from mrr_ai.services.genai_retry import generate_with_retry
 
-_ADJACENT_SYSTEM = (
-    "You segment a scanned medical-record PDF into its sub-documents. You are shown two "
-    "consecutive pages. Decide whether the SECOND (current) page begins a NEW document "
-    "or continues the SAME document as the first page."
+_VERIFY_SYSTEM = (
+    "You review the segmentation of a scanned workers' compensation medical record. "
+    "Given two adjacent segments with their metadata and page images, decide whether "
+    "the second segment is part of the first document or a separate document."
 )
 
 # Rows this short next to another boundary are the measured scatter signature.
 SHORT_ROW_PAGES = 2
+# How many of the suspect fragment's own pages to show (fragments are 1-2 pages by
+# selection; a small cap keeps the question easy - few pages, full information).
+FRAGMENT_PAGE_CAP = 2
 
 
 def _page_png(pdf_path, page, dpi=120):
@@ -41,33 +44,58 @@ def _page_png(pdf_path, page, dpi=120):
     return buffer.getvalue()
 
 
-def _adjacent_says_new(pdf_path, page):
-    """One two-image check: does a new document start at `page`? Failure -> True (keep
-    the boundary): merging on missing evidence would hide a document."""
+def _row_line(name, row):
+    return (
+        f"{name}: pages {row['start']}-{row['end']}, category {row['category']}, "
+        f"date {row['date']}, title: {row.get('title') or '-'}"
+    )
+
+
+def _same_document(pdf_path, prev_row, row):
+    """Rich yes/no check: is `row` a continuation of `prev_row`'s document?
+
+    The model gets everything a human reviewer would use - both segments' metadata as
+    text, the LAST page of document A, and the suspect fragment's own first pages
+    (small by construction). Failure -> False (keep the boundary): merging on missing
+    evidence would hide a document, the one error nobody downstream can detect.
+    """
+    fragment_end = min(row["end"], row["start"] + FRAGMENT_PAGE_CAP - 1)
     contents = [
-        "First image = previous page. Second image = current page. Does the current "
-        "page start a NEW document or continue the SAME one?",
-        types.Part.from_bytes(data=_page_png(pdf_path, page - 1), mime_type="image/png"),
-        types.Part.from_bytes(data=_page_png(pdf_path, page), mime_type="image/png"),
+        _row_line("Document A", prev_row)
+        + "\n"
+        + _row_line("Segment B", row)
+        + "\n\n"
+        + "The first image is the LAST page of document A. The following image(s) are "
+        f"segment B (pages {row['start']}-{fragment_end}). Segment B may be the "
+        "continuation of document A - remaining report pages, attachments, lab tables, "
+        "signature/stamp/certification pages, terms or branding pages, or blank "
+        "separator pages - OR it may begin a separate document.\n"
+        "Answer YES if segment B belongs to document A; answer NO if it is a separate "
+        "document.",
+        types.Part.from_bytes(data=_page_png(pdf_path, prev_row["end"]), mime_type="image/png"),
     ]
+    for page in range(row["start"], fragment_end + 1):
+        contents.append(
+            types.Part.from_bytes(data=_page_png(pdf_path, page), mime_type="image/png")
+        )
     config = types.GenerateContentConfig(
         temperature=0.0,
         response_mime_type="text/x.enum",
-        response_schema={"type": "STRING", "enum": ["NEW", "SAME"]},
-        system_instruction=_ADJACENT_SYSTEM,
+        response_schema={"type": "STRING", "enum": ["YES", "NO"]},
+        system_instruction=_VERIFY_SYSTEM,
     )
     try:
         response = generate_with_retry(
             genai_client, model=GENAI_MODEL, contents=contents, config=config
         )
     except Exception as exc:
-        print(f"verify oracle failed at page {page}: {exc}")
-        return True
-    return (response.text or "").strip() != "SAME"
+        print(f"verify oracle failed at page {row['start']}: {exc}")
+        return False
+    return (response.text or "").strip() == "YES"
 
 
-def suspect_starts(rows):
-    """Boundary pages worth one verification call: the later row of a same-category+
+def suspect_indices(rows):
+    """Row indices worth one verification call: the later row of a same-category+
     same-date pair (the model contradicting itself), and any short-fragment row."""
     suspects = []
     for i in range(1, len(rows)):
@@ -79,7 +107,7 @@ def suspect_starts(rows):
         )
         short = (row["end"] - row["start"] + 1) <= SHORT_ROW_PAGES
         if same_cat_date or short:
-            suspects.append(row["start"])
+            suspects.append(i)
     return suspects
 
 
@@ -98,19 +126,21 @@ def verify_and_merge(pdf_path, rows, progress=None, workers=CLASSIFY_WORKERS, au
         if progress is not None:
             progress("verifying", current, total)
 
-    suspects = suspect_starts(rows)
+    suspects = suspect_indices(rows)
     report(0, len(suspects))
-    says_new = {}
+    same_doc = {}
     if suspects:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_adjacent_says_new, pdf_path, p): p for p in suspects}
-            for i, future in enumerate(as_completed(futures), start=1):
-                says_new[futures[future]] = future.result()
-                report(i, len(suspects))
+            futures = {
+                pool.submit(_same_document, pdf_path, rows[i - 1], rows[i]): i for i in suspects
+            }
+            for done, future in enumerate(as_completed(futures), start=1):
+                same_doc[rows[futures[future]]["start"]] = future.result()
+                report(done, len(suspects))
 
     out, affected = [], 0
     for row in rows:
-        refuted = bool(out) and says_new.get(row["start"]) is False
+        refuted = bool(out) and same_doc.get(row["start"]) is True
         if refuted and auto:
             previous = out[-1]
             previous["end"] = row["end"]
