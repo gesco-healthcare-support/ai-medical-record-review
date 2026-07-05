@@ -59,6 +59,10 @@ CLASSIFY_WORKERS = int(os.environ.get("CLASSIFY_WORKERS", 4))
 # two-page check and refuted ones merge away. Disable only to isolate raw model output.
 VERIFY_MERGE = os.environ.get("VERIFY_MERGE", "1").strip().lower() not in ("0", "false", "no")
 
+# The verification JUDGE may be a stronger model than the segmenter: verdict quality is
+# what gates automatic merging, and the call volume (~100 tiny questions/case) is cheap.
+VERIFY_MODEL = os.environ.get("VERIFY_MODEL") or GENAI_MODEL
+
 
 def validate_env():
     """Raise if required secrets are missing (see .env.example)."""

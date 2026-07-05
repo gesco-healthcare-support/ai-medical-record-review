@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.genai import types
 from pdf2image import convert_from_path
 
-from mrr_ai.config import CLASSIFY_WORKERS, GENAI_MODEL
+from mrr_ai.config import CLASSIFY_WORKERS, VERIFY_MODEL
 from mrr_ai.extensions import genai_client
 from mrr_ai.services.genai_retry import generate_with_retry
 
@@ -86,7 +86,7 @@ def _same_document(pdf_path, prev_row, row):
     )
     try:
         response = generate_with_retry(
-            genai_client, model=GENAI_MODEL, contents=contents, config=config
+            genai_client, model=VERIFY_MODEL, contents=contents, config=config
         )
     except Exception as exc:
         print(f"verify oracle failed at page {row['start']}: {exc}")
