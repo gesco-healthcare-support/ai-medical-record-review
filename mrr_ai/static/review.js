@@ -214,6 +214,10 @@ function renderTable() {
         }
     });
 
+    const suggested = S.rows.filter((r, i) => r.suggest_merge && i > 0).length;
+    const bulk = $("applySuggestions");
+    bulk.classList.toggle("hidden", suggested === 0);
+    bulk.textContent = `Apply ${suggested} suggested merge${suggested === 1 ? "" : "s"}`;
     $("docCount").textContent = `${S.rows.length} documents / ${S.totalPages} pages`;
     const firstError = errors.size ? `row ${[...errors.keys()][0] + 1}: ${[...errors.values()][0]}` : "";
     $("validationMsg").textContent = firstError;
@@ -257,6 +261,23 @@ $("rowsBody").addEventListener("click", (event) => {
     S.selected = idx;
     renderTable();
     jumpTo(Number(S.rows[idx].start) || 1);
+});
+
+$("applySuggestions").addEventListener("click", () => {
+    // Apply every AI merge suggestion in one pass (top-down so chains collapse).
+    // The human keeps the veto: suggestions are visible as chips before this click.
+    for (let i = 1; i < S.rows.length; ) {
+        if (S.rows[i].suggest_merge) {
+            S.rows[i - 1].end = Math.max(S.rows[i - 1].end, S.rows[i].end);
+            S.rows[i - 1].flag =
+                [S.rows[i - 1].flag, S.rows[i].flag].includes("x") ? "x" : "-";
+            S.rows.splice(i, 1);
+        } else {
+            i += 1;
+        }
+    }
+    S.selected = -1;
+    renderTable();
 });
 
 $("addRow").addEventListener("click", () => {

@@ -64,6 +64,10 @@ button.mini.suggest {
     background: #fdf4e3; border-color: #e6c98a; color: #8a6110; font-weight: 600;
 }
 button.mini.suggest:hover { border-color: #b0782a; }
+button.suggest-bulk {
+    background: #fdf4e3; border-color: #e6c98a; color: #8a6110; font-weight: 600;
+}
+button.suggest-bulk:hover { border-color: #b0782a; color: #8a6110; }
 
 .bar {
     height: 10px; background: #e2e9f0; border-radius: 6px; overflow: hidden;
