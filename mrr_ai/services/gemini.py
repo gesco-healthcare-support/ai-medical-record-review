@@ -38,6 +38,12 @@ def wait_for_files_active(files):
     print()
 
 
+SEGMENTATION_SYSTEM = (
+    "You are an expert medical-records clerk. You split scanned workers' compensation "
+    "medical-record files into their component documents and report exact page ranges "
+    "and metadata."
+)
+
 SEGMENTATION_PROMPT = """The document above is one scanned medical-record file from a California workers' compensation case. It is a continuous excerpt of a larger record: it may begin in the middle of one document and end in the middle of another.
 
 Split the file into its component sub-documents and return one JSON record per sub-document, in page order.
