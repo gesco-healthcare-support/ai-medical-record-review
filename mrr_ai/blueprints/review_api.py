@@ -19,8 +19,6 @@ bp = Blueprint("review_api", __name__)
 # curated taxonomy; the summarize engine handles it, so it stays selectable.
 EDITABLE_CATEGORIES = sorted({*CATEGORIES.keys(), "6"}, key=lambda c: int(c))
 
-DEFAULT_SUMMARY_MODEL = "gpt-4o-mini"
-
 
 def validate_rows(rows, total_pages):
     """Return an error string for the first invalid row, or None.
@@ -87,7 +85,7 @@ def summarize_start():
         return jsonify({"error": "no PDF uploaded"}), 400
     body = request.json or {}
     rows = body.get("rows") or []
-    model = body.get("model") or DEFAULT_SUMMARY_MODEL
+    model = body.get("model")  # None -> config.SUMMARY_MODEL inside the engine
 
     total_pages = get_pdf_page_count(state.pdf_filepath)
     error = validate_rows(rows, total_pages)

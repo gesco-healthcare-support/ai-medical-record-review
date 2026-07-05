@@ -1,15 +1,20 @@
-"""Per-document OpenAI summarization, extracted for the review flow.
+"""Per-document summarization for the review flow - Gemini on the Vertex/BAA path.
 
-Faithfully reproduces the /summarize per-row behavior (same prompts, same title
-extraction, same decorations) so the review UI's row-wise summaries and the legacy
-Word export stay identical in content. Two deliberate hardenings:
+Reproduces the legacy /summarize per-row behavior (same category prompts, same title
+extraction, same decorations) but on Gemini instead of OpenAI (decision 2026-07-05:
+one vendor, one BAA-covered path, and the OpenAI account is unfunded). Two hardenings
+over the legacy path:
 - prompts.get(...) falls back to the general prompt: category_11 has NO prompt in
-  prompts.py (latent KeyError crash in the legacy path, found 2026-06-16).
+  prompts.py (latent KeyError crash, found 2026-06-16).
 - callers pass rows explicitly; no file/global reads here (services stay Flask-free).
 """
 
-from mrr_ai.extensions import client
+from google.genai import types
+
+from mrr_ai.config import SUMMARY_MODEL
+from mrr_ai.extensions import genai_client
 from mrr_ai.prompts import prompts
+from mrr_ai.services.genai_retry import generate_with_retry
 from mrr_ai.services.ocr import extract_text_from_selected_pages
 
 TITLE_PROMPT = (
@@ -27,37 +32,36 @@ TITLE_PROMPT = (
 )
 
 
-def _chat(model, system_msg, user_text):
-    completion = client.chat.completions.create(
+def _generate(model, system_msg, user_text, temperature):
+    response = generate_with_retry(
+        genai_client,
         model=model,
-        messages=[
-            {"role": "system", "content": [{"type": "text", "text": f"{system_msg}"}]},
-            {"role": "user", "content": [{"type": "text", "text": f"{user_text}"}]},
-        ],
-        temperature=0.8,
-        max_tokens=2048,
-        top_p=1,
-        frequency_penalty=0,
-        presence_penalty=0,
-        response_format={"type": "text"},
+        contents=user_text,
+        config=types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=2048,
+            system_instruction=system_msg,
+        ),
     )
-    return completion.choices[0].message.content
+    return (response.text or "").strip()
 
 
-def summarize_row(pdf_path, row, model):
+def summarize_row(pdf_path, row, model=None):
     """Summarize one sub-document row -> the legacy output_dict shape.
 
     row: {start, end, category, date, injury_date, flag}. The dict feeds both the UI
     (row-wise display) and state.all_data (legacy Word export).
     """
+    model = model or SUMMARY_MODEL
     key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
     system_msg = prompts.get(key, prompts["category_100"])
 
     pages = list(range(int(row["start"]), int(row["end"]) + 1))
     text = extract_text_from_selected_pages(pdf_path, pages)
 
-    summary = _chat(model, system_msg, text)
-    title = _chat(model, TITLE_PROMPT, text)
+    # Legacy used temperature 0.8 for the summary body; the title is extraction, so 0.
+    summary = _generate(model, system_msg, text, temperature=0.8)
+    title = _generate(model, TITLE_PROMPT, text, temperature=0.0)
 
     doi_final = "" if row["injury_date"] in ("", "-") else f"**DOI**:{row['injury_date']},"
     diag_tag = " [Diagnostic Study]" if str(row["category"]) == "3" else ""

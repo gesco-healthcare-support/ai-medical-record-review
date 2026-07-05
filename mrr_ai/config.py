@@ -19,6 +19,10 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_FOLDER = os.path.join(_REPO_ROOT, "uploads")
 
 
+# Tesseract binary override for machines where it is installed but not on PATH
+# (Windows installer default). Empty -> pytesseract uses PATH lookup.
+TESSERACT_CMD = os.environ.get("TESSERACT_CMD", "")
+
 # --- Gemini routing -------------------------------------------------------------------
 # Vertex AI is the BAA-covered Gemini platform (BAA signed 2026-07); the AI Studio
 # Developer API is NOT covered - PHI processing requires GOOGLE_GENAI_USE_VERTEXAI=true.
@@ -31,6 +35,10 @@ USE_VERTEX = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower() in 
 GENAI_MODEL = os.environ.get("GENAI_MODEL") or (
     "gemini-2.5-flash" if USE_VERTEX else "gemini-flash-latest"
 )
+
+# Summaries run on Gemini too (Adrian, 2026-07-05): keeps the whole pipeline on the
+# BAA-covered Vertex path and off the unfunded OpenAI account. Override to experiment.
+SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL") or GENAI_MODEL
 
 # Retry tuning for transient 429 (Vertex dynamic shared quota) and 5xx overload.
 GENAI_MAX_RETRIES = int(os.environ.get("GENAI_MAX_RETRIES", 6))
