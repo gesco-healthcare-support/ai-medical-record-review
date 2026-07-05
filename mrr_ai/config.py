@@ -55,6 +55,10 @@ WINDOW_OVERLAP = int(os.environ.get("WINDOW_OVERLAP", 30))
 # shared Gemini quota pool is not stormed; raise cautiously.
 CLASSIFY_WORKERS = int(os.environ.get("CLASSIFY_WORKERS", 4))
 
+# Boundary verification merge pass (measured recall-safe): suspect boundaries get one
+# two-page check and refuted ones merge away. Disable only to isolate raw model output.
+VERIFY_MERGE = os.environ.get("VERIFY_MERGE", "1").strip().lower() not in ("0", "false", "no")
+
 
 def validate_env():
     """Raise if required secrets are missing (see .env.example)."""

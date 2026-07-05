@@ -18,7 +18,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
-from mrr_ai.config import CLASSIFY_WORKERS, GENAI_MODEL, WINDOW_BUDGET_MB, WINDOW_OVERLAP
+from mrr_ai.config import (
+    CLASSIFY_WORKERS,
+    GENAI_MODEL,
+    VERIFY_MERGE,
+    WINDOW_BUDGET_MB,
+    WINDOW_OVERLAP,
+)
 from mrr_ai.extensions import genai_client
 from mrr_ai.services.classification import classify
 from mrr_ai.services.gemini import (
@@ -29,6 +35,7 @@ from mrr_ai.services.gemini import (
 )
 from mrr_ai.services.genai_retry import generate_with_retry
 from mrr_ai.services.ocr import extract_text_from_selected_pages
+from mrr_ai.services.verify_pass import verify_and_merge
 from mrr_ai.services.windows import byte_budgeted_windows
 
 
@@ -155,4 +162,8 @@ def run_segmentation(pdf_path, total_pages, progress=None):
         for i, future in enumerate(as_completed(futures), start=1):
             future.result()  # a worker failure must fail the job loudly, not vanish
             report("categorizing", i, len(rows))
+
+    if VERIFY_MERGE:
+        rows, stats = verify_and_merge(pdf_path, rows, progress=progress)
+        print(f"verify pass: {stats}")
     return rows

@@ -65,6 +65,7 @@ const STAGE_LABELS = {
     starting: "Starting...",
     segmenting: "Reading the record and finding document boundaries",
     categorizing: "Categorizing each document",
+    verifying: "Double-checking uncertain boundaries",
     summarizing: "Writing summaries",
 };
 

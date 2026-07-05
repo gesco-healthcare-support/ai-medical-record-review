@@ -66,6 +66,12 @@ def test_run_segmentation_wires_windows_classify_and_progress(monkeypatch, make_
     monkeypatch.setattr(
         segment_engine, "extract_text_from_selected_pages", lambda path, pages: "text"
     )
+    # verification is unit-tested separately; here it must not reach for a real oracle
+    monkeypatch.setattr(
+        segment_engine,
+        "verify_and_merge",
+        lambda pdf_path, rows, progress=None: (rows, dict(suspects=0, merged_away=0)),
+    )
 
     calls = []
     rows = run_segmentation(pdf, 6, progress=lambda *a: calls.append(a))
