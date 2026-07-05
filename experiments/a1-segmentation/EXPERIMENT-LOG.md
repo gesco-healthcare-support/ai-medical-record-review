@@ -11,6 +11,14 @@ Verdict bands and metric meanings: `docs/01-GLOSSARY.md`.
 
 ## Notes
 
+- 2026-07-05 (DocAI benchmark): Google Custom Splitter (zero-shot pretrained v1.6-pro,
+  $5/1k pages) scored on all 8 eligible cases with the shared harness: statistical TIE
+  with our sol1 on boundaries at ~100x the cost ($10.6 vs $0.10/suite), slightly worse
+  recall (1-3 missed docs per clean case vs our 0-2), confidence <0.5 on every entity.
+  Convergence finding: DocAI reproduces our methods' exact disagreement pages ->
+  residual error is answer-key convention + genuine ambiguity, method-independent.
+  Table: `outputs/sol1-diagnosis/COMPARISON.md`; adapter `src/docai_splitter.py`.
+
 - 2026-07-04 (signals verdict): local structural signals are NOT VIABLE for verification
   targeting on these documents (pre-declared bar: consistent AUC >= 0.70). Best single
   feature was the 256-bit dHash at 0.76 on Case 3 but 0.58-0.59 elsewhere; dates_shared
