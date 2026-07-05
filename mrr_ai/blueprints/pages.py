@@ -47,6 +47,11 @@ def IndividualMRR():
     return render_template("individual_mrr.html")
 
 
+@bp.route("/review")
+def review():
+    return render_template("review.html")
+
+
 @bp.route("/reset", methods=["POST"])
 def reset():
     # Clear the session data
