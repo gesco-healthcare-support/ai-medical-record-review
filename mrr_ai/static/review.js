@@ -197,6 +197,7 @@ function renderTable() {
             <td><input type="text" data-field="date" value="${row.date || "-"}"></td>
             <td style="text-align:center"><input type="checkbox" data-field="flag" ${String(row.flag).toLowerCase() === "x" ? "checked" : ""}></td>
             <td class="row-actions">
+                ${row.suggest_merge && i > 0 ? '<button class="mini suggest" data-action="merge" title="The AI double-checked this boundary and believes it continues the document above">Likely same doc - merge?</button>' : ""}
                 ${i > 0 ? '<button class="mini" data-action="merge" title="Merge into the document above">Merge up</button>' : ""}
                 <button class="mini" data-action="delete" title="Remove this row">Delete</button>
             </td>`;

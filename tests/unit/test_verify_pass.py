@@ -20,34 +20,46 @@ def test_suspects_same_cat_date_and_short_rows():
     assert suspect_starts(rows) == [6, 11]
 
 
-def test_refuted_boundary_merges_and_keeps_flags(monkeypatch):
+def test_refuted_boundary_becomes_suggestion_by_default(monkeypatch):
+    # Default mode NEVER drops a row: at scale the oracle wrongly refuted ~3% of real
+    # boundaries, and an automatic merge hides a document (the worst error class).
     rows = [_row(1, 5), _row(6, 7, flag="x"), _row(8, 20, category="9", date="-")]
     monkeypatch.setattr(verify_pass, "_adjacent_says_new", lambda pdf, page: page != 6)
-    merged, stats = verify_and_merge("case.pdf", rows)
+    out, stats = verify_and_merge("case.pdf", rows)
+    assert [(r["start"], r["end"]) for r in out] == [(1, 5), (6, 7), (8, 20)]
+    assert out[1].get("suggest_merge") is True and "suggest_merge" not in out[0]
+    assert stats == {"suspects": 1, "suggested": 1}
+
+
+def test_auto_mode_merges_and_keeps_flags(monkeypatch):
+    rows = [_row(1, 5), _row(6, 7, flag="x"), _row(8, 20, category="9", date="-")]
+    monkeypatch.setattr(verify_pass, "_adjacent_says_new", lambda pdf, page: page != 6)
+    merged, stats = verify_and_merge("case.pdf", rows, auto=True)
     assert [(r["start"], r["end"]) for r in merged] == [(1, 7), (8, 20)]
     assert merged[0]["flag"] == "x"  # absorbed row's review flag survives
-    assert stats == dict(suspects=1, merged_away=1)
+    assert stats == {"suspects": 1, "merged_away": 1}
 
 
-def test_confirmed_boundary_survives(monkeypatch):
+def test_confirmed_boundary_survives_unmarked(monkeypatch):
     rows = [_row(1, 5), _row(6, 7)]
     monkeypatch.setattr(verify_pass, "_adjacent_says_new", lambda pdf, page: True)
-    merged, stats = verify_and_merge("case.pdf", rows)
-    assert len(merged) == 2 and stats["merged_away"] == 0
+    out, stats = verify_and_merge("case.pdf", rows)
+    assert len(out) == 2 and stats["suggested"] == 0
+    assert all("suggest_merge" not in r for r in out)
 
 
-def test_chained_fragments_collapse(monkeypatch):
+def test_auto_mode_chained_fragments_collapse(monkeypatch):
     rows = [_row(1, 5), _row(6, 6), _row(7, 7), _row(8, 20, category="9", date="-")]
     monkeypatch.setattr(verify_pass, "_adjacent_says_new", lambda pdf, page: page not in (6, 7))
-    merged, _stats = verify_and_merge("case.pdf", rows)
+    merged, _stats = verify_and_merge("case.pdf", rows, auto=True)
     assert [(r["start"], r["end"]) for r in merged] == [(1, 7), (8, 20)]
 
 
-def test_first_row_never_merges(monkeypatch):
+def test_first_row_never_merges_or_suggests(monkeypatch):
     rows = [_row(1, 1), _row(2, 20, category="9", date="-")]
     monkeypatch.setattr(verify_pass, "_adjacent_says_new", lambda pdf, page: False)
-    merged, _stats = verify_and_merge("case.pdf", rows)
-    assert merged[0]["start"] == 1  # a leading fragment stays a row (nothing before it)
+    out, _stats = verify_and_merge("case.pdf", rows)
+    assert out[0]["start"] == 1 and "suggest_merge" not in out[0]
 
 
 def test_oracle_failure_keeps_boundary(monkeypatch):

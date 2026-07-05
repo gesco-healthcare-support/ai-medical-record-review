@@ -83,13 +83,15 @@ def suspect_starts(rows):
     return suspects
 
 
-def verify_and_merge(pdf_path, rows, progress=None, workers=CLASSIFY_WORKERS):
-    """Verify suspect boundaries and merge the refuted ones into their predecessors.
+def verify_and_merge(pdf_path, rows, progress=None, workers=CLASSIFY_WORKERS, auto=False):
+    """Verify suspect boundaries; refuted ones become MERGE SUGGESTIONS by default.
 
-    Verdicts are fetched in parallel (independent calls); merges apply sequentially in
-    page order so chained fragments collapse correctly. Rows must be sorted and tiled;
-    merging preserves tiling (the absorbed row's end extends its predecessor).
-    Returns (merged_rows, stats).
+    Verdicts are fetched in parallel (independent calls). With auto=False (production
+    default) a refuted boundary marks its row ``suggest_merge`` for a one-click accept
+    in the editor - measured at scale (294pp, 104 suspects, 2026-07-05) the oracle
+    wrongly refuted 3 REAL boundaries (~3% false-SAME), and an automatic merge hides a
+    document, the worst error class. auto=True keeps the destructive merge for
+    experiments; merging preserves tiling. Returns (rows, stats).
     """
 
     def report(current, total):
@@ -106,14 +108,20 @@ def verify_and_merge(pdf_path, rows, progress=None, workers=CLASSIFY_WORKERS):
                 says_new[futures[future]] = future.result()
                 report(i, len(suspects))
 
-    merged, dropped = [], 0
+    out, affected = [], 0
     for row in rows:
-        if merged and says_new.get(row["start"]) is False:
-            previous = merged[-1]
+        refuted = bool(out) and says_new.get(row["start"]) is False
+        if refuted and auto:
+            previous = out[-1]
             previous["end"] = row["end"]
             if str(row["flag"]).strip().lower() == "x":
                 previous["flag"] = "x"
-            dropped += 1
-        else:
-            merged.append(dict(row))
-    return merged, dict(suspects=len(suspects), merged_away=dropped)
+            affected += 1
+            continue
+        row = dict(row)
+        if refuted:
+            row["suggest_merge"] = True
+            affected += 1
+        out.append(row)
+    key = "merged_away" if auto else "suggested"
+    return out, {"suspects": len(suspects), key: affected}
