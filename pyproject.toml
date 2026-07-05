@@ -21,6 +21,7 @@ dependencies = [
     "httplib2",
     "python-dotenv",
     "sentence-transformers>=5.5.1",
+    "httpx>=0.28.1",
 ]
 
 [tool.uv]
