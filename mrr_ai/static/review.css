@@ -157,3 +157,20 @@ td input, td select {
 .auth-card input[type="submit"]:hover { background: #275dc0; }
 .auth-card ul.fs-error-msg, .auth-card .error { color: #c0392b; list-style: none; padding: 0; margin: 4px 0; }
 .auth-card a { color: #2f6fdd; }
+
+/* Landing page. */
+.home-panel { max-width: 1000px; margin: 24px auto; }
+.home-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.home-header form { display: flex; align-items: center; gap: 10px; }
+.file-drop-inline { margin: 0; }
+.docs-table { width: 100%; border-collapse: collapse; margin-top: 18px; }
+.docs-table th { text-align: left; font-size: 13px; color: #5b6b7a; padding: 8px 10px; border-bottom: 2px solid #e2e9f0; }
+.docs-table td { padding: 9px 10px; border-bottom: 1px solid #edf2f7; font-size: 14px; }
+.docs-table .doc-name { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-link { font-size: 13px; color: #2f6fdd; margin-right: 8px; }
+.chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; background: #e8eef5; color: #35485a; }
+.chip-segmenting, .chip-summarizing { background: #e3edfd; color: #1d4fa8; }
+.chip-reviewing { background: #fdf3dc; color: #8a6110; }
+.chip-done { background: #e2f5e8; color: #1e7c40; }
+.chip-error, .chip-interrupted { background: #fdeceb; color: #b03a2e; }
+.save-state { font-size: 12px; margin-left: 10px; }

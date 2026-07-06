@@ -68,11 +68,13 @@ def test_register_login_roundtrip(app, anon_client):
         follow_redirects=False,
     )
     assert login.status_code == 302
-    assert fresh.get("/review").status_code == 200
+    assert fresh.get("/").status_code == 200
 
 
 def test_authenticated_client_reaches_protected_routes(client):
-    assert client.get("/review").status_code == 200
+    assert client.get("/").status_code == 200  # landing page
+    assert client.get("/classic").status_code == 200
+    assert client.get("/review/some-doc-id").status_code == 200  # shell; data is API-gated
     assert client.get("/api/segment/status").status_code == 200
 
 

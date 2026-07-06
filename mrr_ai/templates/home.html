@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MRR Review - my documents</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='review.css') }}">
+</head>
+<body>
+<header class="topbar">
+    <div class="brand">MRR <span>Review</span></div>
+    <nav class="top-actions">
+        <a href="/classic" title="The original pages UI">Classic UI</a>
+        <a href="/logout" title="Sign out">Log out</a>
+    </nav>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main>
+    <section class="panel home-panel">
+        <div class="home-header">
+            <h1>My documents</h1>
+            <form id="uploadForm">
+                <label class="file-drop file-drop-inline">
+                    <input type="file" id="pdfInput" accept="application/pdf" required>
+                    <span id="fileLabel">Choose a PDF...</span>
+                </label>
+                <button type="submit" class="primary" id="uploadBtn">Upload &amp; identify documents</button>
+            </form>
+        </div>
+        <table class="docs-table">
+            <thead>
+            <tr>
+                <th>Document</th><th>Pages</th><th>Uploaded</th><th>Status</th><th></th>
+            </tr>
+            </thead>
+            <tbody id="docsBody">
+            <tr><td colspan="5" class="muted">Loading...</td></tr>
+            </tbody>
+        </table>
+    </section>
+</main>
+
+<script src="{{ url_for('static', filename='home.js') }}"></script>
+</body>
+</html>

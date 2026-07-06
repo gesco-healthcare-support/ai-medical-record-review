@@ -7,51 +7,45 @@
     <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='review.css') }}">
 </head>
-<body>
+<body data-doc-id="{{ document_id }}">
 <header class="topbar">
     <div class="brand">MRR <span>Review</span></div>
     <ol class="steps">
-        <li data-step="upload">1 Upload</li>
-        <li data-step="segment">2 Identify documents</li>
-        <li data-step="review">3 Review &amp; correct</li>
-        <li data-step="summaries">4 Summaries</li>
+        <li data-step="identify">1 Identify documents</li>
+        <li data-step="review">2 Review &amp; correct</li>
+        <li data-step="summaries">3 Summaries</li>
     </ol>
     <nav class="top-actions">
-        <a href="/pages" title="The original pages UI">Classic UI</a>
-        <button id="startOver" class="ghost" type="button">Start over</button>
+        <a href="/" title="Back to your documents">My documents</a>
+        <a href="/classic" title="The original pages UI">Classic UI</a>
     </nav>
 </header>
 
 <div id="banner" class="banner hidden"></div>
 
 <main>
-    <!-- 1: upload -->
-    <section id="step-upload" class="panel center-panel">
-        <h1>Upload a medical-record PDF</h1>
+    <!-- 1a: ready to start (uploaded / interrupted / failed without rows) -->
+    <section id="step-start" class="panel center-panel hidden">
+        <h1>Ready to identify documents</h1>
         <p class="muted">The record is split into its component documents and categorized.
             You review and correct the result before any summaries are written.</p>
-        <form id="uploadForm">
-            <label class="file-drop">
-                <input type="file" id="pdfInput" accept="application/pdf" required>
-                <span id="fileLabel">Choose a PDF...</span>
-            </label>
-            <button type="submit" class="primary" id="uploadBtn">Upload &amp; identify documents</button>
-        </form>
+        <button id="startSegment" class="primary" type="button">Identify documents</button>
     </section>
 
-    <!-- 2 + 4: progress -->
+    <!-- 1b + 3a: progress -->
     <section id="step-progress" class="panel center-panel hidden">
         <h1 id="progressTitle">Working...</h1>
         <div class="bar"><div id="barFill" class="bar-fill"></div></div>
         <p id="progressDetail" class="muted">Starting...</p>
     </section>
 
-    <!-- 3: editor -->
+    <!-- 2: editor -->
     <section id="step-editor" class="hidden">
         <div class="editor-toolbar">
             <div>
                 <strong id="docCount"></strong>
                 <span id="validationMsg" class="error-text"></span>
+                <span id="saveState" class="muted save-state"></span>
             </div>
             <div>
                 <button id="applySuggestions" class="ghost suggest-bulk hidden" type="button"></button>
@@ -83,10 +77,13 @@
         </div>
     </section>
 
-    <!-- 4: summaries -->
+    <!-- 3b: summaries -->
     <section id="step-summaries" class="panel hidden">
         <div class="editor-toolbar">
-            <strong id="summaryCount"></strong>
+            <div>
+                <strong id="summaryCount"></strong>
+                <button id="backToEditor" class="ghost" type="button">Back to editor</button>
+            </div>
             <div class="export-bar">
                 <input id="expPatient" placeholder="Patient name">
                 <input id="expDob" placeholder="DOB">

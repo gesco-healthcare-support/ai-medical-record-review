@@ -1,6 +1,6 @@
 """UI page routes (template renders) and session reset."""
 
-from flask import Blueprint, render_template
+from flask import Blueprint, redirect, render_template
 
 from mrr_ai import state
 
@@ -9,6 +9,12 @@ bp = Blueprint("pages", __name__)
 
 @bp.route("/")
 def index():
+    """Landing page: the user's documents. The classic hub moved to /classic."""
+    return render_template("home.html")
+
+
+@bp.route("/classic")
+def classic():
     return render_template("index.html")
 
 
@@ -49,7 +55,15 @@ def IndividualMRR():
 
 @bp.route("/review")
 def review():
-    return render_template("review.html")
+    # The editor is document-scoped now; bare /review has nothing to show.
+    return redirect("/")
+
+
+@bp.route("/review/<document_id>")
+def review_document(document_id):
+    """Editor page shell; all data loads through the owner-checked documents API,
+    so rendering the shell for a foreign id leaks nothing (the API answers 404)."""
+    return render_template("review.html", document_id=document_id)
 
 
 @bp.route("/reset", methods=["POST"])

@@ -1,18 +1,22 @@
-/* Review flow: upload -> segment (poll) -> edit rows beside the PDF -> summarize (poll).
+/* Document-scoped review flow: boot from the document's persisted state -> segment
+   (poll) -> edit rows beside the PDF (autosaved) -> summarize (poll) -> export.
    Vanilla JS on purpose: no build step, nothing to break the day of a demo. */
 "use strict";
 
+const DOC_ID = document.body.dataset.docId;
+
 const S = {
-    rows: [],          // {start, end, category, title, date, injury_date, flag}
+    rows: [],          // {start, end, category, title, date, injury_date, flag, suggest_merge}
     categories: [],
     totalPages: 0,
     selected: -1,
     lastViewerPage: 0,
     splitting: -1,     // row index currently showing the inline split form
+    saveTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
-const sections = ["step-upload", "step-progress", "step-editor", "step-summaries"];
+const sections = ["step-start", "step-progress", "step-editor", "step-summaries"];
 
 // Human labels for the 13 curated categories (mirrors taxonomy.py names).
 const CATEGORY_LABELS = {
@@ -32,14 +36,14 @@ const CATEGORY_LABELS = {
     "100": "100 - General / other",
 };
 
-function show(section) {
+function show(section, activeStep) {
     sections.forEach((id) => $(id).classList.toggle("hidden", id !== section));
-    const stepOf = {
-        "step-upload": "upload", "step-progress": "segment",
+    const defaults = {
+        "step-start": "identify", "step-progress": "identify",
         "step-editor": "review", "step-summaries": "summaries",
     };
-    const active = stepOf[section];
-    const order = ["upload", "segment", "review", "summaries"];
+    const active = activeStep || defaults[section];
+    const order = ["identify", "review", "summaries"];
     document.querySelectorAll(".steps li").forEach((li) => {
         const idx = order.indexOf(li.dataset.step);
         li.classList.toggle("active", li.dataset.step === active);
@@ -53,14 +57,31 @@ function banner(message) {
     el.classList.toggle("hidden", !message);
 }
 
-async function api(url, options) {
-    const resp = await fetch(url, options);
+function cookieValue(name) {
+    const hit = document.cookie.split("; ").find((c) => c.startsWith(name + "="));
+    return hit ? decodeURIComponent(hit.slice(name.length + 1)) : "";
+}
+
+/* All data flows through the owner-checked documents API. Unsafe methods carry the
+   CSRF cookie back as a header (Flask-Security cookie/header pattern). */
+async function api(path, options = {}) {
+    const opts = { ...options, headers: { Accept: "application/json", ...(options.headers || {}) } };
+    if (opts.method && opts.method !== "GET") {
+        opts.headers["X-XSRF-Token"] = cookieValue("XSRF-TOKEN");
+    }
+    if (opts.json !== undefined) {
+        opts.headers["Content-Type"] = "application/json";
+        opts.body = JSON.stringify(opts.json);
+        delete opts.json;
+    }
+    const resp = await fetch(`/api/documents/${DOC_ID}${path}`, opts);
+    if (resp.status === 401) { window.location = "/login"; throw new Error("signed out"); }
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.error || `${url} failed (${resp.status})`);
+    if (!resp.ok) throw new Error(data.error || `${path} failed (${resp.status})`);
     return data;
 }
 
-/* ---------- polling ---------- */
+/* ---------- boot: route from the document's persisted state ---------- */
 
 const STAGE_LABELS = {
     starting: "Starting...",
@@ -70,62 +91,92 @@ const STAGE_LABELS = {
     summarizing: "Writing summaries",
 };
 
-function pollJob(statusUrl, title) {
+async function boot() {
+    let detail;
+    try {
+        detail = await api("");
+    } catch (err) {
+        banner(`Could not load this document: ${err.message}`);
+        show("step-start");
+        $("startSegment").disabled = true;
+        return;
+    }
+    S.totalPages = detail.page_count;
+    S.categories = detail.categories || [];
+    S.rows = detail.rows || [];
+
+    const job = detail.active_job;
+    if (job && job.kind === "segment") return watchSegment();
+    if (job && job.kind === "summarize") return watchSummarize();
+    if (detail.status === "done") return loadSummaries();
+    if (detail.status === "error") banner("The last run failed - you can start again.");
+    if (detail.status === "interrupted") banner("The last run was interrupted - start again.");
+    if (S.rows.length) return enterEditor();
+    show("step-start");
+}
+
+function pollDocument(title, activeStep) {
     $("progressTitle").textContent = title;
     $("barFill").style.width = "0%";
-    show("step-progress");
+    show("step-progress", activeStep);
     return new Promise((resolve, reject) => {
         const timer = setInterval(async () => {
             let snap;
             try {
-                snap = await api(statusUrl);
+                snap = await api("/status");
             } catch (err) {
                 clearInterval(timer);
                 return reject(err);
             }
-            const pct = snap.total ? Math.round((100 * snap.current) / snap.total) : 5;
+            const job = snap.job || {};
+            const pct = job.total ? Math.round((100 * job.current) / job.total) : 5;
             $("barFill").style.width = `${Math.max(pct, 4)}%`;
-            const label = STAGE_LABELS[snap.stage] || snap.stage || "Working";
+            const label = STAGE_LABELS[job.stage] || job.stage || "Working";
             $("progressDetail").textContent =
-                snap.total ? `${label} (${snap.current}/${snap.total})` : label;
-            if (snap.state === "done") { clearInterval(timer); resolve(snap); }
-            if (snap.state === "error") { clearInterval(timer); reject(new Error(snap.error)); }
+                job.total ? `${label} (${job.current}/${job.total})` : label;
+            if (job.state === "done") { clearInterval(timer); resolve(snap); }
+            if (job.state === "error") { clearInterval(timer); reject(new Error(job.error)); }
+            if (job.state === "interrupted") {
+                clearInterval(timer);
+                reject(new Error("the run was interrupted"));
+            }
         }, 1000);
     });
 }
 
-/* ---------- upload + segment ---------- */
-
-$("pdfInput").addEventListener("change", () => {
-    const f = $("pdfInput").files[0];
-    $("fileLabel").textContent = f ? f.name : "Choose a PDF...";
-});
-
-$("uploadForm").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    banner("");
-    const file = $("pdfInput").files[0];
-    if (!file) return;
-    $("uploadBtn").disabled = true;
+async function watchSegment() {
     try {
-        const form = new FormData();
-        form.append("pdf", file);
-        const up = await fetch("/upload", { method: "POST", body: form });
-        if (!up.ok) throw new Error(`upload failed (${up.status})`);
-        const meta = await up.json();
-        S.totalPages = meta.num_pages;
-
-        const start = await api("/api/segment/start", { method: "POST" });
-        S.totalPages = start.total_pages || S.totalPages;
-        const snap = await pollJob("/api/segment/status", "Identifying documents");
-        S.rows = snap.rows;
-        S.categories = snap.categories;
+        await pollDocument("Identifying documents", "identify");
+        const detail = await api("");
+        S.rows = detail.rows || [];
         enterEditor();
     } catch (err) {
         banner(err.message);
-        show("step-upload");
+        show("step-start");
+    }
+}
+
+async function watchSummarize() {
+    try {
+        await pollDocument("Summarizing documents", "summaries");
+        await loadSummaries();
+    } catch (err) {
+        banner(err.message);
+        if (S.rows.length) enterEditor(); else show("step-start");
+    }
+}
+
+$("startSegment").addEventListener("click", async () => {
+    banner("");
+    $("startSegment").disabled = true;
+    try {
+        await api("/segment/start", { method: "POST", json: {} });
+        await watchSegment();
+    } catch (err) {
+        banner(err.message);
+        show("step-start");
     } finally {
-        $("uploadBtn").disabled = false;
+        $("startSegment").disabled = false;
     }
 });
 
@@ -133,7 +184,7 @@ $("uploadForm").addEventListener("submit", async (event) => {
 
 function enterEditor() {
     show("step-editor");
-    $("pdfFrame").src = "/api/pdf#page=1";
+    $("pdfFrame").src = `/api/documents/${DOC_ID}/pdf#page=1`;
     S.lastViewerPage = 1;
     renderTable();
 }
@@ -141,7 +192,25 @@ function enterEditor() {
 function jumpTo(page) {
     if (page === S.lastViewerPage) return;
     S.lastViewerPage = page;
-    $("pdfFrame").src = `/api/pdf#page=${page}`;
+    $("pdfFrame").src = `/api/documents/${DOC_ID}/pdf#page=${page}`;
+}
+
+/* Autosave: corrections must survive switching documents / closing the tab. Saves are
+   debounced and only sent for VALID states (invalid intermediate edits stay local). */
+function scheduleSave() {
+    clearTimeout(S.saveTimer);
+    $("saveState").textContent = "Unsaved changes...";
+    S.saveTimer = setTimeout(saveRows, 800);
+}
+
+async function saveRows() {
+    if (!S.rows.length || rowErrors().size) return;
+    try {
+        await api("/rows", { method: "PUT", json: { rows: S.rows } });
+        $("saveState").textContent = "Saved";
+    } catch (err) {
+        $("saveState").textContent = `Not saved: ${err.message}`;
+    }
 }
 
 function sortRows() {
@@ -239,6 +308,7 @@ $("rowsBody").addEventListener("change", (event) => {
     else if (field === "start" || field === "end") row[field] = Number(event.target.value);
     else row[field] = event.target.value;
     renderTable();
+    scheduleSave();
 });
 
 $("rowsBody").addEventListener("click", (event) => {
@@ -251,6 +321,7 @@ $("rowsBody").addEventListener("click", (event) => {
         S.selected = -1;
         S.splitting = -1;
         renderTable();
+        scheduleSave();
         return;
     }
     if (action === "merge") {
@@ -262,6 +333,7 @@ $("rowsBody").addEventListener("click", (event) => {
         S.selected = idx - 1;
         S.splitting = -1;
         renderTable();
+        scheduleSave();
         return;
     }
     if (action === "split") {
@@ -291,6 +363,7 @@ $("rowsBody").addEventListener("click", (event) => {
         S.splitting = -1;
         S.selected = idx + 1;
         renderTable();
+        scheduleSave();
         jumpTo(k);
         return;
     }
@@ -314,7 +387,9 @@ $("applySuggestions").addEventListener("click", () => {
         }
     }
     S.selected = -1;
+    S.splitting = -1;
     renderTable();
+    scheduleSave();
 });
 
 /* Add a missed document anywhere: the user types the page range and the row sorts
@@ -355,6 +430,7 @@ $("addConfirm").addEventListener("click", () => {
     S.splitting = -1;
     closeAddForm();
     renderTable();
+    scheduleSave();
     jumpTo(start);
 });
 
@@ -362,19 +438,22 @@ $("addConfirm").addEventListener("click", () => {
 
 $("summarizeBtn").addEventListener("click", async () => {
     banner("");
+    clearTimeout(S.saveTimer);
     try {
-        await api("/api/summarize/start", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rows: S.rows }),
-        });
-        const snap = await pollJob("/api/summarize/status", "Summarizing documents");
-        renderSummaries(snap.summaries);
+        // The rows travel with the request: the server persists this exact editor
+        // state before queueing, so what you see is what gets summarized.
+        await api("/summarize/start", { method: "POST", json: { rows: S.rows } });
+        await watchSummarize();
     } catch (err) {
         banner(err.message);
         show("step-editor");
     }
 });
+
+async function loadSummaries() {
+    const summaries = await api("/summaries");
+    renderSummaries(summaries);
+}
 
 function renderSummaries(summaries) {
     const list = $("summaryList");
@@ -398,13 +477,21 @@ function renderSummaries(summaries) {
     show("step-summaries");
 }
 
+$("backToEditor").addEventListener("click", () => {
+    if (S.rows.length) enterEditor();
+    else show("step-start");
+});
+
 $("exportBtn").addEventListener("click", async () => {
     banner("");
     $("exportBtn").disabled = true;
     try {
-        const resp = await fetch("/exportresultstoword", {
+        const resp = await fetch(`/api/documents/${DOC_ID}/export`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                "X-XSRF-Token": cookieValue("XSRF-TOKEN"),
+            },
             body: JSON.stringify({
                 patientName: $("expPatient").value,
                 patientdob: $("expDob").value,
@@ -426,9 +513,4 @@ $("exportBtn").addEventListener("click", async () => {
     }
 });
 
-$("startOver").addEventListener("click", async () => {
-    await fetch("/reset", { method: "POST" });
-    location.reload();
-});
-
-show("step-upload");
+boot();
