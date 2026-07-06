@@ -166,9 +166,14 @@ class ReviewRow(db.Model):
     date = db.Column(db.String(16), nullable=False, default="-")
     injury_date = db.Column(db.String(16), nullable=False, default="-")
     flag = db.Column(db.String(4), nullable=False, default="-")
+    # Carried from segmentation so the editor's merge-suggestion chips survive a
+    # reload; cleared naturally as the user edits and the editor saves its state.
+    suggest_merge = db.Column(db.Boolean, nullable=False, default=False)
 
     def as_row(self):
-        return {field: getattr(self, field) for field in ROW_FIELDS}
+        row = {field: getattr(self, field) for field in ROW_FIELDS}
+        row["suggest_merge"] = self.suggest_merge
+        return row
 
 
 class Summary(db.Model):

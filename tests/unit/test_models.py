@@ -70,6 +70,7 @@ def test_document_job_rows_roundtrip(app, user):
             "date": "01/15/2024",
             "injury_date": "-",
             "flag": "-",
+            "suggest_merge": False,
         }
 
 

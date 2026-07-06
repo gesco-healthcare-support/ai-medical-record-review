@@ -4,6 +4,11 @@ PDF delivery is INLINE (see services/segment_engine.py): the Files API existed o
 the non-BAA Developer endpoint and was removed with the Vertex port.
 """
 
+# Provenance stamp stored on every Job row: bump on ANY change to the prompts or
+# schema below, or stored SegmentRows become untraceable to the prompt that made them
+# (the fine-tuning dataset needs this). "1" = original; "2" = 2026-07-06 recall-first rework.
+PROMPT_VERSION = "2"
+
 SEGMENTATION_SYSTEM = (
     "You are an expert medical-records clerk. You split scanned workers' compensation "
     "medical-record files into their component documents and report exact page ranges "

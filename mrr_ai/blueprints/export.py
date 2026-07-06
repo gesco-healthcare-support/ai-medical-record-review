@@ -16,11 +16,12 @@ bp = Blueprint("export", __name__)
 _DOCX_MIMETYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
-def _build_mrr_document(patient_name, patient_dob, qme_or_ame, lawfirm):
-    """Assemble the MRR Word document from ``state.all_data`` (sorted chronologically).
+def _build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm):
+    """Assemble the MRR Word document from summary ``entries`` (sorted chronologically).
 
-    Shared by both Word-export routes; they differ only in where the document is saved
-    and how it is returned, so the document-building logic lives here once.
+    Parameterized so BOTH flows share it: the legacy routes pass the module-global
+    ``state.all_data``/``state.num_pages``, the document-scoped API passes persisted
+    Summary rows.
     """
 
     def safe_date_parse(entry):
@@ -29,7 +30,7 @@ def _build_mrr_document(patient_name, patient_dob, qme_or_ame, lawfirm):
         except ValueError:
             return datetime.min  # Assign a very early date as fallback
 
-    state.all_data = sorted(state.all_data, key=safe_date_parse)
+    entries = sorted(entries, key=safe_date_parse)
 
     doc = Document()
 
@@ -45,8 +46,9 @@ def _build_mrr_document(patient_name, patient_dob, qme_or_ame, lawfirm):
 
     doc.add_paragraph("")
 
-    # TITLE
-    title = doc.add_paragraph(qme_or_ame)
+    # TITLE. An empty paragraph has no runs, so runs[0] below would crash on a blank
+    # QME/AME field (latent legacy bug: the form allows leaving it empty).
+    title = doc.add_paragraph(qme_or_ame or " ")
     title_format = title.runs[0]
     title_format.bold = True
     title_format.underline = True
@@ -67,7 +69,7 @@ def _build_mrr_document(patient_name, patient_dob, qme_or_ame, lawfirm):
 
     intro_text = (
         "I have received "
-        + str(state.num_pages)
+        + str(num_pages)
         + " pages of medical records from "
         + lawfirm
         + ". I have reviewed all of the pages  received and my opinion is based upon such received records."
@@ -95,7 +97,7 @@ def _build_mrr_document(patient_name, patient_dob, qme_or_ame, lawfirm):
 
     big_text = ""
     main_paragraph = None
-    for entry in state.all_data:
+    for entry in entries:
         big_text += (
             f"_{entry['summaryDate']}_\t****{entry['summaryTitle']}****: {entry['summaryText']}"
         )
@@ -154,7 +156,9 @@ def exportresultstoword():
     if state.main_filename is None:
         state.main_filename = "default_filename"
 
-    doc = _build_mrr_document(patientName, patientdob, QMEorAME, lawfirm)
+    doc = _build_mrr_document(
+        state.all_data, state.num_pages, patientName, patientdob, QMEorAME, lawfirm
+    )
 
     out_dir = os.path.join(os.path.expanduser("~"), "MRRs")
     os.makedirs(out_dir, exist_ok=True)  # fresh machines lack ~/MRRs; export must not 500
@@ -180,7 +184,9 @@ def exportResultsToWordFileIndivRecords():
     QMEorAME = request.json.get("QMEorAME")
     lawfirm = request.json.get("lawfirm")
 
-    doc = _build_mrr_document(patientName, patientdob, QMEorAME, lawfirm)
+    doc = _build_mrr_document(
+        state.all_data, state.num_pages, patientName, patientdob, QMEorAME, lawfirm
+    )
 
     # Sanitize the patient name before using it in the output filename (prevents traversal).
     file_path = os.path.join(
