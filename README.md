@@ -32,6 +32,14 @@ cp .env.example .env
 `GEMINI_API_KEY` and `OPENAI_API_KEY` are required. Rotate the keys from the original
 handoff - they were stored in plaintext and are considered compromised.
 
+`SECRET_KEY` and `SECURITY_PASSWORD_SALT` are also required (sessions + password
+hashing). Generate each once per machine and keep them stable - rotating SECRET_KEY
+logs everyone out; rotating the salt invalidates every stored password:
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
 ### 2. Dependencies (uv)
 
 This project uses [uv](https://docs.astral.sh/uv/) for dependency and Python-version
@@ -39,8 +47,24 @@ management. Python 3.12 is pinned via `.python-version`; uv installs it automati
 
 ```bash
 uv sync                 # create .venv and install locked dependencies
-uv run python app.py    # runs on http://localhost:5010
+uv run python app.py    # dev server on http://localhost:5010
+uv run python serve.py  # production serving (waitress)
 ```
+
+First run: register an account at `/register`, then upload from the landing page.
+Every route requires login; users see only their own documents.
+
+> **Single process only.** Background document pipelines run on an in-process worker
+> pool and the classic UI keeps module-level globals, so the app must never run under
+> a multi-process server (gunicorn workers, multiple containers on one DB). `serve.py`
+> runs waitress with one process and scales threads instead.
+
+User accounts, documents, corrected rows, and summaries live in SQLite at
+`instance/mrr.db` (auto-created; git-ignored). Uploaded PDFs live under
+`uploads/<user_id>/`. Back up both together while the app is stopped (or use
+`sqlite3 instance/mrr.db ".backup backup.db"` live). The schema is created with
+`db.create_all()`, which never ALTERs existing tables - the first post-release schema
+change must introduce Alembic migrations (or, pre-release, delete `instance/mrr.db`).
 
 > Python 3.12 is pinned because the current (deprecated) `google-generativeai` SDK has
 > no 3.13 support. The `refactor/migrate-sdks` work migrates to `google-genai` + `pypdf`
