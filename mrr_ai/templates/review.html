@@ -56,6 +56,12 @@
             <div>
                 <button id="applySuggestions" class="ghost suggest-bulk hidden" type="button"></button>
                 <button id="addRow" class="ghost" type="button">+ Add document</button>
+                <span id="addForm" class="add-form hidden">
+                    pages <input id="addStart" type="number" min="1" aria-label="First page of the new document">
+                    to <input id="addEnd" type="number" min="1" aria-label="Last page of the new document">
+                    <button id="addConfirm" class="mini" type="button">Add</button>
+                    <button id="addCancel" class="mini" type="button">Cancel</button>
+                </span>
                 <button id="summarizeBtn" class="primary" type="button">Send to summarization</button>
             </div>
         </div>

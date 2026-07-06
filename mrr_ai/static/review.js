@@ -8,6 +8,7 @@ const S = {
     totalPages: 0,
     selected: -1,
     lastViewerPage: 0,
+    splitting: -1,     // row index currently showing the inline split form
 };
 
 const $ = (id) => document.getElementById(id);
@@ -197,9 +198,13 @@ function renderTable() {
             <td><input type="text" data-field="date" value="${row.date || "-"}"></td>
             <td style="text-align:center"><input type="checkbox" data-field="flag" ${String(row.flag).toLowerCase() === "x" ? "checked" : ""}></td>
             <td class="row-actions">
+                ${S.splitting === i ? `at page <input type="number" class="split-page" min="${Number(row.start) + 1}" max="${row.end}" value="${Number(row.start) + 1}" aria-label="First page of the second document">
+                <button class="mini" data-action="split-confirm">Split</button>
+                <button class="mini" data-action="split-cancel">Cancel</button>` : `
                 ${row.suggest_merge && i > 0 ? '<button class="mini suggest" data-action="merge" title="The AI double-checked this boundary and believes it continues the document above">Likely same doc - merge?</button>' : ""}
                 ${i > 0 ? '<button class="mini" data-action="merge" title="Merge into the document above">Merge up</button>' : ""}
-                <button class="mini" data-action="delete" title="Remove this row">Delete</button>
+                ${Number(row.end) > Number(row.start) ? '<button class="mini" data-action="split" title="Split this document into two">Split</button>' : ""}
+                <button class="mini" data-action="delete" title="Remove this row">Delete</button>`}
             </td>`;
         const title = row.title && row.title !== "-" ? row.title : "";
         if (title) {
@@ -244,6 +249,7 @@ $("rowsBody").addEventListener("click", (event) => {
     if (action === "delete") {
         S.rows.splice(idx, 1);
         S.selected = -1;
+        S.splitting = -1;
         renderTable();
         return;
     }
@@ -254,7 +260,38 @@ $("rowsBody").addEventListener("click", (event) => {
             [S.rows[idx - 1].flag, S.rows[idx].flag].includes("x") ? "x" : "-";
         S.rows.splice(idx, 1);
         S.selected = idx - 1;
+        S.splitting = -1;
         renderTable();
+        return;
+    }
+    if (action === "split") {
+        S.splitting = idx;
+        renderTable();
+        return;
+    }
+    if (action === "split-cancel") {
+        S.splitting = -1;
+        renderTable();
+        return;
+    }
+    if (action === "split-confirm") {
+        // Pages start..k-1 stay here; k..end become a new row that inherits category and
+        // dates and is flagged for review (its metadata was extracted from the whole span).
+        const row = S.rows[idx];
+        const k = Number(tr.querySelector(".split-page").value);
+        if (!Number.isInteger(k) || k <= Number(row.start) || k > Number(row.end)) {
+            tr.querySelector(".split-page").classList.add("invalid");
+            return;
+        }
+        S.rows.splice(idx + 1, 0, {
+            start: k, end: Number(row.end), category: row.category, title: "-",
+            date: row.date, injury_date: row.injury_date, flag: "x",
+        });
+        row.end = k - 1;
+        S.splitting = -1;
+        S.selected = idx + 1;
+        renderTable();
+        jumpTo(k);
         return;
     }
     if (event.target.tagName === "INPUT" || event.target.tagName === "SELECT") return;
@@ -280,15 +317,45 @@ $("applySuggestions").addEventListener("click", () => {
     renderTable();
 });
 
+/* Add a missed document anywhere: the user types the page range and the row sorts
+   into its ascending position (a document the AI missed is usually mid-file, so
+   appending at the end would just move the correction work to the user). */
+function closeAddForm() {
+    $("addForm").classList.add("hidden");
+    $("addRow").classList.remove("hidden");
+    $("addStart").classList.remove("invalid");
+    $("addEnd").classList.remove("invalid");
+}
+
 $("addRow").addEventListener("click", () => {
     const last = S.rows[S.rows.length - 1];
     const start = last ? Math.min(Number(last.end) + 1, S.totalPages) : 1;
-    S.rows.push({
-        start, end: Math.min(start, S.totalPages), category: "100", title: "(added manually)",
+    ["addStart", "addEnd"].forEach((id) => { $(id).max = S.totalPages; $(id).value = start; });
+    $("addForm").classList.remove("hidden");
+    $("addRow").classList.add("hidden");
+    $("addStart").focus();
+});
+
+$("addCancel").addEventListener("click", closeAddForm);
+
+$("addConfirm").addEventListener("click", () => {
+    const start = Number($("addStart").value);
+    const end = Number($("addEnd").value);
+    const bad = (v) => !Number.isInteger(v) || v < 1 || v > S.totalPages;
+    $("addStart").classList.toggle("invalid", bad(start) || start > end);
+    $("addEnd").classList.toggle("invalid", bad(end) || start > end);
+    if (bad(start) || bad(end) || start > end) return;
+    const row = {
+        start, end, category: "100", title: "(added manually)",
         date: "-", injury_date: "-", flag: "x",
-    });
-    S.selected = S.rows.length - 1;
+    };
+    S.rows.push(row);
+    sortRows();
+    S.selected = S.rows.indexOf(row);
+    S.splitting = -1;
+    closeAddForm();
     renderTable();
+    jumpTo(start);
 });
 
 /* ---------- summarize + export ---------- */

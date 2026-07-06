@@ -135,3 +135,10 @@ td input, td select {
 .summary-card .meta { font-size: 12px; color: #5a6b7a; margin-bottom: 8px; }
 .summary-card .flagged { color: #b0782a; font-weight: 600; }
 .summary-card p.body { margin: 0; white-space: pre-wrap; }
+
+/* Inline forms: add-document (toolbar) and split-row (row actions). */
+.add-form { color: #35485a; font-size: 13px; }
+.add-form input, .row-actions .split-page {
+    width: 4.5em; padding: 2px 4px; border: 1px solid #b9c7d4; border-radius: 4px;
+}
+.add-form input.invalid, .row-actions .split-page.invalid { border-color: #c0392b; }
