@@ -12,6 +12,7 @@ LOGGING: document ids only; original_filename is PHI-bearing and never logged.
 import hashlib
 import io
 import os
+import re
 import uuid
 
 from flask import Blueprint, current_app, jsonify, request, send_file
@@ -346,6 +347,28 @@ def put_summary(document_id, idx):
     return jsonify(summary.listing())
 
 
+def _export_entry(summary):
+    """One docx entry with the legacy tag format recomposed around reviewer edits.
+
+    The web view strips "[ManualCheck] " from titles and the "**DOI**:date," text
+    prefix for readability, so edited values come back clean - but the exported
+    report format must not change. The flag is re-applied from the structured
+    manual_check field; the DOI prefix is recovered from the immutable raw text.
+    """
+    title = summary.effective_title()
+    if summary.manual_check and not title.lstrip().startswith("[ManualCheck]"):
+        title = f"[ManualCheck] {title}"
+    text = summary.effective_text()
+    doi = re.match(r"\s*(\*\*DOI\*\*:[^,]*,)", summary.text or "")
+    if doi and "**DOI**" not in text:
+        text = f"{doi.group(1)} {text}"
+    return {
+        "summaryDate": summary.effective_date(),
+        "summaryTitle": title,
+        "summaryText": text,
+    }
+
+
 @bp.route("/<document_id>/export", methods=["POST"])
 def export_document(document_id):
     document = _own(document_id)
@@ -355,14 +378,7 @@ def export_document(document_id):
     if not included:
         return jsonify({"error": "no summaries to export yet"}), 409
     body = request.json or {}
-    entries = [
-        {
-            "summaryDate": s.effective_date(),
-            "summaryTitle": s.effective_title(),
-            "summaryText": s.effective_text(),
-        }
-        for s in included
-    ]
+    entries = [_export_entry(s) for s in included]
     docx = _build_mrr_document(
         entries,
         document.page_count,

@@ -212,37 +212,39 @@ td select { width: 100%; min-width: 200px; }
 .export-bar { display: flex; gap: 8px; flex-wrap: wrap; }
 .export-bar input { width: clamp(110px, 12vw, 180px); }
 
-.summary-grid {
-    display: grid; gap: 14px;
-    grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr));
-    align-content: start;
-}
+.summary-list { display: flex; flex-direction: column; gap: 14px; }
 .summary-card {
     background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 14px 18px 16px; display: flex; flex-direction: column; gap: 8px;
+    padding: 14px 20px 16px; display: flex; flex-direction: column; gap: 6px;
     transition: opacity .15s ease;
 }
 .summary-card.excluded { opacity: .55; border-style: dashed; }
-.summary-head { display: flex; gap: 8px; align-items: center; }
-.sum-title { flex: 1; font-weight: 600; font-size: 14px; min-width: 0; }
-.sum-date { width: 110px; }
+.summary-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.sum-heading { margin: 0; font-size: 15px; flex: 0 1 auto; min-width: 0; }
+.chips { display: inline-flex; gap: 6px; }
+.chip-review { background: var(--warn-bg); color: var(--warn); }
+.chip-edit { background: var(--accent-soft); color: var(--accent-strong); }
+.chip-off { background: var(--danger-bg); color: #b03a2e; }
+.card-actions { margin-left: auto; display: inline-flex; gap: 12px; align-items: center; }
 .exclude-toggle {
     display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
     color: var(--ink-soft); white-space: nowrap; cursor: pointer;
 }
 .summary-card .meta { font-size: 12px; color: var(--ink-soft); }
-.summary-card .flagged { color: var(--warn); font-weight: 600; }
-.edited-chip {
-    display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
-    background: var(--accent-soft); color: var(--accent-strong); font-size: 11px;
-}
-.sum-text {
-    width: 100%; resize: vertical; min-height: 96px; line-height: 1.5;
-    white-space: pre-wrap;
-}
-.summary-empty {
-    grid-column: 1 / -1; text-align: center; padding: 8vh 0; color: var(--ink-soft);
-}
+/* Read mode: the whole summary is visible - no inner scrolling, no clamping. */
+.summary-card p.body { margin: 4px 0 0; white-space: pre-wrap; line-height: 1.6; }
+/* Edit mode (in place): title/date fields + a content-sized textarea + save/cancel. */
+.summary-card.editing { border-color: var(--accent); }
+.sum-title { flex: 1; font-weight: 600; font-size: 14px; min-width: 240px; }
+.sum-date { width: 110px; }
+.sum-text { width: 100%; resize: vertical; min-height: 120px; line-height: 1.6; }
+.edit-actions { display: flex; gap: 8px; margin-top: 4px; }
+
+.pager { display: inline-flex; gap: 10px; align-items: center; font-size: 13px; color: var(--ink-soft); }
+.pager button[disabled] { opacity: .45; cursor: default; }
+.pager-bottom { justify-content: center; display: flex; margin: 18px 0 6px; }
+
+.summary-empty { text-align: center; padding: 8vh 0; color: var(--ink-soft); }
 .summary-empty button { margin-top: 10px; }
 
 /* ---------- landing page ---------- */

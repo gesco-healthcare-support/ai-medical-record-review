@@ -150,6 +150,45 @@ def test_export_skips_excluded_and_uses_edits(client, pdf_bytes, monkeypatch):
     assert all_excluded.status_code == 409
 
 
+def test_export_recomposes_tags_around_edits(client, pdf_bytes, monkeypatch):
+    """The web UI edits CLEAN titles/text ([ManualCheck] and **DOI** stripped for
+    display); the docx must still carry the legacy tag format for every summary."""
+
+    def decorated(pdf_path, row, model=None):
+        manual = "[ManualCheck] " if row["flag"] == "x" else ""
+        return {
+            "summaryTitle": f"{manual}SUMMARY {row['start']} (Pages {row['start']}-{row['end']})",
+            "summaryDate": row["date"],
+            "summaryText": "**DOI**:06/01/2023, original body",
+            "manualCheck": row["flag"] == "x",
+        }
+
+    monkeypatch.setattr("mrr_ai.services.summarize_engine.summarize_row", decorated)
+    document_id = _upload(client, pdf_bytes)
+    client.post(f"/api/documents/{document_id}/summarize/start", json={"rows": _ROWS})
+    assert _wait_done(client, document_id)
+
+    # idx 1 is the flagged row (_ROWS[2], flag "x"); edit it the way the UI does: clean.
+    assert (
+        client.put(
+            f"/api/documents/{document_id}/summaries/1",
+            json={"summaryTitle": "EDITED TITLE (Pages 8-10)", "summaryText": "edited body"},
+        ).status_code
+        == 200
+    )
+
+    exported = client.post(f"/api/documents/{document_id}/export", json={"QMEorAME": "QME"})
+    assert exported.status_code == 200
+
+    from docx import Document as DocxDocument
+
+    text = "\n".join(p.text for p in DocxDocument(io.BytesIO(exported.data)).paragraphs)
+    assert "[ManualCheck] EDITED TITLE" in text  # flag recomposed around the clean edit
+    assert "**DOI**:06/01/2023," in text  # DOI prefix recovered from the raw text
+    assert "edited body" in text
+    assert "[ManualCheck] [ManualCheck]" not in text  # unedited titles are not doubled
+
+
 def test_boot_migration_adds_columns_to_old_database(tmp_path):
     """A database created before the include/edited_*/excluded columns must upgrade in
     place on boot - the seeded demo data cannot be thrown away for a schema change."""

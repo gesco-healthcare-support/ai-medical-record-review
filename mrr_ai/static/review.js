@@ -9,6 +9,8 @@ const DOC_ID = document.body.dataset.docId;
 // first load, so row-click navigation NEEDS a viewer with a programmatic page API.
 const VIEWER_URL = "/static/vendor/pdfjs/web/viewer.html";
 
+const SUMMARY_PAGE_SIZE = 20;
+
 const S = {
     rows: [],          // {start, end, category, title, date, injury_date, flag, suggest_merge, include}
     categories: [],
@@ -20,7 +22,9 @@ const S = {
     splitting: -1,     // row index currently showing the inline split form
     watching: null,    // "segment" | "summarize" while a job poll drives the view
     saveTimer: null,
-    summaryTimers: {}, // idx -> debounce timer for summary text edits
+    summaries: [],     // fetched summary listing (all pages; paginated client-side)
+    summaryPage: 0,
+    editingSummary: -1, // summary idx currently in in-place edit mode
 };
 
 const $ = (id) => document.getElementById(id);
@@ -545,27 +549,118 @@ $("summarizeBtn").addEventListener("click", async () => {
     }
 });
 
-/* ---------- summaries: read, edit, exclude, export ---------- */
+/* ---------- summaries: read, edit in place, exclude, paginate, export ---------- */
 
 async function loadSummaries() {
-    const summaries = await api("/summaries");
-    renderSummaries(summaries);
+    S.summaries = await api("/summaries");
+    S.summaryPage = 0;
+    S.editingSummary = -1;
+    renderSummaries();
 }
 
-function summaryCounts(summaries) {
-    const excluded = summaries.filter((s) => s.excluded).length;
+/* The engine bakes tags into the STORED strings ("[ManualCheck] ..." titles, a
+   "**DOI**:date," text prefix). Stored data keeps them (the Word export format
+   depends on it - the server recomposes tags at export time); the web view lifts
+   them out and shows a chip / meta entry instead. */
+function parseDisplay(item) {
+    const title = (item.summaryTitle || "").replace(/^\s*\[ManualCheck\]\s*/i, "");
+    let text = item.summaryText || "";
+    let doi = null;
+    const match = text.match(/^\s*\*\*DOI\*\*:\s*([^,]*),?\s*/);
+    if (match) {
+        doi = match[1].trim();
+        text = text.slice(match[0].length);
+    }
+    return { title, text, doi };
+}
+
+function summaryCounts() {
+    const excluded = S.summaries.filter((s) => s.excluded).length;
     const suffix = excluded ? ` - ${excluded} excluded from export` : "";
-    $("summaryCount").textContent = summaries.length
-        ? `${summaries.length} summaries${suffix}` : "No summaries yet";
+    $("summaryCount").textContent = S.summaries.length
+        ? `${S.summaries.length} summaries${suffix}` : "No summaries yet";
 }
 
-function renderSummaries(summaries) {
+function buildSummaryCard(item) {
+    const { title, text, doi } = parseDisplay(item);
+    const card = document.createElement("div");
+    card.className = "summary-card" + (item.excluded ? " excluded" : "");
+    card.dataset.idx = item.idx;
+
+    const meta = [
+        item.summaryDate || "no date",
+        `pages ${item.row.start}-${item.row.end}`,
+        CATEGORY_LABELS[String(item.row.category)] || item.row.category,
+        doi ? `DOI ${doi}` : "",
+    ].filter(Boolean).join(" - ");
+
+    if (S.editingSummary !== item.idx) {
+        const chips = [
+            item.manualCheck ? '<span class="chip chip-review">needs review</span>' : "",
+            item.edited ? '<span class="chip chip-edit">edited</span>' : "",
+            item.excluded ? '<span class="chip chip-off">excluded</span>' : "",
+        ].join("");
+        card.innerHTML = `
+            <div class="summary-head">
+                <h3 class="sum-heading"></h3>
+                <span class="chips">${chips}</span>
+                <span class="card-actions">
+                    <button class="mini" data-action="edit-summary" title="Edit this summary in place">Edit</button>
+                    <label class="exclude-toggle" title="Excluded summaries stay here but are left out of the Word export">
+                        <input type="checkbox" data-action="toggle-exclude" ${item.excluded ? "checked" : ""}> Exclude
+                    </label>
+                </span>
+            </div>
+            <div class="meta">${meta}</div>
+            <p class="body"></p>`;
+        card.querySelector(".sum-heading").textContent = title;
+        card.querySelector("p.body").textContent = text;
+    } else {
+        card.classList.add("editing");
+        card.innerHTML = `
+            <div class="summary-head">
+                <input class="sum-title" aria-label="Summary title">
+                <input class="sum-date" aria-label="Summary date">
+            </div>
+            <div class="meta">${meta}</div>
+            <textarea class="sum-text" aria-label="Summary text"></textarea>
+            <div class="edit-actions">
+                <button class="primary" data-action="save-summary">Save</button>
+                <button class="ghost" data-action="cancel-edit">Cancel</button>
+            </div>`;
+        card.querySelector(".sum-title").value = title;
+        card.querySelector(".sum-date").value = item.summaryDate || "";
+        const area = card.querySelector(".sum-text");
+        area.value = text;
+        // Size the textarea to its content so editing starts with everything visible.
+        requestAnimationFrame(() => {
+            area.style.height = "auto";
+            area.style.height = `${Math.min(area.scrollHeight + 4, 640)}px`;
+        });
+    }
+    return card;
+}
+
+function renderPager(pageCount) {
+    const html = pageCount > 1 ? `
+        <button class="mini" data-page="prev" ${S.summaryPage === 0 ? "disabled" : ""}>Prev</button>
+        <span>Page ${S.summaryPage + 1} of ${pageCount}</span>
+        <button class="mini" data-page="next" ${S.summaryPage >= pageCount - 1 ? "disabled" : ""}>Next</button>` : "";
+    ["summaryPager", "summaryPagerBottom"].forEach((id) => {
+        $(id).innerHTML = html;
+        $(id).classList.toggle("hidden", pageCount <= 1);
+    });
+}
+
+function renderSummaries() {
     const list = $("summaryList");
     list.innerHTML = "";
-    summaryCounts(summaries);
-    $("exportBtn").disabled = summaries.every((s) => s.excluded);
+    summaryCounts();
+    $("exportBtn").disabled =
+        S.summaries.length === 0 || S.summaries.every((s) => s.excluded);
 
-    if (!summaries.length) {
+    if (!S.summaries.length) {
+        renderPager(0);
         const empty = document.createElement("div");
         empty.className = "summary-empty";
         empty.innerHTML = "<p>This document has not been summarized yet.</p>";
@@ -579,69 +674,64 @@ function renderSummaries(summaries) {
         return;
     }
 
-    summaries.forEach((item) => {
-        const card = document.createElement("div");
-        card.className = "summary-card" + (item.excluded ? " excluded" : "");
-        card.dataset.idx = item.idx;
-        card.innerHTML = `
-            <div class="summary-head">
-                <input class="sum-title" data-sfield="summaryTitle" aria-label="Summary title">
-                <input class="sum-date" data-sfield="summaryDate" aria-label="Summary date">
-                <label class="exclude-toggle" title="Excluded summaries stay here but are left out of the Word export">
-                    <input type="checkbox" data-sfield="excluded"> Exclude
-                </label>
-            </div>
-            <div class="meta">
-                ${item.manualCheck ? '<span class="flagged">needs review</span> - ' : ""}
-                pages ${item.row.start}-${item.row.end} -
-                ${CATEGORY_LABELS[String(item.row.category)] || item.row.category}
-                <span class="edited-chip${item.edited ? "" : " hidden"}">edited</span>
-            </div>
-            <textarea class="sum-text" data-sfield="summaryText" rows="5" aria-label="Summary text"></textarea>`;
-        card.querySelector(".sum-title").value = item.summaryTitle;
-        card.querySelector(".sum-date").value = item.summaryDate || "";
-        card.querySelector("[data-sfield=excluded]").checked = item.excluded;
-        card.querySelector(".sum-text").value = item.summaryText;
-        list.appendChild(card);
-    });
+    const pageCount = Math.ceil(S.summaries.length / SUMMARY_PAGE_SIZE);
+    S.summaryPage = Math.min(S.summaryPage, pageCount - 1);
+    const start = S.summaryPage * SUMMARY_PAGE_SIZE;
+    S.summaries.slice(start, start + SUMMARY_PAGE_SIZE)
+        .forEach((item) => list.appendChild(buildSummaryCard(item)));
+    renderPager(pageCount);
     show("step-summaries");
 }
 
-async function saveSummary(idx, patch, card) {
+["summaryPager", "summaryPagerBottom"].forEach((id) => {
+    $(id).addEventListener("click", (event) => {
+        const direction = event.target.dataset.page;
+        if (!direction) return;
+        S.summaryPage += direction === "next" ? 1 : -1;
+        S.editingSummary = -1;
+        renderSummaries();
+        $("step-summaries").scrollTop = 0;
+    });
+});
+
+async function saveSummary(idx, patch) {
     $("summarySaveState").textContent = "Saving...";
     try {
         const updated = await api(`/summaries/${idx}`, { method: "PUT", json: patch });
+        const pos = S.summaries.findIndex((s) => s.idx === idx);
+        if (pos >= 0) S.summaries[pos] = updated;
+        S.editingSummary = -1;
         $("summarySaveState").textContent = "Saved";
-        card.classList.toggle("excluded", updated.excluded);
-        card.querySelector(".edited-chip").classList.toggle("hidden", !updated.edited);
-        const all = [...$("summaryList").querySelectorAll(".summary-card")];
-        const excludedCount = all.filter((c) => c.classList.contains("excluded")).length;
-        $("summaryCount").textContent = `${all.length} summaries`
-            + (excludedCount ? ` - ${excludedCount} excluded from export` : "");
-        $("exportBtn").disabled = excludedCount === all.length;
+        renderSummaries();
     } catch (err) {
         $("summarySaveState").textContent = `Not saved: ${err.message}`;
     }
 }
 
-$("summaryList").addEventListener("change", (event) => {
+$("summaryList").addEventListener("click", (event) => {
     const card = event.target.closest(".summary-card");
-    const field = event.target.dataset.sfield;
-    if (!card || !field) return;
-    const value = field === "excluded" ? event.target.checked : event.target.value;
-    saveSummary(Number(card.dataset.idx), { [field]: value }, card);
+    const action = event.target.dataset.action;
+    if (!card || !action) return;
+    const idx = Number(card.dataset.idx);
+    if (action === "edit-summary") {
+        S.editingSummary = idx;
+        renderSummaries();
+    } else if (action === "cancel-edit") {
+        S.editingSummary = -1;
+        renderSummaries();
+    } else if (action === "save-summary") {
+        saveSummary(idx, {
+            summaryTitle: card.querySelector(".sum-title").value,
+            summaryDate: card.querySelector(".sum-date").value,
+            summaryText: card.querySelector(".sum-text").value,
+        });
+    }
 });
 
-$("summaryList").addEventListener("input", (event) => {
-    // Debounced live save for the text area; title/date save on change (blur).
-    if (event.target.dataset.sfield !== "summaryText") return;
+$("summaryList").addEventListener("change", (event) => {
+    if (event.target.dataset.action !== "toggle-exclude") return;
     const card = event.target.closest(".summary-card");
-    const idx = Number(card.dataset.idx);
-    $("summarySaveState").textContent = "Unsaved changes...";
-    clearTimeout(S.summaryTimers[idx]);
-    S.summaryTimers[idx] = setTimeout(() => {
-        saveSummary(idx, { summaryText: event.target.value }, card);
-    }, 800);
+    saveSummary(Number(card.dataset.idx), { excluded: event.target.checked });
 });
 
 $("exportBtn").addEventListener("click", async () => {
