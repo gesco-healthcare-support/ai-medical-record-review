@@ -111,6 +111,32 @@ def anon_client(app):
 
 
 @pytest.fixture
+def make_document(app, user):
+    """Factory inserting a synthetic Document row; returns its id (sessions are
+    context-scoped, so tests work with ids and re-query inside their own contexts)."""
+
+    def _make(**overrides):
+        from mrr_ai import models
+        from mrr_ai.extensions import db
+
+        fields = dict(
+            user_id=user.id,
+            original_filename="synthetic-case.pdf",
+            stored_path="uploads/synthetic/missing.pdf",
+            sha256="0" * 64,
+            page_count=10,
+        )
+        fields.update(overrides)
+        with app.app_context():
+            document = models.Document(**fields)
+            db.session.add(document)
+            db.session.commit()
+            return document.id
+
+    return _make
+
+
+@pytest.fixture
 def home_tmp(tmp_path, monkeypatch):
     """Redirect ``~`` to a temp dir (cross-platform) and pre-create ``~/MRRs``.
 

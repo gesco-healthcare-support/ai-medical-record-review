@@ -64,6 +64,10 @@ def create_app(config_overrides=None):
     register_blueprints(app)
 
     _create_schema(app)
+
+    from mrr_ai.services import job_queue
+
+    job_queue.init_app(app)  # after the schema exists: init sweeps orphaned jobs
     return app
 
 
