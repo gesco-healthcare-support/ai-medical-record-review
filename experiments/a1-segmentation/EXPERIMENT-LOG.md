@@ -11,6 +11,22 @@ Verdict bands and metric meanings: `docs/01-GLOSSARY.md`.
 
 ## Notes
 
+- 2026-07-06 (3.5-flash bake-off + prompt rework): full app pipeline (segment ->
+  categorize -> verify-suggest) on gemini-3.5-flash for ALL stages, all 8 eligible
+  cases, one at a time (~$0.15). Clean gold: ties 2.5-flash except the dense case -
+  Case 3 perfect 51/51, Case 1 one hard miss with 30% fewer rows, Case 2 (dense scans)
+  4 HARD misses (docs swallowed) vs 2.5's 0-2. Hard misses concentrate on dense scans
+  (Case 2: 4, R1: 7, R3: 12). Speed 4-5x on normal density (Case 1: 4 min vs ~20);
+  EXCEPTION R3 dense windows 86s/call -> 16 min. Prompt rework FOR 3.5 (recall-first
+  tiebreak replacing the same-type+date merge rule; verify YES gated on positive
+  continuation evidence): pre-declared bar (fewer misses at <= rows, fast subset)
+  MISSED - Case 2/3 byte-identical buckets, so prompt immunity holds on a 4th model
+  generation; R3 -4 hard misses at +6 rows. Genuine win: verify suggestion noise
+  16 -> 1 on R3 with 0 suggestions on gold starts (bulk-accept safe). Prompt changes
+  kept. Full tables: `outputs/sol1-diagnosis/COMPARISON.md`, raw rows
+  `outputs/bakeoff/RESULTS.csv`. Model switch decision is Adrian's - evidence says
+  2.5-flash for segmentation, 3.5-flash safe for categorize/verify stages.
+
 - 2026-07-05 (DocAI benchmark): Google Custom Splitter (zero-shot pretrained v1.6-pro,
   $5/1k pages) scored on all 8 eligible cases with the shared harness: statistical TIE
   with our sol1 on boundaries at ~100x the cost ($10.6 vs $0.10/suite), slightly worse

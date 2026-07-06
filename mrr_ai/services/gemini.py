@@ -15,7 +15,7 @@ SEGMENTATION_PROMPT = """The document above is one scanned medical-record file f
 Split the file into its component sub-documents and return one JSON record per sub-document, in page order.
 
 ## What a sub-document is
-One document produced by one author or facility for one encounter, report, or form - the unit a records reviewer would summarize as a single item (a progress report, an imaging report, a deposition, a claim form, one therapy visit note, etc.).
+One document produced by one author or facility for one encounter, report, or form - the unit a records reviewer would summarize as a single item (a progress report, an imaging report, a deposition, a claim form, one therapy visit note, etc.). Most sub-documents are SHORT - one to three pages is typical; multi-page spans are the exception (long reports, depositions, medico-legal evaluations), not the norm.
 
 ## Page numbers
 "Page N" means the N-th page of THIS file, counting from 1. Ignore page numbers printed on the pages: scanned bundles restart and repeat their printed numbering, so printed numbers do not identify positions in this file.
@@ -31,7 +31,8 @@ One document produced by one author or facility for one encounter, report, or fo
 - NOT starts: "page N of M" continuation pages; lab tables, signature pages, or attachments that belong to the report they follow; a letterhead change INSIDE one report. Long medico-legal evaluations (QME/PQME/AME) quote many other records - keep the entire evaluation as ONE record. A distinct QME/AME supplemental report is its own record.
 - A report often EMBEDS a few pages that look like a different document type (lab tables, an imaging summary, a work-status form, a copied letter). If those pages carry the report's date or are referenced by the surrounding text, they are part of the report - do not split them out as their own record.
 - A document's FIRST or LAST pages often look unlike its body: certification or notary stamps, letterhead-only or branding pages, terms-and-conditions or disclaimer pages, distribution/cc lists. These belong to the document they accompany - never report them as separate records.
-- Consistency check before you output: if two consecutive records you produced have the same document type AND the same date, and the second one does not begin with a fresh letterhead or a form's first page, they are ONE document - merge them into a single record.
+- Do NOT merge two records merely because they share a document type and date: these files routinely contain same-day batches of short same-type documents (one per visit, one per body part, one per form), and each is its own record.
+- Tiebreak: when you are genuinely unsure whether a page starts a new document or continues the previous one, START A NEW RECORD. A reviewer merges a false split in one click, but a document hidden inside another record is never seen again.
 
 ## Fields (use "-" whenever a value is unavailable; never null)
 - "t" title: the document's own title or header wording if visible (it may sit next to a label such as "Notes"); otherwise the document type. Replace any comma with a dash so the value stays CSV-safe. A title of the form "X vs Y" is almost always a deposition: use "Deposition".

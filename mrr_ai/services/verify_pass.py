@@ -70,8 +70,12 @@ def _same_document(pdf_path, prev_row, row):
         "continuation of document A - remaining report pages, attachments, lab tables, "
         "signature/stamp/certification pages, terms or branding pages, or blank "
         "separator pages - OR it may begin a separate document.\n"
-        "Answer YES if segment B belongs to document A; answer NO if it is a separate "
-        "document.",
+        "Answer YES only when the evidence clearly shows continuation: continued "
+        "pagination, a sentence or table that flows across the boundary, the same "
+        "author and visit continuing, or an attachment the report explicitly "
+        "references. Sharing a document type, date, or letterhead is NOT enough - "
+        "these records routinely contain same-day batches of separate short "
+        "documents. If the evidence is unclear, answer NO.",
         types.Part.from_bytes(data=_page_png(pdf_path, prev_row["end"]), mime_type="image/png"),
     ]
     for page in range(row["start"], fragment_end + 1):
