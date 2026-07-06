@@ -142,3 +142,18 @@ td input, td select {
     width: 4.5em; padding: 2px 4px; border: 1px solid #b9c7d4; border-radius: 4px;
 }
 .add-form input.invalid, .row-actions .split-page.invalid { border-color: #c0392b; }
+
+/* Auth pages (Flask-Security templates render inside .auth-card). */
+.auth-card { max-width: 420px; }
+.auth-card h1 { font-size: 22px; }
+.auth-card form p { margin: 10px 0; text-align: left; }
+.auth-card input[type="email"], .auth-card input[type="password"], .auth-card input[type="text"] {
+    width: 100%; padding: 8px 10px; border: 1px solid #b9c7d4; border-radius: 6px; box-sizing: border-box;
+}
+.auth-card input[type="submit"] {
+    width: 100%; padding: 9px 0; margin-top: 8px; border: 0; border-radius: 6px;
+    background: #2f6fdd; color: #fff; font-size: 15px; cursor: pointer;
+}
+.auth-card input[type="submit"]:hover { background: #275dc0; }
+.auth-card ul.fs-error-msg, .auth-card .error { color: #c0392b; list-style: none; padding: 0; margin: 4px 0; }
+.auth-card a { color: #2f6fdd; }

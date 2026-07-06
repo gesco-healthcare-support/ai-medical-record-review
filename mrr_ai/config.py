@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-REQUIRED_ENV = ("GEMINI_API_KEY", "OPENAI_API_KEY")
+REQUIRED_ENV = ("GEMINI_API_KEY", "OPENAI_API_KEY", "SECRET_KEY", "SECURITY_PASSWORD_SALT")
 
 MAX_CONTENT_LENGTH = 1024 * 1024 * 1024
 ALLOWED_EXTENSIONS = {"pdf"}
@@ -22,6 +22,23 @@ UPLOAD_FOLDER = os.path.join(_REPO_ROOT, "uploads")
 # Tesseract binary override for machines where it is installed but not on PATH
 # (Windows installer default). Empty -> pytesseract uses PATH lookup.
 TESSERACT_CMD = os.environ.get("TESSERACT_CMD", "")
+
+# --- Web sessions / auth / persistence --------------------------------------------------
+# SECRET_KEY signs session cookies; SECURITY_PASSWORD_SALT is Flask-Security's HMAC salt.
+# Both are REQUIRED (validate_env fails fast): a guessable default would silently break
+# every security property. Generate: python -c "import secrets; print(secrets.token_hex(32))"
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
+SECURITY_PASSWORD_SALT = os.environ.get("SECURITY_PASSWORD_SALT", "")
+
+# SQLite next to the app by default (single-box deployment); the ORM keeps a later
+# move to SQL Server/Postgres a config change, not a rewrite.
+SQLALCHEMY_DATABASE_URI = os.environ.get("SQLALCHEMY_DATABASE_URI") or (
+    "sqlite:///" + os.path.join(_REPO_ROOT, "instance", "mrr.db")
+)
+
+# Concurrent document pipelines (segment/summarize workers). Kept at 2 because all jobs
+# share one Vertex quota pool - more workers just trade throughput for 429 storms.
+PIPELINE_WORKERS = int(os.environ.get("PIPELINE_WORKERS", 2))
 
 # --- Gemini routing -------------------------------------------------------------------
 # Vertex AI is the BAA-covered Gemini platform (BAA signed 2026-07); the AI Studio
