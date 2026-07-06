@@ -1,0 +1,189 @@
+"""Per-row summarize marking, summary editing/exclusion, and the boot migration.
+
+All engines stubbed; synthetic data only.
+"""
+
+import io
+import sqlite3
+import time
+
+
+def _upload(client, pdf_bytes):
+    response = client.post(
+        "/api/documents",
+        data={"pdf": (io.BytesIO(pdf_bytes(10)), "synthetic.pdf")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 201
+    return response.get_json()["id"]
+
+
+def _wait_done(client, document_id, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        payload = client.get(f"/api/documents/{document_id}/status").get_json()
+        if payload["status"] == "done":
+            return True
+        if payload["status"] == "error":
+            raise AssertionError(f"job failed: {payload['job']}")
+        time.sleep(0.02)
+    return False
+
+
+_ROWS = [
+    {
+        "start": 1,
+        "end": 4,
+        "category": "1",
+        "title": "DOC A",
+        "date": "01/15/2024",
+        "injury_date": "-",
+        "flag": "-",
+        "include": True,
+    },
+    {
+        "start": 5,
+        "end": 7,
+        "category": "3",
+        "title": "DOC B",
+        "date": "02/20/2024",
+        "injury_date": "-",
+        "flag": "-",
+        "include": False,
+    },
+    {
+        "start": 8,
+        "end": 10,
+        "category": "5",
+        "title": "DOC C",
+        "date": "03/05/2024",
+        "injury_date": "-",
+        "flag": "x",
+        "include": True,
+    },
+]
+
+
+def _fake_summarize(pdf_path, row, model=None):
+    return {
+        "summaryTitle": f"SUMMARY {row['start']}",
+        "summaryDate": row["date"],
+        "summaryText": "synthetic text",
+        "manualCheck": row["flag"] == "x",
+    }
+
+
+def test_only_included_rows_are_summarized(client, pdf_bytes, monkeypatch):
+    monkeypatch.setattr("mrr_ai.services.summarize_engine.summarize_row", _fake_summarize)
+    document_id = _upload(client, pdf_bytes)
+
+    assert (
+        client.post(
+            f"/api/documents/{document_id}/summarize/start", json={"rows": _ROWS}
+        ).status_code
+        == 200
+    )
+    assert _wait_done(client, document_id)
+
+    summaries = client.get(f"/api/documents/{document_id}/summaries").get_json()
+    assert [item["summaryTitle"] for item in summaries] == ["SUMMARY 1", "SUMMARY 8"]
+
+    detail = client.get(f"/api/documents/{document_id}").get_json()
+    assert [row["include"] for row in detail["rows"]] == [True, False, True]
+
+
+def test_summarize_refused_when_nothing_included(client, pdf_bytes):
+    document_id = _upload(client, pdf_bytes)
+    rows = [dict(row, include=False) for row in _ROWS]
+    response = client.post(f"/api/documents/{document_id}/summarize/start", json={"rows": rows})
+    assert response.status_code == 400
+    assert "marked for summarization" in response.get_json()["error"]
+
+
+def test_edit_and_exclude_summary(client, pdf_bytes, monkeypatch):
+    monkeypatch.setattr("mrr_ai.services.summarize_engine.summarize_row", _fake_summarize)
+    document_id = _upload(client, pdf_bytes)
+    client.post(f"/api/documents/{document_id}/summarize/start", json={"rows": _ROWS})
+    assert _wait_done(client, document_id)
+
+    edited = client.put(
+        f"/api/documents/{document_id}/summaries/0",
+        json={"summaryText": "corrected by reviewer", "summaryTitle": "FIXED TITLE"},
+    )
+    assert edited.status_code == 200
+    body = edited.get_json()
+    assert body["summaryText"] == "corrected by reviewer"
+    assert body["edited"] is True
+
+    # The raw model output is preserved underneath (training signal).
+    from mrr_ai.models import Summary
+
+    with client.application.app_context():
+        raw = Summary.query.filter_by(document_id=document_id, idx=0).one()
+        assert raw.text == "synthetic text"
+        assert raw.edited_text == "corrected by reviewer"
+
+    assert (
+        client.put(f"/api/documents/{document_id}/summaries/1", json={"excluded": True}).status_code
+        == 200
+    )
+    listing = client.get(f"/api/documents/{document_id}/summaries").get_json()
+    assert [item["excluded"] for item in listing] == [False, True]
+
+    unknown = client.put(f"/api/documents/{document_id}/summaries/99", json={"excluded": True})
+    assert unknown.status_code == 404
+
+
+def test_export_skips_excluded_and_uses_edits(client, pdf_bytes, monkeypatch):
+    monkeypatch.setattr("mrr_ai.services.summarize_engine.summarize_row", _fake_summarize)
+    document_id = _upload(client, pdf_bytes)
+    client.post(f"/api/documents/{document_id}/summarize/start", json={"rows": _ROWS})
+    assert _wait_done(client, document_id)
+
+    client.put(f"/api/documents/{document_id}/summaries/0", json={"excluded": True})
+    exported = client.post(f"/api/documents/{document_id}/export", json={"QMEorAME": "QME"})
+    assert exported.status_code == 200
+    assert exported.data[:2] == b"PK"
+
+    client.put(f"/api/documents/{document_id}/summaries/1", json={"excluded": True})
+    all_excluded = client.post(f"/api/documents/{document_id}/export", json={})
+    assert all_excluded.status_code == 409
+
+
+def test_boot_migration_adds_columns_to_old_database(tmp_path):
+    """A database created before the include/edited_*/excluded columns must upgrade in
+    place on boot - the seeded demo data cannot be thrown away for a schema change."""
+    db_path = tmp_path / "old.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "CREATE TABLE review_rows (id INTEGER PRIMARY KEY, document_id VARCHAR(36),"
+        ' idx INTEGER, start INTEGER, "end" INTEGER, category VARCHAR(8),'
+        " title VARCHAR(512), date VARCHAR(16), injury_date VARCHAR(16),"
+        " flag VARCHAR(4), suggest_merge BOOLEAN)"
+    )
+    connection.execute(
+        "CREATE TABLE summaries (id INTEGER PRIMARY KEY, document_id VARCHAR(36),"
+        " job_id INTEGER, idx INTEGER, title VARCHAR(512), date VARCHAR(16),"
+        " text TEXT, manual_check BOOLEAN, row_start INTEGER, row_end INTEGER,"
+        " row_category VARCHAR(8))"
+    )
+    connection.commit()
+    connection.close()
+
+    from mrr_ai import create_app
+
+    create_app(
+        {
+            "TESTING": True,
+            "SQLALCHEMY_DATABASE_URI": "sqlite:///" + str(db_path),
+            "WTF_CSRF_ENABLED": False,
+            "SECURITY_PASSWORD_HASH": "plaintext",
+        }
+    )
+
+    connection = sqlite3.connect(db_path)
+    review_columns = {row[1] for row in connection.execute("PRAGMA table_info(review_rows)")}
+    summary_columns = {row[1] for row in connection.execute("PRAGMA table_info(summaries)")}
+    connection.close()
+    assert "include" in review_columns
+    assert {"edited_title", "edited_date", "edited_text", "excluded"} <= summary_columns

@@ -1,18 +1,26 @@
-/* Document-scoped review flow: boot from the document's persisted state -> segment
-   (poll) -> edit rows beside the PDF (autosaved) -> summarize (poll) -> export.
-   Vanilla JS on purpose: no build step, nothing to break the day of a demo. */
+/* Document-scoped review flow: boot from the document's persisted state, then move
+   freely between the three pipeline steps (identify / review / summaries). Rows and
+   summary edits autosave. Vanilla JS on purpose: no build step, nothing to break the
+   day of a demo. */
 "use strict";
 
 const DOC_ID = document.body.dataset.docId;
+// PDF.js viewer (vendored): Chrome's built-in viewer ignores #page changes after the
+// first load, so row-click navigation NEEDS a viewer with a programmatic page API.
+const VIEWER_URL = "/static/vendor/pdfjs/web/viewer.html";
 
 const S = {
-    rows: [],          // {start, end, category, title, date, injury_date, flag, suggest_merge}
+    rows: [],          // {start, end, category, title, date, injury_date, flag, suggest_merge, include}
     categories: [],
     totalPages: 0,
+    status: "",
     selected: -1,
     lastViewerPage: 0,
+    viewerLoaded: false,
     splitting: -1,     // row index currently showing the inline split form
+    watching: null,    // "segment" | "summarize" while a job poll drives the view
     saveTimer: null,
+    summaryTimers: {}, // idx -> debounce timer for summary text edits
 };
 
 const $ = (id) => document.getElementById(id);
@@ -43,11 +51,9 @@ function show(section, activeStep) {
         "step-editor": "review", "step-summaries": "summaries",
     };
     const active = activeStep || defaults[section];
-    const order = ["identify", "review", "summaries"];
     document.querySelectorAll(".steps li").forEach((li) => {
-        const idx = order.indexOf(li.dataset.step);
         li.classList.toggle("active", li.dataset.step === active);
-        li.classList.toggle("done", idx < order.indexOf(active));
+        li.classList.toggle("busy", Boolean(S.watching));
     });
 }
 
@@ -81,6 +87,42 @@ async function api(path, options = {}) {
     return data;
 }
 
+/* ---------- step navigation (free movement between the three pipeline steps) ---------- */
+
+function gotoStep(step) {
+    // While a job poll is driving the view, the progress panel holds the screen -
+    // navigating away would fight the auto-advance when the job lands.
+    if (S.watching) return;
+    banner("");
+    if (step === "identify") {
+        renderStartPanel();
+        show("step-start");
+    } else if (step === "review") {
+        if (S.rows.length) enterEditor();
+        else {
+            renderStartPanel("No documents identified yet - run identification first.");
+            show("step-start");
+        }
+    } else if (step === "summaries") {
+        loadSummaries().catch((err) => banner(err.message));
+    }
+}
+
+document.querySelectorAll(".steps li").forEach((li) => {
+    li.addEventListener("click", () => gotoStep(li.dataset.step));
+});
+
+function renderStartPanel(hint) {
+    const rerun = S.rows.length > 0;
+    $("startTitle").textContent = rerun ? "Re-run document identification" : "Ready to identify documents";
+    $("startSegment").textContent = rerun ? "Re-run identification" : "Identify documents";
+    $("startHint").textContent = hint || (rerun
+        ? "Re-running replaces the current document list - including every correction "
+          + "you made - with a fresh AI pass over the record."
+        : "The record is split into its component documents and categorized. You review "
+          + "and correct the result before any summaries are written.");
+}
+
 /* ---------- boot: route from the document's persisted state ---------- */
 
 const STAGE_LABELS = {
@@ -97,6 +139,7 @@ async function boot() {
         detail = await api("");
     } catch (err) {
         banner(`Could not load this document: ${err.message}`);
+        renderStartPanel();
         show("step-start");
         $("startSegment").disabled = true;
         return;
@@ -104,14 +147,16 @@ async function boot() {
     S.totalPages = detail.page_count;
     S.categories = detail.categories || [];
     S.rows = detail.rows || [];
+    S.status = detail.status;
 
     const job = detail.active_job;
     if (job && job.kind === "segment") return watchSegment();
     if (job && job.kind === "summarize") return watchSummarize();
-    if (detail.status === "done") return loadSummaries();
+    if (detail.status === "done") return loadSummaries().catch((err) => banner(err.message));
     if (detail.status === "error") banner("The last run failed - you can start again.");
     if (detail.status === "interrupted") banner("The last run was interrupted - start again.");
     if (S.rows.length) return enterEditor();
+    renderStartPanel();
     show("step-start");
 }
 
@@ -145,28 +190,42 @@ function pollDocument(title, activeStep) {
 }
 
 async function watchSegment() {
+    S.watching = "segment";
     try {
         await pollDocument("Identifying documents", "identify");
         const detail = await api("");
         S.rows = detail.rows || [];
+        S.status = detail.status;
+        S.watching = null;
         enterEditor();
     } catch (err) {
+        S.watching = null;
         banner(err.message);
+        renderStartPanel();
         show("step-start");
     }
 }
 
 async function watchSummarize() {
+    S.watching = "summarize";
     try {
         await pollDocument("Summarizing documents", "summaries");
+        S.status = "done";
+        S.watching = null;
         await loadSummaries();
     } catch (err) {
+        S.watching = null;
         banner(err.message);
-        if (S.rows.length) enterEditor(); else show("step-start");
+        if (S.rows.length) enterEditor(); else { renderStartPanel(); show("step-start"); }
     }
 }
 
 $("startSegment").addEventListener("click", async () => {
+    if (S.rows.length && !window.confirm(
+        "Re-running identification replaces the current document list AND your "
+        + "corrections. Continue?")) {
+        return;
+    }
     banner("");
     $("startSegment").disabled = true;
     try {
@@ -174,25 +233,49 @@ $("startSegment").addEventListener("click", async () => {
         await watchSegment();
     } catch (err) {
         banner(err.message);
+        renderStartPanel();
         show("step-start");
     } finally {
         $("startSegment").disabled = false;
     }
 });
 
-/* ---------- editor ---------- */
+/* ---------- review & correct ---------- */
+
+function viewerSrc(page) {
+    const file = encodeURIComponent(`/api/documents/${DOC_ID}/pdf`);
+    return `${VIEWER_URL}?file=${file}#page=${page}`;
+}
 
 function enterEditor() {
     show("step-editor");
-    $("pdfFrame").src = `/api/documents/${DOC_ID}/pdf#page=1`;
-    S.lastViewerPage = 1;
+    if (!S.viewerLoaded) {
+        $("pdfFrame").src = viewerSrc(1);
+        S.viewerLoaded = true;
+        S.lastViewerPage = 1;
+    }
     renderTable();
 }
 
 function jumpTo(page) {
     if (page === S.lastViewerPage) return;
     S.lastViewerPage = page;
-    $("pdfFrame").src = `/api/documents/${DOC_ID}/pdf#page=${page}`;
+    const frame = $("pdfFrame");
+    if (!S.viewerLoaded) {
+        frame.src = viewerSrc(page);
+        S.viewerLoaded = true;
+        return;
+    }
+    try {
+        const viewer = frame.contentWindow.PDFViewerApplication;
+        if (viewer && viewer.pdfViewer && viewer.pdfViewer.pagesCount) {
+            viewer.page = page;
+            return;
+        }
+    } catch (err) {
+        // same-origin, so this only happens while the viewer is still booting
+    }
+    frame.src = viewerSrc(page); // viewer not ready yet: (re)load opened at the page
 }
 
 /* Autosave: corrections must survive switching documents / closing the tab. Saves are
@@ -251,21 +334,24 @@ function renderTable() {
         if (Number(row.start) > previousEnd + 1) {
             const gap = document.createElement("tr");
             gap.className = "gap-row";
-            gap.innerHTML = `<td colspan="7">pages ${previousEnd + 1}-${Number(row.start) - 1} not included (skipped at summarization)</td>`;
+            gap.innerHTML = `<td colspan="8">pages ${previousEnd + 1}-${Number(row.start) - 1} not included (skipped at summarization)</td>`;
             body.appendChild(gap);
         }
         previousEnd = Math.max(previousEnd, Number(row.end) || previousEnd);
 
+        const included = row.include !== false;
         const tr = document.createElement("tr");
-        tr.className = "doc-row" + (errors.has(i) ? " invalid" : "") + (S.selected === i ? " selected" : "");
+        tr.className = "doc-row" + (errors.has(i) ? " invalid" : "")
+            + (S.selected === i ? " selected" : "") + (included ? "" : " skipped");
         tr.dataset.idx = i;
         tr.innerHTML = `
-            <td>${i + 1}</td>
+            <td class="col-num">${i + 1}</td>
             <td><input type="number" data-field="start" value="${row.start}" min="1" max="${S.totalPages}"></td>
             <td><input type="number" data-field="end" value="${row.end}" min="1" max="${S.totalPages}"></td>
             <td><select data-field="category">${categoryOptions(row.category)}</select></td>
-            <td><input type="text" data-field="date" value="${row.date || "-"}"></td>
-            <td style="text-align:center"><input type="checkbox" data-field="flag" ${String(row.flag).toLowerCase() === "x" ? "checked" : ""}></td>
+            <td><input type="text" class="date-input" data-field="date" value="${row.date || "-"}"></td>
+            <td class="col-check"><input type="checkbox" data-field="flag" ${String(row.flag).toLowerCase() === "x" ? "checked" : ""}></td>
+            <td class="col-check"><input type="checkbox" data-field="include" ${included ? "checked" : ""}></td>
             <td class="row-actions">
                 ${S.splitting === i ? `at page <input type="number" class="split-page" min="${Number(row.start) + 1}" max="${row.end}" value="${Number(row.start) + 1}" aria-label="First page of the second document">
                 <button class="mini" data-action="split-confirm">Split</button>
@@ -278,9 +364,11 @@ function renderTable() {
         const title = row.title && row.title !== "-" ? row.title : "";
         if (title) {
             const meta = document.createElement("tr");
-            meta.className = "doc-row" + (S.selected === i ? " selected" : "");
+            meta.className = "doc-row title-row" + (S.selected === i ? " selected" : "")
+                + (included ? "" : " skipped");
             meta.dataset.idx = i;
-            meta.innerHTML = `<td></td><td colspan="6" class="row-title">${title.replaceAll("<", "&lt;")}</td>`;
+            meta.innerHTML = `<td></td><td colspan="7" class="row-title"></td>`;
+            meta.querySelector(".row-title").textContent = title;
             body.appendChild(tr);
             body.appendChild(meta);
         } else {
@@ -292,10 +380,15 @@ function renderTable() {
     const bulk = $("applySuggestions");
     bulk.classList.toggle("hidden", suggested === 0);
     bulk.textContent = `Apply ${suggested} suggested merge${suggested === 1 ? "" : "s"}`;
-    $("docCount").textContent = `${S.rows.length} documents / ${S.totalPages} pages`;
+
+    const included = S.rows.filter((r) => r.include !== false).length;
+    $("docCount").textContent =
+        `${S.rows.length} documents / ${S.totalPages} pages`;
     const firstError = errors.size ? `row ${[...errors.keys()][0] + 1}: ${[...errors.values()][0]}` : "";
     $("validationMsg").textContent = firstError;
-    $("summarizeBtn").disabled = errors.size > 0 || S.rows.length === 0;
+    const summarizeBtn = $("summarizeBtn");
+    summarizeBtn.disabled = errors.size > 0 || included === 0;
+    summarizeBtn.textContent = included ? `Summarize ${included} document${included === 1 ? "" : "s"}` : "Summarize";
 }
 
 $("rowsBody").addEventListener("change", (event) => {
@@ -305,6 +398,7 @@ $("rowsBody").addEventListener("change", (event) => {
     const field = event.target.dataset.field;
     if (!field) return;
     if (field === "flag") row.flag = event.target.checked ? "x" : "-";
+    else if (field === "include") row.include = event.target.checked;
     else if (field === "start" || field === "end") row[field] = Number(event.target.value);
     else row[field] = event.target.value;
     renderTable();
@@ -358,6 +452,7 @@ $("rowsBody").addEventListener("click", (event) => {
         S.rows.splice(idx + 1, 0, {
             start: k, end: Number(row.end), category: row.category, title: "-",
             date: row.date, injury_date: row.injury_date, flag: "x",
+            include: row.include !== false,
         });
         row.end = k - 1;
         S.splitting = -1;
@@ -392,7 +487,7 @@ $("applySuggestions").addEventListener("click", () => {
     scheduleSave();
 });
 
-/* Add a missed document anywhere: the user types the page range and the row sorts
+/* Insert a missed document anywhere: the user types the page range and the row sorts
    into its ascending position (a document the AI missed is usually mid-file, so
    appending at the end would just move the correction work to the user). */
 function closeAddForm() {
@@ -422,7 +517,7 @@ $("addConfirm").addEventListener("click", () => {
     if (bad(start) || bad(end) || start > end) return;
     const row = {
         start, end, category: "100", title: "(added manually)",
-        date: "-", injury_date: "-", flag: "x",
+        date: "-", injury_date: "-", flag: "x", include: true,
     };
     S.rows.push(row);
     sortRows();
@@ -434,7 +529,7 @@ $("addConfirm").addEventListener("click", () => {
     jumpTo(start);
 });
 
-/* ---------- summarize + export ---------- */
+/* ---------- summarize ---------- */
 
 $("summarizeBtn").addEventListener("click", async () => {
     banner("");
@@ -450,36 +545,103 @@ $("summarizeBtn").addEventListener("click", async () => {
     }
 });
 
+/* ---------- summaries: read, edit, exclude, export ---------- */
+
 async function loadSummaries() {
     const summaries = await api("/summaries");
     renderSummaries(summaries);
 }
 
+function summaryCounts(summaries) {
+    const excluded = summaries.filter((s) => s.excluded).length;
+    const suffix = excluded ? ` - ${excluded} excluded from export` : "";
+    $("summaryCount").textContent = summaries.length
+        ? `${summaries.length} summaries${suffix}` : "No summaries yet";
+}
+
 function renderSummaries(summaries) {
     const list = $("summaryList");
     list.innerHTML = "";
+    summaryCounts(summaries);
+    $("exportBtn").disabled = summaries.every((s) => s.excluded);
+
+    if (!summaries.length) {
+        const empty = document.createElement("div");
+        empty.className = "summary-empty";
+        empty.innerHTML = "<p>This document has not been summarized yet.</p>";
+        const btn = document.createElement("button");
+        btn.className = "primary";
+        btn.textContent = "Go to Review & correct";
+        btn.addEventListener("click", () => gotoStep("review"));
+        empty.appendChild(btn);
+        list.appendChild(empty);
+        show("step-summaries");
+        return;
+    }
+
     summaries.forEach((item) => {
         const card = document.createElement("div");
-        card.className = "summary-card";
-        const flagged = item.manualCheck
-            ? '<span class="flagged">needs review</span> - ' : "";
+        card.className = "summary-card" + (item.excluded ? " excluded" : "");
+        card.dataset.idx = item.idx;
         card.innerHTML = `
-            <h3></h3>
-            <div class="meta">${flagged}${item.summaryDate || "no date"} -
+            <div class="summary-head">
+                <input class="sum-title" data-sfield="summaryTitle" aria-label="Summary title">
+                <input class="sum-date" data-sfield="summaryDate" aria-label="Summary date">
+                <label class="exclude-toggle" title="Excluded summaries stay here but are left out of the Word export">
+                    <input type="checkbox" data-sfield="excluded"> Exclude
+                </label>
+            </div>
+            <div class="meta">
+                ${item.manualCheck ? '<span class="flagged">needs review</span> - ' : ""}
                 pages ${item.row.start}-${item.row.end} -
-                ${CATEGORY_LABELS[String(item.row.category)] || item.row.category}</div>
-            <p class="body"></p>`;
-        card.querySelector("h3").textContent = item.summaryTitle;
-        card.querySelector("p.body").textContent = item.summaryText;
+                ${CATEGORY_LABELS[String(item.row.category)] || item.row.category}
+                <span class="edited-chip${item.edited ? "" : " hidden"}">edited</span>
+            </div>
+            <textarea class="sum-text" data-sfield="summaryText" rows="5" aria-label="Summary text"></textarea>`;
+        card.querySelector(".sum-title").value = item.summaryTitle;
+        card.querySelector(".sum-date").value = item.summaryDate || "";
+        card.querySelector("[data-sfield=excluded]").checked = item.excluded;
+        card.querySelector(".sum-text").value = item.summaryText;
         list.appendChild(card);
     });
-    $("summaryCount").textContent = `${summaries.length} summaries`;
     show("step-summaries");
 }
 
-$("backToEditor").addEventListener("click", () => {
-    if (S.rows.length) enterEditor();
-    else show("step-start");
+async function saveSummary(idx, patch, card) {
+    $("summarySaveState").textContent = "Saving...";
+    try {
+        const updated = await api(`/summaries/${idx}`, { method: "PUT", json: patch });
+        $("summarySaveState").textContent = "Saved";
+        card.classList.toggle("excluded", updated.excluded);
+        card.querySelector(".edited-chip").classList.toggle("hidden", !updated.edited);
+        const all = [...$("summaryList").querySelectorAll(".summary-card")];
+        const excludedCount = all.filter((c) => c.classList.contains("excluded")).length;
+        $("summaryCount").textContent = `${all.length} summaries`
+            + (excludedCount ? ` - ${excludedCount} excluded from export` : "");
+        $("exportBtn").disabled = excludedCount === all.length;
+    } catch (err) {
+        $("summarySaveState").textContent = `Not saved: ${err.message}`;
+    }
+}
+
+$("summaryList").addEventListener("change", (event) => {
+    const card = event.target.closest(".summary-card");
+    const field = event.target.dataset.sfield;
+    if (!card || !field) return;
+    const value = field === "excluded" ? event.target.checked : event.target.value;
+    saveSummary(Number(card.dataset.idx), { [field]: value }, card);
+});
+
+$("summaryList").addEventListener("input", (event) => {
+    // Debounced live save for the text area; title/date save on change (blur).
+    if (event.target.dataset.sfield !== "summaryText") return;
+    const card = event.target.closest(".summary-card");
+    const idx = Number(card.dataset.idx);
+    $("summarySaveState").textContent = "Unsaved changes...";
+    clearTimeout(S.summaryTimers[idx]);
+    S.summaryTimers[idx] = setTimeout(() => {
+        saveSummary(idx, { summaryText: event.target.value }, card);
+    }, 800);
 });
 
 $("exportBtn").addEventListener("click", async () => {

@@ -3,17 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MRR Review</title>
+    <title>MRR - review</title>
     <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='review.css') }}">
 </head>
 <body data-doc-id="{{ document_id }}">
 <header class="topbar">
-    <div class="brand">MRR <span>Review</span></div>
-    <ol class="steps">
-        <li data-step="identify">1 Identify documents</li>
-        <li data-step="review">2 Review &amp; correct</li>
-        <li data-step="summaries">3 Summaries</li>
+    <a class="brand" href="/">MRR</a>
+    <ol class="steps" aria-label="Pipeline steps">
+        <li data-step="identify" title="Run or re-run document identification">Identify documents</li>
+        <li data-step="review" title="Correct the identified documents">Review &amp; correct</li>
+        <li data-step="summaries" title="Read, edit, and export the summaries">Summaries</li>
     </ol>
     <nav class="top-actions">
         <a href="/" title="Back to your documents">My documents</a>
@@ -24,39 +24,39 @@
 <div id="banner" class="banner hidden"></div>
 
 <main>
-    <!-- 1a: ready to start (uploaded / interrupted / failed without rows) -->
+    <!-- identify: start / re-run panel -->
     <section id="step-start" class="panel center-panel hidden">
-        <h1>Ready to identify documents</h1>
-        <p class="muted">The record is split into its component documents and categorized.
-            You review and correct the result before any summaries are written.</p>
+        <h1 id="startTitle">Ready to identify documents</h1>
+        <p class="muted" id="startHint">The record is split into its component documents and
+            categorized. You review and correct the result before any summaries are written.</p>
         <button id="startSegment" class="primary" type="button">Identify documents</button>
     </section>
 
-    <!-- 1b + 3a: progress -->
+    <!-- progress (identification or summarization) -->
     <section id="step-progress" class="panel center-panel hidden">
         <h1 id="progressTitle">Working...</h1>
         <div class="bar"><div id="barFill" class="bar-fill"></div></div>
         <p id="progressDetail" class="muted">Starting...</p>
     </section>
 
-    <!-- 2: editor -->
+    <!-- review & correct -->
     <section id="step-editor" class="hidden">
         <div class="editor-toolbar">
-            <div>
+            <div class="toolbar-status">
                 <strong id="docCount"></strong>
                 <span id="validationMsg" class="error-text"></span>
                 <span id="saveState" class="muted save-state"></span>
             </div>
-            <div>
+            <div class="toolbar-actions">
                 <button id="applySuggestions" class="ghost suggest-bulk hidden" type="button"></button>
-                <button id="addRow" class="ghost" type="button">+ Add document</button>
+                <button id="addRow" class="ghost" type="button">+ Insert document</button>
                 <span id="addForm" class="add-form hidden">
                     pages <input id="addStart" type="number" min="1" aria-label="First page of the new document">
                     to <input id="addEnd" type="number" min="1" aria-label="Last page of the new document">
-                    <button id="addConfirm" class="mini" type="button">Add</button>
+                    <button id="addConfirm" class="mini" type="button">Insert</button>
                     <button id="addCancel" class="mini" type="button">Cancel</button>
                 </span>
-                <button id="summarizeBtn" class="primary" type="button">Send to summarization</button>
+                <button id="summarizeBtn" class="primary" type="button">Summarize</button>
             </div>
         </div>
         <div class="editor-split">
@@ -64,8 +64,12 @@
                 <table id="rowsTable">
                     <thead>
                     <tr>
-                        <th>#</th><th>Start</th><th>End</th><th>Category</th>
-                        <th>Date</th><th>Review</th><th></th>
+                        <th class="col-num">#</th><th class="col-page">Start</th>
+                        <th class="col-page">End</th><th class="col-category">Category</th>
+                        <th class="col-date">Date</th>
+                        <th class="col-check" title="Flag for manual review">Review</th>
+                        <th class="col-check" title="Include this document in summarization">Summarize</th>
+                        <th class="col-actions"></th>
                     </tr>
                     </thead>
                     <tbody id="rowsBody"></tbody>
@@ -77,22 +81,22 @@
         </div>
     </section>
 
-    <!-- 3b: summaries -->
-    <section id="step-summaries" class="panel hidden">
+    <!-- summaries -->
+    <section id="step-summaries" class="hidden">
         <div class="editor-toolbar">
-            <div>
+            <div class="toolbar-status">
                 <strong id="summaryCount"></strong>
-                <button id="backToEditor" class="ghost" type="button">Back to editor</button>
+                <span class="muted save-state" id="summarySaveState"></span>
             </div>
             <div class="export-bar">
-                <input id="expPatient" placeholder="Patient name">
-                <input id="expDob" placeholder="DOB">
-                <input id="expQme" placeholder="QME/AME">
-                <input id="expFirm" placeholder="Law firm">
+                <input id="expPatient" placeholder="Patient name" aria-label="Patient name">
+                <input id="expDob" placeholder="DOB" aria-label="Date of birth">
+                <input id="expQme" placeholder="QME/AME" aria-label="QME or AME title">
+                <input id="expFirm" placeholder="Law firm" aria-label="Law firm">
                 <button id="exportBtn" class="primary" type="button">Export to Word</button>
             </div>
         </div>
-        <div id="summaryList"></div>
+        <div id="summaryList" class="summary-grid"></div>
     </section>
 </main>
 

@@ -1,5 +1,6 @@
 """MRR AI application package (Flask application factory)."""
 
+import mimetypes
 import os
 
 from flask import Flask
@@ -11,6 +12,11 @@ from mrr_ai.config import (
     SQLALCHEMY_DATABASE_URI,
     UPLOAD_FOLDER,
 )
+
+# Windows' registry-backed mimetypes lacks .mjs, so Flask would serve the vendored
+# PDF.js ES modules as text/plain - and browsers refuse module scripts with a
+# non-JavaScript MIME type (strict checking per the HTML spec).
+mimetypes.add_type("text/javascript", ".mjs")
 
 
 def create_app(config_overrides=None):
@@ -71,20 +77,41 @@ def create_app(config_overrides=None):
     return app
 
 
-def _create_schema(app):
-    """Create tables on boot.
+# Additive columns introduced after the first databases shipped. create_all cannot
+# ALTER existing tables, and real data (the seeded demo DB) must survive upgrades.
+# This stopgap covers ADD COLUMN only; anything harder (renames, drops, backfills)
+# is the trigger to introduce Alembic properly.
+_ADDITIVE_COLUMNS = {
+    "review_rows": [("include", "BOOLEAN NOT NULL DEFAULT 1")],
+    "summaries": [
+        ("edited_title", "VARCHAR(512)"),
+        ("edited_date", "VARCHAR(16)"),
+        ("edited_text", "TEXT"),
+        ("excluded", "BOOLEAN NOT NULL DEFAULT 0"),
+    ],
+}
 
-    create_all is additive-only: it cannot ALTER existing tables, so the first
-    post-release schema CHANGE must introduce Alembic (tracked in the plan).
-    """
+
+def _create_schema(app):
+    """Create tables on boot, then apply additive column migrations."""
     uri = app.config["SQLALCHEMY_DATABASE_URI"]
     if uri.startswith("sqlite:///"):
         directory = os.path.dirname(uri.removeprefix("sqlite:///"))
         if directory:
             os.makedirs(directory, exist_ok=True)
 
+    from sqlalchemy import text
+
     from mrr_ai import models  # noqa: F401 - models must be imported before create_all
     from mrr_ai.extensions import db
 
     with app.app_context():
         db.create_all()
+        for table, columns in _ADDITIVE_COLUMNS.items():
+            existing = {
+                row[1] for row in db.session.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            }
+            for name, ddl in columns:
+                if name not in existing:
+                    db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+        db.session.commit()

@@ -67,6 +67,7 @@ def _store_rows(document, rows):
                 injury_date=str(row.get("injury_date") or "-"),
                 flag=str(row.get("flag") or "-"),
                 suggest_merge=bool(row.get("suggest_merge")),
+                include=bool(row.get("include", True)),
             )
         )
     db.session.commit()
@@ -245,9 +246,11 @@ def _summarize_target(document_id, pdf_path, model):
         from mrr_ai.services.summarize_engine import summarize_row
 
         job = job_queue.active_job(document_id)
+        # Only rows the reviewer marked for summarization; the rest stay editable
+        # but cost nothing and produce nothing.
         rows = [
             row.as_row()
-            for row in ReviewRow.query.filter_by(document_id=document_id)
+            for row in ReviewRow.query.filter_by(document_id=document_id, include=True)
             .order_by(ReviewRow.idx)
             .all()
         ]
@@ -291,8 +294,8 @@ def summarize_start(document_id):
         error = _store_rows(document, rows)  # flush the editor's final state first
         if error:
             return jsonify({"error": error}), 400
-    elif not document.review_rows:
-        return jsonify({"error": "no rows to summarize"}), 400
+    if not any(row.include for row in document.review_rows):
+        return jsonify({"error": "no rows are marked for summarization"}), 400
 
     model = body.get("model") or config.SUMMARY_MODEL
     job = job_queue.submit(
@@ -315,17 +318,50 @@ def get_summaries(document_id):
     return jsonify([summary.listing() for summary in document.summaries])
 
 
+@bp.route("/<document_id>/summaries/<int:idx>", methods=["PUT"])
+def put_summary(document_id, idx):
+    """Reviewer edits to one summary: title/date/text land in edited_* (the raw model
+    output stays immutable - it is training data), excluded toggles export membership."""
+    document = _own(document_id)
+    if document is None:
+        return _not_found()
+    summary = Summary.query.filter_by(document_id=document.id, idx=idx).first()
+    if summary is None:
+        return _not_found()
+    if document.active_job is not None and document.active_job.kind == "summarize":
+        return jsonify({"error": "summarization is rewriting these summaries; wait"}), 409
+
+    body = request.json or {}
+    for field, column, cap in (
+        ("summaryTitle", "edited_title", 512),
+        ("summaryDate", "edited_date", 16),
+        ("summaryText", "edited_text", None),
+    ):
+        if field in body:
+            value = str(body[field])
+            setattr(summary, column, value[:cap] if cap else value)
+    if "excluded" in body:
+        summary.excluded = bool(body["excluded"])
+    db.session.commit()
+    return jsonify(summary.listing())
+
+
 @bp.route("/<document_id>/export", methods=["POST"])
 def export_document(document_id):
     document = _own(document_id)
     if document is None:
         return _not_found()
-    if not document.summaries:
+    included = [s for s in document.summaries if not s.excluded]
+    if not included:
         return jsonify({"error": "no summaries to export yet"}), 409
     body = request.json or {}
     entries = [
-        {"summaryDate": s.date, "summaryTitle": s.title, "summaryText": s.text}
-        for s in document.summaries
+        {
+            "summaryDate": s.effective_date(),
+            "summaryTitle": s.effective_title(),
+            "summaryText": s.effective_text(),
+        }
+        for s in included
     ]
     docx = _build_mrr_document(
         entries,

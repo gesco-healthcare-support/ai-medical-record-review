@@ -3,13 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MRR Review - my documents</title>
+    <title>MRR - my documents</title>
     <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='review.css') }}">
 </head>
 <body>
 <header class="topbar">
-    <div class="brand">MRR <span>Review</span></div>
+    <a class="brand" href="/">MRR</a>
+    <div style="flex:1"></div>
     <nav class="top-actions">
         <a href="/classic" title="The original pages UI">Classic UI</a>
         <a href="/logout" title="Sign out">Log out</a>

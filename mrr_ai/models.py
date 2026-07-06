@@ -169,10 +169,14 @@ class ReviewRow(db.Model):
     # Carried from segmentation so the editor's merge-suggestion chips survive a
     # reload; cleared naturally as the user edits and the editor saves its state.
     suggest_merge = db.Column(db.Boolean, nullable=False, default=False)
+    # Whether this row is sent to summarization; lets the reviewer scope a run to
+    # exactly the documents that matter without deleting the rest.
+    include = db.Column(db.Boolean, nullable=False, default=True)
 
     def as_row(self):
         row = {field: getattr(self, field) for field in ROW_FIELDS}
         row["suggest_merge"] = self.suggest_merge
+        row["include"] = self.include
         return row
 
 
@@ -185,9 +189,17 @@ class Summary(db.Model):
     )
     job_id = db.Column(db.Integer, db.ForeignKey("jobs.id"), nullable=False)
     idx = db.Column(db.Integer, nullable=False)
+    # title/date/text are the RAW model output and stay immutable (like SegmentRow,
+    # human edits vs model output is future training signal); reviewer changes land
+    # in the edited_* columns and win wherever the summary is displayed or exported.
     title = db.Column(db.String(512), nullable=False)
     date = db.Column(db.String(16), nullable=False, default="-")
     text = db.Column(db.Text, nullable=False)
+    edited_title = db.Column(db.String(512), nullable=True)
+    edited_date = db.Column(db.String(16), nullable=True)
+    edited_text = db.Column(db.Text, nullable=True)
+    # Excluded summaries stay visible in the UI (dimmed) but never reach the Word export.
+    excluded = db.Column(db.Boolean, nullable=False, default=False)
     manual_check = db.Column(db.Boolean, nullable=False, default=False)
     # Snapshot of the summarized row, so summaries stay interpretable even if the
     # review rows are edited again afterward.
@@ -195,13 +207,27 @@ class Summary(db.Model):
     row_end = db.Column(db.Integer, nullable=False)
     row_category = db.Column(db.String(8), nullable=False)
 
+    def effective_title(self):
+        return self.edited_title if self.edited_title is not None else self.title
+
+    def effective_date(self):
+        return self.edited_date if self.edited_date is not None else self.date
+
+    def effective_text(self):
+        return self.edited_text if self.edited_text is not None else self.text
+
     def listing(self):
         return {
             "idx": self.idx,
-            "summaryTitle": self.title,
-            "summaryDate": self.date,
-            "summaryText": self.text,
+            "summaryTitle": self.effective_title(),
+            "summaryDate": self.effective_date(),
+            "summaryText": self.effective_text(),
             "manualCheck": self.manual_check,
+            "excluded": self.excluded,
+            "edited": any(
+                value is not None
+                for value in (self.edited_title, self.edited_date, self.edited_text)
+            ),
             "row": {"start": self.row_start, "end": self.row_end, "category": self.row_category},
         }
 

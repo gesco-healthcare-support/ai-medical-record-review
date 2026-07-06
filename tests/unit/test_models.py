@@ -71,6 +71,7 @@ def test_document_job_rows_roundtrip(app, user):
             "injury_date": "-",
             "flag": "-",
             "suggest_merge": False,
+            "include": True,
         }
 
 
