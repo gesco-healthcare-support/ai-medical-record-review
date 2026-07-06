@@ -88,6 +88,7 @@ _ADDITIVE_COLUMNS = {
         ("edited_date", "VARCHAR(16)"),
         ("edited_text", "TEXT"),
         ("excluded", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("source_text", "TEXT"),
     ],
 }
 

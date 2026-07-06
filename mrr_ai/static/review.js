@@ -344,12 +344,27 @@ function renderTable() {
         previousEnd = Math.max(previousEnd, Number(row.end) || previousEnd);
 
         const included = row.include !== false;
+        // The TITLE row leads its group (title above the fields it describes) and is
+        // editable in place; empty titles persist as "-" server-side.
+        const titleRow = document.createElement("tr");
+        titleRow.className = "doc-row title-row" + (S.selected === i ? " selected" : "")
+            + (included ? "" : " skipped");
+        titleRow.dataset.idx = i;
+        titleRow.innerHTML = `
+            <td class="col-num">${i + 1}</td>
+            <td colspan="7" class="row-title">
+                <input type="text" data-field="title" placeholder="(untitled document)" aria-label="Document title">
+            </td>`;
+        titleRow.querySelector("input").value =
+            row.title && row.title !== "-" ? row.title : "";
+        body.appendChild(titleRow);
+
         const tr = document.createElement("tr");
         tr.className = "doc-row" + (errors.has(i) ? " invalid" : "")
             + (S.selected === i ? " selected" : "") + (included ? "" : " skipped");
         tr.dataset.idx = i;
         tr.innerHTML = `
-            <td class="col-num">${i + 1}</td>
+            <td class="col-num"></td>
             <td><input type="number" data-field="start" value="${row.start}" min="1" max="${S.totalPages}"></td>
             <td><input type="number" data-field="end" value="${row.end}" min="1" max="${S.totalPages}"></td>
             <td><select data-field="category">${categoryOptions(row.category)}</select></td>
@@ -365,19 +380,7 @@ function renderTable() {
                 ${Number(row.end) > Number(row.start) ? '<button class="mini" data-action="split" title="Split this document into two">Split</button>' : ""}
                 <button class="mini" data-action="delete" title="Remove this row">Delete</button>`}
             </td>`;
-        const title = row.title && row.title !== "-" ? row.title : "";
-        if (title) {
-            const meta = document.createElement("tr");
-            meta.className = "doc-row title-row" + (S.selected === i ? " selected" : "")
-                + (included ? "" : " skipped");
-            meta.dataset.idx = i;
-            meta.innerHTML = `<td></td><td colspan="7" class="row-title"></td>`;
-            meta.querySelector(".row-title").textContent = title;
-            body.appendChild(tr);
-            body.appendChild(meta);
-        } else {
-            body.appendChild(tr);
-        }
+        body.appendChild(tr);
     });
 
     const suggested = S.rows.filter((r, i) => r.suggest_merge && i > 0).length;

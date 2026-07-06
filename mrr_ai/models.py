@@ -195,6 +195,10 @@ class Summary(db.Model):
     title = db.Column(db.String(512), nullable=False)
     date = db.Column(db.String(16), nullable=False, default="-")
     text = db.Column(db.Text, nullable=False)
+    # The exact extracted text the model was given for this summary - the INPUT half
+    # of the fine-tuning pair. Recomputing it later would silently drift with OCR
+    # versions, so it is captured at generation time. Never shown in the UI.
+    source_text = db.Column(db.Text, nullable=True)
     edited_title = db.Column(db.String(512), nullable=True)
     edited_date = db.Column(db.String(16), nullable=True)
     edited_text = db.Column(db.Text, nullable=True)

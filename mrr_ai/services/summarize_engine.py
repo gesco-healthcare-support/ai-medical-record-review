@@ -72,4 +72,7 @@ def summarize_row(pdf_path, row, model=None):
         "summaryTitle": f"{manual_tag}{title}{diag_tag} (Pages {row['start']}-{row['end']})",
         "manualCheck": manual_tag,
         "summaryText": f"{doi_final} {summary}",
+        # The exact model input, so callers can persist the fine-tuning pair
+        # (input text -> model summary -> human correction).
+        "sourceText": text,
     }

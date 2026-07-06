@@ -267,6 +267,7 @@ def _summarize_target(document_id, pdf_path, model):
                     title=output["summaryTitle"],
                     date=output.get("summaryDate") or "-",
                     text=output["summaryText"],
+                    source_text=output.get("sourceText"),
                     manual_check=bool(output.get("manualCheck")),
                     row_start=row["start"],
                     row_end=row["end"],

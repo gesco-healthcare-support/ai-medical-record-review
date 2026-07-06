@@ -70,6 +70,7 @@ def _fake_summarize(pdf_path, row, model=None):
         "summaryDate": row["date"],
         "summaryText": "synthetic text",
         "manualCheck": row["flag"] == "x",
+        "sourceText": f"extracted page text {row['start']}-{row['end']}",
     }
 
 
@@ -122,6 +123,9 @@ def test_edit_and_exclude_summary(client, pdf_bytes, monkeypatch):
         raw = Summary.query.filter_by(document_id=document_id, idx=0).one()
         assert raw.text == "synthetic text"
         assert raw.edited_text == "corrected by reviewer"
+        # The model INPUT is captured too: (source_text, text, edited_text) is the
+        # complete fine-tuning triple for the summarizer.
+        assert raw.source_text == "extracted page text 1-4"
 
     assert (
         client.put(f"/api/documents/{document_id}/summaries/1", json={"excluded": True}).status_code
@@ -225,4 +229,10 @@ def test_boot_migration_adds_columns_to_old_database(tmp_path):
     summary_columns = {row[1] for row in connection.execute("PRAGMA table_info(summaries)")}
     connection.close()
     assert "include" in review_columns
-    assert {"edited_title", "edited_date", "edited_text", "excluded"} <= summary_columns
+    assert {
+        "edited_title",
+        "edited_date",
+        "edited_text",
+        "excluded",
+        "source_text",
+    } <= summary_columns
