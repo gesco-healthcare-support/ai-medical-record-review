@@ -193,6 +193,50 @@ def test_export_recomposes_tags_around_edits(client, pdf_bytes, monkeypatch):
     assert "[ManualCheck] [ManualCheck]" not in text  # unedited titles are not doubled
 
 
+def test_export_recomposes_pages_and_diagnostic_tags(client, pdf_bytes, monkeypatch):
+    """The web UI also strips the " (Pages X-Y)" suffix and the "[Diagnostic Study]"
+    tag from titles; the docx must recompose BOTH from the summary's row snapshot,
+    normalized to the canonical row range - regardless of what the reviewer typed."""
+
+    rows = [
+        dict(_ROWS[0]),  # category 1
+        dict(_ROWS[2], category="3", flag="-"),  # category 3 -> [Diagnostic Study]
+    ]
+
+    def engine_style(pdf_path, row, model=None):
+        diag = " [Diagnostic Study]" if str(row["category"]) == "3" else ""
+        return {
+            "summaryTitle": f"RAW TITLE{diag} (Pages {row['start']}-{row['end']})",
+            "summaryDate": row["date"],
+            "summaryText": "body text",
+            "manualCheck": False,
+        }
+
+    monkeypatch.setattr("mrr_ai.services.summarize_engine.summarize_row", engine_style)
+    document_id = _upload(client, pdf_bytes)
+    client.post(f"/api/documents/{document_id}/summarize/start", json={"rows": rows})
+    assert _wait_done(client, document_id)
+
+    # The reviewer edits both titles CLEAN (the way the redesigned UI presents them);
+    # the second edit even carries a stale typed suffix that must be normalized.
+    client.put(f"/api/documents/{document_id}/summaries/0", json={"summaryTitle": "CLEAN EDIT"})
+    client.put(
+        f"/api/documents/{document_id}/summaries/1",
+        json={"summaryTitle": "DIAG EDIT (Pages 99-99)"},
+    )
+
+    exported = client.post(f"/api/documents/{document_id}/export", json={"QMEorAME": "QME"})
+    assert exported.status_code == 200
+
+    from docx import Document as DocxDocument
+
+    text = "\n".join(p.text for p in DocxDocument(io.BytesIO(exported.data)).paragraphs)
+    assert "CLEAN EDIT (Pages 1-4)" in text
+    assert "DIAG EDIT [Diagnostic Study] (Pages 8-10)" in text  # normalized, tag restored
+    assert "(Pages 99-99)" not in text  # typed suffix replaced by the row snapshot
+    assert "[Diagnostic Study] [Diagnostic Study]" not in text
+
+
 def test_boot_migration_adds_columns_to_old_database(tmp_path):
     """A database created before the include/edited_*/excluded columns must upgrade in
     place on boot - the seeded demo data cannot be thrown away for a schema change."""

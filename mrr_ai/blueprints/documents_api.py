@@ -348,15 +348,25 @@ def put_summary(document_id, idx):
     return jsonify(summary.listing())
 
 
+# A trailing engine-style page suffix; en dash included because the web view
+# displays ranges with one and an edit could carry it back.
+_PAGES_SUFFIX = re.compile(r"\s*\(pages\s+\d+\s*[-\u2013]\s*\d+\)\s*$", re.IGNORECASE)
+
+
 def _export_entry(summary):
     """One docx entry with the legacy tag format recomposed around reviewer edits.
 
-    The web view strips "[ManualCheck] " from titles and the "**DOI**:date," text
-    prefix for readability, so edited values come back clean - but the exported
-    report format must not change. The flag is re-applied from the structured
-    manual_check field; the DOI prefix is recovered from the immutable raw text.
+    The web view strips "[ManualCheck] ", "[Diagnostic Study]", and the trailing
+    " (Pages X-Y)" from titles plus the "**DOI**:date," text prefix for readability,
+    so edited values come back clean - but the exported report format must not
+    change. Every decoration is re-applied from structured fields: the flag from
+    manual_check, the tag and pages from the row snapshot (canonical even when a
+    reviewer typed their own suffix), the DOI from the immutable raw text.
     """
-    title = summary.effective_title()
+    title = _PAGES_SUFFIX.sub("", summary.effective_title().strip()).rstrip()
+    if str(summary.row_category) == "3" and "[Diagnostic Study]" not in title:
+        title = f"{title} [Diagnostic Study]"
+    title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
     if summary.manual_check and not title.lstrip().startswith("[ManualCheck]"):
         title = f"[ManualCheck] {title}"
     text = summary.effective_text()

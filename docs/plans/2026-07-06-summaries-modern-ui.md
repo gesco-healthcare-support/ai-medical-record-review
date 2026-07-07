@@ -154,7 +154,60 @@ a separate follow-up, not smuggled into this change.
 - Crest asset is 221 KB (one-time cached; downscaled copy planned).
 - Rollback: `git revert` the UI commits; no schema/data implications.
 
+## Phase 2 (added 2026-07-07, Adrian's instruction): complete the entire rework
+
+Decisions (same exchange): (1) strip "(Pages X-Y)" and "[Diagnostic Study]" from
+displayed titles, recompose at export from row_start/row_end/row_category (same
+machinery as [ManualCheck]/DOI); (2) upload does NOT auto-start identification -
+the previous home.js auto-chain is REMOVED (no accidental Vertex spend; deviates
+from the mock's "identification starts automatically" copy, which is dropped);
+(3) registration password checklist (8+ chars / number / symbol) enforced BOTH
+client-side and server-side via a PasswordUtil subclass (password_util_cls,
+verified against installed Flask-Security 5.8 source).
+
+- P2-T1: title decorations round-trip -- approach: tdd
+  - files: mrr_ai/blueprints/documents_api.py (_export_entry),
+    mrr_ai/static/review.js (parseDisplay), tests/unit/test_summary_editing.py
+  - acceptance: docx titles carry [ManualCheck]/[Diagnostic Study]/(Pages X-Y)
+    exactly as the legacy format regardless of clean web edits; no doubling.
+- P2-T2: Review & correct page (settled design) -- approach: code
+  - files: mrr_ai/templates/review.html (#step-editor + panels),
+    mrr_ai/static/review.js (renderTable/save-state), mrr_ai/static/evaluators.css
+  - detail: 1320px column; filename subhead; H1 "N documents / M pages" + green
+    Saved check; gold Apply-merges, outline Insert, primary Summarize; row actions
+    move to the TITLE row (per design); category select with CSS chevron; gap rows
+    warning-tinted dashed; excluded rows dim except the Summarize cell; fixed
+    360px PDF viewer; start/progress panels restyled on tokens.
+- P2-T3: My documents page (option 1b) -- approach: code
+  - files: mrr_ai/templates/home.html, mrr_ai/static/home.js,
+    mrr_ai/static/evaluators.css, mrr_ai/blueprints/documents_api.py (rows_count
+    via one grouped count query), mrr_ai/models.py (no change unless needed)
+  - detail: status filter chips with counts + filename search + sortable headers +
+    dot badges (running counts) + overflow menu (Open / Re-run identification /
+    Delete...) + 20/page pager + first-run empty state with drop zone and 3-step
+    explainer; row click opens the review; upload lands as "Uploaded" (manual
+    start decision); poll while jobs active.
+- P2-T4: auth pages (option 1a) + password rules -- approach: tdd (rules) + code (UI)
+  - files: mrr_ai/templates/security/{base,login_user,register_user}.html,
+    mrr_ai/static/register.js, mrr_ai/security.py, tests/unit/test_auth.py,
+    tests/conftest.py (compliant test password)
+  - detail: navy bar (wordmark only) + 400px elevated card + crest + gold eyebrow;
+    danger banner on failed sign-in + field-level errors; live checklist gates the
+    submit; MrrPasswordUtil appends number/symbol rules to the stock length check.
+- P2-T5: retire review.css + PDF.js console-noise investigation -- approach: code
+  - files: mrr_ai/static/evaluators.css, delete mrr_ai/static/review.css,
+    template link tags; static/vendor/pdfjs/web/viewer.html (only if the blocked
+    inline script turns out to be vendoring damage, not stock)
+  - acceptance: no template references review.css; suite green; ruff clean;
+    node --check clean on all JS. Live browser verification deferred until
+    Adrian approves (his explicit gate).
+
 ## Verification
+
+Phase 1 (done 2026-07-06). Phase 2 verification is suite-level only until Adrian
+approves live testing: pytest (incl. new docx + password tests), ruff,
+node --check on review.js/home.js/register.js, plus Flask test-client GETs of
+/login, /register, and / to prove the rebuilt templates render.
 
 On the live dev server (seeded real cases, adriang@gesco.com):
 1. Stepper: open a done document -> Summaries active, steps 1-2 green-check; click

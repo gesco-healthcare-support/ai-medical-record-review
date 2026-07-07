@@ -567,12 +567,16 @@ async function loadSummaries() {
     renderSummaries();
 }
 
-/* The engine bakes tags into the STORED strings ("[ManualCheck] ..." titles, a
-   "**DOI**:date," text prefix). Stored data keeps them (the Word export format
-   depends on it - the server recomposes tags at export time); the web view lifts
-   them out and shows a chip / meta entry instead. */
+/* The engine bakes decorations into the STORED strings ("[ManualCheck] " and
+   "[Diagnostic Study]" title tags, a " (Pages X-Y)" title suffix, a "**DOI**:date,"
+   text prefix). Stored data keeps them (the Word export format depends on it - the
+   server recomposes every decoration at export time from structured fields); the
+   web view lifts them out and shows chips / meta entries instead. */
 function parseDisplay(item) {
-    const title = (item.summaryTitle || "").replace(/^\s*\[ManualCheck\]\s*/i, "");
+    const title = (item.summaryTitle || "")
+        .replace(/^\s*\[ManualCheck\]\s*/i, "")
+        .replace(/\s*\(Pages\s+\d+\s*[-\u2013]\s*\d+\)\s*$/i, "")
+        .replace(/\s*\[Diagnostic Study\]\s*$/i, "");
     let text = item.summaryText || "";
     let doi = null;
     const match = text.match(/^\s*\*\*DOI\*\*:\s*([^,]*),?\s*/);
