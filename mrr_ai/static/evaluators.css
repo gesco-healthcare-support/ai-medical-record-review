@@ -250,6 +250,68 @@ textarea:focus-visible, a:focus-visible {
 .summary-empty p { margin: 0 0 4px; font: 14px/1.5 var(--font-body), sans-serif; }
 .summary-empty button { margin-top: 14px; }
 
+/* ---------- auth pages (Login Rework.dc.html, option 1a) ---------- */
+
+.auth-main {
+    flex: 1; display: flex; align-items: flex-start; justify-content: center;
+    padding: 7vh 20px 64px;
+}
+.auth-card {
+    width: 400px; max-width: 100%; background: #fff; border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md); padding: 40px 36px 32px;
+    display: flex; flex-direction: column; gap: 20px;
+}
+.auth-head {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 10px; text-align: center;
+}
+.auth-crest { width: 48px; height: auto; }
+.ev-eyebrow {
+    font: 600 12px/1 var(--font-body), sans-serif; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--gold-700);
+}
+.auth-head h1 {
+    font: 600 24px/1.2 var(--font-heading), sans-serif;
+    letter-spacing: -0.02em; color: var(--ink); margin: 0;
+}
+.auth-sub { font: 15px/1.5 var(--font-body), sans-serif; color: var(--gray-500); margin: -4px 0 0; }
+.auth-form { display: flex; flex-direction: column; gap: 20px; }
+.auth-field { display: flex; flex-direction: column; }
+.auth-field-error { color: var(--danger-500); font: 12.5px/1.4 var(--font-body), sans-serif; margin-top: 5px; }
+.ev-inp.invalid { border-color: var(--danger-500); }
+.auth-remember {
+    display: inline-flex; align-items: center; gap: 8px;
+    font: 14px/1 var(--font-body), sans-serif; color: var(--gray-600); cursor: pointer;
+}
+.ev-btn-block { width: 100%; justify-content: center; padding: 13px 16px; font-size: 14px; }
+.auth-alt {
+    text-align: center; font: 14px/1.5 var(--font-body), sans-serif; color: var(--gray-500);
+    border-top: 1px solid var(--gray-100); padding-top: 16px;
+}
+.auth-alt a { font-weight: 500; }
+.auth-alert {
+    display: flex; gap: 10px; align-items: flex-start;
+    background: var(--danger-100); border: 1px solid var(--danger-500);
+    border-radius: var(--radius-md); padding: 12px 14px;
+    font: 500 13.5px/1.5 var(--font-body), sans-serif; color: var(--danger-500);
+}
+.auth-alert svg { flex: none; margin-top: 2px; }
+.auth-checklist { display: flex; flex-direction: column; gap: 5px; padding: 8px 2px 0; }
+.auth-check {
+    display: flex; align-items: center; gap: 8px;
+    font: 13px/1.4 var(--font-body), sans-serif; color: var(--gray-400);
+}
+.auth-check.met { color: var(--gray-600); }
+.auth-check.met .auth-check-icon { color: var(--success-500); }
+.auth-check.failed { color: var(--danger-500); }
+.auth-check.unmet .auth-check-icon { color: var(--gray-300); }
+.auth-check-icon { display: inline-flex; width: 14px; height: 14px; }
+/* Flask-Security flash messages (security/_messages.html) */
+.auth-card .flashes, .auth-card .fs-gen-msgs {
+    list-style: none; margin: 0; padding: 0;
+    font: 13px/1.5 var(--font-body), sans-serif; color: var(--gray-600);
+}
+
 /* ---------- my documents (My Documents Rework.dc.html, option 1b) ---------- */
 
 .hd-column { width: 100%; max-width: 1200px; margin: 0 auto; padding: 28px 32px 40px; }
