@@ -53,6 +53,11 @@
     --radius-md: 8px;
     --radius-lg: 12px;
     --radius-pill: 999px;
+    /* Fluid layout: the side gutter grows slowly and caps at 72px, so extra screen
+       width feeds the CONTENT, not the margins. --content-cap is a safety valve that
+       only engages past QHD (keeps text/tables from absurd line lengths on 4K). */
+    --gutter: clamp(20px, 3.5vw, 72px);
+    --content-cap: 2560px;
     /* Type (stacks are appended at the point of use, as the design files do) */
     --font-heading: "Poppins";
     --font-body: "Inter";
@@ -191,7 +196,8 @@ textarea:focus-visible, a:focus-visible {
 
 #step-summaries { flex: 1; overflow: auto; }
 .sum-column {
-    max-width: 900px; margin: 0 auto; padding: 22px 28px 40px; box-sizing: border-box;
+    width: 100%; max-width: var(--content-cap); margin: 0 auto;
+    padding: 22px var(--gutter) 40px; box-sizing: border-box;
 }
 .sum-header {
     display: flex; justify-content: space-between; align-items: center;
@@ -253,7 +259,11 @@ textarea:focus-visible, a:focus-visible {
 /* ---------- auth pages (Login Rework.dc.html, option 1a) ---------- */
 
 .auth-main {
-    flex: 1; display: flex; align-items: flex-start; justify-content: center;
+    /* Column flex (inherited from the base `main` rule): align-items is the
+       HORIZONTAL axis here, so it must be center to place the card mid-screen;
+       justify-content pins it near the top under the bar. */
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: flex-start;
     padding: 7vh 20px 64px;
 }
 .auth-card {
@@ -314,7 +324,10 @@ textarea:focus-visible, a:focus-visible {
 
 /* ---------- my documents (My Documents Rework.dc.html, option 1b) ---------- */
 
-.hd-column { width: 100%; max-width: 1200px; margin: 0 auto; padding: 28px 32px 40px; }
+.hd-column {
+    width: 100%; max-width: var(--content-cap); margin: 0 auto;
+    padding: 28px var(--gutter) 40px;
+}
 .hd-header {
     display: flex; justify-content: space-between; align-items: flex-end;
     gap: 16px; flex-wrap: wrap; margin-bottom: 18px;
@@ -471,8 +484,8 @@ textarea:focus-visible, a:focus-visible {
 #step-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
 .rc-column {
     flex: 1; display: flex; flex-direction: column; min-height: 0;
-    width: 100%; max-width: 1320px; margin: 0 auto;
-    padding: 20px 28px 32px;
+    width: 100%; max-width: var(--content-cap); margin: 0 auto;
+    padding: 20px var(--gutter) 32px;
 }
 .rc-filename { font: 14px/1.4 var(--font-body), sans-serif; color: var(--gray-500); margin-bottom: 2px; }
 .rc-header {
@@ -499,13 +512,18 @@ textarea:focus-visible, a:focus-visible {
 }
 input.invalid { border-color: var(--danger-500) !important; }
 
+/* Table and viewer split the width 55/45 (grow values) and both fill the viewport
+   height under the topbar+stepper+header, so the PDF is a real working surface that
+   scales with the screen instead of a fixed 360px box. They stack below ~1040px. */
 .editor-split { flex: 1; display: flex; gap: 16px; align-items: stretch; min-height: 0; flex-wrap: wrap; }
 .table-wrap {
-    flex: 1 1 640px; min-width: min(640px, 100%); max-height: 640px; overflow: auto;
+    flex: 55 1 560px; min-width: min(560px, 100%);
+    height: clamp(520px, calc(100vh - 232px), 1000px); overflow: auto;
     background: #fff; border: 1px solid var(--gray-200); border-radius: var(--radius-lg);
 }
 .viewer-wrap {
-    flex: 1 1 360px; max-width: 360px; min-width: min(320px, 100%); min-height: 560px;
+    flex: 45 1 440px; min-width: min(420px, 100%);
+    height: clamp(520px, calc(100vh - 232px), 1000px);
     border: 1px solid var(--gray-200); border-radius: var(--radius-lg); overflow: hidden;
 }
 #pdfFrame { width: 100%; height: 100%; border: 0; background: #525659; }
