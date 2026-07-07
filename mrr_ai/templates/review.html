@@ -103,24 +103,63 @@
 
     <!-- summaries -->
     <section id="step-summaries" class="hidden">
-        <div class="editor-toolbar">
-            <div class="toolbar-status">
-                <strong id="summaryCount"></strong>
-                <span id="summaryPager" class="pager hidden"></span>
-                <span class="muted save-state" id="summarySaveState"></span>
+        <div class="sum-column">
+            <div class="sum-header">
+                <div>
+                    <h1>Summaries</h1>
+                    <div class="sum-countline">
+                        <span id="summaryCount"></span>
+                        <span id="summarySaveState"></span>
+                    </div>
+                </div>
+                <button id="exportBtn" class="ev-btn ev-btn-primary" type="button">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="M7 10l5 5 5-5"></path><path d="M12 15V3"></path></svg>
+                    Export to Word
+                </button>
             </div>
-            <div class="export-bar">
-                <input id="expPatient" placeholder="Patient name" aria-label="Patient name">
-                <input id="expDob" placeholder="DOB" aria-label="Date of birth">
-                <input id="expQme" placeholder="QME/AME" aria-label="QME or AME title">
-                <input id="expFirm" placeholder="Law firm" aria-label="Law firm">
-                <button id="exportBtn" class="primary" type="button">Export to Word</button>
-            </div>
+            <div id="summaryList" class="summary-list"></div>
+            <div id="summaryPagerBottom" class="ev-pager hidden"></div>
         </div>
-        <div id="summaryList" class="summary-list"></div>
-        <div id="summaryPagerBottom" class="pager pager-bottom hidden"></div>
     </section>
 </main>
+
+<!-- export dialog: the four Word-header fields, shown on Export to Word -->
+<div id="exportDialog" class="ev-dialog-backdrop hidden">
+    <div class="ev-dialog" role="dialog" aria-modal="true" aria-labelledby="exportDialogTitle">
+        <div class="ev-dialog-head">
+            <div>
+                <h2 id="exportDialogTitle">Export to Word</h2>
+                <p id="exportDialogNote" class="ev-dialog-sub"></p>
+            </div>
+            <button id="exportDialogClose" class="ev-dialog-x" type="button" aria-label="Close">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+        </div>
+        <div class="ev-dialog-row">
+            <div class="ev-field-2">
+                <label class="ev-lbl" for="expPatient">Patient name</label>
+                <input id="expPatient" class="ev-inp" placeholder="Full name">
+            </div>
+            <div class="ev-field-1">
+                <label class="ev-lbl" for="expDob">DOB</label>
+                <input id="expDob" class="ev-inp" placeholder="MM/DD/YYYY">
+            </div>
+        </div>
+        <div>
+            <label class="ev-lbl" for="expQme">Evaluation type (QME / AME)</label>
+            <input id="expQme" class="ev-inp" value="PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)">
+        </div>
+        <div>
+            <label class="ev-lbl" for="expFirm">Attorney law firm</label>
+            <input id="expFirm" class="ev-inp" placeholder="Firm name">
+        </div>
+        <div class="ev-dialog-foot">
+            <span id="exportError" class="error-text"></span>
+            <button id="exportCancel" class="ev-btn ev-btn-ghost" type="button">Cancel</button>
+            <button id="exportConfirm" class="ev-btn ev-btn-primary" type="button">Export</button>
+        </div>
+    </div>
+</div>
 
 <script src="{{ url_for('static', filename='review.js') }}"></script>
 </body>

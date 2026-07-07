@@ -585,10 +585,16 @@ function parseDisplay(item) {
 
 function summaryCounts() {
     const excluded = S.summaries.filter((s) => s.excluded).length;
-    const suffix = excluded ? ` - ${excluded} excluded from export` : "";
-    $("summaryCount").textContent = S.summaries.length
-        ? `${S.summaries.length} summaries${suffix}` : "No summaries yet";
+    const n = S.summaries.length;
+    const suffix = excluded ? ` \u2014 ${excluded} excluded from export` : "";
+    $("summaryCount").textContent = n ? `${n} summar${n === 1 ? "y" : "ies"}${suffix}` : "";
 }
+
+// Lucide icons (stroke follows the chip's text color via currentColor).
+const CHIP_ICONS = {
+    review: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path></svg>',
+    edit: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>',
+};
 
 function buildSummaryCard(item) {
     const { title, text, doi } = parseDisplay(item);
@@ -598,25 +604,26 @@ function buildSummaryCard(item) {
 
     const meta = [
         item.summaryDate || "no date",
-        `pages ${item.row.start}-${item.row.end}`,
+        `pages ${item.row.start}\u2013${item.row.end}`,
         CATEGORY_LABELS[String(item.row.category)] || item.row.category,
         doi ? `DOI ${doi}` : "",
-    ].filter(Boolean).join(" - ");
+    ].filter(Boolean).join(" \u00b7 ");
 
     if (S.editingSummary !== item.idx) {
         const chips = [
-            item.manualCheck ? '<span class="chip chip-review">needs review</span>' : "",
-            item.edited ? '<span class="chip chip-edit">edited</span>' : "",
-            item.excluded ? '<span class="chip chip-off">excluded</span>' : "",
+            item.manualCheck
+                ? `<span class="ev-chip ev-chip-review">${CHIP_ICONS.review}needs review</span>` : "",
+            item.edited ? `<span class="ev-chip ev-chip-edit">${CHIP_ICONS.edit}edited</span>` : "",
+            item.excluded ? '<span class="ev-chip ev-chip-off">excluded</span>' : "",
         ].join("");
         card.innerHTML = `
             <div class="summary-head">
                 <h3 class="sum-heading"></h3>
-                <span class="chips">${chips}</span>
+                ${chips}
                 <span class="card-actions">
-                    <button class="mini" data-action="edit-summary" title="Edit this summary in place">Edit</button>
+                    <button class="ev-btn ev-btn-ghost ev-btn-sm" data-action="edit-summary" title="Edit this summary in place">Edit</button>
                     <label class="exclude-toggle" title="Excluded summaries stay here but are left out of the Word export">
-                        <input type="checkbox" data-action="toggle-exclude" ${item.excluded ? "checked" : ""}> Exclude
+                        <input type="checkbox" class="ev-cb" data-action="toggle-exclude" ${item.excluded ? "checked" : ""}> Exclude
                     </label>
                 </span>
             </div>
@@ -628,14 +635,14 @@ function buildSummaryCard(item) {
         card.classList.add("editing");
         card.innerHTML = `
             <div class="summary-head">
-                <input class="sum-title" aria-label="Summary title">
-                <input class="sum-date" aria-label="Summary date">
+                <input class="ev-inp sum-title" aria-label="Summary title">
+                <input class="ev-inp sum-date" aria-label="Summary date">
             </div>
             <div class="meta">${meta}</div>
-            <textarea class="sum-text" aria-label="Summary text"></textarea>
+            <textarea class="ev-inp sum-text" aria-label="Summary text"></textarea>
             <div class="edit-actions">
-                <button class="primary" data-action="save-summary">Save</button>
-                <button class="ghost" data-action="cancel-edit">Cancel</button>
+                <button class="ev-btn ev-btn-primary" data-action="save-summary">Save</button>
+                <button class="ev-btn ev-btn-ghost" data-action="cancel-edit">Cancel</button>
             </div>`;
         card.querySelector(".sum-title").value = title;
         card.querySelector(".sum-date").value = item.summaryDate || "";
@@ -651,14 +658,18 @@ function buildSummaryCard(item) {
 }
 
 function renderPager(pageCount) {
-    const html = pageCount > 1 ? `
-        <button class="mini" data-page="prev" ${S.summaryPage === 0 ? "disabled" : ""}>Prev</button>
-        <span>Page ${S.summaryPage + 1} of ${pageCount}</span>
-        <button class="mini" data-page="next" ${S.summaryPage >= pageCount - 1 ? "disabled" : ""}>Next</button>` : "";
-    ["summaryPager", "summaryPagerBottom"].forEach((id) => {
-        $(id).innerHTML = html;
-        $(id).classList.toggle("hidden", pageCount <= 1);
-    });
+    const pager = $("summaryPagerBottom");
+    pager.classList.toggle("hidden", pageCount <= 1);
+    if (pageCount <= 1) {
+        pager.innerHTML = "";
+        return;
+    }
+    const first = S.summaryPage * SUMMARY_PAGE_SIZE + 1;
+    const last = Math.min((S.summaryPage + 1) * SUMMARY_PAGE_SIZE, S.summaries.length);
+    pager.innerHTML = `
+        <button class="ev-btn ev-btn-outline ev-btn-sm" data-page="prev" ${S.summaryPage === 0 ? "disabled" : ""}>Prev</button>
+        <span>Page ${S.summaryPage + 1} of ${pageCount} \u00b7 ${first}\u2013${last} of ${S.summaries.length}</span>
+        <button class="ev-btn ev-btn-outline ev-btn-sm" data-page="next" ${S.summaryPage >= pageCount - 1 ? "disabled" : ""}>Next</button>`;
 }
 
 function renderSummaries() {
@@ -672,9 +683,12 @@ function renderSummaries() {
         renderPager(0);
         const empty = document.createElement("div");
         empty.className = "summary-empty";
-        empty.innerHTML = "<p>This document has not been summarized yet.</p>";
+        empty.innerHTML = `
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><line x1="10" y1="9" x2="8" y2="9"></line></svg>
+            <p class="empty-title">No summaries yet</p>
+            <p>Summaries appear here after you run summarization from Review &amp; correct.</p>`;
         const btn = document.createElement("button");
-        btn.className = "primary";
+        btn.className = "ev-btn ev-btn-primary";
         btn.textContent = "Go to Review & correct";
         btn.addEventListener("click", () => gotoStep("review"));
         empty.appendChild(btn);
@@ -692,15 +706,13 @@ function renderSummaries() {
     show("step-summaries");
 }
 
-["summaryPager", "summaryPagerBottom"].forEach((id) => {
-    $(id).addEventListener("click", (event) => {
-        const direction = event.target.dataset.page;
-        if (!direction) return;
-        S.summaryPage += direction === "next" ? 1 : -1;
-        S.editingSummary = -1;
-        renderSummaries();
-        $("step-summaries").scrollTop = 0;
-    });
+$("summaryPagerBottom").addEventListener("click", (event) => {
+    const direction = event.target.dataset.page;
+    if (!direction) return;
+    S.summaryPage += direction === "next" ? 1 : -1;
+    S.editingSummary = -1;
+    renderSummaries();
+    $("step-summaries").scrollTop = 0;
 });
 
 async function saveSummary(idx, patch) {
@@ -743,9 +755,44 @@ $("summaryList").addEventListener("change", (event) => {
     saveSummary(Number(card.dataset.idx), { excluded: event.target.checked });
 });
 
-$("exportBtn").addEventListener("click", async () => {
-    banner("");
-    $("exportBtn").disabled = true;
+/* ---------- export dialog (the four Word-header fields) ---------- */
+
+function plural(n) {
+    return `${n} summar${n === 1 ? "y" : "ies"}`;
+}
+
+function openExportDialog() {
+    const included = S.summaries.filter((s) => !s.excluded).length;
+    const excluded = S.summaries.length - included;
+    $("exportDialogNote").textContent =
+        `These details fill the report header. ${plural(included)} will be exported`
+        + (excluded ? `; ${excluded} excluded` : "")
+        + ". Enter only what the report requires \u2014 no additional PHI.";
+    $("exportConfirm").textContent = `Export ${plural(included)}`;
+    $("exportError").textContent = "";
+    $("exportDialog").classList.remove("hidden");
+    $("expPatient").focus();
+}
+
+function closeExportDialog() {
+    $("exportDialog").classList.add("hidden");
+}
+
+$("exportBtn").addEventListener("click", openExportDialog);
+$("exportDialogClose").addEventListener("click", closeExportDialog);
+$("exportCancel").addEventListener("click", closeExportDialog);
+$("exportDialog").addEventListener("click", (event) => {
+    if (event.target === $("exportDialog")) closeExportDialog(); // backdrop click only
+});
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("exportDialog").classList.contains("hidden")) {
+        closeExportDialog();
+    }
+});
+
+$("exportConfirm").addEventListener("click", async () => {
+    $("exportConfirm").disabled = true;
+    $("exportError").textContent = "";
     try {
         const resp = await fetch(`/api/documents/${DOC_ID}/export`, {
             method: "POST",
@@ -767,10 +814,11 @@ $("exportBtn").addEventListener("click", async () => {
         a.download = "summaries.docx";
         a.click();
         URL.revokeObjectURL(a.href);
+        closeExportDialog();
     } catch (err) {
-        banner(err.message);
+        $("exportError").textContent = err.message;
     } finally {
-        $("exportBtn").disabled = false;
+        $("exportConfirm").disabled = false;
     }
 });
 
