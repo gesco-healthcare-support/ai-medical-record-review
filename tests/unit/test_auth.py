@@ -6,7 +6,7 @@ so the tests probe a SAMPLE of every blueprint anonymously and assert nothing se
 
 
 def _register(
-    client, email="new-user@example.com", password="register-test-password", confirm=None
+    client, email="new-user@example.com", password="register-test-password-1!", confirm=None
 ):
     return client.post(
         "/register",
@@ -64,11 +64,35 @@ def test_register_login_roundtrip(app, anon_client):
     fresh = app.test_client()
     login = fresh.post(
         "/login",
-        data={"email": "new-user@example.com", "password": "register-test-password"},
+        data={"email": "new-user@example.com", "password": "register-test-password-1!"},
         follow_redirects=False,
     )
     assert login.status_code == 302
     assert fresh.get("/").status_code == 200
+
+
+def test_register_rejects_password_missing_number(app, anon_client):
+    """Server-side twin of the registration checklist: a direct POST (bypassing all
+    client-side gating) must be rejected by the same rules the UI shows."""
+    response = _register(anon_client, email="np@example.com", password="letters-only-here!")
+    assert response.status_code == 200  # form re-rendered with errors
+    assert b"number" in response.data.lower()
+
+    from mrr_ai.models import User
+
+    with app.app_context():
+        assert User.query.filter_by(email="np@example.com").count() == 0
+
+
+def test_register_rejects_password_missing_symbol(app, anon_client):
+    response = _register(anon_client, email="ns@example.com", password="password1111")
+    assert response.status_code == 200
+    assert b"symbol" in response.data.lower()
+
+    from mrr_ai.models import User
+
+    with app.app_context():
+        assert User.query.filter_by(email="ns@example.com").count() == 0
 
 
 def test_authenticated_client_reaches_protected_routes(client):

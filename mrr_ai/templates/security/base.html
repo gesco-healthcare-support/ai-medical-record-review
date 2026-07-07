@@ -3,16 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MRR - sign in</title>
+    <title>{% block title %}MRR - sign in{% endblock %}</title>
     <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='review.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='evaluators.css') }}">
 </head>
 <body>
-<header class="topbar">
-    <span class="brand">MRR</span>
+<header class="ev-topbar">
+    <span class="ev-crest-chip">
+        <img src="{{ url_for('static', filename='assets/evaluators-crest.png') }}" alt="Evaluators crest">
+    </span>
+    <span class="ev-wordmark">EVALUATORS</span>
+    <span class="ev-topbar-divider"></span>
+    <span class="ev-topbar-app">Medical Record Review</span>
 </header>
-<main class="panel center-panel auth-card">
-    {% block content %}{% endblock %}
+<main class="auth-main">
+    <div class="auth-card">
+        <div class="auth-head">
+            <img class="auth-crest" src="{{ url_for('static', filename='assets/evaluators-crest.png') }}" alt="">
+            <div class="ev-eyebrow">Medical Record Review</div>
+            {% block heading %}{% endblock %}
+        </div>
+        {% block content %}{% endblock %}
+    </div>
 </main>
 </body>
 </html>

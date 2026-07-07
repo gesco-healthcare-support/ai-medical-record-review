@@ -1,17 +1,38 @@
 {% extends "security/base.html" %}
-{% from "security/_macros.html" import render_field_with_errors, render_field, render_form_errors %}
+
+{% block heading %}
+<h1>Sign in</h1>
+<p class="auth-sub">Welcome back. Sign in to your workspace.</p>
+{% endblock %}
 
 {% block content %}
-<h1>Sign in</h1>
-<p class="muted auth-sub">Medical Record Review workspace</p>
 {% include "security/_messages.html" %}
-<form action="{{ url_for_security('login') }}" method="post" name="login_user_form">
+{% if login_user_form.errors %}
+<div class="auth-alert" role="alert">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+    <span>We couldn't sign you in. Check your email and password, then try again.</span>
+</div>
+{% endif %}
+<form action="{{ url_for_security('login') }}" method="post" name="login_user_form" class="auth-form">
     {{ login_user_form.hidden_tag() }}
-    {{ render_form_errors(login_user_form) }}
-    {{ render_field_with_errors(login_user_form.email) }}
-    {{ render_field_with_errors(login_user_form.password) }}
-    {{ render_field_with_errors(login_user_form.remember) }}
-    {{ render_field(login_user_form.submit) }}
+    <div class="auth-field">
+        <label class="ev-lbl" for="email">Email address</label>
+        {{ login_user_form.email(class_="ev-inp" + (" invalid" if login_user_form.email.errors else ""),
+                                 placeholder="you@practice.com", autocomplete="email") }}
+        {% for error in login_user_form.email.errors %}
+        <div class="auth-field-error">{{ error }}</div>
+        {% endfor %}
+    </div>
+    <div class="auth-field">
+        <label class="ev-lbl" for="password">Password</label>
+        {{ login_user_form.password(class_="ev-inp" + (" invalid" if login_user_form.password.errors else ""),
+                                    placeholder="Your password", autocomplete="current-password") }}
+        {% for error in login_user_form.password.errors %}
+        <div class="auth-field-error">{{ error }}</div>
+        {% endfor %}
+    </div>
+    <label class="auth-remember">{{ login_user_form.remember(class_="ev-cb") }} Remember me</label>
+    <button type="submit" class="ev-btn ev-btn-primary ev-btn-block">Sign in</button>
 </form>
-<p class="auth-alt">No account yet? <a href="{{ url_for_security('register') }}">Register</a></p>
+<div class="auth-alt">No account yet? <a href="{{ url_for_security('register') }}">Create an account</a></div>
 {% endblock %}

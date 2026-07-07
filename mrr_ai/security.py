@@ -7,12 +7,32 @@ redirect to /login, JSON requests get 401 JSON - so the fetch()-based APIs need 
 special casing here.
 """
 
+import re
+
 from flask import request
-from flask_security import Security, SQLAlchemyUserDatastore, current_user
+from flask_security import PasswordUtil, Security, SQLAlchemyUserDatastore, current_user
 from flask_wtf import CSRFProtect
 
 # Endpoints reachable without a session. Everything else is denied by default.
 PUBLIC_ENDPOINTS = {"security.login", "security.register", "static"}
+
+
+class MrrPasswordUtil(PasswordUtil):
+    """Server-side twin of the registration checklist (8+ characters via the stock
+    length validator, plus a number and a symbol) so a direct API POST can never
+    register a password the UI would reject. Applies wherever Flask-Security
+    validates a NEW password (register, change, reset) - never at login."""
+
+    def validate(self, password, is_register, **kwargs):
+        messages, normalized = super().validate(password, is_register, **kwargs)
+        extra = []
+        if not re.search(r"\d", normalized):
+            extra.append("Password must contain a number")
+        if not re.search(r"[^A-Za-z0-9]", normalized):
+            extra.append("Password must contain a symbol")
+        if extra:
+            messages = (messages or []) + extra
+        return messages, normalized
 
 
 def init_security(app):
@@ -26,7 +46,7 @@ def init_security(app):
     from mrr_ai.models import Role, User
 
     datastore = SQLAlchemyUserDatastore(db, User, Role)
-    security = Security(app, datastore)
+    security = Security(app, datastore, password_util_cls=MrrPasswordUtil)
 
     @app.before_request
     def _require_authentication():
