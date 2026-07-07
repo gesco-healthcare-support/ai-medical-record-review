@@ -535,7 +535,7 @@ input.invalid { border-color: var(--danger-500) !important; }
     padding: 10px; border-bottom: 1px solid var(--gray-200); white-space: nowrap;
 }
 #rowsTable th.col-num { width: 34px; }
-#rowsTable th.col-page { width: 66px; }
+#rowsTable th.col-page { width: 88px; }
 #rowsTable th.col-category { min-width: 210px; }
 #rowsTable th.col-date { width: 120px; }
 #rowsTable th.col-check { width: 64px; text-align: center; }
@@ -571,6 +571,17 @@ td.rc-titletd.col-num { color: var(--gray-400); font: 13px/1.8 var(--font-body),
 }
 .rc-inp:hover { border-color: var(--color-border-strong); }
 .rc-inp:focus { outline: none; border-color: var(--color-border-focus); box-shadow: var(--shadow-focus); }
+/* Start/End are page numbers up to the document's page count (3 digits). The native
+   number-spinner + default padding left room for barely one digit, clipping anything
+   >= 10. Drop the low-value spinner and tighten padding so every value stays visible. */
+#rowsTable input[type="number"] {
+    padding-left: 8px; padding-right: 6px;
+    -moz-appearance: textfield; appearance: textfield;
+}
+#rowsTable input[type="number"]::-webkit-outer-spin-button,
+#rowsTable input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none; margin: 0;
+}
 .rc-selwrap { position: relative; display: block; }
 .rc-sel {
     appearance: none; -webkit-appearance: none; width: 100%;
