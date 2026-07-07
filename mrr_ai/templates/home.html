@@ -5,13 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MRR - my documents</title>
     <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='review.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='evaluators.css') }}">
 </head>
 <body>
-<header class="topbar">
-    <a class="brand" href="/">MRR</a>
-    <div style="flex:1"></div>
-    <nav class="top-actions">
+<header class="ev-topbar">
+    <span class="ev-crest-chip">
+        <img src="{{ url_for('static', filename='assets/evaluators-crest.png') }}" alt="Evaluators crest">
+    </span>
+    <span class="ev-wordmark">EVALUATORS</span>
+    <span class="ev-topbar-divider"></span>
+    <span class="ev-topbar-app">Medical Record Review</span>
+    <nav class="ev-topbar-nav">
         <a href="/classic" title="The original pages UI">Classic UI</a>
         <a href="/logout" title="Sign out">Log out</a>
     </nav>
@@ -20,30 +25,80 @@
 <div id="banner" class="banner hidden"></div>
 
 <main>
-    <section class="panel home-panel">
-        <div class="home-header">
+    <!-- populated listing -->
+    <section id="docsView" class="hd-column hidden">
+        <div class="hd-header">
             <h1>My documents</h1>
-            <form id="uploadForm">
-                <label class="file-drop file-drop-inline">
-                    <input type="file" id="pdfInput" accept="application/pdf" required>
-                    <span id="fileLabel">Choose a PDF...</span>
-                </label>
-                <button type="submit" class="primary" id="uploadBtn">Upload &amp; identify documents</button>
-            </form>
+            <button id="uploadBtn" class="ev-btn ev-btn-primary ev-btn-lg" type="button">Upload a record</button>
         </div>
-        <table class="docs-table">
-            <thead>
-            <tr>
-                <th>Document</th><th>Pages</th><th>Uploaded</th><th>Status</th><th></th>
-            </tr>
-            </thead>
-            <tbody id="docsBody">
-            <tr><td colspan="5" class="muted">Loading...</td></tr>
-            </tbody>
-        </table>
+        <div class="hd-toolbar">
+            <div id="filterChips" class="hd-chips"></div>
+            <input id="searchInput" class="ev-inp hd-search" type="search"
+                   placeholder="Search by filename..." aria-label="Search by filename">
+        </div>
+        <div class="hd-card" id="tableCard">
+            <table class="hd-table">
+                <thead>
+                <tr>
+                    <th data-sort="name">Document</th>
+                    <th data-sort="pages" class="hd-w-pages">Pages</th>
+                    <th data-sort="uploaded" class="hd-w-uploaded">Uploaded</th>
+                    <th data-sort="found" class="hd-w-found">Documents found</th>
+                    <th data-sort="activity" class="hd-w-activity">Last activity</th>
+                    <th class="hd-w-status">Status</th>
+                    <th class="hd-w-menu"></th>
+                </tr>
+                </thead>
+                <tbody id="docsBody"></tbody>
+            </table>
+            <div class="hd-foot">
+                <span id="pageInfo"></span>
+                <div class="hd-foot-nav">
+                    <button id="prevPage" class="ev-btn ev-btn-outline ev-btn-sm" type="button">Prev</button>
+                    <button id="nextPage" class="ev-btn ev-btn-outline ev-btn-sm" type="button">Next</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- first-run empty state -->
+    <section id="emptyView" class="hd-empty hidden">
+        <h1>Start your first review</h1>
+        <p class="hd-empty-sub">Upload a medical record and MRR identifies the documents inside
+            it. You review and correct the result before anything is summarized.</p>
+        <div id="dropZone" class="hd-drop" role="button" tabindex="0"
+             aria-label="Drag a PDF here, or browse your files">
+            <span class="hd-drop-icon">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 13v8"></path><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path><path d="m8 17 4-4 4 4"></path></svg>
+            </span>
+            <div class="hd-drop-title">Drag a PDF here, or browse your files</div>
+            <div class="hd-drop-sub">One record per upload</div>
+            <button id="browseBtn" class="ev-btn ev-btn-outline" type="button">Browse files</button>
+        </div>
+        <div class="hd-steps">
+            <div class="hd-step">
+                <span class="hd-step-num">1</span>
+                <div class="hd-step-title">Upload the record</div>
+                <div class="hd-step-sub">The PDF is split into its component documents and each
+                    one is categorized.</div>
+            </div>
+            <div class="hd-step">
+                <span class="hd-step-num">2</span>
+                <div class="hd-step-title">Review &amp; correct</div>
+                <div class="hd-step-sub">Check page ranges, categories, and dates side by side
+                    with the PDF. Merge, split, or skip documents.</div>
+            </div>
+            <div class="hd-step">
+                <span class="hd-step-num">3</span>
+                <div class="hd-step-title">Export summaries</div>
+                <div class="hd-step-sub">Each document is summarized; you edit or exclude, then
+                    export the review to Word.</div>
+            </div>
+        </div>
     </section>
 </main>
 
+<input type="file" id="pdfInput" accept="application/pdf" class="hidden" aria-hidden="true">
 <script src="{{ url_for('static', filename='home.js') }}"></script>
 </body>
 </html>

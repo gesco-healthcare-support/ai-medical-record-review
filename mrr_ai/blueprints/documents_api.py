@@ -17,6 +17,7 @@ import uuid
 
 from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_security import current_user
+from sqlalchemy import func
 
 from mrr_ai import config
 from mrr_ai.blueprints.export import _DOCX_MIMETYPE, _build_mrr_document
@@ -119,7 +120,18 @@ def list_documents():
     documents = (
         Document.query.filter_by(user_id=current_user.id).order_by(Document.created_at.desc()).all()
     )
-    return jsonify([document.listing() for document in documents])
+    # "Documents found" for the landing table: one grouped count, because touching
+    # each document's rows relationship would load every full row set per request.
+    counts = dict(
+        db.session.query(ReviewRow.document_id, func.count(ReviewRow.id))
+        .join(Document, Document.id == ReviewRow.document_id)
+        .filter(Document.user_id == current_user.id)
+        .group_by(ReviewRow.document_id)
+        .all()
+    )
+    return jsonify(
+        [document.listing() | {"rows_count": counts.get(document.id, 0)} for document in documents]
+    )
 
 
 @bp.route("/<document_id>", methods=["GET"])
