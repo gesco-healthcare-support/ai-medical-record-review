@@ -6,17 +6,20 @@ so the tests probe a SAMPLE of every blueprint anonymously and assert nothing se
 
 
 def _register(
-    client, email="new-user@example.com", password="register-test-password-1!", confirm=None
+    client,
+    email="new-user@example.com",
+    password="register-test-password-1!",
+    confirm=None,
+    name="Sample Reviewer",
 ):
-    return client.post(
-        "/register",
-        data={
-            "email": email,
-            "password": password,
-            "password_confirm": confirm if confirm is not None else password,
-        },
-        follow_redirects=False,
-    )
+    data = {
+        "email": email,
+        "password": password,
+        "password_confirm": confirm if confirm is not None else password,
+    }
+    if name is not None:
+        data["name"] = name
+    return client.post("/register", data=data, follow_redirects=False)
 
 
 def test_anonymous_html_requests_redirect_to_login(anon_client):
@@ -59,7 +62,8 @@ def test_register_login_roundtrip(app, anon_client):
     from mrr_ai.models import User
 
     with app.app_context():
-        assert User.query.filter_by(email="new-user@example.com").count() == 1
+        user = User.query.filter_by(email="new-user@example.com").one()
+        assert user.name == "Sample Reviewer"  # the Name field is persisted
 
     fresh = app.test_client()
     login = fresh.post(
@@ -69,6 +73,17 @@ def test_register_login_roundtrip(app, anon_client):
     )
     assert login.status_code == 302
     assert fresh.get("/").status_code == 200
+
+
+def test_register_requires_name(app, anon_client):
+    """Name is required at the form level (the column stays nullable for legacy rows)."""
+    response = _register(anon_client, email="noname@example.com", name=None)
+    assert response.status_code == 200  # re-rendered with errors, no redirect
+
+    from mrr_ai.models import User
+
+    with app.app_context():
+        assert User.query.filter_by(email="noname@example.com").count() == 0
 
 
 def test_register_rejects_password_missing_number(app, anon_client):

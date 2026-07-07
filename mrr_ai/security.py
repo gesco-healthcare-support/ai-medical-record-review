@@ -10,11 +10,28 @@ special casing here.
 import re
 
 from flask import request
-from flask_security import PasswordUtil, Security, SQLAlchemyUserDatastore, current_user
+from flask_security import (
+    PasswordUtil,
+    RegisterFormV2,
+    Security,
+    SQLAlchemyUserDatastore,
+    current_user,
+)
 from flask_wtf import CSRFProtect
+from wtforms import StringField
+from wtforms.validators import DataRequired, Length
 
 # Endpoints reachable without a session. Everything else is denied by default.
 PUBLIC_ENDPOINTS = {"security.login", "security.register", "static"}
+
+
+class MrrRegisterForm(RegisterFormV2):
+    """Adds a required display name to registration. Because User has a matching
+    ``name`` column, Flask-Security's ``to_dict(only_user=True)`` passes it straight
+    to ``create_user`` - no view override needed. Ordered first so it renders above
+    email in the default field iteration used by any generic template."""
+
+    name = StringField("Name", validators=[DataRequired(), Length(max=255)])
 
 
 class MrrPasswordUtil(PasswordUtil):
@@ -46,7 +63,12 @@ def init_security(app):
     from mrr_ai.models import Role, User
 
     datastore = SQLAlchemyUserDatastore(db, User, Role)
-    security = Security(app, datastore, password_util_cls=MrrPasswordUtil)
+    security = Security(
+        app,
+        datastore,
+        register_form=MrrRegisterForm,
+        password_util_cls=MrrPasswordUtil,
+    )
 
     @app.before_request
     def _require_authentication():

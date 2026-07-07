@@ -25,7 +25,10 @@ class Role(db.Model, fsqla.FsRoleMixin):
 
 
 class User(db.Model, fsqla.FsUserMixin):
-    pass
+    # Display name collected at registration. Nullable at the DB level so the boot
+    # migration can add it to databases with existing users (who have no name);
+    # registration enforces it via a form validator instead.
+    name = db.Column(db.String(255), nullable=True)
 
 
 def _utcnow():
