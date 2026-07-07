@@ -49,7 +49,7 @@
         <h1 id="startTitle">Ready to identify documents</h1>
         <p class="muted" id="startHint">The record is split into its component documents and
             categorized. You review and correct the result before any summaries are written.</p>
-        <button id="startSegment" class="primary" type="button">Identify documents</button>
+        <button id="startSegment" class="ev-btn ev-btn-primary ev-btn-lg" type="button">Identify documents</button>
     </section>
 
     <!-- progress (identification or summarization) -->
@@ -61,42 +61,45 @@
 
     <!-- review & correct -->
     <section id="step-editor" class="hidden">
-        <div class="editor-toolbar">
-            <div class="toolbar-status">
-                <strong id="docCount"></strong>
-                <span id="validationMsg" class="error-text"></span>
-                <span id="saveState" class="muted save-state"></span>
+        <div class="rc-column">
+            <div class="rc-filename" id="docFilename"></div>
+            <div class="rc-header">
+                <div class="rc-status">
+                    <h1 id="docCount"></h1>
+                    <span id="saveState" class="rc-save"></span>
+                    <span id="validationMsg" class="error-text"></span>
+                </div>
+                <div class="rc-actions">
+                    <button id="applySuggestions" class="ev-btn ev-btn-gold hidden" type="button"></button>
+                    <button id="addRow" class="ev-btn ev-btn-outline" type="button">+ Insert document</button>
+                    <span id="addForm" class="add-form hidden">
+                        pages <input id="addStart" type="number" min="1" aria-label="First page of the new document">
+                        to <input id="addEnd" type="number" min="1" aria-label="Last page of the new document">
+                        <button id="addConfirm" class="ev-btn ev-btn-sm ev-btn-outline" type="button">Insert</button>
+                        <button id="addCancel" class="ev-btn ev-btn-sm ev-btn-ghost" type="button">Cancel</button>
+                    </span>
+                    <button id="summarizeBtn" class="ev-btn ev-btn-primary ev-btn-lg" type="button">Summarize</button>
+                </div>
             </div>
-            <div class="toolbar-actions">
-                <button id="applySuggestions" class="ghost suggest-bulk hidden" type="button"></button>
-                <button id="addRow" class="ghost" type="button">+ Insert document</button>
-                <span id="addForm" class="add-form hidden">
-                    pages <input id="addStart" type="number" min="1" aria-label="First page of the new document">
-                    to <input id="addEnd" type="number" min="1" aria-label="Last page of the new document">
-                    <button id="addConfirm" class="mini" type="button">Insert</button>
-                    <button id="addCancel" class="mini" type="button">Cancel</button>
-                </span>
-                <button id="summarizeBtn" class="primary" type="button">Summarize</button>
-            </div>
-        </div>
-        <div class="editor-split">
-            <div class="table-wrap">
-                <table id="rowsTable">
-                    <thead>
-                    <tr>
-                        <th class="col-num">#</th><th class="col-page">Start</th>
-                        <th class="col-page">End</th><th class="col-category">Category</th>
-                        <th class="col-date">Date</th>
-                        <th class="col-check" title="Flag for manual review">Review</th>
-                        <th class="col-check" title="Include this document in summarization">Summarize</th>
-                        <th class="col-actions"></th>
-                    </tr>
-                    </thead>
-                    <tbody id="rowsBody"></tbody>
-                </table>
-            </div>
-            <div class="viewer-wrap">
-                <iframe id="pdfFrame" title="PDF viewer"></iframe>
+            <div class="editor-split">
+                <div class="table-wrap">
+                    <table id="rowsTable">
+                        <thead>
+                        <tr>
+                            <th class="col-num">#</th><th class="col-page">Start</th>
+                            <th class="col-page">End</th><th class="col-category">Category</th>
+                            <th class="col-date">Date</th>
+                            <th class="col-check" title="Flag for manual review">Review</th>
+                            <th class="col-check col-sum" title="Include this document in summarization">Summarize</th>
+                            <th class="col-actions"></th>
+                        </tr>
+                        </thead>
+                        <tbody id="rowsBody"></tbody>
+                    </table>
+                </div>
+                <div class="viewer-wrap">
+                    <iframe id="pdfFrame" title="PDF viewer"></iframe>
+                </div>
             </div>
         </div>
     </section>

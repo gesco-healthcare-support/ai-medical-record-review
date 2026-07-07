@@ -158,6 +158,7 @@ async function boot() {
     S.categories = detail.categories || [];
     S.rows = detail.rows || [];
     S.status = detail.status;
+    $("docFilename").textContent = detail.original_filename || "";
 
     const job = detail.active_job;
     if (job && job.kind === "segment") return watchSegment();
@@ -290,9 +291,19 @@ function jumpTo(page) {
 
 /* Autosave: corrections must survive switching documents / closing the tab. Saves are
    debounced and only sent for VALID states (invalid intermediate edits stay local). */
+const SAVE_CHECK =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>';
+
+function setSaveState(kind, message) {
+    const el = $("saveState");
+    el.className = `rc-save ${kind}`;
+    if (kind === "saved") el.innerHTML = `${SAVE_CHECK}Saved`;
+    else el.textContent = message || "";
+}
+
 function scheduleSave() {
     clearTimeout(S.saveTimer);
-    $("saveState").textContent = "Unsaved changes...";
+    setSaveState("dirty", "Unsaved changes...");
     S.saveTimer = setTimeout(saveRows, 800);
 }
 
@@ -300,9 +311,9 @@ async function saveRows() {
     if (!S.rows.length || rowErrors().size) return;
     try {
         await api("/rows", { method: "PUT", json: { rows: S.rows } });
-        $("saveState").textContent = "Saved";
+        setSaveState("saved");
     } catch (err) {
-        $("saveState").textContent = `Not saved: ${err.message}`;
+        setSaveState("error", `Not saved: ${err.message}`);
     }
 }
 
@@ -350,18 +361,31 @@ function renderTable() {
         previousEnd = Math.max(previousEnd, Number(row.end) || previousEnd);
 
         const included = row.include !== false;
-        // The TITLE row leads its group (title above the fields it describes) and is
-        // editable in place; empty titles persist as "-" server-side.
+        // The TITLE row leads its group (title above the fields it describes, row
+        // actions on its right per the settled design) and is editable in place;
+        // empty titles persist as "-" server-side.
+        const actions = S.splitting === i
+            ? `at page <input type="number" class="split-page" min="${Number(row.start) + 1}" max="${row.end}" value="${Number(row.start) + 1}" aria-label="First page of the second document">
+               <button class="ev-btn ev-btn-sm ev-btn-outline" data-action="split-confirm">Split</button>
+               <button class="ev-btn ev-btn-sm ev-btn-ghost" data-action="split-cancel">Cancel</button>`
+            : `${row.suggest_merge && i > 0 ? '<button class="ev-btn ev-btn-sm ev-btn-gold" data-action="merge" title="The AI double-checked this boundary and believes it continues the document above">Likely same doc \u2014 merge?</button>' : ""}
+               ${i > 0 ? '<button class="ev-btn ev-btn-sm ev-btn-outline" data-action="merge" title="Merge into the document above">Merge up</button>' : ""}
+               ${Number(row.end) > Number(row.start) ? '<button class="ev-btn ev-btn-sm ev-btn-outline" data-action="split" title="Split this document into two">Split</button>' : ""}
+               <button class="ev-btn ev-btn-sm ev-btn-del" data-action="delete" title="Remove this row">Delete</button>`;
+
         const titleRow = document.createElement("tr");
         titleRow.className = "doc-row title-row" + (S.selected === i ? " selected" : "")
             + (included ? "" : " skipped");
         titleRow.dataset.idx = i;
         titleRow.innerHTML = `
-            <td class="col-num">${i + 1}</td>
-            <td colspan="7" class="row-title">
-                <input type="text" data-field="title" placeholder="(untitled document)" aria-label="Document title">
+            <td class="col-num rc-titletd">${i + 1}</td>
+            <td colspan="7" class="rc-titletd">
+                <div class="rc-titlebar">
+                    <input type="text" class="rc-title" data-field="title" placeholder="(untitled document)" aria-label="Document title">
+                    <span class="rc-rowactions">${actions}</span>
+                </div>
             </td>`;
-        titleRow.querySelector("input").value =
+        titleRow.querySelector("input.rc-title").value =
             row.title && row.title !== "-" ? row.title : "";
         body.appendChild(titleRow);
 
@@ -371,21 +395,13 @@ function renderTable() {
         tr.dataset.idx = i;
         tr.innerHTML = `
             <td class="col-num"></td>
-            <td><input type="number" data-field="start" value="${row.start}" min="1" max="${S.totalPages}"></td>
-            <td><input type="number" data-field="end" value="${row.end}" min="1" max="${S.totalPages}"></td>
-            <td><select data-field="category">${categoryOptions(row.category)}</select></td>
-            <td><input type="text" class="date-input" data-field="date" value="${row.date || "-"}"></td>
-            <td class="col-check"><input type="checkbox" data-field="flag" ${String(row.flag).toLowerCase() === "x" ? "checked" : ""}></td>
-            <td class="col-check"><input type="checkbox" data-field="include" ${included ? "checked" : ""}></td>
-            <td class="row-actions">
-                ${S.splitting === i ? `at page <input type="number" class="split-page" min="${Number(row.start) + 1}" max="${row.end}" value="${Number(row.start) + 1}" aria-label="First page of the second document">
-                <button class="mini" data-action="split-confirm">Split</button>
-                <button class="mini" data-action="split-cancel">Cancel</button>` : `
-                ${row.suggest_merge && i > 0 ? '<button class="mini suggest" data-action="merge" title="The AI double-checked this boundary and believes it continues the document above">Likely same doc - merge?</button>' : ""}
-                ${i > 0 ? '<button class="mini" data-action="merge" title="Merge into the document above">Merge up</button>' : ""}
-                ${Number(row.end) > Number(row.start) ? '<button class="mini" data-action="split" title="Split this document into two">Split</button>' : ""}
-                <button class="mini" data-action="delete" title="Remove this row">Delete</button>`}
-            </td>`;
+            <td><input type="number" class="rc-inp" data-field="start" value="${row.start}" min="1" max="${S.totalPages}"></td>
+            <td><input type="number" class="rc-inp" data-field="end" value="${row.end}" min="1" max="${S.totalPages}"></td>
+            <td><span class="rc-selwrap"><select class="rc-sel" data-field="category">${categoryOptions(row.category)}</select></span></td>
+            <td><input type="text" class="rc-inp" data-field="date" value="${row.date || "-"}"></td>
+            <td class="col-check"><input type="checkbox" class="ev-cb" data-field="flag" ${String(row.flag).toLowerCase() === "x" ? "checked" : ""}></td>
+            <td class="col-check col-sum"><input type="checkbox" class="ev-cb" data-field="include" ${included ? "checked" : ""}></td>
+            <td></td>`;
         body.appendChild(tr);
     });
 
