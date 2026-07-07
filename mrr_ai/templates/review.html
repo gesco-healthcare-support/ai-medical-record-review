@@ -10,18 +10,36 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='evaluators.css') }}">
 </head>
 <body data-doc-id="{{ document_id }}">
-<header class="topbar">
-    <a class="brand" href="/">MRR</a>
-    <ol class="steps" aria-label="Pipeline steps">
-        <li data-step="identify" title="Run or re-run document identification">Identify documents</li>
-        <li data-step="review" title="Correct the identified documents">Review &amp; correct</li>
-        <li data-step="summaries" title="Read, edit, and export the summaries">Summaries</li>
-    </ol>
-    <nav class="top-actions">
+<header class="ev-topbar">
+    <a class="ev-crest-chip" href="/" title="Back to your documents">
+        <img src="{{ url_for('static', filename='assets/evaluators-crest.png') }}" alt="Evaluators crest">
+    </a>
+    <span class="ev-wordmark">EVALUATORS</span>
+    <span class="ev-topbar-divider"></span>
+    <span class="ev-topbar-app">Medical Record Review</span>
+    <nav class="ev-topbar-nav">
         <a href="/" title="Back to your documents">My documents</a>
         <a href="/classic" title="The original pages UI">Classic UI</a>
+        <a href="/logout" title="Sign out">Log out</a>
     </nav>
 </header>
+
+<nav class="ev-stepper" aria-label="Pipeline steps">
+    <div class="ev-step" data-step="identify" title="Run or re-run document identification">
+        <span class="ev-step-circle" data-num="1"></span>
+        <span class="ev-step-label">Identify documents</span>
+    </div>
+    <span class="ev-step-line"></span>
+    <div class="ev-step" data-step="review" title="Correct the identified documents">
+        <span class="ev-step-circle" data-num="2"></span>
+        <span class="ev-step-label">Review &amp; correct</span>
+    </div>
+    <span class="ev-step-line"></span>
+    <div class="ev-step" data-step="summaries" title="Read, edit, and export the summaries">
+        <span class="ev-step-circle" data-num="3"></span>
+        <span class="ev-step-label">Summaries</span>
+    </div>
+</nav>
 
 <div id="banner" class="banner hidden"></div>
 

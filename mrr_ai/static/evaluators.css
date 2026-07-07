@@ -72,6 +72,54 @@ textarea:focus-visible, a:focus-visible {
     *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 
+/* ---------- app shell: navy top bar + numbered pipeline stepper ---------- */
+
+.ev-topbar {
+    display: flex; align-items: center; gap: 16px;
+    background: var(--navy-600); padding: 0 28px; height: 58px; flex: none;
+}
+.ev-crest-chip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 38px; height: 38px; background: #fff; border-radius: 8px; flex: none;
+}
+.ev-crest-chip img { width: 28px; height: auto; }
+.ev-wordmark {
+    font: 600 13px/1 var(--font-heading), sans-serif;
+    letter-spacing: .16em; color: #fff;
+}
+.ev-topbar-divider { width: 1px; height: 16px; background: var(--navy-400); }
+.ev-topbar-app { font: 13px/1 var(--font-body), sans-serif; color: var(--color-text-on-navy); }
+.ev-topbar-nav { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+.ev-topbar-nav a {
+    font: 13px/1 var(--font-body), sans-serif; color: var(--color-text-on-navy);
+    text-decoration: none; transition: color .12s;
+}
+.ev-topbar-nav a:hover { color: #fff; }
+
+.ev-stepper {
+    display: flex; align-items: center; background: #fff;
+    border-bottom: 1px solid var(--gray-200); padding: 14px 28px; flex: none;
+}
+.ev-step { display: flex; align-items: center; gap: 11px; cursor: pointer; user-select: none; }
+.ev-step.busy { cursor: default; opacity: .65; pointer-events: none; }
+.ev-step-line { width: 56px; height: 1px; background: var(--gray-200); margin: 0 18px; }
+.ev-step-circle {
+    width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--gray-100); color: var(--gray-400);
+    font: 600 13px/1 var(--font-heading), sans-serif;
+}
+.ev-step-circle::before { content: attr(data-num); }
+.ev-step-label { font: 500 14px/1 var(--font-body), sans-serif; color: var(--gray-400); }
+.ev-step:not(.active):not(.busy):hover .ev-step-label { color: var(--ink); }
+.ev-step.active .ev-step-circle { background: var(--navy-600); color: #fff; }
+.ev-step.active .ev-step-label { font-weight: 600; color: var(--ink); }
+.ev-step.done .ev-step-circle { background: var(--success-500); }
+.ev-step.done .ev-step-circle::before {
+    content: ""; width: 13px; height: 13px;
+    background: url('data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%23fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"%3E%3Cpath d="M20 6 9 17l-5-5"/%3E%3C/svg%3E') center / contain no-repeat;
+}
+.ev-step.done .ev-step-label { color: var(--gray-600); }
+
 /* ---------- buttons ---------- */
 
 .ev-btn {

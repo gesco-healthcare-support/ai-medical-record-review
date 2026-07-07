@@ -48,16 +48,22 @@ const CATEGORY_LABELS = {
     "100": "100 - General / other",
 };
 
+const STEP_ORDER = ["identify", "review", "summaries"];
+
 function show(section, activeStep) {
     sections.forEach((id) => $(id).classList.toggle("hidden", id !== section));
     const defaults = {
         "step-start": "identify", "step-progress": "identify",
         "step-editor": "review", "step-summaries": "summaries",
     };
-    const active = activeStep || defaults[section];
-    document.querySelectorAll(".steps li").forEach((li) => {
-        li.classList.toggle("active", li.dataset.step === active);
-        li.classList.toggle("busy", Boolean(S.watching));
+    // Stepper states are positional: steps before the active one read as done
+    // (green check), after it as upcoming - the design's three-state stepper.
+    const activeIdx = STEP_ORDER.indexOf(activeStep || defaults[section]);
+    document.querySelectorAll(".ev-step").forEach((el) => {
+        const idx = STEP_ORDER.indexOf(el.dataset.step);
+        el.classList.toggle("done", idx < activeIdx);
+        el.classList.toggle("active", idx === activeIdx);
+        el.classList.toggle("busy", Boolean(S.watching));
     });
 }
 
@@ -112,8 +118,8 @@ function gotoStep(step) {
     }
 }
 
-document.querySelectorAll(".steps li").forEach((li) => {
-    li.addEventListener("click", () => gotoStep(li.dataset.step));
+document.querySelectorAll(".ev-step").forEach((el) => {
+    el.addEventListener("click", () => gotoStep(el.dataset.step));
 });
 
 function renderStartPanel(hint) {
