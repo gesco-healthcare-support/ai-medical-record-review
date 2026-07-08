@@ -6,10 +6,12 @@ Gemini bill per method (cost objective = total tokens, per the plan).
 """
 
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import os
 import random
+import threading
 import time
 from contextvars import ContextVar
 
@@ -42,6 +44,59 @@ MAX_RETRIES = int(os.environ.get("GENAI_MAX_RETRIES", 10))
 RETRY_BASE_DELAY = float(os.environ.get("GENAI_RETRY_BASE_DELAY", 2.0))
 RETRY_MAX_DELAY = float(os.environ.get("GENAI_RETRY_MAX_DELAY", 60.0))
 
+# PROACTIVE throttle (prevent 429 rather than only recover from it). Every request waits until a
+# min interval has elapsed since the previous send, so a long sequential run never machine-guns the
+# shared-quota pool. The interval is ADAPTIVE (AIMD): a 429 multiplies it up (back off the whole
+# run, not just the one call); sustained success decays it back toward the floor. Jittered so the
+# spacing is not perfectly periodic. All env-tunable.
+MIN_INTERVAL = float(os.environ.get("GENAI_MIN_INTERVAL", 3.0))          # seconds between sends (floor)
+MIN_INTERVAL_MAX = float(os.environ.get("GENAI_MIN_INTERVAL_MAX", 30.0))  # adaptive ceiling
+_INTERVAL_BACKOFF = 1.5   # multiply interval on a 429 (additive-increase surrogate: fast widen)
+_INTERVAL_DECAY = 0.97    # multiply interval on success (slow return to the floor)
+_throttle_lock = threading.Lock()
+_next_send_at = 0.0            # monotonic clock: earliest time the next request may be sent
+_current_interval = MIN_INTERVAL
+
+# Per-call HTTP timeout (milliseconds). A hung socket in a ~230-call sequential run would otherwise
+# stall the whole experiment indefinitely (observed once: a call hung at 100/104). google-genai
+# raises httpx.TimeoutException on expiry, which is an httpx.TransportError subclass -> already
+# caught and RETRIED by the backoff loop below.
+TIMEOUT_MS = int(os.environ.get("GENAI_TIMEOUT_MS", 120_000))
+
+# Hard wall-clock deadline per attempt (seconds). The SDK's own HttpOptions.timeout has been
+# observed NOT to fire on some stuck Vertex sockets (a call once hung ~58 min). So enforce our
+# own deadline by running each generate_content on a worker thread and abandoning it if it blows
+# the deadline - then retrying on a fresh connection. Kept above the normal call latency
+# (~5-25s) with headroom for the SDK-internal retries.
+CALL_DEADLINE = float(os.environ.get("GENAI_CALL_DEADLINE", 90.0))
+
+
+def _reserve_send_slot():
+    """Reserve the next send slot; return seconds to sleep before sending (0 if none). The time
+    bookkeeping is done under the lock WITHOUT sleeping, so concurrent callers each get a distinct,
+    non-overlapping slot and the actual wait happens outside the lock."""
+    global _next_send_at
+    with _throttle_lock:
+        now = time.monotonic()
+        send_at = max(now, _next_send_at)
+        interval = _current_interval * random.uniform(0.85, 1.15)  # +-15% jitter
+        _next_send_at = send_at + interval
+        return max(0.0, send_at - now)
+
+
+def _widen_interval():
+    """A 429 was seen: multiplicatively widen the throttle so the rest of the run slows down."""
+    global _current_interval
+    with _throttle_lock:
+        _current_interval = min(MIN_INTERVAL_MAX, _current_interval * _INTERVAL_BACKOFF)
+
+
+def _relax_interval():
+    """A call succeeded: decay the throttle slowly back toward the floor."""
+    global _current_interval
+    with _throttle_lock:
+        _current_interval = max(MIN_INTERVAL, _current_interval * _INTERVAL_DECAY)
+
 # Per-token rates ($/token). Defaults are Gemini Flash; the Vertex gemini-2.5-flash tier differs,
 # so allow an env override (GENAI_USD_PER_INPUT_TOKEN / _OUTPUT_TOKEN) when reporting Vertex cost.
 # Sources: https://ai.google.dev/gemini-api/docs/pricing , https://cloud.google.com/vertex-ai/generative-ai/pricing
@@ -68,13 +123,17 @@ def _build_client():
         Vertex endpoint (the key carries its own project).
     AI Studio (non-PHI dev only): leave the flag unset; uses GEMINI_API_KEY on the Developer API.
     """
+    http_options = types.HttpOptions(timeout=TIMEOUT_MS)  # per-call ceiling; expiry is retryable
     if USE_VERTEX:
         project = os.environ.get("GOOGLE_CLOUD_PROJECT")
         if project:  # service-account / ADC path
             location = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
-            return genai.Client(vertexai=True, project=project, location=location)
-        return genai.Client(vertexai=True, api_key=os.environ["GEMINI_API_KEY"])  # GCP API-key path
-    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+            return genai.Client(vertexai=True, project=project, location=location,
+                                http_options=http_options)
+        # GCP API-key path
+        return genai.Client(vertexai=True, api_key=os.environ["GEMINI_API_KEY"],
+                            http_options=http_options)
+    return genai.Client(api_key=os.environ["GEMINI_API_KEY"], http_options=http_options)
 
 
 def client():
@@ -87,6 +146,19 @@ def client():
     if _client is None:
         _client = _build_client()
     return _client
+
+
+def _reset_client():
+    """Drop the cached sync client so the NEXT call builds a fresh connection pool.
+
+    Root cause of the stuck-call hangs: Vertex under load can leave a pooled socket wedged, and
+    because client() caches one client for the whole run, every retry reused the SAME dead pool
+    and re-hung (the hard-deadline watchdog abandoned each attempt but kept retrying into the
+    same stuck connection). Rebuilding after an abandonment / transport disconnect gives the
+    retry a clean pool - the missing piece that makes stuck calls actually recoverable.
+    """
+    global _client
+    _client = None
 
 
 def _active_async_client():
@@ -158,6 +230,22 @@ def _backoff_delay(attempt):
     return random.uniform(0.0, ceiling)
 
 
+def _generate_once(**kwargs):
+    """One generate_content under a HARD wall-clock deadline enforced OUTSIDE the SDK.
+
+    Runs the call on a single-use worker thread; if it blows CALL_DEADLINE we raise
+    TimeoutError and move on, leaving the stuck thread to die on its own (it cannot be force-
+    killed in Python, but shutdown(wait=False) frees us to retry on a fresh connection). A
+    bounded run tolerates a handful of such zombie threads.
+    """
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(lambda: client().models.generate_content(**kwargs))
+    try:
+        return future.result(timeout=CALL_DEADLINE)
+    finally:
+        executor.shutdown(wait=False)
+
+
 def _generate_with_retry(**kwargs):
     """Call generate_content, retrying transient overload/rate-limit errors with jittered backoff.
 
@@ -168,22 +256,34 @@ def _generate_with_retry(**kwargs):
     """
     last = None
     for attempt in range(MAX_RETRIES):
+        time.sleep(_reserve_send_slot())  # proactive throttle: never machine-gun the shared pool
         try:
-            return client().models.generate_content(**kwargs)
+            response = _generate_once(**kwargs)
+            _relax_interval()
+            return response
+        except concurrent.futures.TimeoutError as exc:  # our hard deadline: stuck socket
+            _reset_client()  # the pooled connection is wedged - retry on a FRESH pool, not this one
+            last = exc
         except errors.ServerError as exc:  # 5xx incl. 503 high-demand
             last = exc
-        except errors.ClientError as exc:  # retry only transient 429 rate limiting
-            if getattr(exc, "code", None) != 429:
+        except errors.ClientError as exc:  # retry transient 429 (rate limit) + 499 (cancelled)
+            code = getattr(exc, "code", None)
+            if code not in (429, 499):
                 raise
             # A per-day / free-tier quota won't recover within our backoff window: fail fast.
-            if "PerDay" in str(exc) or "free_tier" in str(exc):
+            if code == 429 and ("PerDay" in str(exc) or "free_tier" in str(exc)):
                 raise
+            if code == 429:
+                _widen_interval()  # DSQ contention: slow the WHOLE run down, not just this retry
+            # 499 CANCELLED: a slow (usually big-payload) request the server/timeout cut off under
+            # load. It is transient, so ride it out rather than let it kill a whole solution.
             last = exc
-        except httpx.TransportError as exc:  # transient transport disconnect (carries no HTTP status)
-            # e.g. RemoteProtocolError "server disconnected" or ReadError (TCP reset). Vertex under
-            # dynamic shared quota sometimes drops the connection instead of returning 429; without
-            # this, a single disconnect in a long sequential loop aborts the whole run (the docstring
-            # promise to "ride those out rather than crash").
+        except httpx.TransportError as exc:  # transient transport disconnect OR per-call timeout
+            # httpx.TimeoutException (our per-call ceiling) + RemoteProtocolError "server
+            # disconnected" / ReadError (TCP reset). Vertex under dynamic shared quota sometimes
+            # drops the connection instead of returning 429; without this a single disconnect in a
+            # long sequential loop aborts the whole run.
+            _reset_client()  # a dropped/disconnected socket means the pool is suspect - rebuild
             last = exc
         if attempt < MAX_RETRIES - 1:
             time.sleep(_backoff_delay(attempt))
@@ -243,17 +343,23 @@ async def _generate_with_retry_async(**kwargs):
     """Async twin of _generate_with_retry using client.aio (the documented async API)."""
     last = None
     for attempt in range(MAX_RETRIES):
+        await asyncio.sleep(_reserve_send_slot())  # proactive throttle (shared with the sync path)
         try:
-            return await _active_async_client().aio.models.generate_content(**kwargs)
+            response = await _active_async_client().aio.models.generate_content(**kwargs)
+            _relax_interval()
+            return response
         except errors.ServerError as exc:  # 5xx incl. 503 high-demand
             last = exc
-        except errors.ClientError as exc:  # retry only transient 429 rate limiting
-            if getattr(exc, "code", None) != 429:
+        except errors.ClientError as exc:  # retry transient 429 (rate limit) + 499 (cancelled)
+            code = getattr(exc, "code", None)
+            if code not in (429, 499):
                 raise
-            if "PerDay" in str(exc) or "free_tier" in str(exc):  # quota won't recover: fail fast
-                raise
+            if code == 429 and ("PerDay" in str(exc) or "free_tier" in str(exc)):
+                raise  # quota won't recover: fail fast
+            if code == 429:
+                _widen_interval()
             last = exc
-        except httpx.TransportError as exc:  # transient transport disconnect (see sync twin)
+        except httpx.TransportError as exc:  # transient transport disconnect / timeout (see sync twin)
             last = exc
         if attempt < MAX_RETRIES - 1:
             await asyncio.sleep(_backoff_delay(attempt))

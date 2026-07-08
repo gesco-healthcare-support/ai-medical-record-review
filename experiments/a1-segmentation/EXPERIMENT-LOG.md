@@ -11,6 +11,24 @@ Verdict bands and metric meanings: `docs/01-GLOSSARY.md`.
 
 ## Notes
 
+- 2026-07-08 (Case 3 guarded 5-method bake-off, one call at a time under DSQ congestion,
+  resumable): scored the current method against all candidate segmenters on Case 3 (227pp,
+  51 gold docs). Doc-F1 ranking: 1_windows 0.61 (CURRENT: R=1.00 P=0.69 WD=0.191, only 2
+  window calls, ~$0.01) > naive_chunk 0.60 > 2_adjacent_image 0.58 (brute force: R=1.00 but
+  over-seg 1.51, 226 calls) > 5_accumulate 0.46 > 4b_range_probe_cued 0.44. NEGATIVE RESULTS:
+  sol5 (greedy accumulate - grow the doc, ask "does the candidate belong to the doc so far?"
+  with first+middle+preceding+candidate images) MERGED away 14% of real docs (R 0.86) AND
+  did NOT beat brute-force precision (0.62 vs 0.66) - richer context shifted bias to SAME
+  without fixing over-splits, consistent with the earlier "context does not fix ambiguous
+  boundaries / task-level ceiling" finding. sol4b binary-search lost 35% of docs (R 0.65).
+  The chunk/window methods dominate the per-page/probe family on accuracy AND ~100x on
+  calls -> current sliding-window method VALIDATED as best; app code unchanged. GUARDS added
+  to genai_client (all env-tunable): proactive jittered throttle + AIMD widening on 429,
+  499-CANCELLED retryable, a hard wall-clock watchdog (SDK HttpOptions.timeout does NOT fire
+  on stuck Vertex sockets - a call hung ~58 min), and CLIENT REBUILD on hang/disconnect (ROOT
+  CAUSE of the hangs: one cached client reused a wedged connection pool, so every retry
+  re-hung). Disk verdict cache (src/verdict_cache.py) made the run resumable across restarts.
+  Full table: `outputs/bake_off.md` (gitignored).
 - 2026-07-06 (3.5-flash bake-off + prompt rework): full app pipeline (segment ->
   categorize -> verify-suggest) on gemini-3.5-flash for ALL stages, all 8 eligible
   cases, one at a time (~$0.15). Clean gold: ties 2.5-flash except the dense case -
