@@ -14,8 +14,11 @@ app context. Config and clients come from `mrr_ai.config` / `mrr_ai.extensions`.
 - **windows.py** - `byte_budgeted_windows`, `next_window_start` (window packing under the
   Vertex inline cap).
 - **genai_retry.py** - `generate_with_retry` (jittered backoff; pass the client explicitly).
-- **categorization.py** - `normalize`, `similarity`, `categorize_documents` (difflib fuzzy
-  match; mislabels noisy titles to `100` - being replaced by B5/B6).
+- **classification.py** - the live **B5 categorization cascade** `classify()` (high-precision
+  rules -> local sentence-transformers embeddings -> Gemini constrained-enum, with fusion +
+  manual-review flagging). Used by `/getPages`. See `../../docs/explanation/categorization.md`.
+- **categorization.py** - legacy `normalize` / `similarity` / `categorize_documents` (difflib
+  fuzzy match). **Superseded by classification.py and no longer called** (kept pending removal).
 - **files.py** - `allowed_file`, `parse_date`, `is_valid_date`, `count_lines_in_file`.
 
 When testing, mock `mrr_ai.extensions.client` / `genai_client` and the OCR functions; pass

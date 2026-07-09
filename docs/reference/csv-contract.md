@@ -40,6 +40,10 @@ source in [Categories Jan 25, 2025.docx](./). Category `100` is the catch-all
 
 ## How rows are produced
 
-- **Automatic:** `/getPages` -> Gemini returns `{id,s,e,t,d,i,m}` per sub-document; the
-  title `t` is fuzzy-matched to a category number; the row is emitted.
+- **Automatic:** `/getPages` -> Gemini returns `{id,s,e,t,d,i,m}` per sub-document; the title
+  `t` is classified into a category number by the B5 cascade
+  ([../explanation/categorization.md](../explanation/categorization.md)); the row is emitted.
 - **Manual:** staff author the CSV directly (the historically more accurate path).
+
+See [../explanation/segmentation.md](../explanation/segmentation.md) and
+[../explanation/summarization.md](../explanation/summarization.md) for the full producer/consumer flow.
