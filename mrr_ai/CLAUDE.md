@@ -19,7 +19,9 @@ The Flask application, built by `create_app()` in `__init__.py`. Full picture:
   multi-user flow: owner-checked (404 on foreign ids), no globals.
 - **services/** - business logic, no Flask (see `services/CLAUDE.md`). `job_queue.py`
   runs document pipelines on a bounded pool and is the only writer of Document.status.
-- **groups.py** - category taxonomy; **prompts.py** - per-category prompts.
+- **taxonomy.py** - category catalog (ids/names/corpora) driving the B5 cascade
+  (`services/classification.py`). **groups.py** - legacy taxonomy, superseded and unused.
+  **prompts.py** - per-category summarization prompts.
 
 How-to: add a route -> `../docs/how-to/add-a-blueprint.md`; add a category ->
 `../docs/how-to/add-a-category.md`.

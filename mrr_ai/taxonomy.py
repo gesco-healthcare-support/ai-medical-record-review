@@ -1,17 +1,18 @@
 """Category catalog used by the B5 classification cascade.
 
-This is a lightweight catalog (name + description + example doc-type titles per category),
-derived from the existing taxonomy (``groups.py`` and the "Categories" source doc). It is
-NOT the curated B6 taxonomy (deferred): just enough to drive the embedding and LLM stages of
-the cascade, plus integrity guarantees.
+This is a catalog (name + description + example doc-type titles per category). The example
+titles mirror the hand-authored business taxonomy in ``groups.py`` in full - every title there
+appears under its group here - enriched with a name + description per category for the
+embedding and LLM stages. It is NOT yet the curated B6 taxonomy (deferred).
 
 Notes:
 - Category ids are strings to match the CSV ``category`` column and ``summarize`` options.
-- Category 6 is intentionally omitted: it is undefined in the source taxonomy (empty in
-  ``groups.py``), matching prior behavior where it was never assignable by the fuzzy matcher.
-- Section names ("History of Present Illness", "Physical Examination", "Diagnosis") that the
-  old taxonomy mislabeled as document types are excluded - they appear in nearly every report
-  and caused systematic mis-categorization. Cleaning the full taxonomy is B6.
+- Category 6 is intentionally omitted: it is empty in ``groups.py`` (no titles) and was never
+  assignable, so there is nothing to mirror.
+- Some group-5 entries are section headers ("History of Present Illness", "Physical
+  Examination", "Diagnosis") rather than document types. They are kept to match ``groups.py``
+  by decision; because they appear in nearly every report they can add matching noise, which
+  the cascade's embedding-vs-LLM cross-check is relied on to dampen. Refining this is B6.
 """
 
 from dataclasses import dataclass
@@ -39,14 +40,31 @@ CATEGORIES: dict[str, "Category"] = {
         "Routine treating-physician progress notes, office/clinic visits, and follow-ups.",
         (
             "Medical Progress Reports (PR-2)",
+            "Primary Treating Physician's Progress Report (PR-2)",
             "Patient Progress Notes",
+            "Progress Notes",
+            "Progress Report",
             "Physician Notes",
             "Office Visit",
+            "Encounter - Office Visit",
+            "Encounter Office Visit",
             "Post Operative Visit",
             "Orthopedic Follow Up",
+            "Orthopedic Re-evaluation",
+            "Treating Orthopedic Evaluation",
             "Follow up Video Visit",
             "Telephone Appointment Visit",
+            "Telephone Visit",
             "Family Medicine Clinic Note",
+            "Nephrology Consult Note",
+            "Transplant Follow Up",
+            "Outpatient Palliative Care Consult",
+            "Admission History & Physical",
+            "Preoperative Hospital Admission History and Physical",
+            "Physical Examination Reevaluation",
+            "Supplemental Report",
+            "Supplemental Report on Pain Management Process",
+            "Initial Comprehensive Examination",
         ),
     ),
     "2": Category(
@@ -57,9 +75,11 @@ CATEGORIES: dict[str, "Category"] = {
         (
             "Primary Treating Physician's Permanent and Stationary Report (PR-4)",
             "Maximum Medical Improvement for Impairment Rating Purposes",
+            "Primary Treating Physician's Maximum Medical Improvement for Impairment Rating Purposes",
             "Doctor's First Report of Occupational Injury or Illness",
             "Initial Patient Consultation",
             "Initial Orthopedic Consultation",
+            "Specialist Initial Consultation",
             "Complex Orthopedic Evaluation",
             "Consultative Rating Determination",
         ),
@@ -71,12 +91,34 @@ CATEGORIES: dict[str, "Category"] = {
         "studies, and similar.",
         (
             "Diagnostic Study (X-Ray, MRI, CT scan)",
+            "Diagnostic Study",
+            "Diagnostic",
             "Laboratory Report",
             "NCS/EMG Report",
+            "Electrodiagnostic Study",
             "Unattended Sleep Study",
+            "Auto CPAP",
             "Colonoscopy Report",
             "Dexa Bone Density Hip and Spine",
             "Bilateral Mammogram Screening",
+            "Diabetic Muscle Infraction",
+            "Ed (Emergency Department) Provider Notes",
+            "X-Ray Report",
+            "X Ray Report",
+            "XRay Report",
+            "XR Wrist Minimum 3 Views",
+            "MRI Report",
+            "MRI Shoulder",
+            "MRI Left Shoulder",
+            "MRI Left Shoulder w/o Contrast",
+            "MRI Right Shoulder",
+            "MRI Right Shoulder w/o Contrast",
+            "MRI Lumbar",
+            "MRI Lumbar Spine",
+            "MRI Lumbar Spine w/o Contrast",
+            "MRI Lumbar Spine Without Contrast",
+            "CT Scan",
+            "CT Scan Report",
         ),
     ),
     "4": Category(
@@ -92,12 +134,25 @@ CATEGORIES: dict[str, "Category"] = {
         (
             "Initial Acupuncture Intake Form",
             "Initial Chiropractic Evaluation",
+            "Chiropractic Evaluation",
             "Chiropractic Progress Report",
             "Acupuncture Worksheet",
+            "Acupuncture Worksheet Established",
+            "Acupuncture Worksheet Final",
             "Physical Therapy Note",
+            "Physical Therapy Daily Note",
             "PT Initial Report",
             "PT Progress",
+            "PT Daily",
+            "Acupuncture Daily",
+            "Daily Encounter",
+            "SOAP Notes",
             "Chiropractor Notes",
+            # Section headers kept to mirror groups.py (see module docstring): present in
+            # nearly every report, so they add matching noise the cross-check must dampen.
+            "History of Present Illness",
+            "Physical Examination",
+            "Diagnosis",
         ),
     ),
     "7": Category(
@@ -107,6 +162,7 @@ CATEGORIES: dict[str, "Category"] = {
         (
             "Worker's Compensation Claim Form",
             "Application for Adjudication of Claim",
+            "Application of Adjudication of Claim",
             "Amended Application for Adjudication of Claim",
         ),
     ),
@@ -120,7 +176,7 @@ CATEGORIES: dict[str, "Category"] = {
         "9",
         "Depositions",
         "Deposition transcripts of testimony.",
-        ("Deposition", "Video Conference Deposition", "Deposition Transcript"),
+        ("Deposition", "Video Conference Deposition", "Deposition Transcript", "Transcript"),
     ),
     "10": Category(
         "10",
@@ -139,14 +195,19 @@ CATEGORIES: dict[str, "Category"] = {
         "QME/AME supplemental reports",
         "Supplemental reports from a QME (Qualified Medical Evaluator) or AME (Agreed Medical "
         "Evaluator) - follow-ups to a prior medical-legal evaluation.",
-        ("QME/AME Supplemental Reports", "QME Supplemental Report", "AME Supplemental Report"),
+        (
+            "QME/AME Supplemental Reports",
+            "QME Supplemental Report",
+            "AME Supplemental Report",
+            "Supplemental Reports",
+        ),
     ),
     "13": Category(
         "13",
         "QME/AME medical-legal evaluations",
         "Comprehensive medical-legal evaluations by a QME (Qualified Medical Evaluator) or AME "
         "(Agreed Medical Evaluator).",
-        ("QME/AME reports", "QME report", "AME report"),
+        ("QME/AME reports", "QME report", "QME reports", "AME report", "AME reports"),
     ),
     "14": Category(
         "14",

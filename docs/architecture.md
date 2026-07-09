@@ -10,19 +10,23 @@ Gemini (segmentation), OpenAI (summarization), and local OCR (Tesseract + Popple
 
 ```
 MR PDF ──► 1. SEGMENT ──► 2. CATEGORIZE ──► [ 6-col CSV ] ──► 3. SUMMARIZE ──► 4. EXPORT ──► MRR .docx
-           (Gemini)        (fuzzy match)      (the contract)    (OpenAI)         (python-docx)
+           (Gemini)        (B5 cascade)       (the contract)    (OpenAI)         (python-docx)
 ```
 
 1. **Segment** - `/getPages` uploads the PDF to Gemini and gets sub-document page ranges
-   (start/end) + title/date/injury/manual-flag, as JSON.
-2. **Categorize** - each sub-document title is matched to a category number (1-14, 100)
-   via `difflib` fuzzy match against the taxonomy in `groups.py`.
+   (start/end) + title/date/injury/manual-flag, as JSON. See
+   [explanation/segmentation.md](explanation/segmentation.md).
+2. **Categorize** - each sub-document title is classified into a category number (1-5, 7-14,
+   100) by the **B5 cascade** (deterministic rules -> local embeddings -> Gemini constrained-
+   enum), escalating to first-page OCR on low confidence. See
+   [explanation/categorization.md](explanation/categorization.md).
 3. The page ranges + categories are written to a **6-column CSV** - see
    [reference/csv-contract.md](reference/csv-contract.md). This CSV is the contract: it can
    be produced automatically (Gemini) or by hand, and everything downstream consumes it.
 4. **Summarize** - `/summarize` OCRs each sub-document's pages and sends them to OpenAI
    with the category-specific prompt from `prompts.py`.
-5. **Export** - `/exportresultstoword` assembles the summaries into a Word document.
+5. **Export** - `/exportresultstoword` assembles the summaries into a Word document. Stages 3-4:
+   [explanation/summarization.md](explanation/summarization.md).
 
 ## Package layout
 
@@ -33,7 +37,8 @@ mrr_ai/
   config.py            env validation (fail-fast), paths, constants
   extensions.py        genai_client (Gemini) + client (OpenAI), built once
   state.py             shared mutable globals (see "State" below)
-  groups.py            category taxonomy (number -> document-type names)
+  taxonomy.py          category catalog (ids, names, corpora) for the B5 cascade
+  groups.py            legacy category taxonomy (superseded by taxonomy.py; unused)
   prompts.py           per-category summarization prompts
   blueprints/          HTTP routes grouped by area
     pages.py           UI page renders + /reset
@@ -48,8 +53,9 @@ mrr_ai/
     pdf.py             sizes, page counts, chunk segmentation
     ocr.py             Tesseract text extraction
     gemini.py          upload/poll, SEGMENTATION_PROMPT, response parsing
-    categorization.py  normalize / similarity / categorize_documents
-    files.py           allowed_file, date validation, line counts
+    classification.py  B5 categorization cascade (rules -> embeddings -> Gemini enum)
+    categorization.py  legacy difflib fuzzy matcher (superseded; unused)
+    files.py           allowed_file, date validation, safe_name, line counts
   templates/  static/  Flask UI
 tests/                 pytest route-smoke + unit/integration
 docs/                  this documentation
@@ -87,6 +93,6 @@ from `.env` (never committed); the app fails fast at startup if they are missing
 
 - Large PDFs are split into fixed 100-page chunks before Gemini; a sub-document spanning a
   chunk boundary is mis-split (see `experiments/a1-segmentation/` for the fix direction).
-- Categorization uses lexical fuzzy match, which mislabels noisy titles to category 100
-  (the upcoming B5/B6 work).
+- Categorization (the B5 cascade) is live, but its category catalog is not yet curated (B6);
+  genuinely ambiguous titles are flagged for manual review rather than mislabeled.
 - Single-process state (above).
