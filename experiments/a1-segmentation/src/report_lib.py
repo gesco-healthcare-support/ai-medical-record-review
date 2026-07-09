@@ -9,8 +9,8 @@ EXPERIMENT-LOG.md so progress is visible at a glance.
 All thresholds live in SIGNAL_BANDS / DOC_BANDS so they are easy to find and
 tune; they are rules of thumb, documented in the glossary.
 """
-import os
 import csv
+import os
 from datetime import datetime
 
 # (minimum lift over chance, LABEL, plain meaning). Checked high-to-low.

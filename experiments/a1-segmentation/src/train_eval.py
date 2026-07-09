@@ -11,8 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pipeline
+from cases import ALL_CASE_IDS, CSV_CASE_IDS
 from featurizers import TfidfFeaturizer
-from cases import CSV_CASE_IDS, ALL_CASE_IDS
 
 if __name__ == "__main__":
     case_ids = ALL_CASE_IDS if "--all" in sys.argv else CSV_CASE_IDS

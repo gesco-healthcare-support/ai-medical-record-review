@@ -22,11 +22,12 @@ from dataclasses import dataclass
 import numpy as np
 from google.genai import types
 
+from mrr_ai.config import GENAI_MODEL
 from mrr_ai.extensions import genai_client
+from mrr_ai.services.genai_retry import generate_with_retry
 from mrr_ai.taxonomy import ALLOWED_IDS, CATEGORIES, DEFAULT_ID
 
 _EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
-_LLM_MODEL = "gemini-flash-latest"
 
 # Ordered high-precision rules; first match wins. Specific categories precede the
 # categories they could be confused with (e.g. supplemental QME/AME -> 12 before QME/AME -> 13).
@@ -88,19 +89,26 @@ def match_rules(title):
 
 # --- embedding stage (lazy: torch is only imported/loaded when this runs) -------------------
 
+import threading  # noqa: E402  (stdlib; placed with the stage it guards)
+
 _model = None
 _category_ids = None
 _category_matrix = None
+# classify() now runs on a thread pool; SentenceTransformer.encode is not documented as
+# thread-safe, so the whole encode path is serialized. Encoding is milliseconds - the
+# LLM call dominates - so this lock costs nothing while preventing races on first load.
+_embed_lock = threading.Lock()
 
 
 def _encode(texts):
     """Encode texts into L2-normalized vectors using the local sentence-transformers model."""
     global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
+    with _embed_lock:
+        if _model is None:
+            from sentence_transformers import SentenceTransformer
 
-        _model = SentenceTransformer(_EMBED_MODEL_NAME)
-    return np.asarray(_model.encode(list(texts), normalize_embeddings=True))
+            _model = SentenceTransformer(_EMBED_MODEL_NAME)
+        return np.asarray(_model.encode(list(texts), normalize_embeddings=True))
 
 
 def _category_vectors():
@@ -141,8 +149,8 @@ def llm_classify(text):
         ),
     )
     try:
-        response = genai_client.models.generate_content(
-            model=_LLM_MODEL, contents=prompt, config=config
+        response = generate_with_retry(
+            genai_client, model=GENAI_MODEL, contents=prompt, config=config
         )
     except Exception as exc:
         print(f"LLM classification failed: {exc}")

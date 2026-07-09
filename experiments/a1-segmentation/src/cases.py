@@ -4,13 +4,13 @@ Each case has a stable `id`, its input `pdf`, and a `label_csv` (the hand-typed
 CSV for the 3 clean cases, or the ROR-converted CSV for the other 8). OCR and all
 experiments load cases from here, so adding a case is a one-place change.
 """
+import glob
 import os
 import sys
-import glob
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import AI_SYSTEM_DIR
-from ror_to_csv import find_input_pdf, ROR_LABELS, ROR_CASES
+from ror_to_csv import ROR_CASES, ROR_LABELS, find_input_pdf
 
 
 def _csv_cases():

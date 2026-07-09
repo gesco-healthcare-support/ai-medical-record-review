@@ -3,6 +3,13 @@
 import pytesseract
 from pdf2image import convert_from_path
 
+from mrr_ai.config import TESSERACT_CMD
+
+# Tesseract is often installed but not on PATH (Windows installer default); an empty
+# extraction here silently starves summarization, so honor the explicit override.
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
 
 def extract_text_from_selected_pages(pdf_path, selected_pages):
     extracted_text = ""

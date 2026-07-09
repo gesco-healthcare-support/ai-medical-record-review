@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MRR Review</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='review.css') }}">
+</head>
+<body>
+<header class="topbar">
+    <div class="brand">MRR <span>Review</span></div>
+    <ol class="steps">
+        <li data-step="upload">1 Upload</li>
+        <li data-step="segment">2 Identify documents</li>
+        <li data-step="review">3 Review &amp; correct</li>
+        <li data-step="summaries">4 Summaries</li>
+    </ol>
+    <nav class="top-actions">
+        <a href="/pages" title="The original pages UI">Classic UI</a>
+        <button id="startOver" class="ghost" type="button">Start over</button>
+    </nav>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main>
+    <!-- 1: upload -->
+    <section id="step-upload" class="panel center-panel">
+        <h1>Upload a medical-record PDF</h1>
+        <p class="muted">The record is split into its component documents and categorized.
+            You review and correct the result before any summaries are written.</p>
+        <form id="uploadForm">
+            <label class="file-drop">
+                <input type="file" id="pdfInput" accept="application/pdf" required>
+                <span id="fileLabel">Choose a PDF...</span>
+            </label>
+            <button type="submit" class="primary" id="uploadBtn">Upload &amp; identify documents</button>
+        </form>
+    </section>
+
+    <!-- 2 + 4: progress -->
+    <section id="step-progress" class="panel center-panel hidden">
+        <h1 id="progressTitle">Working...</h1>
+        <div class="bar"><div id="barFill" class="bar-fill"></div></div>
+        <p id="progressDetail" class="muted">Starting...</p>
+    </section>
+
+    <!-- 3: editor -->
+    <section id="step-editor" class="hidden">
+        <div class="editor-toolbar">
+            <div>
+                <strong id="docCount"></strong>
+                <span id="validationMsg" class="error-text"></span>
+            </div>
+            <div>
+                <button id="applySuggestions" class="ghost suggest-bulk hidden" type="button"></button>
+                <button id="addRow" class="ghost" type="button">+ Add document</button>
+                <span id="addForm" class="add-form hidden">
+                    pages <input id="addStart" type="number" min="1" aria-label="First page of the new document">
+                    to <input id="addEnd" type="number" min="1" aria-label="Last page of the new document">
+                    <button id="addConfirm" class="mini" type="button">Add</button>
+                    <button id="addCancel" class="mini" type="button">Cancel</button>
+                </span>
+                <button id="summarizeBtn" class="primary" type="button">Send to summarization</button>
+            </div>
+        </div>
+        <div class="editor-split">
+            <div class="table-wrap">
+                <table id="rowsTable">
+                    <thead>
+                    <tr>
+                        <th>#</th><th>Start</th><th>End</th><th>Category</th>
+                        <th>Date</th><th>Review</th><th></th>
+                    </tr>
+                    </thead>
+                    <tbody id="rowsBody"></tbody>
+                </table>
+            </div>
+            <div class="viewer-wrap">
+                <iframe id="pdfFrame" title="PDF viewer"></iframe>
+            </div>
+        </div>
+    </section>
+
+    <!-- 4: summaries -->
+    <section id="step-summaries" class="panel hidden">
+        <div class="editor-toolbar">
+            <strong id="summaryCount"></strong>
+            <div class="export-bar">
+                <input id="expPatient" placeholder="Patient name">
+                <input id="expDob" placeholder="DOB">
+                <input id="expQme" placeholder="QME/AME">
+                <input id="expFirm" placeholder="Law firm">
+                <button id="exportBtn" class="primary" type="button">Export to Word</button>
+            </div>
+        </div>
+        <div id="summaryList"></div>
+    </section>
+</main>
+
+<script src="{{ url_for('static', filename='review.js') }}"></script>
+</body>
+</html>
