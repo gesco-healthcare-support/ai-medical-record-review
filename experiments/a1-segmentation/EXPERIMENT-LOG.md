@@ -11,6 +11,79 @@ Verdict bands and metric meanings: `docs/01-GLOSSARY.md`.
 
 ## Notes
 
+- 2026-07-09 (verify/merge upgrade offline, ~$0.04, 289 verify calls, resumable via
+  verdict_cache, `src/verify_upgrade_experiment.py` -> `VERIFY-UPGRADE-RESULTS.md`): aggressive
+  enriched merge pass (ALL adjacent pairs; oracle = boundary-page images + local OCR text for
+  continuation-sentence/"page N of M" + metadata; recall-safe unclear->keep) on Case 1/2/3.
+  AUTO mode UNSAFE in all 3: harmed 1/6/5 real docs (recall 0.98/0.85/0.84) for inconsistent
+  doc-F1 (+0.028/-0.004/+0.101) - confirms why production is SUGGEST mode; ~1-3% false-merge
+  matches app's prior measurement. SUGGEST mode (recall-safe, 0 data loss): catches 5/17/14
+  over-splits per case (clicks saved) vs current-verify's ~1-3, at 0.83/0.74/0.74 precision,
+  19/31/39% over-split coverage (1/6/5 false flags declined). CONCLUSION: verify upgrade helps
+  the PRODUCT (fewer reviewer clicks, recall-safe suggest mode) NOT the autonomous strict
+  doc-F1 (auto is recall-catastrophic; suggest needs a human to apply). Fundamental tension:
+  autonomous strict-doc-F1 gain REQUIRES applying merges = recall risk. Whole arc converges:
+  segmenter near practical ceiling; materially higher AUTONOMOUS number needs a VLM fine-tune
+  (self-hosting). Robustness lesson: script needed per-verdict caching + progress logging +
+  60s deadline to survive DSQ stalls (first run wedged ~19min silent). App code unchanged.
+- 2026-07-09 (prompt-level over-seg levers tested, ~$0.04, `src/loosen_prompt_experiment.py`
+  + `src/cot_prompt_experiment.py` -> `PROMPT-LEVERS-RESULTS.md`): after the triage showed
+  over-seg is the whole gap, tested whether PROMPTING can cut the confident over-splits.
+  Searched literature (most remedies we already use; merge-when-uncertain + CoT were the
+  untested viable ones; few-shot IMAGE examples blocked = PHI). Tested 2 on Case 3 image
+  window method, same-session A/B: (1) LOOSENED TIEBREAK (continue-unless-clear) = NULL
+  (DocF1 0.603 vs 0.608, over 1.47 vs 1.45, R 1.00 both); (2) CHAIN-OF-THOUGHT (reason then
+  spans) = NULL (0.603, over 1.47, R 1.00). Over-seg pinned ~1.45-1.47 across all 3 variants.
+  KEY: over-splits are CONFIDENT (loosen-tiebreak proved it), so a tiebreak never fires and
+  CoT rationalizes the confident call instead of reversing it. Converges with (a) app's prior
+  "Prompting is measured-immune, fix is verification" (verify_pass.py), (b) removed confidence
+  enum (model said "high" on 231/232), (c) literature (zero-shot ceiling; fine-tune clears;
+  split-then-merge corrects). CONCLUSION: no prompt solution -> pivot to designing the
+  verify/merge stage. App code unchanged.
+- 2026-07-09 (over-seg solutions research, no spend, web survey -> `OVERSEG-SOLUTIONS-RESEARCH.md`):
+  HEADLINE: the SOTA paradigm for over-segmentation is "over-split then merge" (AOSM,
+  ICDAR2009/UW-III) - which our segment(recall-first)+verify_pass architecture ALREADY is;
+  the lever is our merge stage being timid (merges ~1-3 rows/case). Ranked options:
+  (1) STRENGTHEN VERIFY (recommended: cheapest, recall-safe) - widen suspect net + add
+  literature merge signals (mid-sentence continuation, "page N of M" pagination, layout/font
+  similarity); KEY: OCR text failed for DETECTION (recall) but helps for local VERIFICATION
+  ("does this pair continue?"). (2) FINE-TUNING - fine-tuned decoder LLMs hit doc-F1 >0.9 on
+  TABME++ (Mistral-7B QLoRA, 1 H100), but that's synthetic TEXT; our seg is a VISION task so
+  for us it must be a VLM fine-tune = self-hosting initiative (~$48-65k). (3) CRF/transition
+  smoothing - low value (our over-splits are semantic not random; recall already 1.00).
+  (4) gold-convention ceiling (bundle-vs-item + unlabeled gaps) - not a model fix, caps at 0.91.
+  No app change; measurement/survey only. PAUSED here per Adrian (no design/build yet).
+- 2026-07-09 (OCR-text experiment, Mayo replication, ~$0.15, `src/ocr_text_experiment.py`):
+  tested feeding OCR TEXT (Mayo JAMIA Open 2026 approach) vs the production IMAGE window
+  method; ONE variable changed (modality), production prompt/schema/temp0 held fixed;
+  reused cached Tesseract OCR ($0 OCR). NEGATIVE RESULT. (1) Whole-case holistic text (pure
+  Mayo, 1 call) FAILS: recall collapses to 0.657 (Case 1) / 0.730 (Case 2) - merges away
+  1/4-1/3 of docs (unrecoverable); held only on 51-doc Case 3 (0.613/R1.00). Holistic text
+  seg does not scale past a handful of docs (Mayo packets ~2 docs; ours 51-67); same
+  merge-bias failure as sol5. (2) Windowed text only ON PAR with image: Case 3 tie
+  (0.618 vs sol1 0.61, both R1.00), Case 1 ~tie vs naive (0.486 vs 0.495), Case 2 higher
+  docF1 (0.671 vs 0.532) but LOWER recall (0.905 vs 0.921). Recall is paramount -> not a win.
+  (3) Text did NOT cut over-seg (1.41/1.76/1.32 vs image 1.53/1.78/1.51) -> over-seg is
+  prompt-bias + gold-convention, NOT image-perception. WHY: OCR text flattens visual
+  boundary cues (letterhead/form/cover/whitespace) that hold image recall at 1.00 ->
+  confirms segmentation is a VISION task. Correction: text is ~1.7x tokens of images (NOT
+  cheaper). Full write-up: `OCR-TEXT-EXPERIMENT-RESULTS.md`. App code unchanged.
+- 2026-07-09 (error triage vs strict doc-F1, ZERO Vertex spend, `src/triage_errors.py`):
+  decomposed the current method's errors on all 3 clean cases (naive_chunk saved preds as
+  a within-0.01-doc-F1 proxy for 1_windows; recomputed metrics reconcile exactly with the
+  saved naive-diagnosis reports). FINDING: the entire strict-doc-F1 gap is OVER-SEGMENTATION.
+  (1) Merges (unrecoverable) nearly absent: 2/1/0 across Case 1/2/3 (181 gold docs, ~1.7%);
+  boundary recall 0.94/0.92/1.00; live overlapping-window method recovered Case 1's two
+  merges per 2026-07-04, so live merges likely 0-1. (2) Localization near-perfect: 63/67,
+  58/63, 51/51 boundaries land exactly; 0-4 shifted +-2 per case - no off-by-one problem.
+  (3) Over-seg 1.5-1.8, precision 0.53-0.65: 119/95/78 predicted vs 67/63/51 gold. What-if
+  (directional): remove false splits -> strict doc-F1 ~0.92-0.99 (approaching the 0.91
+  ceiling). sol2 adjacent per-page (reconstructed from cache): doc-F1 0.578 == chunk 0.574,
+  recall 1.00, 0 merges - "detect the boundary N times" TIES, does not beat. Part of the
+  residual is gold-convention (unlabeled gaps -> 0.91 ceiling), not model error. Lever for
+  strict doc-F1 = cut over-segmentation WITHOUT causing merges (sol5 tried via context and
+  over-merged to R=0.86); untested low-risk angles = OCR-text input + targeted
+  merge-confirmation. Full write-up: `ERROR-TRIAGE-RESULTS.md`. App code unchanged.
 - 2026-07-08 (Case 3 guarded 5-method bake-off, one call at a time under DSQ congestion,
   resumable): scored the current method against all candidate segmenters on Case 3 (227pp,
   51 gold docs). Doc-F1 ranking: 1_windows 0.61 (CURRENT: R=1.00 P=0.69 WD=0.191, only 2

@@ -59,3 +59,12 @@ Reference ceiling (`chunk_upper`, gold starts + forced chunk edges): Doc-F1 0.91
 - Temperature-0 run-to-run variance is ~+-0.05 bF1.
 - Guard/robustness details and the full run narrative are in
   `experiments/a1-segmentation/EXPERIMENT-LOG.md` (2026-07-08 entry). Committed in `0cfbf42`.
+
+## Follow-up: error triage (2026-07-09)
+
+A zero-spend triage decomposed where the strict doc-F1 gap lives (all 3 clean cases):
+the gap is entirely **over-segmentation** - merges (unrecoverable) are 2/1/0 across
+Case 1/2/3, boundary localization is near-perfect (51/51 exact on Case 3), and removing
+false splits would lift strict doc-F1 to ~0.92-0.99. The per-page "detect the boundary
+N times" method (sol2) ties the window method (0.578 vs 0.574), not beating it. Full
+write-up: `ERROR-TRIAGE-RESULTS.md`; reproduce via `src/triage_errors.py`.
