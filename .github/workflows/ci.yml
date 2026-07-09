@@ -34,6 +34,8 @@ jobs:
         env:
           GEMINI_API_KEY: dummy-ci-key
           OPENAI_API_KEY: dummy-ci-key
+          SECRET_KEY: dummy-ci-secret
+          SECURITY_PASSWORD_SALT: dummy-ci-salt
         run: uv run python -c "import app; print('import OK')"
 
   secret-scan:
