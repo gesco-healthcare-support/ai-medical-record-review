@@ -104,21 +104,28 @@ window.DocTable = (function () {
         return `<span class="hd-badge hd-badge-${tone}"><span class="hd-dot"></span>${label}</span>`;
     }
 
-    function menuHtml(doc) {
+    function menuHtml(doc, allowDelete) {
         const identifyLabel = doc.rows_count ? "Re-run identification" : "Start identification";
         const identifyDisabled = doc.active_job ? " disabled" : "";
+        // Bundle pickers pass allowDelete:false - deleting the underlying document from a
+        // "pick a document to bundle" context is surprising and destructive; deletion lives
+        // on My documents instead.
+        const deleteItem = allowDelete
+            ? `
+                <div class="hd-menu-divider"></div>
+                <button type="button" class="danger" data-action="delete">Delete…</button>`
+            : "";
         return `
             <div class="hd-menu" data-menu>
                 <button type="button" data-action="open">Open</button>
-                <button type="button" data-action="identify"${identifyDisabled}>${identifyLabel}</button>
-                <div class="hd-menu-divider"></div>
-                <button type="button" class="danger" data-action="delete">Delete…</button>
+                <button type="button" data-action="identify"${identifyDisabled}>${identifyLabel}</button>${deleteItem}
             </div>`;
     }
 
     function create(config) {
         const onOpen = config.onOpen;
         const onLoaded = config.onLoaded || (() => {});
+        const allowDelete = config.allowDelete !== false; // default true (My documents)
         const el = (id) => document.getElementById(id);
         const S = {
             docs: [],
@@ -192,7 +199,7 @@ window.DocTable = (function () {
                     <td class="hd-menu-cell">
                         <button type="button" class="hd-dots${menuOpen ? " open" : ""}" data-dots
                                 aria-label="Actions" aria-expanded="${menuOpen}">⋯</button>
-                        ${menuOpen ? menuHtml(doc) : ""}
+                        ${menuOpen ? menuHtml(doc, allowDelete) : ""}
                     </td>`;
                 tr.querySelector(".hd-name").textContent = doc.original_filename; // PHI-safe render
                 body.appendChild(tr);
@@ -254,6 +261,7 @@ window.DocTable = (function () {
                 return;
             }
             if (action === "delete") {
+                if (!allowDelete) return; // menu never renders Delete when disabled; guard anyway
                 if (!window.confirm("Delete this document and all of its rows and summaries?")) {
                     return;
                 }

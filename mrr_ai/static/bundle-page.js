@@ -28,6 +28,7 @@ function pickerMsg(text) {
 const table = DocTable.create({
     onOpen: (id) => selectDocument(id),
     onError: (err) => pickerMsg(err.message),
+    allowDelete: false, // pickers must not permanently delete the underlying document
 });
 
 async function uploadDocument() {
