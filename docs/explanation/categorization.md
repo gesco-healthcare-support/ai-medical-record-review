@@ -72,8 +72,20 @@ enriched with a per-category name + description. It is not yet the curated "B6" 
   `groups.py`** (business decision); because they appear in nearly every report they can bias
   the category-5 embedding vote, which the embedding-vs-LLM cross-check is relied on to dampen.
   Refining this is B6.
-- `ALLOWED_IDS` (the enum given to Gemini) and `DEFAULT_ID = "100"` are derived here, so the
-  catalog is the single source of truth for what a valid category is.
+- `ALLOWED_IDS` and `DEFAULT_ID = "100"` are derived here; `taxonomy.py` is the source of
+  truth for a **fresh** database.
+
+### Runtime source: the editable catalog (DB-backed)
+
+As of ADR [0006](../decisions/0006-editable-catalog-admin.md), the live category set is **not**
+`taxonomy.py` at runtime - it is the `Category` DB table, seeded from `taxonomy.py` on first
+boot and edited from the admin console. `classification.py` reads it lazily through
+[`mrr_ai/catalog.py`](../../mrr_ai/catalog.py) (`get_categories(auto_assign=True)`), keyed on a
+catalog revision, and rebuilds its catalog text + embedding matrix when an admin edit bumps that
+revision. With no app/DB context it falls back to the `taxonomy.py` constants, so the cascade
+stays unit-testable. The classifier's assignable set is the `auto_assign=True` categories; the
+review editor additionally offers active categories with `auto_assign=False` (this is now how
+`6` is modeled: a real, active, editor-only category rather than an omission).
 
 ## The predecessor (superseded, still in the tree)
 

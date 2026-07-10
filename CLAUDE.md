@@ -53,6 +53,15 @@ keeps the app single-process), `services/` (pdf, ocr, gemini, categorization, fi
 
 ## Status / focus
 
-Done: modularized into the `mrr_ai` package (factory + blueprints + services + route-smoke
-tests); segmentation B1 fixes (temp 0, JSON schema, robust parser) on google-genai. Next:
-categorization cascade (B5) + taxonomy curation (B6); then fix the deferred CI issues.
+Done: `mrr_ai` package (factory + blueprints + services + tests, CI); segmentation B1 fixes;
+B5 categorization cascade (rules -> embeddings -> Gemini enum); **account-based flow**
+(Flask-Security login, owner-scoped documents, background job queue, Gemini/Vertex
+summarization, review editor, category bundles); **admin console** (2026-07) - `is_admin`
+accounts edit the DB-backed category/prompt catalog at runtime (see
+`docs/decisions/0006-editable-catalog-admin.md`). Categories/prompts are seeded from
+`taxonomy.py`/`prompts.py` and read through `catalog.py`. Next: B6 taxonomy curation; phase-2
+admin editing of the global segmentation/categorization prompts; deferred CI items.
+
+Note: `docs/architecture.md`, `docs/reference/api-routes.md`, and `docs/explanation/frontend-ui.md`
+still describe the classic single-user CSV/OpenAI pipeline and predate the account-based flow -
+stale, flagged for a separate documentation pass.

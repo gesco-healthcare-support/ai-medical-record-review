@@ -37,11 +37,15 @@ mrr_ai/
   config.py            env validation (fail-fast), paths, constants
   extensions.py        genai_client (Gemini) + client (OpenAI), built once
   state.py             shared mutable globals (see "State" below)
-  taxonomy.py          category catalog (ids, names, corpora) for the B5 cascade
+  taxonomy.py          category catalog SEED + fallback (DB is the live source; see catalog.py)
   groups.py            legacy category taxonomy (superseded by taxonomy.py; unused)
-  prompts.py           per-category summarization prompts
+  prompts.py           per-category summary-prompt SEED + fallback
+  catalog.py           DB-first accessor for the editable category/prompt catalog
+  seed_catalog.py      seeds the Category/Prompt tables from the constants on first boot
+  cli.py               `flask admin grant/revoke/list` (bootstrap is_admin accounts)
   blueprints/          HTTP routes grouped by area
-    pages.py           UI page renders + /reset
+    pages.py           UI page renders + /reset + /admin
+    admin_api.py       /api/admin category + prompt CRUD + reprocess (is_admin gated)
     upload.py          /upload, /uploadAndCheckCSV, /uploadPages
     segmentation.py    /getPages, /segmentPDF
     summarize.py       /summarize, /summarize_indiv_record

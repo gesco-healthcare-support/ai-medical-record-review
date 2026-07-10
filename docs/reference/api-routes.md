@@ -16,6 +16,7 @@ calls (e.g. you must `/upload` before `/summarize`).
 | GET | `/DiagAndOpReports` | Diagnostic/operative reports UI |
 | GET | `/DepositionReports` | Deposition reports UI |
 | GET | `/IndividualMRR` | Individual-record MRR UI |
+| GET | `/admin` | Admin console (categories + prompts); `is_admin` only |
 | POST | `/reset` | Clear session state (pdf_filepath, all_data, ...) |
 
 ## Upload (`blueprints/upload.py`)
@@ -69,3 +70,21 @@ calls (e.g. you must `/upload` before `/summarize`).
 |--------|------|---------|
 | POST | `/create_patient_folder_indiv_mrr` | Create a patient folder under uploads/ |
 | POST | `/upload_files` | Upload multiple PDFs into the patient folder |
+
+## Admin (`blueprints/admin_api.py`) - `is_admin` accounts only
+
+All under `/api/admin`; the app-level gate returns 403 for authenticated non-admins.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/whoami` | Confirm the caller is an admin |
+| GET | `/api/admin/categories` | List all categories (incl. inactive) + prompt presence |
+| POST | `/api/admin/categories` | Create a category (numeric immutable id) |
+| PATCH | `/api/admin/categories/<id>` | Edit name/description/examples/auto_assign/active (id immutable) |
+| GET | `/api/admin/prompts/<category_id>` | Get a category's summary prompt (+ effective/fallback) |
+| PUT | `/api/admin/prompts/<category_id>` | Set/replace a category's summary prompt |
+| POST | `/api/admin/reprocess/<document_id>` | Re-summarize a document with current prompts (replaces prior summaries) |
+
+> Note: this reference predates the account-based document flow; the `/api/documents/*`,
+> `/api/segment/*`, and `/api/summarize/*` routes (blueprints `documents_api`, `review_api`)
+> are not yet enumerated here.
