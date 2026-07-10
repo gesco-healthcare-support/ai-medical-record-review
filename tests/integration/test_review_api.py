@@ -51,7 +51,9 @@ def test_segment_job_returns_rows(client, make_pdf, tmp_path, monkeypatch):
     snap = _poll(client, "/api/segment/status")
     assert snap["state"] == "done"
     assert [r["start"] for r in snap["rows"]] == [1, 3]
-    assert "8" in snap["categories"] and "100" in snap["categories"]
+    # categories is now [{id, name}] for data-driven editor labels.
+    category_ids = [c["id"] for c in snap["categories"]]
+    assert "8" in category_ids and "100" in category_ids
 
 
 def test_segment_requires_upload(client):

@@ -34,8 +34,13 @@ def get_categories(active_only=False, auto_assign=False):
 
 
 def get_category_ids(active_only=True, auto_assign=False):
-    """Just the ids from :func:`get_categories` (the editor's category dropdown source)."""
+    """Just the ids from :func:`get_categories`."""
     return [c["id"] for c in get_categories(active_only=active_only, auto_assign=auto_assign)]
+
+
+def get_category_options(active_only=True):
+    """``[{id, name}]`` for the review editor's category dropdown + labels (active only)."""
+    return [{"id": c["id"], "name": c["name"]} for c in get_categories(active_only=active_only)]
 
 
 def get_prompt(role, category_id):

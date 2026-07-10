@@ -72,7 +72,7 @@ def segment_status():
     snap = jobs.status()
     if snap.get("kind") == "segment" and snap.get("state") == "done":
         snap["rows"] = snap.pop("result")
-        snap["categories"] = catalog.get_category_ids(active_only=True)
+        snap["categories"] = catalog.get_category_options()
     return jsonify(snap)
 
 

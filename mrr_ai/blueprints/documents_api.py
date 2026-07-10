@@ -141,7 +141,7 @@ def get_document(document_id):
         return _not_found()
     payload = document.listing()
     payload["rows"] = [row.as_row() for row in document.review_rows]
-    payload["categories"] = catalog.get_category_ids(active_only=True)
+    payload["categories"] = catalog.get_category_options()
     return jsonify(payload)
 
 
