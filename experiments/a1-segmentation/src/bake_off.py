@@ -199,6 +199,22 @@ def selftest():
     assert s4 == spans, f"sol4 did not recover gold: {s4}"
     assert s4b == spans, f"sol4b did not recover gold: {s4b}"
 
+    # (1b) sol5 greedy accumulate: a perfect "belongs to the document assembled so far" oracle
+    # (SAME_DOC iff the candidate is within the doc that began at doc_first) must recover gold.
+    def perfect_belongs(pdf, doc_first, candidate, cost, dpi=150):
+        cost.add(None)
+        return "SAME_DOC" if candidate <= end_of[doc_first] else "NEW_DOC"
+
+    orig_b = oracles.belongs_to_doc
+    oracles.belongs_to_doc = perfect_belongs
+    try:
+        c5 = Cost()
+        s5 = solutions.sol5_accumulate(None, n, c5)
+    finally:
+        oracles.belongs_to_doc = orig_b
+    assert s5 == spans, f"sol5 did not recover gold: {s5}"
+    assert c5.calls == n - 1, f"sol5 must call the oracle once per page 2..n: {c5.calls} != {n - 1}"
+
     # (2) cue pre-cuts shrink the search: feed sol4b a subset of true boundaries as pre-cuts.
     precuts = set(gold_starts[2::3])  # every third gold start, as if found for free
     c4b_cued = Cost()
@@ -448,6 +464,8 @@ def selftest():
     print(f"selftest OK over {n} pages, {len(spans)} gold docs (mean ~7.6pp):")
     print(f"  (1) perfect oracle: sol2/sol4/sol4b all recover gold "
           f"(calls sol2={c2.calls} sol4={c4.calls} sol4b={c4b.calls})")
+    print(f"  (1b) sol5 greedy accumulate recovers gold under a perfect belongs-oracle "
+          f"({c5.calls} calls, one per page)")
     print(f"  (2) cue pre-cuts cut probes {c4.calls} -> {c4b_cued.calls}")
     print("  (3a) shifted boundary: confirm RELOCATES it -> exact recovery (plain over-shifts)")
     print(f"  (3b) false split: confirm VETOES it -> exact recovery "

@@ -22,6 +22,8 @@ dependencies = [
     "python-dotenv",
     "sentence-transformers>=5.5.1",
     "httpx>=0.28.1",
+    "flask-security[common,fsqla]>=5.8.1",
+    "waitress>=3.0.2",
 ]
 
 [tool.uv]

@@ -1,0 +1,29 @@
+/* Vendored latin subsets of Poppins (headings) and Inter (body) - Evaluators
+   Design System type. Local files: this LAN app must not depend on Google Fonts
+   at runtime (same reasoning as the vendored PDF.js).
+   Inter ships as one variable font (Google serves the identical file for every
+   weight), so a single face with a weight range covers 400/500/600. */
+
+@font-face {
+    font-family: "Inter";
+    font-style: normal;
+    font-weight: 100 900;
+    font-display: swap;
+    src: url("inter-variable.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "Poppins";
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url("poppins-600.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "Poppins";
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url("poppins-700.woff2") format("woff2");
+}

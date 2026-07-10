@@ -13,6 +13,7 @@ import io
 import sys
 
 import images
+import verdict_cache
 from genai_client import classify_enum, classify_enum_async, generate_json
 from google.genai import types
 from pypdf import PdfReader, PdfWriter
@@ -42,6 +43,13 @@ _RANGE_SYS = (
     "page of a document and a later CANDIDATE page. Decide whether the candidate page still "
     "belongs to the SAME document, or is part of a NEW (different) document."
 )
+_BELONGS_SYS = (
+    "You segment a scanned medical-record PDF into its sub-documents. You are shown several "
+    "pages of the document currently being assembled (its first page, a middle page, and its "
+    "most recent page), then a CANDIDATE next page. Using the whole document's identity - not "
+    "just the page immediately before - decide whether the candidate continues the SAME "
+    "document or begins a NEW (different) document."
+)
 
 
 def _part(pdf_path, page_number, dpi):
@@ -49,26 +57,62 @@ def _part(pdf_path, page_number, dpi):
 
 
 def adjacent(pdf_path, page_number, cost, dpi=150):
-    """Is `page_number` the start of a new document vs the page before it? -> 'NEW'|'SAME'|None."""
-    contents = [
-        "First image = previous page. Second image = current page. "
-        "Does the current page start a NEW document or continue the SAME one?",
-        _part(pdf_path, page_number - 1, dpi),
-        _part(pdf_path, page_number, dpi),
-    ]
-    return classify_enum(contents, ("NEW", "SAME"), _ADJACENT_SYS, cost)
+    """Is `page_number` the start of a new document vs the page before it? -> 'NEW'|'SAME'|None.
+    Disk-cached (resume/no-respend); page rendering is skipped entirely on a cache hit."""
+    def _compute():
+        contents = [
+            "First image = previous page. Second image = current page. "
+            "Does the current page start a NEW document or continue the SAME one?",
+            _part(pdf_path, page_number - 1, dpi),
+            _part(pdf_path, page_number, dpi),
+        ]
+        return classify_enum(contents, ("NEW", "SAME"), _ADJACENT_SYS, cost)
+
+    return verdict_cache.cached(pdf_path, "adjacent", f"p={page_number}", dpi, cost, _compute)
 
 
 def range_probe(pdf_path, start_page, candidate_page, cost, dpi=150):
     """Does `candidate_page` belong to the document that began at `start_page`?
-    -> 'SAME_DOC'|'NEW_DOC'|None."""
-    contents = [
-        "First image = the first page of a document. Second image = a later candidate page. "
-        "Does the candidate still belong to the SAME document, or a NEW one?",
-        _part(pdf_path, start_page, dpi),
-        _part(pdf_path, candidate_page, dpi),
-    ]
-    return classify_enum(contents, ("SAME_DOC", "NEW_DOC"), _RANGE_SYS, cost)
+    -> 'SAME_DOC'|'NEW_DOC'|None. Disk-cached like adjacent()."""
+    def _compute():
+        contents = [
+            "First image = the first page of a document. Second image = a later candidate page. "
+            "Does the candidate still belong to the SAME document, or a NEW one?",
+            _part(pdf_path, start_page, dpi),
+            _part(pdf_path, candidate_page, dpi),
+        ]
+        return classify_enum(contents, ("SAME_DOC", "NEW_DOC"), _RANGE_SYS, cost)
+
+    return verdict_cache.cached(pdf_path, "range_probe", f"s={start_page},c={candidate_page}",
+                                dpi, cost, _compute)
+
+
+def belongs_to_doc(pdf_path, doc_first, candidate_page, cost, dpi=150):
+    """Does `candidate_page` continue the document assembled so far (Solution 5)?
+
+    The document currently runs [doc_first, candidate_page - 1]. Represent it with THREE pages -
+    its first (identity), a middle page (mid-document context), and its most recent page (local
+    continuity) - then show the candidate. Deduped + ordered, so a 1-2 page document naturally
+    collapses to fewer anchor images. -> 'SAME_DOC'|'NEW_DOC'|None. Disk-cached by (doc_first,
+    candidate): the middle/preceding pages are a deterministic function of those two, so they
+    fully key the call."""
+    prev = candidate_page - 1
+    middle = (doc_first + prev) // 2
+    anchors = sorted({doc_first, middle, prev})  # pages already in the doc: first, middle, latest
+
+    def _compute():
+        contents = [
+            f"Images 1-{len(anchors)} are pages already in the current document, in reading "
+            "order (its first page, a middle page, and its most recent page). The LAST image is "
+            "the candidate next page. Does the candidate continue the SAME document or begin a "
+            "NEW one?",
+            *[_part(pdf_path, a, dpi) for a in anchors],
+            _part(pdf_path, candidate_page, dpi),
+        ]
+        return classify_enum(contents, ("SAME_DOC", "NEW_DOC"), _BELONGS_SYS, cost)
+
+    return verdict_cache.cached(pdf_path, "belongs", f"f={doc_first},c={candidate_page}",
+                                dpi, cost, _compute)
 
 
 def adjacent_text(prev_markdown, cur_markdown, cost):

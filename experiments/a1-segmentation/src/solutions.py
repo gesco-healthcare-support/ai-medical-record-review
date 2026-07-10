@@ -125,7 +125,7 @@ def sol1_overlapping_windows(pdf_path, n, cost, window=80, overlap=30, byte_budg
         windows = _byte_budgeted_windows(pdf_path, n, overlap, int(byte_budget_mb * 1024 * 1024))
     reports = [oracles.window_segment(pdf_path, ws, we, cost) for ws, we in windows]
     starts = {1}
-    for k, (ws, we) in enumerate(windows):
+    for k, (ws, _we) in enumerate(windows):
         owned_cap = n if k == len(windows) - 1 else windows[k + 1][0]
         prev_we = windows[k - 1][1] if k else 0
         prev_starts = {a for a, _b in reports[k - 1]} if k else set()
@@ -261,6 +261,29 @@ def sol4b_range_probe_cued(pdf_path, n, cost, precuts=None, confirm=True, dpi=15
     return _spans(starts, n)
 
 
+def sol5_accumulate(pdf_path, n, cost, dpi=150):
+    """Greedy accumulation (Solution 5): grow a document page by page, asking whether each next
+    page belongs to the DOCUMENT ASSEMBLED SO FAR - represented by its first page (identity), a
+    middle page, and its most recent page - rather than only the previous page (sol2).
+
+    The extra document-level context is aimed squarely at sol2's failure mode: brute force
+    over-segments because an interior page of a long document (new letterhead, an embedded form,
+    a signature page) looks locally different from the single page before it. Anchoring the
+    decision to the whole document's identity should keep such pages attached. Risk (measured
+    first): the same context can bias toward SAME and MERGE a genuinely new short document into
+    the previous one - the worse, unrecoverable error - so recall is the metric to watch.
+
+    One oracle call per page (2..n): O(n) calls like sol2, and inherently sequential (each
+    decision depends on where the current document started)."""
+    starts = [1]
+    doc_first = 1
+    for p in range(2, n + 1):
+        if oracles.belongs_to_doc(pdf_path, doc_first, p, cost, dpi=dpi) == "NEW_DOC":
+            starts.append(p)
+            doc_first = p
+    return _spans(starts, n)
+
+
 def naive_chunk_production(pdf_path, n, cost, chunk=CHUNK_SIZE):
     """The ACTUAL current approach (production /getPages): segment the PDF in non-overlapping
     `chunk`-page windows, each handled INDEPENDENTLY by the production prompt, with page numbers
@@ -314,6 +337,7 @@ SOLUTIONS = {
     "3_adjacent_markdown": sol3_adjacent_markdown,
     "4_range_probe": sol4_range_probe,
     "4b_range_probe_cued": sol4b_range_probe_cued,
+    "5_accumulate": sol5_accumulate,
 }
 
 # Solutions with an async (concurrent) implementation; sol4/4b are inherently sequential.

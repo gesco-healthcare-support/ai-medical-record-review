@@ -44,3 +44,6 @@ htmlcov/
 .playwright-mcp/
 .DS_Store
 Thumbs.db
+
+# SQLite database (per-machine state; never commit)
+instance/
