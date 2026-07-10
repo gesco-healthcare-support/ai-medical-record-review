@@ -51,7 +51,9 @@ def test_segment_job_returns_rows(client, make_pdf, tmp_path, monkeypatch):
     snap = _poll(client, "/api/segment/status")
     assert snap["state"] == "done"
     assert [r["start"] for r in snap["rows"]] == [1, 3]
-    assert "8" in snap["categories"] and "100" in snap["categories"]
+    # categories is now [{id, name}] for data-driven editor labels.
+    category_ids = [c["id"] for c in snap["categories"]]
+    assert "8" in category_ids and "100" in category_ids
 
 
 def test_segment_requires_upload(client):
@@ -95,7 +97,7 @@ def test_summarize_job_returns_rowwise_summaries(client, make_pdf, tmp_path, mon
     state.pdf_filepath = make_pdf(tmp_path / "case.pdf", pages=5)
     state.all_data = []
 
-    def fake_summarize_row(pdf_path, row, model):
+    def fake_summarize_row(pdf_path, row, model=None, prompt=None):
         return {
             "summaryDate": row["date"],
             "summaryTitle": f"T{row['start']} (Pages {row['start']}-{row['end']})",

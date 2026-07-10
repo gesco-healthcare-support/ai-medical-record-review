@@ -59,7 +59,7 @@ def test_two_documents_overlap_and_finish(client, pdf_bytes, monkeypatch):
         overlap.wait()
         return [dict(row) for row in _ROWS]
 
-    def fake_summarize(pdf_path, row, model=None):
+    def fake_summarize(pdf_path, row, model=None, prompt=None):
         return {
             "summaryTitle": f"SUMMARY {row['start']}",
             "summaryDate": row["date"],

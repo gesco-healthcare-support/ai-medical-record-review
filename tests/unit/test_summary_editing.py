@@ -64,7 +64,7 @@ _ROWS = [
 ]
 
 
-def _fake_summarize(pdf_path, row, model=None):
+def _fake_summarize(pdf_path, row, model=None, prompt=None):
     return {
         "summaryTitle": f"SUMMARY {row['start']}",
         "summaryDate": row["date"],
@@ -158,7 +158,7 @@ def test_export_recomposes_tags_around_edits(client, pdf_bytes, monkeypatch):
     """The web UI edits CLEAN titles/text ([ManualCheck] and **DOI** stripped for
     display); the docx must still carry the legacy tag format for every summary."""
 
-    def decorated(pdf_path, row, model=None):
+    def decorated(pdf_path, row, model=None, prompt=None):
         manual = "[ManualCheck] " if row["flag"] == "x" else ""
         return {
             "summaryTitle": f"{manual}SUMMARY {row['start']} (Pages {row['start']}-{row['end']})",
@@ -203,7 +203,7 @@ def test_export_recomposes_pages_and_diagnostic_tags(client, pdf_bytes, monkeypa
         dict(_ROWS[2], category="3", flag="-"),  # category 3 -> [Diagnostic Study]
     ]
 
-    def engine_style(pdf_path, row, model=None):
+    def engine_style(pdf_path, row, model=None, prompt=None):
         diag = " [Diagnostic Study]" if str(row["category"]) == "3" else ""
         return {
             "summaryTitle": f"RAW TITLE{diag} (Pages {row['start']}-{row['end']})",

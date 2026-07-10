@@ -6,18 +6,13 @@ per-document OpenAI calls); jobs run on the single-slot runner in services/jobs.
 
 from flask import Blueprint, jsonify, request, send_file
 
-from mrr_ai import state
+from mrr_ai import catalog, state
 from mrr_ai.services import jobs
 from mrr_ai.services.pdf import get_pdf_page_count
 from mrr_ai.services.segment_engine import run_segmentation
 from mrr_ai.services.summarize_engine import summarize_row
-from mrr_ai.taxonomy import CATEGORIES
 
 bp = Blueprint("review_api", __name__)
-
-# Categories the editor may assign. "6" exists in the legacy prompt set but not in the
-# curated taxonomy; the summarize engine handles it, so it stays selectable.
-EDITABLE_CATEGORIES = sorted({*CATEGORIES.keys(), "6"}, key=lambda c: int(c))
 
 
 def validate_rows(rows, total_pages):
@@ -26,9 +21,11 @@ def validate_rows(rows, total_pages):
     Rules mirror the client: integer pages, 1 <= start <= end <= total, ascending and
     non-overlapping (gaps are ALLOWED - users deliberately skip junk pages), known
     category. The list drives page slicing, so violations must stop the pipeline here.
+    The valid category set is read from the DB catalog (active categories) at call time.
     """
     if not rows:
         return "no rows to summarize"
+    editable = set(catalog.get_category_ids(active_only=True))
     previous_end = 0
     for i, row in enumerate(rows, start=1):
         try:
@@ -40,7 +37,7 @@ def validate_rows(rows, total_pages):
         if start <= previous_end:
             return f"row {i}: overlaps or is out of order with the previous row"
         previous_end = end
-        if str(row.get("category")) not in EDITABLE_CATEGORIES:
+        if str(row.get("category")) not in editable:
             return f"row {i}: unknown category {row.get('category')!r}"
     return None
 
@@ -75,7 +72,7 @@ def segment_status():
     snap = jobs.status()
     if snap.get("kind") == "segment" and snap.get("state") == "done":
         snap["rows"] = snap.pop("result")
-        snap["categories"] = EDITABLE_CATEGORIES
+        snap["categories"] = catalog.get_category_options()
     return jsonify(snap)
 
 
@@ -95,11 +92,15 @@ def summarize_start():
     pdf_path = state.pdf_filepath
     state.all_data = []  # the legacy Word export reads this after the run
 
+    # Resolve each row's summary prompt now, in the request's app context: this legacy
+    # path runs the closure on the jobs.py runner, which does not guarantee a DB context.
+    prompts_by_row = [catalog.get_prompt("summary", str(row.get("category"))) for row in rows]
+
     def target(report):
         summaries = []
-        for i, row in enumerate(rows, start=1):
+        for i, (row, prompt) in enumerate(zip(rows, prompts_by_row, strict=True), start=1):
             report("summarizing", i - 1, len(rows))
-            output = summarize_row(pdf_path, row, model)
+            output = summarize_row(pdf_path, row, model, prompt=prompt)
             state.all_data.append(output)
             summaries.append({**output, "row": row})
             report("summarizing", i, len(rows))

@@ -24,6 +24,11 @@ app context. Config and clients come from `mrr_ai.config` / `mrr_ai.extensions`.
 - **classification.py** - the live **B5 categorization cascade** `classify()` (high-precision
   rules -> local sentence-transformers embeddings -> Gemini constrained-enum, with fusion +
   manual-review flagging). Used by `/getPages`. See `../../docs/explanation/categorization.md`.
+  Its auto-assignable category set now comes from the editable DB catalog (lazily via
+  `mrr_ai.catalog`, keyed on the catalog revision so an admin edit reloads the catalog text +
+  embedding matrix). This is the ONE sanctioned exception to the no-Flask rule: the catalog
+  read is lazy and falls back to the `taxonomy.py` constants when there is no app context, so
+  the cascade stays unit-testable without an app.
 - **categorization.py** - legacy `normalize` / `similarity` / `categorize_documents` (difflib
   fuzzy match). **Superseded by classification.py and no longer called** (kept pending removal).
 - **files.py** - `allowed_file`, `parse_date`, `is_valid_date`, `count_lines_in_file`.

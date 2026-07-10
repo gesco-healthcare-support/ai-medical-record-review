@@ -29,6 +29,10 @@ class User(db.Model, fsqla.FsUserMixin):
     # migration can add it to databases with existing users (who have no name);
     # registration enforces it via a form validator instead.
     name = db.Column(db.String(255), nullable=True)
+    # Marks the few accounts allowed into the admin area (category + prompt editing).
+    # Not full RBAC: a single boolean, flipped via the ``flask admin`` CLI or the admin
+    # UI. Added to existing databases through the boot ADD COLUMN path (default 0).
+    is_admin = db.Column(db.Boolean, nullable=False, default=False)
 
 
 def _utcnow():
@@ -110,6 +114,10 @@ class Job(db.Model):
     error = db.Column(db.Text, nullable=True)
     model = db.Column(db.String(64), nullable=False)
     prompt_version = db.Column(db.String(16), nullable=False)
+    # The editable-catalog revision this run used, so a re-processed summary/segment stays
+    # traceable to the exact category + prompt state that produced it (nullable: pre-existing
+    # jobs predate the catalog).
+    catalog_revision = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=_utcnow)
     started_at = db.Column(db.DateTime, nullable=True)
     finished_at = db.Column(db.DateTime, nullable=True)
@@ -237,6 +245,67 @@ class Summary(db.Model):
             ),
             "row": {"start": self.row_start, "end": self.row_end, "category": self.row_category},
         }
+
+
+class Category(db.Model):
+    """An editable document category. Seeded from taxonomy.py; ids are immutable strings.
+
+    ``auto_assign`` preserves the pre-existing two-set distinction: the classifier only ever
+    assigns categories with ``auto_assign=True`` (the taxonomy ids), while the review editor
+    offers every ``active`` category (including id 6, which is selectable but never
+    auto-assigned). ``active=False`` soft-deletes: hidden from the editor + classifier, but the
+    id and any historical rows referencing it are preserved.
+    """
+
+    __tablename__ = "categories"
+
+    id = db.Column(db.String(8), primary_key=True)  # numeric string, immutable
+    name = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text, nullable=False, default="")
+    examples = db.Column(db.JSON, nullable=False, default=list)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    auto_assign = db.Column(db.Boolean, nullable=False, default=True)
+    updated_at = db.Column(db.DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    def listing(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "examples": list(self.examples or []),
+            "active": self.active,
+            "auto_assign": self.auto_assign,
+        }
+
+
+class Prompt(db.Model):
+    """An editable prompt. Phase 1 stores only per-category summary prompts (``role`` =
+    'summary', ``category_id`` set); the ``role`` column lets phase 2 add the global
+    segmentation/categorization/verify prompts (``category_id`` null) without a migration."""
+
+    __tablename__ = "prompts"
+
+    id = db.Column(db.Integer, primary_key=True)
+    role = db.Column(db.String(32), nullable=False)
+    category_id = db.Column(db.String(8), nullable=True)
+    text = db.Column(db.Text, nullable=False)
+    revision = db.Column(db.Integer, nullable=False, default=1)
+    updated_at = db.Column(db.DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (db.UniqueConstraint("role", "category_id", name="uq_prompt_role_category"),)
+
+
+class CatalogMeta(db.Model):
+    """Single-row (id=1) monotonic revision counter for the category/prompt catalog.
+
+    Bumped whenever a category or prompt is edited; used both to invalidate the classifier's
+    in-memory caches and to stamp the catalog version onto jobs so outputs stay traceable.
+    """
+
+    __tablename__ = "catalog_meta"
+
+    id = db.Column(db.Integer, primary_key=True)  # always 1
+    revision = db.Column(db.Integer, nullable=False, default=1)
 
 
 class AuditLog(db.Model):

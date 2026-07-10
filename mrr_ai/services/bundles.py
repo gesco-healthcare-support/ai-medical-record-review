@@ -46,16 +46,19 @@ def build_bundle_pdf(pdf_path, rows):
     return buffer
 
 
-def bundle_summary_entries(pdf_path, rows, model=None):
+def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
     """Summarize each row with its category prompt -> Word-export entry dicts.
 
     Fresh on demand (works even if the document was never summarized in full); reuses the
     per-row engine, so each record gets its category-specific prompt exactly as the main
-    flow would.
+    flow would. ``prompt_for`` is an optional ``row -> prompt text`` resolver injected by the
+    blueprint (DB-first via ``catalog.get_prompt``); when omitted the engine uses its
+    hardcoded default, keeping this service Flask/DB-free.
     """
     entries = []
     for row in rows:
-        output = summarize_engine.summarize_row(pdf_path, row, model)
+        prompt = prompt_for(row) if prompt_for is not None else None
+        output = summarize_engine.summarize_row(pdf_path, row, model, prompt=prompt)
         entries.append(
             {
                 "summaryDate": output.get("summaryDate") or "-",

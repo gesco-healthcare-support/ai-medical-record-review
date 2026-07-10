@@ -79,12 +79,13 @@ def active_job(document_id):
     ).first()
 
 
-def submit(document_id, kind, target, *, model, prompt_version):
+def submit(document_id, kind, target, *, model, prompt_version, catalog_revision=None):
     """Queue ``target(report)`` for a document; None if it already has an active job.
 
     ``target`` runs on the pool inside an app context; it receives
     ``report(stage, current, total)`` and owns persisting its own results (rows,
-    summaries) - this module only manages Job/Document state.
+    summaries) - this module only manages Job/Document state. ``catalog_revision`` records
+    the category/prompt catalog version the run used (provenance).
     """
     from mrr_ai.extensions import db
     from mrr_ai.models import Document, Job
@@ -93,7 +94,13 @@ def submit(document_id, kind, target, *, model, prompt_version):
     with _submit_lock:
         if active_job(document_id) is not None:
             return None
-        job = Job(document_id=document_id, kind=kind, model=model, prompt_version=prompt_version)
+        job = Job(
+            document_id=document_id,
+            kind=kind,
+            model=model,
+            prompt_version=prompt_version,
+            catalog_revision=catalog_revision,
+        )
         document = db.session.get(Document, document_id)
         document.status = _STATUS_ON_SUBMIT[kind]
         db.session.add(job)

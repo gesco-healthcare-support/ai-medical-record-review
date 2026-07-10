@@ -19,9 +19,17 @@ The Flask application, built by `create_app()` in `__init__.py`. Full picture:
   multi-user flow: owner-checked (404 on foreign ids), no globals.
 - **services/** - business logic, no Flask (see `services/CLAUDE.md`). `job_queue.py`
   runs document pipelines on a bounded pool and is the only writer of Document.status.
-- **taxonomy.py** - category catalog (ids/names/corpora) driving the B5 cascade
-  (`services/classification.py`). **groups.py** - legacy taxonomy, superseded and unused.
-  **prompts.py** - per-category summarization prompts.
+- **taxonomy.py** / **prompts.py** - the category catalog (ids/names/corpora) and
+  per-category summary prompts. As of the admin feature these are the SEED source and the
+  runtime FALLBACK, not the live source: on first boot they seed the `Category`/`Prompt`
+  DB tables (`seed_catalog.py`), and everything reads through **catalog.py** thereafter.
+  **groups.py** - legacy taxonomy, superseded and unused.
+- **catalog.py** - DB-first accessor for the editable catalog: `get_categories` /
+  `get_category_ids` / `get_category_options` / `get_prompt` / `catalog_version` /
+  `bump_revision`. Admins edit categories + summary prompts via `/api/admin`
+  (`blueprints/admin_api.py`), gated by the `is_admin` flag; an edit bumps the revision so
+  the classifier's cached catalog + embedding matrix reload.
+- **cli.py** - `flask admin grant/revoke/list` to mark the few admin accounts.
 
 How-to: add a route -> `../docs/how-to/add-a-blueprint.md`; add a category ->
 `../docs/how-to/add-a-category.md`.

@@ -21,6 +21,7 @@
         <a href="/diagnostics" title="Diagnostic &amp; Operative bundle">Diagnostic &amp; Operative</a>
         <a href="/depositions" title="Deposition bundle">Depositions</a>
         <a href="/classic" title="The original pages UI">Classic UI</a>
+        {% if current_user.is_admin %}<a href="/admin" title="Categories &amp; prompts">Admin</a>{% endif %}
         <a href="/logout" title="Sign out">Log out</a>
     </nav>
 </header>

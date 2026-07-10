@@ -69,7 +69,17 @@ def create_app(config_overrides=None):
 
     register_blueprints(app)
 
+    from mrr_ai.cli import admin_cli
+
+    app.cli.add_command(admin_cli)
+
     _create_schema(app)
+
+    # Start the classifier's catalog cache clean: it lazily loads the (just-seeded) DB
+    # catalog on first use, and this keeps one app's cache from leaking into another.
+    from mrr_ai.services import classification
+
+    classification.reset_catalog_cache()
 
     from mrr_ai.services import job_queue
 
@@ -82,7 +92,8 @@ def create_app(config_overrides=None):
 # This stopgap covers ADD COLUMN only; anything harder (renames, drops, backfills)
 # is the trigger to introduce Alembic properly.
 _ADDITIVE_COLUMNS = {
-    "user": [("name", "VARCHAR(255)")],
+    "user": [("name", "VARCHAR(255)"), ("is_admin", "BOOLEAN NOT NULL DEFAULT 0")],
+    "jobs": [("catalog_revision", "INTEGER")],
     "review_rows": [("include", "BOOLEAN NOT NULL DEFAULT 1")],
     "summaries": [
         ("edited_title", "VARCHAR(512)"),
@@ -117,3 +128,8 @@ def _create_schema(app):
                 if name not in existing:
                     db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
         db.session.commit()
+
+        # Populate the editable category/prompt catalog from the constants (idempotent).
+        from mrr_ai.seed_catalog import seed_catalog
+
+        seed_catalog(db)

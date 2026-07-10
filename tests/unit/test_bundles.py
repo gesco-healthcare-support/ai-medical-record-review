@@ -71,7 +71,7 @@ def test_build_bundle_pdf_skips_out_of_range_pages(tmp_path):
 
 
 def test_bundle_summary_entries_maps_summarize_row_output(monkeypatch):
-    def fake_summarize(pdf_path, row, model=None):
+    def fake_summarize(pdf_path, row, model=None, prompt=None):
         return {
             "summaryTitle": f"T{row['start']}",
             "summaryDate": row["date"],

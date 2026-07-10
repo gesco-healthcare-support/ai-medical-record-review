@@ -32,23 +32,20 @@ const S = {
 const $ = (id) => document.getElementById(id);
 const sections = ["step-start", "step-progress", "step-editor", "step-summaries"];
 
-// Human labels for the 13 curated categories (mirrors taxonomy.py names).
-const CATEGORY_LABELS = {
-    "1": "1 - Progress / follow-up (PR-2)",
-    "2": "2 - Comprehensive eval (PR-4)",
-    "3": "3 - Diagnostic / imaging",
-    "4": "4 - GI procedure H&P",
-    "5": "5 - PT / chiro / acupuncture",
-    "6": "6 - Daily / SOAP notes",
-    "7": "7 - WC claim forms",
-    "8": "8 - Operative / pathology",
-    "9": "9 - Deposition",
-    "10": "10 - Request for authorization",
-    "11": "11 - Interval history / MDM",
-    "12": "12 - QME/AME supplemental",
-    "13": "13 - QME/AME evaluation",
-    "100": "100 - General / other",
-};
+// Category labels are data-driven from the server (S.categories = [{id, name}]), so admin
+// edits and every category (incl. 14, and 6 which is editor-only) show a real label. Names
+// are admin-editable, so escape them before they enter innerHTML.
+function esc(value) {
+    return String(value).replace(
+        /[&<>"]/g,
+        (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch],
+    );
+}
+
+function categoryLabel(id) {
+    const found = S.categories.find((c) => String(c.id) === String(id));
+    return found ? `${found.id} - ${found.name}` : String(id);
+}
 
 const STEP_ORDER = ["identify", "review", "summaries"];
 
@@ -347,9 +344,8 @@ function rowErrors() {
 
 function categoryOptions(current) {
     return S.categories.map((c) => {
-        const label = CATEGORY_LABELS[c] || c;
-        const sel = String(current) === c ? " selected" : "";
-        return `<option value="${c}"${sel}>${label}</option>`;
+        const sel = String(current) === String(c.id) ? " selected" : "";
+        return `<option value="${esc(c.id)}"${sel}>${esc(c.id + " - " + c.name)}</option>`;
     }).join("");
 }
 
@@ -642,7 +638,7 @@ function buildSummaryCard(item) {
     const meta = [
         item.summaryDate || "no date",
         `pages ${item.row.start}\u2013${item.row.end}`,
-        CATEGORY_LABELS[String(item.row.category)] || item.row.category,
+        esc(categoryLabel(item.row.category)),
         doi ? `DOI ${doi}` : "",
     ].filter(Boolean).join(" \u00b7 ");
 
