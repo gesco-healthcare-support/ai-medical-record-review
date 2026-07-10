@@ -1,26 +1,55 @@
-# How to add a document category
+# How to add or edit a document category
 
-A category is a number that selects (a) the fuzzy-match group and (b) the summarization
-prompt. To add one:
+Categories (and their summary prompts) live in the database and are edited at runtime from
+the **admin console** - no code change or redeploy. The `Category`/`Prompt` tables are seeded
+on first boot from `mrr_ai/taxonomy.py` and `mrr_ai/prompts.py`, which remain the seed source
+and the fallback; everything reads through `mrr_ai/catalog.py` thereafter.
 
-1. **Taxonomy** - in `mrr_ai/groups.py`, add the category number as a key with a list of
-   representative document-type titles (used by the fuzzy matcher):
+## Prerequisite: be an admin
 
-   ```python
-   "15": ["My New Report Type", "Another Title Variant"],
-   ```
+Admin features are gated by an `is_admin` flag on your account (not full RBAC). Grant it once
+with the CLI:
 
-2. **Prompt** - in `mrr_ai/prompts.py`, add a `category_15` entry with the summarization
-   instructions for that type.
+```bash
+flask --app app admin grant you@example.com   # revoke / list also available
+```
 
-3. **Routing** - `summarize()` in `mrr_ai/blueprints/summarize.py` selects the prompt by
-   number. If you add a number outside the existing 1-14/100 range, extend the
-   `if option == N` ladder to map it to `prompts["category_15"]`.
+Then the **Admin** link appears in the top nav (or go to `/admin`).
 
-4. **Docs** - update `docs/reference/csv-contract.md` if the category range changes.
+## Add a category (admin console)
 
-5. **Test** - add a case to `tests/unit/test_categorization.py` asserting a representative
-   title maps to the new number.
+1. On `/admin`, click **Add category**.
+2. Enter:
+   - **ID** - a number (e.g. `15`). It is **permanent** - it keys stored review rows, so it is
+     never editable afterward.
+   - **Name** and **Description** - the description + examples also feed the classifier, so
+     write them the way real titles read.
+   - **Example document titles** - one per line.
+   - **Auto-assign** - on = the classifier may assign it; off = selectable in the review editor
+     but never auto-assigned (how id 6 behaves).
+   - **Active** - inactive categories are hidden from new categorization and the editor but
+     keep their id and any historical rows (soft delete).
+3. Optionally open **Prompt** for the new category and write its summary prompt. With no prompt
+   row it inherits the general (`100`) prompt.
 
-> The lexical fuzzy match is being replaced (B5/B6). Until then, choose titles in step 1
-> that closely match what Gemini emits, or the match will fall through to category 100.
+Saving bumps the catalog revision, so the classifier reloads its category text + embedding
+matrix on the next run automatically.
+
+## Edit / deactivate
+
+- **Edit** changes name/description/examples/auto-assign/active. Editing classifier-facing text
+  changes future categorization.
+- **Deactivate** (Active off) is the soft delete - ids are immutable and existing rows must stay
+  interpretable, so there is no hard delete in the UI.
+- **Apply an edit to existing documents:** re-run their summaries. The per-document Summaries
+  re-run (and the admin `POST /api/admin/reprocess/<id>`) re-summarize with the current prompts,
+  **replacing** the prior summaries; the job records the catalog revision it used.
+
+## Developer note (changing the seed defaults)
+
+`taxonomy.py` (classifier catalog) and `prompts.py` (summary prompts) are only the **seed** for
+a fresh database and the fallback when a row is missing. Editing them changes what a brand-new
+DB seeds; it does **not** alter an already-seeded database (the admin console does that). The
+category column is free-text `String(8)` (no enum/FK), so new ids need no migration. See
+[../explanation/categorization.md](../explanation/categorization.md) and ADR
+[0006](../decisions/0006-editable-catalog-admin.md).

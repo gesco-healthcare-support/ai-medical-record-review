@@ -51,6 +51,13 @@ mirror the source files in [../reference/prompts/](../reference/prompts/). The r
 `category_13` (QME/AME): it demands verbatim diagnoses, a detailed physical exam, and the exact
 AMA Whole-Person Impairment language - the high-value, error-sensitive content.
 
+> **Editable at runtime (ADR [0006](../decisions/0006-editable-catalog-admin.md)).** `prompts.py`
+> is now the **seed + fallback**: the summary prompts live in the `Prompt` DB table and are
+> edited from the admin console. The live account-based summarizer (`services/summarize_engine.py`,
+> used by the review app + bundles) resolves each prompt DB-first via `catalog.get_prompt`, with
+> the general (`100`) prompt as the fallback for a category that has none (e.g. `11`). This legacy
+> CSV path still reads the `prompts.py` dict directly.
+
 ## Stage 4 - export to Word
 
 Code: [../../mrr_ai/blueprints/export.py](../../mrr_ai/blueprints/export.py).

@@ -9,3 +9,4 @@ Short records of significant decisions: context, decision, alternatives, consequ
 | [0003](0003-modularization.md) | Modularize into the mrr_ai package (factory + blueprints + services) |
 | [0004](0004-segmentation-b1-fixes.md) | Fix Gemini segmentation (temp 0, JSON schema, robust parser) |
 | [0005](0005-testing-and-ci.md) | Testing strategy, coverage policy, and CI secret-scan |
+| [0006](0006-editable-catalog-admin.md) | DB-backed editable category/prompt catalog with an is_admin gate |
