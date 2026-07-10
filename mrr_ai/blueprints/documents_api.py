@@ -153,13 +153,16 @@ def delete_document(document_id):
     if document.active_job is not None:
         return jsonify({"error": "a job is running for this document; wait for it"}), 409
     stored_path = document.stored_path
+    # Read the persisted id from the row (a DB-sourced value, not the raw request path)
+    # before deletion, so the cleanup log below cannot carry injected user input.
+    document_uuid = document.id
     db.session.delete(document)  # cascades to jobs/rows/summaries
     db.session.commit()
     try:
         os.remove(stored_path)
     except OSError:
         # The DB row is gone either way; leave a trace for manual cleanup (id only).
-        current_app.logger.warning("could not remove stored file for document %s", document_id)
+        current_app.logger.warning("could not remove stored file for document %s", document_uuid)
     audit("delete", document_id)
     return jsonify({"ok": True})
 
