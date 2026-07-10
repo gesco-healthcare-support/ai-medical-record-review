@@ -113,6 +113,8 @@ def test_other_user_gets_404_everywhere(client, other_client, pdf_bytes):
         ("POST", f"/api/documents/{document_id}/segment/start"),
         ("POST", f"/api/documents/{document_id}/summarize/start"),
         ("POST", f"/api/documents/{document_id}/export"),
+        ("POST", f"/api/documents/{document_id}/summaries/0/resummarize"),
+        ("POST", f"/api/documents/{document_id}/bundle/pdf"),
         ("DELETE", f"/api/documents/{document_id}"),
     ]
     for method, url in probes:
@@ -406,3 +408,71 @@ def test_bundle_rejects_non_owner(client, other_client, pdf_bytes):
         ).status_code
         == 404
     )
+
+
+# --- inline per-summary re-run --------------------------------------------------------
+
+
+def _summarized_doc(client, pdf_bytes, monkeypatch, tag_holder):
+    def fake_summarize(pdf_path, row, model=None):
+        return {
+            "summaryTitle": f"{tag_holder['tag']} {row['start']}",
+            "summaryDate": row["date"],
+            "summaryText": f"{tag_holder['tag']} body {row['start']}",
+            "manualCheck": "",
+        }
+
+    monkeypatch.setattr("mrr_ai.services.summarize_engine.summarize_row", fake_summarize)
+    document_id = _upload(client, pdf_bytes).get_json()["id"]
+    assert (
+        client.post(
+            f"/api/documents/{document_id}/summarize/start", json={"rows": _ROWS}
+        ).status_code
+        == 200
+    )
+    assert _wait_status(client, document_id, "done")
+    return document_id
+
+
+def test_resummarize_refreshes_one_summary_and_clears_edits(client, pdf_bytes, monkeypatch):
+    holder = {"tag": "OLD"}
+    document_id = _summarized_doc(client, pdf_bytes, monkeypatch, holder)
+
+    # Reviewer hand-edits summary 0.
+    client.put(f"/api/documents/{document_id}/summaries/0", json={"summaryText": "HAND EDIT"})
+    before = client.get(f"/api/documents/{document_id}/summaries").get_json()
+    assert before[0]["edited"] is True and before[0]["summaryText"] == "HAND EDIT"
+
+    # Re-run only summary 0: fresh output, edit dropped.
+    holder["tag"] = "NEW"
+    resp = client.post(f"/api/documents/{document_id}/summaries/0/resummarize")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["summaryText"] == "NEW body 1"
+    assert body["edited"] is False
+
+    after = client.get(f"/api/documents/{document_id}/summaries").get_json()
+    assert after[1]["summaryText"] == "OLD body 6"  # the other summary is untouched
+
+
+def test_resummarize_unknown_idx_404(client, pdf_bytes):
+    document_id = _upload(client, pdf_bytes).get_json()["id"]
+    assert client.post(f"/api/documents/{document_id}/summaries/999/resummarize").status_code == 404
+
+
+def test_resummarize_blocked_while_job_active(app, client, pdf_bytes, monkeypatch):
+    document_id = _summarized_doc(client, pdf_bytes, monkeypatch, {"tag": "OLD"})
+
+    from mrr_ai.services import job_queue
+
+    release = threading.Event()
+    with app.app_context():
+        job_queue.submit(
+            document_id, "segment", lambda report: release.wait(10), model="m", prompt_version="2"
+        )
+    try:
+        assert (
+            client.post(f"/api/documents/{document_id}/summaries/0/resummarize").status_code == 409
+        )
+    finally:
+        release.set()

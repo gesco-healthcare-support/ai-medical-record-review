@@ -363,6 +363,64 @@ def put_summary(document_id, idx):
     return jsonify(summary.listing())
 
 
+@bp.route("/<document_id>/summaries/<int:idx>/resummarize", methods=["POST"])
+def resummarize(document_id, idx):
+    """Re-run one summary from scratch: re-OCR its pages, re-summarize with its category
+    prompt, replace the stored model output, and CLEAR the reviewer's edits (it is a fresh
+    summary). Synchronous - a single record is one OCR pass + two model calls.
+    """
+    document = _own(document_id)
+    if document is None:
+        return _not_found()
+    summary = Summary.query.filter_by(document_id=document.id, idx=idx).first()
+    if summary is None:
+        return _not_found()
+    if document.active_job is not None:
+        # A segment job rewrites the rows this reads; a summarize job rewrites this summary.
+        return jsonify({"error": "a job is running for this document; wait for it"}), 409
+
+    # Prefer the current review row (full, live metadata incl. injury_date/flag); fall back
+    # to the summary's own snapshot if the reviewer has since removed/reshaped that row.
+    review_row = ReviewRow.query.filter_by(
+        document_id=document.id, start=summary.row_start, end=summary.row_end
+    ).first()
+    row = (
+        review_row.as_row()
+        if review_row is not None
+        else {
+            "start": summary.row_start,
+            "end": summary.row_end,
+            "category": summary.row_category,
+            "date": summary.date,
+            "injury_date": "-",
+            "flag": "x" if summary.manual_check else "-",
+        }
+    )
+
+    from mrr_ai.services.summarize_engine import summarize_row
+
+    # The re-run button POSTs no body; get_json(silent) avoids a 415 on the empty request.
+    model = (request.get_json(silent=True) or {}).get("model") or config.SUMMARY_MODEL
+    output = summarize_row(document.stored_path, row, model)
+
+    summary.title = output["summaryTitle"]
+    summary.date = output.get("summaryDate") or "-"
+    summary.text = output["summaryText"]
+    summary.source_text = output.get("sourceText")
+    summary.manual_check = bool(output.get("manualCheck"))
+    # Keep the snapshot consistent with what was just summarized.
+    summary.row_start = int(row["start"])
+    summary.row_end = int(row["end"])
+    summary.row_category = str(row["category"])
+    # Fresh model output supersedes the prior hand-edits for this row.
+    summary.edited_title = None
+    summary.edited_date = None
+    summary.edited_text = None
+    db.session.commit()
+    audit("resummarize", document.id)
+    return jsonify(summary.listing())
+
+
 # A trailing engine-style page suffix; en dash included because the web view
 # displays ranges with one and an edit could carry it back. Possessive quantifiers
 # (\s++, \d++, \s*+) are backtrack-free, and there is no leading \s* so re.search runs
