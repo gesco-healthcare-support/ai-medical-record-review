@@ -19,9 +19,9 @@ from flask import Blueprint, current_app, jsonify, request, send_file
 from flask_security import current_user
 from sqlalchemy import func
 
-from mrr_ai import config
+from mrr_ai import catalog, config
 from mrr_ai.blueprints.export import _DOCX_MIMETYPE, _build_mrr_document
-from mrr_ai.blueprints.review_api import EDITABLE_CATEGORIES, validate_rows
+from mrr_ai.blueprints.review_api import validate_rows
 from mrr_ai.extensions import db
 from mrr_ai.models import Document, Job, ReviewRow, SegmentRow, Summary
 from mrr_ai.services import bundles, job_queue
@@ -141,7 +141,7 @@ def get_document(document_id):
         return _not_found()
     payload = document.listing()
     payload["rows"] = [row.as_row() for row in document.review_rows]
-    payload["categories"] = EDITABLE_CATEGORIES
+    payload["categories"] = catalog.get_category_ids(active_only=True)
     return jsonify(payload)
 
 
@@ -273,7 +273,8 @@ def _summarize_target(document_id, pdf_path, model):
         summaries = []
         for i, row in enumerate(rows):
             report("summarizing", i, len(rows))
-            output = summarize_row(pdf_path, row, model)
+            prompt = catalog.get_prompt("summary", str(row["category"]))
+            output = summarize_row(pdf_path, row, model, prompt=prompt)
             summaries.append(
                 Summary(
                     document_id=document_id,
@@ -401,7 +402,8 @@ def resummarize(document_id, idx):
 
     # The re-run button POSTs no body; get_json(silent) avoids a 415 on the empty request.
     model = (request.get_json(silent=True) or {}).get("model") or config.SUMMARY_MODEL
-    output = summarize_row(document.stored_path, row, model)
+    prompt = catalog.get_prompt("summary", str(row["category"]))
+    output = summarize_row(document.stored_path, row, model, prompt=prompt)
 
     summary.title = output["summaryTitle"]
     summary.date = output.get("summaryDate") or "-"
@@ -565,7 +567,12 @@ def bundle_summarize(document_id):
             }
         ), 409
     model = body.get("model") or config.SUMMARY_MODEL
-    entries = bundles.bundle_summary_entries(document.stored_path, matched, model)
+    entries = bundles.bundle_summary_entries(
+        document.stored_path,
+        matched,
+        model,
+        prompt_for=lambda row: catalog.get_prompt("summary", str(row["category"])),
+    )
     docx = _build_mrr_document(
         entries,
         document.page_count,

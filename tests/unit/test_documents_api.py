@@ -184,7 +184,7 @@ def test_segment_persists_raw_and_review_rows(app, client, pdf_bytes, monkeypatc
 
 
 def test_summarize_then_export_roundtrip(app, client, pdf_bytes, monkeypatch):
-    def fake_summarize(pdf_path, row, model=None):
+    def fake_summarize(pdf_path, row, model=None, prompt=None):
         return {
             "summaryTitle": f"SUMMARY {row['start']}",
             "summaryDate": row["date"],
@@ -367,7 +367,7 @@ def test_bundle_pdf_requires_a_category_list(client, pdf_bytes):
 def test_bundle_summarize_builds_filtered_docx(client, pdf_bytes, monkeypatch):
     calls = []
 
-    def fake_summarize(pdf_path, row, model=None):
+    def fake_summarize(pdf_path, row, model=None, prompt=None):
         calls.append(row["category"])
         return {
             "summaryTitle": f"S{row['start']}",
@@ -414,7 +414,7 @@ def test_bundle_rejects_non_owner(client, other_client, pdf_bytes):
 
 
 def _summarized_doc(client, pdf_bytes, monkeypatch, tag_holder):
-    def fake_summarize(pdf_path, row, model=None):
+    def fake_summarize(pdf_path, row, model=None, prompt=None):
         return {
             "summaryTitle": f"{tag_holder['tag']} {row['start']}",
             "summaryDate": row["date"],

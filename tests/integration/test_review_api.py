@@ -95,7 +95,7 @@ def test_summarize_job_returns_rowwise_summaries(client, make_pdf, tmp_path, mon
     state.pdf_filepath = make_pdf(tmp_path / "case.pdf", pages=5)
     state.all_data = []
 
-    def fake_summarize_row(pdf_path, row, model):
+    def fake_summarize_row(pdf_path, row, model=None, prompt=None):
         return {
             "summaryDate": row["date"],
             "summaryTitle": f"T{row['start']} (Pages {row['start']}-{row['end']})",

@@ -46,15 +46,21 @@ def _generate(model, system_msg, user_text, temperature):
     return (response.text or "").strip()
 
 
-def summarize_row(pdf_path, row, model=None):
+def summarize_row(pdf_path, row, model=None, prompt=None):
     """Summarize one sub-document row -> the legacy output_dict shape.
 
     row: {start, end, category, date, injury_date, flag}. The dict feeds both the UI
     (row-wise display) and state.all_data (legacy Word export).
+
+    ``prompt`` is the category's summary system prompt. Blueprints resolve it DB-first via
+    ``catalog.get_prompt`` and inject it so this service stays Flask/DB-free; when omitted it
+    falls back to the hardcoded ``prompts.py`` dict (identical to the pre-DB behavior).
     """
     model = model or SUMMARY_MODEL
-    key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
-    system_msg = prompts.get(key, prompts["category_100"])
+    if prompt is None:
+        key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
+        prompt = prompts.get(key, prompts["category_100"])
+    system_msg = prompt
 
     pages = list(range(int(row["start"]), int(row["end"]) + 1))
     text = extract_text_from_selected_pages(pdf_path, pages)
