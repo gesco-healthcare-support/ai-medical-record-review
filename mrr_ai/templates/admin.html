@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MRR - admin</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='evaluators.css') }}">
+</head>
+<body>
+<header class="ev-topbar">
+    <a class="ev-crest-chip" href="/" title="Back to your documents">
+        <img src="{{ url_for('static', filename='assets/evaluators-crest.png') }}" alt="Evaluators crest">
+    </a>
+    <span class="ev-wordmark">EVALUATORS</span>
+    <span class="ev-topbar-divider"></span>
+    <span class="ev-topbar-app">Admin</span>
+    <nav class="ev-topbar-nav">
+        <a href="/" title="Back to your documents">My documents</a>
+        <a href="/admin" title="Categories &amp; prompts">Admin</a>
+        <a href="/logout" title="Sign out">Log out</a>
+    </nav>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main>
+    <section class="hd-column">
+        <div class="hd-header">
+            <div>
+                <h1>Categories &amp; prompts</h1>
+                <p class="muted">Add or edit the document categories and their summary prompts.
+                    Deactivating a category hides it from new work but keeps existing records intact.</p>
+            </div>
+            <button id="addCategoryBtn" class="ev-btn ev-btn-primary ev-btn-lg" type="button">Add category</button>
+        </div>
+        <div class="hd-card">
+            <table class="hd-table">
+                <thead>
+                <tr>
+                    <th class="hd-w-pages">ID</th>
+                    <th>Name</th>
+                    <th class="hd-w-found">Auto-assign</th>
+                    <th class="hd-w-status">Active</th>
+                    <th class="hd-w-status">Summary prompt</th>
+                    <th class="hd-w-menu"></th>
+                </tr>
+                </thead>
+                <tbody id="adminCategories"></tbody>
+            </table>
+        </div>
+        <div id="adminMsg" class="error-text"></div>
+    </section>
+</main>
+
+<!-- add / edit category metadata -->
+<div id="categoryDialog" class="ev-dialog-backdrop hidden">
+    <div class="ev-dialog" role="dialog" aria-modal="true" aria-labelledby="categoryDialogTitle">
+        <div class="ev-dialog-head">
+            <div>
+                <h2 id="categoryDialogTitle">Add category</h2>
+                <p class="ev-dialog-sub">Category ids are permanent - they key existing records.</p>
+            </div>
+            <button id="categoryDialogClose" class="ev-dialog-x" type="button" aria-label="Close">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+        </div>
+        <div class="ev-dialog-row">
+            <div class="ev-field-1">
+                <label class="ev-lbl" for="catId">ID (number)</label>
+                <input id="catId" class="ev-inp" inputmode="numeric" placeholder="e.g. 15">
+            </div>
+            <div class="ev-field-2">
+                <label class="ev-lbl" for="catName">Name</label>
+                <input id="catName" class="ev-inp" placeholder="Category name">
+            </div>
+        </div>
+        <div>
+            <label class="ev-lbl" for="catDescription">Description</label>
+            <input id="catDescription" class="ev-inp" placeholder="What documents belong here">
+        </div>
+        <div>
+            <label class="ev-lbl" for="catExamples">Example document titles (one per line)</label>
+            <textarea id="catExamples" class="ev-inp" rows="4" placeholder="MRI Report&#10;CT Scan"></textarea>
+        </div>
+        <div class="ev-dialog-row">
+            <label class="ev-check"><input type="checkbox" id="catAutoAssign" checked> Auto-assign (classifier may pick this)</label>
+            <label class="ev-check"><input type="checkbox" id="catActive" checked> Active</label>
+        </div>
+        <div class="ev-dialog-foot">
+            <span id="categoryError" class="error-text"></span>
+            <button id="categoryCancel" class="ev-btn ev-btn-ghost" type="button">Cancel</button>
+            <button id="categorySave" class="ev-btn ev-btn-primary" type="button">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- edit a category's summary prompt -->
+<div id="promptDialog" class="ev-dialog-backdrop hidden">
+    <div class="ev-dialog ev-dialog-wide" role="dialog" aria-modal="true" aria-labelledby="promptDialogTitle">
+        <div class="ev-dialog-head">
+            <div>
+                <h2 id="promptDialogTitle">Summary prompt</h2>
+                <p id="promptDialogSub" class="ev-dialog-sub"></p>
+            </div>
+            <button id="promptDialogClose" class="ev-dialog-x" type="button" aria-label="Close">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+        </div>
+        <div>
+            <label class="ev-lbl" for="promptText">Prompt sent to the model for this category</label>
+            <textarea id="promptText" class="ev-inp ev-mono" rows="16"></textarea>
+        </div>
+        <div class="ev-dialog-foot">
+            <span id="promptError" class="error-text"></span>
+            <button id="promptCancel" class="ev-btn ev-btn-ghost" type="button">Cancel</button>
+            <button id="promptSave" class="ev-btn ev-btn-primary" type="button">Save prompt</button>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='admin.js') }}"></script>
+</body>
+</html>

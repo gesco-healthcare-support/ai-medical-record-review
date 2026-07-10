@@ -35,6 +35,16 @@ def admin_client(app):
     return test_client
 
 
+def test_admin_page_renders_for_admin(admin_client):
+    resp = admin_client.get("/admin")
+    assert resp.status_code == 200
+    assert b"Categories" in resp.data
+
+
+def test_admin_page_forbidden_for_non_admin(client):
+    assert client.get("/admin").status_code == 403
+
+
 def test_list_categories_includes_inactive(admin_client, app):
     from mrr_ai.models import Category
 

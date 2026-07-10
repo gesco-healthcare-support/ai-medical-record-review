@@ -89,6 +89,13 @@ def depositions():
     )
 
 
+@bp.route("/admin")
+def admin():
+    """Admin console: category + prompt editing. The app-level gate already restricts
+    /admin to is_admin accounts, so reaching this render implies authorization."""
+    return render_template("admin.html")
+
+
 @bp.route("/reset", methods=["POST"])
 def reset():
     # Clear the session data

@@ -671,3 +671,22 @@ body[data-bundle-slug] #step-editor { flex: none; }
 .bundle-fields { display: flex; flex-direction: column; gap: 14px; }
 .bundle-buttons { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
 #bundleResultMsg { min-height: 1.2em; font: 13px/1.4 var(--font-body), sans-serif; }
+
+/* ---------- admin (categories + prompts) ---------- */
+
+/* The three per-row controls sit inline, right-aligned, and never wrap mid-row. */
+.hd-admin-actions { display: flex; gap: 8px; justify-content: flex-end; white-space: nowrap; }
+
+/* Checkbox + label pair inside the category dialog. */
+.ev-check {
+    display: flex; align-items: center; gap: 8px;
+    font: 14px/1.4 var(--font-body), sans-serif; color: var(--gray-700); cursor: pointer;
+}
+.ev-check input { width: 16px; height: 16px; accent-color: var(--blue-500); }
+
+/* Wider dialog + monospace textarea for editing prompt bodies. */
+.ev-dialog-wide { max-width: 820px; }
+.ev-mono {
+    font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+    font-size: 13px; line-height: 1.5; white-space: pre; overflow-wrap: normal;
+}
