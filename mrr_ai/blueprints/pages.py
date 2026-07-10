@@ -89,7 +89,7 @@ def depositions():
     )
 
 
-@bp.route("/admin")
+@bp.route("/admin", methods=["GET"])
 def admin():
     """Admin console: category + prompt editing. The app-level gate already restricts
     /admin to is_admin accounts, so reaching this render implies authorization."""
