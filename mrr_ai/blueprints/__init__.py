@@ -2,6 +2,7 @@
 
 
 def register_blueprints(app):
+    from mrr_ai.blueprints.admin_api import bp as admin_api_bp
     from mrr_ai.blueprints.documents_api import bp as documents_api_bp
     from mrr_ai.blueprints.export import bp as export_bp
     from mrr_ai.blueprints.extraction import bp as extraction_bp
@@ -24,5 +25,6 @@ def register_blueprints(app):
         segmentation_bp,
         review_api_bp,
         documents_api_bp,
+        admin_api_bp,
     ):
         app.register_blueprint(bp)

@@ -29,6 +29,10 @@ class User(db.Model, fsqla.FsUserMixin):
     # migration can add it to databases with existing users (who have no name);
     # registration enforces it via a form validator instead.
     name = db.Column(db.String(255), nullable=True)
+    # Marks the few accounts allowed into the admin area (category + prompt editing).
+    # Not full RBAC: a single boolean, flipped via the ``flask admin`` CLI or the admin
+    # UI. Added to existing databases through the boot ADD COLUMN path (default 0).
+    is_admin = db.Column(db.Boolean, nullable=False, default=False)
 
 
 def _utcnow():

@@ -9,7 +9,7 @@ special casing here.
 
 import re
 
-from flask import request
+from flask import abort, request
 from flask_security import (
     PasswordUtil,
     RegisterFormV2,
@@ -23,6 +23,15 @@ from wtforms.validators import DataRequired, Length
 
 # Endpoints reachable without a session. Everything else is denied by default.
 PUBLIC_ENDPOINTS = {"security.login", "security.register", "static"}
+
+# URL prefixes for the admin area. An authenticated user who is not an admin gets 403
+# here (the base gate below has already required a session). Kept as path prefixes so
+# a new admin route under either prefix is protected the moment it is registered.
+ADMIN_PATH_PREFIXES = ("/admin", "/api/admin")
+
+
+def _is_admin_path(path):
+    return any(path == prefix or path.startswith(prefix + "/") for prefix in ADMIN_PATH_PREFIXES)
 
 
 class MrrRegisterForm(RegisterFormV2):
@@ -76,8 +85,11 @@ def init_security(app):
         # endpoint None = no URL match; let Flask 404 (reveals nothing to probes).
         if endpoint is None or endpoint in PUBLIC_ENDPOINTS:
             return None
-        if current_user.is_authenticated:
-            return None
-        return app.login_manager.unauthorized()
+        if not current_user.is_authenticated:
+            return app.login_manager.unauthorized()
+        # Authenticated: the admin area additionally requires the is_admin flag.
+        if _is_admin_path(request.path) and not getattr(current_user, "is_admin", False):
+            abort(403)
+        return None
 
     return security
