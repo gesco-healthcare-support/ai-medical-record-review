@@ -11,6 +11,15 @@ if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
+def extract_text_from_image(image):
+    """OCR one already-rasterized page image (PIL).
+
+    Callers that need both the pixels and the text of a page rasterize once and reuse
+    the image (see services/verify_pass.py) instead of paying double conversion.
+    """
+    return pytesseract.image_to_string(image)
+
+
 def extract_text_from_selected_pages(pdf_path, selected_pages):
     extracted_text = ""
 

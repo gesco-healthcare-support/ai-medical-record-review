@@ -80,6 +80,21 @@ VERIFY_MERGE = os.environ.get("VERIFY_MERGE", "1").strip().lower() not in ("0", 
 # what gates automatic merging, and the call volume (~100 tiny questions/case) is cheap.
 VERIFY_MODEL = os.environ.get("VERIFY_MODEL") or GENAI_MODEL
 
+# Wide suggest net (measured 2026-07-09): every adjacent boundary is a merge-suggestion
+# candidate - confident over-splits carry no computable signature, so the old triggers
+# alone caught ~1-3 per case vs 5-17 for the full net. The cap bounds huge bundles to
+# O(cap) verify calls; above it the measured high-yield triggers keep their slots first.
+VERIFY_SUSPECT_CAP = int(os.environ.get("VERIFY_SUSPECT_CAP", 200))
+
+# Boundary-page OCR text as extra oracle evidence (continuation sentences, "page N of M"
+# pagination). Off restores the image-only oracle: a clean A/B switch and an instant
+# rollback for the text change.
+VERIFY_USE_TEXT = os.environ.get("VERIFY_USE_TEXT", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
 
 def validate_env():
     """Raise if required secrets are missing (see .env.example)."""

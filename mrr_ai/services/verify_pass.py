@@ -20,9 +20,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.genai import types
 from pdf2image import convert_from_path
 
-from mrr_ai.config import CLASSIFY_WORKERS, VERIFY_MODEL
+from mrr_ai.config import CLASSIFY_WORKERS, VERIFY_MODEL, VERIFY_SUSPECT_CAP, VERIFY_USE_TEXT
 from mrr_ai.extensions import genai_client
 from mrr_ai.services.genai_retry import generate_with_retry
+from mrr_ai.services.ocr import extract_text_from_image
 
 _VERIFY_SYSTEM = (
     "You review the segmentation of a scanned workers' compensation medical record. "
@@ -30,18 +31,52 @@ _VERIFY_SYSTEM = (
     "the second segment is part of the first document or a separate document."
 )
 
-# Rows this short next to another boundary are the measured scatter signature.
+# Rows this short next to another boundary are the measured scatter signature; these
+# (plus same-category+date pairs) keep priority when the suspect net hits its cap.
 SHORT_ROW_PAGES = 2
 # How many of the suspect fragment's own pages to show (fragments are 1-2 pages by
 # selection; a small cap keeps the question easy - few pages, full information).
 FRAGMENT_PAGE_CAP = 2
+# Boundary-page OCR excerpts are clipped so the prompt stays small; the continuation
+# evidence (a sentence cut mid-flow, "page N of M") lives at the boundary edges anyway.
+BOUNDARY_TEXT_CHARS = 1200
 
 
-def _page_png(pdf_path, page, dpi=120):
-    images = convert_from_path(pdf_path, first_page=page, last_page=page, dpi=dpi)
+def _page_image(pdf_path, page, dpi=120):
+    """Rasterize one page ONCE; the caller reuses it for both PNG evidence and OCR."""
+    return convert_from_path(pdf_path, first_page=page, last_page=page, dpi=dpi)[0]
+
+
+def _png_bytes(image):
     buffer = io.BytesIO()
-    images[0].save(buffer, format="PNG")
+    image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def _boundary_text(a_last_image, b_first_image):
+    """OCR the two boundary pages into a prompt block, or "" when OCR yields nothing.
+
+    Text is enrichment, not a gate: any OCR failure (Tesseract missing, unreadable
+    page) degrades to the image-only oracle instead of vetoing the check.
+    """
+    try:
+        a_tail = extract_text_from_image(a_last_image).strip()[-BOUNDARY_TEXT_CHARS:]
+        b_head = extract_text_from_image(b_first_image).strip()[:BOUNDARY_TEXT_CHARS]
+    except Exception as exc:
+        print(f"verify boundary OCR failed, continuing image-only: {exc}")
+        return ""
+    if not a_tail and not b_head:
+        return ""
+    return (
+        "\n\nOCR text from the boundary pages (may contain recognition errors).\n"
+        "END of document A's last page:\n"
+        f"{a_tail or '(no text recognized)'}\n"
+        "START of segment B's first page:\n"
+        f"{b_head or '(no text recognized)'}\n"
+        "A sentence, list, or table cut mid-flow at the end of A and resuming in B, or "
+        "pagination such as 'Page 3 of 5' followed by 'Page 4 of 5', is strong "
+        "continuation evidence."
+    )
 
 
 def _row_line(name, row):
@@ -55,40 +90,47 @@ def _same_document(pdf_path, prev_row, row):
     """Rich yes/no check: is `row` a continuation of `prev_row`'s document?
 
     The model gets everything a human reviewer would use - both segments' metadata as
-    text, the LAST page of document A, and the suspect fragment's own first pages
-    (small by construction). Failure -> False (keep the boundary): merging on missing
-    evidence would hide a document, the one error nobody downstream can detect.
+    text, the LAST page of document A, the suspect fragment's own first pages (small
+    by construction), and (with VERIFY_USE_TEXT) the OCR text of the two boundary
+    pages for continuation-sentence and pagination clues. Each boundary page is
+    rasterized once and reused for both the image and the OCR. Any failure - evidence
+    gathering or the model call - resolves to False (keep the boundary): merging on
+    missing evidence would hide a document, the one error nobody downstream can detect.
     """
     fragment_end = min(row["end"], row["start"] + FRAGMENT_PAGE_CAP - 1)
-    contents = [
-        _row_line("Document A", prev_row)
-        + "\n"
-        + _row_line("Segment B", row)
-        + "\n\n"
-        + "The first image is the LAST page of document A. The following image(s) are "
-        f"segment B (pages {row['start']}-{fragment_end}). Segment B may be the "
-        "continuation of document A - remaining report pages, attachments, lab tables, "
-        "signature/stamp/certification pages, terms or branding pages, or blank "
-        "separator pages - OR it may begin a separate document.\n"
-        "Answer YES only when the evidence clearly shows continuation: continued "
-        "pagination, a sentence or table that flows across the boundary, the same "
-        "author and visit continuing, or an attachment the report explicitly "
-        "references. Sharing a document type, date, or letterhead is NOT enough - "
-        "these records routinely contain same-day batches of separate short "
-        "documents. If the evidence is unclear, answer NO.",
-        types.Part.from_bytes(data=_page_png(pdf_path, prev_row["end"]), mime_type="image/png"),
-    ]
-    for page in range(row["start"], fragment_end + 1):
-        contents.append(
-            types.Part.from_bytes(data=_page_png(pdf_path, page), mime_type="image/png")
-        )
-    config = types.GenerateContentConfig(
-        temperature=0.0,
-        response_mime_type="text/x.enum",
-        response_schema={"type": "STRING", "enum": ["YES", "NO"]},
-        system_instruction=_VERIFY_SYSTEM,
-    )
     try:
+        a_last = _page_image(pdf_path, prev_row["end"])
+        fragment_images = [
+            _page_image(pdf_path, page) for page in range(row["start"], fragment_end + 1)
+        ]
+        prompt = (
+            _row_line("Document A", prev_row)
+            + "\n"
+            + _row_line("Segment B", row)
+            + "\n\n"
+            + "The first image is the LAST page of document A. The following image(s) are "
+            f"segment B (pages {row['start']}-{fragment_end}). Segment B may be the "
+            "continuation of document A - remaining report pages, attachments, lab tables, "
+            "signature/stamp/certification pages, terms or branding pages, or blank "
+            "separator pages - OR it may begin a separate document.\n"
+            "Answer YES only when the evidence clearly shows continuation: continued "
+            "pagination, a sentence or table that flows across the boundary, the same "
+            "author and visit continuing, or an attachment the report explicitly "
+            "references. Sharing a document type, date, or letterhead is NOT enough - "
+            "these records routinely contain same-day batches of separate short "
+            "documents. If the evidence is unclear, answer NO."
+        )
+        if VERIFY_USE_TEXT:
+            prompt += _boundary_text(a_last, fragment_images[0])
+        contents = [prompt, types.Part.from_bytes(data=_png_bytes(a_last), mime_type="image/png")]
+        for image in fragment_images:
+            contents.append(types.Part.from_bytes(data=_png_bytes(image), mime_type="image/png"))
+        config = types.GenerateContentConfig(
+            temperature=0.0,
+            response_mime_type="text/x.enum",
+            response_schema={"type": "STRING", "enum": ["YES", "NO"]},
+            system_instruction=_VERIFY_SYSTEM,
+        )
         response = generate_with_retry(
             genai_client, model=VERIFY_MODEL, contents=contents, config=config
         )
@@ -98,10 +140,19 @@ def _same_document(pdf_path, prev_row, row):
     return (response.text or "").strip() == "YES"
 
 
-def suspect_indices(rows):
-    """Row indices worth one verification call: the later row of a same-category+
-    same-date pair (the model contradicting itself), and any short-fragment row."""
-    suspects = []
+def suspect_indices(rows, cap=None):
+    """Row indices worth one verification call, ascending, at most ``cap`` of them.
+
+    Wide net (measured 2026-07-09): EVERY adjacent boundary is a candidate, because
+    confident over-splits carry no computable signature - the old triggers (short
+    fragments, same-category+date pairs) caught ~1-3 suggestions per case where the
+    full net catches 5-17, recall-safe in suggest mode. The cap bounds huge bundles
+    to O(cap) verify calls; above it the measured triggers keep their slots first and
+    the remaining boundaries fill the rest in page order.
+    """
+    if cap is None:
+        cap = VERIFY_SUSPECT_CAP
+    triggered, rest = [], []
     for i in range(1, len(rows)):
         row, prev = rows[i], rows[i - 1]
         same_cat_date = (
@@ -110,9 +161,8 @@ def suspect_indices(rows):
             and row["date"] not in ("", "-")
         )
         short = (row["end"] - row["start"] + 1) <= SHORT_ROW_PAGES
-        if same_cat_date or short:
-            suspects.append(i)
-    return suspects
+        (triggered if same_cat_date or short else rest).append(i)
+    return sorted((triggered + rest)[: max(cap, 0)])
 
 
 def verify_and_merge(pdf_path, rows, progress=None, workers=CLASSIFY_WORKERS, auto=False):
