@@ -1,0 +1,31 @@
+{# Shared documents table (toolbar + sortable table + pager). Behavior lives in
+   static/doc-table.js; both My documents (home.html) and the bundle pickers (bundle.html)
+   include this so they render the identical table. #}
+<div class="hd-toolbar">
+    <div id="filterChips" class="hd-chips"></div>
+    <input id="searchInput" class="ev-inp hd-search" type="search"
+           placeholder="Search by filename..." aria-label="Search by filename">
+</div>
+<div class="hd-card" id="tableCard">
+    <table class="hd-table">
+        <thead>
+        <tr>
+            <th data-sort="name">Document</th>
+            <th data-sort="pages" class="hd-w-pages">Pages</th>
+            <th data-sort="uploaded" class="hd-w-uploaded">Uploaded</th>
+            <th data-sort="found" class="hd-w-found">Documents found</th>
+            <th data-sort="activity" class="hd-w-activity">Last activity</th>
+            <th class="hd-w-status">Status</th>
+            <th class="hd-w-menu"></th>
+        </tr>
+        </thead>
+        <tbody id="docsBody"></tbody>
+    </table>
+    <div class="hd-foot">
+        <span id="pageInfo"></span>
+        <div class="hd-foot-nav">
+            <button id="prevPage" class="ev-btn ev-btn-outline ev-btn-sm" type="button">Prev</button>
+            <button id="nextPage" class="ev-btn ev-btn-outline ev-btn-sm" type="button">Next</button>
+        </div>
+    </div>
+</div>

@@ -41,9 +41,7 @@
                 <input type="file" id="bundleUpload" accept="application/pdf" aria-label="PDF to upload">
                 <button id="bundleUploadBtn" class="ev-btn ev-btn-primary" type="button">Upload PDF</button>
             </div>
-            <div class="hd-card">
-                <div id="bundleDocList" class="bundle-doclist"></div>
-            </div>
+            {% include "_doc_table.html" %}
             <div id="bundlePickerMsg" class="error-text"></div>
         </div>
     </section>
@@ -89,6 +87,7 @@
 </main>
 
 <script src="{{ url_for('static', filename='review.js') }}"></script>
+<script src="{{ url_for('static', filename='doc-table.js') }}"></script>
 <script src="{{ url_for('static', filename='bundle-page.js') }}"></script>
 </body>
 </html>

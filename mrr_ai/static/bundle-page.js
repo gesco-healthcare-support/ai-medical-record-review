@@ -1,5 +1,7 @@
-/* Category-bundle workspace (Diagnostic & Operative / Depositions). Reuses the shared
-   review editor (window.MRR) for identify + correct, then extracts or summarizes just the
+/* Category-bundle workspace (Diagnostic & Operative / Depositions). The document picker
+   is the shared table (doc-table.js) - same as My documents; the only difference is that
+   opening a row mounts the shared review editor (window.MRR) in place here instead of
+   navigating. Once the doc's rows exist, this page extracts or summarizes just the
    documents whose category is in this page's set. Vanilla JS, no build step. */
 "use strict";
 
@@ -22,58 +24,11 @@ function pickerMsg(text) {
     el("bundlePickerMsg").textContent = text || "";
 }
 
-async function listDocuments() {
-    const resp = await fetch("/api/documents", { headers: { Accept: "application/json" } });
-    if (resp.status === 401) {
-        window.location = "/login";
-        return [];
-    }
-    if (!resp.ok) throw new Error(`could not load your documents (${resp.status})`);
-    return resp.json();
-}
-
-const STATUS_LABEL = {
-    uploaded: "not yet identified",
-    segmenting: "identifying...",
-    reviewing: "ready to review",
-    summarizing: "summarizing...",
-    done: "reviewed",
-    error: "last run failed",
-    interrupted: "interrupted",
-};
-
-async function renderDocList() {
-    const list = el("bundleDocList");
-    list.textContent = "Loading your documents...";
-    let documents;
-    try {
-        documents = await listDocuments();
-    } catch (err) {
-        list.textContent = "";
-        pickerMsg(err.message);
-        return;
-    }
-    list.innerHTML = "";
-    if (!documents.length) {
-        list.innerHTML = '<p class="muted">No documents yet - upload a record to begin.</p>';
-        return;
-    }
-    documents.forEach((doc) => {
-        const row = document.createElement("div");
-        row.className = "bundle-docrow";
-        const status = STATUS_LABEL[doc.status] || doc.status;
-        const label = document.createElement("span");
-        // original_filename is the owner's own PHI-bearing name; shown only to them.
-        label.textContent = `${doc.original_filename} - ${doc.page_count} pages - ${status}`;
-        const open = document.createElement("button");
-        open.className = "ev-btn ev-btn-sm ev-btn-outline";
-        open.type = "button";
-        open.textContent = "Open";
-        open.addEventListener("click", () => selectDocument(doc.id));
-        row.append(label, open);
-        list.appendChild(row);
-    });
-}
+/* The picker: the shared documents table. Opening a row mounts the editor here. */
+const table = DocTable.create({
+    onOpen: (id) => selectDocument(id),
+    onError: (err) => pickerMsg(err.message),
+});
 
 async function uploadDocument() {
     const input = el("bundleUpload");
@@ -87,15 +42,9 @@ async function uploadDocument() {
     try {
         const form = new FormData();
         form.append("pdf", file);
-        const resp = await fetch("/api/documents", {
-            method: "POST",
-            headers: { "X-XSRF-Token": xsrf() },
-            body: form,
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.error || `upload failed (${resp.status})`);
+        const created = await DocTable.api("/api/documents", { method: "POST", body: form });
         pickerMsg("");
-        selectDocument(data.id);
+        selectDocument(created.id);
     } catch (err) {
         pickerMsg(err.message);
     } finally {
@@ -116,8 +65,8 @@ async function selectDocument(id) {
         window.MRR.banner(err.message);
         return;
     }
-    // Persisted-reviewed / done documents boot without auto-opening the editor; open it so
-    // the reviewer can adjust before bundling. New uploads sit on the Identify panel.
+    // Reviewed/done documents boot without auto-opening the editor; open it so the
+    // reviewer can adjust before bundling. New uploads sit on the Identify panel.
     if (window.MRR.getRows().length) window.MRR.enterEditor();
 }
 
@@ -185,4 +134,4 @@ el("bundleBackBtn").addEventListener("click", () => window.location.reload());
 // The editor tells us whenever it has rows ready (initial load or after identification).
 window.MRR.setOnReviewed(showActions);
 
-renderDocList();
+table.refresh();
