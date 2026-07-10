@@ -245,6 +245,7 @@ def segment_start(document_id):
         _segment_target(document.id, document.stored_path, document.page_count),
         model=config.GENAI_MODEL,
         prompt_version=PROMPT_VERSION,
+        catalog_revision=catalog.catalog_version(),
     )
     if job is None:
         return jsonify({"error": "a job is already running for this document"}), 409
@@ -322,6 +323,7 @@ def summarize_start(document_id):
         _summarize_target(document.id, document.stored_path, model),
         model=model,
         prompt_version=PROMPT_VERSION,
+        catalog_revision=catalog.catalog_version(),
     )
     if job is None:
         return jsonify({"error": "a job is already running for this document"}), 409

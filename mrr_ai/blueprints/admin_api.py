@@ -14,10 +14,12 @@ import re
 from flask import Blueprint, jsonify, request
 from flask_security import current_user
 
-from mrr_ai import catalog
+from mrr_ai import catalog, config
 from mrr_ai.extensions import db
-from mrr_ai.models import Category, Prompt
+from mrr_ai.models import Category, Document, Prompt
+from mrr_ai.services import job_queue
 from mrr_ai.services.audit import audit
+from mrr_ai.services.gemini import PROMPT_VERSION
 
 bp = Blueprint("admin_api", __name__, url_prefix="/api/admin")
 
@@ -137,3 +139,35 @@ def put_summary_prompt(category_id):
     catalog.bump_revision()
     audit("prompt.update")
     return jsonify({"category_id": category_id, "text": text, "custom": True})
+
+
+@bp.post("/reprocess/<document_id>")
+def reprocess(document_id):
+    """Re-summarize a document with the CURRENT prompts, replacing its prior summaries.
+
+    Admin-scoped (any owner's document), so an admin can apply a prompt/category edit to
+    existing records. Reuses the normal summarize job - which already replaces the old
+    summaries once the new set completes - and stamps the current catalog revision.
+    """
+    # Imported lazily to avoid an import cycle with documents_api at module load.
+    from mrr_ai.blueprints.documents_api import _summarize_target
+
+    document = db.session.get(Document, document_id)
+    if document is None:
+        return jsonify({"error": "not found"}), 404
+    if not any(row.include for row in document.review_rows):
+        return jsonify({"error": "no reviewed rows to summarize"}), 400
+
+    model = config.SUMMARY_MODEL
+    job = job_queue.submit(
+        document.id,
+        "summarize",
+        _summarize_target(document.id, document.stored_path, model),
+        model=model,
+        prompt_version=PROMPT_VERSION,
+        catalog_revision=catalog.catalog_version(),
+    )
+    if job is None:
+        return jsonify({"error": "a job is already running for this document"}), 409
+    audit("reprocess", document.id)
+    return jsonify({"ok": True})

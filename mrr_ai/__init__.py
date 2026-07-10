@@ -93,6 +93,7 @@ def create_app(config_overrides=None):
 # is the trigger to introduce Alembic properly.
 _ADDITIVE_COLUMNS = {
     "user": [("name", "VARCHAR(255)"), ("is_admin", "BOOLEAN NOT NULL DEFAULT 0")],
+    "jobs": [("catalog_revision", "INTEGER")],
     "review_rows": [("include", "BOOLEAN NOT NULL DEFAULT 1")],
     "summaries": [
         ("edited_title", "VARCHAR(512)"),

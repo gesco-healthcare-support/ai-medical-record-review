@@ -114,6 +114,10 @@ class Job(db.Model):
     error = db.Column(db.Text, nullable=True)
     model = db.Column(db.String(64), nullable=False)
     prompt_version = db.Column(db.String(16), nullable=False)
+    # The editable-catalog revision this run used, so a re-processed summary/segment stays
+    # traceable to the exact category + prompt state that produced it (nullable: pre-existing
+    # jobs predate the catalog).
+    catalog_revision = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=_utcnow)
     started_at = db.Column(db.DateTime, nullable=True)
     finished_at = db.Column(db.DateTime, nullable=True)
