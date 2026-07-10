@@ -361,8 +361,11 @@ def put_summary(document_id, idx):
 
 
 # A trailing engine-style page suffix; en dash included because the web view
-# displays ranges with one and an edit could carry it back.
-_PAGES_SUFFIX = re.compile(r"\s*\(pages\s+\d+\s*[-\u2013]\s*\d+\)\s*$", re.IGNORECASE)
+# displays ranges with one and an edit could carry it back. Possessive quantifiers
+# (\s++, \d++, \s*+) are backtrack-free, and there is no leading \s* so re.search runs
+# in linear time (ReDoS-safe, Sonar S5852). The caller rstrip()s the result, so the
+# space before "(pages" needs no match here.
+_PAGES_SUFFIX = re.compile(r"\(pages\s++\d++\s*+[-\u2013]\s*+\d++\)\s*+$", re.IGNORECASE)
 
 
 def _export_entry(summary):
