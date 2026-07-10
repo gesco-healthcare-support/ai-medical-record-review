@@ -59,3 +59,17 @@ def catalog_version():
     """Monotonic revision of the catalog; bumped on any category/prompt edit."""
     meta = db.session.get(CatalogMeta, 1)
     return meta.revision if meta is not None else 0
+
+
+def bump_revision():
+    """Increment the catalog revision and commit. Callers invoke this after any category or
+    prompt edit so the classifier's cached catalog/matrix invalidate and new jobs stamp the
+    new version. Returns the new revision."""
+    meta = db.session.get(CatalogMeta, 1)
+    if meta is None:
+        meta = CatalogMeta(id=1, revision=1)
+        db.session.add(meta)
+    else:
+        meta.revision += 1
+    db.session.commit()
+    return meta.revision
