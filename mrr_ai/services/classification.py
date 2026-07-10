@@ -25,7 +25,7 @@ from google.genai import types
 from mrr_ai.config import GENAI_MODEL
 from mrr_ai.extensions import genai_client
 from mrr_ai.services.genai_retry import generate_with_retry
-from mrr_ai.taxonomy import ALLOWED_IDS, CATEGORIES, DEFAULT_ID
+from mrr_ai.taxonomy import CATEGORIES, DEFAULT_ID
 
 _EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 
@@ -65,8 +65,6 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
     )
 )
 
-_CATALOG_TEXT = "\n".join(f"- {c.id}: {c.name} - {c.description}" for c in CATEGORIES.values())
-
 
 @dataclass
 class Classification:
@@ -87,17 +85,103 @@ def match_rules(title):
     return None
 
 
-# --- embedding stage (lazy: torch is only imported/loaded when this runs) -------------------
+# --- catalog cache (DB-backed, invalidated on edit) -----------------------------------------
 
-import threading  # noqa: E402  (stdlib; placed with the stage it guards)
+import threading  # noqa: E402  (stdlib; placed with the stages it guards)
 
-_model = None
+# The classifier's category set comes from the editable DB catalog (auto-assignable only),
+# not the hardcoded taxonomy, so an admin edit takes effect without a code change. The
+# derived state (catalog text for the LLM, ids, and the expensive embedding matrix) is cached
+# and rebuilt when the catalog revision changes. reset_catalog_cache() runs on app creation so
+# each app (and each test's fresh DB) starts clean. Reads fall back to the taxonomy constants
+# when there is no app/DB context (e.g. a bare unit test), preserving the pre-DB behavior.
+_catalog_lock = threading.Lock()
+_catalog_version_seen = None
+_catalog_categories = None  # list of dicts: id/name/description/examples
+_catalog_text_cache = ""
 _category_ids = None
 _category_matrix = None
-# classify() now runs on a thread pool; SentenceTransformer.encode is not documented as
-# thread-safe, so the whole encode path is serialized. Encoding is milliseconds - the
-# LLM call dominates - so this lock costs nothing while preventing races on first load.
+
+_model = None
+# SentenceTransformer.encode is not documented as thread-safe and classify() runs on a thread
+# pool, so the encode path is serialized. Encoding is milliseconds; the LLM call dominates.
 _embed_lock = threading.Lock()
+
+
+def reset_catalog_cache():
+    """Drop the cached catalog + embedding matrix so the next classify reloads from the DB.
+
+    Called on app creation (fresh DB / test isolation) and after a catalog edit bumps the
+    revision, so a stale category set or embedding matrix can never outlive an edit.
+    """
+    global _catalog_version_seen, _catalog_categories, _catalog_text_cache
+    global _category_ids, _category_matrix
+    with _catalog_lock:
+        _catalog_version_seen = None
+        _catalog_categories = None
+        _catalog_text_cache = ""
+        _category_ids = None
+        _category_matrix = None
+
+
+def _catalog_version():
+    """Current catalog revision, or -1 when there is no app/DB context (constants fallback)."""
+    try:
+        from mrr_ai import catalog
+
+        return catalog.catalog_version()
+    except Exception:
+        return -1
+
+
+def _auto_assign_categories():
+    """Auto-assignable categories as dicts; taxonomy constants when the DB is unavailable."""
+    try:
+        from mrr_ai import catalog
+
+        rows = catalog.get_categories(auto_assign=True)
+        if rows:
+            return rows
+    except Exception:
+        pass
+    return [
+        {"id": c.id, "name": c.name, "description": c.description, "examples": list(c.examples)}
+        for c in CATEGORIES.values()
+    ]
+
+
+def _corpus(category):
+    """Representative text for a category dict (mirrors taxonomy.Category.corpus)."""
+    examples = category.get("examples") or []
+    return f"{category['name']}. {category['description']} Examples: " + "; ".join(examples)
+
+
+def _refresh_locked():
+    """Reload the catalog if its revision changed. Caller must hold ``_catalog_lock``."""
+    global _catalog_version_seen, _catalog_categories, _catalog_text_cache
+    global _category_ids, _category_matrix
+    version = _catalog_version()
+    if version != _catalog_version_seen or _catalog_categories is None:
+        categories = _auto_assign_categories()
+        _catalog_categories = categories
+        _catalog_text_cache = "\n".join(
+            f"- {c['id']}: {c['name']} - {c['description']}" for c in categories
+        )
+        _category_ids = None  # force the embedding matrix to rebuild for the new set
+        _category_matrix = None
+        _catalog_version_seen = version
+
+
+def _catalog_text():
+    with _catalog_lock:
+        _refresh_locked()
+        return _catalog_text_cache
+
+
+def _allowed_ids():
+    with _catalog_lock:
+        _refresh_locked()
+        return [c["id"] for c in _catalog_categories]
 
 
 def _encode(texts):
@@ -112,12 +196,14 @@ def _encode(texts):
 
 
 def _category_vectors():
-    """Return (ids, matrix) of encoded category corpora, computed once and cached."""
+    """Return (ids, matrix) of encoded category corpora, rebuilt when the catalog changes."""
     global _category_ids, _category_matrix
-    if _category_matrix is None:
-        _category_ids = list(CATEGORIES.keys())
-        _category_matrix = _encode([CATEGORIES[i].corpus for i in _category_ids])
-    return _category_ids, _category_matrix
+    with _catalog_lock:
+        _refresh_locked()
+        if _category_matrix is None:
+            _category_ids = [c["id"] for c in _catalog_categories]
+            _category_matrix = _encode([_corpus(c) for c in _catalog_categories])
+        return _category_ids, _category_matrix
 
 
 def embed_classify(text):
@@ -134,15 +220,16 @@ def embed_classify(text):
 
 def llm_classify(text):
     """Classify via Gemini constrained-enum output; returns a valid id or None on failure."""
+    allowed = _allowed_ids()
     prompt = (
         "Classify the medical-record document below into exactly one category id from this "
         "list. Choose 100 only if none of the specific categories fit.\n\n"
-        f"{_CATALOG_TEXT}\n\nDocument:\n{text}\n\nReturn only the category id."
+        f"{_catalog_text()}\n\nDocument:\n{text}\n\nReturn only the category id."
     )
     config = types.GenerateContentConfig(
         temperature=0.0,
         response_mime_type="text/x.enum",
-        response_schema={"type": "STRING", "enum": list(ALLOWED_IDS)},
+        response_schema={"type": "STRING", "enum": list(allowed)},
         system_instruction=(
             "You classify California workers'-compensation medical-record document types. "
             "Return exactly one category id from the allowed set."
@@ -156,7 +243,7 @@ def llm_classify(text):
         print(f"LLM classification failed: {exc}")
         return None
     category = (response.text or "").strip()
-    return category if category in CATEGORIES else None
+    return category if category in set(allowed) else None
 
 
 # --- fusion ---------------------------------------------------------------------------------

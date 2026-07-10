@@ -75,6 +75,12 @@ def create_app(config_overrides=None):
 
     _create_schema(app)
 
+    # Start the classifier's catalog cache clean: it lazily loads the (just-seeded) DB
+    # catalog on first use, and this keeps one app's cache from leaking into another.
+    from mrr_ai.services import classification
+
+    classification.reset_catalog_cache()
+
     from mrr_ai.services import job_queue
 
     job_queue.init_app(app)  # after the schema exists: init sweeps orphaned jobs
