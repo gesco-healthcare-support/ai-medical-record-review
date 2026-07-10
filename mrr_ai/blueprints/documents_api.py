@@ -24,7 +24,7 @@ from mrr_ai.blueprints.export import _DOCX_MIMETYPE, _build_mrr_document
 from mrr_ai.blueprints.review_api import EDITABLE_CATEGORIES, validate_rows
 from mrr_ai.extensions import db
 from mrr_ai.models import Document, Job, ReviewRow, SegmentRow, Summary
-from mrr_ai.services import job_queue
+from mrr_ai.services import bundles, job_queue
 from mrr_ai.services.audit import audit
 from mrr_ai.services.files import safe_name
 from mrr_ai.services.gemini import PROMPT_VERSION
@@ -363,6 +363,64 @@ def put_summary(document_id, idx):
     return jsonify(summary.listing())
 
 
+@bp.route("/<document_id>/summaries/<int:idx>/resummarize", methods=["POST"])
+def resummarize(document_id, idx):
+    """Re-run one summary from scratch: re-OCR its pages, re-summarize with its category
+    prompt, replace the stored model output, and CLEAR the reviewer's edits (it is a fresh
+    summary). Synchronous - a single record is one OCR pass + two model calls.
+    """
+    document = _own(document_id)
+    if document is None:
+        return _not_found()
+    summary = Summary.query.filter_by(document_id=document.id, idx=idx).first()
+    if summary is None:
+        return _not_found()
+    if document.active_job is not None:
+        # A segment job rewrites the rows this reads; a summarize job rewrites this summary.
+        return jsonify({"error": "a job is running for this document; wait for it"}), 409
+
+    # Prefer the current review row (full, live metadata incl. injury_date/flag); fall back
+    # to the summary's own snapshot if the reviewer has since removed/reshaped that row.
+    review_row = ReviewRow.query.filter_by(
+        document_id=document.id, start=summary.row_start, end=summary.row_end
+    ).first()
+    row = (
+        review_row.as_row()
+        if review_row is not None
+        else {
+            "start": summary.row_start,
+            "end": summary.row_end,
+            "category": summary.row_category,
+            "date": summary.date,
+            "injury_date": "-",
+            "flag": "x" if summary.manual_check else "-",
+        }
+    )
+
+    from mrr_ai.services.summarize_engine import summarize_row
+
+    # The re-run button POSTs no body; get_json(silent) avoids a 415 on the empty request.
+    model = (request.get_json(silent=True) or {}).get("model") or config.SUMMARY_MODEL
+    output = summarize_row(document.stored_path, row, model)
+
+    summary.title = output["summaryTitle"]
+    summary.date = output.get("summaryDate") or "-"
+    summary.text = output["summaryText"]
+    summary.source_text = output.get("sourceText")
+    summary.manual_check = bool(output.get("manualCheck"))
+    # Keep the snapshot consistent with what was just summarized.
+    summary.row_start = int(row["start"])
+    summary.row_end = int(row["end"])
+    summary.row_category = str(row["category"])
+    # Fresh model output supersedes the prior hand-edits for this row.
+    summary.edited_title = None
+    summary.edited_date = None
+    summary.edited_text = None
+    db.session.commit()
+    audit("resummarize", document.id)
+    return jsonify(summary.listing())
+
+
 # A trailing engine-style page suffix; en dash included because the web view
 # displays ranges with one and an edit could carry it back. Possessive quantifiers
 # (\s++, \d++, \s*+) are backtrack-free, and there is no leading \s* so re.search runs
@@ -426,4 +484,103 @@ def export_document(document_id):
         mimetype=_DOCX_MIMETYPE,
         as_attachment=True,
         download_name="summaries.docx",
+    )
+
+
+# --- category bundles: Diagnostic & Operative (cats 3+8), Depositions (cat 9), ... -------
+# One generalized, category-parameterized implementation; the two product pages differ
+# only by the category set they send.
+
+_BUNDLE_NAME_CHARS = re.compile(r"[^a-z0-9]+")
+
+
+def _download_name(label, ext):
+    """Safe download filename from a free-text label ('Diagnostic & Operative' -> ...)."""
+    slug = _BUNDLE_NAME_CHARS.sub("-", (label or "records").lower()).strip("-") or "records"
+    return f"{slug}.{ext}"
+
+
+def _matched_rows_or_error(document):
+    """The current review rows whose category is in the requested set.
+
+    Returns (matched, error): matched is a non-empty list on success, else it is None and
+    error is a ready (response, status) tuple - empty/invalid categories -> 400, a set that
+    matches nothing in this record -> 409. Inlined checks keep matched a concrete list at
+    every call site (no Optional to unwrap).
+    """
+    categories = (request.json or {}).get("categories")
+    if not isinstance(categories, list) or not categories:
+        return None, (jsonify({"error": "categories must be a non-empty list"}), 400)
+    rows = [
+        row.as_row()
+        for row in ReviewRow.query.filter_by(document_id=document.id).order_by(ReviewRow.idx).all()
+    ]
+    matched = bundles.matched_rows(rows, categories)
+    if not matched:
+        return None, (jsonify({"error": "no matching documents in this record"}), 409)
+    return matched, None
+
+
+@bp.route("/<document_id>/bundle/pdf", methods=["POST"])
+def bundle_pdf(document_id):
+    """Combine the category-matched documents' pages into one downloadable PDF (no LLM)."""
+    document = _own(document_id)
+    if document is None:
+        return _not_found()
+    matched, error = _matched_rows_or_error(document)
+    if error is not None:
+        return error
+    assert matched is not None  # error is None => matched is a non-empty list
+    body = request.json or {}
+    buffer = bundles.build_bundle_pdf(document.stored_path, matched)
+    audit("bundle_pdf", document.id)
+    return send_file(
+        buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=_download_name(body.get("label"), "pdf"),
+    )
+
+
+@bp.route("/<document_id>/bundle/summarize", methods=["POST"])
+def bundle_summarize(document_id):
+    """Summarize just the category-matched documents into a filtered Word report.
+
+    Synchronous and bounded (BUNDLE_SUMMARIZE_CAP): typical diagnostic/deposition bundles
+    are small; a record with more matches is routed to the main Summaries flow instead.
+    """
+    document = _own(document_id)
+    if document is None:
+        return _not_found()
+    body = request.json or {}
+    matched, error = _matched_rows_or_error(document)
+    if error is not None:
+        return error
+    assert matched is not None  # error is None => matched is a non-empty list
+    if len(matched) > config.BUNDLE_SUMMARIZE_CAP:
+        return jsonify(
+            {
+                "error": f"{len(matched)} matching documents exceeds the on-demand limit of "
+                f"{config.BUNDLE_SUMMARIZE_CAP}; use the main Summaries flow for a record this large"
+            }
+        ), 409
+    model = body.get("model") or config.SUMMARY_MODEL
+    entries = bundles.bundle_summary_entries(document.stored_path, matched, model)
+    docx = _build_mrr_document(
+        entries,
+        document.page_count,
+        body.get("patientName") or "",
+        body.get("patientdob") or "",
+        body.get("QMEorAME") or "",
+        body.get("lawfirm") or "",
+    )
+    buffer = io.BytesIO()
+    docx.save(buffer)
+    buffer.seek(0)
+    audit("bundle_summarize", document.id)
+    return send_file(
+        buffer,
+        mimetype=_DOCX_MIMETYPE,
+        as_attachment=True,
+        download_name=_download_name(body.get("label"), "docx"),
     )

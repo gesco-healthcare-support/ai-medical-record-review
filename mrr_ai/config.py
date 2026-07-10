@@ -80,6 +80,11 @@ VERIFY_MERGE = os.environ.get("VERIFY_MERGE", "1").strip().lower() not in ("0", 
 # what gates automatic merging, and the call volume (~100 tiny questions/case) is cheap.
 VERIFY_MODEL = os.environ.get("VERIFY_MODEL") or GENAI_MODEL
 
+# Category-bundle on-demand summarize (Diagnostic&Operative / Depositions pages) runs
+# synchronously, so bound the record count to keep the request within a reasonable
+# latency; above this the UI routes the user to the main Summaries flow instead.
+BUNDLE_SUMMARIZE_CAP = int(os.environ.get("BUNDLE_SUMMARIZE_CAP", 40))
+
 # Wide suggest net (measured 2026-07-09): every adjacent boundary is a merge-suggestion
 # candidate - confident over-splits carry no computable signature, so the old triggers
 # alone caught ~1-3 per case vs 5-17 for the full net. The cap bounds huge bundles to

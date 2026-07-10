@@ -17,6 +17,10 @@ app context. Config and clients come from `mrr_ai.config` / `mrr_ai.extensions`.
 - **verify_pass.py** - `suspect_indices` (wide adjacent-pair net, bounded by
   `VERIFY_SUSPECT_CAP`) + `verify_and_merge` (suggest-mode boundary verification;
   `VERIFY_USE_TEXT` adds boundary-page OCR evidence; unclear/failed -> keep the boundary).
+- **bundles.py** - category-filtered per-document bundles (Diagnostic&Operative / Depositions):
+  `matched_rows`, `pages_for_rows`, `build_bundle_pdf` (in-memory pypdf concat, no LLM) +
+  `bundle_summary_entries` (fresh per-row summaries via summarize_row). Category set is the
+  only difference between the product pages, so it is a parameter here.
 - **classification.py** - the live **B5 categorization cascade** `classify()` (high-precision
   rules -> local sentence-transformers embeddings -> Gemini constrained-enum, with fusion +
   manual-review flagging). Used by `/getPages`. See `../../docs/explanation/categorization.md`.

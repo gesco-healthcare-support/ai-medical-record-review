@@ -66,6 +66,29 @@ def review_document(document_id):
     return render_template("review.html", document_id=document_id)
 
 
+# Category-bundle workspaces: upload-or-pick a record, review it with the shared editor,
+# then extract/summarize just the matching-category documents. One template, two category
+# sets (the only difference between the pages).
+@bp.route("/diagnostics")
+def diagnostics():
+    return render_template(
+        "bundle.html",
+        bundle_label="Diagnostic & Operative",
+        bundle_slug="diagnostic-operative",
+        categories=["3", "8"],
+    )
+
+
+@bp.route("/depositions")
+def depositions():
+    return render_template(
+        "bundle.html",
+        bundle_label="Depositions",
+        bundle_slug="depositions",
+        categories=["9"],
+    )
+
+
 @bp.route("/reset", methods=["POST"])
 def reset():
     # Clear the session data

@@ -4,7 +4,9 @@
    day of a demo. */
 "use strict";
 
-const DOC_ID = document.body.dataset.docId;
+// Mutable so a host page (the bundle workspaces) can re-point the shared editor at a
+// different document in place via MRR.loadDocument(id); /review sets it once from <body>.
+let DOC_ID = document.body.dataset.docId;
 // PDF.js viewer (vendored): Chrome's built-in viewer ignores #page changes after the
 // first load, so row-click navigation NEEDS a viewer with a programmatic page API.
 const VIEWER_URL = "/static/vendor/pdfjs/web/viewer.html";
@@ -50,8 +52,14 @@ const CATEGORY_LABELS = {
 
 const STEP_ORDER = ["identify", "review", "summaries"];
 
+// Host pages (the bundle workspaces) get notified when the editor has rows ready to work with.
+let onReviewed = null;
+
 function show(section, activeStep) {
-    sections.forEach((id) => $(id).classList.toggle("hidden", id !== section));
+    sections.forEach((id) => {
+        const el = $(id);
+        if (el) el.classList.toggle("hidden", id !== section);
+    });
     const defaults = {
         "step-start": "identify", "step-progress": "identify",
         "step-editor": "review", "step-summaries": "summaries",
@@ -266,6 +274,7 @@ function enterEditor() {
         S.lastViewerPage = 1;
     }
     renderTable();
+    if (onReviewed) onReviewed(S.rows);
 }
 
 function jumpTo(page) {
@@ -560,7 +569,7 @@ $("addConfirm").addEventListener("click", () => {
 
 /* ---------- summarize ---------- */
 
-$("summarizeBtn").addEventListener("click", async () => {
+async function defaultSummarize() {
     banner("");
     clearTimeout(S.saveTimer);
     try {
@@ -572,11 +581,19 @@ $("summarizeBtn").addEventListener("click", async () => {
         banner(err.message);
         show("step-editor");
     }
-});
+}
+
+// The Summarize button lives in the shared editor markup; /review runs the full-document
+// summarize (default), while a bundle page swaps in its own category-filtered action via
+// MRR.setOnSummarize before the editor is used.
+let onSummarize = defaultSummarize;
+$("summarizeBtn").addEventListener("click", () => onSummarize());
 
 /* ---------- summaries: read, edit in place, exclude, paginate, export ---------- */
 
 async function loadSummaries() {
+    // No-op on a host page without the Summaries step (the bundle workspaces).
+    if (!$("summaryList")) return;
     S.summaries = await api("/summaries");
     S.summaryPage = 0;
     S.editingSummary = -1;
@@ -641,6 +658,7 @@ function buildSummaryCard(item) {
                 <h3 class="sum-heading"></h3>
                 ${chips}
                 <span class="card-actions">
+                    <button class="ev-btn ev-btn-ghost ev-btn-sm" data-action="resummarize" title="Re-run this summary from scratch (discards your edits to it)">Re-run</button>
                     <button class="ev-btn ev-btn-ghost ev-btn-sm" data-action="edit-summary" title="Edit this summary in place">Edit</button>
                     <label class="exclude-toggle" title="Excluded summaries stay here but are left out of the Word export">
                         <input type="checkbox" class="ev-cb" data-action="toggle-exclude" ${item.excluded ? "checked" : ""}> Exclude
@@ -726,7 +744,7 @@ function renderSummaries() {
     show("step-summaries");
 }
 
-$("summaryPagerBottom").addEventListener("click", (event) => {
+$("summaryPagerBottom")?.addEventListener("click", (event) => {
     const direction = event.target.dataset.page;
     if (!direction) return;
     S.summaryPage += direction === "next" ? 1 : -1;
@@ -734,6 +752,28 @@ $("summaryPagerBottom").addEventListener("click", (event) => {
     renderSummaries();
     $("step-summaries").scrollTop = 0;
 });
+
+async function resummarizeCard(idx, card) {
+    // Fresh model output supersedes any hand-edits to this row; warn before discarding them.
+    const item = S.summaries.find((s) => s.idx === idx);
+    if (item && item.edited && !window.confirm(
+        "Re-running replaces this summary with fresh AI output and discards your edits to it. "
+        + "Continue?")) {
+        return;
+    }
+    card.classList.add("busy");
+    $("summarySaveState").textContent = "Re-running this summary...";
+    try {
+        const updated = await api(`/summaries/${idx}/resummarize`, { method: "POST", json: {} });
+        const pos = S.summaries.findIndex((s) => s.idx === idx);
+        if (pos >= 0) S.summaries[pos] = updated;
+        $("summarySaveState").textContent = "Re-ran";
+        renderSummaries();
+    } catch (err) {
+        card.classList.remove("busy");
+        $("summarySaveState").textContent = `Re-run failed: ${err.message}`;
+    }
+}
 
 async function saveSummary(idx, patch) {
     $("summarySaveState").textContent = "Saving...";
@@ -749,7 +789,7 @@ async function saveSummary(idx, patch) {
     }
 }
 
-$("summaryList").addEventListener("click", (event) => {
+$("summaryList")?.addEventListener("click", (event) => {
     const card = event.target.closest(".summary-card");
     const action = event.target.dataset.action;
     if (!card || !action) return;
@@ -766,10 +806,12 @@ $("summaryList").addEventListener("click", (event) => {
             summaryDate: card.querySelector(".sum-date").value,
             summaryText: card.querySelector(".sum-text").value,
         });
+    } else if (action === "resummarize") {
+        resummarizeCard(idx, card);
     }
 });
 
-$("summaryList").addEventListener("change", (event) => {
+$("summaryList")?.addEventListener("change", (event) => {
     if (event.target.dataset.action !== "toggle-exclude") return;
     const card = event.target.closest(".summary-card");
     saveSummary(Number(card.dataset.idx), { excluded: event.target.checked });
@@ -798,19 +840,20 @@ function closeExportDialog() {
     $("exportDialog").classList.add("hidden");
 }
 
-$("exportBtn").addEventListener("click", openExportDialog);
-$("exportDialogClose").addEventListener("click", closeExportDialog);
-$("exportCancel").addEventListener("click", closeExportDialog);
-$("exportDialog").addEventListener("click", (event) => {
+$("exportBtn")?.addEventListener("click", openExportDialog);
+$("exportDialogClose")?.addEventListener("click", closeExportDialog);
+$("exportCancel")?.addEventListener("click", closeExportDialog);
+$("exportDialog")?.addEventListener("click", (event) => {
     if (event.target === $("exportDialog")) closeExportDialog(); // backdrop click only
 });
 document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !$("exportDialog").classList.contains("hidden")) {
+    const dialog = $("exportDialog");
+    if (event.key === "Escape" && dialog && !dialog.classList.contains("hidden")) {
         closeExportDialog();
     }
 });
 
-$("exportConfirm").addEventListener("click", async () => {
+$("exportConfirm")?.addEventListener("click", async () => {
     $("exportConfirm").disabled = true;
     $("exportError").textContent = "";
     try {
@@ -842,4 +885,41 @@ $("exportConfirm").addEventListener("click", async () => {
     }
 });
 
-boot();
+function resetEditorState() {
+    Object.assign(S, {
+        rows: [], categories: [], totalPages: 0, status: "", selected: -1,
+        lastViewerPage: 0, viewerLoaded: false, splitting: -1, watching: null,
+        summaries: [], summaryPage: 0, editingSummary: -1,
+    });
+    clearTimeout(S.saveTimer);
+    const frame = $("pdfFrame");
+    if (frame) frame.src = "about:blank";
+    banner("");
+}
+
+/* Re-point the editor at a different document without a page reload: the bundle pages
+   pick/upload a document, then drive this shared editor in place. */
+async function loadDocument(id) {
+    DOC_ID = id;
+    document.body.dataset.docId = id;
+    resetEditorState();
+    await boot();
+}
+
+// Handle for host pages (the bundle workspaces) to drive the shared editor. The main
+// /review page ignores it and just auto-boots below.
+window.MRR = {
+    loadDocument,
+    getRows: () => S.rows,
+    pollJob: pollDocument,
+    enterEditor,
+    setOnSummarize: (fn) => { onSummarize = fn; },
+    setOnReviewed: (fn) => { onReviewed = fn; },
+    api,
+    banner,
+    state: S,
+};
+
+// /review renders with the document id on <body> and boots immediately; bundle pages
+// start without one and call MRR.loadDocument(id) once a document is chosen.
+if (DOC_ID) boot();
