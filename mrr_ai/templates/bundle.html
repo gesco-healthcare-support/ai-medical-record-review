@@ -31,19 +31,22 @@
 <div id="banner" class="banner hidden"></div>
 
 <main>
-    <!-- pick or upload a document -->
-    <section id="bundle-picker">
-        <div class="bundle-inner">
-            <h1>{{ bundle_label }} builder</h1>
-            <p class="muted bundle-lead">Upload a new record or pick an existing one. Identify and
-                correct its documents, then download or summarize just the {{ bundle_label }} records.</p>
+    <!-- pick or upload a document (same full-width column as My documents) -->
+    <section id="bundle-picker" class="hd-column">
+        <div class="hd-header">
+            <div>
+                <h1>{{ bundle_label }} builder</h1>
+                <p class="muted bundle-lead">Upload a new record or pick an existing one. Identify
+                    and correct its documents, then download or summarize just the
+                    {{ bundle_label }} records.</p>
+            </div>
             <div class="bundle-upload">
                 <input type="file" id="bundleUpload" accept="application/pdf" aria-label="PDF to upload">
                 <button id="bundleUploadBtn" class="ev-btn ev-btn-primary" type="button">Upload PDF</button>
             </div>
-            {% include "_doc_table.html" %}
-            <div id="bundlePickerMsg" class="error-text"></div>
         </div>
+        {% include "_doc_table.html" %}
+        <div id="bundlePickerMsg" class="error-text"></div>
     </section>
 
     <!-- the shared identify + Review-&-correct editor (hidden until a document is chosen) -->
@@ -51,7 +54,7 @@
 
     <!-- extract / summarize the matching-category records (shown once rows exist) -->
     <section id="bundle-actions" class="hidden">
-        <div class="bundle-inner">
+        <div class="bundle-actions-inner">
             <div class="hd-card bundle-card">
                 <h2 id="bundleActionsTitle">{{ bundle_label }} records</h2>
                 <p class="muted" id="bundleActionsHint"></p>
