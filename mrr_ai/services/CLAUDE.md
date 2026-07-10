@@ -14,6 +14,9 @@ app context. Config and clients come from `mrr_ai.config` / `mrr_ai.extensions`.
 - **windows.py** - `byte_budgeted_windows`, `next_window_start` (window packing under the
   Vertex inline cap).
 - **genai_retry.py** - `generate_with_retry` (jittered backoff; pass the client explicitly).
+- **verify_pass.py** - `suspect_indices` (wide adjacent-pair net, bounded by
+  `VERIFY_SUSPECT_CAP`) + `verify_and_merge` (suggest-mode boundary verification;
+  `VERIFY_USE_TEXT` adds boundary-page OCR evidence; unclear/failed -> keep the boundary).
 - **classification.py** - the live **B5 categorization cascade** `classify()` (high-precision
   rules -> local sentence-transformers embeddings -> Gemini constrained-enum, with fusion +
   manual-review flagging). Used by `/getPages`. See `../../docs/explanation/categorization.md`.

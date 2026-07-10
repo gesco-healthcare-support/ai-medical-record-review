@@ -1,5 +1,5 @@
 ---
-status: draft (awaiting Adrian's approval to implement)
+status: approved (implemented on feat/verify-suggest-net; D1 base=main, D2 wide, D3 cap=200)
 date: 2026-07-09
 feature: verify-suggest-net-widening
 ---
