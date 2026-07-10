@@ -121,3 +121,8 @@ def _create_schema(app):
                 if name not in existing:
                     db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
         db.session.commit()
+
+        # Populate the editable category/prompt catalog from the constants (idempotent).
+        from mrr_ai.seed_catalog import seed_catalog
+
+        seed_catalog(db)
