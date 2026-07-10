@@ -4,7 +4,9 @@
    day of a demo. */
 "use strict";
 
-const DOC_ID = document.body.dataset.docId;
+// Mutable so a host page (the bundle workspaces) can re-point the shared editor at a
+// different document in place via MRR.loadDocument(id); /review sets it once from <body>.
+let DOC_ID = document.body.dataset.docId;
 // PDF.js viewer (vendored): Chrome's built-in viewer ignores #page changes after the
 // first load, so row-click navigation NEEDS a viewer with a programmatic page API.
 const VIEWER_URL = "/static/vendor/pdfjs/web/viewer.html";
@@ -560,7 +562,7 @@ $("addConfirm").addEventListener("click", () => {
 
 /* ---------- summarize ---------- */
 
-$("summarizeBtn").addEventListener("click", async () => {
+async function defaultSummarize() {
     banner("");
     clearTimeout(S.saveTimer);
     try {
@@ -572,7 +574,13 @@ $("summarizeBtn").addEventListener("click", async () => {
         banner(err.message);
         show("step-editor");
     }
-});
+}
+
+// The Summarize button lives in the shared editor markup; /review runs the full-document
+// summarize (default), while a bundle page swaps in its own category-filtered action via
+// MRR.setOnSummarize before the editor is used.
+let onSummarize = defaultSummarize;
+$("summarizeBtn").addEventListener("click", () => onSummarize());
 
 /* ---------- summaries: read, edit in place, exclude, paginate, export ---------- */
 
@@ -842,4 +850,40 @@ $("exportConfirm").addEventListener("click", async () => {
     }
 });
 
-boot();
+function resetEditorState() {
+    Object.assign(S, {
+        rows: [], categories: [], totalPages: 0, status: "", selected: -1,
+        lastViewerPage: 0, viewerLoaded: false, splitting: -1, watching: null,
+        summaries: [], summaryPage: 0, editingSummary: -1,
+    });
+    clearTimeout(S.saveTimer);
+    const frame = $("pdfFrame");
+    if (frame) frame.src = "about:blank";
+    banner("");
+}
+
+/* Re-point the editor at a different document without a page reload: the bundle pages
+   pick/upload a document, then drive this shared editor in place. */
+async function loadDocument(id) {
+    DOC_ID = id;
+    document.body.dataset.docId = id;
+    resetEditorState();
+    await boot();
+}
+
+// Handle for host pages (the bundle workspaces) to drive the shared editor. The main
+// /review page ignores it and just auto-boots below.
+window.MRR = {
+    loadDocument,
+    getRows: () => S.rows,
+    pollJob: pollDocument,
+    enterEditor,
+    setOnSummarize: (fn) => { onSummarize = fn; },
+    api,
+    banner,
+    state: S,
+};
+
+// /review renders with the document id on <body> and boots immediately; bundle pages
+// start without one and call MRR.loadDocument(id) once a document is chosen.
+if (DOC_ID) boot();
