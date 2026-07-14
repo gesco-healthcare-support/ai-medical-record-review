@@ -71,7 +71,33 @@ async function selectDocument(id) {
     if (window.MRR.getRows().length) window.MRR.enterEditor();
 }
 
+// A view-only toggle in the review toolbar to hide non-matching-category documents. Injected
+// once (the toolbar lives in the shared editor markup); default off so the reviewer can still
+// see and re-tag a mislabeled document that belongs in this bundle.
+let filterInjected = false;
+
+function injectCategoryFilter() {
+    if (filterInjected) return;
+    const actions = document.querySelector(".rc-actions");
+    if (!actions) return;
+    const label = document.createElement("label");
+    label.className = "rc-catfilter ev-check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = "bundleCatFilter";
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(` Show only ${CFG.label} documents`));
+    actions.insertBefore(label, actions.firstChild);
+    box.addEventListener("change", () => {
+        window.MRR.setRowFilter(
+            box.checked ? (row) => CATS.includes(String(row.category)) : null,
+        );
+    });
+    filterInjected = true;
+}
+
 function showActions(rows) {
+    injectCategoryFilter();
     const matched = rows.filter((row) => CATS.includes(String(row.category)));
     el("bundle-actions").classList.remove("hidden");
     const n = matched.length;
