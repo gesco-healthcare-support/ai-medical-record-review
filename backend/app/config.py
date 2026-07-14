@@ -1,0 +1,71 @@
+"""Application settings (ported from the Flask mrr_ai/config.py).
+
+Lazy via get_settings() so importing the package does not require the env to be present
+(tests/tooling import freely; a real run reads .env). Required secrets have no default, so
+instantiation fails fast if they are missing. Postgres + Redis + Vertex-only per the plan.
+"""
+
+from functools import lru_cache
+
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    environment: str = "dev"  # "prod" hard-requires Vertex (BAA)
+
+    # Persistence + queue (local self-hosted; no cloud).
+    database_url: str  # e.g. postgresql+psycopg://mrr:...@localhost:5432/mrr  (required)
+    redis_url: str = "redis://localhost:6379/0"
+
+    # Auth: cookie signing + the carried-over Flask-Security password salt (required).
+    secret_key: str
+    security_password_salt: str
+
+    # PHI at rest; keep off any network share.
+    upload_folder: str = "./uploads"
+    tesseract_cmd: str = ""
+
+    # Gemini routing. Vertex is the BAA-covered path; required in production.
+    use_vertex: bool = Field(default=False, validation_alias="GOOGLE_GENAI_USE_VERTEXAI")
+    gemini_api_key: str = ""
+    google_cloud_project: str = ""
+    google_cloud_location: str = "us-central1"
+    genai_model: str = ""
+    summary_model: str = ""
+    verify_model: str = ""
+
+    # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
+    pipeline_workers: int = 2
+    classify_workers: int = 4
+    genai_max_retries: int = 6
+    genai_retry_base_delay: float = 2.0
+    genai_retry_max_delay: float = 30.0
+
+    # Segmentation + verification tuning (ported verbatim).
+    window_budget_mb: float = 12.5
+    window_overlap: int = 30
+    verify_merge: bool = True
+    verify_use_text: bool = True
+    verify_suspect_cap: int = 200
+    bundle_summarize_cap: int = 40
+
+    @model_validator(mode="after")
+    def _derive(self) -> "Settings":
+        default_model = "gemini-2.5-flash" if self.use_vertex else "gemini-flash-latest"
+        self.genai_model = self.genai_model or default_model
+        self.summary_model = self.summary_model or self.genai_model
+        self.verify_model = self.verify_model or self.genai_model
+        if self.environment == "prod" and not self.use_vertex:
+            raise RuntimeError(
+                "GOOGLE_GENAI_USE_VERTEXAI must be true in production: PHI may only go to the "
+                "BAA-covered Vertex endpoint, never the Developer API."
+            )
+        return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()  # type: ignore[call-arg]  # required fields come from env/.env
