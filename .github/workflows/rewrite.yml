@@ -1,0 +1,58 @@
+name: rewrite-ci
+
+# The Next.js + FastAPI re-platform lives on its own long-lived branch; the main CI (ci.yml)
+# only covers the Flask app on `main`. This validates the new backend/ + frontend/ stack.
+on:
+  push:
+    branches: [feat/nextjs-fastapi-rewrite]
+  pull_request:
+    branches: [feat/nextjs-fastapi-rewrite]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install deps (core; no torch)
+        run: uv sync
+
+      - name: Ruff lint + format check
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Import smoke (models map, app builds)
+        run: uv run python -c "from sqlalchemy.orm import configure_mappers; import app.main; configure_mappers(); print('import OK')"
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm (corepack)
+        run: corepack enable
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
