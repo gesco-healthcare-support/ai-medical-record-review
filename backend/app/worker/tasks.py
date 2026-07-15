@@ -102,6 +102,36 @@ def segment_document(job_id) -> None:
     _run(job_id, work)
 
 
+def classify_document(job_id) -> None:
+    """RQ entry (P6 individual-records): classify each already-seeded ReviewRow by its first-page
+    OCR, setting the category + review flag. Rows come pre-split from the aggregate merge, so this
+    does NOT re-segment. OCR is best-effort per row (a missing/unreadable page degrades to
+    title-only classification rather than failing the whole case)."""
+    from app.services.classification import classify
+    from app.services.ocr import extract_text_from_selected_pages
+
+    def work(session, job, report):
+        document = session.get(Document, job.document_id)
+        rows = session.scalars(
+            select(ReviewRow)
+            .where(ReviewRow.document_id == job.document_id)
+            .order_by(ReviewRow.idx)
+        ).all()
+        for i, row in enumerate(rows):
+            report("categorizing", i, len(rows))
+            try:
+                page_text = extract_text_from_selected_pages(document.stored_path, [row.start])
+            except Exception:
+                page_text = ""  # best-effort: classify on the title alone if OCR is unavailable
+            result = classify(row.title, page_text=page_text or None)
+            row.category = result.category
+            if result.needs_review:
+                row.flag = "x"
+        report("categorizing", len(rows), len(rows))
+
+    _run(job_id, work)
+
+
 def summarize_document(job_id) -> None:
     """RQ entry: summarize the included ReviewRows -> Summary rows, replacing the prior set only
     after the new set is complete (a failed run keeps the previous results)."""

@@ -16,9 +16,16 @@ SEGMENT_QUEUE = "segment"
 SUMMARIZE_QUEUE = "summarize"
 QUEUE_NAMES = (SEGMENT_QUEUE, SUMMARIZE_QUEUE)
 
-_QUEUE_FOR_KIND = {"segment": SEGMENT_QUEUE, "summarize": SUMMARIZE_QUEUE}
+# `classify` (individual-record auto-categorization, P6) runs the classifier, so it goes on the
+# segment (torch) queue - not the torch-free summarize queue.
+_QUEUE_FOR_KIND = {
+    "segment": SEGMENT_QUEUE,
+    "classify": SEGMENT_QUEUE,
+    "summarize": SUMMARIZE_QUEUE,
+}
 _WORKER_FN = {
     "segment": "app.worker.tasks.segment_document",
+    "classify": "app.worker.tasks.classify_document",
     "summarize": "app.worker.tasks.summarize_document",
 }
 

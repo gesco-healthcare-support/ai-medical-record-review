@@ -35,7 +35,9 @@ from app.schemas.documents import (
     SummaryEditPayload,
 )
 from app.services import bundles, catalog
+from app.services.aggregate import merge_pdfs
 from app.services.audit import audit
+from app.services.extraction import extract_header
 from app.services.files import safe_name
 from app.services.gemini import PROMPT_VERSION
 from app.services.jobs import JobConflict, enqueue
@@ -146,6 +148,71 @@ def create_document(
     return {"id": document_id, "page_count": page_count, "sha256_duplicate": duplicate}
 
 
+@router.post("/aggregate", status_code=status.HTTP_201_CREATED)
+def aggregate_documents(
+    pdfs: list[UploadFile] = File(default=[]),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Individual-record upload: merge several pre-split PDFs into one Document, seed one ReviewRow
+    per source file (by page range), and enqueue a classify job to auto-categorize them."""
+    sources = [(safe_name(f.filename), f.file.read()) for f in pdfs if f.filename]
+    if not sources:
+        raise HTTPException(status_code=400, detail="no PDFs uploaded")
+    merged, records = merge_pdfs(sources)
+    if not records:
+        raise HTTPException(status_code=400, detail="no readable PDFs uploaded")
+
+    document_id = str(uuid.uuid4())
+    user_dir = os.path.join(get_settings().upload_folder, str(user.id))
+    os.makedirs(user_dir, exist_ok=True)
+    stored_path = os.path.join(user_dir, document_id + ".pdf")
+    with open(stored_path, "wb") as out:
+        out.write(merged)
+    page_count = records[-1]["end"]  # ranges tile, so the last end is the merged page count
+
+    document = Document(
+        id=document_id,
+        user_id=user.id,
+        original_filename="aggregated-records.pdf",
+        stored_path=stored_path,
+        sha256=_sha256(stored_path),
+        page_count=page_count,
+    )
+    session.add(document)
+    # One row per source record (its page range); category defaults to general until the classify
+    # job runs. Source filenames may be PHI, so they are NOT persisted as the title.
+    for idx, record in enumerate(records):
+        session.add(
+            ReviewRow(
+                document_id=document_id,
+                idx=idx,
+                start=record["start"],
+                end=record["end"],
+                category="100",
+                title="-",
+                date="-",
+                injury_date="-",
+                flag="-",
+                include=True,
+            )
+        )
+    session.commit()
+    audit(session, "aggregate_upload", user.id, document_id)
+    try:
+        enqueue(
+            session,
+            document_id,
+            "classify",
+            model=get_settings().genai_model,
+            prompt_version=PROMPT_VERSION,
+            catalog_revision=catalog.catalog_version(session),
+        )
+    except JobConflict:
+        pass  # a brand-new document cannot already have an active job; never fail the upload on it
+    return {"id": document_id, "page_count": page_count, "records": records}
+
+
 @router.get("")
 def list_documents(
     session: Session = Depends(get_db),
@@ -176,6 +243,17 @@ def get_document(
     payload["rows"] = [row.as_row() for row in document.review_rows]
     payload["categories"] = catalog.get_category_options(session)
     return payload
+
+
+@router.post("/{document_id}/extract-header")
+def extract_header_route(document: Document = Depends(get_owned_document)):
+    """Auto-extract {name, dob, lawfirm} from the record's first pages (Vertex) to prefill the
+    export/bundle header. Sync-AI: FastAPI runs this sync handler in its threadpool."""
+    pages = list(range(1, min(15, document.page_count) + 1))
+    try:
+        return extract_header(document.stored_path, pages)
+    except PipelineError as exc:
+        return _pipeline_error_response(document.id, exc)
 
 
 @router.delete("/{document_id}")

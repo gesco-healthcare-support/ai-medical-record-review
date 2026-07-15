@@ -225,3 +225,43 @@ def test_recover_orphans_leaves_a_healthy_job():
             assert session.get(Job, job_id).state == "queued"  # untouched
     finally:
         queue.empty()
+
+
+def test_classify_document_sets_each_rows_category(monkeypatch):
+    """P6: classify_document classifies each seeded row (classifier mocked) - no always-category_01."""
+    import app.services.classification as classification
+    from app.services.classification import Classification
+    from app.worker.tasks import classify_document
+
+    monkeypatch.setattr(
+        classification,
+        "classify",
+        lambda title, page_text=None: Classification("3", "high", "rules", needs_review=False),
+    )
+    doc_id = _make_user_and_doc(page_count=2)
+    with get_sessionmaker()() as session:
+        for idx in range(2):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=idx + 1,
+                    end=idx + 1,
+                    category="100",
+                    title="-",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "classify", model="m", prompt_version="1").id
+
+    classify_document(job_id)
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+        ).all()
+        assert [r.category for r in rows] == ["3", "3"]  # per-row classification applied

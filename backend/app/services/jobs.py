@@ -16,8 +16,10 @@ from sqlalchemy.orm import Session
 
 from app.models import Document, Job
 
-STATUS_ON_ENQUEUE = {"segment": "segmenting", "summarize": "summarizing"}
-STATUS_ON_DONE = {"segment": "reviewing", "summarize": "done"}
+# `classify` (P6 individual-record auto-categorization) shares segment's status transitions:
+# it prepares rows for review, so done -> reviewing.
+STATUS_ON_ENQUEUE = {"segment": "segmenting", "classify": "segmenting", "summarize": "summarizing"}
+STATUS_ON_DONE = {"segment": "reviewing", "classify": "reviewing", "summarize": "done"}
 ACTIVE_STATES = ("queued", "running")
 
 

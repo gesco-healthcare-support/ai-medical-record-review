@@ -307,3 +307,83 @@ async def test_summarize_start_enqueues_with_rows(authed):
         assert queue.jobs[0].func_name.endswith("summarize_document")
     finally:
         queue.empty()
+
+
+def test_merge_pdfs_computes_page_ranges():
+    """P6: merge concatenates in order, tiles the page ranges, and skips unreadable files."""
+    import io
+
+    from pypdf import PdfReader
+
+    from app.services.aggregate import merge_pdfs
+
+    merged, records = merge_pdfs(
+        [("a.pdf", _pdf_bytes(2)), ("b.pdf", _pdf_bytes(3)), ("bad.pdf", b"not a pdf")]
+    )
+    assert records == [
+        {"filename": "a.pdf", "start": 1, "end": 2, "pages": 2},
+        {"filename": "b.pdf", "start": 3, "end": 5, "pages": 3},
+    ]
+    assert len(PdfReader(io.BytesIO(merged)).pages) == 5
+
+
+async def test_extract_header_mocked(authed, monkeypatch):
+    """P6: extract-header returns the Vertex-extracted header fields (Vertex mocked)."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "extract_header",
+        lambda pdf_path, pages: {"name": "Synthetic Patient", "dob": "-", "lawfirm": "Example Law"},
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert resp.status_code == 200
+    assert resp.json() == {"name": "Synthetic Patient", "dob": "-", "lawfirm": "Example Law"}
+
+
+async def test_extract_header_ocr_unavailable_returns_503(authed, monkeypatch):
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+
+    import app.api.documents as documents_module
+
+    def boom(pdf_path, pages):
+        raise OcrUnavailableError("no tesseract")
+
+    monkeypatch.setattr(documents_module, "extract_header", boom)
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert resp.status_code == 503
+
+
+async def test_aggregate_merges_creates_rows_and_enqueues_classify(authed):
+    """P6: multi-file upload merges into one Document, seeds a row per record, enqueues classify."""
+    from app.worker.queues import queue_for
+
+    client, _ = authed
+    queue = queue_for("segment")  # classify routes to the segment queue
+    queue.empty()
+    try:
+        resp = await client.post(
+            "/api/documents/aggregate",
+            files=[
+                ("pdfs", ("a.pdf", _pdf_bytes(2), "application/pdf")),
+                ("pdfs", ("b.pdf", _pdf_bytes(3), "application/pdf")),
+            ],
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["page_count"] == 5 and len(body["records"]) == 2
+
+        got = await client.get(f"/api/documents/{body['id']}")
+        rows = got.json()["rows"]
+        assert len(rows) == 2
+        assert (rows[0]["start"], rows[0]["end"]) == (1, 2)
+        assert (rows[1]["start"], rows[1]["end"]) == (3, 5)
+
+        assert queue.count == 1
+        assert queue.jobs[0].func_name.endswith("classify_document")
+    finally:
+        queue.empty()
