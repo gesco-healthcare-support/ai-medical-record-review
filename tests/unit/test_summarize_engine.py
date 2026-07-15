@@ -2,6 +2,9 @@
 
 from types import SimpleNamespace
 
+import pytest
+
+from mrr_ai.errors import EmptyExtractionError
 from mrr_ai.services import summarize_engine
 from mrr_ai.services.summarize_engine import summarize_row
 
@@ -54,3 +57,13 @@ def test_clean_row_has_no_decorations(monkeypatch):
     assert out["summaryTitle"] == "Progress Note - Dr A (Pages 3-5)"
     assert out["summaryText"] == " s"
     assert out["manualCheck"] == ""
+
+
+def test_empty_extraction_raises_before_calling_the_model(monkeypatch):
+    calls = _wire(monkeypatch, ["s", "t"])
+    # OCR yields only whitespace: summarization must fail fast, not send empty input to Gemini.
+    monkeypatch.setattr(summarize_engine, "extract_text_from_selected_pages", lambda p, pg: "  \n ")
+    row = _row()  # build the row outside so only summarize_row can raise inside pytest.raises
+    with pytest.raises(EmptyExtractionError):
+        summarize_row("case.pdf", row)
+    assert calls == []  # the model was never called

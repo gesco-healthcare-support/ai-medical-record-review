@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from flask import current_app
 
 from mrr_ai.config import PIPELINE_WORKERS
+from mrr_ai.errors import user_facing_message
 
 # Document.status transitions driven by job lifecycle.
 _STATUS_ON_SUBMIT = {"segment": "segmenting", "summarize": "summarizing"}
@@ -137,11 +138,14 @@ def _run(app, job_id, target):
 
         try:
             target(report)
-        except Exception as exc:  # noqa: BLE001 - the poller needs the message, whatever it is
+        except Exception as exc:  # noqa: BLE001 - any target failure becomes a user-facing error
             db.session.rollback()  # the target may have died mid-transaction
+            # Log the technical detail server-side; show the user a friendly message, never a
+            # raw stack trace or vendor API error (see mrr_ai/errors.py).
+            current_app.logger.exception("job %s failed", job_id)
             job = db.session.get(Job, job_id)
             job.state = "error"
-            job.error = str(exc)
+            job.error = user_facing_message(exc)
             job.finished_at = _utcnow()
             document = db.session.get(Document, job.document_id)
             document.status = "error"
