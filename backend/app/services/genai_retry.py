@@ -1,0 +1,45 @@
+"""Retry wrapper for google-genai generate_content calls.
+
+Vertex gemini runs on dynamic shared quota: under load it returns 429 RESOURCE_EXHAUSTED / 503
+UNAVAILABLE, or drops the connection without a status. Ride those out with full-jitter
+exponential backoff. Re-raise immediately on non-429 client errors and per-day/free-tier quota
+exhaustion (backoff cannot fix those inside a request). Retry knobs come from config.
+"""
+
+import random
+import time
+
+import httpx
+from google.genai import errors
+
+from app.config import get_settings
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Full-jitter backoff in [0, min(max_delay, base * 2**attempt)] seconds."""
+    settings = get_settings()
+    ceiling = min(settings.genai_retry_max_delay, settings.genai_retry_base_delay * (2**attempt))
+    return random.uniform(0.0, ceiling)
+
+
+def generate_with_retry(client, **kwargs):
+    """Call client.models.generate_content, retrying transient failures. Client passed explicitly
+    so route/worker modules keep a single patchable client seam."""
+    settings = get_settings()
+    last = None
+    for attempt in range(settings.genai_max_retries):
+        try:
+            return client.models.generate_content(**kwargs)
+        except errors.ServerError as exc:  # 5xx incl. 503 high-demand
+            last = exc
+        except errors.ClientError as exc:  # retry only transient 429 rate limiting
+            if getattr(exc, "code", None) != 429:
+                raise
+            if "PerDay" in str(exc) or "free_tier" in str(exc):
+                raise
+            last = exc
+        except httpx.TransportError as exc:  # disconnect without an HTTP status
+            last = exc
+        if attempt < settings.genai_max_retries - 1:
+            time.sleep(_backoff_delay(attempt))
+    raise last

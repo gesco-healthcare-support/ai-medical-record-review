@@ -38,8 +38,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install deps (core; no torch)
-        run: uv sync
+      - name: Install deps (core + docs; no torch)
+        run: uv sync --extra docs
 
       - name: Ruff lint + format check
         run: |

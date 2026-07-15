@@ -21,11 +21,10 @@ dependencies = [
     "fastapi-users[sqlalchemy]>=15.0.5",
 ]
 
-# AI + document pipeline (ported from the Flask services/ layer, all Flask-free). Installed on
-# the WORKER tier and for pipeline tests: `uv sync --extra pipeline`. Pulls torch (large), so it
-# is kept out of the default web/CI install.
+# Document processing the WEB tier needs (upload page-count, OCR, summarize, docx export,
+# bundle PDFs). Torch-FREE, so the web tier + CI install stays light: `uv sync --extra docs`.
 [project.optional-dependencies]
-pipeline = [
+docs = [
     "google-genai>=1.0",
     "pypdf>=5.1",
     "pymupdf>=1.24",
@@ -33,6 +32,10 @@ pipeline = [
     "pytesseract>=0.3.13",
     "python-docx>=1.1",
     "numpy>=2.1",
+]
+# Segmentation classifier (torch + sentence-transformers) - the P4 WORKER tier only:
+# `uv sync --extra docs --extra classifier`. Kept out of the web tier so it never pulls torch.
+classifier = [
     "sentence-transformers>=3.3",
 ]
 

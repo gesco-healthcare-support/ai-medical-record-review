@@ -149,6 +149,24 @@ class Document(Base):
         "Summary", backref="document", cascade="all, delete-orphan", order_by="Summary.idx"
     )
 
+    @property
+    def active_job(self):
+        """The queued/running job, if any - at most one by the job-service invariant."""
+        return next((job for job in self.jobs if job.state in ("queued", "running")), None)
+
+    def listing(self):
+        """Landing-page shape; original_filename is shown to its owner only."""
+        job = self.active_job
+        return {
+            "id": self.id,
+            "original_filename": self.original_filename,
+            "page_count": self.page_count,
+            "status": self.status,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "active_job": job.progress() if job else None,
+        }
+
 
 class Job(Base):
     __tablename__ = "jobs"
@@ -172,6 +190,16 @@ class Job(Base):
         "SegmentRow", backref="job", cascade="all, delete-orphan", order_by="SegmentRow.idx"
     )
 
+    def progress(self):
+        return {
+            "kind": self.kind,
+            "state": self.state,
+            "stage": self.stage,
+            "current": self.current,
+            "total": self.total,
+            "error": self.error,
+        }
+
 
 class SegmentRow(Base):
     __tablename__ = "segment_rows"
@@ -187,6 +215,11 @@ class SegmentRow(Base):
     injury_date = Column(Text, nullable=False, default="-")  # multi-DOI: "MM/DD/YYYY, MM/DD/YYYY"
     flag = Column(String(4), nullable=False, default="-")
     suggest_merge = Column(Boolean, nullable=False, default=False)
+
+    def as_row(self):
+        row = {field: getattr(self, field) for field in ROW_FIELDS}
+        row["suggest_merge"] = self.suggest_merge
+        return row
 
 
 class ReviewRow(Base):
@@ -204,6 +237,12 @@ class ReviewRow(Base):
     flag = Column(String(4), nullable=False, default="-")
     suggest_merge = Column(Boolean, nullable=False, default=False)
     include = Column(Boolean, nullable=False, default=True)
+
+    def as_row(self):
+        row = {field: getattr(self, field) for field in ROW_FIELDS}
+        row["suggest_merge"] = self.suggest_merge
+        row["include"] = self.include
+        return row
 
 
 class Summary(Base):
@@ -226,6 +265,30 @@ class Summary(Base):
     row_end = Column(Integer, nullable=False)
     row_category = Column(String(8), nullable=False)
 
+    def effective_title(self):
+        return self.edited_title if self.edited_title is not None else self.title
+
+    def effective_date(self):
+        return self.edited_date if self.edited_date is not None else self.date
+
+    def effective_text(self):
+        return self.edited_text if self.edited_text is not None else self.text
+
+    def listing(self):
+        return {
+            "idx": self.idx,
+            "summaryTitle": self.effective_title(),
+            "summaryDate": self.effective_date(),
+            "summaryText": self.effective_text(),
+            "manualCheck": self.manual_check,
+            "excluded": self.excluded,
+            "edited": any(
+                value is not None
+                for value in (self.edited_title, self.edited_date, self.edited_text)
+            ),
+            "row": {"start": self.row_start, "end": self.row_end, "category": self.row_category},
+        }
+
 
 class Category(Base):
     __tablename__ = "categories"
@@ -237,6 +300,16 @@ class Category(Base):
     active = Column(Boolean, nullable=False, default=True)
     auto_assign = Column(Boolean, nullable=False, default=True)
     updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    def listing(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "examples": list(self.examples or []),
+            "active": self.active,
+            "auto_assign": self.auto_assign,
+        }
 
 
 class Prompt(Base):
