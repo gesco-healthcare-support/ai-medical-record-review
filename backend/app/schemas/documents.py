@@ -14,6 +14,11 @@ class RowsPayload(BaseModel):
     rows: list[dict[str, Any]] = []
 
 
+class SummarizeStartPayload(BaseModel):
+    rows: list[dict[str, Any]] | None = None  # optional: flush the editor's final rows first
+    model: str | None = None
+
+
 class SummaryEditPayload(BaseModel):
     # All optional; the route uses model_dump(exclude_unset=True) so only fields the client
     # actually sent are written (mirrors the Flask `if field in body` semantics).

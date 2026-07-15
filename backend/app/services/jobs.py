@@ -90,7 +90,8 @@ def enqueue(
         catalog_revision=catalog_revision,
     )
     try:
-        queue_for(kind).enqueue(worker_fn(kind), job.id)
+        # RQ job id == the DB job id, so heartbeat orphan recovery can correlate the two.
+        queue_for(kind).enqueue(worker_fn(kind), job.id, job_id=str(job.id))
     except Exception:
         job.state = "interrupted"
         job.finished_at = _utcnow()

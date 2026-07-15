@@ -187,3 +187,41 @@ def test_enqueue_dispatches_to_the_right_queue():
         assert queue.jobs[0].func_name.endswith("segment_document")
     finally:
         queue.empty()  # don't leave a job for a real worker to pick up
+
+
+def test_recover_orphans_interrupts_a_dead_job():
+    """A DB job stuck 'running' with no RQ counterpart (its worker died) is interrupted."""
+    from app.worker.recovery import recover_orphans
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
+        job.state = "running"  # a (now-dead) worker had started it; no RQ record remains
+        session.commit()
+        job_id = job.id
+
+    with get_sessionmaker()() as session:
+        assert recover_orphans(session) >= 1
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "interrupted"
+        assert session.get(Document, doc_id).status == "interrupted"
+
+
+def test_recover_orphans_leaves_a_healthy_job():
+    """A DB job whose RQ counterpart is still queued (a live worker will run it) is left alone."""
+    from app.worker.recovery import recover_orphans
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+
+    queue = queue_for("segment")
+    # A real RQ job whose id matches the DB job -> recover_orphans sees it queued (healthy).
+    queue.enqueue("app.worker.tasks.segment_document", job_id, job_id=str(job_id))
+    try:
+        with get_sessionmaker()() as session:
+            recover_orphans(session)
+        with get_sessionmaker()() as session:
+            assert session.get(Job, job_id).state == "queued"  # untouched
+    finally:
+        queue.empty()

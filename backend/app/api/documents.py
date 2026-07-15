@@ -1,10 +1,11 @@
 """Document-scoped JSON API (ported from the Flask documents_api blueprint).
 
-The Flask blueprint had 15 routes; the two job-start routes (segment/summarize) are DEFERRED to
-P4 (they need the RQ queue). The other 13 are here. Every id route depends on get_owned_document
--> 404 on a non-owner (IDOR guard). Handlers are sync `def` on the sync session (get_db); FastAPI
-runs them in its threadpool, so the OCR/Vertex work in resummarize/bundle-summarize blocks a
-worker thread, not the event loop. Logging is ids-only; original_filename is PHI and never logged.
+All 15 routes: 13 landed in P3b; segment/start + summarize/start landed in P4b (they enqueue RQ
+jobs via app.services.jobs, routed to the segment/summarize queues). Every id route depends on
+get_owned_document -> 404 on a non-owner (IDOR guard). Handlers are sync `def` on the sync session
+(get_db); FastAPI runs them in its threadpool, so the OCR/Vertex work in resummarize/bundle-summarize
+blocks a worker thread, not the event loop. Logging is ids-only; original_filename is PHI, never
+logged.
 """
 
 import hashlib
@@ -30,11 +31,14 @@ from app.schemas.documents import (
     ExportPayload,
     ResummarizePayload,
     RowsPayload,
+    SummarizeStartPayload,
     SummaryEditPayload,
 )
 from app.services import bundles, catalog
 from app.services.audit import audit
 from app.services.files import safe_name
+from app.services.gemini import PROMPT_VERSION
+from app.services.jobs import JobConflict, enqueue
 from app.services.pdf import get_pdf_page_count
 from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
 from app.services.rows import validate_rows
@@ -235,6 +239,60 @@ def put_rows(
     if error:
         raise HTTPException(status_code=400, detail=error)
     return {"ok": True, "count": len(rows)}
+
+
+@router.post("/{document_id}/segment/start")
+def segment_start(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+):
+    """Enqueue a segmentation job on the `segment` queue. The DB one-active-job index -> 409."""
+    try:
+        enqueue(
+            session,
+            document.id,
+            "segment",
+            model=get_settings().genai_model,
+            prompt_version=PROMPT_VERSION,
+            catalog_revision=catalog.catalog_version(session),
+        )
+    except JobConflict:
+        raise HTTPException(status_code=409, detail="a job is already running for this document")
+    return {"ok": True}
+
+
+@router.post("/{document_id}/summarize/start")
+def summarize_start(
+    payload: SummarizeStartPayload | None = None,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+):
+    """Enqueue a summarization job on the `summarize` queue. Optionally flush the editor's final
+    rows first; at least one row must be marked for inclusion."""
+    payload = payload or SummarizeStartPayload()
+    if payload.rows is not None:
+        if document.active_job is not None:
+            raise HTTPException(
+                status_code=409, detail="a job is already running for this document"
+            )
+        error = _store_rows(session, document, payload.rows)
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+    if not any(row.include for row in document.review_rows):
+        raise HTTPException(status_code=400, detail="no rows are marked for summarization")
+    model = payload.model or get_settings().summary_model
+    try:
+        enqueue(
+            session,
+            document.id,
+            "summarize",
+            model=model,
+            prompt_version=PROMPT_VERSION,
+            catalog_revision=catalog.catalog_version(session),
+        )
+    except JobConflict:
+        raise HTTPException(status_code=409, detail="a job is already running for this document")
+    return {"ok": True}
 
 
 @router.get("/{document_id}/summaries")

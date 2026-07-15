@@ -259,3 +259,51 @@ async def test_resummarize_mocked_happy_path(authed, monkeypatch):
     resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
     assert resp.status_code == 200
     assert resp.json()["summaryTitle"].startswith("New Title")
+
+
+async def test_segment_start_enqueues_then_conflicts(authed):
+    """P4b: segment/start enqueues a job; a second start while it's active returns 409."""
+    from app.worker.queues import queue_for
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    queue = queue_for("segment")
+    queue.empty()
+    try:
+        first = await client.post(f"/api/documents/{doc_id}/segment/start")
+        assert first.status_code == 200 and first.json() == {"ok": True}
+        assert queue.count == 1
+
+        # The DB one-active-job index rejects a second enqueue while the first is queued.
+        second = await client.post(f"/api/documents/{doc_id}/segment/start")
+        assert second.status_code == 409
+    finally:
+        queue.empty()
+
+
+async def test_summarize_start_requires_included_rows(authed):
+    """P4b: with nothing marked for summarization, summarize/start is a 400 (not an empty job)."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    resp = await client.post(f"/api/documents/{doc_id}/summarize/start", json={})
+    assert resp.status_code == 400
+
+
+async def test_summarize_start_enqueues_with_rows(authed):
+    """P4b: passing rows flushes them, then summarize/start enqueues on the summarize queue."""
+    from app.worker.queues import queue_for
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    queue = queue_for("summarize")
+    queue.empty()
+    try:
+        resp = await client.post(
+            f"/api/documents/{doc_id}/summarize/start",
+            json={"rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}]},
+        )
+        assert resp.status_code == 200
+        assert queue.count == 1
+        assert queue.jobs[0].func_name.endswith("summarize_document")
+    finally:
+        queue.empty()
