@@ -12,6 +12,7 @@ over the legacy path:
 from google.genai import types
 
 from mrr_ai.config import SUMMARY_MODEL
+from mrr_ai.errors import EmptyExtractionError
 from mrr_ai.extensions import genai_client
 from mrr_ai.prompts import prompts
 from mrr_ai.services.genai_retry import generate_with_retry
@@ -64,6 +65,10 @@ def summarize_row(pdf_path, row, model=None, prompt=None):
 
     pages = list(range(int(row["start"]), int(row["end"]) + 1))
     text = extract_text_from_selected_pages(pdf_path, pages)
+    if not text.strip():
+        # Fail fast with a clear reason: sending empty text to Gemini yields a cryptic
+        # "Model input cannot be empty" 400. Blank/image-only pages hit this.
+        raise EmptyExtractionError(f"no OCR text for pages {row['start']}-{row['end']}")
 
     # Legacy used temperature 0.8 for the summary body; the title is extraction, so 0.
     summary = _generate(model, system_msg, text, temperature=0.8)

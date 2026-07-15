@@ -1,5 +1,9 @@
 """Unit tests for OCR extraction, with Tesseract/Poppler fully mocked."""
 
+import pytest
+from pdf2image.exceptions import PDFInfoNotInstalledError
+
+from mrr_ai.errors import OcrUnavailableError
 from mrr_ai.services import ocr as ocr_service
 from mrr_ai.services.ocr import extract_text_from_all_pages, extract_text_from_selected_pages
 
@@ -35,3 +39,24 @@ def test_extract_all_pages_swallows_errors(monkeypatch):
 
     monkeypatch.setattr(ocr_service, "convert_from_path", boom)
     assert extract_text_from_all_pages("/tmp/x.pdf") == ""
+
+
+def test_missing_tesseract_raises_ocr_unavailable(monkeypatch):
+    monkeypatch.setattr(ocr_service, "convert_from_path", lambda *a, **k: ["img"])
+
+    def not_found(image):
+        raise ocr_service.pytesseract.TesseractNotFoundError()
+
+    monkeypatch.setattr(ocr_service.pytesseract, "image_to_string", not_found)
+    # A missing binary is a config error, not a per-page hiccup: fail fast, do not return "".
+    with pytest.raises(OcrUnavailableError):
+        extract_text_from_selected_pages("/tmp/x.pdf", [1])
+
+
+def test_missing_poppler_raises_ocr_unavailable(monkeypatch):
+    def not_installed(*a, **k):
+        raise PDFInfoNotInstalledError("Unable to get page count. Is poppler installed?")
+
+    monkeypatch.setattr(ocr_service, "convert_from_path", not_installed)
+    with pytest.raises(OcrUnavailableError):
+        extract_text_from_selected_pages("/tmp/x.pdf", [1])

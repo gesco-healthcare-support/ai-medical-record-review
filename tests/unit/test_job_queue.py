@@ -83,10 +83,13 @@ def test_second_job_on_same_document_rejected(app, make_document):
     release.set()
 
 
-def test_target_exception_lands_in_job_and_document(app, make_document):
+def test_unexpected_target_exception_shows_generic_message(app, make_document):
+    from mrr_ai.errors import GENERIC_USER_MESSAGE
+
     doc = make_document()
 
     def target(report):
+        # A raw technical error (e.g. a vendor 400) must not reach the user verbatim.
         raise RuntimeError("window 3 failed after retries")
 
     with app.app_context():
@@ -95,7 +98,26 @@ def test_target_exception_lands_in_job_and_document(app, make_document):
 
     assert _wait_for_state(app, job_id, "error")
     _, error = _get_job_state(app, job_id)
-    assert "window 3 failed" in error
+    assert error == GENERIC_USER_MESSAGE
+    assert "window 3 failed" not in error  # technical detail is logged, not shown
+    assert _document_status(app, doc) == "error"
+
+
+def test_pipeline_error_shows_its_user_message(app, make_document):
+    from mrr_ai.errors import OcrUnavailableError
+
+    doc = make_document()
+
+    def target(report):
+        raise OcrUnavailableError("tesseract not on PATH")
+
+    with app.app_context():
+        job = job_queue.submit(doc, "summarize", target, model="m", prompt_version="2")
+        job_id = job.id
+
+    assert _wait_for_state(app, job_id, "error")
+    _, error = _get_job_state(app, job_id)
+    assert error == OcrUnavailableError.user_message
     assert _document_status(app, doc) == "error"
 
 
