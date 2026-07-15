@@ -19,11 +19,13 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Table,
     Text,
     UniqueConstraint,
+    text,
 )
 from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyBaseAccessTokenTable
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
@@ -170,6 +172,19 @@ class Document(Base):
 
 class Job(Base):
     __tablename__ = "jobs"
+
+    # One active (queued/running) job per document, enforced at the DB level so the invariant
+    # holds across RQ worker processes (the old in-process lock cannot). A racing second enqueue
+    # violates this -> IntegrityError -> the 409 (see app/services/jobs.py).
+    __table_args__ = (
+        Index(
+            "uq_one_active_job_per_document",
+            "document_id",
+            unique=True,
+            postgresql_where=text("state IN ('queued', 'running')"),
+            sqlite_where=text("state IN ('queued', 'running')"),
+        ),
+    )
 
     id = Column(Integer, primary_key=True)
     document_id = Column(String(36), ForeignKey("documents.id"), nullable=False, index=True)
