@@ -25,7 +25,8 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyBaseAccessTokenTable
+from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from app.db import Base
 
@@ -34,6 +35,15 @@ def _uuid() -> str:
     import uuid
 
     return str(uuid.uuid4())
+
+
+def _uniquifier() -> str:
+    """A fresh fs_uniquifier for FastAPI-Users-created accounts. The column is retained from the
+    Flask-Security schema (kept NOT NULL + unique for the 1:1 migration) but is no longer the
+    session identity; FastAPI-Users keys sessions by user id via the access_token table."""
+    import uuid
+
+    return uuid.uuid4().hex
 
 
 def _utcnow() -> datetime:
@@ -67,8 +77,8 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False)
     username = Column(String(255), unique=True)
     password = Column(String(255))  # argon2id hash, carried over from Flask-Security
-    active = Column(Boolean, nullable=False)
-    fs_uniquifier = Column(String(64), unique=True, nullable=False)
+    active = Column(Boolean, nullable=False, default=True)
+    fs_uniquifier = Column(String(64), unique=True, nullable=False, default=_uniquifier)
     fs_webauthn_user_handle = Column(String(64))
     confirmed_at = Column(DateTime)
     last_login_at = Column(DateTime)
@@ -87,8 +97,30 @@ class User(Base):
     # Project-added columns.
     name = Column(String(255))
     is_admin = Column(Boolean, nullable=False, default=False)
+    # FastAPI-Users requires an is_verified attribute; registration is non-confirmable so this
+    # stays False and is never gated on (we depend on current_active_user, not _verified).
+    is_verified = Column(Boolean, nullable=False, default=False)
 
     roles = relationship("Role", secondary=roles_users)
+
+    # FastAPI-Users reads/writes these attribute names; map them onto the existing fsqla columns
+    # so the migrated data is reused verbatim (superuser == our admin flag). Synonyms are writable,
+    # so the adapter's create/update set the underlying columns correctly.
+    hashed_password = synonym("password")
+    is_active = synonym("active")
+    is_superuser = synonym("is_admin")
+
+
+class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
+    """Opaque server-side session token (FastAPI-Users DatabaseStrategy). The base provides
+    `token` (PK) + `created_at`; we add the user FK. Postgres stays the source of truth for
+    sessions, which allows server-side revocation on logout. Carries no PHI."""
+
+    __tablename__ = "access_token"
+
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("user.id", ondelete="cascade"), nullable=False
+    )
 
 
 # --- domain (copied from mrr_ai/models.py) --------------------------------------------------
