@@ -690,3 +690,7 @@ body[data-bundle-slug] #step-editor { flex: none; }
     font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
     font-size: 13px; line-height: 1.5; white-space: pre; overflow-wrap: normal;
 }
+
+/* Review-stage "show only <category>" toggle, injected into the editor toolbar by the
+   bundle pages. Sits left of the toolbar buttons. */
+.rc-catfilter { margin-right: auto; font-size: 13px; white-space: nowrap; }

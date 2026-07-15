@@ -51,6 +51,10 @@ const STEP_ORDER = ["identify", "review", "summaries"];
 
 // Host pages (the bundle workspaces) get notified when the editor has rows ready to work with.
 let onReviewed = null;
+// Optional display filter `(row) => bool` set by a host page (the bundle workspaces) to show
+// only matching-category documents in the review table. null = show all (the /review default).
+// View-only: it hides rows from the table but never changes what is saved or summarized.
+let rowFilter = null;
 
 function show(section, activeStep) {
     sections.forEach((id) => {
@@ -355,9 +359,19 @@ function renderTable() {
     const body = $("rowsBody");
     body.innerHTML = "";
     let previousEnd = 0;
+    // A host-set display filter (bundle pages) shows only matching-category rows. It is
+    // view-only; skipped rows keep their real index `i`, so edits/saves are unaffected.
+    const filtering = Boolean(rowFilter);
+    let hiddenCount = 0;
 
     S.rows.forEach((row, i) => {
-        if (Number(row.start) > previousEnd + 1) {
+        if (filtering && !rowFilter(row)) {
+            hiddenCount += 1;
+            return;
+        }
+        // Skipped-page gap markers track continuity across ALL rows, so they are meaningless
+        // in a filtered view - suppress them while filtering.
+        if (!filtering && Number(row.start) > previousEnd + 1) {
             const gap = document.createElement("tr");
             gap.className = "gap-row";
             gap.innerHTML = `<td colspan="8">pages ${previousEnd + 1}-${Number(row.start) - 1} not included (skipped at summarization)</td>`;
@@ -409,6 +423,15 @@ function renderTable() {
             <td></td>`;
         body.appendChild(tr);
     });
+
+    // When filtering hides rows, say so up top so nothing feels silently missing (a
+    // mislabeled document that belongs in the bundle would otherwise just not appear).
+    if (filtering && hiddenCount) {
+        const note = document.createElement("tr");
+        note.className = "gap-row";
+        note.innerHTML = `<td colspan="8">${hiddenCount} other document${hiddenCount === 1 ? "" : "s"} hidden by the category filter - turn it off to see and re-tag them.</td>`;
+        body.insertBefore(note, body.firstChild);
+    }
 
     const suggested = S.rows.filter((r, i) => r.suggest_merge && i > 0).length;
     const bulk = $("applySuggestions");
@@ -911,6 +934,10 @@ window.MRR = {
     enterEditor,
     setOnSummarize: (fn) => { onSummarize = fn; },
     setOnReviewed: (fn) => { onReviewed = fn; },
+    setRowFilter: (fn) => {
+        rowFilter = fn;
+        if ($("rowsBody")) renderTable();
+    },
     api,
     banner,
     state: S,
