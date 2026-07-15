@@ -9,6 +9,7 @@ general prompt, avoiding the historical KeyError).
 from google.genai import types
 
 from app.config import get_settings
+from app.errors import EmptyExtractionError
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.ocr import extract_text_from_selected_pages
@@ -58,6 +59,10 @@ def summarize_row(pdf_path, row, model=None, prompt=None):
 
     pages = list(range(int(row["start"]), int(row["end"]) + 1))
     text = extract_text_from_selected_pages(pdf_path, pages)
+    if not text.strip():
+        # Fail fast with a clear reason: sending empty text to Gemini yields a cryptic
+        # "Model input cannot be empty" 400. Blank/image-only pages hit this.
+        raise EmptyExtractionError(f"no OCR text for pages {row['start']}-{row['end']}")
 
     # Legacy used temperature 0.8 for the summary body; the title is extraction, so 0.
     summary = _generate(model, system_msg, text, temperature=0.8)

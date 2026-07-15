@@ -34,7 +34,16 @@ from sqlalchemy import delete, select  # noqa: E402
 from app.auth.password import MrrPasswordHelper  # noqa: E402
 from app.db import get_sessionmaker  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import AccessToken, User  # noqa: E402
+from app.models import (  # noqa: E402
+    AccessToken,
+    AuditLog,
+    Document,
+    Job,
+    ReviewRow,
+    SegmentRow,
+    Summary,
+    User,
+)
 
 TEST_EMAIL_PREFIX = "pytest-auth-"
 
@@ -46,14 +55,24 @@ def unique_test_email() -> str:
 
 
 def _delete_test_users() -> None:
-    """Remove every account the integration tests created plus its sessions. The access_token FK is
-    ondelete=cascade, but we clear tokens explicitly too so a stray row can never block the delete."""
+    """Remove every account the integration tests created plus everything it owns, so runs are
+    idempotent. Core deletes in explicit FK order (child tables first) - more robust than relying
+    on ORM cascade ordering across a multi-document flush."""
     with get_sessionmaker()() as session:
         ids = session.scalars(select(User.id).where(User.email.like(TEST_EMAIL_PREFIX + "%"))).all()
-        if ids:
-            session.execute(delete(AccessToken).where(AccessToken.user_id.in_(ids)))
-            session.execute(delete(User).where(User.id.in_(ids)))
-            session.commit()
+        if not ids:
+            return
+        doc_ids = select(Document.id).where(Document.user_id.in_(ids)).scalar_subquery()
+        job_ids = select(Job.id).where(Job.document_id.in_(doc_ids)).scalar_subquery()
+        session.execute(delete(SegmentRow).where(SegmentRow.job_id.in_(job_ids)))
+        session.execute(delete(Summary).where(Summary.document_id.in_(doc_ids)))
+        session.execute(delete(ReviewRow).where(ReviewRow.document_id.in_(doc_ids)))
+        session.execute(delete(Job).where(Job.document_id.in_(doc_ids)))
+        session.execute(delete(Document).where(Document.user_id.in_(ids)))
+        session.execute(delete(AuditLog).where(AuditLog.user_id.in_(ids)))
+        session.execute(delete(AccessToken).where(AccessToken.user_id.in_(ids)))
+        session.execute(delete(User).where(User.id.in_(ids)))
+        session.commit()
 
 
 @pytest.fixture(autouse=True)
