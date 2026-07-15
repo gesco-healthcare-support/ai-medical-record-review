@@ -152,7 +152,7 @@ class SegmentRow(Base):
     category = Column(String(8), nullable=False)
     title = Column(String(512), nullable=False, default="-")
     date = Column(String(16), nullable=False, default="-")
-    injury_date = Column(String(16), nullable=False, default="-")
+    injury_date = Column(Text, nullable=False, default="-")  # multi-DOI: "MM/DD/YYYY, MM/DD/YYYY"
     flag = Column(String(4), nullable=False, default="-")
     suggest_merge = Column(Boolean, nullable=False, default=False)
 
@@ -168,7 +168,7 @@ class ReviewRow(Base):
     category = Column(String(8), nullable=False)
     title = Column(String(512), nullable=False, default="-")
     date = Column(String(16), nullable=False, default="-")
-    injury_date = Column(String(16), nullable=False, default="-")
+    injury_date = Column(Text, nullable=False, default="-")  # multi-DOI: "MM/DD/YYYY, MM/DD/YYYY"
     flag = Column(String(4), nullable=False, default="-")
     suggest_merge = Column(Boolean, nullable=False, default=False)
     include = Column(Boolean, nullable=False, default=True)
