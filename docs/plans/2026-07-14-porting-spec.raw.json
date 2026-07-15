@@ -1,0 +1,1715 @@
+{
+  "summary": "Read-only map of the current MRR AI Flask app into a Next.js + FastAPI porting spec",
+  "agentCount": 6,
+  "logs": [],
+  "result": [
+    {
+      "track": "endpoints",
+      "summary": "The app exposes 59 blueprint routes across two disjoint surfaces plus Flask-Security's auto-registered auth endpoints. The MODERN account flow is DB-backed and per-user: documents_api (15 routes under /api/documents, every handler owner-scoped via _own() -> 404-on-miss IDOR guard) and admin_api (7 routes under /api/admin, gated by is_admin), plus a handful of pages.py routes that render SPA shells (/, /review/<id>, /diagnostics, /depositions, /admin). These map cleanly onto FastAPI routers + Pydantic models + auth dependencies (rewrite). The CLASSIC single-user flow is state.py-global-based and multi-user-broken: review_api (5 routes: /api/pdf, /api/segment/*, /api/summarize/*), upload (3), summarize (2, OpenAI), reports (3), extraction (2), individual_mrr (2), export (3), segmentation (2), and the classic template pages + /reset in pages.py. Despite its name and the task briefing grouping it as modern, review_api is fully state.py-based and no front-end references it, so it drops with the rest of the classic paths. Auth is a single app-level before_request deny-by-default gate in security.py (not per-route decorators), with admin path-prefix escalation; CSRF is global CSRFProtect using an XSRF-TOKEN cookie echoed as an X-XSRF-Token header on the fetch APIs. The two job-enqueuing modern routes (segment/start, summarize/start, admin reprocess) submit to services/job_queue and are the seam where the endpoint stays a thin POST handler but the underlying pipeline is redesigned onto Redis + workers; resummarize and bundle/summarize run synchronously in-request today.",
+      "files": [
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/__init__.py",
+          "role": "Blueprint registration order; register_blueprints(app) wires all 11 blueprints"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/security.py",
+          "role": "App-level deny-by-default auth gate (before_request), PUBLIC_ENDPOINTS, ADMIN_PATH_PREFIXES, CSRF + Flask-Security wiring, password rules"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/__init__.py",
+          "role": "App factory: config (session cookie, CSRF cookie/header, SECURITY_* flags), schema, job_queue.init_app"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/state.py",
+          "role": "Module-global mutable state backing the CLASSIC single-user flow (drop target)"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/documents_api.py",
+          "role": "MODERN per-user document API (15 routes, /api/documents), _own() IDOR guard, job targets"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/admin_api.py",
+          "role": "MODERN admin API (7 routes, /api/admin), is_admin-gated category/prompt CRUD + reprocess"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/review_api.py",
+          "role": "CLASSIC state-based review API (5 routes /api/*); no front-end consumer -> drop"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/pages.py",
+          "role": "Template-render + redirect routes (15); mix of MODERN SPA shells (rewrite) and CLASSIC pages + /reset (drop)"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/upload.py",
+          "role": "CLASSIC state-based upload routes (3) -> drop"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/summarize.py",
+          "role": "CLASSIC OpenAI summarize routes (2), state-based, writes all_data_temp.txt -> drop"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/reports.py",
+          "role": "CLASSIC diag/depo extraction + page-range merge (3), state-based, writes ~/MRRs -> drop"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/extraction.py",
+          "role": "CLASSIC OpenAI name/DOB/lawfirm extraction (2), state-based -> drop"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/individual_mrr.py",
+          "role": "CLASSIC patient-folder + multi-file upload (2), state-based -> drop"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/export.py",
+          "role": "CLASSIC export routes (3) -> drop; _build_mrr_document + _DOCX_MIMETYPE are framework-agnostic docx helpers reused by documents_api -> port-as-is as a service"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/segmentation.py",
+          "role": "CLASSIC segmentPDF + getPages (2), state-based -> drop"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/extensions.py",
+          "role": "db + SQLite WAL pragmas + genai/OpenAI clients; not routes but shapes DB/session concurrency for the port"
+        }
+      ],
+      "items": [
+        {
+          "name": "POST /api/documents",
+          "kind": "endpoint",
+          "detail": "documents_api.py:79 create_document. Input: multipart/form-data file field 'pdf'. Saves to UPLOAD_FOLDER/<user_id>/<uuid>.pdf, computes page_count + sha256, warns (not blocks) on duplicate. Resp 201 JSON {id,page_count,sha256_duplicate}; 400 {error} on no/unreadable PDF. Auth: session-gated; owner=current_user.id. CSRF: X-XSRF-Token required. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /api/documents",
+          "kind": "endpoint",
+          "detail": "documents_api.py:118 list_documents. Input: none. Resp 200 JSON array of document.listing() merged with {rows_count}. Auth: session-gated, filtered by user_id. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /api/documents/<document_id>",
+          "kind": "endpoint",
+          "detail": "documents_api.py:137 get_document. Resp 200 JSON document.listing() + {rows:[row.as_row()],categories:catalog.get_category_options()}; 404 {error} if not owned. Auth: _own() IDOR guard. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "DELETE /api/documents/<document_id>",
+          "kind": "endpoint",
+          "detail": "documents_api.py:148 delete_document. Cascades DB rows + removes stored file. Resp 200 {ok:true}; 409 {error} if active_job; 404 if not owned. CSRF required. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /api/documents/<document_id>/pdf",
+          "kind": "endpoint",
+          "detail": "documents_api.py:170 get_pdf. Resp: send_file(stored_path, application/pdf, conditional=True) inline; 404 if not owned. Audits view_pdf. Flow: MODERN. Maps to FastAPI FileResponse/StreamingResponse.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /api/documents/<document_id>/status",
+          "kind": "endpoint",
+          "detail": "documents_api.py:179 get_status. Resp 200 JSON {status, job: latest.progress()|null}; 404 if not owned. Polled by SPA. Flow: MODERN. Underlying job progress source is redesign (Redis).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "PUT /api/documents/<document_id>/rows",
+          "kind": "endpoint",
+          "detail": "documents_api.py:188 put_rows. Input JSON {rows:[{start,end,category,title,date,injury_date,flag,suggest_merge,include}]}; validated by validate_rows against page_count + active catalog ids. Resp {ok,count}; 400 on invalid; 409 if active_job; 404 if not owned. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /api/documents/<document_id>/segment/start",
+          "kind": "endpoint",
+          "detail": "documents_api.py:237 segment_start. Enqueues 'segment' job via job_queue.submit (target _segment_target runs run_segmentation, persists SegmentRows + seeds ReviewRows). Resp {ok:true}; 409 if job running; 404 if not owned. Flow: MODERN. Endpoint=rewrite; ENQUEUE = redesign onto Redis+worker.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /api/documents/<document_id>/summarize/start",
+          "kind": "endpoint",
+          "detail": "documents_api.py:302 summarize_start. Input JSON optional {rows,model}; flushes rows via _store_rows, requires >=1 include row, enqueues 'summarize' job (_summarize_target). Resp {ok:true}; 400/409 errors; 404 if not owned. Flow: MODERN. ENQUEUE = redesign.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /api/documents/<document_id>/summaries",
+          "kind": "endpoint",
+          "detail": "documents_api.py:333 get_summaries. Resp 200 JSON array of summary.listing(); 404 if not owned. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "PUT /api/documents/<document_id>/summaries/<int:idx>",
+          "kind": "endpoint",
+          "detail": "documents_api.py:341 put_summary. Input JSON any of {summaryTitle(cap512),summaryDate(cap16),summaryText,excluded}; writes edited_* columns (raw model output kept immutable). Resp summary.listing(); 409 if summarize job active; 404 if not owned/no summary. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /api/documents/<document_id>/summaries/<int:idx>/resummarize",
+          "kind": "endpoint",
+          "detail": "documents_api.py:369 resummarize. SYNCHRONOUS single-record re-OCR + 2 model calls (get_json silent, optional {model}); replaces raw model output, clears edited_*. Resp summary.listing(); 409 if any active_job; 404 if not owned/no summary. Flow: MODERN (in-request AI call, not queued).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /api/documents/<document_id>/export",
+          "kind": "endpoint",
+          "detail": "documents_api.py:463 export_document. Input JSON {patientName,patientdob,QMEorAME,lawfirm}; builds docx from non-excluded summaries via _build_mrr_document, in-memory BytesIO. Resp: send_file docx attachment 'summaries.docx'; 409 if none; 404 if not owned. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /api/documents/<document_id>/bundle/pdf",
+          "kind": "endpoint",
+          "detail": "documents_api.py:528 bundle_pdf. Input JSON {categories:[...],label}; combines category-matched pages into one PDF (no LLM). Resp send_file PDF attachment (slugged from label); 400 empty categories, 409 no match, 404 not owned. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /api/documents/<document_id>/bundle/summarize",
+          "kind": "endpoint",
+          "detail": "documents_api.py:549 bundle_summarize. Input JSON {categories,label,model,patientName,patientdob,QMEorAME,lawfirm}; SYNCHRONOUS, bounded by config.BUNDLE_SUMMARIZE_CAP; builds filtered docx. Resp send_file docx; 400/409 errors; 404 not owned. Flow: MODERN (in-request AI, not queued).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /api/admin/whoami",
+          "kind": "endpoint",
+          "detail": "admin_api.py:29 whoami. Resp JSON {email,is_admin}. Auth: /api/admin prefix -> gate requires is_admin. Flow: MODERN admin.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /api/admin/categories",
+          "kind": "endpoint",
+          "detail": "admin_api.py:43 list_categories. Resp JSON array of _category_payload (listing + has_summary_prompt), incl inactive, sorted numeric id. Admin-gated. Flow: MODERN admin.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /api/admin/categories",
+          "kind": "endpoint",
+          "detail": "admin_api.py:50 create_category. Input JSON {id(positive int str),name,description,examples[list],active,auto_assign}. Bumps catalog revision, audits. Resp 201 _category_payload; 400 validation. Admin-gated. Flow: MODERN admin.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "PATCH /api/admin/categories/<category_id>",
+          "kind": "endpoint",
+          "detail": "admin_api.py:80 update_category. Input JSON partial {name,description,examples,auto_assign,active}; id immutable (deactivate = soft delete). Bumps revision, audits. Resp _category_payload; 404 unknown; 400 validation. Admin-gated. Flow: MODERN admin.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /api/admin/prompts/<category_id>",
+          "kind": "endpoint",
+          "detail": "admin_api.py:108 get_summary_prompt. Resp JSON {category_id,text|null,effective_text,custom}. Admin-gated. Flow: MODERN admin.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "PUT /api/admin/prompts/<category_id>",
+          "kind": "endpoint",
+          "detail": "admin_api.py:123 put_summary_prompt. Input JSON {text}; upserts Prompt(role=summary), increments revision, bumps catalog, audits. Resp {category_id,text,custom:true}; 404 unknown category; 400 empty text. Admin-gated. Flow: MODERN admin.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /api/admin/reprocess/<document_id>",
+          "kind": "endpoint",
+          "detail": "admin_api.py:144 reprocess. Admin-scoped over ANY owner's document (db.session.get, not _own). Enqueues normal 'summarize' job with current prompts/catalog revision. Resp {ok:true}; 404 no doc; 400 no reviewed rows; 409 job running. Flow: MODERN admin. ENQUEUE = redesign.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /api/pdf",
+          "kind": "endpoint",
+          "detail": "review_api.py:45 api_pdf. Reads state.pdf_filepath global; send_file inline. 404 if unset. CLASSIC single-user; no front-end references it (grep matched only review_api). Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /api/segment/start",
+          "kind": "endpoint",
+          "detail": "review_api.py:53 segment_start. Uses state.pdf_filepath + services/jobs.py single-slot runner. Resp {ok,total_pages}; 400/409. CLASSIC single-user; superseded by /api/documents/<id>/segment/start. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /api/segment/status",
+          "kind": "endpoint",
+          "detail": "review_api.py:70 segment_status. Reads jobs.status() global runner; on done attaches rows+categories. CLASSIC single-user. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /api/summarize/start",
+          "kind": "endpoint",
+          "detail": "review_api.py:79 summarize_start. Input JSON {rows,model}; validates, resets state.all_data, runs on jobs.py runner. CLASSIC single-user; superseded by documents_api. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /api/summarize/status",
+          "kind": "endpoint",
+          "detail": "review_api.py:114 summarize_status. Reads jobs.status(); on done attaches summaries. CLASSIC single-user. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /",
+          "kind": "ui-page",
+          "detail": "pages.py:10 index. Renders home.html (user's documents landing). Session-gated. MODERN SPA shell -> becomes a Next.js page/route (data via /api/documents). Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /review/<document_id>",
+          "kind": "ui-page",
+          "detail": "pages.py:62 review_document. Renders review.html shell (all data via owner-checked documents API; foreign id leaks nothing). MODERN SPA editor -> Next.js dynamic route. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /review",
+          "kind": "ui-page",
+          "detail": "pages.py:56 review. Bare route redirects to '/'. MODERN; trivial redirect -> Next.js redirect rule. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /diagnostics",
+          "kind": "ui-page",
+          "detail": "pages.py:72 diagnostics. Renders bundle.html with bundle_label='Diagnostic & Operative', categories=['3','8']. MODERN bundle workspace -> Next.js page consuming /api/documents/<id>/bundle/*. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /depositions",
+          "kind": "ui-page",
+          "detail": "pages.py:82 depositions. Renders bundle.html categories=['9']. MODERN bundle workspace -> Next.js page. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /admin",
+          "kind": "ui-page",
+          "detail": "pages.py:92 admin. Renders admin.html console; /admin prefix -> gate requires is_admin. MODERN admin SPA shell -> Next.js admin route. Flow: MODERN.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "GET /classic",
+          "kind": "ui-page",
+          "detail": "pages.py:16 classic. Renders index.html (classic single-user hub). CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /pages",
+          "kind": "ui-page",
+          "detail": "pages.py:21 pages. Renders pages.html. CLASSIC single-user UI. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /pagesManual",
+          "kind": "ui-page",
+          "detail": "pages.py:26 pagesManual. Renders pagesManual.html. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /pdfsegment",
+          "kind": "ui-page",
+          "detail": "pages.py:31 pdfsegment. Renders pdfsegment.html (classic segmentation UI, drives review_api /api/segment/*). CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /checkCSV",
+          "kind": "ui-page",
+          "detail": "pages.py:36 checkCSV. Renders checkCSV.html. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /DiagAndOpReports",
+          "kind": "ui-page",
+          "detail": "pages.py:41 DiagAndOpReports. Renders DiagAndOpReports.html (classic, drives /getDiagOpRep). CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /DepositionReports",
+          "kind": "ui-page",
+          "detail": "pages.py:46 DepositionReports. Renders DepositionReports.html (classic, drives /getDepoRep). CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "GET /IndividualMRR",
+          "kind": "ui-page",
+          "detail": "pages.py:51 IndividualMRR. Renders individual_mrr.html (classic, drives individual_mrr + summarize_indiv_record). CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /reset",
+          "kind": "endpoint",
+          "detail": "pages.py:99 reset. Clears state.py globals (pdf_filepath, main_filename, all_data, pages_not_counting). Resp {message},200. CLASSIC single-user session reset. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /upload",
+          "kind": "endpoint",
+          "detail": "upload.py:15 upload. Input multipart file 'pdf'; saves to UPLOAD_FOLDER, sets state.pdf_filepath/num_pages/main_filename globals. Resp {filepath,num_pages}. CLASSIC single-user (global state). Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /uploadAndCheckCSV",
+          "kind": "endpoint",
+          "detail": "upload.py:40 uploadAndCheckCSV. Input multipart file 'txt'; validates 6-col CSV (dates, duplicates), sets state.txt_filepath. Resp {errors_and_duplicates:str}. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /uploadPages",
+          "kind": "endpoint",
+          "detail": "upload.py:129 uploadPages. Input multipart file 'txt'; sets state.txt_filepath, counts lines. Resp {filepath,line_count}. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /summarize",
+          "kind": "endpoint",
+          "detail": "summarize.py:17 summarize. Input JSON {model}; reads state.txt_filepath CSV + state.pdf_filepath, OpenAI per-row, writes all_data_temp.txt, appends state.all_data. Resp {summaryText,summaryDate,summaryTitle,big_text}. CLASSIC single-user, hardcoded category_01..14/100 prompts. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /summarize_indiv_record",
+          "kind": "endpoint",
+          "detail": "summarize.py:212 summarize_indiv_record. Input JSON {folder_name,records[]}; reads state.indiv_mrr_folder_path, OpenAI per record, mutates state.all_data. Resp literal 'S' (or 400 no records). CLASSIC; note buggy `option==N or 'N'` branch logic. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /getDiagOpRep",
+          "kind": "endpoint",
+          "detail": "reports.py:16 getDiagOpRep. Input JSON {model}(unused); reads state.txt_filepath CSV + state.pdf_filepath, extracts cat 3/8 pages, writes combined PDF to ~/MRRs/<main_filename>_diag_and_op_reports. Resp {summaryText:'success'}. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /getDepoRep",
+          "kind": "endpoint",
+          "detail": "reports.py:94 getDepoRep. Input JSON {model}(unused); extracts cat 9 pages to ~/MRRs/<main_filename>_depositions. Resp {summaryText:'Total Depositions: N'}. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /compute_page_ranges",
+          "kind": "endpoint",
+          "detail": "reports.py:158 compute_page_ranges. Input JSON {folder_name}; merges folder PDFs, writes ~/MRRs/<patientNameGlobal> - AGGREGATED_RECORDS.pdf. Resp {status,page_ranges,merged_pdf}; 400 errors. CLASSIC (global state + local disk). Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /getpatientnameanddob",
+          "kind": "endpoint",
+          "detail": "extraction.py:14 getpatientnameanddob. No body; OCR pages 5,15 of state.pdf_filepath, OpenAI extract. Resp {name,dob}. CLASSIC (reads global pdf path). Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /getlawfirm",
+          "kind": "endpoint",
+          "detail": "extraction.py:61 getlawfirm. No body; OCR pages 1,7 of state.pdf_filepath, OpenAI extract. Resp {lawfirm}. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /create_patient_folder_indiv_mrr",
+          "kind": "endpoint",
+          "detail": "individual_mrr.py:14 create_patient_folder. Input JSON {folder_name,patient_name}; sets state.patientNameGlobal, mkdir under UPLOAD_BASE_DIR (safe_name). Resp {message,folder_path}; 400/500. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /upload_files",
+          "kind": "endpoint",
+          "detail": "individual_mrr.py:39 upload_files. Input multipart form 'folder_name' + files 'pdfs'; sets state.indiv_mrr_folder_path, saves files. Resp {message,saved_files,folder_path}; 400. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /exportresultstoCSV",
+          "kind": "endpoint",
+          "detail": "export.py:123 exportresultstoCSV. Input JSON {TXTText}; writes ~/MRRs/<main_filename>.csv from state global. Resp {message}/ {error}. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /exportresultstoword",
+          "kind": "endpoint",
+          "detail": "export.py:148 exportresultstoword. Input JSON {patientName,patientdob,QMEorAME,lawfirm}; builds docx from state.all_data/state.num_pages, saves _int/_rep to ~/MRRs, returns _int as 'summaries.docx'. CLASSIC (reads globals). NOTE _build_mrr_document helper itself is framework-agnostic -> port-as-is service. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /exportResultsToWordFileIndivRecords",
+          "kind": "endpoint",
+          "detail": "export.py:180 exportResultsToWordFileIndivRecords. Input JSON {patientName,patientdob,QMEorAME,lawfirm}; builds docx from state.all_data, saves ~/MRRs/<patientName> - MRR.docx. CLASSIC. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /segmentPDF",
+          "kind": "endpoint",
+          "detail": "segmentation.py:20 segmentPDF. No meaningful body; calls segment_pdf(state.pdf_filepath, 100) writing files to MRR folder. Resp {pages:msg}. CLASSIC (global path + disk). Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /getPages",
+          "kind": "endpoint",
+          "detail": "segmentation.py:29 getPages. Body ignored (pageDelimiter legacy); run_segmentation on state.pdf_filepath, returns 6-col CSV text in {pages}. CLASSIC single-user analog of documents_api segment. Flow: CLASSIC.",
+          "disposition": "drop"
+        },
+        {
+          "name": "POST /login (Flask-Security)",
+          "kind": "auth-behavior",
+          "detail": "security.py:75 Security(app,...); auto-registered by Flask-Security. In PUBLIC_ENDPOINTS (security.login). Content-negotiated: HTML form (WTForms csrf_token) vs JSON 401. Session cookie (SESSION_COOKIE_HTTPONLY, SameSite=Lax; SECURE deferred to HTTPS). Not a blueprint route. Rewrite as FastAPI auth (session/token).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /register (Flask-Security)",
+          "kind": "auth-behavior",
+          "detail": "Auto-registered; SECURITY_REGISTERABLE=True, CONFIRMABLE=False, no register email (no SMTP). MrrRegisterForm adds required 'name'; MrrPasswordUtil enforces 8+ / digit / symbol server-side. In PUBLIC_ENDPOINTS (security.register). Rewrite as FastAPI signup + Pydantic validators.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "POST /logout (Flask-Security)",
+          "kind": "auth-behavior",
+          "detail": "Auto-registered; SECURITY_POST_LOGOUT_VIEW='/login'. Invalidates session (and CSRF tokens). NOT in PUBLIC_ENDPOINTS -> requires session. Rewrite as FastAPI logout.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "before_request deny-by-default gate",
+          "kind": "auth-behavior",
+          "detail": "security.py:82 _require_authentication. App-level (not per-route): endpoint None -> 404; endpoint in PUBLIC_ENDPOINTS{security.login,security.register,static} -> allow; else require current_user.is_authenticated (else login_manager.unauthorized -> redirect or 401 JSON); if path under /admin or /api/admin and not is_admin -> abort 403. Rewrite as FastAPI dependencies (get_current_user + require_admin) applied at router level.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "CSRF protection (global CSRFProtect)",
+          "kind": "auth-behavior",
+          "detail": "security.py:69 CSRFProtect(app) before Security. Unsafe methods require X-XSRF-Token header echoed from XSRF-TOKEN cookie (SECURITY_CSRF_COOKIE_NAME) for fetch APIs; WTForms hidden csrf_token for login/register; WTF_CSRF_TIME_LIMIT=None. Rewrite/redesign: FastAPI has no built-in CSRF; token-auth SPA model changes this (double-submit or bearer-token instead).",
+          "disposition": "rewrite"
+        }
+      ],
+      "portingNotes": [
+        "Two FastAPI routers cover the entire keep-set: documents router (prefix /api/documents, 15 routes) and admin router (prefix /api/admin, 7 routes). Everything else is either dropped (classic) or becomes Next.js pages/routes (the pages.py SPA shells).",
+        "Auth: replace the single before_request gate with FastAPI dependencies. A get_current_user dependency on both routers reproduces deny-by-default; a require_admin dependency on the admin router (and any /admin page) reproduces the is_admin path-prefix escalation. Do NOT port as per-route decorators piecemeal - the original design deliberately gates at app level so new routes are protected by default; mirror that with router-level dependencies.",
+        "IDOR guard: _own(document_id) = Document.query.filter_by(id=..., user_id=current_user.id).first() returning 404 (not 403) on miss. Reproduce as a shared FastAPI dependency get_owned_document(document_id, user) that raises HTTPException(404); every documents route must depend on it.",
+        "Pydantic request models: RowsPayload {rows:[RowModel{start:int,end:int,category:str,title,date,injury_date,flag,suggest_merge:bool,include:bool=True}]}; SummarizeStartPayload {rows?:[RowModel], model?:str}; SummaryEditPayload {summaryTitle?,summaryDate?,summaryText?,excluded?}; ExportPayload {patientName,patientdob,QMEorAME,lawfirm}; BundlePayload {categories:list[str], label?:str, model?:str} + export fields; CategoryCreate/Update and PromptPut for admin. validate_rows (review_api.py:18) is framework-agnostic domain logic -> port-as-is into a shared validator used by the Pydantic model / service.",
+        "File responses: get_pdf and all export/bundle downloads use Flask send_file -> FastAPI FileResponse (disk) or StreamingResponse(BytesIO) with Content-Disposition. Multipart upload (create_document) -> FastAPI UploadFile parameter named 'pdf'.",
+        "Job pipeline (redesign): segment/start, summarize/start, and admin reprocess call services/job_queue.submit with a per-request closure target (_segment_target/_summarize_target that mutate DB inside an app context). For Redis + external workers these closures cannot be pickled - the enqueue must send a serializable job descriptor (document_id, kind, model, prompt_version, catalog_revision) and the worker reconstructs the target. status/get_status polling reads Job.progress() from DB today; keep the DB Job row as the progress source of truth so the FastAPI status endpoint stays a simple DB read regardless of the queue backend.",
+        "Synchronous AI routes (resummarize, bundle/summarize) run model calls in-request today; in FastAPI these should be async def with the blocking OCR/model work offloaded (run_in_threadpool or a short queue job) to avoid blocking the event loop - a behavioral porting decision, not a queue redesign.",
+        "CSRF: the XSRF-TOKEN cookie / X-XSRF-Token header contract disappears with FastAPI. Decide the SPA auth model (session cookie + double-submit CSRF, or bearer token in Authorization header) up front because it changes every mutating fetch in the Next.js client.",
+        "Shared helper _build_mrr_document + _DOCX_MIMETYPE (export.py:19) and _export_entry/_PAGES_SUFFIX + _download_name (documents_api.py) are pure python-docx/regex with no Flask coupling at the function body -> port-as-is into a services/reporting module reused by the documents router.",
+        "catalog.get_category_options / get_category_ids / get_prompt / bump_revision / catalog_version and services.audit.audit are framework-agnostic and already sit behind the endpoints -> port-as-is; the endpoints just call them."
+      ],
+      "risks": [
+        "Task-briefing vs reality mismatch: the brief groups review_api into the MODERN account flow, but review_api.py is entirely state.py-global-based (state.pdf_filepath, state.all_data) on the single-slot services/jobs.py runner, and grep confirms NO template or front-end JS references /api/pdf, /api/segment/*, or /api/summarize/*. If it is dropped on that assumption, confirm no external/automation client hits those paths first.",
+        "Dropping the classic flow removes ALL /upload, /summarize, /getDiagOpRep, /getDepoRep, /compute_page_ranges, /getpatientnameanddob, /getlawfirm, individual-MRR, and classic export routes. If any real user workflow still runs through the /classic hub (index.html) rather than /, that capability must be re-created in the modern per-document flow before drop, or data/workflow is lost.",
+        "Job closures (_segment_target/_summarize_target) capture request-scoped values and mutate the DB inside a Flask app context; naive port to Redis workers will break because closures are not serializable and the worker has no Flask app context. Redesign must supply a worker-side app/DB context and a serializable descriptor.",
+        "Owner-scoping is enforced ONLY in documents_api via _own; admin reprocess intentionally bypasses it (db.session.get over any owner). The FastAPI port must preserve exactly this asymmetry (owner-checked user routes, is_admin-only cross-owner reprocess) or it introduces either an IDOR or a broken admin feature.",
+        "409-on-active-job concurrency guards (delete, put_rows, summarize_start, put_summary, resummarize) depend on document.active_job derived from the single-process job model; with an external queue the active_job check must be recomputed from the shared Job table/Redis, or two workers can race a document.",
+        "Several classic routes write PHI-bearing artifacts to ~/MRRs and all_data_temp.txt on local disk (export.py, reports.py, summarize.py); these are exactly the paths being dropped, but any migration/parity testing must not resurrect that local-disk PHI behavior in the new stack."
+      ],
+      "openQuestions": [
+        "Confirm review_api (/api/pdf, /api/segment/*, /api/summarize/*) is truly dead: is the /classic + /pdfsegment UI still used by anyone, or can it be dropped outright with the rest of the state.py flow?",
+        "Should the modern flow gain feature parity for anything only the classic flow does today (e.g. the CSV-checker /uploadAndCheckCSV, multi-file individual-MRR folders, the aggregated-records PDF merge in /compute_page_ranges), or are those intentionally retired?",
+        "Auth model for the Next.js + FastAPI split: keep server session cookies (needs CSRF strategy) or move to bearer tokens? This decides how login/logout/register and every mutating endpoint are ported.",
+        "Flask-Security currently owns /login /logout /register plus password policy (MrrPasswordUtil: 8+/digit/symbol) and the required display-name field (MrrRegisterForm). Which library replaces this in FastAPI (fastapi-users, Authlib, custom) and does it need to keep reading the SAME user/role tables in the shared SQLite DB?",
+        "Job progress contract: is Job.progress() (DB-backed) the intended single source of truth for the status endpoints post-redesign, or will Redis carry live progress and the DB only final state? Affects whether get_status stays a plain DB read.",
+        "Should the two synchronous AI routes (resummarize, bundle/summarize) also move onto the external queue for consistency, or remain in-request (async) given they are bounded single-record / capped-bundle operations?"
+      ]
+    },
+    {
+      "track": "data-model",
+      "summary": "The persistence layer is a single flask_sqlalchemy `db` (extensions.py:21) with 11 declarative models in models.py. Two of them (Role, User) are Flask-Security mixin models (fsqla_v3); the other nine (Document, Job, SegmentRow, ReviewRow, Summary, Category, Prompt, CatalogMeta, AuditLog) are plain SQLAlchemy and are framework-agnostic. Core domain shape: a Document owns Jobs (a Job is also the provenance record: model + prompt_version + catalog_revision), a Job owns immutable SegmentRow training INPUTs, a Document owns mutable ReviewRow training LABELs and Summary rows (raw title/date/text immutable + edited_* overrides + source_text = fine-tuning input half). Key invariants: Document.status has a single writer (the job service) with at most one queued/running job (active_job); SegmentRow-vs-ReviewRow is the training-data flywheel; Category ids are immutable strings with an active/auto_assign two-set distinction and soft-delete; CatalogMeta is a single-row (id=1) monotonic revision counter stamped onto jobs. SQLite is configured via a per-connection PRAGMA event listener (WAL + busy_timeout=5000 + foreign_keys=ON) so background job threads write while request threads read. There is NO Alembic: schema is created on boot via db.create_all(), patched by a hand-rolled additive ADD COLUMN loop (_ADDITIVE_COLUMNS), then the catalog tables are seed-if-empty from the taxonomy.py/prompts.py constants. The models port to FastAPI + SQLAlchemy essentially unchanged; the Flask-Security auth models and the boot create_all/ALTER/seed mechanism must be re-implemented (Alembic + FastAPI lifespan). The existing SQLite DB must be reused byte-compatibly, so the new declarative models must mirror the exact columns (especially the fsqla_v3 user/role schema) and the same PRAGMAs must be applied on every engine connection.",
+      "files": [
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\models.py",
+          "role": "All 11 ORM models (users, documents, jobs, segment/review rows, summaries, catalog, audit) + status/kind enums + ROW_FIELDS"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\extensions.py",
+          "role": "db = SQLAlchemy() singleton + SQLite PRAGMA connect event listener (WAL/busy_timeout/foreign_keys)"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\__init__.py",
+          "role": "App factory: _create_schema boot create_all + _ADDITIVE_COLUMNS additive-ALTER migration + seed_catalog call"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\seed_catalog.py",
+          "role": "Seed-if-empty of Category/Prompt/CatalogMeta from constants + constants_* runtime fallbacks"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\catalog.py",
+          "role": "DB-first catalog accessor (get_categories/get_prompt) + catalog_version/bump_revision counter"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\config.py",
+          "role": "SQLALCHEMY_DATABASE_URI default (sqlite:///instance/mrr.db), PIPELINE_WORKERS, env fail-fast"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\taxonomy.py",
+          "role": "CATEGORIES constant (ids 1-5,7-14,100; NO id 6) - seed source + runtime fallback for categories"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\prompts.py",
+          "role": "prompts dict (category_NN keys) - seed source + fallback for per-category summary prompts"
+        }
+      ],
+      "items": [
+        {
+          "name": "Role model (table `role`)",
+          "kind": "model",
+          "detail": "models.py:23-24. `class Role(db.Model, fsqla_v3.FsRoleMixin)` - empty body; all columns come from the Flask-Security fsqla_v3 mixin (id, name, description, permissions, update_datetime) plus the implicit roles_users association table. Table name defaults to `role`. Immutable auth schema.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "User model (table `user`)",
+          "kind": "model",
+          "detail": "models.py:27-35. `class User(db.Model, fsqla_v3.FsUserMixin)` + two app-added columns: `name` VARCHAR(255) nullable (registration-enforced, DB-nullable for boot migration) and `is_admin` BOOLEAN NOT NULL DEFAULT 0 (single-boolean admin gate, not RBAC). All other columns (id, email, password, active, fs_uniquifier, confirmed_at, login tracking, etc.) come from fsqla_v3 FsUserMixin - exact set is defined by the Flask-Security version, NOT enumerated in app code. FK targets `user.id` are used by Document.user_id and AuditLog.user_id.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Document model (table `documents`)",
+          "kind": "model",
+          "detail": "models.py:58-97. Cols: id VARCHAR(36) PK (uuid4 default), user_id INT FK->user.id NOT NULL indexed, original_filename VARCHAR(512) NOT NULL (PHI-bearing, never log), stored_path VARCHAR(1024), sha256 VARCHAR(64) indexed, page_count INT, status VARCHAR(16) default 'uploaded', created_at/updated_at DateTime (onupdate). DOCUMENT_STATUSES=(uploaded,segmenting,reviewing,summarizing,done,error,interrupted). Relationships (all cascade 'all, delete-orphan'): jobs (order_by Job.id), review_rows (order_by idx), summaries (order_by idx). Invariants: status single-writer (job service); active_job property = the at-most-one queued/running job. listing() shape for landing page.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Job model (table `jobs`)",
+          "kind": "model",
+          "detail": "models.py:100-137. Cols: id INT PK, document_id VARCHAR(36) FK->documents.id indexed, kind VARCHAR(16) (JOB_KINDS=segment,summarize), state VARCHAR(16) default 'queued' (JOB_STATES=queued,running,done,error,interrupted), stage VARCHAR(32) default 'starting', current INT, total INT, error TEXT, model VARCHAR(64) NOT NULL, prompt_version VARCHAR(16) NOT NULL, catalog_revision INT NULLABLE (nullable for pre-catalog jobs), created_at/started_at/finished_at DateTime. Relationship segment_rows cascade 'all, delete-orphan' order_by idx. Doubles as PROVENANCE (model + prompt_version + catalog_revision) for its rows. progress() dict for polling.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "SegmentRow model (table `segment_rows`)",
+          "kind": "model",
+          "detail": "models.py:140-160. RAW segmentation output, IMMUTABLE training INPUT (never edited by UI). Cols: id INT PK, job_id INT FK->jobs.id indexed, idx INT, start INT, end INT, category VARCHAR(8), title VARCHAR(512) default '-', date VARCHAR(16) default '-', injury_date VARCHAR(16) default '-', flag VARCHAR(4) default '-', suggest_merge BOOLEAN default 0. as_row() emits ROW_FIELDS+suggest_merge. Half of the training flywheel (input side, keyed by owning Job's model/prompt version).",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "ReviewRow model (table `review_rows`)",
+          "kind": "model",
+          "detail": "models.py:163-191. Human-corrected working set = training LABEL and the summarize INPUT. Cols mirror SegmentRow (idx,start,end,category,title,date,injury_date,flag,suggest_merge) but keyed on document_id VARCHAR(36) FK->documents.id indexed (NOT job_id), plus include BOOLEAN default 1 (scopes which rows reach summarization). as_row() adds suggest_merge + include. Diff vs SegmentRow per document = the fine-tuning dataset.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Summary model (table `summaries`)",
+          "kind": "model",
+          "detail": "models.py:194-247. Cols: id INT PK, document_id VARCHAR(36) FK->documents.id indexed, job_id INT FK->jobs.id NOT NULL, idx INT, title VARCHAR(512) NOT NULL + date VARCHAR(16) + text TEXT (RAW immutable model output), source_text TEXT nullable (exact extracted input the model saw = fine-tuning input half, captured at gen time, never shown), edited_title/edited_date/edited_text nullable (reviewer overrides that win in display/export), excluded BOOLEAN default 0 (dimmed in UI, omitted from Word export), manual_check BOOLEAN default 0, row_start/row_end INT + row_category VARCHAR(8) (snapshot of summarized row). effective_*/listing() methods. NOTE: job_id FK has NO relationship/cascade from Job (deleted only via Document cascade).",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Category model (table `categories`)",
+          "kind": "model",
+          "detail": "models.py:250-278. Editable taxonomy. Cols: id VARCHAR(8) PK (numeric string, IMMUTABLE), name VARCHAR(255) NOT NULL, description TEXT default '', examples JSON default [] (db.JSON), active BOOLEAN default 1, auto_assign BOOLEAN default 1, updated_at DateTime onupdate. Two-set invariant: classifier uses active AND auto_assign; editor offers all active (incl id 6 which is selectable but never auto-assigned); active=False = soft-delete (hidden but id + historical rows preserved). listing() dict.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Prompt model (table `prompts`)",
+          "kind": "model",
+          "detail": "models.py:281-295. Editable prompts. Cols: id INT PK, role VARCHAR(32) NOT NULL, category_id VARCHAR(8) NULLABLE, text TEXT NOT NULL, revision INT default 1, updated_at DateTime onupdate. UniqueConstraint(role, category_id) = uq_prompt_role_category. Phase 1 stores only role='summary' with category_id set; category_id NULL reserved for phase-2 global segmentation/verify prompts (added without migration). Id 11 intentionally has NO row -> falls back to general (100).",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "CatalogMeta model (table `catalog_meta`)",
+          "kind": "model",
+          "detail": "models.py:298-308. Single-row (id always 1) monotonic revision counter. Cols: id INT PK, revision INT NOT NULL default 1. Bumped on any category/prompt edit; used to invalidate classifier in-memory caches AND to stamp Job.catalog_revision so outputs stay traceable.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "AuditLog model (table `audit_log`)",
+          "kind": "model",
+          "detail": "models.py:311-321. Who-did-what. Cols: id INT PK, user_id INT FK->user.id indexed, action VARCHAR(32), document_id VARCHAR(36) NULLABLE (id only, NOT a FK - references ids never filenames, so it survives document deletion), at DateTime default utcnow. Deliberately no cascade (retained after document delete).",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "SQLite PRAGMA connect event listener",
+          "kind": "service",
+          "detail": "extensions.py:24-34. @event.listens_for(Engine,'connect') applies on every connection: journal_mode=WAL (persistent, DB-level), busy_timeout=5000 (per-connection), foreign_keys=ON (per-connection). Rationale: background job threads write progress while request threads read; without WAL the rollback-journal writer lock makes readers error instead of wait. Framework-agnostic SQLAlchemy event - logic ports directly, but must be re-registered on the FastAPI-owned Engine and on every worker process's engine.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "db = SQLAlchemy() singleton + engine/session wiring",
+          "kind": "service",
+          "detail": "extensions.py:21; bound to app in __init__.py:60-62 via db.init_app(app). This is flask_sqlalchemy's app-scoped session/engine management (db.session, db.Model, app-context-scoped sessions). Under FastAPI this becomes a plain SQLAlchemy Engine + sessionmaker + declarative Base with request-scoped sessions (dependency-injected) and separate engines in the Redis worker processes. DB URI from config.py:35-37 (sqlite:///instance/mrr.db default).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "_create_schema boot migration (create_all + additive ALTER)",
+          "kind": "service",
+          "detail": "__init__.py:108-136. On every boot: mkdir the sqlite dir, db.create_all() (cannot ALTER existing tables), then for each _ADDITIVE_COLUMNS table introspect PRAGMA table_info and ADD COLUMN any missing one, commit. Explicitly a stopgap that covers ADD COLUMN only; renames/drops/backfills are called out as the trigger to adopt Alembic. Runs create_all/DDL on startup - problematic when web + N externalized workers all boot concurrently against one SQLite file.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "_ADDITIVE_COLUMNS declarative migration map",
+          "kind": "service",
+          "detail": "__init__.py:94-105. Hand-maintained {table: [(col, ddl)]} of columns added after first ship: user.name VARCHAR(255), user.is_admin BOOLEAN NOT NULL DEFAULT 0, jobs.catalog_revision INTEGER, review_rows.include BOOLEAN NOT NULL DEFAULT 1, summaries.{edited_title VARCHAR(512), edited_date VARCHAR(16), edited_text TEXT, excluded BOOLEAN NOT NULL DEFAULT 0, source_text TEXT}. This is the full boot-migration history that Alembic must reproduce as its baseline so existing DBs are not re-migrated.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "seed_catalog seed-if-empty mechanism",
+          "kind": "service",
+          "detail": "seed_catalog.py:56-78. Runs every boot but populates only when Category.query.first() is None (never clobbers edited rows). Inserts constants_categories() (taxonomy ids w/ active=True,auto_assign=True + hardcoded id 6 SOAP notes active/not-auto_assign), one summary Prompt per category id that has a hardcoded prompt (id 11 skipped -> falls to 100), and CatalogMeta(id=1,revision=1). constants_categories()/constants_summary_prompt() (seed_catalog.py:26-53) also serve as runtime fallbacks and are framework-agnostic (port-as-is); the seed-on-boot trigger becomes an Alembic data migration or FastAPI startup task (rewrite).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "DB-first catalog accessor + revision counter",
+          "kind": "service",
+          "detail": "catalog.py (whole file). get_categories(active_only,auto_assign)/get_category_ids/get_category_options read Category rows (fallback to constants when unseeded); get_prompt(role,category_id) DB-first with summary->100 fallback then constants; catalog_version() reads CatalogMeta id=1 (catalog.py:63-66); bump_revision() increments+commits, creating the row if absent (catalog.py:69-80). Pure SQLAlchemy over db.session - moves to FastAPI on the injected Session unchanged apart from how the session is obtained.",
+          "disposition": "port-as-is"
+        }
+      ],
+      "portingNotes": [
+        "Reuse the existing SQLite DB byte-compatibly: the new declarative models MUST reproduce the exact table/column names and types. The nine plain models copy verbatim (swap `db.Model` for a shared DeclarativeBase, `db.Column`->`Column`, `db.relationship`->`relationship`). Table names are pinned via __tablename__ (documents, jobs, segment_rows, review_rows, summaries, categories, prompts, catalog_meta, audit_log) and default names (`user`, `role`, `roles_users`) - keep all identical.",
+        "Role/User are the only true rewrites: they inherit Flask-Security fsqla_v3 mixins, so their column set is NOT visible in app code (only `name` + `is_admin` are). Before porting, introspect the LIVE mrr.db (PRAGMA table_info(user)/table_info(role)/table_info(roles_users)) and mirror every column exactly in plain SQLAlchemy models, or auth + DB-reuse breaks. Preserve `password` (hash), `fs_uniquifier`, `active`, `email` so existing logins survive; the new FastAPI auth layer re-implements verification against that same hash format.",
+        "Engine/session: create one SQLAlchemy Engine + sessionmaker on a shared DeclarativeBase; use request-scoped sessions in FastAPI (Depends) and independent engines/sessions in each Redis worker process. Do NOT share a Session across threads/async tasks. flask_sqlalchemy's implicit app-context session (db.session) has no FastAPI analog - every catalog.py/service call that used db.session must receive an explicit Session.",
+        "Re-register the SQLite PRAGMA listener (extensions.py:24-34) on EVERY engine (web + each worker). journal_mode=WAL is persistent once set, but busy_timeout and foreign_keys=ON are per-connection and must be applied on each new connection or FK cascades and writer-wait behavior silently differ. This is the load-bearing concurrency guarantee once the job queue is externalized to separate worker processes.",
+        "Boot migration -> Alembic: replace _create_schema's create_all + additive-ALTER with an Alembic baseline that encodes the current full schema INCLUDING every _ADDITIVE_COLUMNS entry, then `alembic stamp` existing production DBs to head so they are recognized as up-to-date and never re-migrated. New DBs run migrations from empty. Only ONE process should run migrations at startup (not every worker).",
+        "Seed -> idempotent startup/data-migration: keep the seed-if-empty semantics (only when categories empty; never clobber edited rows). constants_categories/constants_summary_prompt and the taxonomy.py/prompts.py constants stay as the seed source AND runtime fallback - port them unchanged. Preserve the exact quirks: id 6 (SOAP notes) active but auto_assign=False, id 11 has no prompt row and falls back to id 100.",
+        "ORM-level cascades (delete-orphan on Document->jobs/review_rows/summaries and Job->segment_rows) run in Python and port unchanged, but they only fire when objects are loaded through the ORM Session; bulk deletes bypass them. Keep foreign_keys=ON so DB-level integrity still holds for the FK-without-cascade edges (Summary.job_id, AuditLog.document_id is id-only not a FK).",
+        "Preserve the training-data design as an invariant, not an incidental detail: SegmentRow is immutable model output keyed to a Job (provenance = model+prompt_version+catalog_revision); ReviewRow is the mutable human label; Summary keeps raw text immutable with edited_* overrides and captures source_text at generation time. The FastAPI write paths must uphold the single-writer Document.status rule and the at-most-one-active-job invariant that today live in the job service."
+      ],
+      "risks": [
+        "fsqla_v3 (Flask-Security) generates the user/role/roles_users schema implicitly; the exact columns/types are not in the repo. If the FastAPI port re-declares them from memory rather than introspecting the live DB, column drift (missing fs_uniquifier, wrong types, missing 2FA/unified-signin columns) will break DB reuse and/or auth silently.",
+        "No Alembic exists today. If the port keeps create_all() (or lets it run alongside Alembic) it can recreate/shadow tables or race; and without a baseline `stamp`, Alembic may try to re-create an already-populated schema. Getting the baseline+stamp wrong risks data loss on the seeded/production DB.",
+        "Externalizing the queue multiplies SQLite writers: create_all/ALTER on startup from multiple processes, and concurrent writes from N workers + web, can hit `database is locked` despite busy_timeout=5000. SQLite is a single-writer store; the WAL/busy_timeout tuning was sized for 2 in-process threads (PIPELINE_WORKERS=2), not separate processes/hosts.",
+        "SQLite WAL requires all readers/writers on the same local filesystem; it does not work reliably over network shares. If FastAPI and the Redis workers run on different hosts pointing at a shared-mount mrr.db, WAL breaks. Keeping SQLite likely forces web+workers co-located on one box, or a move off SQLite.",
+        "Summary.job_id is a FK to jobs.id with no relationship/cascade from Job; today summaries are only deleted via the Document cascade. A FastAPI path that deletes a Job directly (e.g. re-run cleanup) could orphan or FK-violate summaries - the current safety is implicit, not enforced by the model.",
+        "Datetime tz handling: _utcnow() returns tz-aware UTC datetimes but SQLite stores them as naive strings; SQLAlchemy reads them back naive. A stricter FastAPI/Pydantic layer that assumes tz-aware values could misbehave or double-convert. Behavior must be matched, not 'fixed', to keep existing rows consistent.",
+        "Category.examples uses db.JSON (stored as TEXT in SQLite). The port must use the same JSON type/serialization so existing rows deserialize identically; a switch to a native JSON/JSONB or different encoder would corrupt reads of already-stored examples."
+      ],
+      "openQuestions": [
+        "Which Flask-Security version / fsqla_v3 schema is in the live DB? Need PRAGMA table_info(user), table_info(role), table_info(roles_users) from a real mrr.db to author byte-compatible FastAPI models (columns like fs_uniquifier, fs_token_uniquifier, tf_*, us_*, mf_recovery_codes vary by version).",
+        "Should the boot migration/seed move to Alembic migrations or a FastAPI lifespan startup hook, and which single process owns DDL/seed once web and the Redis workers are separate processes (to avoid concurrent create_all/ALTER on one SQLite file)?",
+        "Will the externalized worker processes run on the same host/filesystem as the web app? This decides whether SQLite WAL remains viable or the 'keep the same DB' constraint forces co-location (or an eventual move to Postgres/SQL Server the URI comment anticipates).",
+        "What is the target session model under FastAPI - request-scoped Session via Depends for the web tier and a separate per-task/per-worker Session in the queue tier - and how are the shared framework-agnostic services (catalog.py etc.) refactored to accept an explicit Session instead of the implicit flask_sqlalchemy db.session?",
+        "How are existing password hashes / fs_uniquifier values carried into the re-implemented auth layer so current users can log in without a reset (the auth is a rewrite but the credential columns must be preserved)?",
+        "Confirm all data-model paths here are the multi-user (accounts) design - none appear to depend on state.py single-user globals, so nothing in this track is a 'drop'; verify no legacy single-user table/column is still present in shipped DBs."
+      ]
+    },
+    {
+      "track": "auth-session",
+      "summary": "The app uses Flask-Security-Too 5.8.1 (flask-security[common,fsqla]) for the entire auth surface: open self-registration, session-cookie login/logout, CSRF, and the user datastore, layered on Flask-Login + Flask-WTF. Authorization is enforced app-wide by ONE before_request deny-by-default gate in mrr_ai/security.py (everything outside PUBLIC_ENDPOINTS requires a session; /admin and /api/admin additionally require the is_admin boolean), NOT per-route decorators - so the FastAPI port must reproduce a global gate, not scatter guards. The session is a Flask signed cookie (SECRET_KEY) holding the user's fs_uniquifier via Flask-Login; CSRF uses the Angular-style double-submit pattern (readable XSRF-TOKEN cookie out, X-XSRF-Token header back in) wired by CSRFProtect BEFORE Security. Passwords use Flask-Security's default hash (argon2 via the [common] extra) salted by SECURITY_PASSWORD_SALT, with a custom MrrPasswordUtil enforcing 8+ chars plus a digit and a symbol on new passwords only (never at login). Per-user isolation is an IDOR-safe owner-check (filter_by id AND current_user.id -> 404, never 403) repeated across documents_api.py. The single biggest port decision is session-cookie vs JWT: Next.js is a separate origin/build and Flask-Security has no drop-in FastAPI equivalent, so login, logout, registration, the CSRF scheme, current_user, and the two gates must all be re-implemented while KEEPING the existing SQLite User/Role schema (fsqla mixins + name + is_admin) and, ideally, the existing argon2 hashes so no user must reset. All of this is classic web auth (not the state.py single-user path), so nothing here is \"drop\".",
+      "files": [
+        {
+          "path": "mrr_ai/security.py",
+          "role": "Auth wiring: CSRFProtect + Flask-Security init, MrrRegisterForm (adds required name), MrrPasswordUtil (custom password rules), the before_request deny-by-default gate, PUBLIC_ENDPOINTS, and the /admin + /api/admin is_admin gate."
+        },
+        {
+          "path": "mrr_ai/__init__.py",
+          "role": "App factory: all SECURITY_*/session-cookie/CSRF config in create_app (lines 29-56); additive user-table column migration for name + is_admin (lines 94-105)."
+        },
+        {
+          "path": "mrr_ai/config.py",
+          "role": "Secrets + fail-fast validate_env: SECRET_KEY and SECURITY_PASSWORD_SALT are REQUIRED (lines 9, 30-31, 104-112); SQLALCHEMY_DATABASE_URI (SQLite kept)."
+        },
+        {
+          "path": "mrr_ai/models.py",
+          "role": "User/Role on fsqla_v3 mixins (lines 16-35); custom columns name (nullable) + is_admin (bool). Document/AuditLog carry user_id FKs used by owner-checks."
+        },
+        {
+          "path": "mrr_ai/cli.py",
+          "role": "flask admin CLI (AppGroup): grant/revoke/list admin accounts - the only way to bootstrap the first admin (self-registration never sets is_admin)."
+        },
+        {
+          "path": "mrr_ai/blueprints/documents_api.py",
+          "role": "The owner-check IDOR guard _own() (lines 36-38) and current_user usage for per-user upload dirs, listings, and dedupe."
+        },
+        {
+          "path": "mrr_ai/blueprints/admin_api.py",
+          "role": "/api/admin routes (all pre-gated by is_admin); /api/admin/whoami returns email + is_admin for the UI (lines 29-32)."
+        },
+        {
+          "path": "mrr_ai/blueprints/pages.py",
+          "role": "/admin page render relies on the app gate for authorization (lines 92-96); comment documents the no-re-check assumption."
+        },
+        {
+          "path": "mrr_ai/services/audit.py",
+          "role": "audit() reads current_user.id when no user_id passed (lines 11-17) - a hidden dependency on the auth context."
+        },
+        {
+          "path": "mrr_ai/templates/security/login_user.html",
+          "role": "Custom Flask-Security login template (form posts to url_for_security('login'), hidden CSRF via hidden_tag(), remember-me)."
+        },
+        {
+          "path": "mrr_ai/templates/security/register_user.html",
+          "role": "Custom registration template (name/email/password/confirm; loads register.js for live checklist)."
+        },
+        {
+          "path": "mrr_ai/templates/security/base.html",
+          "role": "Auth-page shell (Evaluators design system) that login/register extend."
+        },
+        {
+          "path": "mrr_ai/static/register.js",
+          "role": "Client-side password checklist (8+/number/symbol) + confirm-match; mirrors MrrPasswordUtil, gates submit (server still enforces)."
+        },
+        {
+          "path": "mrr_ai/static/review.js",
+          "role": "Front-end fetch wrapper (lines 85-107): reads XSRF-TOKEN cookie, sends X-XSRF-Token on unsafe methods, redirects to /login on 401."
+        },
+        {
+          "path": "mrr_ai/static/admin.js",
+          "role": "Same CSRF cookie->header + 401-redirect pattern for /api/admin (lines 7-25)."
+        },
+        {
+          "path": "tests/conftest.py",
+          "role": "Auth test harness: login() helper POSTs /login (lines 91-95); authenticated client vs anon_client fixtures; test app disables CSRF and forces plaintext hash (lines 52-72, 98-110)."
+        }
+      ],
+      "items": [
+        {
+          "name": "Open self-registration (SECURITY_REGISTERABLE, not confirmable, no email)",
+          "kind": "auth-behavior",
+          "detail": "__init__.py:41-43 SECURITY_REGISTERABLE=True, SECURITY_CONFIRMABLE=False, SECURITY_SEND_REGISTER_EMAIL=False (no SMTP on box). Anyone can create an ordinary (non-admin) account; account is active immediately, no email verification. SECURITY_EMAIL_VALIDATOR_ARGS check_deliverability=False (__init__.py:47) disables live DNS/MX so reserved/test domains pass. Endpoint 'security.register' is public (security.py:25).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Required display name at registration (MrrRegisterForm)",
+          "kind": "auth-behavior",
+          "detail": "security.py:37-43 subclasses RegisterFormV2 adding name = StringField(validators=[DataRequired, Length(max=255)]). User.name column (models.py:31) matches so Flask-Security's to_dict(only_user=True) passes it straight to create_user. Must be collected + validated on the port's register flow.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Custom password rules (MrrPasswordUtil)",
+          "kind": "auth-behavior",
+          "detail": "security.py:46-61 extends PasswordUtil.validate: keeps the stock 8+ length check, then requires a digit (\\d) and a symbol ([^A-Za-z0-9]). Applies to NEW passwords only (register/change/reset), never at login. Mirrored client-side in register.js:13-17 (advisory only). The two regex checks are framework-agnostic Python and can move as a plain validator function.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Password hashing scheme + salt (argon2 default)",
+          "kind": "auth-behavior",
+          "detail": "No SECURITY_PASSWORD_HASH set, so Flask-Security-Too 5.8 default (argon2, via the [common] extra in pyproject.toml:25) is used; SECURITY_PASSWORD_SALT (config.py:31, REQUIRED) is the HMAC salt Flask-Security prepends. Stored as a passlib-style hash string in User.password. To avoid forcing every user to reset, the FastAPI port must verify existing hashes with the same argon2 params + salt handling (passlib/argon2-cffi). CONFIDENCE MEDIUM on exact default - confirm against the live DB hash prefix.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Login endpoint + POST-login view (content-negotiated)",
+          "kind": "endpoint",
+          "detail": "POST/GET /login provided by Flask-Security (endpoint 'security.login', public - security.py:25). __init__.py:48 SECURITY_POST_LOGIN_VIEW='/'. Content negotiation: form POST -> 302 to '/'; Accept: application/json -> JSON body incl. a fresh CSRF token. Front-end relies on the JSON/401 behavior (review.js:103).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Logout endpoint + POST-logout view",
+          "kind": "endpoint",
+          "detail": "GET /logout (Flask-Security). __init__.py:50 SECURITY_POST_LOGOUT_VIEW='/login'. Linked from every app template's nav (home/review/bundle/admin.html). Clears the session; Flask-Security also rotates fs_uniquifier semantics on relevant transitions. NOTE /logout is NOT in PUBLIC_ENDPOINTS but is reachable because the caller is authenticated.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Session cookie configuration",
+          "kind": "auth-behavior",
+          "detail": "__init__.py:36-37 SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax'. SESSION_COOKIE_SECURE intentionally DEFERRED (comment lines 34-35: must be added the day HTTPS is served; setting now breaks plain-HTTP LAN). Cookie is a Flask itsdangerous-signed session (SECRET_KEY, config.py:30) storing the user identity (fs_uniquifier via Flask-Login get_id). KEY DECISION for the port: keep an HttpOnly session cookie vs move to JWT.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "CSRF: XSRF-TOKEN cookie out, X-XSRF-Token header in",
+          "kind": "auth-behavior",
+          "detail": "security.py:69 CSRFProtect(app) initialized BEFORE Security (official pattern). __init__.py:52 SECURITY_CSRF_COOKIE_NAME='XSRF-TOKEN' (readable, NOT HttpOnly - JS reads it via document.cookie). __init__.py:55 WTF_CSRF_TIME_LIMIT=None (token lives as long as the session; avoids mid-review expiry eating edits). Flask-Security accepts the token echoed in the X-XSRF-Token header (front-end: review.js:95, admin.js:14, bundle-page.js, doc-table.js, review.js:883). Token is session-bound + SECRET_KEY-signed (not pure stateless double-submit).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Deny-by-default before_request gate + PUBLIC_ENDPOINTS",
+          "kind": "auth-behavior",
+          "detail": "security.py:82-93 @app.before_request: endpoint None -> return None (let Flask 404, reveal nothing); endpoint in PUBLIC_ENDPOINTS {security.login, security.register, static} (security.py:25) -> allow; else if not current_user.is_authenticated -> app.login_manager.unauthorized() (content-negotiates: browser 302 /login, JSON 401). This app-level gate is the core invariant: new routes are protected by default. Port must replicate as global middleware, not per-route deps.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Admin gate on /admin + /api/admin (is_admin)",
+          "kind": "auth-behavior",
+          "detail": "security.py:30-34 ADMIN_PATH_PREFIXES=('/admin','/api/admin') with prefix/exact matching; security.py:91-92 after auth, if _is_admin_path(request.path) and not current_user.is_admin -> abort(403). is_admin is a single boolean (models.py:35), NOT full RBAC. Handlers in admin_api.py and pages.py deliberately do NOT re-check (they rely on this gate).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "current_user proxy access",
+          "kind": "auth-behavior",
+          "detail": "flask_security.current_user (Flask-Login LocalProxy) read in security.py:88/91, admin_api.py:32, documents_api.py (id in _own, upload dir, dedupe), audit.py:16, and templates (current_user.is_admin nav gate in home/review/bundle.html). Port needs a request-scoped current-user accessor (FastAPI dependency) available to routes, services, and any templating.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Owner-check / IDOR guard (_own)",
+          "kind": "auth-behavior",
+          "detail": "documents_api.py:36-38 _own() = Document.query.filter_by(id=document_id, user_id=current_user.id).first(); miss -> 404 (_not_found, line 41-42), NEVER 403, so a non-owner can't confirm existence. Applied on every document route (get/delete/pdf/status/rows/segment/summarize/summaries/export/bundle). The predicate is framework-agnostic; only the current_user.id source changes.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "SQLAlchemyUserDatastore (user store)",
+          "kind": "service",
+          "detail": "security.py:74 SQLAlchemyUserDatastore(db, User, Role); create_user/find_user etc. Used at registration and in tests (conftest.py:83-87 datastore.create_user). Port needs an equivalent user-repository over the SAME tables (create/find/activate, fs_uniquifier generation).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "User/Role model on fsqla_v3 mixins (session identity)",
+          "kind": "model",
+          "detail": "models.py:16-35: Role(FsRoleMixin), User(FsUserMixin) + name (nullable) + is_admin (bool, default False). fsqla_v3 supplies email, password, active, fs_uniquifier, confirmed_at, last_login_*/current_login_* + tf_/us_ MFA columns. fs_uniquifier is the value stored in the session cookie (Flask-Login get_id) and rotating it invalidates sessions. DB/schema is KEPT, so these columns must survive; the port re-uses the table as-is.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "flask admin CLI (grant/revoke/list)",
+          "kind": "service",
+          "detail": "cli.py:17-63 AppGroup 'admin' with grant/revoke/list; the ONLY bootstrap for the first admin (registration never sets is_admin). Runs inside an app context. Port needs an equivalent CLI/management script hitting the same User.is_admin column.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "whoami confirmation endpoint",
+          "kind": "endpoint",
+          "detail": "admin_api.py:29-32 GET /api/admin/whoami -> {email, is_admin}. Used by the admin UI + tests to confirm admin reachability. Trivial to reproduce once current_user + the admin gate exist.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Audit trail bound to current_user",
+          "kind": "auth-behavior",
+          "detail": "audit.py:11-17 audit(action, document_id=None, user_id=None): if user_id is None it imports flask_security.current_user and uses current_user.id. Every mutating document/admin route calls audit(...). Rows store user_id + action + document_id only (never filenames - PHI). Port must supply current_user.id here from the new auth context.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Server-rendered auth UI (login/register/base templates)",
+          "kind": "ui-page",
+          "detail": "templates/security/{login_user,register_user,base}.html override Flask-Security defaults with the Evaluators design system. login posts email/password/remember; register posts name/email/password/password_confirm and loads register.js. In Next.js these become client-rendered pages calling the FastAPI auth endpoints.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Remember-me cookie",
+          "kind": "auth-behavior",
+          "detail": "login_user.html:34 exposes login_user_form.remember -> Flask-Login 'remember me' issues a separate long-lived signed remember_token cookie that re-establishes the session. Port must decide whether to reproduce persistent login (refresh token / long-lived cookie) or drop it.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Front-end CSRF + 401 fetch convention",
+          "kind": "ui-component",
+          "detail": "review.js:85-107 / admin.js:7-25 / bundle-page.js / doc-table.js: read XSRF-TOKEN cookie via document.cookie, attach X-XSRF-Token on non-GET, and on 401 do window.location='/login'. This client contract (readable CSRF cookie + header + 401->login) must be reproduced by the Next.js data layer, or replaced by the port's chosen auth transport.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Fail-fast secret validation",
+          "kind": "auth-behavior",
+          "detail": "config.py:9,104-112 REQUIRED_ENV includes SECRET_KEY + SECURITY_PASSWORD_SALT; validate_env() raises RuntimeError if missing; called at extensions.py:19 import time. Framework-agnostic; the FastAPI app should keep the same startup guard (and the same SECRET_KEY/SALT values if it wants to read existing sessions/hashes).",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Test auth harness (login helper + fixtures)",
+          "kind": "auth-behavior",
+          "detail": "conftest.py: login() posts real /login (91-95); client fixture is authenticated, anon_client tests the gate (98-110); test app sets WTF_CSRF_ENABLED=False + SECURITY_PASSWORD_HASH='plaintext' (52-72). The port needs equivalent auth test fixtures (a way to mint an authenticated client and to run the deny-by-default gate unauthenticated).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Additive user-table migration (name, is_admin)",
+          "kind": "auth-behavior",
+          "detail": "__init__.py:94-105 _ADDITIVE_COLUMNS adds user.name VARCHAR(255) and user.is_admin BOOLEAN NOT NULL DEFAULT 0 via boot-time ALTER TABLE (SQLite stopgap, not Alembic). Since the DB/schema is KEPT, the columns already exist; the port only needs to read them, not re-run this.",
+          "disposition": "n/a"
+        }
+      ],
+      "portingNotes": [
+        "KEY DECISION - session cookie vs JWT: current design is an HttpOnly, SECRET_KEY-signed server session cookie (SameSite=Lax, Secure deferred) holding fs_uniquifier. Same-origin deploy (Next.js and FastAPI behind one host/reverse-proxy) lets you keep an HttpOnly session cookie almost 1:1 and preserve SameSite=Lax + the readable-CSRF-cookie pattern. Cross-origin (Next.js on a different domain than the API) forces SameSite=None; Secure and CORS with credentials, and makes CSRF/cookie handling harder - which is what pushes teams toward Bearer JWT in an Authorization header (no CSRF cookie needed). Recommend documenting deploy topology first, because it dictates the whole auth transport.",
+        "Candidate FastAPI auth libraries: (1) FastAPI-Users - closest to Flask-Security (registration, login/logout, password hashing via argon2/bcrypt through passlib/pwdlib, SQLAlchemy user model, cookie OR JWT transports, is_superuser flag maps onto is_admin); it can target the existing SQLite User table but the fsqla column names (fs_uniquifier, active, confirmed_at, tf_/us_) won't line up with its defaults without a custom model + user-manager. (2) Authlib / fastapi-login / starlette SessionMiddleware for a thinner hand-rolled cookie session. (3) A minimal custom layer (itsdangerous-signed cookie + passlib argon2 verify) that reuses SECRET_KEY/SALT so existing sessions AND existing password hashes remain valid.",
+        "Password-hash continuity: to avoid forcing every user to reset, the port MUST verify Flask-Security's stored hashes. Inspect a real User.password prefix in the live DB to confirm the scheme (expected argon2, e.g. $argon2id$...), then configure passlib/pwdlib with the same scheme + SECURITY_PASSWORD_SALT handling. Flask-Security HMACs the password with the salt before hashing in some configs - replicate exactly or verification fails.",
+        "Deny-by-default gate -> FastAPI middleware, NOT per-route Depends: the security guarantee is that a newly added route is protected unless explicitly whitelisted. Reproduce with a global middleware (or a router-level dependency applied to the whole app) that allows an allow-list (login, register, static, health) and 401s everything else; layer the is_admin path-prefix check for /admin and /api/admin on top. Preserve the content-negotiation nuance: HTML/browser requests 302 to the login page, application/json requests get 401 JSON (the front-end depends on 401->redirect).",
+        "current_user in services: audit.py and the owner-checks pull current_user out of a global proxy. FastAPI has no thread-local request proxy by default - inject the current user via a dependency and PASS it down to services (audit(action, doc_id, user)), or use a contextvar-backed request context. This is a mechanical but pervasive change touching audit.py and every documents_api owner-check.",
+        "CSRF in the port: if you keep cookie-based sessions, reproduce the readable XSRF-TOKEN cookie + X-XSRF-Token header double-submit (starlette-csrf or a small dependency); the Next.js fetch layer already expects to read a cookie and echo a header (review.js/admin.js), so an axios/fetch interceptor replicates the client side. If you move to Authorization: Bearer JWT, CSRF protection is unnecessary and the XSRF cookie/header can be dropped entirely - but then Next.js must store/attach the token (memory + refresh, or an HttpOnly cookie read server-side in Next route handlers).",
+        "Next.js session holding: with HttpOnly cookies the browser holds the session automatically and Next.js Server Components/route handlers can forward the cookie to FastAPI; the SPA never sees the token (best for PHI). With JWT you either keep it in memory (lost on reload, needs refresh) or in an HttpOnly cookie set by a Next.js route handler acting as a BFF. Given HIPAA, prefer HttpOnly cookies over localStorage tokens.",
+        "Keep the same DB/schema: User/Role are fsqla_v3 tables; do not regenerate them. The port reuses email/password/active/fs_uniquifier/name/is_admin as-is. fs_uniquifier should remain the session identity so existing sessions and the 'rotate to force logout' capability survive; if the port stops using it, document that all existing sessions are invalidated on cutover.",
+        "Registration open + no email confirmation is a current product state tied to 'no SMTP on this box' - carry the open/confirmable flags as explicit config in the port so flipping to confirmable later is a config change, and mirror check_deliverability=False so test/reserved domains still register.",
+        "Admin bootstrap: the flask admin CLI has no HTTP surface; reproduce it as a FastAPI management command / script (e.g. python -m app.admin grant email) that flips User.is_admin on the same table, since self-registration never grants admin."
+      ],
+      "risks": [
+        "PHI/session security: this app processes medical records, so a weakened auth port is a HIPAA exposure. Regressions to watch on cutover: forgetting SESSION_COOKIE_SECURE once HTTPS is live (currently deferred), storing JWTs in localStorage (XSS-exfiltratable) instead of HttpOnly cookies, or a cross-origin config that loosens SameSite=Lax to None without tight CORS.",
+        "Losing the deny-by-default invariant: if the port switches to per-route dependencies instead of a global gate, a future route can ship unauthenticated silently. The current before_request design specifically prevents this - the port must keep an equivalent global default-deny or it is a strictly weaker security posture.",
+        "IDOR regressions: the owner-check returns 404 (not 403) on foreign ids so existence isn't leaked. A naive port that 403s, or that resolves the document before checking ownership, reintroduces an IDOR/enumeration channel across patient records.",
+        "Password-hash incompatibility: if the FastAPI hasher can't verify Flask-Security's stored argon2 hashes (wrong scheme/params/salt handling), either every user is locked out or (worse) a fallback silently accepts weaker credentials. Must be verified against a real hash before cutover.",
+        "CSRF gap during transition: the XSRF-TOKEN cookie is intentionally non-HttpOnly (JS reads it). If the port keeps cookie sessions but drops or misconfigures the CSRF header check, state-changing endpoints become CSRF-vulnerable; if it keeps the readable cookie but no longer validates it, it's security theater.",
+        "fs_uniquifier / session-format change invalidates all live sessions and remember-me cookies at cutover - acceptable but must be communicated; also the remember-me long-lived cookie is a standing credential that needs the same Secure/HttpOnly treatment.",
+        "current_user removal from services: audit logging and owner-checks depend on an ambient current user; if a service path is ported without threading the user through, audit rows could be written with a wrong/None user_id or owner-checks could be bypassed."
+      ],
+      "openQuestions": [
+        "Deploy topology: will Next.js and FastAPI be served same-origin (one host / reverse proxy) or cross-origin (separate domains)? This determines cookie-session vs JWT and the entire CSRF/CORS design.",
+        "Confirm the actual stored password hash scheme by inspecting a real User.password value in the live SQLite DB (expected argon2 via [common], but SECURITY_PASSWORD_HASH is unset so it must be verified) - and confirm whether Flask-Security HMACs with SECURITY_PASSWORD_SALT before hashing, so the port can reproduce verification exactly.",
+        "Is preserving existing users' passwords (no forced reset) a hard requirement? If yes, the port is constrained to an argon2-compatible verifier + the same salt; if a reset is acceptable, the hasher choice is free.",
+        "Should remember-me / persistent login be preserved, or is a session-only login acceptable in the port?",
+        "Should the port keep fs_uniquifier as the session identity (preserving the 'rotate to force logout' capability and existing sessions), or is a clean session-format cutover (invalidating all current sessions) acceptable?",
+        "Registration is currently fully open and non-confirmable because there's no SMTP - does the target deployment add mail (enabling email confirmation), or should the port keep open/non-confirmable registration?",
+        "Is the single is_admin boolean sufficient for the target, or does the re-platform intend to introduce real role-based access (which would change the Role table usage and the admin gate)?",
+        "Does the FastAPI side need Jinja-equivalent server rendering of any auth page, or are login/register fully owned by Next.js (API-only auth endpoints on FastAPI)?"
+      ]
+    },
+    {
+      "track": "job-pipeline",
+      "summary": "The async pipeline has TWO runners. The live multi-user one is services/job_queue.py: a DB-backed queue where jobs persist as Job rows and execute on an in-process ThreadPoolExecutor(max_workers=PIPELINE_WORKERS, default 2), created in init_app and stored on app.extensions[\"job_queue\"]. submit(document_id, kind, target, ...) is the only entry: under a module-level threading.Lock (_submit_lock) it runs a check-then-insert (active_job() must be None), sets Document.status, commits the Job, then submits _run to the pool. _run wraps the target in app.app_context() (each pool thread gets its own scoped session), flips Job.state running->done/error, and drives the Document.status state machine (job_queue is the SINGLE writer of status after upload). Progress flows through a report(stage,current,total) callback that writes Job.stage/current/total to the DB, throttled to PROGRESS_MIN_INTERVAL=1.0s (except on stage change) because SQLite has one writer. sweep_orphans() runs at boot, marking any queued/running Job (and its Document) \"interrupted\" so a crash cannot leave phantom running rows. Provenance (model, prompt_version, catalog_revision) is stamped onto the Job at submit. The whole design assumes ONE process (serve.py runs waitress single-process; the classic runner services/jobs.py + state.py globals reinforce it). The classifier keeps a per-process in-memory catalog cache + sentence-transformers embedding matrix, invalidated by polling catalog_version() from the DB. Disposition: REDESIGN for Redis + external worker processes.",
+      "files": [
+        {
+          "path": "mrr_ai/services/job_queue.py",
+          "role": "DB-backed job queue: ThreadPoolExecutor pool, submit()+_submit_lock, _run() app-context worker, state machine, progress throttle, sweep_orphans() - the primary REDESIGN target"
+        },
+        {
+          "path": "mrr_ai/blueprints/documents_api.py",
+          "role": "Job targets _segment_target (204-234) + _summarize_target (255-299), submit() call sites segment_start/summarize_start, status polling endpoint (179-185); also synchronous non-queued LLM paths resummarize (369-425) + bundle_summarize (549-595)"
+        },
+        {
+          "path": "mrr_ai/models.py",
+          "role": "Job (provenance + progress columns, 100-137), SegmentRow (immutable raw output, 140-160), Document.status state machine + active_job property + single-writer rule (42-97)"
+        },
+        {
+          "path": "mrr_ai/services/segment_engine.py",
+          "role": "run_segmentation engine: Flask-free, inner ThreadPoolExecutor(CLASSIFY_WORKERS) for per-row categorization, progress callback contract - port-as-is"
+        },
+        {
+          "path": "mrr_ai/services/classification.py",
+          "role": "In-process catalog cache + embedding matrix as module globals (88-215), _catalog_lock/_embed_lock, revision-poll invalidation, lazy torch/sentence-transformers load - cross-process cache-coherence concern"
+        },
+        {
+          "path": "mrr_ai/config.py",
+          "role": "PIPELINE_WORKERS(41), CLASSIFY_WORKERS(73), Vertex retry knobs (61-63), BUNDLE_SUMMARIZE_CAP(86) - concurrency + quota tuning"
+        },
+        {
+          "path": "mrr_ai/extensions.py",
+          "role": "SQLite WAL + busy_timeout=5000 + foreign_keys pragmas (24-34) enabling concurrent reader/writer - must survive multi-process access"
+        },
+        {
+          "path": "mrr_ai/__init__.py",
+          "role": "App-factory wiring: reset_catalog_cache() (80-82) then job_queue.init_app() (84-86) after schema exists"
+        },
+        {
+          "path": "serve.py",
+          "role": "Production entry point documenting the HARD single-process constraint (waitress one process, threads=PIPELINE_WORKERS+6)"
+        },
+        {
+          "path": "mrr_ai/services/jobs.py",
+          "role": "Classic single-slot in-memory runner (module globals _lock/_job) - DROP"
+        },
+        {
+          "path": "mrr_ai/state.py",
+          "role": "Classic single-user mutable globals (pdf_filepath, all_data, num_pages...) - DROP; its existence is a reason for the single-process constraint"
+        },
+        {
+          "path": "mrr_ai/blueprints/review_api.py",
+          "role": "Classic segment/summarize endpoints driving services/jobs.py off state.py globals (53-119) - DROP"
+        },
+        {
+          "path": "mrr_ai/services/genai_retry.py",
+          "role": "Vertex 429/5xx full-jitter backoff wrapper - port-as-is, still gates shared-quota storms"
+        },
+        {
+          "path": "mrr_ai/catalog.py",
+          "role": "catalog_version() (63) + bump_revision() (69): provenance-stamp source AND classifier cache-invalidation trigger"
+        }
+      ],
+      "items": [
+        {
+          "name": "ThreadPoolExecutor pool + init_app",
+          "kind": "service",
+          "detail": "job_queue.init_app(app) at __init__.py:84-86 creates ThreadPoolExecutor(max_workers=PIPELINE_WORKERS, thread_name_prefix='pipeline') stored on app.extensions['job_queue'] (job_queue.py:44-50); PIPELINE_WORKERS default 2 (config.py:41) kept low because all jobs share one Vertex quota pool. This IS the executor being externalized to Redis + separate worker processes.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "submit() + _submit_lock single-active-job invariant",
+          "kind": "service",
+          "detail": "job_queue.py:37,82-111: _submit_lock (threading.Lock) serializes a check-then-insert - active_job(document_id) must be None (job_queue.py:73-79 queries Job.state in queued/running) before inserting the Job and pool.submit(_run). This in-process lock is the ONLY guard against two active jobs per document; it does not survive a move to multiple worker/web processes.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "_run() worker: app context + scoped session + state machine",
+          "kind": "job",
+          "detail": "job_queue.py:114-156: each pool thread runs target under app.app_context() with its own thread-scoped db.session; sets Job.state running->done/error, Job.started_at/finished_at, and on exception rollback()+Job.error+Document.status='error'. Drives _STATUS_ON_SUBMIT/_STATUS_ON_DONE transitions (job_queue.py:28-29). Target is passed as a live Python closure - not transferable across a process boundary.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "progress report() + PROGRESS_MIN_INTERVAL throttle",
+          "kind": "job",
+          "detail": "job_queue.py:33,125-136: report(stage,current,total) writes Job.stage/current/total to the DB; same-stage ticks rate-limited to 1.0s (stage changes always write) because SQLite has one writer and unthrottled progress contends with the job's own inserts. Engine calls it around every model interaction (segment_engine.py:141-165).",
+          "disposition": "redesign"
+        },
+        {
+          "name": "sweep_orphans() boot reconciliation",
+          "kind": "job",
+          "detail": "job_queue.py:53-70, called from init_app under app_context: marks every Job with state in (queued,running) as 'interrupted' + its Document status 'interrupted', so a crash/restart cannot leave phantom running rows the UI polls forever or that block submit(). Assumes all running rows belong to the just-died single process.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "Document.status state machine + single-writer rule",
+          "kind": "model",
+          "detail": "models.py:42-50 DOCUMENT_STATUSES (uploaded,segmenting,reviewing,summarizing,done,error,interrupted); job_queue is the sole writer after 'uploaded'/delete (models.py:9-11, job_queue.py:9-11). status column models.py:67; Document.active_job property models.py:81-84. Schema stays (same SQLite DB) but the transition-driver code moves into workers.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "Job model (progress + provenance record)",
+          "kind": "model",
+          "detail": "models.py:100-137: id, document_id, kind, state, stage/current/total, error, model, prompt_version, catalog_revision (nullable), created/started/finished_at; progress() shape at 129-137. Doubles as the provenance record for its SegmentRows/Summaries. Same table reused unchanged against the kept SQLite schema.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "SegmentRow model (immutable raw output)",
+          "kind": "model",
+          "detail": "models.py:140-160: job_id FK, idx, start/end/category/title/date/injury_date/flag, suggest_merge; the immutable training INPUT half (ReviewRow is the label). Written by _segment_target keyed to the owning Job.id. Schema kept as-is.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "_segment_target job body",
+          "kind": "job",
+          "detail": "documents_api.py:204-234: closure target(report) runs run_segmentation(pdf_path,total_pages,progress=report), re-fetches job via job_queue.active_job(document_id) for job.id, deletes ReviewRows, inserts paired SegmentRow(job_id=...) + ReviewRow(document_id=...), commits. Persistence logic is portable but the closure-over-pdf_path + active_job re-fetch pattern must become a worker task keyed by document_id.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "_summarize_target job body",
+          "kind": "job",
+          "detail": "documents_api.py:255-299: closure target(report) loads ReviewRows where include=True, per-row catalog.get_prompt('summary',category) + summarize_engine.summarize_row(...), builds Summary rows (with job_id + source_text provenance), then replaces old summaries only after the new set is complete (failed run keeps prior results). Same closure/active_job pattern as segment; becomes a worker task.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "run_segmentation engine + inner CLASSIFY_WORKERS pool",
+          "kind": "service",
+          "detail": "segment_engine.py:134-169: Flask-free; sliding-window Vertex calls sequentially, then a NESTED ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS=4, config.py:73) for per-row _categorize, then optional verify_and_merge. Takes a progress callback and raises loudly on worker failure. Moves into worker processes unchanged (pure Python + genai_client).",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Classifier in-process catalog cache + embedding matrix",
+          "kind": "service",
+          "detail": "classification.py:88-215: module-global _catalog_categories/_catalog_text_cache/_category_ids/_category_matrix guarded by _catalog_lock; sentence-transformers all-MiniLM-L6-v2 loaded lazily behind _embed_lock (encode serialized, not thread-safe). _refresh_locked() rebuilds when catalog_version() (DB) changes. reset_catalog_cache() called at app creation (__init__.py:80-82). Per-process state: N worker processes = N model+matrix copies; coherence relies on each process polling the DB revision.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "Provenance stamping at submit",
+          "kind": "service",
+          "detail": "documents_api.py:242-249,320-327: submit() records model=config.GENAI_MODEL/SUMMARY_MODEL, prompt_version=PROMPT_VERSION ('2', gemini.py:10), catalog_revision=catalog.catalog_version() onto the Job. source_text captured per Summary in the engine (summarize_engine.py:83). Must be passed in the enqueue payload so the worker records the revision current at submit time.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "Status polling endpoint",
+          "kind": "endpoint",
+          "detail": "GET /api/documents/<id>/status documents_api.py:179-185: ownership-scoped, returns {status: Document.status, job: latest Job.progress()}. Also list_documents/get_document embed active_job progress (documents_api.py:96,118-134). Read-only DB query; re-implemented as a FastAPI route (auth+ownership rewrite).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "segment_start / summarize_start submit endpoints",
+          "kind": "endpoint",
+          "detail": "POST /api/documents/<id>/segment/start (237-252) + /summarize/start (302-330): resolve owned doc, optionally flush editor rows (_store_rows), call job_queue.submit(), 409 if job is None (already active). summarize also gates on >=1 include row. Endpoints move to FastAPI and call the new enqueue API; the 409 semantics depend on the redesigned invariant.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Job-conflict 409 guards on mutation routes",
+          "kind": "auth-behavior",
+          "detail": "documents_api.py:153-154 (delete), 193-196 (put_rows), 311-312 (summarize), 351-352 (put_summary), 381-383 (resummarize): every mutating route refuses (409) while document.active_job is not None, because a finishing segment job would overwrite rows / a summarize job is reading them. This concurrency-guard behavior must be preserved against the externalized queue's notion of 'active'.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Synchronous non-queued LLM paths",
+          "kind": "endpoint",
+          "detail": "resummarize (documents_api.py:369-425: one OCR + two model calls, inline) and bundle_summarize (549-595: bounded by BUNDLE_SUMMARIZE_CAP=40, inline). These run on the request thread OUTSIDE the queue. Under FastAPI (async) blocking Vertex calls must move to a threadpool/worker; candidates to fold onto the same queue so they honor the active-job invariant + shared quota.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "SQLite WAL + busy_timeout pragmas",
+          "kind": "service",
+          "detail": "extensions.py:24-34: PRAGMA journal_mode=WAL, busy_timeout=5000, foreign_keys=ON on every connection, so background job threads writing progress and request threads reading do not error. Same DB is kept; pragmas must apply to every worker + web process connection, and busy_timeout is the only backpressure once writers multiply.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Vertex retry/backoff wrapper",
+          "kind": "service",
+          "detail": "genai_retry.py: generate_with_retry() full-jitter exponential backoff over GENAI_MAX_RETRIES=6, retries transient 429/5xx/transport disconnects, re-raises PerDay/free_tier quota. Shared by segment + classify + summarize + verify. Framework-agnostic; moves to workers unchanged and is the main defense against 429 storms as concurrency grows.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "catalog_version() / bump_revision() + reset_catalog_cache wiring",
+          "kind": "service",
+          "detail": "catalog.py:63-80 CatalogMeta single-row monotonic revision; bump_revision() on any category/prompt edit. Dual role: provenance stamp (Job.catalog_revision) AND classifier cache-invalidation trigger (classification._refresh_locked polls it). reset_catalog_cache() wired at app creation (__init__.py:80-82). Value/table port unchanged; the cross-process cache-reset wiring is the redesign piece.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "Single-process hard constraint",
+          "kind": "service",
+          "detail": "serve.py:1-29 documents that ONE process is mandatory (in-process pool + state.py globals); threads=PIPELINE_WORKERS+6. Externalizing the queue is precisely what removes this constraint - web (FastAPI/uvicorn) and worker processes scale independently. The constraint itself does not port.",
+          "disposition": "n/a"
+        },
+        {
+          "name": "Classic single-slot runner (services/jobs.py)",
+          "kind": "service",
+          "detail": "jobs.py:1-72: in-memory _lock/_job single-slot runner (start/status/clear) on a daemon Thread, honest only because the classic UI keeps one case in state.py globals. Used solely by review_api.py (10,62,72,109,116). CLASSIC single-user path - not worth porting.",
+          "disposition": "drop"
+        },
+        {
+          "name": "Classic state.py globals + review_api endpoints",
+          "kind": "service",
+          "detail": "state.py:13-24 module globals (pdf_filepath, all_data, num_pages, main_filename...) + review_api.py:45-119 (/api/pdf,/api/segment/*,/api/summarize/* off those globals). Single-user, single-process legacy flow superseded by the document-scoped DB API. Drop entirely on the multi-user Next.js+FastAPI target.",
+          "disposition": "drop"
+        }
+      ],
+      "portingNotes": [
+        "Executor -> broker: replace ThreadPoolExecutor + pool.submit(_run, app, job_id, target) with an RQ (Redis-only, simplest) or Celery task enqueue. The current target is a live closure over pdf_path/model and cannot cross a process boundary; redesign each job as a registered worker function taking a plain payload (document_id, kind, model, prompt_version, catalog_revision) that resolves Document/stored_path/page_count from the DB inside the worker.",
+        "Preserve one-job-per-document across processes: the in-process _submit_lock no longer works once web + workers are separate OS processes. Enforce the invariant in the DB itself - e.g. a partial UNIQUE index on jobs(document_id) WHERE state IN ('queued','running'), or wrap the check-then-insert in a transaction and let the constraint violation map to the existing 409. A Redis SETNX per-document lock is an alternative but the DB constraint is the durable source of truth and matches the 'status/progress via DB' requirement.",
+        "Status + progress stay in the DB: the FastAPI status route reads Document.status + latest Job.progress() with the identical query, so the polling contract is unchanged for the Next.js client. Keep writing Job.stage/current/total from the worker and keep PROGRESS_MIN_INTERVAL throttling - SQLite single-writer contention persists (arguably worsens) with multiple worker processes, so throttling is still load-bearing, not cosmetic.",
+        "State machine ownership: job_queue is currently the SOLE writer of Document.status after upload. In the target, the worker task must remain the only status writer (uploaded->segmenting/summarizing at enqueue is a web-side write; running->reviewing/done/error is worker-side). Keep the _STATUS_ON_SUBMIT/_STATUS_ON_DONE mapping and the on-exception rollback+error path intact so the single-writer guarantee survives.",
+        "Orphan recovery must become registry/heartbeat-aware: sweep_orphans() at boot blindly marks all running jobs interrupted because it assumes one just-died process. With N workers + rolling restarts that would kill healthy in-flight jobs. Use RQ's StartedJobRegistry / worker heartbeats (or Celery task-revocation + a periodic reaper) to mark only jobs whose worker is provably dead as interrupted, and reconcile DB running-rows against the live worker set rather than wiping on every boot.",
+        "Classifier cache across worker processes: each worker process keeps its own module-global catalog cache + all-MiniLM-L6-v2 matrix, rebuilt lazily when its DB-polled catalog_version() changes. This design already survives multi-process - no cross-process invalidation broadcast is required as long as every classify path calls _refresh_locked() (which reads catalog_version() from the shared DB). Cost: N copies of torch + the embedding model in RAM; the FastAPI web process should NOT import classification (segmentation-only), so only worker processes pay it. reset_catalog_cache() moves from the Flask app-factory hook to a worker-startup hook.",
+        "Provenance timing: catalog_revision/model/prompt_version are stamped at submit today. Carry them in the enqueue payload so the worker records the revision that was current when the user clicked, not whatever the catalog is when the job eventually runs - this keeps SegmentRow/Summary traceable to the exact catalog state, matching current behavior.",
+        "Nested CLASSIFY_WORKERS pool inside a worker: run_segmentation spawns its own ThreadPoolExecutor(4) per job. With external workers, total Vertex concurrency = (worker count) x (CLASSIFY_WORKERS) x windows - budget this against the shared quota; RQ worker count + CLASSIFY_WORKERS become the two concurrency knobs replacing PIPELINE_WORKERS. genai_retry backoff still applies inside each call.",
+        "Synchronous inline LLM routes (resummarize, bundle_summarize) currently block a Flask request thread. Under async FastAPI they must run in a threadpool (run_in_threadpool) or, preferably, be folded onto the same queue so they honor the one-active-job invariant and shared-quota backpressure instead of racing the background jobs.",
+        "SQLite is kept but is now written by web + N worker processes concurrently. Every process's engine must install the WAL/busy_timeout/foreign_keys pragmas from extensions.py on connect. WAL allows many readers + one writer; busy_timeout=5000 is the only backpressure - validate it holds under the new writer count or plan the documented ORM path to Postgres if OperationalError('database is locked') appears.",
+        "The classic path (services/jobs.py, state.py, review_api.py) is dropped, which is exactly what lets the target run multi-process; nothing in the document-scoped flow reads state.py, so removal is clean."
+      ],
+      "risks": [
+        "PHI in the broker: Redis payloads and any RDB/AOF persistence could retain PHI if row text, extracted OCR text, or original_filename are enqueued. Mitigation is architectural - enqueue ONLY non-PHI identifiers/metadata (document_id UUID, kind, model, prompt_version, catalog_revision) and let workers read PHI from the DB/disk; still put Redis on the internal/BAA-covered network with TLS + auth and, ideally, disable persistence or encrypt at rest.",
+        "Vertex shared-quota storms: moving from 2 in-process threads to N independent worker processes multiplies concurrent generate_content calls (further multiplied by the inner CLASSIFY_WORKERS pool). Without a global concurrency cap this triggers 429 RESOURCE_EXHAUSTED storms that genai_retry backoff can only partially absorb; per-day/free-tier exhaustion is non-retryable and fails the job.",
+        "Losing the in-process _submit_lock allows a cross-process race where two enqueue calls both pass the active_job() check and create two active jobs for one document (double-execution, duplicate SegmentRows/Summaries, corrupted status). A DB unique-partial-index or distributed lock is mandatory, not optional.",
+        "Boot orphan-sweep mass-marking: if sweep_orphans() semantics are ported naively, any web/worker restart marks healthy in-flight jobs owned by still-alive workers as interrupted, silently killing long (minutes-to-hours) segmentation runs.",
+        "Cache coherence + memory across processes: N worker processes each hold a full sentence-transformers model + embedding matrix (RAM cost) and an independent catalog cache; a catalog edit is picked up per-process only on the next classify's revision poll, so concurrent jobs can legitimately run on different catalog revisions (recorded in provenance, acceptable) but operators may find the divergence surprising.",
+        "SQLite write contention: multiple worker processes writing throttled progress + bulk row/summary inserts against one SQLite file raises lock contention; exceeding busy_timeout surfaces as OperationalError('database is locked') mid-job. The 'keep SQLite' decision caps practical write concurrency."
+      ],
+      "openQuestions": [
+        "RQ vs Celery for the broker: RQ is Redis-only and closely matches the current simple submit/poll model; Celery adds routing/retries/beat but more moving parts. Which fits the single-box + eventual-scale target?",
+        "Keep SQLite with N external worker processes, or is this the trigger for the documented Postgres move (config.py:35-37 says the ORM makes it a config change)? Depends on measured lock contention under real worker counts.",
+        "How to enforce one-active-job-per-document across processes: DB partial-unique index (portable, durable) vs Redis SETNX lock (fast, but a second source of truth) vs advisory lock - and how does the chosen mechanism map back to the existing 409 responses?",
+        "Progress storage: keep writing progress to the DB (current contract, survives broker restart) or use Redis job meta (less SQLite contention but a second read path for the status endpoint)? Task direction is DB - confirm.",
+        "Orphan/heartbeat strategy: rely on RQ StartedJobRegistry + worker heartbeat, Celery late-ack + visibility timeout, or a custom periodic reaper comparing jobs.state='running' against live workers? What heartbeat/timeout marks a job interrupted vs still-running?",
+        "Should the currently-synchronous resummarize and bundle_summarize move onto the queue (honoring the invariant + quota) or stay inline via FastAPI's threadpool?",
+        "Embedding-model footprint: accept N per-worker copies of all-MiniLM-L6-v2 + torch, or run a dedicated classification worker/pool (or a shared embedding microservice) so only some processes load torch?",
+        "Auth/session replacement: Flask-Security (CSRF cookie/header, registerable, session cookies) has no FastAPI equivalent - what auth model (JWT/session) backs the ownership (_own/IDOR) checks the job endpoints depend on?",
+        "Does the worker re-read catalog_version() at run time or trust the submit-time stamp for provenance? (Current code stamps at submit; confirm this is the intended semantics for delayed-start queued jobs.)"
+      ]
+    },
+    {
+      "track": "frontend-ui",
+      "summary": "The modern UI is a server-rendered-shell + vanilla-JS SPA-lite: Flask serves static HTML page shells (pages.py routes) whose behavior lives entirely in hand-written vanilla JS that talks to JSON APIs. There is no build step, no framework, no bundler. Two shared components carry most of the weight: window.MRR (the review-editor engine in review.js, mounted by both /review and the bundle pages) and the DocTable factory (doc-table.js, used by My Documents and both bundle pickers via _doc_table.html). Data-fetching is fetch() with an Accept: application/json header, a cookie-to-header XSRF pattern (X-XSRF-Token read from the XSRF-TOKEN cookie on unsafe methods), and 401->redirect-to-/login. Job progress is surfaced by two polling loops: doc-table.js polls the list every 2s while any doc has an active_job, and review.js polls /status every 1s during segment/summarize. The Evaluators design system (evaluators.css) is a CSS-custom-property token set plus ev-*/hd-*/rc-*/sum-*/auth-* component classes; a React UI must reproduce these tokens as CSS vars or a Tailwind theme. Auth pages (login/register) are Flask-Security-Too WTForms renders extending security/base.html. The classic pages (index.html + 7 others, served under /classic, /pages, etc.) are the jQuery/select2 single-user monolith UI backed by state.py globals - drop. Every modern page/component maps to a rewrite in React/Next; the API contracts they consume are stable and can be reused as-is by the FastAPI back-end.",
+      "files": [
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/static/review.js",
+          "role": "Shared review-editor engine exposed as window.MRR (identify/review-correct/summaries flow, autosave, PDF.js viewer sync, export dialog); driven by /review and both bundle pages"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/static/doc-table.js",
+          "role": "DocTable factory: status badges, filter chips, filename search, sortable headers, pagination, per-row overflow menu, 2s active-job polling; reused by My Documents and bundle pickers"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/static/evaluators.css",
+          "role": "Evaluators design system: :root CSS-custom-property tokens (navy/gold/blue/gray scales, semantic, shadows, radii, fluid --gutter/--content-cap, Poppins/Inter fonts) + all ev-*/hd-*/rc-*/sum-*/auth-* component classes"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/home.html",
+          "role": "My Documents page shell (topbar nav, empty-state dropzone, includes _doc_table.html, hidden file input)"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/static/home.js",
+          "role": "My Documents logic: DocTable wiring, upload (button/browse/drag-drop), empty-vs-populated toggle"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/review.html",
+          "role": "Review page shell: topbar, 3-step ev-stepper, includes _doc_editor.html, summaries section, ev-dialog export modal; <body data-doc-id> triggers MRR auto-boot"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/_doc_editor.html",
+          "role": "Shared identify/progress/review-correct editor markup (rows table + PDF iframe split), included by review.html and bundle.html"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/_doc_table.html",
+          "role": "Shared documents-table markup (toolbar + sortable table + pager) driven by doc-table.js"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/bundle.html",
+          "role": "Bundle workspace shell (Diagnostic&Operative / Depositions); data-bundle-* attrs pass label/slug/categories; loads review.js + doc-table.js + bundle-page.js"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/static/bundle-page.js",
+          "role": "Bundle logic: picker(DocTable)->mount shared MRR editor in place, category filter injection, extract-PDF / summarize-to-Word of matching-category docs"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/admin.html",
+          "role": "Admin console shell: category table + two ev-dialog modals (category metadata, summary prompt)"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/static/admin.js",
+          "role": "Admin CRUD over /api/admin (category list/create/patch/toggle, prompt get/put)"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/security/base.html",
+          "role": "Auth layout (topbar + centered auth-card) extended by login/register"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/security/login_user.html",
+          "role": "Flask-Security login WTForm render (email/password/remember)"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/security/register_user.html",
+          "role": "Flask-Security register WTForm render + live password checklist"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/static/register.js",
+          "role": "Register-page live password-rule checklist + confirm-match gating (mirrors server MrrPasswordUtil)"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/blueprints/pages.py",
+          "role": "Route->template mapping; confirms modern (/, /review/<id>, /diagnostics, /depositions, /admin) vs classic (/classic, /pages, /checkCSV, etc.) and injects bundle category sets"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/templates/index.html",
+          "role": "Classic single-user hub (jQuery + select2, inline scripts, state.py-backed routes) - drop"
+        },
+        {
+          "path": "P:/MRR_AI_Source/mrr-line_source/mrr_ai/static/styles.css",
+          "role": "Classic stylesheet for the jQuery pages - drop"
+        }
+      ],
+      "items": [
+        {
+          "name": "window.MRR shared review editor (review.js)",
+          "kind": "ui-component",
+          "detail": "The single largest reusable unit. Manages state object S (rows, categories, totalPages, status, selected, watching, saveTimer, summaries, summaryPage, editingSummary) at review.js:16-30. Public handle window.MRR (review.js:930-944) = {loadDocument(id), getRows(), pollJob, enterEditor, setOnSummarize(fn), setOnReviewed(fn), setRowFilter(fn), api, banner, state}. Three pipeline steps toggled via show()/gotoStep (review.js:59-132): identify panel, review-&-correct table (rows table + same-origin PDF.js iframe at /static/vendor/pdfjs/web/viewer.html, review.js:12,265-300), summaries list. Row ops: inline edit/merge/split/delete/insert, AI 'suggest_merge' chips + bulk apply (review.js:451-587). Debounced autosave (800ms) only when valid; client validation mirrors server (review.js:304-347). Summaries: parseDisplay strips baked-in decoration tags for web view (review.js:627-640), in-place edit/exclude/resummarize/paginate (review.js:655-837). API calls: GET /api/documents/<id>, GET .../status, PUT .../rows, POST .../segment/start, POST .../summarize/start, GET .../summaries, PUT .../summaries/<idx>, POST .../summaries/<idx>/resummarize, POST .../export, GET .../pdf.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "DocTable factory (doc-table.js + _doc_table.html)",
+          "kind": "ui-component",
+          "detail": "window.DocTable.create(config) with config {onOpen, onLoaded, onError, allowDelete}; returns {refresh, getDocs, state} (doc-table.js:125-350). Also exports DocTable.api (fetch wrapper w/ XSRF + 401->/login, doc-table.js:65-81) and DocTable.cookieValue. Renders status badges (STATUS_LABELS/STATUS_TONES doc-table.js:15-32), filter chips w/ counts, filename search, sortable headers (SORT_ACCESSORS:45-51), 20/page pagination, per-row overflow menu (Open / Start|Re-run identification / Delete). allowDelete:false hides Delete for bundle pickers (doc-table.js:107-123). Self-polls refresh every 2000ms while any doc has active_job (doc-table.js:235). API: GET /api/documents, POST .../segment/start, DELETE /api/documents/<id>.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "My Documents page (home.html + home.js)",
+          "kind": "ui-page",
+          "detail": "Landing page at '/'. Purpose: list uploaded records, upload new ones, route into /review/<id>. Client flow: instantiates DocTable {onOpen -> window.location=/review/<id>, onLoaded -> toggle empty vs populated view (home.js:16-26)}. Upload via button/browse/drag-drop onto #dropZone or #tableCard; POSTs multipart to /api/documents; surfaces sha256_duplicate note; does NOT auto-start identification by design (home.js:38-83, comment at :4-5). Empty state = 3-step explainer + dropzone (home.html:41-74). API: POST /api/documents, GET /api/documents (via DocTable).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Review editor page (review.html + _doc_editor.html)",
+          "kind": "ui-page",
+          "detail": "Route /review/<document_id> (bare /review redirects to /, pages.py:56-66). Shell renders topbar, 3-state ev-stepper, the shared _doc_editor.html, a summaries section, and the export ev-dialog with 4 Word-header fields (patientName/patientdob/QMEorAME/lawfirm, review.html:74-109). <body data-doc-id> makes review.js auto-boot (review.js:9,948). Export downloads a .docx blob via POST /api/documents/<id>/export (review.js:875-905). This page = MRR engine + Summaries UI + export modal.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Diagnostics/Depositions bundle workspaces (bundle.html + bundle-page.js)",
+          "kind": "ui-page",
+          "detail": "Routes /diagnostics (categories ['3','8']) and /depositions (['9']) render one bundle.html with data-bundle-label/slug/categories (pages.py:72-89, bundle.html:13-15). NO data-doc-id so MRR does not auto-boot (bundle.html:11-12). Flow: DocTable picker (allowDelete:false) or upload -> selectDocument mounts shared MRR editor in place via MRR.loadDocument (bundle-page.js:56-72), hides the editor's own Summarize button, injects a 'Show only <label> documents' view-only category filter into .rc-actions (bundle-page.js:79-97), and via MRR.setOnReviewed shows a bundle-actions card. Actions download combined PDF or summarize-to-Word of matching-category docs. API: POST /api/documents/<id>/bundle/pdf, POST .../bundle/summarize (blob download w/ Content-Disposition filename parse, bundle-page.js:111-135).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Admin console (admin.html + admin.js)",
+          "kind": "ui-page",
+          "detail": "Route /admin (server is_admin-gated, pages.py:92-96; nav link shown only when current_user.is_admin in home/review/bundle templates). Category table (id/name/auto-assign/active/prompt-custom-or-general) + two ev-dialog modals: category metadata (id immutable on edit, name/description/examples/auto_assign/active) and summary-prompt editor (ev-mono textarea, shows custom vs inherited-general). API: GET/POST /api/admin/categories, PATCH /api/admin/categories/<id> (also used for activate/deactivate toggle), GET /api/admin/prompts/<id>, PUT /api/admin/prompts/<id> (admin.js:39-159). Names textContent-set to avoid injection (admin.js:64).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Login page (security/login_user.html + base.html)",
+          "kind": "ui-page",
+          "detail": "Flask-Security-Too render extending security/base.html. WTForm login_user_form (email/password/remember + hidden CSRF via hidden_tag()); posts to url_for_security('login'). Includes security/_messages.html (Flask-Security built-in partial, not present in repo). Styled with auth-* + ev-inp/ev-btn classes; per-field .invalid + auth-field-error rendering. Link to register.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Register page (security/register_user.html + register.js)",
+          "kind": "ui-page",
+          "detail": "Flask-Security render; WTForm register_user_form (name/email/password/optional password_confirm + hidden_tag CSRF); posts to url_for_security('register'). register.js drives a live checklist (8+ chars / number / symbol) and confirm-match, gating the submit button; server enforces identical rules (MrrPasswordUtil) so it is UX-only (register.js:1-45).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "ev-dialog modal pattern",
+          "kind": "ui-component",
+          "detail": "Reusable modal: .ev-dialog-backdrop > .ev-dialog[role=dialog][aria-modal] with -head/-x/-sub/-row/-field-1/-field-2/-foot parts (evaluators.css:614-642, .ev-dialog-wide:688). Three instances: export dialog (review.html:74-109), category dialog + prompt dialog (admin.html:57-121). Behaviors (per-page JS): open/close by class toggle, backdrop-click close, Escape close, focus first field (review.js:845-873; admin.js:71-88). No shared modal JS - each page re-implements open/close.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Fetch + XSRF + 401 data-access pattern",
+          "kind": "auth-behavior",
+          "detail": "Every modern JS module repeats the same api() wrapper: fetch with Accept: application/json; on unsafe methods (method !== GET) add X-XSRF-Token header read from the XSRF-TOKEN cookie (cookieValue helper); opts.json serializes body + sets Content-Type; 401 -> window.location='/login'; non-ok -> throw Error(data.error). Duplicated in doc-table.js:60-81, review.js:85-107, admin.js:7-27, bundle-page.js:18-21, and inline in review.js export (875-891) / bundle-page.js download (111-118). Session is a Flask-Security cookie; XSRF is the cookie/header double-submit.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Job-progress polling pattern",
+          "kind": "auth-behavior",
+          "detail": "Two client polling loops stand in for push/queue: doc-table.js refreshes the whole list via setTimeout(refresh,2000) while any doc has active_job (doc-table.js:234-235); review.js pollDocument setInterval(GET /status,1000) drives the progress bar during segment/summarize, resolving on job.state done|error|interrupted and auto-advancing the stepper (review.js:183-241). active_job shape {kind, state, stage, current, total, error}; STAGE_LABELS at review.js:147-153.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "Evaluators design system (evaluators.css tokens + classes)",
+          "kind": "ui-component",
+          "detail": "Tokens in :root (evaluators.css:7-64): navy-900..50, gold-700..100, blue-600/500/100, gray-50..700 + --ink, semantic success/warning/danger (500/100), role vars (--color-border, -focus, -text-muted, -text-on-navy), --shadow-focus/md/lg, --radius-sm/md/lg/pill, fluid --gutter clamp(20px,3.5vw,72px) + --content-cap 2560px, --font-heading Poppins / --font-body Inter. Component families: shell (ev-topbar/-crest-chip/-wordmark/-stepper/-step w/ active|done|busy states); controls (ev-btn +primary/outline/ghost/gold/del/sm/lg/block, ev-inp, ev-lbl, ev-cb, ev-check, ev-chip +review/edit/off); dialog (ev-dialog* family); pager (ev-pager); table/home (hd-column/-header/-toolbar/-chip/-search/-card/-table/-w-*/-doc/-name/-badge+tones/-dots/-menu/-foot/-empty/-drop/-steps); review editor (rc-column/-filename/-header/-status/-save+states/-actions/-title/-inp/-sel/-selwrap/-catfilter, add-form, editor-split, table-wrap, viewer-wrap, doc-row/title-row/gap-row, panel/center-panel, bar/bar-fill); summaries (sum-column/-header/-countline, summary-list/-card+excluded|editing, sum-heading/-title/-date/-text, summary-empty); auth (auth-main/-card/-head/-crest/-sub/-form/-field/-field-error/-remember/-alt/-alert/-checklist/-check+met|failed|unmet, ev-eyebrow). Vendored fonts at /static/vendor/fonts/fonts.css; crest at /static/assets/evaluators-crest.png.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "Classic hub (index.html) + ancillary classic pages",
+          "kind": "ui-page",
+          "detail": "index.html (served /classic) plus pages.html, pagesManual.html, pdfsegment.html, checkCSV.html, DiagAndOpReports.html, DepositionReports.html, individual_mrr.html (served /pages, /checkCSV, etc. per pages.py:16-53). jQuery 3.6 + select2 from CDNs, inline <script> blocks, hit the single-user state.py-globals routes (/upload, /uploadPages, /summarize, /reset, /getpatientnameanddob, /getlawfirm, /getPages, /segmentPDF, /exportresultstoword, etc.). No per-user document model, no XSRF pattern. Superseded by the modern per-document flow.",
+          "disposition": "drop"
+        }
+      ],
+      "portingNotes": [
+        "Data-fetching: replace the four hand-rolled api() wrappers with one typed client (fetch or TanStack Query). The XSRF double-submit (read XSRF-TOKEN cookie -> X-XSRF-Token header on unsafe methods) and the 401->/login redirect must be reproduced against whatever session/CSRF scheme the FastAPI back-end adopts; if FastAPI keeps Flask-Security's cookie+CSRF the client logic ports 1:1, otherwise this becomes the main auth rewrite.",
+        "Polling -> live state: both polling loops (2s list poll in doc-table.js, 1s /status poll in review.js) are natural TanStack Query refetchInterval / SWR candidates keyed on active_job presence. This is also the seam where the externalized Redis job queue lands (Path B): the /status contract {kind,state,stage,current,total,error} can stay identical, so the React progress UI need not change if the back-end swaps the job source.",
+        "window.MRR is the central decomposition problem: it is one module doing three steps + a mutable global S + a host-injection API (setOnSummarize/setOnReviewed/setRowFilter/loadDocument). In React it becomes a <ReviewEditor> with a state store (Zustand/Context or useReducer over the S shape) and props/callbacks replacing the window.MRR handle; the bundle page's 'mount editor in place and re-point at a new doc' becomes routing/remount, and setRowFilter/setOnReviewed become props. Preserve the exact autosave-only-when-valid and client validation (rowErrors mirrors server) semantics.",
+        "DocTable is a clean factory -> <DocTable onOpen onLoaded onError allowDelete/> React component; STATUS_LABELS/TONES, FILTERS, SORT_ACCESSORS become module constants; keep textContent-based filename/name rendering (PHI-safe, doc-table.js:204, admin.js:64) as React auto-escaping already handles it.",
+        "Design tokens -> theme: lift the :root custom properties verbatim into a global CSS layer (they already work in React) or generate a Tailwind theme from them (colors, spacing, radii, fontFamily). The fluid --gutter clamp and --content-cap are layout primitives to keep. Component classes (ev-*/hd-*/rc-*/sum-*/auth-*) should map to a component library (CSS Modules / Tailwind @apply / styled), not be copied as global selectors, since the vanilla markup builds them via innerHTML strings.",
+        "PDF viewer: review.js embeds the vendored PDF.js viewer in an iframe and drives it via contentWindow.PDFViewerApplication.page for row-click page jumps (review.js:265-300). React needs an equivalent programmatic-page viewer (react-pdf, or keep the vendored pdf.js in an iframe with a typed postMessage/ref bridge). Chrome's built-in viewer was explicitly rejected because it ignores #page after first load.",
+        "Blob downloads (export .docx, bundle pdf/docx) use manual anchor.click()+URL.revokeObjectURL and parse Content-Disposition for the filename (review.js:893-898, bundle-page.js:120-131). Reproduce in a small download helper; these are POST-with-JSON-body -> binary responses, not simple links.",
+        "Server-rendered auth: login/register are Flask-Security WTForm renders with url_for_security() actions and a hidden_tag() CSRF field, plus an included _messages.html that ships with Flask-Security (not in this repo). In Next these become client forms POSTing to the FastAPI auth endpoints; the register live-checklist (register.js) ports directly to controlled inputs. Confirm the target auth stack before porting - this is the least framework-agnostic surface.",
+        "Decoration parsing lives in the client (parseDisplay strips [ManualCheck]/[Diagnostic Study]/(Pages X-Y)/**DOI** from stored strings for display, review.js:627-640) while the Word export recomposes them server-side. Keep this split: the React summary card reuses parseDisplay logic; do not move it server-side or the export format breaks.",
+        "The classic pages and styles.css are drop: they depend on state.py process-global single-user session, which the port abandons. Do not port index.html/pages/pdfsegment/checkCSV/DiagAndOpReports/DepositionReports/individual_mrr or the /upload,/summarize,/reset,/getPages,/getpatientnameanddob,/getlawfirm,/exportresultstoword,/segmentPDF routes they call."
+      ],
+      "risks": [
+        "window.MRR carries hidden coupling via mutable module state and host-injected callbacks (onSummarize/onReviewed/rowFilter/DOC_ID). A naive component split can drop edge cases: the 'don't navigate while S.watching' guard (review.js:113), reset-on-reload (loadDocument/resetEditorState review.js:907-926), and the bundle page hiding the editor's own Summarize button (bundle-page.js:60-62).",
+        "Both bundle and review load review.js AND the bundle page loads doc-table.js + bundle-page.js as separate global scripts sharing window; the current split relies on load order (review.js defines window.MRR before bundle-page.js runs, bundle.html:93-95). React module imports remove this ordering hazard but the porter must re-establish the same init sequencing (table.refresh only after MRR is ready).",
+        "PDF.js is a vendored same-origin iframe with a private API (PDFViewerApplication). If the React stack changes origins/CSP or uses a hosted viewer, the programmatic page-jump breaks silently (the try/catch at review.js:290-298 swallows the failure and falls back to a full reload).",
+        "Admin nav visibility is driven by a Jinja {% if current_user.is_admin %} at render time (home/review/bundle templates); in a client-rendered React app this gate must move to an authenticated /whoami-style call (admin_api.py:29 exposes /api/admin/whoami) or the Admin link/route leaks to non-admins even though the API stays gated.",
+        "The four fetch/XSRF wrappers are duplicated with subtle differences (doc-table.js scopes to absolute URLs, review.js prefixes /api/documents/<DOC_ID>, admin.js uses body-not-string detection). Consolidating them risks changing the base-URL assumptions each page depends on.",
+        "PHI: the export/bundle dialogs collect patient name/DOB and the summaries render medical text; the React UI must keep the PHI-safe textContent rendering and must not log request/response bodies or place PHI in URLs (the note text at review.js:851 explicitly warns users not to add extra PHI)."
+      ],
+      "openQuestions": [
+        "Will the FastAPI back-end keep Flask-Security's session-cookie + XSRF-TOKEN double-submit scheme, or move to a token/JWT scheme? This decides whether the entire client auth/XSRF layer ports 1:1 or is rewritten, and whether login/register stay server-rendered or become client forms.",
+        "Next.js rendering mode for these pages: are they client-rendered SPA routes (closest to current behavior, since all data comes from JSON APIs) or SSR/RSC with server data fetching? The polling/autosave/interactive-editor nature argues for client components, but the admin gate and initial doc list could be server-fetched.",
+        "Is the vendored PDF.js viewer being kept as-is (iframe) in the port, or replaced with a React PDF component? The row-click page-jump contract depends on the answer.",
+        "Should the design system be delivered as raw CSS-var + component CSS (fastest, reuses evaluators.css nearly verbatim) or refactored into a Tailwind theme / component library? Impacts how ev-*/hd-*/rc-* classes are reproduced.",
+        "The included security/_messages.html is a Flask-Security built-in template not present in the repo - confirm the target keeps Flask-Security-style flash/message rendering or replaces it with the app's standard {data,meta,errors} envelope surfaced as toasts.",
+        "Confirm the classic pages are truly retired for the port (drop) and no user workflow still depends on /classic, /pages, /pdfsegment, /checkCSV, /DiagAndOpReports, /DepositionReports, /IndividualMRR - the index.html header still links all of them."
+      ]
+    },
+    {
+      "track": "services-phi",
+      "summary": "The services/ layer is deliberately Flask-free business logic (the \"no Flask imports\" rule is documented in mrr_ai/services/CLAUDE.md), so the bulk of it ports to FastAPI unchanged: PDF/OCR/window/segment/verify/summarize/bundle logic all take plain args and return plain data, reading only config constants and the pre-built genai_client. The GenAI clients and config are the seams: extensions.py mixes Flask-SQLAlchemy db with a framework-agnostic google-genai client builder (Vertex/BAA vs Developer-API routing) plus a legacy OpenAI client; config.py holds all env vars, model names, caps and fail-fast REQUIRED_ENV validation and moves nearly verbatim. The ONE sanctioned exception to service purity is classification.py lazily reading the editable DB catalog via mrr_ai.catalog (falls back to taxonomy.py constants when there is no app context) - that read couples to Flask-SQLAlchemy and must be re-seated on a FastAPI DB session. prompts.py and taxonomy.py are pure seed/fallback constants and port as-is. The classic single-user surface (state.py globals, services/jobs.py single-slot runner, categorization.py legacy difflib matcher) is drop; job_queue.py is the in-process pool that becomes the external Redis/worker redesign. PHI flows: multi-user PDFs land at UPLOAD_FOLDER/<user_id>/<uuid>.pdf (uuid names keep patient filenames out of paths/logs), OCR text is held in memory or persisted as Summary.source_text (fine-tuning input = PHI in DB), and what reaches Vertex is inline PDF window bytes (segment), page PNGs + OCR excerpts (verify), title + first-page OCR (classify), and full row OCR text (summarize); embeddings stay local; logging/audit is ids-only. The full pipeline must run on the Vertex BAA path (GOOGLE_GENAI_USE_VERTEXAI=true); the OpenAI legacy path is non-BAA/unfunded and only the classic routes use it.",
+      "files": [
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\services\\CLAUDE.md",
+          "role": "Authoritative map of services/ + the 'no Flask imports' purity rule and the one classification catalog exception"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\services\\segment_engine.py",
+          "role": "Core sliding-window segmentation pipeline (Flask-free); inline PDF bytes -> Vertex -> tiled categorized rows"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\services\\classification.py",
+          "role": "B5 categorization cascade; the ONE sanctioned Flask/DB coupling (lazy catalog read)"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\services\\verify_pass.py",
+          "role": "Boundary verification (page PNGs + OCR excerpts -> Vertex); PHI-carrying"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\services\\summarize_engine.py",
+          "role": "Per-row summarization (row OCR text -> Vertex); persists sourceText fine-tuning input"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\extensions.py",
+          "role": "Client seam: genai_client (Vertex/Gemini) + legacy OpenAI client + Flask-SQLAlchemy db"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\config.py",
+          "role": "All env vars, model names, caps, REQUIRED_ENV + fail-fast validate_env"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\state.py",
+          "role": "Classic single-user mutable globals -> drop"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\blueprints\\documents_api.py",
+          "role": "Multi-user PDF upload PHI storage (UPLOAD_FOLDER/<user_id>/<uuid>.pdf)"
+        },
+        {
+          "path": "P:\\MRR_AI_Source\\mrr-line_source\\mrr_ai\\services\\audit.py",
+          "role": "Ids-only audit trail (PHI-redaction rule enforced here)"
+        }
+      ],
+      "items": [
+        {
+          "name": "services/pdf.py",
+          "kind": "service",
+          "detail": "pypdf helpers get_pdf_size (L10), get_pdf_page_count (L17), segment_pdf (L29, writes ~/MRRs), segment_pdf_locally (L66, writes UPLOAD_FOLDER). Flask-free; only imports config.UPLOAD_FOLDER. get_pdf_page_count still used by multi-user create_document (documents_api L93); the fixed-100-page segment_* funcs are classic-only and superseded by segment_engine.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/ocr.py",
+          "kind": "service",
+          "detail": "Tesseract via pdf2image/Poppler. extract_text_from_image (L14), extract_text_from_selected_pages (L23), extract_text_from_all_pages (L50). Honors config.TESSERACT_CMD override (L10-11). Flask-free; shells out to native binaries (mock in tests). Produces PHI text held in memory.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/windows.py",
+          "kind": "service",
+          "detail": "Pure byte-budgeted overlapping window packing: page_raw_sizes (L18), next_window_start (L36, overlap capped at 1/3), byte_budgeted_windows (L46, fails fast if a page exceeds budget). No Flask, no I/O beyond reading the PDF path.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/gemini.py",
+          "kind": "service",
+          "detail": "Data-only segmentation assets: PROMPT_VERSION='2' (L10), SEGMENTATION_SYSTEM (L12), SEGMENTATION_PROMPT (L18), SEGMENT_RESPONSE_SCHEMA (L60), tolerant parse_segment_item (L90). No client. INLINE PDF delivery only (Files API removed with Vertex port).",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/genai_retry.py",
+          "kind": "service",
+          "detail": "generate_with_retry (L29): full-jitter exponential backoff over google.genai ServerError/transient-429/httpx.TransportError; re-raises non-429 and PerDay/free_tier. Client passed explicitly (patchable seam). Reads GENAI_MAX_RETRIES/BASE/MAX_DELAY from config. Flask-free.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/segment_engine.py",
+          "kind": "service",
+          "detail": "run_segmentation (L134): byte_budgeted_windows -> per-window inline PDF-bytes call to Vertex (_window_rows L53, types.Part.from_bytes) -> ownership merge_window_rows (L89, pure) -> ThreadPoolExecutor categorize (CLASSIFY_WORKERS) -> optional verify_and_merge. progress(stage,current,total) callback. Flask-free; imports genai_client + classify + verify + windows + gemini + ocr.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/classification.py",
+          "kind": "service",
+          "detail": "classify (L252) cascade: rules (L79) -> local sentence-transformers embeddings (L209, PHI stays local) -> Gemini constrained-enum llm_classify (L221). Sends title+first-page OCR text to Vertex only in LLM stage. THE Flask exception: lazy `from mrr_ai import catalog` reads (L131,L140) the DB catalog keyed on catalog_version, cached (L98-124), falling back to taxonomy.CATEGORIES when no app context. Thread-locked caches + _embed_lock.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/verify_pass.py",
+          "kind": "service",
+          "detail": "verify_and_merge (L168, suggest-mode default) + suspect_indices (L143, wide net capped by VERIFY_SUSPECT_CAP=200) + _same_document oracle (L89): sends prev-doc last page PNG + fragment page PNGs + (VERIFY_USE_TEXT) 1200-char boundary OCR excerpts to Vertex VERIFY_MODEL. Rasterize-once via _page_image (L45). Failure -> keep boundary. Flask-free.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/summarize_engine.py",
+          "kind": "service",
+          "detail": "summarize_row (L49): extract_text_from_selected_pages(row pages) -> Gemini SUMMARY_MODEL body (temp 0.8) + TITLE_PROMPT (temp 0.0). prompt injected by caller (DB-first) or falls back to prompts.py; category_11 KeyError guarded via prompts.get default (L62). Returns output_dict incl. sourceText = exact model input (PHI, persisted for fine-tuning). Flask/DB-free.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/bundles.py",
+          "kind": "service",
+          "detail": "matched_rows (L17), pages_for_rows (L23), build_bundle_pdf (L31, in-memory BytesIO pypdf concat, NO ~/MRRs artifacts), bundle_summary_entries (L49, reuses summarize_row with injected prompt_for resolver). BUNDLE_SUMMARIZE_CAP bounds sync path. Flask/DB-free.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/files.py",
+          "kind": "service",
+          "detail": "allowed_file (L10), safe_name (L14, wraps werkzeug.secure_filename for path-traversal defense), parse_date/is_valid_date (L24,L31), count_lines_in_file (L41). No Flask app context, but imports werkzeug.utils.secure_filename (Flask-ecosystem dep, not bundled by FastAPI/Starlette).",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "services/audit.py",
+          "kind": "phi-path",
+          "detail": "audit(action, document_id, user_id) (L11): ids-only AuditLog row, commits its own tx. Docstring (L1-5) states original filename is PHI and must NEVER reach the audit table or logs - log/audit by document id only. Lazily imports flask_security.current_user (L15) and uses extensions.db - coupled to Flask-Security + Flask-SQLAlchemy.",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "services/categorization.py",
+          "kind": "service",
+          "detail": "Legacy difflib fuzzy matcher normalize/similarity/categorize_documents (L7,L11,L15). Superseded by classification.py and no longer called (per services/CLAUDE.md L32-33); kept pending removal.",
+          "disposition": "drop"
+        },
+        {
+          "name": "services/jobs.py",
+          "kind": "job",
+          "detail": "Single-slot in-memory background runner start/status/clear (L16,L53,L64) for the CLASSIC review UI; module-level _job + _lock, one case at a time. Superseded by job_queue.py in the document-scoped flow.",
+          "disposition": "drop"
+        },
+        {
+          "name": "services/job_queue.py",
+          "kind": "job",
+          "detail": "DB-backed queue on in-process ThreadPoolExecutor (PIPELINE_WORKERS=2). submit (L82), _run (L114, drives Document.status state machine - single writer), sweep_orphans (L53, boot reconciliation), init_app (L44). Uses flask current_app + app_context + scoped sessions. Explicit SINGLE-PROCESS constraint (L14-16, L114). This is the externalize-to-Redis+workers target.",
+          "disposition": "redesign"
+        },
+        {
+          "name": "extensions.genai_client (Vertex/Gemini)",
+          "kind": "integration",
+          "detail": "_build_client (L37): routes on config.USE_VERTEX; Vertex + GOOGLE_CLOUD_PROJECT -> ADC (genai.Client(vertexai=True, project, location)); Vertex w/o project -> GEMINI_API_KEY against Vertex endpoint; else Developer API key. Built once at import after validate_env(). Builder logic is framework-agnostic; lives in a module that also defines Flask-SQLAlchemy db + SQLite WAL pragmas (L21-34).",
+          "disposition": "rewrite"
+        },
+        {
+          "name": "extensions.client (OpenAI legacy)",
+          "kind": "integration",
+          "detail": "client = OpenAI() (L56), reads OPENAI_API_KEY from env. Only consumed by classic state-based routes: summarize.py (client.chat.completions L110,L129,L300,L316) and extraction.py (L18,L65). Non-BAA, account unfunded (config L57); superseded by Gemini summarize on Vertex.",
+          "disposition": "drop"
+        },
+        {
+          "name": "Tesseract/Poppler OCR integration",
+          "kind": "integration",
+          "detail": "pytesseract + pdf2image.convert_from_path (ocr.py, verify_pass._page_image L47). TESSERACT_CMD override (config L24) for Windows PATH gaps. Native binaries must be present on FastAPI hosts AND on the externalized workers that run OCR-bearing stages.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "config.py env/model/caps + validate_env",
+          "kind": "service",
+          "detail": "load_dotenv (L7); REQUIRED_ENV=(GEMINI_API_KEY,OPENAI_API_KEY,SECRET_KEY,SECURITY_PASSWORD_SALT) (L9); UPLOAD_FOLDER=<repo>/uploads (L19); USE_VERTEX (L46); GENAI_MODEL default gemini-2.5-flash on Vertex (L52); SUMMARY_MODEL/VERIFY_MODEL (L58,L81); retry+window+worker+verify caps (L61-101); SQLALCHEMY_DATABASE_URI SQLite (L35); validate_env fail-fast (L104). Pure Python.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "prompts.py (seed constants)",
+          "kind": "service",
+          "detail": "prompts dict of 14 per-category summary system prompts (category_01..category_14, category_100). Seed source for the Prompt DB table + runtime fallback (per mrr_ai/CLAUDE.md L22-26). category_11 absent -> summarize_engine falls back to category_100. No Flask. ~53KB of prompt text.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "taxonomy.py (seed constants)",
+          "kind": "service",
+          "detail": "Frozen Category dataclass + CATEGORIES dict (L36, ids 1-5,7-14,100; 6 omitted), ALLOWED_IDS (L227), DEFAULT_ID='100' (L230). Seed source for Category DB table + fallback used by classification when no app/DB context. Pure Python.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "state.py globals",
+          "kind": "service",
+          "detail": "Module-level mutable globals (pdf_filepath, txt_filepath, all_data, num_pages, patientNameGlobal, indiv_mrr_folder_path, etc.) for the CLASSIC single-process UI. Imported by 8 classic blueprints (export/extraction/individual_mrr/pages/reports/segmentation/upload/summarize). Contains a stale hardcoded path pdf_savepath='/home/usera/...' (L15). Root cause of the single-process constraint.",
+          "disposition": "drop"
+        },
+        {
+          "name": "PHI-at-rest: multi-user PDF upload storage",
+          "kind": "phi-path",
+          "detail": "documents_api.create_document (L79-91): UPLOAD_FOLDER/<user_id>/<uuid>.pdf; uuid storage names keep patient filenames out of paths/process listings/logs (explicit comment L86-87). original_filename kept only in the Document DB row (L105). sha256 dedup warning (L98-100). This is the canonical PHI-at-rest convention to preserve.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "PHI-at-rest: classic upload/export paths",
+          "kind": "phi-path",
+          "detail": "Classic routes write PATIENT-NAMED artifacts: upload.py UPLOAD_FOLDER/<filename> (L23-24), individual_mrr/reports uploads/<patient_folder> (individual_mrr L59-60), export.py + reports.py ~/MRRs/*.csv/*.docx/*.pdf (export L134,L163-166,L192; reports L24,L202). Filenames/folders derive from patient input - the PHI-in-path anti-pattern the multi-user flow eliminated.",
+          "disposition": "drop"
+        },
+        {
+          "name": "PHI-in-transit: content sent to Vertex/Gemini",
+          "kind": "phi-path",
+          "detail": "Four PHI egress points to Vertex (BAA path only when USE_VERTEX): segment_engine _window_rows inline PDF window bytes (L61); verify_pass _same_document page PNGs + 1200-char boundary OCR (L125-127,L124); classification.llm_classify title+first-page OCR text (L227); summarize_engine full row OCR text (L38,L66). All via generate_with_retry(genai_client). HIPAA gate: GOOGLE_GENAI_USE_VERTEXAI=true required for PHI (config L44-45).",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "PHI-in-transit: content sent to OpenAI (legacy)",
+          "kind": "phi-path",
+          "detail": "Classic summarize.py (L110,L129,L300,L316) and extraction.py (L18,L65) send OCR text of state.pdf_filepath pages to OpenAI chat.completions. Non-BAA endpoint - a PHI exposure that must NOT be carried to the port; superseded by the Vertex summarize path.",
+          "disposition": "drop"
+        },
+        {
+          "name": "PHI-local: embedding classification stage",
+          "kind": "phi-path",
+          "detail": "classification.embed_classify (L209) runs sentence-transformers all-MiniLM-L6-v2 locally; document title/OCR text is embedded on-box and never leaves the process (docstring L11-12, stage-2 comment). Only the LLM stage egresses text. Preserves a local-only PHI path worth keeping in the port + on workers.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "PHI-in-memory: bundle assembly",
+          "kind": "phi-path",
+          "detail": "bundles.build_bundle_pdf (L31) concatenates source pages into an io.BytesIO buffer; bundle_summary_entries summarizes in-memory. Explicit no-~/MRRs-artifacts HIPAA choice (docstring L5-7); ids-only logging left to caller. Contrast with classic reports.py which writes merged PDFs to ~/MRRs.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "PHI-at-rest: fine-tuning source text in DB",
+          "kind": "phi-path",
+          "detail": "summarize_engine returns sourceText = exact model input OCR text (L81-83), persisted to Summary.source_text (added additive column, __init__ L104). SegmentRow (raw model output) vs ReviewRow (human-corrected) is the fine-tuning dataset (mrr_ai/CLAUDE.md L10-11). PHI stored in the SQLite DB that the port KEEPS - re-review DB-at-rest protection.",
+          "disposition": "port-as-is"
+        },
+        {
+          "name": "Logging/redaction rule (ids-only)",
+          "kind": "phi-path",
+          "detail": "Redaction is by convention, not a central sink: audit.py enforces ids-only (docstring). Services use bare print() for progress/errors (page numbers, ids, exception strings) - e.g. segment_engine L127,L168; verify_pass L66,L138; classification L243,L273. Classic summarize.py prints state.pdf_filepath (L102,L292) - path leakage tolerable only because classic is dropped; the port needs a structured logger with a redaction boundary.",
+          "disposition": "rewrite"
+        }
+      ],
+      "portingNotes": [
+        "Moves to FastAPI unchanged (pure Flask-free Python): pdf.py, ocr.py, windows.py, gemini.py, genai_retry.py, segment_engine.py, verify_pass.py, summarize_engine.py, bundles.py, files.py (werkzeug.secure_filename must stay a dep or be swapped for an equivalent slugifier), and the seed constants prompts.py + taxonomy.py. These take plain args and return plain data - no request/app-context assumptions.",
+        "Client init under FastAPI: lift extensions._build_client (the USE_VERTEX / ADC-vs-API-key routing) verbatim into a module-level singleton or a lifespan-startup provider; it is framework-agnostic. Split extensions.py so `db` becomes a plain SQLAlchemy engine/session (the app keeps the same SQLite file + WAL/busy_timeout/foreign_keys pragmas via a connect event) instead of Flask-SQLAlchemy. Drop the OpenAI client entirely.",
+        "config.py ports as-is; keep load_dotenv + validate_env fail-fast at startup. Two edits implied by the port: remove OPENAI_API_KEY from REQUIRED_ENV (OpenAI path dropped), and treat GOOGLE_GENAI_USE_VERTEXAI=true as a hard production requirement (currently only a routing flag) so PHI never hits the non-BAA Developer endpoint.",
+        "The classification.py catalog read is the single sanctioned Flask coupling: it reaches the DB through mrr_ai.catalog (Flask-SQLAlchemy db.session + implicit app context) and falls back to taxonomy constants when absent. Under FastAPI, re-seat this on a request-independent session accessor (the classifier runs on worker threads/processes, not inside a request), preserving the version-keyed cache + reset_catalog_cache invalidation seam.",
+        "Job pipeline externalization (Path B): job_queue.py's in-process ThreadPoolExecutor + single-writer Document.status machine + sweep_orphans boot reconciliation are the redesign target for Redis + worker processes. The services it calls (segment_engine.run_segmentation, summarize_engine, verify_pass) are already pure and take a progress(stage,current,total) callback - the callback just needs to write progress to Redis/DB from the worker instead of a Flask-scoped session. Workers must have Tesseract/Poppler + the sentence-transformers model available, and share the one Vertex quota pool (keep PIPELINE_WORKERS/CLASSIFY_WORKERS caps to avoid 429 storms).",
+        "Drop the entire classic surface as one unit: state.py globals, services/jobs.py, services/categorization.py, and the state-based blueprints - they encode the single-process, one-case-at-a-time design and the patient-named-path/OpenAI PHI anti-patterns the multi-user documents flow already replaced.",
+        "audit.py + logging need rewrite for the port: replace flask_security.current_user with the FastAPI auth principal, and introduce a structured logger whose formatter enforces the ids-only rule at the boundary (services currently print() freely). The DB writes stay against the same schema.",
+        "HIPAA re-review scope for the port: (1) PDF-at-rest under UPLOAD_FOLDER/<user_id>/<uuid>.pdf - keep uuid naming, confirm the FastAPI upload handler streams to disk without logging filenames; (2) Summary.source_text and SegmentRow fine-tuning PHI kept in the retained SQLite DB - protect DB-at-rest and export; (3) all four Vertex egress points gated on the BAA/Vertex flag; (4) confirm the local embedding path stays on-box on every worker; (5) verify no request/query-string or log line carries original_filename or OCR text end-to-end."
+      ],
+      "risks": [
+        "The 'no Flask imports' purity is what makes ~10 services trivially portable; the classification->catalog DB read is the ONE crack. If the port does not re-seat that seam cleanly on a FastAPI/worker session, the classifier either loses admin-editable categories (silent fallback to taxonomy constants) or drags a Flask app context into worker processes.",
+        "PHI leaves the box at four Vertex call sites; the ONLY thing keeping that HIPAA-compliant is USE_VERTEX being true at runtime. It is a soft env flag with a Developer-API fallback (extensions L51, config L52-54) - a misconfigured deployment silently ships PHI to the non-BAA endpoint. The port should make Vertex non-optional in production and fail fast otherwise.",
+        "Externalizing the queue multiplies the Vertex quota contention surface: today PIPELINE_WORKERS x CLASSIFY_WORKERS is bounded in one process; independent worker processes each spin up their own pools and can storm the shared quota into sustained 429s. genai_retry backoff mitigates transient 429 but re-raises PerDay/free_tier - capacity planning is required.",
+        "Logging redaction is convention-only (scattered print() + an audit docstring), not an enforced sink. Any new log line in the port that includes original_filename, a state path, or OCR text is an undetected PHI leak; the classic prints of state.pdf_filepath show the pattern already exists.",
+        "files.py depends on werkzeug.secure_filename for path-traversal defense at the upload boundary. FastAPI/Starlette do not bundle werkzeug; dropping it without an equivalent sanitizer reopens a traversal vector on user-supplied filenames.",
+        "extensions.py runs validate_env() and builds clients at IMPORT time. Porting that import-time side effect into FastAPI naively can break test collection and worker bootstrapping; it should move to explicit startup/lifespan wiring.",
+        "prompts.py/taxonomy.py are seed + fallback, but the live source is the DB catalog. If the port re-seeds from constants on a DB that already holds admin edits, it must preserve seed idempotency (seed_catalog) or it will clobber curated categories/prompts."
+      ],
+      "openQuestions": [
+        "Under the external queue, does classification's DB catalog read happen inside worker processes? If so, what session/connection do workers use against the shared SQLite file (WAL helps concurrent readers, but multi-process writers on SQLite are contention-prone) - is a move to Postgres/SQL Server implied for the multi-worker deployment despite the 'keep the same DB' goal?",
+        "Is the OpenAI legacy path (summarize.py/extraction.py + extensions.client) truly dead for the product, or does any user still rely on the classic CSV/individual-record summarize flow? Confirm before dropping OPENAI_API_KEY from REQUIRED_ENV.",
+        "Should Summary.source_text (raw OCR PHI stored for fine-tuning) continue to be persisted in the ported app, or is fine-tuning data collection out of scope for the re-platform (affects DB-at-rest HIPAA scope)?",
+        "For the Vertex client on workers: ADC via GOOGLE_CLOUD_PROJECT (service-account) vs GEMINI_API_KEY - which auth mode is the production target, and are worker hosts provisioned for ADC?",
+        "Does the port need to preserve the progress(stage,current,total) callback contract exactly (segment/categorize/verify stages) for the Next.js UI's progress display, or will polling move to Redis job state with a different shape?",
+        "Are Tesseract + Poppler guaranteed present on the FastAPI hosts and every externalized worker, and is the local sentence-transformers model (all-MiniLM-L6-v2) pre-provisioned there (first-use download is a cold-start + network dependency)?"
+      ]
+    }
+  ],
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Map"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "map:endpoints",
+      "phaseIndex": 1,
+      "phaseTitle": "Map",
+      "agentId": "a48094ef97ed51d0b",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1784070712788,
+      "queuedAt": 1784070710103,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "endpoints",
+      "promptPreview": "Repository: P:\\\\MRR_AI_Source\\\\mrr-line_source (Flask app, Python 3.12, package mrr_ai/, vanilla-JS front-end + Evaluators design system, SQLite via SQLAlchemy, Flask-Security auth, google-genai/Vertex + OpenAI, Tesseract/Poppler OCR). GOAL: this is a READ-ONLY mapping to produce a PORTING SPEC for re-platforming the app to a Next.js (React/TypeScript) front-end + FastAPI (Python) back-end, KEEPIN…",
+      "lastProgressAt": 1784071000960,
+      "tokens": 98448,
+      "toolCalls": 21,
+      "durationMs": 288172,
+      "resultPreview": "{\"track\":\"endpoints\",\"summary\":\"The app exposes 59 blueprint routes across two disjoint surfaces plus Flask-Security's auto-registered auth endpoints. The MODERN account flow is DB-backed and per-user: documents_api (15 routes under /api/documents, every handler owner-scoped via _own() -> 404-on-miss IDOR guard) and admin_api (7 routes under /api/admin, gated by is_admin), plus a handful of pages.…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "map:data-model",
+      "phaseIndex": 1,
+      "phaseTitle": "Map",
+      "agentId": "a533a5f2b6d16d638",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1784070712773,
+      "queuedAt": 1784070710103,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "data-model",
+      "promptPreview": "Repository: P:\\\\MRR_AI_Source\\\\mrr-line_source (Flask app, Python 3.12, package mrr_ai/, vanilla-JS front-end + Evaluators design system, SQLite via SQLAlchemy, Flask-Security auth, google-genai/Vertex + OpenAI, Tesseract/Poppler OCR). GOAL: this is a READ-ONLY mapping to produce a PORTING SPEC for re-platforming the app to a Next.js (React/TypeScript) front-end + FastAPI (Python) back-end, KEEPIN…",
+      "lastProgressAt": 1784070893967,
+      "tokens": 64765,
+      "toolCalls": 9,
+      "durationMs": 181193,
+      "resultPreview": "{\"track\":\"data-model\",\"summary\":\"The persistence layer is a single flask_sqlalchemy `db` (extensions.py:21) with 11 declarative models in models.py. Two of them (Role, User) are Flask-Security mixin models (fsqla_v3); the other nine (Document, Job, SegmentRow, ReviewRow, Summary, Category, Prompt, CatalogMeta, AuditLog) are plain SQLAlchemy and are framework-agnostic. Core domain shape: a Document…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "map:auth-session",
+      "phaseIndex": 1,
+      "phaseTitle": "Map",
+      "agentId": "a1321dfbf7de93d83",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1784070713359,
+      "queuedAt": 1784070710103,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "auth-session",
+      "promptPreview": "Repository: P:\\\\MRR_AI_Source\\\\mrr-line_source (Flask app, Python 3.12, package mrr_ai/, vanilla-JS front-end + Evaluators design system, SQLite via SQLAlchemy, Flask-Security auth, google-genai/Vertex + OpenAI, Tesseract/Poppler OCR). GOAL: this is a READ-ONLY mapping to produce a PORTING SPEC for re-platforming the app to a Next.js (React/TypeScript) front-end + FastAPI (Python) back-end, KEEPIN…",
+      "lastProgressAt": 1784071057279,
+      "tokens": 103395,
+      "toolCalls": 32,
+      "durationMs": 343919,
+      "resultPreview": "{\"track\":\"auth-session\",\"summary\":\"The app uses Flask-Security-Too 5.8.1 (flask-security[common,fsqla]) for the entire auth surface: open self-registration, session-cookie login/logout, CSRF, and the user datastore, layered on Flask-Login + Flask-WTF. Authorization is enforced app-wide by ONE before_request deny-by-default gate in mrr_ai/security.py (everything outside PUBLIC_ENDPOINTS requires a …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "map:job-pipeline",
+      "phaseIndex": 1,
+      "phaseTitle": "Map",
+      "agentId": "aafc9c44a25714fcb",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1784070712793,
+      "queuedAt": 1784070710103,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "job-pipeline",
+      "promptPreview": "Repository: P:\\\\MRR_AI_Source\\\\mrr-line_source (Flask app, Python 3.12, package mrr_ai/, vanilla-JS front-end + Evaluators design system, SQLite via SQLAlchemy, Flask-Security auth, google-genai/Vertex + OpenAI, Tesseract/Poppler OCR). GOAL: this is a READ-ONLY mapping to produce a PORTING SPEC for re-platforming the app to a Next.js (React/TypeScript) front-end + FastAPI (Python) back-end, KEEPIN…",
+      "lastProgressAt": 1784071023582,
+      "tokens": 100544,
+      "toolCalls": 23,
+      "durationMs": 310788,
+      "resultPreview": "{\"track\":\"job-pipeline\",\"summary\":\"The async pipeline has TWO runners. The live multi-user one is services/job_queue.py: a DB-backed queue where jobs persist as Job rows and execute on an in-process ThreadPoolExecutor(max_workers=PIPELINE_WORKERS, default 2), created in init_app and stored on app.extensions[\\\"job_queue\\\"]. submit(document_id, kind, target, ...) is the only entry: under a module-le…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "map:frontend-ui",
+      "phaseIndex": 1,
+      "phaseTitle": "Map",
+      "agentId": "ab6248b9d0b597b8e",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1784070712997,
+      "queuedAt": 1784070710103,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "frontend-ui",
+      "promptPreview": "Repository: P:\\\\MRR_AI_Source\\\\mrr-line_source (Flask app, Python 3.12, package mrr_ai/, vanilla-JS front-end + Evaluators design system, SQLite via SQLAlchemy, Flask-Security auth, google-genai/Vertex + OpenAI, Tesseract/Poppler OCR). GOAL: this is a READ-ONLY mapping to produce a PORTING SPEC for re-platforming the app to a Next.js (React/TypeScript) front-end + FastAPI (Python) back-end, KEEPIN…",
+      "lastProgressAt": 1784071030247,
+      "tokens": 121450,
+      "toolCalls": 24,
+      "durationMs": 317249,
+      "resultPreview": "{\"track\":\"frontend-ui\",\"summary\":\"The modern UI is a server-rendered-shell + vanilla-JS SPA-lite: Flask serves static HTML page shells (pages.py routes) whose behavior lives entirely in hand-written vanilla JS that talks to JSON APIs. There is no build step, no framework, no bundler. Two shared components carry most of the weight: window.MRR (the review-editor engine in review.js, mounted by both …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "map:services-phi",
+      "phaseIndex": 1,
+      "phaseTitle": "Map",
+      "agentId": "ac30e9b82067f9ec6",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1784070713679,
+      "queuedAt": 1784070710103,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "services-phi",
+      "promptPreview": "Repository: P:\\\\MRR_AI_Source\\\\mrr-line_source (Flask app, Python 3.12, package mrr_ai/, vanilla-JS front-end + Evaluators design system, SQLite via SQLAlchemy, Flask-Security auth, google-genai/Vertex + OpenAI, Tesseract/Poppler OCR). GOAL: this is a READ-ONLY mapping to produce a PORTING SPEC for re-platforming the app to a Next.js (React/TypeScript) front-end + FastAPI (Python) back-end, KEEPIN…",
+      "lastProgressAt": 1784070952699,
+      "tokens": 103531,
+      "toolCalls": 31,
+      "durationMs": 239020,
+      "resultPreview": "{\"track\":\"services-phi\",\"summary\":\"The services/ layer is deliberately Flask-free business logic (the \\\"no Flask imports\\\" rule is documented in mrr_ai/services/CLAUDE.md), so the bulk of it ports to FastAPI unchanged: PDF/OCR/window/segment/verify/summarize/bundle logic all take plain args and return plain data, reading only config constants and the pre-built genai_client. The GenAI clients and c…"
+    }
+  ],
+  "totalTokens": 592133,
+  "totalToolCalls": 140
+}
