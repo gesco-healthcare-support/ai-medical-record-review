@@ -1,15 +1,23 @@
 """FastAPI application entry point.
 
-P1 scaffold: just the app + a /health probe. Routers (auth, documents, admin) and the
-global deny-by-default auth middleware land in later phases (see the plan). Models import
-here so `alembic`/tooling can discover the metadata via `app.main`.
+The deny-by-default auth gate (enforce_auth) is attached as an app-level dependency, so every
+route is protected unless its path is on the public allowlist. Auth routers (login/register/reset)
+land in P2c; documents + admin routers in later phases. Models import here so alembic/tooling can
+discover the metadata via `app.main`.
 """
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import RedirectResponse
 
 from app import models  # noqa: F401 - registers all tables on Base.metadata
+from app.auth.deps import AuthRedirect, enforce_auth
 
-app = FastAPI(title="MRR AI API", version="0.1.0")
+app = FastAPI(title="MRR AI API", version="0.1.0", dependencies=[Depends(enforce_auth)])
+
+
+@app.exception_handler(AuthRedirect)
+async def _auth_redirect(request: Request, exc: AuthRedirect) -> RedirectResponse:
+    return RedirectResponse(url="/login", status_code=302)
 
 
 @app.get("/health")

@@ -31,6 +31,12 @@ jobs:
           uv run ruff format --check .
 
       - name: Import smoke (models map, app builds)
+        # Dummy secrets: importing app.main builds the auth backend, which reads Settings. Engines
+        # are lazy, so nothing connects -- this only proves the app + all mappers construct.
+        env:
+          DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci
+          SECRET_KEY: ci-import-smoke
+          SECURITY_PASSWORD_SALT: ci-import-smoke
         run: uv run python -c "from sqlalchemy.orm import configure_mappers; import app.main; configure_mappers(); print('import OK')"
 
   frontend:
