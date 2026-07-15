@@ -14,6 +14,22 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # Postgres service for the auth integration tests (P2c). Same image + credentials as
+    # docker-compose.dev.yml; a fresh empty DB that `alembic upgrade head` builds from the baseline.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mrr
+          POSTGRES_PASSWORD: mrr_dev_only
+          POSTGRES_DB: mrr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mrr -d mrr"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +54,16 @@ jobs:
           SECRET_KEY: ci-import-smoke
           SECURITY_PASSWORD_SALT: ci-import-smoke
         run: uv run python -c "from sqlalchemy.orm import configure_mappers; import app.main; configure_mappers(); print('import OK')"
+
+      - name: Migrate + run tests (unit + integration on Postgres)
+        env:
+          DATABASE_URL: postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr
+          SECRET_KEY: ci-test-secret
+          SECURITY_PASSWORD_SALT: ci-test-salt
+          ENVIRONMENT: dev
+        run: |
+          uv run alembic upgrade head
+          uv run pytest -q
 
   frontend:
     runs-on: ubuntu-latest

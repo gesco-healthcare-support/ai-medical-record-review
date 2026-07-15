@@ -5,10 +5,11 @@ Flask MrrPasswordUtil rule (8+ chars, a digit, a symbol) in validate_password so
 register cannot bypass what the UI enforces. Reset/verification token secrets come from SECRET_KEY.
 """
 
+import logging
 import re
 from collections.abc import AsyncIterator
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi_users import BaseUserManager, IntegerIDMixin
 from fastapi_users.exceptions import InvalidPasswordException
 
@@ -16,6 +17,8 @@ from app.auth.db import get_user_db
 from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.models import User
+
+logger = logging.getLogger(__name__)
 
 _DIGIT = re.compile(r"\d")
 _SYMBOL = re.compile(r"[^A-Za-z0-9]")
@@ -40,6 +43,20 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
             problems.append("a symbol")
         if problems:
             raise InvalidPasswordException(reason="Password must contain " + ", ".join(problems))
+
+    async def on_after_forgot_password(
+        self, user: User, token: str, request: Request | None = None
+    ) -> None:
+        # Email delivery is deferred (P2c); the reset token is generated and returned to the caller
+        # once a mail transport lands. Log ids-only -- never the token (a credential) or the email
+        # (PHI-adjacent), per the boundary logging rule.
+        logger.info("password reset requested user_id=%s", user.id)
+
+    async def on_after_request_verify(
+        self, user: User, token: str, request: Request | None = None
+    ) -> None:
+        # Registration is non-confirmable today; this fires only if verification is enabled later.
+        logger.info("verification requested user_id=%s", user.id)
 
 
 async def get_user_manager(user_db=Depends(get_user_db)) -> AsyncIterator[UserManager]:
