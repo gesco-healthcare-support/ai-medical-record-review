@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 
 from app import models  # noqa: F401 - registers all tables on Base.metadata
+from app.api.admin import router as admin_router
 from app.api.documents import router as documents_router
 from app.auth.deps import AuthRedirect, enforce_auth
 from app.auth.routes import auth_router, users_router
@@ -58,3 +59,4 @@ def health() -> dict[str, str]:
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(documents_router)
+app.include_router(admin_router)
