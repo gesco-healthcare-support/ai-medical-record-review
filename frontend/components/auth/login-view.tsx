@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AuthShell } from "./auth-shell";
 import { SignInForm } from "./sign-in-form";
 import { RegisterForm } from "./register-form";
 import { ForgotForm } from "./forgot-form";
@@ -12,7 +11,7 @@ import { useCurrentUser } from "@/hooks/use-current-user";
 type View = "signin" | "register" | "forgot" | "reset";
 
 /** Single-card auth flow. Initial view comes from ?view / ?token; already-signed-in users
- *  are bounced to the app. */
+ *  are bounced to the app. Each view renders its own AuthShell chrome. */
 export function LoginView() {
   const params = useSearchParams();
   const token = params.get("token");
@@ -32,14 +31,8 @@ export function LoginView() {
     if (user) router.replace("/");
   }, [user, router]);
 
-  return (
-    <AuthShell>
-      {view === "signin" && (
-        <SignInForm onRegister={() => setView("register")} onForgot={() => setView("forgot")} />
-      )}
-      {view === "register" && <RegisterForm onSignIn={() => setView("signin")} />}
-      {view === "forgot" && <ForgotForm onSignIn={() => setView("signin")} />}
-      {view === "reset" && <ResetForm token={token ?? ""} onSignIn={() => setView("signin")} />}
-    </AuthShell>
-  );
+  if (view === "register") return <RegisterForm onSignIn={() => setView("signin")} />;
+  if (view === "forgot") return <ForgotForm onSignIn={() => setView("signin")} />;
+  if (view === "reset") return <ResetForm token={token ?? ""} onSignIn={() => setView("signin")} />;
+  return <SignInForm onRegister={() => setView("register")} onForgot={() => setView("forgot")} />;
 }

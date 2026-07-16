@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Poppins } from "next/font/google";
 import "./globals.css";
+import "./evaluators-ds.css";
 import { Providers } from "./providers";
 import { Toaster } from "@/components/ui/sonner";
 

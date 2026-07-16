@@ -1,20 +1,42 @@
 import type { ReactNode } from "react";
+import Image from "next/image";
 import { Brand } from "@/components/app/brand";
 
-/** Sign-in chrome: navy brand-only header, calm gray-50 field, one centered card (~420px). */
-export function AuthShell({ children }: { children: ReactNode }) {
+/**
+ * Sign-in chrome (mirrors security/base.html): navy brand-only top bar, then a centered card
+ * with the crest, gold eyebrow, and the view's heading, followed by the view's content.
+ */
+export function AuthShell({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  children: ReactNode;
+}) {
   return (
-    <div className="flex min-h-screen flex-col bg-muted">
-      <header className="h-12 w-full shrink-0 bg-navy-600">
-        <div className="mx-auto flex h-full max-w-[1840px] items-center px-[var(--gutter)]">
-          <Brand appLabel="Medical Record Review" />
-        </div>
+    <>
+      <header className="ev-topbar">
+        <Brand />
       </header>
-      <main className="flex flex-1 items-center justify-center px-5 py-10">
-        <div className="w-full max-w-[420px] rounded-xl border border-gray-200 bg-card p-7 shadow-md">
+      <main className="auth-main">
+        <div className="auth-card">
+          <div className="auth-head">
+            <Image
+              className="auth-crest"
+              src="/evaluators-crest.png"
+              alt=""
+              width={48}
+              height={50}
+            />
+            <div className="ev-eyebrow">Medical Record Review</div>
+            <h1>{title}</h1>
+            {subtitle ? <p className="auth-sub">{subtitle}</p> : null}
+          </div>
           {children}
         </div>
       </main>
-    </div>
+    </>
   );
 }

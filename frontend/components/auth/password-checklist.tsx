@@ -12,25 +12,25 @@ export function passwordValid(password: string): boolean {
   return passwordRules.every((rule) => rule.test(password));
 }
 
-/** Live requirements list: each item flips gray to green as it is satisfied while typing. */
+/** Live requirements list (DS .auth-checklist): each item flips gray to green as it is met. */
 export function PasswordChecklist({ password }: { password: string }) {
   return (
-    <ul className="mt-2 grid gap-1" aria-live="polite">
+    <div className="auth-checklist" aria-live="polite">
       {passwordRules.map((rule) => {
-        const ok = rule.test(password);
+        const met = rule.test(password);
         return (
-          <li
-            key={rule.label}
-            className={cn(
-              "flex items-center gap-1.5 text-xs transition-colors",
-              ok ? "text-success" : "text-muted-foreground",
-            )}
-          >
-            {ok ? <Check className="size-3.5" aria-hidden /> : <Circle className="size-3.5" aria-hidden />}
+          <div key={rule.label} className={cn("auth-check", met ? "met" : "unmet")}>
+            <span className="auth-check-icon">
+              {met ? (
+                <Check width={14} height={14} aria-hidden />
+              ) : (
+                <Circle width={14} height={14} aria-hidden />
+              )}
+            </span>
             {rule.label}
-          </li>
+          </div>
         );
       })}
-    </ul>
+    </div>
   );
 }
