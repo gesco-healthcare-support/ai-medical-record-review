@@ -26,7 +26,9 @@ function useDocsMutation<TArgs, TResult>(mutationFn: (args: TArgs) => Promise<TR
 
 export const useUploadDocument = () => useDocsMutation((file: File) => api.uploadDocument(file));
 export const useAggregateDocuments = () =>
-  useDocsMutation((files: File[]) => api.aggregateDocuments(files));
+  useDocsMutation((vars: { name: string; files: File[] }) =>
+    api.aggregateDocuments(vars.name, vars.files),
+  );
 export const useDeleteDocument = () => useDocsMutation((id: string) => api.deleteDocument(id));
 export const useStartIdentification = () =>
   useDocsMutation((id: string) => api.startIdentification(id));

@@ -15,7 +15,7 @@ import os
 import re
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -151,11 +151,13 @@ def create_document(
 @router.post("/aggregate", status_code=status.HTTP_201_CREATED)
 def aggregate_documents(
     pdfs: list[UploadFile] = File(default=[]),
+    name: str = Form(default=""),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
     """Individual-record upload: merge several pre-split PDFs into one Document, seed one ReviewRow
-    per source file (by page range), and enqueue a classify job to auto-categorize them."""
+    per source file (by page range), and enqueue a classify job to auto-categorize them. The
+    optional `name` becomes the record's display name (shown to its owner only)."""
     sources = [(safe_name(f.filename), f.file.read()) for f in pdfs if f.filename]
     if not sources:
         raise HTTPException(status_code=400, detail="no PDFs uploaded")
@@ -174,7 +176,7 @@ def aggregate_documents(
     document = Document(
         id=document_id,
         user_id=user.id,
-        original_filename="aggregated-records.pdf",
+        original_filename=name.strip()[:512] or "aggregated-records.pdf",
         stored_path=stored_path,
         sha256=_sha256(stored_path),
         page_count=page_count,

@@ -16,9 +16,11 @@ export function uploadDocument(file: File) {
   });
 }
 
-/** POST /api/documents/aggregate - combine several pre-split PDFs into one record (field "pdfs"). */
-export function aggregateDocuments(files: File[]) {
+/** POST /api/documents/aggregate - combine several pre-split PDFs into one record (field "pdfs"),
+ *  with an optional display name for the record. */
+export function aggregateDocuments(name: string, files: File[]) {
   const form = new FormData();
+  if (name.trim()) form.append("name", name.trim());
   for (const file of files) form.append("pdfs", file);
   return apiFetch<{ id: string; page_count: number; records: unknown[] }>("/documents/aggregate", {
     method: "POST",
