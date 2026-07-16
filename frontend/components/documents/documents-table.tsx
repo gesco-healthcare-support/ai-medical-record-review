@@ -70,8 +70,8 @@ export function DocumentsTable({
 }: {
   docs: DocumentListItem[];
   onOpen: (id: string) => void;
-  onIdentify: (doc: DocumentListItem) => void;
-  onDelete: (doc: DocumentListItem) => void;
+  onIdentify?: (doc: DocumentListItem) => void;
+  onDelete?: (doc: DocumentListItem) => void;
 }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -193,19 +193,25 @@ export function DocumentsTable({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-52">
                         <DropdownMenuItem onSelect={() => onOpen(doc.id)}>Open</DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={Boolean(doc.active_job)}
-                          onSelect={() => onIdentify(doc)}
-                        >
-                          {doc.rows_count ? "Re-run identification" : "Start identification"}
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                          onSelect={() => onDelete(doc)}
-                        >
-                          Delete...
-                        </DropdownMenuItem>
+                        {onIdentify ? (
+                          <DropdownMenuItem
+                            disabled={Boolean(doc.active_job)}
+                            onSelect={() => onIdentify(doc)}
+                          >
+                            {doc.rows_count ? "Re-run identification" : "Start identification"}
+                          </DropdownMenuItem>
+                        ) : null}
+                        {onDelete ? (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                              onSelect={() => onDelete(doc)}
+                            >
+                              Delete...
+                            </DropdownMenuItem>
+                          </>
+                        ) : null}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </td>

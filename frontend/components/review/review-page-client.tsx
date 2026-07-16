@@ -1,274 +1,45 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { ApiError } from "@/lib/api";
-import {
-  getDocument,
-  getStatus,
-  saveRows,
-  startSegment,
-  startSummarize,
-} from "@/lib/review-api";
-import type { CategoryOption, DocumentStatus } from "@/lib/types";
-import {
-  rowErrors,
-  sortRows,
-  stripKeys,
-  withKeys,
-  type EditorRow,
-} from "@/lib/review-rows";
-import { Stepper, type StepId } from "./stepper";
+import { useReviewWorkflow } from "@/hooks/use-review-workflow";
+import { Stepper } from "./stepper";
 import { StartPanel } from "./start-panel";
 import { ProgressPanel } from "./progress-panel";
-import { ReviewEditor, type SaveState } from "./review-editor";
+import { ReviewEditor } from "./review-editor";
 import { SummariesView } from "./summaries-view";
 
-type Section = "loading" | "start" | "progress" | "editor" | "summaries";
-
-const STAGE_LABELS: Record<string, string> = {
-  starting: "Starting...",
-  segmenting: "Reading the record and finding document boundaries",
-  categorizing: "Categorizing each document",
-  verifying: "Double-checking uncertain boundaries",
-  summarizing: "Writing summaries",
-};
-
-function message(err: unknown, fallback: string) {
-  return err instanceof Error ? err.message : fallback;
-}
-
-/** The /records/[id] state machine: boot from persisted state, then move freely between the
- *  identify / review / summaries steps. Rows autosave; jobs drive a 1s progress poll. */
+/** The /records/[id] screen: the shared identify/review/summaries workflow plus the 3-step
+ *  stepper. All lifecycle state lives in useReviewWorkflow; this component just renders it. */
 export function ReviewPageClient({ documentId }: { documentId: string }) {
-  const [section, setSection] = useState<Section>("loading");
-  const [activeStep, setActiveStep] = useState<StepId>("identify");
-  const [rows, setRows] = useState<EditorRow[]>([]);
-  const [categories, setCategories] = useState<CategoryOption[]>([]);
-  const [totalPages, setTotalPages] = useState(0);
-  const [, setStatus] = useState<DocumentStatus | "">("");
-  const [filename, setFilename] = useState("");
-  const [banner, setBanner] = useState("");
-  const [watching, setWatching] = useState(false);
-  const [startHint, setStartHint] = useState("");
-  const [progress, setProgress] = useState({ title: "Working...", pct: 4, detail: "Starting..." });
-  const [saveState, setSaveState] = useState<SaveState>({ kind: "" });
-
-  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  function clearPoll() {
-    if (pollTimer.current) clearTimeout(pollTimer.current);
-    pollTimer.current = null;
-  }
-
-  const enterEditor = () => {
-    setSection("editor");
-    setActiveStep("review");
-  };
-  const showSummaries = () => {
-    setSection("summaries");
-    setActiveStep("summaries");
-  };
-  const showStart = (hint = "") => {
-    setStartHint(hint);
-    setSection("start");
-    setActiveStep("identify");
-  };
-
-  function pollJob(title: string, step: StepId): Promise<void> {
-    clearPoll();
-    setActiveStep(step);
-    setSection("progress");
-    setProgress({ title, pct: 4, detail: "Starting..." });
-    return new Promise((resolve, reject) => {
-      const tick = async () => {
-        let snap: Awaited<ReturnType<typeof getStatus>>;
-        try {
-          snap = await getStatus(documentId);
-        } catch (err) {
-          reject(err);
-          return;
-        }
-        const job = snap.job;
-        if (!job) {
-          resolve();
-          return;
-        }
-        const pct = job.total ? Math.round((100 * job.current) / job.total) : 5;
-        const label = STAGE_LABELS[job.stage] || job.stage || "Working";
-        setProgress({
-          title,
-          pct: Math.max(pct, 4),
-          detail: job.total ? `${label} (${job.current}/${job.total})` : label,
-        });
-        if (job.state === "done") return resolve();
-        if (job.state === "error") return reject(new Error(job.error || "the run failed"));
-        if (job.state === "interrupted") return reject(new Error("the run was interrupted"));
-        pollTimer.current = setTimeout(tick, 1000);
-      };
-      void tick();
-    });
-  }
-
-  async function watchSegment() {
-    setWatching(true);
-    try {
-      await pollJob("Identifying documents", "identify");
-      const detail = await getDocument(documentId);
-      setRows(sortRows(withKeys(detail.rows || [])));
-      setStatus(detail.status);
-      setWatching(false);
-      enterEditor();
-    } catch (err) {
-      setWatching(false);
-      setBanner(message(err, "identification failed"));
-      showStart();
-    }
-  }
-
-  async function watchSummarize() {
-    setWatching(true);
-    try {
-      await pollJob("Summarizing documents", "summaries");
-      setStatus("done");
-      setWatching(false);
-      showSummaries();
-    } catch (err) {
-      setWatching(false);
-      setBanner(message(err, "summarization failed"));
-      if (rows.length) enterEditor();
-      else showStart();
-    }
-  }
-
-  // Boot once per document id (StrictMode-safe: clearPoll makes the poll single-flight).
-  useEffect(() => {
-    let cancelled = false;
-    async function boot() {
-      let detail: Awaited<ReturnType<typeof getDocument>>;
-      try {
-        detail = await getDocument(documentId);
-      } catch (err) {
-        if (!cancelled) {
-          setBanner(`Could not load this document: ${message(err, "error")}`);
-          showStart();
-        }
-        return;
-      }
-      if (cancelled) return;
-      setTotalPages(detail.page_count);
-      setCategories(detail.categories || []);
-      setRows(sortRows(withKeys(detail.rows || [])));
-      setStatus(detail.status);
-      setFilename(detail.original_filename || "");
-
-      const job = detail.active_job;
-      if (job?.kind === "segment") return void watchSegment();
-      if (job?.kind === "summarize") return void watchSummarize();
-      if (detail.status === "done") return showSummaries();
-      if (detail.status === "error") setBanner("The last run failed - you can start again.");
-      else if (detail.status === "interrupted") setBanner("The last run was interrupted - start again.");
-      if ((detail.rows || []).length) return enterEditor();
-      showStart();
-    }
-    void boot();
-    return () => {
-      cancelled = true;
-      clearPoll();
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId]);
-
-  function gotoStep(step: StepId) {
-    if (watching) return; // a running job holds the screen; navigating would fight the auto-advance
-    setBanner("");
-    if (step === "identify") showStart();
-    else if (step === "review") {
-      if (rows.length) enterEditor();
-      else showStart("No documents identified yet - run identification first.");
-    } else {
-      showSummaries();
-    }
-  }
-
-  async function onStart() {
-    if (
-      rows.length &&
-      !window.confirm(
-        "Re-running identification replaces the current document list AND your corrections. Continue?",
-      )
-    ) {
-      return;
-    }
-    setBanner("");
-    try {
-      await startSegment(documentId);
-      await watchSegment();
-    } catch (err) {
-      setBanner(message(err, "Could not start identification."));
-      showStart();
-    }
-  }
-
-  async function onSummarize() {
-    setBanner("");
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    try {
-      await startSummarize(documentId, stripKeys(sortRows(rows)));
-      await watchSummarize();
-    } catch (err) {
-      setBanner(message(err, "Could not start summarization."));
-      enterEditor();
-    }
-  }
-
-  function onRowsChange(next: EditorRow[]) {
-    const sorted = sortRows(next);
-    setRows(sorted);
-    setSaveState({ kind: "dirty", message: "Unsaved changes..." });
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      if (!sorted.length || rowErrors(sorted, totalPages).size) return; // invalid states stay local
-      saveRows(documentId, stripKeys(sorted))
-        .then(() => setSaveState({ kind: "saved" }))
-        .catch((err) =>
-          setSaveState({
-            kind: "error",
-            message: `Not saved: ${err instanceof ApiError ? err.message : "error"}`,
-          }),
-        );
-    }, 800);
-  }
+  const wf = useReviewWorkflow(documentId);
 
   return (
     <>
-      <Stepper activeStep={activeStep} busy={watching} onStep={gotoStep} />
-      {banner ? <div className="banner">{banner}</div> : null}
+      <Stepper activeStep={wf.activeStep} busy={wf.watching} onStep={wf.gotoStep} />
+      {wf.banner ? <div className="banner">{wf.banner}</div> : null}
       <main>
-        {section === "start" ? (
-          <StartPanel rerun={rows.length > 0} hint={startHint} onStart={onStart} />
+        {wf.section === "start" ? (
+          <StartPanel rerun={wf.rows.length > 0} hint={wf.startHint} onStart={wf.onStart} />
         ) : null}
-        {section === "progress" ? (
-          <ProgressPanel title={progress.title} pct={progress.pct} detail={progress.detail} />
+        {wf.section === "progress" ? (
+          <ProgressPanel title={wf.progress.title} pct={wf.progress.pct} detail={wf.progress.detail} />
         ) : null}
-        {section === "editor" ? (
+        {wf.section === "editor" ? (
           <ReviewEditor
             documentId={documentId}
-            filename={filename}
-            rows={rows}
-            categories={categories}
-            totalPages={totalPages}
-            saveState={saveState}
-            onRowsChange={onRowsChange}
-            onSummarize={onSummarize}
+            filename={wf.filename}
+            rows={wf.rows}
+            categories={wf.categories}
+            totalPages={wf.totalPages}
+            saveState={wf.saveState}
+            onRowsChange={wf.onRowsChange}
+            onSummarize={wf.onSummarize}
           />
         ) : null}
-        {section === "summaries" ? (
+        {wf.section === "summaries" ? (
           <SummariesView
             documentId={documentId}
-            categories={categories}
-            onGotoReview={() => gotoStep("review")}
+            categories={wf.categories}
+            onGotoReview={() => wf.gotoStep("review")}
           />
         ) : null}
       </main>

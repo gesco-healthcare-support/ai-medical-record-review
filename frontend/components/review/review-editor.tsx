@@ -24,6 +24,7 @@ export function ReviewEditor({
   saveState,
   onRowsChange,
   onSummarize,
+  showSummarize = true,
 }: {
   documentId: string;
   filename: string;
@@ -32,7 +33,8 @@ export function ReviewEditor({
   totalPages: number;
   saveState: SaveState;
   onRowsChange: (rows: EditorRow[]) => void;
-  onSummarize: () => void;
+  onSummarize?: () => void;
+  showSummarize?: boolean;
 }) {
   const pdfRef = useRef<PdfViewerHandle>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -221,14 +223,18 @@ export function ReviewEditor({
                 + Insert document
               </button>
             )}
-            <button
-              type="button"
-              className="ev-btn ev-btn-primary ev-btn-lg"
-              disabled={errors.size > 0 || included === 0}
-              onClick={onSummarize}
-            >
-              {included ? `Summarize ${included} document${included === 1 ? "" : "s"}` : "Summarize"}
-            </button>
+            {showSummarize ? (
+              <button
+                type="button"
+                className="ev-btn ev-btn-primary ev-btn-lg"
+                disabled={errors.size > 0 || included === 0}
+                onClick={onSummarize}
+              >
+                {included
+                  ? `Summarize ${included} document${included === 1 ? "" : "s"}`
+                  : "Summarize"}
+              </button>
+            ) : null}
           </div>
         </div>
         <div className="editor-split">
