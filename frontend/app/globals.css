@@ -1,76 +1,170 @@
-/* Evaluators design tokens, ported from the Flask app's evaluators.css :root so the React UI
-   reproduces the same system. Components (buttons, tables, dialogs) get rebuilt as React
-   components in P7; this is the shared token foundation. */
-:root {
-  /* Navy - brand spine */
-  --navy-900: #1b2543;
-  --navy-700: #2a3760;
-  --navy-600: #32416c;
-  --navy-400: #5a6a99;
-  --navy-300: #8c98b8;
-  --navy-100: #e2e6ef;
-  --navy-50: #f1f3f8;
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ---------------------------------------------------------------------------
+   Evaluators Design System -> Tailwind v4 theme.
+   Canonical values from the Claude Design handoff (handoff/tokens.md), which
+   mirror _ds/evaluators-design-system/tokens/*.css. Light-only workbench.
+   --------------------------------------------------------------------------- */
+@theme {
+  /* Navy - brand spine (600 = brand) */
+  --color-navy-50: #f1f3f8;
+  --color-navy-100: #e2e6ef;
+  --color-navy-200: #bdc5d8;
+  --color-navy-300: #8c98b8;
+  --color-navy-400: #5a6a99;
+  --color-navy-500: #3e4e80;
+  --color-navy-600: #32416c;
+  --color-navy-700: #2a3760;
+  --color-navy-800: #232e54;
+  --color-navy-900: #1b2543;
+
   /* Gold - sparing accent */
-  --gold-700: #997b33;
-  --gold-600: #c2a14d;
-  --gold-400: #dcc07e;
-  --gold-100: #faf4e6;
-  /* Accent blue - links, focus, edited state */
-  --blue-600: #1a43bc;
-  --blue-500: #1f4ed8;
-  --blue-100: #e5ecfd;
+  --color-gold-100: #faf4e6;
+  --color-gold-200: #f2e7c9;
+  --color-gold-300: #e8d5a3;
+  --color-gold-400: #dcc07e;
+  --color-gold-500: #cfae5c;
+  --color-gold-600: #c2a14d;
+  --color-gold-700: #997b33;
+  --color-gold-800: #7c6228;
+  --color-gold-900: #5e561f;
+
+  /* Blue - links, focus, info */
+  --color-blue-100: #e5ecfd;
+  --color-blue-500: #1f4ed8;
+  --color-blue-600: #1a43bc;
+
   /* Neutrals */
-  --gray-50: #f4f6f9;
-  --gray-100: #e7eaf0;
-  --gray-200: #d2d7e0;
-  --gray-300: #a9b0bf;
-  --gray-400: #828a9b;
-  --gray-500: #5e6678;
-  --gray-600: #434b5e;
-  --gray-700: #2c3344;
-  --ink: #1a1f2e;
-  /* Semantic */
-  --success-500: #1f8a5b;
-  --success-100: #e3f3ec;
-  --warning-500: #c2820e;
-  --warning-100: #faf0d9;
-  --danger-500: #c23934;
-  --danger-100: #fbe7e6;
-  /* Roles */
-  --color-border: var(--gray-200);
-  --color-border-strong: var(--gray-300);
-  --color-border-focus: var(--blue-500);
-  --color-text-muted: var(--gray-500);
-  --color-text-on-navy: #dde3f0;
-  --shadow-focus: 0 0 0 3px color-mix(in srgb, #1f4ed8 40%, transparent);
-  --shadow-md: 0 10px 30px rgba(27, 37, 67, 0.12);
-  --shadow-lg: 0 16px 40px rgba(27, 37, 67, 0.18);
-  /* Shape */
-  --radius-sm: 6px;
+  --color-gray-50: #f4f6f9;
+  --color-gray-100: #e7eaf0;
+  --color-gray-200: #d2d7e0;
+  --color-gray-300: #a9b0bf;
+  --color-gray-400: #828a9b;
+  --color-gray-500: #5e6678;
+  --color-gray-600: #434b5e;
+  --color-gray-700: #2c3344;
+  --color-ink: #1a1f2e;
+
+  /* Semantic status tones (DEFAULT + soft band) */
+  --color-success: #1f8a5b;
+  --color-success-soft: #e3f3ec;
+  --color-warning: #c2820e;
+  --color-warning-soft: #faf0d9;
+  --color-danger: #c23934;
+  --color-danger-soft: #fbe7e6;
+
+  /* Text on the navy app bar */
+  --color-on-navy: #dde3f0;
+
+  /* Radii (handoff: pills use rounded-full) */
+  --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  --radius-pill: 999px;
-  /* Fluid layout */
-  --gutter: clamp(20px, 3.5vw, 72px);
-  --content-cap: 2560px;
-  /* Type */
-  --font-heading: "Poppins";
-  --font-body: "Inter";
+  --radius-xl: 16px;
+
+  /* Elevation */
+  --shadow-xs: 0 1px 2px rgba(27, 37, 67, 0.06);
+  --shadow-sm: 0 1px 3px rgba(27, 37, 67, 0.08), 0 1px 2px rgba(27, 37, 67, 0.06);
+  --shadow-md: 0 4px 12px rgba(27, 37, 67, 0.08), 0 2px 4px rgba(27, 37, 67, 0.05);
+  --shadow-lg: 0 12px 28px rgba(27, 37, 67, 0.12), 0 4px 8px rgba(27, 37, 67, 0.06);
+  --shadow-xl: 0 24px 48px rgba(27, 37, 67, 0.16);
+  --shadow-modal: 0 20px 50px rgba(27, 37, 67, 0.28);
+  --shadow-focus: 0 0 0 3px rgb(31 78 216 / 0.4);
+
+  /* Type - Poppins headings, Inter body, mono for the prompt editor.
+     next/font sets --font-poppins / --font-inter on <html> in layout.tsx. */
+  --font-sans: var(--font-inter), "Segoe UI", system-ui, sans-serif;
+  --font-heading: var(--font-poppins), "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  /* Fluid title sizes (body/table sizes stay fixed for dense legibility) */
+  --text-page-title: clamp(1.5rem, 1.25rem + 0.6vw, 2.125rem);
+  --text-page-title--line-height: 1.15;
+  --text-page-title--letter-spacing: -0.02em;
+  --text-section-title: clamp(1.375rem, 1.25rem + 0.3vw, 1.6875rem);
+  --text-section-title--line-height: 1.2;
 }
 
-* {
-  box-sizing: border-box;
+/* shadcn semantic slots mapped onto the Evaluators palette. Kept as :root vars
+   so radix-nova components that read raw var(--primary), var(--secondary), etc.
+   resolve correctly (and @theme inline below exposes the bg- and text- utilities). */
+:root {
+  --background: #ffffff;
+  --foreground: var(--color-ink);
+  --card: #ffffff;
+  --card-foreground: var(--color-ink);
+  --popover: #ffffff;
+  --popover-foreground: var(--color-ink);
+  --primary: var(--color-navy-600);
+  --primary-foreground: #ffffff;
+  --secondary: var(--color-blue-500);
+  --secondary-foreground: #ffffff;
+  --muted: var(--color-gray-50);
+  --muted-foreground: var(--color-gray-500);
+  --accent: var(--color-gray-50);
+  --accent-foreground: var(--color-navy-600);
+  --destructive: var(--color-danger);
+  --destructive-foreground: #ffffff;
+  --border: var(--color-gray-200);
+  --input: var(--color-gray-200);
+  --ring: var(--color-blue-500);
+  --radius: 0.5rem;
+
+  /* Fluid horizontal gutter - shared by the app container (see Container). */
+  --gutter: clamp(20px, 4vw, 96px);
 }
-html,
-body {
-  margin: 0;
-  min-height: 100%;
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 }
-body {
-  font: 14px/1.5 var(--font-body), "Segoe UI", system-ui, sans-serif;
-  color: var(--ink);
-  background: var(--gray-50);
-}
-a {
-  color: var(--blue-500);
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    margin: 0;
+    min-height: 100%;
+    background: var(--color-gray-50);
+    color: var(--foreground);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  a {
+    color: var(--color-blue-500);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
