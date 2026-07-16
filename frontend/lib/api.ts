@@ -17,7 +17,14 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
   const method = (options.method ?? "GET").toUpperCase();
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
-  if (method !== "GET" && method !== "HEAD" && options.body && !headers.has("Content-Type")) {
+  // FormData sets its own multipart boundary content-type; only default to JSON otherwise.
+  if (
+    method !== "GET" &&
+    method !== "HEAD" &&
+    options.body &&
+    !headers.has("Content-Type") &&
+    !(options.body instanceof FormData)
+  ) {
     headers.set("Content-Type", "application/json");
   }
   const resp = await fetch(`/api${path}`, { ...options, headers, credentials: "include" });

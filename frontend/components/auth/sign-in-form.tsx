@@ -45,7 +45,7 @@ export function SignInForm({
             id="email"
             type="email"
             className="ev-inp"
-            placeholder="you@practice.com"
+            placeholder="you@email.com"
             autoComplete="email"
             autoFocus
             required

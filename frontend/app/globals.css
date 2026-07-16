@@ -117,3 +117,14 @@
   color: var(--blue-600);
   text-decoration: underline;
 }
+
+/* Unstyled button wrapping a sortable table-header label (keeps the th's font/color). */
+.hd-sortbtn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
