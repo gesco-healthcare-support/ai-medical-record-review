@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+secrets/*
+!secrets/.gitkeep
 
 # ---- PHI: NEVER commit patient data ----
 # Uploaded medical records, generated outputs, and any extracted page maps.
