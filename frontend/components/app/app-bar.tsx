@@ -9,7 +9,7 @@ import { UserMenu } from "./user-menu";
 export function AppBar({ action }: { action?: ReactNode }) {
   return (
     <header className="ev-topbar">
-      <Brand />
+      <Brand homeLink />
       <div className="ev-topbar-nav">
         {action}
         <UserMenu />

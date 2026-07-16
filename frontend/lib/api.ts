@@ -28,7 +28,13 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
     headers.set("Content-Type", "application/json");
   }
   const resp = await fetch(`/api${path}`, { ...options, headers, credentials: "include" });
-  if (resp.status === 401) throw new ApiError("signed out", 401);
+  if (resp.status === 401) {
+    // Session gone -> go to login (guard against a loop when already there).
+    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      window.location.assign("/login");
+    }
+    throw new ApiError("signed out", 401);
+  }
   const data = resp.status === 204 ? null : await resp.json().catch(() => null);
   if (!resp.ok) {
     const body = data as { detail?: string; error?: string } | null;

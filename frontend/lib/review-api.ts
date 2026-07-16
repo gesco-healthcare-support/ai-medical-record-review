@@ -1,5 +1,11 @@
 import { apiFetch } from "@/lib/api";
-import type { DocumentDetail, DocumentStatus, JobProgress, Row } from "@/lib/types";
+import type {
+  DocumentDetail,
+  DocumentStatus,
+  JobProgress,
+  Row,
+  SummaryItem,
+} from "@/lib/types";
 
 /** GET /api/documents/{id} - full editor payload (listing + rows + category options). */
 export function getDocument(id: string) {
@@ -31,5 +37,34 @@ export function startSummarize(id: string, rows: Row[]) {
   return apiFetch<{ ok: boolean }>(`/documents/${id}/summarize/start`, {
     method: "POST",
     body: JSON.stringify({ rows }),
+  });
+}
+
+/** GET /api/documents/{id}/summaries - the drafted summaries (all; paginated client-side). */
+export function getSummaries(id: string) {
+  return apiFetch<SummaryItem[]>(`/documents/${id}/summaries`);
+}
+
+/** PUT /api/documents/{id}/summaries/{idx} - reviewer edits (title/date/text) or exclude toggle. */
+export function putSummary(
+  id: string,
+  idx: number,
+  patch: Partial<{
+    summaryTitle: string;
+    summaryDate: string;
+    summaryText: string;
+    excluded: boolean;
+  }>,
+) {
+  return apiFetch<SummaryItem>(`/documents/${id}/summaries/${idx}`, {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** POST /api/documents/{id}/summaries/{idx}/resummarize - re-run one summary (discards edits). */
+export function resummarize(id: string, idx: number) {
+  return apiFetch<SummaryItem>(`/documents/${id}/summaries/${idx}/resummarize`, {
+    method: "POST",
   });
 }

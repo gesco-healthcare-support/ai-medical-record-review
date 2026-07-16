@@ -59,6 +59,18 @@ export type Row = {
 /** A selectable category ({id, name}) from catalog.get_category_options. */
 export type CategoryOption = { id: string; name: string };
 
+/** A drafted summary (Summary.listing()). */
+export type SummaryItem = {
+  idx: number;
+  summaryTitle: string;
+  summaryDate: string;
+  summaryText: string;
+  manualCheck: boolean;
+  excluded: boolean;
+  edited: boolean;
+  row: { start: number; end: number; category: string };
+};
+
 /** GET /api/documents/{id} - the full editor payload (listing + rows + category options). */
 export type DocumentDetail = {
   id: string;

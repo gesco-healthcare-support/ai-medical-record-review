@@ -128,3 +128,13 @@
   color: inherit;
   cursor: pointer;
 }
+
+/* Pipeline stepper steps are buttons (keyboard/a11y) styled by the DS .ev-step rules. */
+button.ev-step {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+}
