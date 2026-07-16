@@ -4,7 +4,7 @@
 # Vendored third-party code (PDF.js viewer) is not ours to lint/format, and its
 # multi-MB bundles are not patient PDFs - skip all hooks there. The large-file
 # guard still protects every path we author.
-exclude: ^mrr_ai/static/vendor/
+exclude: ^(mrr_ai/static/vendor/|frontend/public/pdfjs/)
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit

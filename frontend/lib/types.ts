@@ -42,3 +42,32 @@ export type DocumentListItem = {
   active_job: JobProgress | null;
   rows_count: number;
 };
+
+/** A sub-document row in the review editor (ReviewRow.as_row()). */
+export type Row = {
+  start: number;
+  end: number;
+  category: string;
+  title: string;
+  date: string;
+  injury_date: string;
+  flag: string;
+  suggest_merge: boolean;
+  include: boolean;
+};
+
+/** A selectable category ({id, name}) from catalog.get_category_options. */
+export type CategoryOption = { id: string; name: string };
+
+/** GET /api/documents/{id} - the full editor payload (listing + rows + category options). */
+export type DocumentDetail = {
+  id: string;
+  original_filename: string;
+  page_count: number;
+  status: DocumentStatus;
+  created_at: string;
+  updated_at: string;
+  active_job: JobProgress | null;
+  rows: Row[];
+  categories: CategoryOption[];
+};
