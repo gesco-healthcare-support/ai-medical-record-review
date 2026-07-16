@@ -57,17 +57,33 @@ Rebuild after code changes: `docker compose build <service> && docker compose up
 ## What Adrian must provide
 
 - The REAL `SECURITY_PASSWORD_SALT` (from the legacy mrr_ai `.env`) to test a migrated login.
-  New accounts work with any salt.
-- Vertex ADC / SA key at `./secrets/vertex-sa.json` (+ `GOOGLE_CLOUD_PROJECT`) to run the AI jobs
-  (identify / summarize / bundle-summarize / reprocess). Without it the app runs and every
-  non-AI path works; AI jobs fail at runtime only.
+  New accounts work with any salt. (Already present in the repo-root `.env`, which compose reads.)
+- Vertex credentials in the containers, to run the AI jobs (identify / summarize / bundle-summarize
+  / reprocess). Two options:
+  - Service-account key (best for the server): drop it at `./secrets/vertex-sa.json` and set
+    `GOOGLE_APPLICATION_CREDENTIALS=/secrets/vertex-sa.json` in `.env`.
+  - gcloud USER ADC (fine for a local demo; token reauths over time): copy the host ADC file into
+    the mounted secrets dir and point at it:
+        cp "$APPDATA/gcloud/application_default_credentials.json" secrets/adc.json
+    then `GOOGLE_APPLICATION_CREDENTIALS=/secrets/adc.json` in `.env`.
+- `GOOGLE_CLOUD_LOCATION=us-central1` (NOT `global`): the gen-lang-client project has NO Vertex
+  quota in `global` (see [[mrr-ai-vertex-auth-quota]]) - every AI call 429s otherwise.
 
-## Known limitations (local)
+Without Vertex creds the app runs and every non-AI path works; AI jobs fail at runtime only.
 
-- The migration copies the DATABASE (users, categories, prompts, document metadata, review rows,
-  summaries). The migrated documents' original PDF FILES are not copied into the uploads volume,
-  so viewing/re-processing a migrated doc's pages needs a separate file copy; NEW uploads work
-  fully. Flag for the server runbook.
+## Migrated document files (making migrated records viewable/processable)
+
+The DB migration copies document METADATA (stored_path pointed at the legacy host path
+`...\uploads\<user_id>\<doc_id>.pdf`). To make migrated records open, copy the legacy PDFs into
+the uploads volume and rewrite stored_path to the container path:
+
+    MSYS_NO_PATHCONV=1 docker compose cp ./uploads/1 api:/app/uploads/
+    docker compose exec -T postgres psql -U mrr -d mrr -c \
+      "UPDATE documents SET stored_path = '/app/uploads/' || user_id || '/' || id || '.pdf' \
+       WHERE stored_path NOT LIKE '/app/%';"
+
+Adjust the source dir (`./uploads/1`) to wherever the legacy PDFs live. On the SERVER, copy the
+Flask upload tree into the volume the same way, then run the same UPDATE.
 
 ## When cutting to the server (P8 proper, later)
 
