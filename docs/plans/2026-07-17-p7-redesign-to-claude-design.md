@@ -1,8 +1,14 @@
 # P7 redesign — align the workbench screens with the Claude Design
 
-status: draft (awaiting Adrian's approval)
+status: BUILT + pushed 2026-07-17 (commits 76ec596 review+bundle+summaries+shared, 9275e81 admin)
 branch: feat/nextjs-fastapi-rewrite
 approach: code (UI; verify-after with Playwright against the design screenshots)
+
+**Built:** PdfViewer (01dc2e7); Review editor tabs + single-row table + SplitPane + Auto-fill;
+Summaries badges/label renames; Bundles picker + read-only matches + aside (embedded editor dropped);
+Admin name/description + examples cols + prompt reference-panel/revert + reprocess select. Verified via
+typecheck + `docker compose build web` + Playwright (review/summaries/bundles). Admin table awaits
+Adrian's admin-login click-test (no design screenshot; classifier blocked self-granting admin).
 
 ## Why
 
