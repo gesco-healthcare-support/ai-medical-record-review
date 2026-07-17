@@ -809,48 +809,6 @@ body[data-bundle-slug] #step-editor { flex: none; }
     .rce-viewer { height: 70vh; }
 }
 
-/* ---------- single-row sub-documents table ---------- */
-#rowsTable th.rc-c-pages, #rowsTable td.rc-c-pages { width: 138px; }
-#rowsTable th.rc-c-cat, #rowsTable td.rc-c-cat { min-width: 200px; }
-#rowsTable th.rc-c-title, #rowsTable td.rc-c-title { min-width: 170px; }
-#rowsTable th.rc-c-date, #rowsTable td.rc-c-date { width: 112px; }
-#rowsTable th.rc-c-injury, #rowsTable td.rc-c-injury { width: 112px; }
-#rowsTable th.rc-c-check, #rowsTable td.rc-c-check { width: 62px; text-align: center; }
-#rowsTable th.rc-c-tools, #rowsTable td.rc-c-tools { width: 100px; }
-.rc-pages { display: flex; align-items: center; gap: 6px; }
-.rc-pages .rc-dash { color: var(--gray-400); flex: none; }
-.rc-pagenum { width: 54px; text-align: center; padding-left: 6px; padding-right: 6px; }
-#rowsTable td.rc-c-title { padding-top: 4px; padding-bottom: 4px; }
-.rc-rowtools { display: inline-flex; gap: 2px; opacity: 0; transition: opacity .12s; }
-#rowsTable tbody tr:hover .rc-rowtools,
-#rowsTable tbody tr:focus-within .rc-rowtools { opacity: 1; }
-.rc-iconbtn {
-    width: 28px; height: 28px; display: inline-grid; place-items: center;
-    border: none; background: transparent; border-radius: var(--radius-sm);
-    color: var(--gray-500); cursor: pointer; transition: background .12s, color .12s;
-}
-.rc-iconbtn:hover:not(:disabled) { background: var(--navy-50); color: var(--navy-600); }
-.rc-iconbtn.danger:hover:not(:disabled) { background: var(--danger-100); color: var(--danger-500); }
-.rc-iconbtn:disabled { opacity: .35; cursor: default; }
-#rowsTable tbody tr.doc-row.skipped td.rc-c-sum { opacity: 1; }
-#rowsTable tbody tr.rc-suggest-row td { padding: 0; border-bottom: none; }
-.rc-suggest {
-    display: flex; align-items: center; gap: 12px;
-    background: var(--gold-100); color: var(--gold-700);
-    padding: 7px 12px; font: 600 12px/1.3 var(--font-body), sans-serif;
-    border-top: 1px solid var(--gold-400);
-}
-.rc-suggest .ev-btn { margin-left: auto; }
-#rowsTable tbody tr.rc-splitrow td { padding: 8px 10px; background: var(--navy-50); border-bottom: none; }
-.rc-splitform {
-    display: inline-flex; align-items: center; gap: 8px;
-    font: 12.5px/1 var(--font-body), sans-serif; color: var(--gray-600);
-}
-.rc-splitform .split-page {
-    width: 4.5em; font: 12.5px/1.3 var(--font-body), sans-serif; color: var(--ink);
-    border: 1.5px solid var(--color-border); border-radius: var(--radius-sm); padding: 4px 6px;
-}
-
 /* ---------- neutral (gray) chip - excluded summaries ---------- */
 .ev-chip-neutral { background: var(--gray-100); color: var(--gray-600); }
 
