@@ -10,22 +10,17 @@ type PdfViewerApp = {
   eventBus?: { on: (name: string, cb: () => void) => void };
 };
 
-// The vendored pdf.js viewer's own app chrome (toolbar/sidebar/dialogs) is hidden so the pane reads
-// as a clean document well, not a generic PDF tool. pdf.js styles #toolbarContainer with a higher-
-// specificity rule, so an injected stylesheet loses; setting display:none INLINE (with !important)
-// on each element wins over any stylesheet. Applied on load + a few polls (pdf.js re-renders async).
-const CHROME_SELECTORS = ["#toolbarContainer", "#secondaryToolbar", "#sidebarContainer", "#loadingBar"];
+// Keep the pdf.js viewer's genuinely useful tools (zoom, find, print, download, page nav, sidebar) -
+// reviewers rely on them while reading records. Hide ONLY the PDF markup EDITORS (Highlight / Text /
+// Draw / Add images), which annotate the source PDF and have no place in review. pdf.js styles these
+// with a higher-specificity rule, so an injected stylesheet loses; setting display:none INLINE (with
+// !important) on each element wins. Applied on load + a few polls (pdf.js renders its UI async).
+const MARKUP_SELECTORS = ["#editorModeButtons", "#editorModeSeparator"];
 
-function hideChrome(doc: Document) {
-  for (const sel of CHROME_SELECTORS) {
+function trimMarkupTools(doc: Document) {
+  for (const sel of MARKUP_SELECTORS) {
     (doc.querySelector(sel) as HTMLElement | null)?.style.setProperty("display", "none", "important");
   }
-  (doc.getElementById("viewerContainer") as HTMLElement | null)?.style.setProperty("top", "0", "important");
-  (doc.getElementById("outerContainer") as HTMLElement | null)?.style.setProperty(
-    "background",
-    "#525659",
-    "important",
-  );
 }
 
 /**
@@ -54,10 +49,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, { documentId: string; filen
       }
     }
 
-    // Hide the pdf.js chrome + start tracking the current page once the viewer boots.
+    // Trim the markup editors + start tracking the current page once the viewer boots.
     function onLoad() {
       const doc = frameRef.current?.contentDocument;
-      if (doc) hideChrome(doc);
+      if (doc) trimMarkupTools(doc);
       const app = viewerApp();
       const sync = () => {
         const a = viewerApp();
@@ -90,11 +85,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, { documentId: string; filen
     );
 
     // Fallback poll: some pdf.js builds fire events before our listener attaches on first load;
-    // also re-hide the chrome in case the viewer re-rendered it after our onLoad pass.
+    // also re-trim the markup editors in case the viewer re-rendered them after our onLoad pass.
     useEffect(() => {
       const id = setInterval(() => {
         const doc = frameRef.current?.contentDocument;
-        if (doc) hideChrome(doc);
+        if (doc) trimMarkupTools(doc);
         const a = viewerApp();
         if (a?.pdfViewer?.pagesCount) {
           setPageInfo((prev) => {
