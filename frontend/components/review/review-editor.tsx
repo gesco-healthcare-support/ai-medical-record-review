@@ -256,7 +256,7 @@ export function ReviewEditor({
             />
           </div>
           <div className="viewer-wrap">
-            <PdfViewer ref={pdfRef} documentId={documentId} />
+            <PdfViewer ref={pdfRef} documentId={documentId} filename={filename} />
           </div>
         </div>
       </div>
