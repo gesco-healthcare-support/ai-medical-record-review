@@ -13,9 +13,13 @@ import {
 import { getPrompt, type AdminCategory } from "@/lib/admin-api";
 import { useSavePrompt } from "@/hooks/use-admin";
 
-/** Edit a category's summary prompt (wide dialog + monospace textarea). The current prompt is
- *  fetched on open; if the category has no custom prompt it shows the inherited general text, and
- *  saving creates a custom prompt for the category. */
+// The general summary prompt lives under category 100 (catalog.get_prompt falls back to it); we read
+// it via the existing endpoint so the reference panel can show what a category would otherwise use.
+const GENERAL_CATEGORY_ID = "100";
+
+/** Edit a category's summary prompt (wide dialog + monospace textarea). Shows the general prompt the
+ *  category would otherwise inherit as a read-only reference, with a one-click revert. The current
+ *  prompt is fetched on open; saving creates/updates a custom prompt for the category. */
 export function PromptDialog({
   open,
   onOpenChange,
@@ -26,6 +30,7 @@ export function PromptDialog({
   category: AdminCategory | null;
 }) {
   const id = category?.id ?? "";
+  const isGeneral = id === GENERAL_CATEGORY_ID;
   const [text, setText] = useState("");
   const [error, setError] = useState("");
   const save = useSavePrompt();
@@ -35,6 +40,14 @@ export function PromptDialog({
     queryFn: () => getPrompt(id),
     enabled: open && Boolean(id),
   });
+
+  // The general (category-100) prompt, for the reference panel + revert (skip when editing 100).
+  const { data: general } = useQuery({
+    queryKey: ["admin", "prompt", GENERAL_CATEGORY_ID],
+    queryFn: () => getPrompt(GENERAL_CATEGORY_ID),
+    enabled: open && Boolean(id) && !isGeneral,
+  });
+  const generalText = general?.effective_text ?? "";
 
   useEffect(() => {
     if (open) setError("");
@@ -61,10 +74,27 @@ export function PromptDialog({
           <DialogTitle>Summary prompt{category ? ` - ${category.name}` : ""}</DialogTitle>
           <DialogDescription>
             {data?.custom
-              ? "This category has a custom summary prompt."
-              : "Inheriting the general prompt; saving creates a custom one for this category."}
+              ? "This category uses a custom summary prompt."
+              : "This category is inheriting the general prompt; saving creates a custom one for it."}
           </DialogDescription>
         </DialogHeader>
+
+        {!isGeneral && generalText ? (
+          <div className="ev-refpanel">
+            <div className="ev-refpanel-head">
+              <span>General prompt this category would otherwise use</span>
+              <button
+                type="button"
+                className="ev-btn ev-btn-ghost ev-btn-sm"
+                onClick={() => setText(generalText)}
+              >
+                Revert editor to this
+              </button>
+            </div>
+            <pre className="ev-mono ev-refpanel-body">{generalText}</pre>
+          </div>
+        ) : null}
+
         <div className="grid gap-1.5">
           <label className="ev-lbl" htmlFor="promptText">
             Prompt sent to the model for this category
@@ -72,14 +102,18 @@ export function PromptDialog({
           <textarea
             id="promptText"
             className="ev-inp ev-mono"
-            rows={16}
+            rows={14}
             value={text}
             disabled={isLoading}
             onChange={(e) => setText(e.target.value)}
           />
         </div>
         <DialogFooter>
-          {error ? <span className="error-text mr-auto">{error}</span> : null}
+          <span className="muted mr-auto text-[12.5px]">
+            Applies to summaries written after saving; existing summaries keep their text until
+            re-run.
+          </span>
+          {error ? <span className="error-text">{error}</span> : null}
           <button
             type="button"
             className="ev-btn ev-btn-ghost"

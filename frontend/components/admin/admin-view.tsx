@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useCurrentUser } from "@/hooks/use-current-user";
+import { useDocuments } from "@/hooks/use-documents";
 import {
   useCategories,
   useCreateCategory,
@@ -28,11 +29,13 @@ function errMessage(err: unknown, fallback: string) {
   return err instanceof ApiError ? err.message : err instanceof Error ? err.message : fallback;
 }
 
-/** Admin console: the category catalog + per-category summary prompts, plus a reprocess control.
- *  is_admin gated (the API also 403s; this adds a friendly notice for a non-admin who deep-links). */
+/** Admin console: the category catalog + per-category summary prompts, plus reprocessing a
+ *  summarized record with the current prompts. is_admin gated (the API also 403s; this adds a
+ *  friendly notice for a non-admin who deep-links). */
 export function AdminView() {
   const { data: user, isLoading: userLoading } = useCurrentUser();
   const { data: categories = [], isLoading } = useCategories();
+  const { data: docs = [] } = useDocuments();
   const create = useCreateCategory();
   const update = useUpdateCategory();
   const reprocess = useReprocess();
@@ -43,6 +46,8 @@ export function AdminView() {
   const [promptCat, setPromptCat] = useState<AdminCategory | null>(null);
   const [reprocessId, setReprocessId] = useState("");
   const [reprocessMsg, setReprocessMsg] = useState("");
+
+  const summarized = docs.filter((d) => d.status === "done");
 
   if (!userLoading && user && !user.is_superuser) {
     return (
@@ -77,15 +82,15 @@ export function AdminView() {
   }
 
   async function runReprocess() {
-    const id = reprocessId.trim();
-    if (!id) {
-      setReprocessMsg("Enter a record ID.");
+    if (!reprocessId) {
+      setReprocessMsg("Choose a record to re-run.");
       return;
     }
-    setReprocessMsg("Working...");
+    const name = summarized.find((d) => d.id === reprocessId)?.original_filename || "the record";
+    setReprocessMsg("Re-running...");
     try {
-      await reprocess.mutateAsync(id);
-      setReprocessMsg("Reprocessing started.");
+      await reprocess.mutateAsync(reprocessId);
+      setReprocessMsg(`Re-run started for ${name} - summaries update when it finishes.`);
       setReprocessId("");
     } catch (err) {
       setReprocessMsg(errMessage(err, "Could not reprocess that record."));
@@ -120,7 +125,8 @@ export function AdminView() {
             <thead>
               <tr>
                 <th className="hd-w-pages">ID</th>
-                <th>Name</th>
+                <th>Name &amp; description</th>
+                <th>Examples</th>
                 <th className="hd-w-found">Auto-assign</th>
                 <th className="hd-w-status">Active</th>
                 <th className="hd-w-status">Summary prompt</th>
@@ -130,14 +136,20 @@ export function AdminView() {
             <tbody>
               {isLoading ? null : categories.length === 0 ? (
                 <tr className="hd-norows">
-                  <td colSpan={6}>No categories yet.</td>
+                  <td colSpan={7}>No categories yet.</td>
                 </tr>
               ) : (
                 categories.map((cat) => (
-                  <tr key={cat.id}>
+                  <tr key={cat.id} className={cn(!cat.active && "admin-inactive")}>
                     <td className="hd-muted">{cat.id}</td>
                     <td>
                       <span className="hd-name">{cat.name}</span>
+                      {cat.description ? <div className="admin-desc">{cat.description}</div> : null}
+                    </td>
+                    <td>
+                      <span className="admin-examples">
+                        {cat.examples.length ? cat.examples.join(" · ") : "—"}
+                      </span>
                     </td>
                     <td className="hd-muted">{cat.auto_assign ? "Yes" : "No"}</td>
                     <td>
@@ -192,30 +204,40 @@ export function AdminView() {
               Reprocess a record
             </h2>
             <p className="muted">
-              Re-summarize a record with the current prompts - useful after editing a category or
-              prompt. Paste the record&apos;s ID.
+              Re-summarize a summarized record with the current prompts - useful after editing a
+              category or prompt. This replaces any evaluator edits on that record&apos;s summaries.
             </p>
           </div>
           <div className="flex flex-wrap items-end gap-2.5">
-            <div className="grid min-w-[240px] flex-1 gap-1.5">
-              <label className="ev-lbl" htmlFor="reprocessId">
-                Record ID
+            <div className="grid min-w-[280px] flex-1 gap-1.5">
+              <label className="ev-lbl" htmlFor="reprocessDoc">
+                Summarized record
               </label>
-              <input
-                id="reprocessId"
-                className="ev-inp"
-                placeholder="Document UUID"
-                value={reprocessId}
-                onChange={(e) => setReprocessId(e.target.value)}
-              />
+              <span className="rc-selwrap">
+                <select
+                  id="reprocessDoc"
+                  className="rc-sel"
+                  value={reprocessId}
+                  onChange={(e) => setReprocessId(e.target.value)}
+                >
+                  <option value="">
+                    {summarized.length ? "Choose a record..." : "No summarized records yet"}
+                  </option>
+                  {summarized.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.original_filename}
+                    </option>
+                  ))}
+                </select>
+              </span>
             </div>
             <button
               type="button"
               className="ev-btn ev-btn-primary"
               onClick={runReprocess}
-              disabled={reprocess.isPending}
+              disabled={reprocess.isPending || !reprocessId}
             >
-              {reprocess.isPending ? "Working..." : "Reprocess"}
+              {reprocess.isPending ? "Re-running..." : "Re-run summaries"}
             </button>
           </div>
           <div className="muted min-h-[1.2em]">{reprocessMsg}</div>
