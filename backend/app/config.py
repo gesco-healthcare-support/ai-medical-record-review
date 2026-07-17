@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2
     classify_workers: int = 4
+    # RQ per-job wall-clock cap (seconds). The old Flask app ran the pipeline in-process with no
+    # cap; RQ's 180s default is far too short - a 200+ page record needs minutes per vision window
+    # plus one Vertex call per identified document. Sized for the largest realistic record; tune up
+    # via the JOB_TIMEOUT env var if a job legitimately runs longer.
+    job_timeout: int = 3600
     genai_max_retries: int = 6
     genai_retry_base_delay: float = 2.0
     genai_retry_max_delay: float = 30.0

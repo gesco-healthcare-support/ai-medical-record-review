@@ -81,6 +81,7 @@ def enqueue(
 ) -> Job:
     """create_job + dispatch to the kind's RQ queue. If the dispatch fails (e.g. Redis down), the
     job is marked interrupted rather than left stuck queued."""
+    from app.config import get_settings
     from app.worker.queues import queue_for, worker_fn
 
     job = create_job(
@@ -93,7 +94,13 @@ def enqueue(
     )
     try:
         # RQ job id == the DB job id, so heartbeat orphan recovery can correlate the two.
-        queue_for(kind).enqueue(worker_fn(kind), job.id, job_id=str(job.id))
+        # job_timeout overrides RQ's 180s default, which is far too short for large records.
+        queue_for(kind).enqueue(
+            worker_fn(kind),
+            job.id,
+            job_id=str(job.id),
+            job_timeout=get_settings().job_timeout,
+        )
     except Exception:
         job.state = "interrupted"
         job.finished_at = _utcnow()
