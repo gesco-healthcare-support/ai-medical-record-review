@@ -42,9 +42,11 @@ class Settings(BaseSettings):
     classify_workers: int = 4
     # RQ per-job wall-clock cap (seconds). The old Flask app ran the pipeline in-process with no
     # cap; RQ's 180s default is far too short - a 200+ page record needs minutes per vision window
-    # plus one Vertex call per identified document. Sized for the largest realistic record; tune up
-    # via the JOB_TIMEOUT env var if a job legitimately runs longer.
+    # plus one Vertex call per identified document. The effective cap is SIZE-AWARE:
+    # max(job_timeout, page_count * job_timeout_per_page), so a small record still fails fast while a
+    # 2600-page record gets hours. Tune via JOB_TIMEOUT / JOB_TIMEOUT_PER_PAGE.
     job_timeout: int = 3600
+    job_timeout_per_page: float = 20.0
     genai_max_retries: int = 6
     genai_retry_base_delay: float = 2.0
     genai_retry_max_delay: float = 30.0

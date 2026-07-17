@@ -94,12 +94,16 @@ def enqueue(
     )
     try:
         # RQ job id == the DB job id, so heartbeat orphan recovery can correlate the two.
-        # job_timeout overrides RQ's 180s default, which is far too short for large records.
+        # Size-aware job_timeout: RQ's 180s default is far too short for large records, and a flat
+        # cap either starves big docs or makes small ones hang. Scale by page count.
+        settings = get_settings()
+        pages = getattr(session.get(Document, document_id), "page_count", 0) or 0
+        timeout = max(settings.job_timeout, int(pages * settings.job_timeout_per_page))
         queue_for(kind).enqueue(
             worker_fn(kind),
             job.id,
             job_id=str(job.id),
-            job_timeout=get_settings().job_timeout,
+            job_timeout=timeout,
         )
     except Exception:
         job.state = "interrupted"
