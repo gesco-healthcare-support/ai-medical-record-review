@@ -40,6 +40,15 @@ export function startSummarize(id: string, rows: Row[]) {
   });
 }
 
+/** The report-header fields auto-extracted from a record's first pages (Vertex). */
+export type HeaderFields = { name: string; dob: string; lawfirm: string };
+
+/** POST /api/documents/{id}/extract-header - Auto-fill: pull {name, dob, lawfirm} from the record
+ *  to prefill the export/bundle header. Not persisted server-side; the caller holds the result. */
+export function extractHeader(id: string) {
+  return apiFetch<HeaderFields>(`/documents/${id}/extract-header`, { method: "POST" });
+}
+
 /** GET /api/documents/{id}/summaries - the drafted summaries (all; paginated client-side). */
 export function getSummaries(id: string) {
   return apiFetch<SummaryItem[]>(`/documents/${id}/summaries`);

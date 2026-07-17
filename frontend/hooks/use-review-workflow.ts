@@ -6,9 +6,11 @@ import { getDocument, getStatus, saveRows, startSegment, startSummarize } from "
 import type { CategoryOption, DocumentStatus } from "@/lib/types";
 import { rowErrors, sortRows, stripKeys, withKeys, type EditorRow } from "@/lib/review-rows";
 import type { StepId } from "@/components/review/stepper";
-import type { SaveState } from "@/components/review/review-editor";
 
 export type Section = "loading" | "start" | "progress" | "editor" | "summaries";
+
+/** Autosave indicator state for the review header. */
+export type SaveState = { kind: "" | "saved" | "dirty" | "error"; message?: string };
 
 const STAGE_LABELS: Record<string, string> = {
   starting: "Starting...",

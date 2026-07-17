@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useRef, type MouseEvent } from "react";
+import { ArrowUpToLine, Scissors, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CategoryOption, Row } from "@/lib/types";
 import type { EditorRow } from "@/lib/review-rows";
@@ -18,9 +19,11 @@ function categoryOptions(categories: CategoryOption[], current: string) {
 const stop = (e: MouseEvent) => e.stopPropagation();
 
 /**
- * The sub-documents table (DS #rowsTable). One title row + one field row per document, gap
- * strips between non-contiguous rows, and per-row tools (merge up / split / delete). Purely
- * presentational: every edit is emitted via a callback; the parent owns the rows + autosave.
+ * The sub-documents table (DS #rowsTable). One row per document: page range, category, title,
+ * date, injury date, review/summarize checkboxes, and hover row-tools (merge-up / split / delete).
+ * A gold suggestion strip sits above a row the AI thinks continues the one above; gap strips mark
+ * skipped pages; a split form drops in below the row being split. Purely presentational - every
+ * edit is emitted via a callback and the parent owns the rows + autosave.
  */
 export function RowsTable({
   rows,
@@ -58,18 +61,18 @@ export function RowsTable({
     <table id="rowsTable">
       <thead>
         <tr>
-          <th className="col-num">#</th>
-          <th className="col-page">Start</th>
-          <th className="col-page">End</th>
-          <th className="col-category">Category</th>
-          <th className="col-date">Date</th>
-          <th className="col-check" title="Flag for manual review">
+          <th className="rc-c-pages">Pages</th>
+          <th className="rc-c-cat">Category</th>
+          <th className="rc-c-title">Title</th>
+          <th className="rc-c-date">Date</th>
+          <th className="rc-c-injury">Injury date</th>
+          <th className="rc-c-check" title="Flag for manual review">
             Review
           </th>
-          <th className="col-check col-sum" title="Include this document in summarization">
+          <th className="rc-c-check rc-c-sum" title="Include this document in summarization">
             Summarize
           </th>
-          <th className="col-actions" aria-label="Row actions" />
+          <th className="rc-c-tools" aria-label="Row tools" />
         </tr>
       </thead>
       <tbody>
@@ -80,6 +83,8 @@ export function RowsTable({
           const gapTo = Number(row.start) - 1;
           previousEnd = Math.max(previousEnd, Number(row.end) || previousEnd);
           const titleValue = row.title && row.title !== "-" ? row.title : "";
+          const injuryValue = row.injury_date && row.injury_date !== "-" ? row.injury_date : "";
+          const dateValue = row.date && row.date !== "-" ? row.date : "";
 
           return (
             <Fragment key={row._key}>
@@ -91,119 +96,25 @@ export function RowsTable({
                 </tr>
               ) : null}
 
-              <tr
-                className={cn(
-                  "doc-row title-row",
-                  selected === i && "selected",
-                  !included && "skipped",
-                )}
-                onClick={() => onSelect(i)}
-              >
-                <td className="col-num rc-titletd">{i + 1}</td>
-                <td colSpan={7} className="rc-titletd">
-                  <div className="rc-titlebar">
-                    <input
-                      type="text"
-                      className="rc-title"
-                      placeholder="(untitled document)"
-                      aria-label="Document title"
-                      value={titleValue}
-                      onClick={stop}
-                      onChange={(e) => onField(i, { title: e.target.value })}
-                    />
-                    <span className="rc-rowactions">
-                      {splitting === i ? (
-                        <>
-                          at page{" "}
-                          <input
-                            ref={splitRef}
-                            type="number"
-                            className="split-page"
-                            min={Number(row.start) + 1}
-                            max={row.end}
-                            defaultValue={Number(row.start) + 1}
-                            aria-label="First page of the second document"
-                            onClick={stop}
-                          />
-                          <button
-                            type="button"
-                            className="ev-btn ev-btn-sm ev-btn-outline"
-                            onClick={(e) => {
-                              stop(e);
-                              onSplitConfirm(i, Number(splitRef.current?.value));
-                            }}
-                          >
-                            Split
-                          </button>
-                          <button
-                            type="button"
-                            className="ev-btn ev-btn-sm ev-btn-ghost"
-                            onClick={(e) => {
-                              stop(e);
-                              onSplitCancel();
-                            }}
-                          >
-                            Cancel
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          {row.suggest_merge && i > 0 ? (
-                            <button
-                              type="button"
-                              className="ev-btn ev-btn-sm ev-btn-gold"
-                              title="The AI double-checked this boundary and believes it continues the document above"
-                              onClick={(e) => {
-                                stop(e);
-                                onMergeUp(i);
-                              }}
-                            >
-                              Likely same doc {"—"} merge?
-                            </button>
-                          ) : null}
-                          {i > 0 ? (
-                            <button
-                              type="button"
-                              className="ev-btn ev-btn-sm ev-btn-outline"
-                              title="Merge into the document above"
-                              onClick={(e) => {
-                                stop(e);
-                                onMergeUp(i);
-                              }}
-                            >
-                              Merge up
-                            </button>
-                          ) : null}
-                          {Number(row.end) > Number(row.start) ? (
-                            <button
-                              type="button"
-                              className="ev-btn ev-btn-sm ev-btn-outline"
-                              title="Split this document into two"
-                              onClick={(e) => {
-                                stop(e);
-                                onSplitStart(i);
-                              }}
-                            >
-                              Split
-                            </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            className="ev-btn ev-btn-sm ev-btn-del"
-                            title="Remove this row"
-                            onClick={(e) => {
-                              stop(e);
-                              onDelete(i);
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </>
-                      )}
-                    </span>
-                  </div>
-                </td>
-              </tr>
+              {row.suggest_merge && i > 0 ? (
+                <tr className="rc-suggest-row">
+                  <td colSpan={8}>
+                    <div className="rc-suggest">
+                      <span>Likely continues the document above</span>
+                      <button
+                        type="button"
+                        className="ev-btn ev-btn-sm ev-btn-gold"
+                        onClick={(e) => {
+                          stop(e);
+                          onMergeUp(i);
+                        }}
+                      >
+                        Merge
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : null}
 
               <tr
                 className={cn(
@@ -214,34 +125,39 @@ export function RowsTable({
                 )}
                 onClick={() => onSelect(i)}
               >
-                <td className="col-num" />
-                <td>
-                  <input
-                    type="number"
-                    className="rc-inp"
-                    value={row.start}
-                    min={1}
-                    max={totalPages}
-                    onClick={stop}
-                    onChange={(e) => onField(i, { start: Number(e.target.value) })}
-                  />
+                <td className="rc-c-pages">
+                  <div className="rc-pages">
+                    <input
+                      type="number"
+                      className="rc-inp rc-pagenum"
+                      value={row.start}
+                      min={1}
+                      max={totalPages}
+                      aria-label="First page"
+                      onClick={stop}
+                      onChange={(e) => onField(i, { start: Number(e.target.value) })}
+                    />
+                    <span className="rc-dash" aria-hidden>
+                      {"–"}
+                    </span>
+                    <input
+                      type="number"
+                      className="rc-inp rc-pagenum"
+                      value={row.end}
+                      min={1}
+                      max={totalPages}
+                      aria-label="Last page"
+                      onClick={stop}
+                      onChange={(e) => onField(i, { end: Number(e.target.value) })}
+                    />
+                  </div>
                 </td>
-                <td>
-                  <input
-                    type="number"
-                    className="rc-inp"
-                    value={row.end}
-                    min={1}
-                    max={totalPages}
-                    onClick={stop}
-                    onChange={(e) => onField(i, { end: Number(e.target.value) })}
-                  />
-                </td>
-                <td>
+                <td className="rc-c-cat">
                   <span className="rc-selwrap">
                     <select
                       className="rc-sel"
                       value={row.category}
+                      aria-label="Category"
                       onClick={stop}
                       onChange={(e) => onField(i, { category: e.target.value })}
                     >
@@ -249,35 +165,140 @@ export function RowsTable({
                     </select>
                   </span>
                 </td>
-                <td>
+                <td className="rc-c-title">
+                  <input
+                    type="text"
+                    className="rc-title"
+                    placeholder="(untitled document)"
+                    aria-label="Document title"
+                    value={titleValue}
+                    onClick={stop}
+                    onChange={(e) => onField(i, { title: e.target.value })}
+                  />
+                </td>
+                <td className="rc-c-date">
                   <input
                     type="text"
                     className="rc-inp"
-                    value={row.date}
+                    value={dateValue}
+                    aria-label="Document date"
                     onClick={stop}
                     onChange={(e) => onField(i, { date: e.target.value })}
                   />
                 </td>
-                <td className="col-check">
+                <td className="rc-c-injury">
+                  <input
+                    type="text"
+                    className="rc-inp"
+                    value={injuryValue}
+                    aria-label="Injury date"
+                    onClick={stop}
+                    onChange={(e) => onField(i, { injury_date: e.target.value })}
+                  />
+                </td>
+                <td className="rc-c-check">
                   <input
                     type="checkbox"
                     className="ev-cb"
+                    aria-label="Flag for manual review"
                     checked={String(row.flag).toLowerCase() === "x"}
                     onClick={stop}
                     onChange={(e) => onField(i, { flag: e.target.checked ? "x" : "-" })}
                   />
                 </td>
-                <td className="col-check col-sum">
+                <td className="rc-c-check rc-c-sum">
                   <input
                     type="checkbox"
                     className="ev-cb"
+                    aria-label="Include in summarization"
                     checked={included}
                     onClick={stop}
                     onChange={(e) => onField(i, { include: e.target.checked })}
                   />
                 </td>
-                <td />
+                <td className="rc-c-tools">
+                  <span className="rc-rowtools">
+                    <button
+                      type="button"
+                      className="rc-iconbtn"
+                      disabled={i === 0}
+                      title="Merge into the document above"
+                      aria-label="Merge up"
+                      onClick={(e) => {
+                        stop(e);
+                        onMergeUp(i);
+                      }}
+                    >
+                      <ArrowUpToLine width={16} height={16} aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      className="rc-iconbtn"
+                      disabled={Number(row.end) <= Number(row.start)}
+                      title="Split this document into two"
+                      aria-label="Split"
+                      onClick={(e) => {
+                        stop(e);
+                        onSplitStart(i);
+                      }}
+                    >
+                      <Scissors width={16} height={16} aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      className="rc-iconbtn danger"
+                      title="Remove this row"
+                      aria-label="Delete"
+                      onClick={(e) => {
+                        stop(e);
+                        onDelete(i);
+                      }}
+                    >
+                      <Trash2 width={16} height={16} aria-hidden />
+                    </button>
+                  </span>
+                </td>
               </tr>
+
+              {splitting === i ? (
+                <tr className="rc-splitrow">
+                  <td colSpan={8}>
+                    <span className="rc-splitform">
+                      Split at page
+                      <input
+                        ref={splitRef}
+                        type="number"
+                        className="split-page"
+                        min={Number(row.start) + 1}
+                        max={row.end}
+                        defaultValue={Number(row.start) + 1}
+                        aria-label="First page of the second document"
+                        onClick={stop}
+                      />
+                      <button
+                        type="button"
+                        className="ev-btn ev-btn-sm ev-btn-outline"
+                        onClick={(e) => {
+                          stop(e);
+                          onSplitConfirm(i, Number(splitRef.current?.value));
+                        }}
+                      >
+                        Split
+                      </button>
+                      <button
+                        type="button"
+                        className="ev-btn ev-btn-sm ev-btn-ghost"
+                        onClick={(e) => {
+                          stop(e);
+                          onSplitCancel();
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  </td>
+                </tr>
+              ) : null}
             </Fragment>
           );
         })}

@@ -1,40 +1,37 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Check } from "lucide-react";
-import { cn } from "@/lib/utils";
 import type { CategoryOption, Row } from "@/lib/types";
 import { newKey, rowErrors, type EditorRow } from "@/lib/review-rows";
 import { RowsTable } from "./rows-table";
 import { PdfViewer, type PdfViewerHandle } from "./pdf-viewer";
-
-export type SaveState = { kind: "" | "saved" | "dirty" | "error"; message?: string };
+import { SplitPane } from "./split-pane";
 
 function mergedFlag(a: string, b: string) {
   return [a, b].includes("x") ? "x" : "-";
 }
 
-/** Review & correct workbench (DS #step-editor): header + resizable split (rows table | PDF). */
+/**
+ * The "Review & correct" workbench body (DS §3): a slim toolbar (Insert document, apply suggested
+ * merges, first validation error) over a resizable SplitPane - the single-row sub-documents table
+ * on the left, the PDF viewer on the right. Row selection jumps the viewer to that row's first
+ * page. The record header, tabs, autosave indicator, and the Segment/Summarize/Auto-fill actions
+ * live in the page header (review-page-client); this component only owns the editing surface.
+ */
 export function ReviewEditor({
   documentId,
   filename,
   rows,
   categories,
   totalPages,
-  saveState,
   onRowsChange,
-  onSummarize,
-  showSummarize = true,
 }: {
   documentId: string;
   filename: string;
   rows: EditorRow[];
   categories: CategoryOption[];
   totalPages: number;
-  saveState: SaveState;
   onRowsChange: (rows: EditorRow[]) => void;
-  onSummarize?: () => void;
-  showSummarize?: boolean;
 }) {
   const pdfRef = useRef<PdfViewerHandle>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -46,7 +43,6 @@ export function ReviewEditor({
   const errors = rowErrors(rows, totalPages);
   const selected = rows.findIndex((r) => r._key === selectedKey);
   const splitting = rows.findIndex((r) => r._key === splittingKey);
-  const included = rows.filter((r) => r.include !== false).length;
   const suggested = rows.filter((r, i) => r.suggest_merge && i > 0).length;
   const firstError = errors.size
     ? `row ${[...errors.keys()][0] + 1}: ${[...errors.values()][0]}`
@@ -158,87 +154,56 @@ export function ReviewEditor({
   }
 
   return (
-    <section id="step-editor">
-      <div className="rc-column">
-        <div className="rc-filename">{filename}</div>
-        <div className="rc-header">
-          <div className="rc-status">
-            <h1>
-              {rows.length} documents / {totalPages} pages
-            </h1>
-            <span className={cn("rc-save", saveState.kind)}>
-              {saveState.kind === "saved" ? (
-                <>
-                  <Check width={14} height={14} aria-hidden /> Saved
-                </>
-              ) : (
-                saveState.message
-              )}
-            </span>
-            <span className="error-text">{firstError}</span>
-          </div>
-          <div className="rc-actions">
-            {suggested > 0 ? (
-              <button type="button" className="ev-btn ev-btn-gold" onClick={applySuggestions}>
-                Apply {suggested} suggested merge{suggested === 1 ? "" : "s"}
-              </button>
-            ) : null}
-            {addOpen ? (
-              <span className="add-form">
-                pages{" "}
-                <input
-                  type="number"
-                  min={1}
-                  max={totalPages}
-                  value={addStart}
-                  aria-label="First page of the new document"
-                  onChange={(e) => setAddStart(e.target.value)}
-                />{" "}
-                to{" "}
-                <input
-                  type="number"
-                  min={1}
-                  max={totalPages}
-                  value={addEnd}
-                  aria-label="Last page of the new document"
-                  onChange={(e) => setAddEnd(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="ev-btn ev-btn-sm ev-btn-outline"
-                  onClick={confirmAdd}
-                >
-                  Insert
-                </button>
-                <button
-                  type="button"
-                  className="ev-btn ev-btn-sm ev-btn-ghost"
-                  onClick={() => setAddOpen(false)}
-                >
-                  Cancel
-                </button>
-              </span>
-            ) : (
-              <button type="button" className="ev-btn ev-btn-outline" onClick={openAdd}>
-                + Insert document
-              </button>
-            )}
-            {showSummarize ? (
-              <button
-                type="button"
-                className="ev-btn ev-btn-primary ev-btn-lg"
-                disabled={errors.size > 0 || included === 0}
-                onClick={onSummarize}
-              >
-                {included
-                  ? `Summarize ${included} document${included === 1 ? "" : "s"}`
-                  : "Summarize"}
-              </button>
-            ) : null}
-          </div>
-        </div>
-        <div className="editor-split">
-          <div className="table-wrap">
+    <>
+      <div className="rce-toolbar">
+        {addOpen ? (
+          <span className="add-form">
+            pages{" "}
+            <input
+              type="number"
+              min={1}
+              max={totalPages}
+              value={addStart}
+              aria-label="First page of the new document"
+              onChange={(e) => setAddStart(e.target.value)}
+            />{" "}
+            to{" "}
+            <input
+              type="number"
+              min={1}
+              max={totalPages}
+              value={addEnd}
+              aria-label="Last page of the new document"
+              onChange={(e) => setAddEnd(e.target.value)}
+            />
+            <button type="button" className="ev-btn ev-btn-sm ev-btn-outline" onClick={confirmAdd}>
+              Insert
+            </button>
+            <button
+              type="button"
+              className="ev-btn ev-btn-sm ev-btn-ghost"
+              onClick={() => setAddOpen(false)}
+            >
+              Cancel
+            </button>
+          </span>
+        ) : (
+          <button type="button" className="ev-btn ev-btn-outline ev-btn-sm" onClick={openAdd}>
+            + Insert document
+          </button>
+        )}
+        {suggested > 0 ? (
+          <button type="button" className="ev-btn ev-btn-gold ev-btn-sm" onClick={applySuggestions}>
+            Apply {suggested} suggested merge{suggested === 1 ? "" : "s"}
+          </button>
+        ) : null}
+        {firstError ? <span className="error-text">{firstError}</span> : null}
+      </div>
+
+      <SplitPane
+        storageKey="mrr.review.split"
+        left={
+          <div className="rce-table">
             <RowsTable
               rows={rows}
               categories={categories}
@@ -255,11 +220,13 @@ export function ReviewEditor({
               onDelete={remove}
             />
           </div>
-          <div className="viewer-wrap">
+        }
+        right={
+          <div className="rce-viewer">
             <PdfViewer ref={pdfRef} documentId={documentId} filename={filename} />
           </div>
-        </div>
-      </div>
-    </section>
+        }
+      />
+    </>
   );
 }

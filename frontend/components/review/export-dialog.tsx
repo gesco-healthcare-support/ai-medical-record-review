@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -9,22 +9,26 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import type { HeaderFields } from "@/lib/review-api";
 
 const DEFAULT_QME = "PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)";
 
-/** Export-to-Word dialog: the four report-header fields (POST /export -> .docx download). */
+/** Export-to-Word dialog: the four report-header fields (POST /export -> .docx download). Patient
+ *  name / DOB / law firm prefill from the record's Auto-fill header when it has been run. */
 export function ExportDialog({
   open,
   onOpenChange,
   documentId,
   includedCount,
   excludedCount,
+  defaults,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   documentId: string;
   includedCount: number;
   excludedCount: number;
+  defaults?: HeaderFields | null;
 }) {
   const [patient, setPatient] = useState("");
   const [dob, setDob] = useState("");
@@ -32,6 +36,15 @@ export function ExportDialog({
   const [firm, setFirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  // Prefill from Auto-fill header each time the dialog opens (without clobbering manual edits mid-
+  // session: we only seed on open). Empty header fields leave the inputs blank.
+  useEffect(() => {
+    if (!open || !defaults) return;
+    setPatient(defaults.name || "");
+    setDob(defaults.dob || "");
+    setFirm(defaults.lawfirm || "");
+  }, [open, defaults]);
 
   async function submit() {
     setBusy(true);

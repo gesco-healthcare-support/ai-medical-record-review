@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { FileText, Pencil, TriangleAlert } from "lucide-react";
+import { useState } from "react";
+import { FileText, Flag, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ApiError } from "@/lib/api";
-import { getSummaries, putSummary, resummarize } from "@/lib/review-api";
+import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summaries";
 import type { CategoryOption, SummaryItem } from "@/lib/types";
+import type { HeaderFields } from "@/lib/review-api";
 import { ExportDialog } from "./export-dialog";
 
 const PAGE_SIZE = 20;
@@ -26,20 +27,26 @@ function parseDisplay(item: SummaryItem) {
   return { title, text, doi };
 }
 
+/** Summaries & export (DS §4): a reading column of SummaryCards with Edited / Manual check /
+ *  Excluded badges, inline edit, Re-draft, and an "In export" toggle. The Export dialog prefills
+ *  from the record header (Auto-fill) when available. */
 export function SummariesView({
   documentId,
   categories,
+  header,
   onGotoReview,
 }: {
   documentId: string;
   categories: CategoryOption[];
+  header?: HeaderFields | null;
   onGotoReview: () => void;
 }) {
-  const [summaries, setSummaries] = useState<SummaryItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: summaries = [], isLoading, error } = useSummaries(documentId);
+  const save = useSaveSummary(documentId);
+  const redraft = useResummarize(documentId);
+
   const [page, setPage] = useState(0);
   const [editingIdx, setEditingIdx] = useState(-1);
-  const [redraftingIdx, setRedraftingIdx] = useState(-1);
   const [saveMsg, setSaveMsg] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   // Edit buffers (one card edits at a time).
@@ -47,29 +54,8 @@ export function SummariesView({
   const [editDate, setEditDate] = useState("");
   const [editText, setEditText] = useState("");
 
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    getSummaries(documentId)
-      .then((data) => {
-        if (active) {
-          setSummaries(data);
-          setPage(0);
-          setEditingIdx(-1);
-        }
-      })
-      .catch((err) => {
-        if (active) setSaveMsg(err instanceof ApiError ? err.message : "Could not load summaries.");
-      })
-      .finally(() => active && setLoading(false));
-    return () => {
-      active = false;
-    };
-  }, [documentId]);
-
-  const replaceItem = useCallback((updated: SummaryItem) => {
-    setSummaries((prev) => prev.map((s) => (s.idx === updated.idx ? updated : s)));
-  }, []);
+  const redraftingIdx = redraft.isPending ? (redraft.variables ?? -1) : -1;
+  const loadError = error instanceof ApiError ? error.message : error ? "Could not load summaries." : "";
 
   function categoryLabel(id: string) {
     const found = categories.find((c) => String(c.id) === String(id));
@@ -87,12 +73,10 @@ export function SummariesView({
   async function saveEdit(idx: number) {
     setSaveMsg("Saving...");
     try {
-      const updated = await putSummary(documentId, idx, {
-        summaryTitle: editTitle,
-        summaryDate: editDate,
-        summaryText: editText,
+      await save.mutateAsync({
+        idx,
+        body: { summaryTitle: editTitle, summaryDate: editDate, summaryText: editText },
       });
-      replaceItem(updated);
       setEditingIdx(-1);
       setSaveMsg("Saved");
     } catch (err) {
@@ -100,34 +84,29 @@ export function SummariesView({
     }
   }
 
-  async function toggleExclude(idx: number, excluded: boolean) {
+  async function toggleInExport(idx: number, inExport: boolean) {
     try {
-      const updated = await putSummary(documentId, idx, { excluded });
-      replaceItem(updated);
+      await save.mutateAsync({ idx, body: { excluded: !inExport } });
     } catch (err) {
       setSaveMsg(err instanceof ApiError ? `Not saved: ${err.message}` : "Not saved");
     }
   }
 
-  async function reRun(item: SummaryItem) {
+  async function reDraft(item: SummaryItem) {
     if (
       item.edited &&
       !window.confirm(
-        "Re-running replaces this summary with fresh AI output and discards your edits to it. Continue?",
+        "Re-drafting replaces this summary with fresh AI output and discards your edits to it. Continue?",
       )
     ) {
       return;
     }
-    setRedraftingIdx(item.idx);
-    setSaveMsg("Re-running this summary...");
+    setSaveMsg("Re-drafting this summary...");
     try {
-      const updated = await resummarize(documentId, item.idx);
-      replaceItem(updated);
-      setSaveMsg("Re-ran");
+      await redraft.mutateAsync(item.idx);
+      setSaveMsg("Re-drafted");
     } catch (err) {
-      setSaveMsg(err instanceof ApiError ? `Re-run failed: ${err.message}` : "Re-run failed");
-    } finally {
-      setRedraftingIdx(-1);
+      setSaveMsg(err instanceof ApiError ? `Re-draft failed: ${err.message}` : "Re-draft failed");
     }
   }
 
@@ -135,7 +114,7 @@ export function SummariesView({
   const includedCount = summaries.length - excludedCount;
   const countLine = summaries.length
     ? `${summaries.length} summar${summaries.length === 1 ? "y" : "ies"}` +
-      (excludedCount ? ` — ${excludedCount} excluded from export` : "")
+      (excludedCount ? ` · ${excludedCount} excluded from export` : "")
     : "";
   const pageCount = Math.max(1, Math.ceil(summaries.length / PAGE_SIZE));
   const curPage = Math.min(page, pageCount - 1);
@@ -149,7 +128,7 @@ export function SummariesView({
             <h1>Summaries</h1>
             <div className="sum-countline">
               <span>{countLine}</span>
-              <span className="muted">{saveMsg}</span>
+              <span className="muted">{saveMsg || loadError}</span>
             </div>
           </div>
           <button
@@ -162,7 +141,7 @@ export function SummariesView({
           </button>
         </div>
 
-        {loading ? null : summaries.length === 0 ? (
+        {isLoading ? null : summaries.length === 0 ? (
           <div className="summary-empty">
             <FileText width={34} height={34} aria-hidden />
             <p className="empty-title">No summaries yet</p>
@@ -212,9 +191,10 @@ export function SummariesView({
                       <button
                         type="button"
                         className="ev-btn ev-btn-primary"
+                        disabled={save.isPending}
                         onClick={() => saveEdit(item.idx)}
                       >
-                        Save
+                        {save.isPending ? "Saving..." : "Save"}
                       </button>
                       <button
                         type="button"
@@ -231,31 +211,35 @@ export function SummariesView({
               return (
                 <div
                   key={item.idx}
-                  className={cn("summary-card", item.excluded && "excluded", redraftingIdx === item.idx && "busy")}
+                  className={cn(
+                    "summary-card",
+                    item.excluded && "excluded",
+                    redraftingIdx === item.idx && "busy",
+                  )}
                 >
                   <div className="summary-head">
                     <h3 className="sum-heading">{title}</h3>
-                    {item.manualCheck ? (
-                      <span className="ev-chip ev-chip-review">
-                        <TriangleAlert width={12} height={12} aria-hidden />
-                        needs review
-                      </span>
-                    ) : null}
                     {item.edited ? (
                       <span className="ev-chip ev-chip-edit">
                         <Pencil width={12} height={12} aria-hidden />
-                        edited
+                        Edited
                       </span>
                     ) : null}
-                    {item.excluded ? <span className="ev-chip ev-chip-off">excluded</span> : null}
+                    {item.manualCheck ? (
+                      <span className="ev-chip ev-chip-review">
+                        <Flag width={12} height={12} aria-hidden />
+                        Manual check
+                      </span>
+                    ) : null}
+                    {item.excluded ? <span className="ev-chip ev-chip-neutral">Excluded</span> : null}
                     <span className="card-actions">
                       <button
                         type="button"
                         className="ev-btn ev-btn-ghost ev-btn-sm"
                         disabled={redraftingIdx === item.idx}
-                        onClick={() => reRun(item)}
+                        onClick={() => reDraft(item)}
                       >
-                        Re-run
+                        {redraftingIdx === item.idx ? "Re-drafting..." : "Re-draft"}
                       </button>
                       <button
                         type="button"
@@ -268,10 +252,10 @@ export function SummariesView({
                         <input
                           type="checkbox"
                           className="ev-cb"
-                          checked={item.excluded}
-                          onChange={(e) => toggleExclude(item.idx, e.target.checked)}
+                          checked={!item.excluded}
+                          onChange={(e) => toggleInExport(item.idx, e.target.checked)}
                         />{" "}
-                        Exclude
+                        In export
                       </label>
                     </span>
                   </div>
@@ -322,6 +306,7 @@ export function SummariesView({
         documentId={documentId}
         includedCount={includedCount}
         excludedCount={excludedCount}
+        defaults={header}
       />
     </section>
   );
