@@ -13,6 +13,7 @@ import httpx
 from google.genai import errors, types
 
 from app.config import get_settings
+from app.services import rate_limit
 
 
 def _backoff_delay(attempt: int) -> float:
@@ -47,6 +48,9 @@ def generate_with_retry(client, **kwargs):
     _apply_thinking_default(kwargs.get("config"))
     last = None
     for attempt in range(settings.genai_max_retries):
+        # Bound the GLOBAL request rate across all processes before every attempt (retries also
+        # consume quota). Fails open if Redis is down; never blocks past the job timeout.
+        rate_limit.acquire()
         try:
             return client.models.generate_content(**kwargs)
         except errors.ServerError as exc:  # 5xx incl. 503 high-demand
