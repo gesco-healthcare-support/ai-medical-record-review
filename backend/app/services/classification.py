@@ -202,8 +202,12 @@ def embed_classify(text):
     return ids[best], float(sims[best])
 
 
-def llm_classify(text):
-    """Classify via Gemini constrained-enum output; returns a valid id or None on failure."""
+def llm_classify(text, model=None):
+    """Classify via Gemini constrained-enum output; returns a valid id or None on failure.
+
+    Defaults to settings.classify_model (the cheapest tier - this is a short, structured enum task).
+    ``model`` is overridable so an A/B can compare tiers on identical inputs.
+    """
     allowed = _allowed_ids()
     prompt = (
         "Classify the medical-record document below into exactly one category id from this "
@@ -221,7 +225,10 @@ def llm_classify(text):
     )
     try:
         response = generate_with_retry(
-            get_genai_client(), model=get_settings().genai_model, contents=prompt, config=config
+            get_genai_client(),
+            model=model or get_settings().classify_model,
+            contents=prompt,
+            config=config,
         )
     except Exception as exc:
         print(f"LLM classification failed: {exc}")
