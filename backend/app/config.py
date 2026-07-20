@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     genai_model: str = ""
     summary_model: str = ""
     verify_model: str = ""
+    # Classification is a short, structured enum task - the cheapest tier is enough and cuts
+    # cost/latency vs full Flash. A separate knob so a quality regression reverts via env alone.
+    classify_model: str = "gemini-2.5-flash-lite"
 
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2
@@ -50,6 +53,20 @@ class Settings(BaseSettings):
     genai_max_retries: int = 6
     genai_retry_base_delay: float = 2.0
     genai_retry_max_delay: float = 30.0
+
+    # Thinking tokens are pure overhead for our structured extraction/segmentation calls, and on
+    # 2.5-flash they silently consume max_output_tokens. Default OFF (budget 0); set >0 or -1
+    # (model-dynamic) via env to re-enable if a task regresses. Applied centrally at the genai seam.
+    gemini_thinking_budget: int = 0
+
+    # Global Vertex request ceiling (requests/minute) enforced by a Redis token bucket at the seam,
+    # so the aggregate rate across every worker process never trips dynamic-shared-quota 429s. Tune
+    # empirically: raise until near throttling, then back off ~20%.
+    vertex_max_rpm: int = 60
+
+    # Independent segmentation windows run on a small thread pool (each still crosses the seam, so
+    # the limiter caps the aggregate). Speed lever; keep modest so it does not dominate the quota.
+    segment_window_workers: int = 3
 
     # Segmentation + verification tuning (ported verbatim).
     window_budget_mb: float = 12.5
