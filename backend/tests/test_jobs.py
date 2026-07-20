@@ -176,6 +176,57 @@ def test_summarize_document_persists_summaries(monkeypatch):
         assert len(summaries) == 1 and summaries[0].title == "T (Pages 1-1)"
 
 
+def test_summarize_document_preserves_row_order_under_parallelism(monkeypatch):
+    """Rows summarize on a thread pool; an inverse-sleep mock finishes them out of order, yet the
+    persisted Summary set must stay in idx (document) order."""
+    import time
+
+    import app.services.summarize_engine as se
+
+    def fake_summarize(pdf_path, row, model=None, prompt=None):
+        time.sleep(0.02 * (4 - int(row["start"])))  # higher start finishes first
+        return {
+            "summaryTitle": f"T{row['start']} (Pages {row['start']}-{row['end']})",
+            "summaryDate": "-",
+            "summaryText": f"body{row['start']}",
+            "manualCheck": "",
+            "sourceText": "x",
+        }
+
+    monkeypatch.setattr(se, "summarize_row", fake_summarize)
+    doc_id = _make_user_and_doc(page_count=3)
+    with get_sessionmaker()() as session:
+        for idx in range(3):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=idx + 1,
+                    end=idx + 1,
+                    category="1",
+                    title="A",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "summarize", model="m", prompt_version="1").id
+
+    summarize_document(job_id)
+    with get_sessionmaker()() as session:
+        summaries = session.scalars(
+            select(Summary).where(Summary.document_id == doc_id).order_by(Summary.idx)
+        ).all()
+        assert [s.idx for s in summaries] == [0, 1, 2]
+        assert [s.title for s in summaries] == [
+            "T1 (Pages 1-1)",
+            "T2 (Pages 2-2)",
+            "T3 (Pages 3-3)",
+        ]
+
+
 def test_enqueue_dispatches_to_the_right_queue():
     doc_id = _make_user_and_doc()
     queue = queue_for("segment")

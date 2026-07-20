@@ -139,11 +139,19 @@ def run_segmentation(pdf_path, total_pages, progress=None):
         settings.window_overlap,
         int(settings.window_budget_mb * 1024 * 1024),
     )
-    reports = []
-    for k, (ws, we) in enumerate(windows, start=1):
-        report("segmenting", k - 1, len(windows))
-        reports.append(_window_rows(pdf_path, ws, we, client))
-        report("segmenting", k, len(windows))
+    # Windows are independent (each builds its own sub-PDF and calls the model), so run them on a
+    # small pool - the seam's rate limiter caps the aggregate request rate. Results are placed by
+    # window index so the downstream ownership merge still sees them in order.
+    report("segmenting", 0, len(windows))
+    reports = [None] * len(windows)
+    with ThreadPoolExecutor(max_workers=settings.segment_window_workers) as pool:
+        futures = {
+            pool.submit(_window_rows, pdf_path, ws, we, client): k
+            for k, (ws, we) in enumerate(windows)
+        }
+        for done, future in enumerate(as_completed(futures), start=1):
+            reports[futures[future]] = future.result()  # fail loudly; never drop a window silently
+            report("segmenting", done, len(windows))
 
     rows = merge_window_rows(reports, windows, total_pages)
 

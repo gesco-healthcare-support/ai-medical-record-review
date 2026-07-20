@@ -8,10 +8,12 @@ server-side, ids only). The worker is the single writer of Document.status after
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 
+from app.config import get_settings
 from app.db import get_sessionmaker
 from app.errors import user_facing_message
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary
@@ -147,27 +149,47 @@ def summarize_document(job_id) -> None:
                 .order_by(ReviewRow.idx)
             ).all()
         ]
-        summaries = []
-        for i, row in enumerate(rows):
-            report("summarizing", i, len(rows))
-            prompt = catalog.get_prompt(session, "summary", str(row["category"]))
-            output = summarize_row(document.stored_path, row, job.model, prompt=prompt)
-            summaries.append(
-                Summary(
-                    document_id=job.document_id,
-                    job_id=job.id,
-                    idx=i,
-                    title=output["summaryTitle"],
-                    date=output.get("summaryDate") or "-",
-                    text=output["summaryText"],
-                    source_text=output.get("sourceText"),
-                    manual_check=bool(output.get("manualCheck")),
-                    row_start=row["start"],
-                    row_end=row["end"],
-                    row_category=row["category"],
-                )
+        report("summarizing", 0, len(rows))
+        # Resolve prompts up front: the DB session is not thread-safe, so no catalog reads happen
+        # inside the parallel section. Cache by category (many rows share one prompt).
+        prompt_by_cat: dict[str, str] = {}
+        for row in rows:
+            cat = str(row["category"])
+            if cat not in prompt_by_cat:
+                prompt_by_cat[cat] = catalog.get_prompt(session, "summary", cat)
+
+        # Independent rows (OCR + Vertex, no session access) run on a bounded pool; the seam's rate
+        # limiter caps the aggregate request rate. Outputs are placed by idx so the persisted set
+        # keeps document order. Replace the prior set only after all rows succeed.
+        outputs: list = [None] * len(rows)
+        pdf_path, model = document.stored_path, job.model
+        with ThreadPoolExecutor(max_workers=get_settings().pipeline_workers) as pool:
+            futures = {
+                pool.submit(
+                    summarize_row, pdf_path, row, model, prompt_by_cat[str(row["category"])]
+                ): i
+                for i, row in enumerate(rows)
+            }
+            for done, future in enumerate(as_completed(futures), start=1):
+                outputs[futures[future]] = future.result()  # a row failure fails the job loudly
+                report("summarizing", done, len(rows))
+
+        summaries = [
+            Summary(
+                document_id=job.document_id,
+                job_id=job.id,
+                idx=i,
+                title=output["summaryTitle"],
+                date=output.get("summaryDate") or "-",
+                text=output["summaryText"],
+                source_text=output.get("sourceText"),
+                manual_check=bool(output.get("manualCheck")),
+                row_start=row["start"],
+                row_end=row["end"],
+                row_category=row["category"],
             )
-        report("summarizing", len(rows), len(rows))
+            for i, (row, output) in enumerate(zip(rows, outputs))
+        ]
         session.execute(delete(Summary).where(Summary.document_id == job.document_id))
         session.add_all(summaries)
 
