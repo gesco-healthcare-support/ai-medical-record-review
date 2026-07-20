@@ -28,6 +28,8 @@ from app.services.windows import byte_budgeted_windows
 
 
 def _generation_config():
+    # Segmentation keeps thinking (segment_thinking_budget, default dynamic): an A/B on labeled
+    # cases showed thinking-off regresses strict doc-F1 here, unlike the other structured calls.
     return types.GenerateContentConfig(
         temperature=0.0,
         top_p=0.95,
@@ -35,6 +37,9 @@ def _generation_config():
         response_mime_type="application/json",
         response_schema=SEGMENT_RESPONSE_SCHEMA,
         system_instruction=SEGMENTATION_SYSTEM,
+        thinking_config=types.ThinkingConfig(
+            thinking_budget=get_settings().segment_thinking_budget
+        ),
     )
 
 

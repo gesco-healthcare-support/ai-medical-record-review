@@ -10,7 +10,7 @@ import random
 import time
 
 import httpx
-from google.genai import errors
+from google.genai import errors, types
 
 from app.config import get_settings
 
@@ -22,10 +22,29 @@ def _backoff_delay(attempt: int) -> float:
     return random.uniform(0.0, ceiling)
 
 
+def _apply_thinking_default(config) -> None:
+    """Disable thinking by default (config-driven) unless the call already set a thinking_config.
+
+    Thinking tokens are overhead for our structured extraction/segmentation calls and silently
+    consume max_output_tokens on 2.5-flash. Applied here so every seam call inherits it; a call
+    that sets its own thinking_config (e.g. a validated-to-need-it task) always wins. Mutates the
+    GenerateContentConfig in place; a mapping config is handled too.
+    """
+    if config is None:
+        return
+    budget = types.ThinkingConfig(thinking_budget=get_settings().gemini_thinking_budget)
+    if isinstance(config, dict):
+        if config.get("thinking_config") is None:
+            config["thinking_config"] = budget
+    elif getattr(config, "thinking_config", None) is None:
+        config.thinking_config = budget
+
+
 def generate_with_retry(client, **kwargs):
     """Call client.models.generate_content, retrying transient failures. Client passed explicitly
     so route/worker modules keep a single patchable client seam."""
     settings = get_settings()
+    _apply_thinking_default(kwargs.get("config"))
     last = None
     for attempt in range(settings.genai_max_retries):
         try:

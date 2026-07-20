@@ -54,10 +54,15 @@ class Settings(BaseSettings):
     genai_retry_base_delay: float = 2.0
     genai_retry_max_delay: float = 30.0
 
-    # Thinking tokens are pure overhead for our structured extraction/segmentation calls, and on
-    # 2.5-flash they silently consume max_output_tokens. Default OFF (budget 0); set >0 or -1
-    # (model-dynamic) via env to re-enable if a task regresses. Applied centrally at the genai seam.
+    # Thinking tokens are pure overhead for our structured extraction calls, and on 2.5-flash they
+    # silently consume max_output_tokens. Default OFF (budget 0); set >0 or -1 (model-dynamic) via
+    # env to re-enable if a task regresses. Applied centrally at the genai seam.
     gemini_thinking_budget: int = 0
+
+    # Segmentation is the exception: an A/B on labeled cases showed thinking-OFF regresses strict
+    # doc-F1 (it over-segments more), so the segmentation window call keeps dynamic thinking (-1)
+    # while every other call inherits gemini_thinking_budget. Env-overridable.
+    segment_thinking_budget: int = -1
 
     # Global Vertex request ceiling (requests/minute) enforced by a Redis token bucket at the seam,
     # so the aggregate rate across every worker process never trips dynamic-shared-quota 429s. Tune
