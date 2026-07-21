@@ -1,0 +1,30 @@
+# Local dev services for the Next.js + FastAPI re-platform (see docs/plans/2026-07-14-nextjs-fastapi-rewrite.md).
+# Postgres + Redis only - the FastAPI app, RQ workers, and Next.js run on the host during dev.
+# On the LAN server these become locally-installed services (no cloud); this file is dev-only.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: mrr
+      POSTGRES_PASSWORD: mrr_dev_only
+      POSTGRES_DB: mrr
+    ports:
+      - "5432:5432"
+    volumes:
+      - mrr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mrr -d mrr"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    # Persistence OFF: the queue carries only non-PHI job identifiers, and we do not want
+    # PHI-adjacent job metadata written to an RDB/AOF file (HIPAA). See the plan's PHI scope.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+
+volumes:
+  mrr_pgdata:

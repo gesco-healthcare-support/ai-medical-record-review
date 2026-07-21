@@ -1,0 +1,100 @@
+name: rewrite-ci
+
+# The Next.js + FastAPI re-platform lives on its own long-lived branch; the main CI (ci.yml)
+# only covers the Flask app on `main`. This validates the new backend/ + frontend/ stack.
+on:
+  push:
+    branches: [feat/nextjs-fastapi-rewrite]
+  pull_request:
+    branches: [feat/nextjs-fastapi-rewrite]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    # Postgres service for the auth integration tests (P2c). Same image + credentials as
+    # docker-compose.dev.yml; a fresh empty DB that `alembic upgrade head` builds from the baseline.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mrr
+          POSTGRES_PASSWORD: mrr_dev_only
+          POSTGRES_DB: mrr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mrr -d mrr"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      # Redis for the RQ job-queue tests (P4). settings.redis_url defaults to localhost:6379.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install deps (core + docs; no torch)
+        run: uv sync --extra docs
+
+      - name: Ruff lint + format check
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Import smoke (models map, app builds)
+        # Dummy secrets: importing app.main builds the auth backend, which reads Settings. Engines
+        # are lazy, so nothing connects -- this only proves the app + all mappers construct.
+        env:
+          DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci
+          SECRET_KEY: ci-import-smoke
+          SECURITY_PASSWORD_SALT: ci-import-smoke
+        run: uv run python -c "from sqlalchemy.orm import configure_mappers; import app.main; configure_mappers(); print('import OK')"
+
+      - name: Migrate + run tests (unit + integration on Postgres)
+        env:
+          DATABASE_URL: postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr
+          SECRET_KEY: ci-test-secret
+          SECURITY_PASSWORD_SALT: ci-test-salt
+          ENVIRONMENT: dev
+        run: |
+          uv run alembic upgrade head
+          uv run pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm (corepack)
+        run: corepack enable
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build

@@ -1,0 +1,120 @@
+# Full deployable stack for the Next.js + FastAPI re-platform: the whole app in one command,
+# entirely on local/in-house infrastructure (no cloud). The SAME file runs on the in-house LAN
+# server - only .env changes (ENVIRONMENT=prod + TLS on the proxy). The dev-only Postgres/Redis
+# for host-process development live in docker-compose.dev.yml; THIS file is the complete app.
+#
+# The one external call is Vertex AI (LLM/VLM inference); everything else runs on your metal.
+#
+# Setup / runbook: see docs/plans/2026-07-16-p8-local-stack.md.
+name: mrr
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg://mrr:${POSTGRES_PASSWORD:-mrr_local_only}@postgres:5432/mrr
+  REDIS_URL: redis://redis:6379/0
+  ENVIRONMENT: ${ENVIRONMENT:-dev}
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env (openssl rand -hex 32)}
+  SECURITY_PASSWORD_SALT: ${SECURITY_PASSWORD_SALT:?set SECURITY_PASSWORD_SALT in .env (the real Flask salt)}
+  UPLOAD_FOLDER: /app/uploads
+  GOOGLE_GENAI_USE_VERTEXAI: ${GOOGLE_GENAI_USE_VERTEXAI:-true}
+  GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+  GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
+  GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+
+services:
+  postgres:
+    restart: unless-stopped
+    image: postgres:16
+    environment:
+      POSTGRES_USER: mrr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mrr_local_only}
+      POSTGRES_DB: mrr
+    ports:
+      - "5433:5432"   # host 5433 to avoid clashing with the dev stack (docker-compose.dev.yml) on 5432
+    volumes:
+      - mrr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mrr -d mrr"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    restart: unless-stopped
+    image: redis:7
+    # Persistence OFF: the queue carries only non-PHI job ids; no RDB/AOF on disk (HIPAA).
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  api:
+    restart: unless-stopped
+    build:
+      context: ./backend
+      args:
+        UV_EXTRAS: "--extra docs"
+    image: mrr-backend-web
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *backend-env
+    volumes:
+      - mrr_uploads:/app/uploads
+      - ./instance:/app/instance:ro   # the legacy SQLite, read for the one-time data migration
+      - ./secrets:/secrets:ro         # optional Vertex service-account key (see .env.example)
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  segment-worker:
+    restart: unless-stopped
+    build:
+      context: ./backend
+      args:
+        UV_EXTRAS: "--extra docs --extra classifier"   # torch/embeddings for the classifier
+    image: mrr-backend-classifier
+    command: ["python", "-m", "app.worker", "segment"]
+    environment: *backend-env
+    volumes:
+      - mrr_uploads:/app/uploads
+      - ./secrets:/secrets:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  summarize-worker:
+    restart: unless-stopped
+    build:
+      context: ./backend
+      args:
+        UV_EXTRAS: "--extra docs"
+    image: mrr-backend-web
+    command: ["python", "-m", "app.worker", "summarize"]
+    environment: *backend-env
+    volumes:
+      - mrr_uploads:/app/uploads
+      - ./secrets:/secrets:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  web:
+    restart: unless-stopped
+    build:
+      context: ./frontend
+    image: mrr-frontend
+    environment:
+      NODE_ENV: production
+      API_ORIGIN: http://api:8000
+    depends_on:
+      - api
+
+  proxy:
+    restart: unless-stopped
+    image: nginx:1.27
+    ports:
+      - "8080:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+      - web
+
+volumes:
+  mrr_pgdata:
+  mrr_uploads:
