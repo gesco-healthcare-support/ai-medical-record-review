@@ -374,6 +374,7 @@ textarea:focus-visible, a:focus-visible {
 .hd-table thead th[data-sort] { cursor: pointer; user-select: none; }
 .hd-table thead th.sorted { color: var(--navy-600); font-weight: 600; }
 .hd-sortlabel { display: inline-flex; align-items: center; gap: 4px; }
+.hd-table th.hd-w-patient { width: 200px; }
 .hd-table th.hd-w-pages { width: 70px; }
 .hd-table th.hd-w-uploaded { width: 110px; }
 .hd-table th.hd-w-found { width: 130px; }
