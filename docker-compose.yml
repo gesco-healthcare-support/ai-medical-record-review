@@ -22,6 +22,7 @@ x-backend-env: &backend-env
 
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16
     environment:
       POSTGRES_USER: mrr
@@ -38,11 +39,13 @@ services:
       retries: 10
 
   redis:
+    restart: unless-stopped
     image: redis:7
     # Persistence OFF: the queue carries only non-PHI job ids; no RDB/AOF on disk (HIPAA).
     command: ["redis-server", "--save", "", "--appendonly", "no"]
 
   api:
+    restart: unless-stopped
     build:
       context: ./backend
       args:
@@ -59,6 +62,7 @@ services:
       redis: { condition: service_started }
 
   segment-worker:
+    restart: unless-stopped
     build:
       context: ./backend
       args:
@@ -74,6 +78,7 @@ services:
       redis: { condition: service_started }
 
   summarize-worker:
+    restart: unless-stopped
     build:
       context: ./backend
       args:
@@ -89,6 +94,7 @@ services:
       redis: { condition: service_started }
 
   web:
+    restart: unless-stopped
     build:
       context: ./frontend
     image: mrr-frontend
@@ -99,6 +105,7 @@ services:
       - api
 
   proxy:
+    restart: unless-stopped
     image: nginx:1.27
     ports:
       - "8080:80"
