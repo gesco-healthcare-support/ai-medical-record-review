@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, FileText } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, FileText } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -172,11 +172,12 @@ export function DocumentsTable({
               </tr>
             ) : (
               pageDocs.map((doc) => (
-                <tr key={doc.id} onClick={() => onOpen(doc.id)}>
+                <tr key={doc.id} data-id={doc.id} onClick={() => onOpen(doc.id)}>
                   <td>
                     <span className="hd-doc">
                       <FileText width={15} height={15} aria-hidden />
                       <span className="hd-name">{doc.original_filename}</span>
+                      <ChevronRight width={15} height={15} aria-hidden className="hd-open-cue" />
                     </span>
                   </td>
                   <td className="hd-muted">{doc.page_count}</td>
