@@ -9,7 +9,16 @@ export type CurrentUser = {
 };
 
 export type JobKind = "segment" | "classify" | "summarize";
-export type JobState = "queued" | "running" | "done" | "error" | "interrupted";
+// paused/needs_attention are resumable-summarize states (item 7): paused = auto-resuming after a
+// transient failure; needs_attention = a permanent failure the reviewer must resolve.
+export type JobState =
+  | "queued"
+  | "running"
+  | "paused"
+  | "done"
+  | "needs_attention"
+  | "error"
+  | "interrupted";
 
 /** Job.progress() from the backend, embedded per document in the listing. */
 export type JobProgress = {
@@ -28,6 +37,7 @@ export type DocumentStatus =
   | "summarizing"
   | "reviewing"
   | "done"
+  | "needs_attention"
   | "error"
   | "interrupted";
 

@@ -17,6 +17,9 @@ class RowsPayload(BaseModel):
 class SummarizeStartPayload(BaseModel):
     rows: list[dict[str, Any]] | None = None  # optional: flush the editor's final rows first
     model: str | None = None
+    # "Re-summarize all": clear existing summaries first so every row is regenerated (discards
+    # reviewer edits). Default false -> the resumable worker reuses done rows by identity (item 7).
+    fresh: bool = False
 
 
 class SummaryEditPayload(BaseModel):

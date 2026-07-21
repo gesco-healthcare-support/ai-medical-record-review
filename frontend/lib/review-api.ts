@@ -32,11 +32,12 @@ export function startSegment(id: string) {
   return apiFetch<{ ok: boolean }>(`/documents/${id}/segment/start`, { method: "POST" });
 }
 
-/** POST /api/documents/{id}/summarize/start - flush rows + enqueue summarization. */
-export function startSummarize(id: string, rows: Row[]) {
+/** POST /api/documents/{id}/summarize/start - flush rows + enqueue summarization. `fresh` clears
+ *  prior summaries first ("Re-summarize all"); otherwise the resumable worker reuses done rows. */
+export function startSummarize(id: string, rows: Row[], fresh = false) {
   return apiFetch<{ ok: boolean }>(`/documents/${id}/summarize/start`, {
     method: "POST",
-    body: JSON.stringify({ rows }),
+    body: JSON.stringify({ rows, fresh }),
   });
 }
 

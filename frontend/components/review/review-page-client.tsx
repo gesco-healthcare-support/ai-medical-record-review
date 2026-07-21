@@ -45,6 +45,18 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   ];
 
   const save = wf.saveState;
+  // The paused stage label is stable (STAGE_LABELS.paused); style the bar distinctly while waiting.
+  const paused = wf.watching && wf.progress.detail.toLowerCase().startsWith("paused");
+
+  const reSummarizeAll = () => {
+    if (
+      window.confirm(
+        "Re-summarize all documents? This discards the current summaries and any edits to them.",
+      )
+    ) {
+      void wf.onSummarize(true);
+    }
+  };
 
   return (
     <div className="rce">
@@ -64,7 +76,7 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
 
         <div className="rce-bar-actions">
           {wf.watching ? (
-            <div className="rce-progress" role="status" aria-live="polite">
+            <div className={cn("rce-progress", paused && "paused")} role="status" aria-live="polite">
               <span className="rce-progress-label">{wf.progress.detail}</span>
               <div className="rce-progress-bar">
                 <div style={{ width: `${wf.progress.pct}%` }} />
@@ -88,16 +100,23 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                 {wf.rows.length ? "Re-run segment" : "Segment"}
               </button>
               {tab === "review" ? (
-                <button
-                  type="button"
-                  className="ev-btn ev-btn-primary"
-                  disabled={errors.size > 0 || included === 0}
-                  onClick={wf.onSummarize}
-                >
-                  {included
-                    ? `Summarize ${included} document${included === 1 ? "" : "s"}`
-                    : "Summarize"}
-                </button>
+                <>
+                  {summaries.length > 0 ? (
+                    <button type="button" className="ev-btn ev-btn-ghost" onClick={reSummarizeAll}>
+                      Re-summarize all
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="ev-btn ev-btn-primary"
+                    disabled={errors.size > 0 || included === 0}
+                    onClick={() => wf.onSummarize()}
+                  >
+                    {included
+                      ? `Summarize ${included} document${included === 1 ? "" : "s"}`
+                      : "Summarize"}
+                  </button>
+                </>
               ) : null}
             </>
           )}
@@ -105,6 +124,11 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
       </header>
 
       {wf.banner ? <div className="banner">{wf.banner}</div> : null}
+      {wf.attention ? (
+        <div className="notice-attention" role="status">
+          {wf.attention.message}
+        </div>
+      ) : null}
 
       <div className="rce-body">
         {tab === "review" ? (

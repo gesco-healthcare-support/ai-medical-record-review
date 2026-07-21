@@ -9,7 +9,7 @@ server-side, ids only). The worker is the single writer of Document.status after
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 
@@ -19,6 +19,13 @@ from app.errors import user_facing_message
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary
 from app.services import catalog
 from app.services.jobs import STATUS_ON_DONE
+from app.worker.failures import (
+    JobNeedsAttention,
+    JobPaused,
+    classify_failure,
+    reason_for,
+)
+from app.worker.queues import queue_for, worker_fn
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +63,14 @@ def _run(job_id, work) -> None:
 
         try:
             work(session, job, report)
+        except JobPaused as sig:
+            # Resumable summarize: transient pressure -> keep the persisted rows + auto-resume.
+            _finalize_paused(session, job_id, sig)
+            return
+        except JobNeedsAttention as sig:
+            # Resumable summarize: a permanent failure -> calm terminal state, partial results kept.
+            _finalize_needs_attention(session, job_id, sig)
+            return
         except Exception as exc:
             session.rollback()  # the work may have died mid-transaction
             job = session.get(Job, job_id)
@@ -75,6 +90,87 @@ def _run(job_id, work) -> None:
         if document is not None:
             document.status = STATUS_ON_DONE[job.kind]
         session.commit()
+
+
+def _job_timeout(session, document_id) -> int:
+    """Size-aware RQ wall-clock cap for a (re)enqueue (mirrors services.jobs.enqueue)."""
+    settings = get_settings()
+    pages = getattr(session.get(Document, document_id), "page_count", 0) or 0
+    return max(settings.job_timeout, int(pages * settings.job_timeout_per_page))
+
+
+def _finalize_paused(session, job_id, sig: JobPaused) -> None:
+    """Persist progress + schedule a delayed resume of the SAME job. document.status stays
+    in-flight ("summarizing") so the UI keeps showing progress ("paused, will retry"). A fresh RQ
+    job id is recorded so orphan recovery correlates the scheduled resume, not the finished run."""
+    job = session.get(Job, job_id)
+    job.state = "paused"
+    job.stage = "paused"
+    job.current, job.total = sig.done, sig.total
+    job.attempts = (job.attempts or 0) + 1
+    try:
+        rq_job = queue_for(job.kind).enqueue_in(
+            timedelta(seconds=sig.delay),
+            worker_fn(job.kind),
+            job.id,
+            job_timeout=_job_timeout(session, job.document_id),
+        )
+        job.rq_job_id = rq_job.id
+        session.commit()
+    except Exception:
+        # Could not schedule the resume (e.g. Redis down): fail visibly rather than strand paused.
+        session.rollback()
+        job = session.get(Job, job_id)
+        job.state = "interrupted"
+        job.finished_at = _utcnow()
+        document = session.get(Document, job.document_id)
+        if document is not None:
+            document.status = "interrupted"
+        session.commit()
+        logger.warning(
+            "resume enqueue failed for job %s; marked interrupted", job_id, exc_info=True
+        )
+        return
+    logger.info(
+        "job %s paused after %d/%d; resume scheduled in %ss (attempt %d)",
+        job_id,
+        sig.done,
+        sig.total,
+        sig.delay,
+        job.attempts,
+    )
+
+
+def _finalize_needs_attention(session, job_id, sig: JobNeedsAttention) -> None:
+    """Terminal, calm outcome: some sub-documents could not be summarized. Successful summaries are
+    already persisted (per-row); record the friendly reason + the affected rows (non-PHI)."""
+    job = session.get(Job, job_id)
+    job.state = "needs_attention"
+    job.error = sig.message
+    job.attention = {"rows": sig.rows, "message": sig.message}
+    job.finished_at = _utcnow()
+    document = session.get(Document, job.document_id)
+    if document is not None:
+        document.status = "needs_attention"
+    session.commit()
+    logger.info("job %s needs attention: %d row(s) could not be summarized", job_id, len(sig.rows))
+
+
+def _build_summary(job, idx, row, output) -> Summary:
+    """One Summary ORM row from a summarize_row output + its source row (legacy shape)."""
+    return Summary(
+        document_id=job.document_id,
+        job_id=job.id,
+        idx=idx,
+        title=output["summaryTitle"],
+        date=output.get("summaryDate") or "-",
+        text=output["summaryText"],
+        source_text=output.get("sourceText"),
+        manual_check=bool(output.get("manualCheck")),
+        row_start=row["start"],
+        row_end=row["end"],
+        row_category=row["category"],
+    )
 
 
 def segment_document(job_id) -> None:
@@ -150,11 +246,21 @@ def classify_document(job_id) -> None:
 
 
 def summarize_document(job_id) -> None:
-    """RQ entry: summarize the included ReviewRows -> Summary rows, replacing the prior set only
-    after the new set is complete (a failed run keeps the previous results)."""
+    """RQ entry: summarize the included ReviewRows -> Summary rows, RESUMABLY (item 7).
+
+    Per-row: each Summary is persisted the moment it succeeds, so a mid-run failure never loses
+    completed work. Skip-done: a row whose (start, end, category) already has a Summary is REUSED
+    (its reviewer edits preserved) and only re-positioned to the current order - so auto-resume, a
+    manual re-click, and post-crash recovery all only pay for the missing rows. A run that ends
+    with retryable rows left raises JobPaused (auto-resume after a fixed delay, forever); a run
+    whose only failures are permanent (blank OCR, auth, per-day quota) raises JobNeedsAttention,
+    keeping every successful summary. The "Re-summarize all" path clears summaries in the route
+    first, so nothing is reused here.
+    """
     from app.services.summarize_engine import summarize_row
 
     def work(session, job, report):
+        settings = get_settings()
         document = session.get(Document, job.document_id)
         rows = [
             row.as_row()
@@ -164,48 +270,112 @@ def summarize_document(job_id) -> None:
                 .order_by(ReviewRow.idx)
             ).all()
         ]
-        report("summarizing", 0, len(rows))
-        # Resolve prompts up front: the DB session is not thread-safe, so no catalog reads happen
-        # inside the parallel section. Cache by category (many rows share one prompt).
+        total = len(rows)
+        wanted = {(int(r["start"]), int(r["end"]), str(r["category"])) for r in rows}
+
+        # Reconcile persisted summaries by row identity: keep the first for each still-wanted row,
+        # drop any that are stale (row removed/edited) or duplicate. This never touches summaries
+        # for rows still in the set, so reviewer edits survive a resume/re-run.
+        existing: dict[tuple, Summary] = {}
+        for summary in session.scalars(
+            select(Summary).where(Summary.document_id == job.document_id)
+        ).all():
+            key = (int(summary.row_start), int(summary.row_end), str(summary.row_category))
+            if key in wanted and key not in existing:
+                existing[key] = summary
+            else:
+                session.delete(summary)
+        session.commit()
+
+        # Position reused summaries to the current row order; collect the rows still to generate.
+        pending: list[tuple[int, dict]] = []
+        for i, row in enumerate(rows):
+            key = (int(row["start"]), int(row["end"]), str(row["category"]))
+            reused = existing.get(key)
+            if reused is not None:
+                if reused.idx != i:
+                    reused.idx = i
+                continue
+            pending.append((i, row))
+        session.commit()
+
+        done_count = total - len(pending)
+        report("summarizing", done_count, total)
+        if not pending:
+            return  # everything already summarized -> _run marks done
+
+        # Resolve prompts up front (the DB session is not thread-safe; no catalog reads in the pool).
         prompt_by_cat: dict[str, str] = {}
-        for row in rows:
+        for _, row in pending:
             cat = str(row["category"])
             if cat not in prompt_by_cat:
                 prompt_by_cat[cat] = catalog.get_prompt(session, "summary", cat)
 
-        # Independent rows (OCR + Vertex, no session access) run on a bounded pool; the seam's rate
-        # limiter caps the aggregate request rate. Outputs are placed by idx so the persisted set
-        # keeps document order. Replace the prior set only after all rows succeed.
-        outputs: list = [None] * len(rows)
         pdf_path, model = document.stored_path, job.model
-        with ThreadPoolExecutor(max_workers=get_settings().pipeline_workers) as pool:
+        attention_rows: list[dict] = []  # permanent per-row failures {idx, pages, reason}
+        transient_left = False  # >=1 row failed transiently -> retry on resume
+        consecutive_transient = 0
+        should_pause = False
+
+        with ThreadPoolExecutor(max_workers=settings.pipeline_workers) as pool:
             futures = {
                 pool.submit(
                     summarize_row, pdf_path, row, model, prompt_by_cat[str(row["category"])]
-                ): i
-                for i, row in enumerate(rows)
+                ): (i, row)
+                for i, row in pending
             }
-            for done, future in enumerate(as_completed(futures), start=1):
-                outputs[futures[future]] = future.result()  # a row failure fails the job loudly
-                report("summarizing", done, len(rows))
+            for future in as_completed(futures):
+                i, row = futures[future]
+                try:
+                    output = future.result()
+                except Exception as exc:
+                    if classify_failure(exc) == "transient":
+                        transient_left = True
+                        consecutive_transient += 1
+                        logger.warning(
+                            "summarize row %d transient failure on document %s (%d in a row)",
+                            i,
+                            job.document_id,
+                            consecutive_transient,
+                        )
+                        if consecutive_transient >= settings.summarize_pause_after:
+                            should_pause = True
+                            for pending_future in futures:
+                                pending_future.cancel()  # skip not-yet-started rows
+                            break
+                    else:
+                        attention_rows.append(
+                            {
+                                "idx": i,
+                                "pages": f"{row['start']}-{row['end']}",
+                                "reason": reason_for(exc),
+                            }
+                        )
+                        logger.warning(
+                            "summarize row %d permanent failure on document %s",
+                            i,
+                            job.document_id,
+                            exc_info=True,
+                        )
+                    continue
+                # Success: persist immediately so a later failure never loses this row.
+                session.add(_build_summary(job, i, row, output))
+                session.commit()
+                done_count += 1
+                consecutive_transient = 0
+                report("summarizing", done_count, total)
 
-        summaries = [
-            Summary(
-                document_id=job.document_id,
-                job_id=job.id,
-                idx=i,
-                title=output["summaryTitle"],
-                date=output.get("summaryDate") or "-",
-                text=output["summaryText"],
-                source_text=output.get("sourceText"),
-                manual_check=bool(output.get("manualCheck")),
-                row_start=row["start"],
-                row_end=row["end"],
-                row_category=row["category"],
+        # Retryable rows outstanding -> pause + auto-resume (transient wins over permanent this
+        # cycle; permanents resurface once transient pressure clears). Otherwise, if only permanent
+        # failures remain -> needs attention. Otherwise every row is summarized -> done.
+        if should_pause or transient_left:
+            raise JobPaused(delay=settings.summarize_resume_delay, done=done_count, total=total)
+        if attention_rows:
+            n = len(attention_rows)
+            raise JobNeedsAttention(
+                f"{n} of {total} document{'s' if n != 1 else ''} could not be summarized. "
+                "Review, correct, or exclude them, then summarize again.",
+                attention_rows,
             )
-            for i, (row, output) in enumerate(zip(rows, outputs))
-        ]
-        session.execute(delete(Summary).where(Summary.document_id == job.document_id))
-        session.add_all(summaries)
 
     _run(job_id, work)

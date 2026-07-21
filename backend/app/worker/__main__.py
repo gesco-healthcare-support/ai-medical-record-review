@@ -28,7 +28,12 @@ def main(argv: list[str] | None = None) -> None:
         reset_catalog_cache()
 
     redis = get_redis()
-    Worker([Queue(name, connection=redis) for name in queues], connection=redis).work()
+    # with_scheduler=True runs the RQ scheduler thread in-process so `enqueue_in`-scheduled jobs
+    # (a paused summarize run's delayed resume, item 7) actually fire. Enabled on every worker;
+    # RQ coordinates multiple schedulers with a Redis lock, so running it here is safe.
+    Worker([Queue(name, connection=redis) for name in queues], connection=redis).work(
+        with_scheduler=True
+    )
 
 
 if __name__ == "__main__":

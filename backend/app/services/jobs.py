@@ -20,7 +20,9 @@ from app.models import Document, Job
 # it prepares rows for review, so done -> reviewing.
 STATUS_ON_ENQUEUE = {"segment": "segmenting", "classify": "segmenting", "summarize": "summarizing"}
 STATUS_ON_DONE = {"segment": "reviewing", "classify": "reviewing", "summarize": "done"}
-ACTIVE_STATES = ("queued", "running")
+# `paused` is a resumable summarize run awaiting its delayed resume (item 7): still in-flight, so
+# it blocks a second job for the same document and is inspected by orphan recovery.
+ACTIVE_STATES = ("queued", "running", "paused")
 
 
 class JobConflict(Exception):
@@ -99,12 +101,16 @@ def enqueue(
         settings = get_settings()
         pages = getattr(session.get(Document, document_id), "page_count", 0) or 0
         timeout = max(settings.job_timeout, int(pages * settings.job_timeout_per_page))
-        queue_for(kind).enqueue(
+        rq_job = queue_for(kind).enqueue(
             worker_fn(kind),
             job.id,
             job_id=str(job.id),
             job_timeout=timeout,
         )
+        # Record the RQ job id so orphan recovery can correlate it. On the first run this equals
+        # str(job.id); a resumable summarize pause reassigns it to the fresh scheduled resume.
+        job.rq_job_id = rq_job.id
+        session.commit()
     except Exception:
         job.state = "interrupted"
         job.finished_at = _utcnow()

@@ -388,6 +388,12 @@ def summarize_start(
             raise HTTPException(status_code=400, detail=error)
     if not any(row.include for row in document.review_rows):
         raise HTTPException(status_code=400, detail="no rows are marked for summarization")
+    if payload.fresh:
+        # "Re-summarize all": wipe prior summaries so the run regenerates every row (the resumable
+        # worker otherwise reuses done rows by identity). Committed before enqueue so the worker
+        # starts from a clean slate.
+        session.execute(delete(Summary).where(Summary.document_id == document.id))
+        session.commit()
     model = payload.model or get_settings().summary_model
     try:
         enqueue(

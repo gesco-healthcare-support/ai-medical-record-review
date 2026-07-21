@@ -34,7 +34,11 @@ def recover_orphans(session: Session) -> int:
     reaped = 0
     for job in session.scalars(select(Job).where(Job.state.in_(ACTIVE_STATES))).all():
         try:
-            status = RQJob.fetch(str(job.id), connection=redis).get_status(refresh=True)
+            # Correlate by the CURRENT rq id: a resumed summarize job's scheduled resume has a
+            # fresh rq id (!= the db id), so fetching by db id would miss it and reap a healthy job.
+            status = RQJob.fetch(job.rq_job_id or str(job.id), connection=redis).get_status(
+                refresh=True
+            )
         except NoSuchJobError:
             status = None  # RQ has no record (worker crashed + registry expired) -> orphan
         except RedisError:

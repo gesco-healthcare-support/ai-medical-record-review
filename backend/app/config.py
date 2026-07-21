@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     genai_retry_base_delay: float = 2.0
     genai_retry_max_delay: float = 30.0
 
+    # Resumable summarize (item 7): after this many CONSECUTIVE transient failures (shared-quota
+    # 429 / 5xx / disconnect) the run stops mid-batch, saves progress, and schedules a resume this
+    # many seconds later - retrying the remaining rows forever until quota frees up. Only transient
+    # pressure pauses; a permanent failure ends the run "needs attention" instead.
+    summarize_pause_after: int = 3
+    summarize_resume_delay: int = 60
+
     # Thinking tokens are pure overhead for our structured extraction calls, and on 2.5-flash they
     # silently consume max_output_tokens. Default OFF (budget 0); set >0 or -1 (model-dynamic) via
     # env to re-enable if a task regresses. Applied centrally at the genai seam.

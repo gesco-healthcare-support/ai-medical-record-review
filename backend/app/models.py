@@ -158,8 +158,12 @@ class Document(Base):
 
     @property
     def active_job(self):
-        """The queued/running job, if any - at most one by the job-service invariant."""
-        return next((job for job in self.jobs if job.state in ("queued", "running")), None)
+        """The in-flight job, if any - at most one by the job-service invariant. `paused` counts
+        as in-flight (a summarize run awaiting its delayed resume): it blocks a second job and
+        keeps the UI on the progress view."""
+        return next(
+            (job for job in self.jobs if job.state in ("queued", "running", "paused")), None
+        )
 
     def listing(self):
         """Landing-page shape; original_filename is shown to its owner only."""
@@ -193,8 +197,8 @@ class Job(Base):
             "uq_one_active_job_per_document",
             "document_id",
             unique=True,
-            postgresql_where=text("state IN ('queued', 'running')"),
-            sqlite_where=text("state IN ('queued', 'running')"),
+            postgresql_where=text("state IN ('queued', 'running', 'paused')"),
+            sqlite_where=text("state IN ('queued', 'running', 'paused')"),
         ),
     )
 
@@ -209,6 +213,13 @@ class Job(Base):
     model = Column(String(64), nullable=False)
     prompt_version = Column(String(16), nullable=False)
     catalog_revision = Column(Integer)
+    # Resumable summarize (item 7): the CURRENT RQ job id (differs from the db id after a delayed
+    # requeue, so orphan recovery correlates by this); the pause/resume cycle count (observability
+    # only - transient 429s retry forever); and, when a run ends `needs_attention`, the reason +
+    # the sub-documents that could not be summarized (non-PHI: idx + page range + a friendly reason).
+    rq_job_id = Column(String(64))
+    attempts = Column(Integer, nullable=False, server_default="0", default=0)
+    attention = Column(JSON)
     created_at = Column(DateTime, nullable=False, default=_utcnow)
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
