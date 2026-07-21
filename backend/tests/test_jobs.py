@@ -12,8 +12,9 @@ import pytest
 from sqlalchemy import select
 
 from app.auth.password import MrrPasswordHelper
+from app.config import get_settings
 from app.db import get_sessionmaker
-from app.errors import OcrUnavailableError
+from app.errors import EmptyExtractionError, OcrUnavailableError
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary, User
 from app.services import jobs
 from app.worker.queues import queue_for, worker_fn
@@ -276,6 +277,160 @@ def test_recover_orphans_leaves_a_healthy_job():
             assert session.get(Job, job_id).state == "queued"  # untouched
     finally:
         queue.empty()
+
+
+# --- resumable summarize (item 7) ---------------------------------------------------------------
+
+
+def _doc_with_summarize_rows(n: int, category: str = "1") -> tuple[str, int]:
+    """A document with n included ReviewRows (start=end=idx+1) + a queued summarize job."""
+    doc_id = _make_user_and_doc(page_count=n)
+    with get_sessionmaker()() as session:
+        for idx in range(n):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=idx + 1,
+                    end=idx + 1,
+                    category=category,
+                    title="A",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "summarize", model="m", prompt_version="1").id
+    return doc_id, job_id
+
+
+def _ok_output(row) -> dict:
+    return {
+        "summaryTitle": f"T{row['start']} (Pages {row['start']}-{row['end']})",
+        "summaryDate": "-",
+        "summaryText": f"body{row['start']}",
+        "manualCheck": "",
+        "sourceText": "x",
+    }
+
+
+def test_summarize_persists_per_row_and_reuses_done_on_rerun(monkeypatch):
+    """Skip-done by row identity: an existing summary is reused (its edit preserved), only the
+    missing row is generated, and it is positioned to the current row order."""
+    import app.services.summarize_engine as se
+
+    calls: list[int] = []
+
+    def fake(pdf_path, row, model=None, prompt=None):
+        calls.append(int(row["start"]))
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+
+    doc_id, job_id = _doc_with_summarize_rows(2)
+    with get_sessionmaker()() as session:  # a prior run already summarized row identity (1,1,"1")
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job_id,
+                idx=0,
+                title="OLD",
+                date="-",
+                text="old body",
+                edited_text="reviewer edit",
+                row_start=1,
+                row_end=1,
+                row_category="1",
+            )
+        )
+        session.commit()
+
+    summarize_document(job_id)
+    assert calls == [2]  # row 1 reused (skipped); only row 2 generated
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        summaries = session.scalars(
+            select(Summary).where(Summary.document_id == doc_id).order_by(Summary.idx)
+        ).all()
+        assert len(summaries) == 2
+        assert summaries[0].title == "OLD"  # reused, not regenerated
+        assert summaries[0].edited_text == "reviewer edit"  # edit preserved
+        assert summaries[0].idx == 0
+
+
+def test_summarize_pauses_and_schedules_resume_on_transient(monkeypatch):
+    """Sustained transient 429 -> stop, keep progress, schedule a delayed resume, state=paused
+    (NOT error); the document stays in-flight ('summarizing')."""
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    def fake(pdf_path, row, model=None, prompt=None):
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+
+    scheduled: dict = {}
+
+    class _FakeQueue:
+        def enqueue_in(self, td, fn, arg, job_timeout=None):
+            scheduled["delay"] = td.total_seconds()
+            scheduled["arg"] = arg
+            return type("_J", (), {"id": "rq-resume-1"})()
+
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind: _FakeQueue())
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 1)
+    monkeypatch.setattr(get_settings(), "summarize_resume_delay", 60)
+
+    doc_id, job_id = _doc_with_summarize_rows(3)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "paused"
+        assert job.rq_job_id == "rq-resume-1"
+        assert session.get(Document, doc_id).status == "summarizing"
+        assert session.scalars(select(Summary).where(Summary.document_id == doc_id)).all() == []
+    assert scheduled["delay"] == 60
+    assert str(scheduled["arg"]) == str(job_id)
+
+
+def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
+    """A permanent per-row failure (empty OCR) ends the job 'needs_attention' naming the row,
+    while every readable row is still persisted."""
+    import app.services.summarize_engine as se
+
+    def fake(pdf_path, row, model=None, prompt=None):
+        if int(row["start"]) == 1:
+            raise EmptyExtractionError("no OCR text for pages 1-1")
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+
+    doc_id, job_id = _doc_with_summarize_rows(2)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "needs_attention"
+        assert session.get(Document, doc_id).status == "needs_attention"
+        assert "could not be summarized" in (job.error or "")
+        assert job.attention and job.attention["rows"][0]["pages"] == "1-1"
+        summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
+        assert len(summaries) == 1 and summaries[0].row_start == 2  # readable row kept
+
+
+def test_second_job_conflicts_while_paused(monkeypatch):
+    """A paused summarize job is in-flight: a second job for the same document must 409."""
+    doc_id, job_id = _doc_with_summarize_rows(1)
+    with get_sessionmaker()() as session:
+        session.get(Job, job_id).state = "paused"
+        session.commit()
+    with get_sessionmaker()() as session, pytest.raises(jobs.JobConflict):
+        jobs.create_job(session, doc_id, "summarize", model="m", prompt_version="1")
 
 
 def test_classify_document_sets_each_rows_category(monkeypatch):

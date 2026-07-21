@@ -84,6 +84,13 @@ a:hover { color: var(--blue-600); }
     border-bottom: 1px solid var(--danger-500); font-size: 13.5px;
 }
 
+/* Calm "needs attention" notice (item 7): amber, not the red error banner - some documents
+   could not be summarized, but it is not a failure the reviewer should read as alarming. */
+.notice-attention {
+    padding: 10px 28px; background: var(--warning-100); color: var(--warning-500);
+    border-bottom: 1px solid var(--warning-500); font-size: 13.5px;
+}
+
 button:focus-visible, input:focus-visible, select:focus-visible,
 textarea:focus-visible, a:focus-visible {
     outline: none;
@@ -806,6 +813,10 @@ body[data-bundle-slug] #step-editor { flex: none; }
     transition: width .5s cubic-bezier(.4, 0, .2, 1);
 }
 .rce-progress-pct { font: 600 12.5px/1 var(--font-body), sans-serif; color: var(--navy-600); flex: none; }
+/* Paused (item 7): a resumable run waiting on capacity - amber fill + label so it reads as
+   "will retry", distinct from an active run, without alarming the reviewer. */
+.rce-progress.paused .rce-progress-label { color: var(--warning-500); }
+.rce-progress.paused .rce-progress-bar > div { background: var(--warning-500); }
 
 .rce-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .rce-editor {

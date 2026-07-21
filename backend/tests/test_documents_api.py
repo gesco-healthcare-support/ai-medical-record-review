@@ -309,6 +309,52 @@ async def test_summarize_start_enqueues_with_rows(authed):
         queue.empty()
 
 
+async def test_summarize_start_fresh_clears_existing_summaries(authed):
+    """Item 7: fresh=true wipes prior summaries before enqueue so the run regenerates every row;
+    without it the summaries are left for the resumable worker to reuse."""
+    from app.db import get_sessionmaker
+    from app.models import Job, Summary
+    from app.worker.queues import queue_for
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    with get_sessionmaker()() as session:
+        prior = Job(
+            document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1"
+        )
+        session.add(prior)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=prior.id,
+                idx=0,
+                title="stale",
+                date="-",
+                text="old",
+                row_start=1,
+                row_end=1,
+                row_category=_VALID_CATEGORY,
+            )
+        )
+        session.commit()
+
+    queue = queue_for("summarize")
+    queue.empty()
+    try:
+        resp = await client.post(
+            f"/api/documents/{doc_id}/summarize/start",
+            json={"rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}], "fresh": True},
+        )
+        assert resp.status_code == 200
+    finally:
+        queue.empty()
+
+    with get_sessionmaker()() as session:
+        remaining = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
+        assert remaining == []  # fresh cleared the stale summary
+
+
 def test_merge_pdfs_computes_page_ranges():
     """P6: merge concatenates in order, tiles the page ranges, and skips unreadable files."""
     import io
@@ -337,11 +383,21 @@ async def test_extract_header_mocked(authed, monkeypatch):
     monkeypatch.setattr(
         documents_module,
         "extract_header",
-        lambda pdf_path, pages: {"name": "Synthetic Patient", "dob": "-", "lawfirm": "Example Law"},
+        lambda pdf_path, pages: {
+            "first_name": "Synthetic",
+            "last_name": "Patient",
+            "dob": "-",
+            "lawfirm": "Example Law",
+        },
     )
     resp = await client.post(f"/api/documents/{doc_id}/extract-header")
     assert resp.status_code == 200
-    assert resp.json() == {"name": "Synthetic Patient", "dob": "-", "lawfirm": "Example Law"}
+    assert resp.json() == {
+        "patient_first_name": "Synthetic",
+        "patient_last_name": "Patient",
+        "patient_dob": "-",
+        "law_firm": "Example Law",
+    }
 
 
 async def test_extract_header_ocr_unavailable_returns_503(authed, monkeypatch):
