@@ -21,7 +21,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("documents", sa.Column("patient_first_name", sa.String(length=255), nullable=True))
+    op.add_column(
+        "documents", sa.Column("patient_first_name", sa.String(length=255), nullable=True)
+    )
     op.add_column("documents", sa.Column("patient_last_name", sa.String(length=255), nullable=True))
     op.add_column("documents", sa.Column("patient_dob", sa.String(length=32), nullable=True))
     op.add_column("documents", sa.Column("law_firm", sa.String(length=512), nullable=True))

@@ -24,8 +24,14 @@ _HEADER_SYSTEM = (
 _HEADER_SCHEMA = {
     "type": "OBJECT",
     "properties": {
-        "first_name": {"type": "STRING", "description": "Patient first (given) name, or '' if not found"},
-        "last_name": {"type": "STRING", "description": "Patient last (family) name, or '' if not found"},
+        "first_name": {
+            "type": "STRING",
+            "description": "Patient first (given) name, or '' if not found",
+        },
+        "last_name": {
+            "type": "STRING",
+            "description": "Patient last (family) name, or '' if not found",
+        },
         "dob": {"type": "STRING", "description": "Patient date of birth mm/dd/yyyy, or ''"},
         "lawfirm": {"type": "STRING", "description": "Sending attorney + law firm, or ''"},
     },
