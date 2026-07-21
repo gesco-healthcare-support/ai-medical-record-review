@@ -67,11 +67,13 @@ export function ExportDialog({
         return;
       }
       if (!resp.ok) throw new Error(`export failed (${resp.status})`);
+      const cd = resp.headers.get("Content-Disposition") || "";
+      const match = cd.match(/filename="?([^"]+)"?/);
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "summaries.docx";
+      link.download = match ? match[1] : "summaries.docx";
       link.click();
       URL.revokeObjectURL(url);
       onOpenChange(false);

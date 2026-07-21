@@ -543,6 +543,23 @@ def _download_name(label: str | None, ext: str) -> str:
     return f"{slug}.{ext}"
 
 
+def _summary_filename(document: Document) -> str:
+    """Lastname_Firstname_Medical_Records_summary.docx from the persisted header; falls back to
+    <original-filename>_summary.docx when no patient name was extracted."""
+    parts = [
+        p.strip()
+        for p in (document.patient_last_name, document.patient_first_name)
+        if (p or "").strip()
+    ]
+    if parts:
+        base = "_".join([*parts, "Medical_Records_summary"])
+    else:
+        stem = os.path.splitext(os.path.basename(document.original_filename or "summaries"))[0]
+        base = f"{stem}_summary"
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_") or "summaries"
+    return f"{safe}.docx"
+
+
 def _matched_rows(session: Session, document: Document, categories):
     """The current review rows whose category is in the requested set, or raise: empty/invalid
     categories -> 400; a set that matches nothing in this record -> 409."""
@@ -587,7 +604,7 @@ def export_document(
     return StreamingResponse(
         buffer,
         media_type=DOCX_MIMETYPE,
-        headers={"Content-Disposition": 'attachment; filename="summaries.docx"'},
+        headers={"Content-Disposition": f'attachment; filename="{_summary_filename(document)}"'},
     )
 
 
