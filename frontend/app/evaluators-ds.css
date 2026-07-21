@@ -775,6 +775,16 @@ body[data-bundle-slug] #step-editor { flex: none; }
     text-decoration: none; transition: color .12s;
 }
 .rce-back:hover { color: var(--navy-600); }
+.rc-headerbar {
+    display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap;
+    padding: 12px var(--gutter); background: var(--gray-50);
+    border-bottom: 1px solid var(--gray-200);
+}
+.rc-hb-fields { display: flex; gap: 12px; flex: 1 1 auto; flex-wrap: wrap; min-width: 0; }
+.rc-hb-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 150px; min-width: 120px; }
+.rc-hb-field .ev-lbl { margin-bottom: 0; }
+.rc-hb-firm { flex: 2 1 240px; }
+.rc-hb-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .rce-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .rce-name {
     font: 600 15.5px/1.25 var(--font-heading), sans-serif; color: var(--ink);

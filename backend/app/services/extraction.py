@@ -16,25 +16,28 @@ from app.services.ocr import extract_text_from_selected_pages
 
 _HEADER_SYSTEM = (
     "You extract administrative header fields from a California workers'-compensation medical "
-    "record. Return the patient's name, the patient's date of birth, and the attorney/law firm "
-    "that sent the record (this is on the declaration page and is NOT the treating doctor)."
+    "record. Return the patient's FIRST name and LAST name separately, the patient's date of "
+    "birth, and the attorney/law firm that sent the record (this is on the declaration page and "
+    "is NOT the treating doctor)."
 )
 
 _HEADER_SCHEMA = {
     "type": "OBJECT",
     "properties": {
-        "name": {"type": "STRING", "description": "Patient full name, or '' if not found"},
+        "first_name": {"type": "STRING", "description": "Patient first (given) name, or '' if not found"},
+        "last_name": {"type": "STRING", "description": "Patient last (family) name, or '' if not found"},
         "dob": {"type": "STRING", "description": "Patient date of birth mm/dd/yyyy, or ''"},
         "lawfirm": {"type": "STRING", "description": "Sending attorney + law firm, or ''"},
     },
-    "required": ["name", "dob", "lawfirm"],
+    "required": ["first_name", "last_name", "dob", "lawfirm"],
 }
 
-_BLANK = {"name": "", "dob": "", "lawfirm": ""}
+_BLANK = {"first_name": "", "last_name": "", "dob": "", "lawfirm": ""}
 
 
 def extract_header(pdf_path, pages) -> dict:
-    """OCR ``pages`` and extract {name, dob, lawfirm} via Vertex; blanks when nothing is found."""
+    """OCR ``pages`` and extract {first_name, last_name, dob, lawfirm} via Vertex; blanks when
+    nothing is found."""
     text = extract_text_from_selected_pages(pdf_path, pages)
     if not text.strip():
         return dict(_BLANK)
@@ -43,8 +46,9 @@ def extract_header(pdf_path, pages) -> dict:
         get_genai_client(),
         model=get_settings().genai_model,
         contents=(
-            "Extract the patient name, the patient's date of birth (mm/dd/yyyy), and the "
-            "attorney/law firm that sent the record from this text:\n\n" + text
+            "Extract the patient's first name and last name (separately), the patient's date of "
+            "birth (mm/dd/yyyy), and the attorney/law firm that sent the record from this text:"
+            "\n\n" + text
         ),
         config=types.GenerateContentConfig(
             temperature=0.0,

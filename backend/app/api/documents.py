@@ -29,6 +29,7 @@ from app.models import Document, Job, ReviewRow, Summary, User
 from app.schemas.documents import (
     BundlePayload,
     ExportPayload,
+    HeaderPayload,
     ResummarizePayload,
     RowsPayload,
     SummarizeStartPayload,
@@ -247,15 +248,42 @@ def get_document(
     return payload
 
 
+def _header_shape(data: dict) -> dict:
+    """Map the extraction service's neutral keys onto the persisted header shape the FE uses."""
+    return {
+        "patient_first_name": data.get("first_name", ""),
+        "patient_last_name": data.get("last_name", ""),
+        "patient_dob": data.get("dob", ""),
+        "law_firm": data.get("lawfirm", ""),
+    }
+
+
 @router.post("/{document_id}/extract-header")
 def extract_header_route(document: Document = Depends(get_owned_document)):
-    """Auto-extract {name, dob, lawfirm} from the record's first pages (Vertex) to prefill the
-    export/bundle header. Sync-AI: FastAPI runs this sync handler in its threadpool."""
+    """Re-extract {patient_first_name, patient_last_name, patient_dob, law_firm} from the record's
+    first pages (Vertex) to repopulate the editable header. Does NOT persist - the reviewer saves
+    via PUT /header. Sync-AI: FastAPI runs this sync handler in its threadpool."""
     pages = list(range(1, min(15, document.page_count) + 1))
     try:
-        return extract_header(document.stored_path, pages)
+        data = extract_header(document.stored_path, pages)
     except PipelineError as exc:
         return _pipeline_error_response(document.id, exc)
+    return _header_shape(data)
+
+
+@router.put("/{document_id}/header")
+def put_header(
+    payload: HeaderPayload,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+):
+    """Persist the reviewer-edited report header on the document."""
+    document.patient_first_name = payload.patient_first_name
+    document.patient_last_name = payload.patient_last_name
+    document.patient_dob = payload.patient_dob
+    document.law_firm = payload.law_firm
+    session.commit()
+    return document.listing()
 
 
 @router.delete("/{document_id}")

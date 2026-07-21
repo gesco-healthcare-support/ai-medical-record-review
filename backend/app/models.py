@@ -142,6 +142,11 @@ class Document(Base):
     status = Column(String(16), nullable=False, default="uploaded")
     created_at = Column(DateTime, nullable=False, default=_utcnow)
     updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    # Report-header fields: auto-extracted on identify, reviewer-editable (all nullable).
+    patient_first_name = Column(String(255))
+    patient_last_name = Column(String(255))
+    patient_dob = Column(String(32))
+    law_firm = Column(String(512))
 
     jobs = relationship("Job", backref="document", cascade="all, delete-orphan", order_by="Job.id")
     review_rows = relationship(
@@ -159,6 +164,8 @@ class Document(Base):
     def listing(self):
         """Landing-page shape; original_filename is shown to its owner only."""
         job = self.active_job
+        first = self.patient_first_name or ""
+        last = self.patient_last_name or ""
         return {
             "id": self.id,
             "original_filename": self.original_filename,
@@ -167,6 +174,11 @@ class Document(Base):
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "active_job": job.progress() if job else None,
+            "patient_first_name": first,
+            "patient_last_name": last,
+            "patient_name": (first + " " + last).strip(),
+            "patient_dob": self.patient_dob or "",
+            "law_firm": self.law_firm or "",
         }
 
 

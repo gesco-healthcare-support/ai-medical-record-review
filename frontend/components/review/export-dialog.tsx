@@ -41,9 +41,10 @@ export function ExportDialog({
   // session: we only seed on open). Empty header fields leave the inputs blank.
   useEffect(() => {
     if (!open || !defaults) return;
-    setPatient(defaults.name || "");
-    setDob(defaults.dob || "");
-    setFirm(defaults.lawfirm || "");
+    const full = `${defaults.patient_first_name || ""} ${defaults.patient_last_name || ""}`.trim();
+    setPatient(full);
+    setDob(defaults.patient_dob || "");
+    setFirm(defaults.law_firm || "");
   }, [open, defaults]);
 
   async function submit() {
