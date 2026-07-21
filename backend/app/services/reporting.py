@@ -5,6 +5,7 @@ chronologically and assembles the letterhead + intro + per-record body into a py
 Document. The classic CSV/on-disk export routes are dropped.
 """
 
+import re
 from datetime import datetime
 
 from docx import Document
@@ -12,6 +13,35 @@ from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.shared import Pt
 
 DOCX_MIMETYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+# Inline emphasis the summarizer emits: **bold**, *italic*, _italic_. Rendered as real runs so no
+# raw markers leak into the Word document (mirrors the web MarkdownText renderer).
+_INLINE_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_", re.DOTALL)
+
+
+def _run(paragraph, s, *, bold=False, italic=False):
+    run = paragraph.add_run(s)
+    run.bold = bold
+    run.italic = italic
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(11)
+    return run
+
+
+def _add_inline_runs(paragraph, text, *, bold=False, italic=False):
+    """Append runs to ``paragraph``, turning **bold** / *italic* / _italic_ markers into real
+    formatting; ``bold``/``italic`` set the baseline for the plain segments."""
+    pos = 0
+    for m in _INLINE_RE.finditer(text):
+        if m.start() > pos:
+            _run(paragraph, text[pos : m.start()], bold=bold, italic=italic)
+        if m.group(1) is not None:
+            _run(paragraph, m.group(1), bold=True, italic=italic)
+        else:
+            _run(paragraph, m.group(2) or m.group(3), bold=bold, italic=True)
+        pos = m.end()
+    if pos < len(text):
+        _run(paragraph, text[pos:], bold=bold, italic=italic)
 
 
 def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm):
@@ -85,19 +115,12 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     fourth_title_format.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     fourth_title_format.font.name = "Times New Roman"
 
-    big_text = ""
-    main_paragraph = None
     for entry in entries:
-        big_text += (
-            f"_{entry['summaryDate']}_\t****{entry['summaryTitle']}****: {entry['summaryText']}"
-        )
-        main_paragraph = doc.add_paragraph(big_text)
-        big_text = ""
-
-    if main_paragraph is not None:
-        for run in main_paragraph.runs:  # ensure the body uses Times New Roman
-            run.font.name = "Times New Roman"
-            run.font.size = Pt(11)
+        para = doc.add_paragraph()
+        _run(para, f"{entry['summaryDate']}\t", italic=True)
+        _add_inline_runs(para, entry["summaryTitle"], bold=True)
+        _run(para, ": ")
+        _add_inline_runs(para, entry["summaryText"])
 
     nine_title = doc.add_paragraph(this_concludes_text)  # noqa: F841
     nine_title_format = fourth_title.runs[0]
