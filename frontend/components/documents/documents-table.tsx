@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, FileText } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, FileText } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +30,7 @@ const FILTERS: ReadonlyArray<{
 
 const SORT_ACCESSORS = {
   name: (d: DocumentListItem) => (d.original_filename || "").toLowerCase(),
+  patient: (d: DocumentListItem) => (d.patient_name || "").toLowerCase(),
   pages: (d: DocumentListItem) => d.page_count || 0,
   uploaded: (d: DocumentListItem) => d.created_at || "",
   found: (d: DocumentListItem) => d.rows_count || 0,
@@ -39,6 +40,7 @@ type SortKey = keyof typeof SORT_ACCESSORS;
 
 const COLUMNS: { key: SortKey; label: string; cls: string }[] = [
   { key: "name", label: "Document", cls: "" },
+  { key: "patient", label: "Patient", cls: "hd-w-patient" },
   { key: "pages", label: "Pages", cls: "hd-w-pages" },
   { key: "uploaded", label: "Uploaded", cls: "hd-w-uploaded" },
   { key: "found", label: "Documents found", cls: "hd-w-found" },
@@ -85,7 +87,12 @@ export function DocumentsTable({
     const accessor = SORT_ACCESSORS[sortKey];
     return docs
       .filter(active.match)
-      .filter((d) => !query || (d.original_filename || "").toLowerCase().includes(query))
+      .filter(
+        (d) =>
+          !query ||
+          (d.original_filename || "").toLowerCase().includes(query) ||
+          (d.patient_name || "").toLowerCase().includes(query),
+      )
       .sort((a, b) => {
         const [va, vb] = [accessor(a), accessor(b)];
         return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
@@ -168,17 +175,19 @@ export function DocumentsTable({
           <tbody>
             {pageDocs.length === 0 ? (
               <tr className="hd-norows">
-                <td colSpan={7}>No documents match this view.</td>
+                <td colSpan={8}>No documents match this view.</td>
               </tr>
             ) : (
               pageDocs.map((doc) => (
-                <tr key={doc.id} onClick={() => onOpen(doc.id)}>
+                <tr key={doc.id} data-id={doc.id} onClick={() => onOpen(doc.id)}>
                   <td>
                     <span className="hd-doc">
                       <FileText width={15} height={15} aria-hidden />
                       <span className="hd-name">{doc.original_filename}</span>
+                      <ChevronRight width={15} height={15} aria-hidden className="hd-open-cue" />
                     </span>
                   </td>
+                  <td className="hd-muted">{doc.patient_name || "—"}</td>
                   <td className="hd-muted">{doc.page_count}</td>
                   <td className="hd-muted">{new Date(doc.created_at).toLocaleDateString()}</td>
                   <td className="hd-muted">{doc.rows_count || "—"}</td>

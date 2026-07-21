@@ -1,18 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, Check } from "lucide-react";
-import { toast } from "sonner";
+import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ApiError } from "@/lib/api";
-import { extractHeader, type HeaderFields } from "@/lib/review-api";
 import { rowErrors } from "@/lib/review-rows";
 import { useReviewWorkflow } from "@/hooks/use-review-workflow";
 import { useSummaries } from "@/hooks/use-summaries";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
+import { BackLink } from "@/components/app/back-link";
 import { ReviewEditor } from "./review-editor";
 import { SummariesView } from "./summaries-view";
+import { HeaderBar } from "./header-bar";
 import { StartPanel } from "./start-panel";
 import { ProgressPanel } from "./progress-panel";
 
@@ -26,8 +24,6 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   const wf = useReviewWorkflow(documentId);
   const { data: summaries = [] } = useSummaries(documentId);
   const [tab, setTab] = useState<Tab>("review");
-  const [header, setHeader] = useState<HeaderFields | null>(null);
-  const [autoFilling, setAutoFilling] = useState(false);
   const lastSection = useRef(wf.section);
 
   // The hook lands on "summaries" after a summarize job finishes (or when a done record boots);
@@ -39,19 +35,6 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
 
   const errors = rowErrors(wf.rows, wf.totalPages);
   const included = wf.rows.filter((r) => r.include !== false).length;
-
-  async function autoFill() {
-    setAutoFilling(true);
-    try {
-      const fields = await extractHeader(documentId);
-      setHeader(fields);
-      toast.success("Header details filled from the record.");
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not read the header.");
-    } finally {
-      setAutoFilling(false);
-    }
-  }
 
   const tabs = [
     { value: "review" as const, label: "Review & correct" },
@@ -67,9 +50,7 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
     <div className="rce">
       <header className="rce-bar">
         <div className="rce-bar-main">
-          <Link href="/" className="rce-back">
-            <ArrowLeft width={15} height={15} aria-hidden /> My documents
-          </Link>
+          <BackLink />
           <div className="rce-title">
             <span className="rce-name">{wf.filename || "Record"}</span>
             <span className="rce-count">
@@ -103,14 +84,6 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                   )}
                 </span>
               ) : null}
-              <button
-                type="button"
-                className="ev-btn ev-btn-outline"
-                onClick={autoFill}
-                disabled={autoFilling}
-              >
-                {autoFilling ? "Reading..." : "Auto-fill header"}
-              </button>
               <button type="button" className="ev-btn ev-btn-outline" onClick={wf.onStart}>
                 {wf.rows.length ? "Re-run segment" : "Segment"}
               </button>
@@ -144,22 +117,25 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
           ) : wf.rows.length === 0 ? (
             <StartPanel rerun={false} hint={wf.startHint} onStart={wf.onStart} />
           ) : (
-            <div className={cn("rce-editor", wf.watching && "busy")}>
-              <ReviewEditor
-                documentId={documentId}
-                filename={wf.filename}
-                rows={wf.rows}
-                categories={wf.categories}
-                totalPages={wf.totalPages}
-                onRowsChange={wf.onRowsChange}
-              />
-            </div>
+            <>
+              <HeaderBar documentId={documentId} header={wf.header} onSaved={(f) => wf.setHeader(f)} />
+              <div className={cn("rce-editor", wf.watching && "busy")}>
+                <ReviewEditor
+                  documentId={documentId}
+                  filename={wf.filename}
+                  rows={wf.rows}
+                  categories={wf.categories}
+                  totalPages={wf.totalPages}
+                  onRowsChange={wf.onRowsChange}
+                />
+              </div>
+            </>
           )
         ) : (
           <SummariesView
             documentId={documentId}
             categories={wf.categories}
-            header={header}
+            header={wf.header}
             onGotoReview={() => setTab("review")}
           />
         )}

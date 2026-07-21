@@ -80,9 +80,10 @@ export function BundlePageClient({ config }: { config: BundleConfig }) {
     setAutoFilling(true);
     try {
       const fields = await extractHeader(selectedId);
-      setPatient(fields.name || "");
-      setDob(fields.dob || "");
-      setFirm(fields.lawfirm || "");
+      const full = `${fields.patient_first_name || ""} ${fields.patient_last_name || ""}`.trim();
+      setPatient(full);
+      setDob(fields.patient_dob || "");
+      setFirm(fields.law_firm || "");
       setResult({ kind: "ok", msg: "Header details filled from the record." });
     } catch (err) {
       setResult({ kind: "err", msg: errMessage(err, "Could not read the header.") });

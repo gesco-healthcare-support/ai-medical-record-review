@@ -40,13 +40,26 @@ export function startSummarize(id: string, rows: Row[]) {
   });
 }
 
-/** The report-header fields auto-extracted from a record's first pages (Vertex). */
-export type HeaderFields = { name: string; dob: string; lawfirm: string };
+/** The persisted, reviewer-editable report-header fields (patient name split into first/last). */
+export type HeaderFields = {
+  patient_first_name: string;
+  patient_last_name: string;
+  patient_dob: string;
+  law_firm: string;
+};
 
-/** POST /api/documents/{id}/extract-header - Auto-fill: pull {name, dob, lawfirm} from the record
- *  to prefill the export/bundle header. Not persisted server-side; the caller holds the result. */
+/** POST /api/documents/{id}/extract-header - re-extract the header from the record (Vertex). Does
+ *  NOT persist; the caller populates the editable bar and the reviewer saves via saveHeader. */
 export function extractHeader(id: string) {
   return apiFetch<HeaderFields>(`/documents/${id}/extract-header`, { method: "POST" });
+}
+
+/** PUT /api/documents/{id}/header - persist the reviewer-edited report header. */
+export function saveHeader(id: string, fields: HeaderFields) {
+  return apiFetch<unknown>(`/documents/${id}/header`, {
+    method: "PUT",
+    body: JSON.stringify(fields),
+  });
 }
 
 /** GET /api/documents/{id}/summaries - the drafted summaries (all; paginated client-side). */

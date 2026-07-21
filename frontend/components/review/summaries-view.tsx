@@ -8,6 +8,7 @@ import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summar
 import type { CategoryOption, SummaryItem } from "@/lib/types";
 import type { HeaderFields } from "@/lib/review-api";
 import { ExportDialog } from "./export-dialog";
+import { MarkdownText } from "./markdown-text";
 
 const PAGE_SIZE = 20;
 
@@ -218,7 +219,9 @@ export function SummariesView({
                   )}
                 >
                   <div className="summary-head">
-                    <h3 className="sum-heading">{title}</h3>
+                    <h3 className="sum-heading">
+                      <MarkdownText text={title} />
+                    </h3>
                     {item.edited ? (
                       <span className="ev-chip ev-chip-edit">
                         <Pencil width={12} height={12} aria-hidden />
@@ -260,7 +263,9 @@ export function SummariesView({
                     </span>
                   </div>
                   <div className="meta">{meta}</div>
-                  <p className="body">{text}</p>
+                  <p className="body">
+                    <MarkdownText text={text} />
+                  </p>
                 </div>
               );
             })}

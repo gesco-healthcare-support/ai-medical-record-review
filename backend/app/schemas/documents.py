@@ -47,3 +47,12 @@ class BundlePayload(BaseModel):
     patientdob: str = ""
     QMEorAME: str = ""
     lawfirm: str = ""
+
+
+class HeaderPayload(BaseModel):
+    """Reviewer-edited report header (PUT /documents/{id}/header)."""
+
+    patient_first_name: str = ""
+    patient_last_name: str = ""
+    patient_dob: str = ""
+    law_firm: str = ""

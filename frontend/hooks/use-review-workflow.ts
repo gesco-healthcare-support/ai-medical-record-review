@@ -2,7 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
-import { getDocument, getStatus, saveRows, startSegment, startSummarize } from "@/lib/review-api";
+import {
+  getDocument,
+  getStatus,
+  saveRows,
+  startSegment,
+  startSummarize,
+  type HeaderFields,
+} from "@/lib/review-api";
 import type { CategoryOption, DocumentStatus } from "@/lib/types";
 import { rowErrors, sortRows, stripKeys, withKeys, type EditorRow } from "@/lib/review-rows";
 import type { StepId } from "@/components/review/stepper";
@@ -46,6 +53,7 @@ export function useReviewWorkflow(
   const [startHint, setStartHint] = useState("");
   const [progress, setProgress] = useState({ title: "Working...", pct: 4, detail: "Starting..." });
   const [saveState, setSaveState] = useState<SaveState>({ kind: "" });
+  const [header, setHeader] = useState<HeaderFields | null>(null);
 
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -111,6 +119,12 @@ export function useReviewWorkflow(
       const detail = await getDocument(documentId as string);
       setRows(sortRows(withKeys(detail.rows || [])));
       setStatus(detail.status);
+      setHeader({
+        patient_first_name: detail.patient_first_name || "",
+        patient_last_name: detail.patient_last_name || "",
+        patient_dob: detail.patient_dob || "",
+        law_firm: detail.law_firm || "",
+      });
       setWatching(false);
       enterEditor();
     } catch (err) {
@@ -162,6 +176,12 @@ export function useReviewWorkflow(
       setRows(sortRows(withKeys(detail.rows || [])));
       setStatus(detail.status);
       setFilename(detail.original_filename || "");
+      setHeader({
+        patient_first_name: detail.patient_first_name || "",
+        patient_last_name: detail.patient_last_name || "",
+        patient_dob: detail.patient_dob || "",
+        law_firm: detail.law_firm || "",
+      });
 
       const job = detail.active_job;
       if (job?.kind === "segment") return void watchSegment();
@@ -259,6 +279,8 @@ export function useReviewWorkflow(
     startHint,
     progress,
     saveState,
+    header,
+    setHeader,
     onStart,
     onSummarize,
     onRowsChange,

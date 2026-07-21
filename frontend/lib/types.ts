@@ -41,6 +41,11 @@ export type DocumentListItem = {
   updated_at: string;
   active_job: JobProgress | null;
   rows_count: number;
+  patient_first_name: string;
+  patient_last_name: string;
+  patient_name: string;
+  patient_dob: string;
+  law_firm: string;
 };
 
 /** A sub-document row in the review editor (ReviewRow.as_row()). */
@@ -80,6 +85,11 @@ export type DocumentDetail = {
   created_at: string;
   updated_at: string;
   active_job: JobProgress | null;
+  patient_first_name: string;
+  patient_last_name: string;
+  patient_name: string;
+  patient_dob: string;
+  law_firm: string;
   rows: Row[];
   categories: CategoryOption[];
 };

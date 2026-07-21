@@ -101,6 +101,21 @@ def segment_document(job_id) -> None:
             session.add(SegmentRow(job_id=job.id, **fields))
             session.add(ReviewRow(document_id=document.id, **fields))
 
+        # Best-effort report header: auto-extract name/DOB/law firm so Review opens pre-filled. A
+        # failure (429, empty OCR) must NOT fail identify - the rows are the primary output and the
+        # reviewer can re-run extraction from the header bar. Logged ids-only, never the values.
+        from app.services.extraction import extract_header
+
+        pages = list(range(1, min(15, document.page_count) + 1))
+        try:
+            header = extract_header(document.stored_path, pages)
+            document.patient_first_name = header["first_name"]
+            document.patient_last_name = header["last_name"]
+            document.patient_dob = header["dob"]
+            document.law_firm = header["lawfirm"]
+        except Exception:
+            logger.warning("header extraction skipped for document %s", document.id, exc_info=True)
+
     _run(job_id, work)
 
 
