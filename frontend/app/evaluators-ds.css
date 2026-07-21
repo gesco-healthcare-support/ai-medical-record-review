@@ -117,6 +117,15 @@ textarea:focus-visible, a:focus-visible {
     text-decoration: none; transition: color .12s;
 }
 .ev-topbar-nav a:hover { color: #fff; }
+.ev-brand-home { display: inline-flex; align-items: center; gap: 16px; text-decoration: none; color: inherit; transition: opacity .12s; }
+.ev-brand-home:hover { opacity: .9; }
+.ev-backlink {
+    display: inline-flex; align-items: center; gap: 5px; flex: none;
+    font: 500 13px/1 var(--font-body), sans-serif; color: var(--gray-500);
+    text-decoration: none; transition: color .12s;
+}
+.ev-backlink:hover { color: var(--navy-600); }
+.ev-page-back { padding: 14px var(--gutter) 0; }
 
 .ev-stepper {
     display: flex; align-items: center; background: #fff;

@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, Check } from "lucide-react";
+import { Check } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { ApiError } from "@/lib/api";
@@ -11,6 +10,7 @@ import { rowErrors } from "@/lib/review-rows";
 import { useReviewWorkflow } from "@/hooks/use-review-workflow";
 import { useSummaries } from "@/hooks/use-summaries";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
+import { BackLink } from "@/components/app/back-link";
 import { ReviewEditor } from "./review-editor";
 import { SummariesView } from "./summaries-view";
 import { StartPanel } from "./start-panel";
@@ -67,9 +67,7 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
     <div className="rce">
       <header className="rce-bar">
         <div className="rce-bar-main">
-          <Link href="/" className="rce-back">
-            <ArrowLeft width={15} height={15} aria-hidden /> My documents
-          </Link>
+          <BackLink />
           <div className="rce-title">
             <span className="rce-name">{wf.filename || "Record"}</span>
             <span className="rce-count">

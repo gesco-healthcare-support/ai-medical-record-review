@@ -8,16 +8,21 @@ export function Brand({ homeLink = false }: { homeLink?: boolean }) {
   const crest = (
     <Image src="/evaluators-crest.png" alt="Evaluators crest" width={28} height={29} priority />
   );
+  const mark = (
+    <>
+      <span className="ev-crest-chip">{crest}</span>
+      <span className="ev-wordmark">EVALUATORS</span>
+    </>
+  );
   return (
     <>
       {homeLink ? (
-        <Link href="/" className="ev-crest-chip" aria-label="My documents">
-          {crest}
+        <Link href="/" className="ev-brand-home" aria-label="Evaluators home - My documents">
+          {mark}
         </Link>
       ) : (
-        <span className="ev-crest-chip">{crest}</span>
+        mark
       )}
-      <span className="ev-wordmark">EVALUATORS</span>
       <span className="ev-topbar-divider" aria-hidden />
       <span className="ev-topbar-app">Medical Record Review</span>
     </>
