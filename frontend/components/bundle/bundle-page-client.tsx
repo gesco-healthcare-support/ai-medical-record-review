@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, FileText } from "lucide-react";
 import { useDocuments } from "@/hooks/use-documents";
 import { extractHeader, getDocument } from "@/lib/review-api";
-import { ApiError } from "@/lib/api";
+import { humanizeError } from "@/lib/errors";
 import {
   downloadBundlePdf,
   downloadBundleSummary,
@@ -27,7 +27,7 @@ const BUNDLE_TABS = [
 ] as const;
 
 function errMessage(err: unknown, fallback: string) {
-  return err instanceof ApiError ? err.message : err instanceof Error ? err.message : fallback;
+  return humanizeError(err, { fallback, notFound: "That record is no longer available." });
 }
 
 function categoryLabel(categories: CategoryOption[], id: string) {

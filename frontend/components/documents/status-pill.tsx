@@ -8,6 +8,7 @@ const STATUS_LABELS: Record<string, string> = {
   reviewing: "Ready for review",
   summarizing: "Summarizing",
   done: "Summarized",
+  needs_attention: "Needs attention",
   error: "Failed",
   interrupted: "Interrupted",
 };
@@ -17,6 +18,7 @@ const STATUS_TONES: Record<string, string> = {
   reviewing: "warning",
   summarizing: "info",
   done: "success",
+  needs_attention: "warning",
   error: "danger",
   interrupted: "danger",
 };

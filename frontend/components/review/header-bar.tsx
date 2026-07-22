@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ApiError } from "@/lib/api";
+import { humanizeError } from "@/lib/errors";
 import { extractHeader, saveHeader, type HeaderFields } from "@/lib/review-api";
 
 const EMPTY: HeaderFields = {
@@ -47,7 +47,7 @@ export function HeaderBar({
       onSaved(fields);
       toast.success("Header saved.");
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not save the header.");
+      toast.error(humanizeError(err, { fallback: "Could not save the header." }));
     } finally {
       setSaving(false);
     }
@@ -61,7 +61,7 @@ export function HeaderBar({
       setDirty(true);
       toast.success("Header filled from the record - review and Save.");
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not read the header.");
+      toast.error(humanizeError(err, { fallback: "Could not read the header." }));
     } finally {
       setAutoFilling(false);
     }

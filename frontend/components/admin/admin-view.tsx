@@ -10,7 +10,7 @@ import {
   useReprocess,
   useUpdateCategory,
 } from "@/hooks/use-admin";
-import { ApiError } from "@/lib/api";
+import { humanizeError } from "@/lib/errors";
 import type { AdminCategory, CategoryInput } from "@/lib/admin-api";
 import { cn } from "@/lib/utils";
 import { CategoryDialog } from "./category-dialog";
@@ -26,7 +26,10 @@ function Badge({ tone, children }: { tone: string; children: ReactNode }) {
 }
 
 function errMessage(err: unknown, fallback: string) {
-  return err instanceof ApiError ? err.message : err instanceof Error ? err.message : fallback;
+  return humanizeError(err, {
+    fallback,
+    notFound: "That item is no longer available - refresh and try again.",
+  });
 }
 
 /** Admin console: the category catalog + per-category summary prompts, plus reprocessing a

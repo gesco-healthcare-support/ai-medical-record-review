@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useAggregateDocuments } from "@/hooks/use-documents";
-import { ApiError } from "@/lib/api";
+import { humanizeError } from "@/lib/errors";
 
 function isPdf(file: File) {
   return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
@@ -56,7 +56,7 @@ export function SplitUploadDialog({
       reset();
       onOpenChange(false);
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not combine the records.");
+      toast.error(humanizeError(err, { fallback: "Could not combine the records." }));
     }
   }
 

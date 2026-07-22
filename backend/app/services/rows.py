@@ -11,6 +11,25 @@ from sqlalchemy.orm import Session
 from app.services import catalog
 
 
+def _as_int(value: object) -> int:
+    """Coerce a page value to int ONLY if it is integer-valued, else raise ValueError.
+
+    Plain int(3.5) silently truncates to 3, which would accept a fractional page the client
+    rejects (Number.isInteger); guard so the client and server agree on a valid page number.
+    """
+    if isinstance(value, bool):  # bool is an int subclass; a checkbox flag is not a page number
+        raise ValueError("boolean is not a page number")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError("fractional page")
+        return int(value)
+    if isinstance(value, str):
+        return int(value.strip())  # int("3") -> 3; int("3.5") already raises ValueError
+    raise ValueError("unsupported page type")
+
+
 def validate_rows(session: Session, rows, total_pages) -> str | None:
     """Return an error string for the first invalid row, or None."""
     if not rows:
@@ -19,7 +38,7 @@ def validate_rows(session: Session, rows, total_pages) -> str | None:
     previous_end = 0
     for i, row in enumerate(rows, start=1):
         try:
-            start, end = int(row["start"]), int(row["end"])
+            start, end = _as_int(row["start"]), _as_int(row["end"])
         except (KeyError, TypeError, ValueError):
             return f"row {i}: start/end must be integers"
         if not 1 <= start <= end <= total_pages:
