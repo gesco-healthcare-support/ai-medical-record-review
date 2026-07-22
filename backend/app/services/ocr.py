@@ -8,12 +8,16 @@ installs are often off PATH) is applied lazily on first use so importing this mo
 Ported with main's PR #25 hardening (edd110f).
 """
 
+import logging
+
 import pytesseract
 from pdf2image import convert_from_path
 from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError
 
 from app.config import get_settings
 from app.errors import OcrUnavailableError
+
+logger = logging.getLogger(__name__)
 
 _configured = False
 
@@ -28,12 +32,20 @@ def _ensure_tesseract() -> None:
 
 
 def _ocr_image(image) -> str:
-    """OCR one page image, mapping a missing Tesseract to OcrUnavailableError."""
+    """OCR one page image within a wall-clock timeout (ocr_timeout_seconds).
+
+    A missing Tesseract is a config failure -> OcrUnavailableError (fail-fast). A timeout or a
+    tesseract execution error is a per-page failure -> logged and re-raised as a RuntimeError the
+    per-page callers skip; pytesseract kills the tesseract subprocess, so a hung/oversized page can
+    never block a worker thread forever (the concurrent-OCR deadlock backstop)."""
     _ensure_tesseract()
     try:
-        return pytesseract.image_to_string(image)
+        return pytesseract.image_to_string(image, timeout=get_settings().ocr_timeout_seconds)
     except pytesseract.TesseractNotFoundError as exc:
         raise OcrUnavailableError(f"Tesseract not found: {exc}") from exc
+    except RuntimeError as exc:
+        logger.warning("OCR failed for a page (timeout or tesseract error): %s", exc)
+        raise
 
 
 def _rasterize(pdf_path, **kwargs):
@@ -57,10 +69,18 @@ def extract_text_from_selected_pages(pdf_path, selected_pages) -> str:
         except OcrUnavailableError:
             raise  # config failure: fail fast rather than silently return partial/empty text
         except Exception as exc:
-            print(f"Error processing page {page_number}: {exc}")  # one bad page must not abort
+            logger.warning(
+                "could not rasterize page %s: %s", page_number, exc
+            )  # skip, do not abort
             continue
         for page_image in images:
-            extracted_text += _ocr_image(page_image)
+            try:
+                extracted_text += _ocr_image(page_image)
+            except OcrUnavailableError:
+                raise  # Tesseract missing: fail fast
+            except Exception as exc:
+                logger.warning("OCR skipped page %s: %s", page_number, exc)  # timeout/bad page
+                continue
     return extracted_text
 
 
@@ -71,8 +91,15 @@ def extract_text_from_all_pages(pdf_path) -> str:
     except OcrUnavailableError:
         raise
     except Exception as exc:
-        print(f"Error processing PDF: {exc}")
+        logger.warning("could not rasterize PDF: %s", exc)
         return extracted_text
     for page_number, page_image in enumerate(images, start=1):
-        extracted_text += f"Page {page_number}:\n{_ocr_image(page_image)}\n"
+        try:
+            text = _ocr_image(page_image)
+        except OcrUnavailableError:
+            raise  # Tesseract missing: fail fast
+        except Exception as exc:
+            logger.warning("OCR skipped page %s: %s", page_number, exc)  # timeout/bad page
+            text = ""
+        extracted_text += f"Page {page_number}:\n{text}\n"
     return extracted_text

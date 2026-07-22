@@ -14,13 +14,7 @@ transient set mirrors generate_with_retry's own retryable set so the two never d
 import httpx
 from google.genai import errors
 
-from app.errors import GENERIC_USER_MESSAGE, PipelineError, user_facing_message
-
-
-def _is_daily_quota(exc: Exception) -> bool:
-    """A per-day / free-tier 429: sustained, not a shared-quota blip (mirrors genai_retry:107)."""
-    text = str(exc)
-    return "PerDay" in text or "free_tier" in text
+from app.errors import is_daily_quota, user_facing_message
 
 
 def classify_failure(exc: Exception) -> str:
@@ -34,7 +28,7 @@ def classify_failure(exc: Exception) -> str:
     if isinstance(exc, errors.ServerError):
         return "transient"
     if isinstance(exc, errors.ClientError):
-        if getattr(exc, "code", None) == 429 and not _is_daily_quota(exc):
+        if getattr(exc, "code", None) == 429 and not is_daily_quota(exc):
             return "transient"
         return "permanent"
     if isinstance(exc, httpx.TransportError):
@@ -43,14 +37,10 @@ def classify_failure(exc: Exception) -> str:
 
 
 def reason_for(exc: Exception) -> str:
-    """A calm, user-facing reason for a permanent failure -- never a raw vendor error."""
-    if isinstance(exc, PipelineError):
-        return user_facing_message(exc)
-    if isinstance(exc, errors.ClientError):
-        if _is_daily_quota(exc):
-            return "The daily AI quota has been used up; it resets on Google's schedule."
-        return "The AI service rejected the request (a permission or request problem)."
-    return GENERIC_USER_MESSAGE
+    """A calm, user-facing reason for a permanent failure -- shares user_facing_message's wording
+    (a PipelineError's message, a friendly genai translation, or the generic fallback), so a
+    per-row reason and a whole-job terminal message never disagree."""
+    return user_facing_message(exc)
 
 
 class JobPaused(Exception):

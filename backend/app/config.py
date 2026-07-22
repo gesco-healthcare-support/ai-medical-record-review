@@ -50,9 +50,28 @@ class Settings(BaseSettings):
     # 2600-page record gets hours. Tune via JOB_TIMEOUT / JOB_TIMEOUT_PER_PAGE.
     job_timeout: int = 3600
     job_timeout_per_page: float = 20.0
-    genai_max_retries: int = 6
+    # Within-request transient retries at the genai seam. Bumped 6 -> 8 so a brief shared-quota
+    # 429 / 5xx burst rides out inside a single call on the NON-resumable paths (segmentation /
+    # verify / classify, which have no pause/resume); a sustained outage still exhausts and fails
+    # the job with a friendly terminal message rather than hanging.
+    genai_max_retries: int = 8
     genai_retry_base_delay: float = 2.0
     genai_retry_max_delay: float = 30.0
+
+    # Per-attempt HTTP timeout (ms) for the Vertex/genai client. google-genai defaults to no
+    # timeout, so a stalled call blocks forever; bounding it turns a stall into an httpx timeout
+    # that generate_with_retry already catches + retries. 120s covers a large vision window.
+    genai_http_timeout_ms: int = 120000
+
+    # Per-call OCR (Tesseract) wall-clock cap (seconds). A hung/oversized page is killed and
+    # skipped rather than blocking a worker thread forever (the concurrent-OCR deadlock backstop;
+    # OMP_THREAD_LIMIT=1 in compose is the primary fix).
+    ocr_timeout_seconds: int = 120
+
+    # Safety margin (seconds) subtracted from the size-aware job_timeout to bound every
+    # ThreadPoolExecutor drain (see pool_timeout). The pool wait always fires JUST before RQ's
+    # SIGKILL, so no as_completed() waits unbounded, yet it scales with page count.
+    future_timeout_margin_seconds: int = 120
 
     # Resumable summarize (item 7): after this many CONSECUTIVE transient failures (shared-quota
     # 429 / 5xx / disconnect) the run stops mid-batch, saves progress, and schedules a resume this
@@ -87,6 +106,19 @@ class Settings(BaseSettings):
     verify_use_text: bool = True
     verify_suspect_cap: int = 200
     bundle_summarize_cap: int = 40
+
+    def effective_job_timeout(self, pages: int) -> int:
+        """The size-aware RQ wall-clock cap (seconds) for a document of ``pages`` pages: a flat
+        floor for small records, scaling by page count for large ones. Single source of the
+        formula shared by services.jobs.enqueue and worker.tasks."""
+        return max(self.job_timeout, int(pages * self.job_timeout_per_page))
+
+    def pool_timeout(self, pages: int) -> int:
+        """The wall-clock ceiling (seconds) for one ThreadPoolExecutor drain: the size-aware job
+        timeout minus a margin, so a stalled pool is abandoned JUST before RQ's SIGKILL (which
+        would otherwise orphan the job) yet a legitimately long pool on a large record is not cut
+        short. Floored at 1 so a tiny job_timeout in a test never yields a non-positive timeout."""
+        return max(1, self.effective_job_timeout(pages) - self.future_timeout_margin_seconds)
 
     @model_validator(mode="after")
     def _derive(self) -> "Settings":

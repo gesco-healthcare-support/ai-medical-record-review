@@ -19,6 +19,13 @@ x-backend-env: &backend-env
   GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
   GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
   GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+  # Pin Tesseract/OpenMP to a single thread. Tesseract 5.x is OpenMP-enabled, and concurrent
+  # tesseract processes (the verify pass OCRs boundary pages on up to CLASSIFY_WORKERS threads)
+  # deadlock on the shared CPU when this is unset - the reproduced "stuck on verifying" forever-
+  # hang. Proven: 6-thread OCR hammer goes 0/60 (deadlock) -> 60/60 with the limit set. Harmless
+  # on the api/web tiers (they never OCR).
+  OMP_THREAD_LIMIT: "1"
+  OMP_NUM_THREADS: "1"
 
 services:
   postgres:

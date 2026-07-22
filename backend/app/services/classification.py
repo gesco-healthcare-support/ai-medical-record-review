@@ -11,6 +11,7 @@ thread-safe under the CLASSIFY_WORKERS pool and needs no Flask app context (the 
 per-process engine backs it).
 """
 
+import logging
 import re
 import threading
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ from app.services import catalog
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.taxonomy import CATEGORIES, DEFAULT_ID
+
+logger = logging.getLogger(__name__)
 
 _EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 
@@ -231,7 +234,7 @@ def llm_classify(text, model=None):
             config=config,
         )
     except Exception as exc:
-        print(f"LLM classification failed: {exc}")
+        logger.warning("LLM classification failed: %s", exc)
         return None
     category = (response.text or "").strip()
     return category if category in set(allowed) else None
@@ -256,7 +259,7 @@ def classify(title, page_text=None):
     try:
         embed_category, _score = embed_classify(text)
     except Exception as exc:
-        print(f"Embedding classification failed: {exc}")
+        logger.warning("embedding classification failed: %s", exc)
         embed_category = None
     llm_category = llm_classify(text)
 

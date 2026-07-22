@@ -100,7 +100,7 @@ def enqueue(
         # cap either starves big docs or makes small ones hang. Scale by page count.
         settings = get_settings()
         pages = getattr(session.get(Document, document_id), "page_count", 0) or 0
-        timeout = max(settings.job_timeout, int(pages * settings.job_timeout_per_page))
+        timeout = settings.effective_job_timeout(pages)
         rq_job = queue_for(kind).enqueue(
             worker_fn(kind),
             job.id,

@@ -7,12 +7,14 @@ This is the segment worker's core; it runs on the P4 `segment` (torch/classifier
 
 import io
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
+from app.errors import PipelineTimeoutError
 from app.services.classification import classify
 from app.services.gemini import (
     SEGMENT_RESPONSE_SCHEMA,
@@ -23,8 +25,12 @@ from app.services.gemini import (
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.ocr import extract_text_from_selected_pages
+from app.services.pools import PoolTimeout, drain_pool
+from app.services.taxonomy import DEFAULT_ID
 from app.services.verify_pass import verify_and_merge
 from app.services.windows import byte_budgeted_windows
+
+logger = logging.getLogger(__name__)
 
 
 def _generation_config():
@@ -114,7 +120,7 @@ def _categorize(pdf_path, row):
             if page_text.strip():
                 result = classify(row["title"], page_text=page_text)
         except Exception as exc:
-            print(f"Classification escalation OCR failed: {exc}")
+            logger.warning("classification escalation OCR failed: %s", exc)
     row["category"] = result.category
     if result.needs_review or row["flag"].strip().lower() == "x":
         row["flag"] = "x"
@@ -128,6 +134,8 @@ def run_segmentation(pdf_path, total_pages, progress=None):
     """
     settings = get_settings()
     client = get_genai_client()
+    # Every pool drain is bounded by the size-aware budget, so no as_completed waits forever.
+    pool_timeout = settings.pool_timeout(total_pages)
 
     def report(stage, current, total):
         if progress is not None:
@@ -149,9 +157,23 @@ def run_segmentation(pdf_path, total_pages, progress=None):
             pool.submit(_window_rows, pdf_path, ws, we, client): k
             for k, (ws, we) in enumerate(windows)
         }
-        for done, future in enumerate(as_completed(futures), start=1):
-            reports[futures[future]] = future.result()  # fail loudly; never drop a window silently
-            report("segmenting", done, len(windows))
+        done = 0
+        try:
+            for future in drain_pool(futures, pool_timeout):
+                reports[futures[future]] = future.result()  # fail loudly; never drop a window
+                done += 1
+                report("segmenting", done, len(windows))
+        except PoolTimeout as pt:
+            # A lost window is lost coverage, so a stall here is terminal (friendly message) rather
+            # than a silently short document.
+            logger.warning(
+                "segmentation windows timed out after %ss; %d window(s) unfinished",
+                pool_timeout,
+                len(pt.unfinished),
+            )
+            raise PipelineTimeoutError(
+                f"segmentation timed out with {len(pt.unfinished)} window(s) unfinished"
+            ) from pt
 
     rows = merge_window_rows(reports, windows, total_pages)
 
@@ -159,12 +181,28 @@ def run_segmentation(pdf_path, total_pages, progress=None):
     # mutation) and classify() opens its own short session for catalog reads (thread-safe).
     report("categorizing", 0, len(rows))
     with ThreadPoolExecutor(max_workers=settings.classify_workers) as pool:
-        futures = [pool.submit(_categorize, pdf_path, row) for row in rows]
-        for i, future in enumerate(as_completed(futures), start=1):
-            future.result()  # a worker failure must fail the job loudly, not vanish
-            report("categorizing", i, len(rows))
+        futures = {pool.submit(_categorize, pdf_path, row): row for row in rows}
+        done = 0
+        try:
+            for future in drain_pool(futures, pool_timeout):
+                future.result()  # a worker failure must fail the job loudly, not vanish
+                done += 1
+                report("categorizing", done, len(rows))
+        except PoolTimeout as pt:
+            # A stalled categorization is recoverable: the row still exists, it just lacks a
+            # confident category. Default it to the catch-all + review flag and keep going, rather
+            # than failing the whole document (a missing category would break the verify/merge).
+            for future in pt.unfinished:
+                row = futures[future]
+                row["category"] = DEFAULT_ID
+                row["flag"] = "x"
+            logger.warning(
+                "categorization timed out after %ss; %d row(s) defaulted to review",
+                pool_timeout,
+                len(pt.unfinished),
+            )
 
     if settings.verify_merge:
-        rows, stats = verify_and_merge(pdf_path, rows, progress=progress)
-        print(f"verify pass: {stats}")
+        rows, stats = verify_and_merge(pdf_path, rows, progress=progress, pool_timeout=pool_timeout)
+        logger.info("verify pass: %s", stats)
     return rows
