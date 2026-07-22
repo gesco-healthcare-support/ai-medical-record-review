@@ -15,7 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HOME=/opt/hf-cache
 
 WORKDIR /app
 
@@ -27,6 +30,18 @@ ARG UV_EXTRAS="--extra docs"
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev ${UV_EXTRAS}
+
+# Bake the segmentation classifier's embedding model into the image so the segment worker never
+# reaches huggingface.co at runtime (HF_HUB_OFFLINE=1 above). Only the classifier build installs
+# sentence-transformers, so guard on UV_EXTRAS; the api/summarize images skip this, and the offline
+# env is harmless there (those tiers never import sentence-transformers). Depends only on the deps
+# layer, so it caches independently of app code.
+RUN case "$UV_EXTRAS" in \
+      *classifier*) \
+        HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 /app/.venv/bin/python -c \
+          "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" ;; \
+      *) echo "no classifier extra: skipping embedding-model bake" ;; \
+    esac
 
 # App code (app/, scripts/, alembic/, alembic.ini).
 COPY . .

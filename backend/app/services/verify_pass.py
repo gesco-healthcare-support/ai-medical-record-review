@@ -7,7 +7,8 @@ class). An unverifiable suspect KEEPS its boundary.
 """
 
 import io
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from google.genai import types
 from pdf2image import convert_from_path
@@ -16,6 +17,9 @@ from app.config import get_settings
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.ocr import extract_text_from_image
+from app.services.pools import PoolTimeout, drain_pool
+
+logger = logging.getLogger(__name__)
 
 _VERIFY_SYSTEM = (
     "You review the segmentation of a scanned workers' compensation medical record. "
@@ -52,7 +56,7 @@ def _boundary_text(a_last_image, b_first_image):
         a_tail = extract_text_from_image(a_last_image).strip()[-BOUNDARY_TEXT_CHARS:]
         b_head = extract_text_from_image(b_first_image).strip()[:BOUNDARY_TEXT_CHARS]
     except Exception as exc:
-        print(f"verify boundary OCR failed, continuing image-only: {exc}")
+        logger.warning("verify boundary OCR failed, continuing image-only: %s", exc)
         return ""
     if not a_tail and not b_head:
         return ""
@@ -117,7 +121,7 @@ def _same_document(pdf_path, prev_row, row):
             get_genai_client(), model=settings.verify_model, contents=contents, config=config
         )
     except Exception as exc:
-        print(f"verify oracle failed at page {row['start']}: {exc}")
+        logger.warning("verify oracle failed at page %s: %s", row["start"], exc)
         return False
     return (response.text or "").strip() == "YES"
 
@@ -140,11 +144,16 @@ def suspect_indices(rows, cap=None):
     return sorted((triggered + rest)[: max(cap, 0)])
 
 
-def verify_and_merge(pdf_path, rows, progress=None, workers=None, auto=False):
+def verify_and_merge(pdf_path, rows, progress=None, workers=None, auto=False, pool_timeout=None):
     """Verify suspect boundaries; refuted ones become MERGE SUGGESTIONS by default (auto=False).
-    Returns (rows, stats). Merging preserves tiling."""
+    Returns (rows, stats). Merging preserves tiling. The boundary-check pool is bounded by
+    pool_timeout (size-aware, from the last row's page); a stall leaves the outstanding boundaries
+    UNVERIFIED, which keeps their splits - never an auto-merge on missing evidence, never a hang."""
+    settings = get_settings()
     if workers is None:
-        workers = get_settings().classify_workers
+        workers = settings.classify_workers
+    if pool_timeout is None:
+        pool_timeout = settings.pool_timeout(rows[-1]["end"] if rows else 0)
 
     def report(current, total):
         if progress is not None:
@@ -158,9 +167,19 @@ def verify_and_merge(pdf_path, rows, progress=None, workers=None, auto=False):
             futures = {
                 pool.submit(_same_document, pdf_path, rows[i - 1], rows[i]): i for i in suspects
             }
-            for done, future in enumerate(as_completed(futures), start=1):
-                same_doc[rows[futures[future]]["start"]] = future.result()
-                report(done, len(suspects))
+            done = 0
+            try:
+                for future in drain_pool(futures, pool_timeout):
+                    same_doc[rows[futures[future]]["start"]] = future.result()
+                    done += 1
+                    report(done, len(suspects))
+            except PoolTimeout as pt:
+                logger.warning(
+                    "verify pass timed out after %ss; %d boundary check(s) left unverified "
+                    "(splits kept)",
+                    pool_timeout,
+                    len(pt.unfinished),
+                )
 
     out, affected = [], 0
     for row in rows:

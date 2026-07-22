@@ -11,6 +11,14 @@ GENERIC_USER_MESSAGE = (
     "failing, contact your administrator."
 )
 
+# Friendly wording for google-genai failures, shared by user_facing_message (terminal job errors)
+# and worker.failures.reason_for (per-row summarize failures) so both render identically.
+AI_BUSY_MESSAGE = (
+    "The AI service was busy and the request could not be completed. Please try again shortly."
+)
+AI_DAILY_QUOTA_MESSAGE = "The daily AI quota has been used up; it resets on Google's schedule."
+AI_REJECTED_MESSAGE = "The AI service rejected the request (a permission or request problem)."
+
 
 class PipelineError(Exception):
     """A document-pipeline failure whose ``user_message`` is safe to show the user."""
@@ -40,9 +48,47 @@ class EmptyExtractionError(PipelineError):
     )
 
 
+class PipelineTimeoutError(PipelineError):
+    """A pipeline stage exceeded its wall-clock budget and was stopped rather than left to hang."""
+
+    user_message = (
+        "Processing took too long and was stopped. Please try again; if it keeps happening the "
+        "document may be very large or the AI service may be busy."
+    )
+
+
+def is_daily_quota(exc: Exception) -> bool:
+    """A per-day / free-tier 429: a sustained quota exhaustion, not a shared-quota blip."""
+    text = str(exc)
+    return "PerDay" in text or "free_tier" in text
+
+
+def genai_user_message(exc: Exception) -> str | None:
+    """A friendly message for a google-genai error we recognize, else None.
+
+    A ServerError (5xx) or a transient shared-quota 429 -> "busy, try again"; the per-day/free-tier
+    quota -> the daily-quota message; any other ClientError (auth / bad request) -> "rejected".
+    Imported lazily so this module stays light for the many callers that never touch genai."""
+    from google.genai import errors as genai_errors
+
+    if isinstance(exc, genai_errors.ServerError):
+        return AI_BUSY_MESSAGE
+    if isinstance(exc, genai_errors.ClientError):
+        if getattr(exc, "code", None) == 429 and not is_daily_quota(exc):
+            return AI_BUSY_MESSAGE
+        if is_daily_quota(exc):
+            return AI_DAILY_QUOTA_MESSAGE
+        return AI_REJECTED_MESSAGE
+    return None
+
+
 def user_facing_message(exc: Exception) -> str:
     """The message to show a user for a failed job/route: a PipelineError's own ``user_message``,
-    otherwise a generic one (the technical detail is logged server-side, never shown raw)."""
+    else a friendly translation of a known genai error, else a generic one (the technical detail is
+    logged server-side, never shown raw)."""
     if isinstance(exc, PipelineError):
         return exc.user_message
+    genai_message = genai_user_message(exc)
+    if genai_message is not None:
+        return genai_message
     return GENERIC_USER_MESSAGE

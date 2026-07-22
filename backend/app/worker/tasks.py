@@ -8,7 +8,7 @@ server-side, ids only). The worker is the single writer of Document.status after
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
@@ -19,6 +19,7 @@ from app.errors import user_facing_message
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary
 from app.services import catalog
 from app.services.jobs import STATUS_ON_DONE
+from app.services.pools import PoolTimeout, drain_pool
 from app.worker.failures import (
     JobNeedsAttention,
     JobPaused,
@@ -47,6 +48,7 @@ def _run(job_id, work) -> None:
         job.state = "running"
         job.started_at = _utcnow()
         session.commit()
+        logger.info("job %s (%s) started on document %s", job_id, job.kind, job.document_id)
 
         last_write = 0.0
 
@@ -57,6 +59,8 @@ def _run(job_id, work) -> None:
             # are rate-limited so per-row progress does not contend with the job's own inserts.
             if stage == job.stage and now - last_write < _PROGRESS_MIN_INTERVAL:
                 return
+            if stage != job.stage:
+                logger.info("job %s stage %r on document %s", job_id, stage, job.document_id)
             job.stage, job.current, job.total = stage, current, total
             session.commit()
             last_write = now
@@ -90,13 +94,14 @@ def _run(job_id, work) -> None:
         if document is not None:
             document.status = STATUS_ON_DONE[job.kind]
         session.commit()
+        logger.info("job %s (%s) done on document %s", job_id, job.kind, job.document_id)
 
 
 def _job_timeout(session, document_id) -> int:
     """Size-aware RQ wall-clock cap for a (re)enqueue (mirrors services.jobs.enqueue)."""
     settings = get_settings()
     pages = getattr(session.get(Document, document_id), "page_count", 0) or 0
-    return max(settings.job_timeout, int(pages * settings.job_timeout_per_page))
+    return settings.effective_job_timeout(pages)
 
 
 def _finalize_paused(session, job_id, sig: JobPaused) -> None:
@@ -317,6 +322,7 @@ def summarize_document(job_id) -> None:
         consecutive_transient = 0
         should_pause = False
 
+        pool_timeout = settings.pool_timeout(document.page_count)
         with ThreadPoolExecutor(max_workers=settings.pipeline_workers) as pool:
             futures = {
                 pool.submit(
@@ -324,46 +330,58 @@ def summarize_document(job_id) -> None:
                 ): (i, row)
                 for i, row in pending
             }
-            for future in as_completed(futures):
-                i, row = futures[future]
-                try:
-                    output = future.result()
-                except Exception as exc:
-                    if classify_failure(exc) == "transient":
-                        transient_left = True
-                        consecutive_transient += 1
-                        logger.warning(
-                            "summarize row %d transient failure on document %s (%d in a row)",
-                            i,
-                            job.document_id,
-                            consecutive_transient,
-                        )
-                        if consecutive_transient >= settings.summarize_pause_after:
-                            should_pause = True
-                            for pending_future in futures:
-                                pending_future.cancel()  # skip not-yet-started rows
-                            break
-                    else:
-                        attention_rows.append(
-                            {
-                                "idx": i,
-                                "pages": f"{row['start']}-{row['end']}",
-                                "reason": reason_for(exc),
-                            }
-                        )
-                        logger.warning(
-                            "summarize row %d permanent failure on document %s",
-                            i,
-                            job.document_id,
-                            exc_info=True,
-                        )
-                    continue
-                # Success: persist immediately so a later failure never loses this row.
-                session.add(_build_summary(job, i, row, output))
-                session.commit()
-                done_count += 1
-                consecutive_transient = 0
-                report("summarizing", done_count, total)
+            try:
+                for future in drain_pool(futures, pool_timeout):
+                    i, row = futures[future]
+                    try:
+                        output = future.result()
+                    except Exception as exc:
+                        if classify_failure(exc) == "transient":
+                            transient_left = True
+                            consecutive_transient += 1
+                            logger.warning(
+                                "summarize row %d transient failure on document %s (%d in a row)",
+                                i,
+                                job.document_id,
+                                consecutive_transient,
+                            )
+                            if consecutive_transient >= settings.summarize_pause_after:
+                                should_pause = True
+                                for pending_future in futures:
+                                    pending_future.cancel()  # skip not-yet-started rows
+                                break
+                        else:
+                            attention_rows.append(
+                                {
+                                    "idx": i,
+                                    "pages": f"{row['start']}-{row['end']}",
+                                    "reason": reason_for(exc),
+                                }
+                            )
+                            logger.warning(
+                                "summarize row %d permanent failure on document %s",
+                                i,
+                                job.document_id,
+                                exc_info=True,
+                            )
+                        continue
+                    # Success: persist immediately so a later failure never loses this row.
+                    session.add(_build_summary(job, i, row, output))
+                    session.commit()
+                    done_count += 1
+                    consecutive_transient = 0
+                    report("summarizing", done_count, total)
+            except PoolTimeout as pt:
+                # A stalled pool near the wall-clock wall: pause and let the outstanding rows retry
+                # on the next resume (pending is recomputed by row identity), never hang.
+                transient_left = True
+                should_pause = True
+                logger.warning(
+                    "summarize pool timed out after %ss on document %s; %d row(s) will retry",
+                    pool_timeout,
+                    job.document_id,
+                    len(pt.unfinished),
+                )
 
         # Retryable rows outstanding -> pause + auto-resume (transient wins over permanent this
         # cycle; permanents resurface once transient pressure clears). Otherwise, if only permanent

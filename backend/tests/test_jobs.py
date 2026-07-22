@@ -423,6 +423,43 @@ def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
         assert len(summaries) == 1 and summaries[0].row_start == 2  # readable row kept
 
 
+def test_summarize_pauses_when_pool_times_out(monkeypatch):
+    """A stalled summarize pool (rows neither succeed nor error within pool_timeout) pauses +
+    schedules a resume rather than hanging; the outstanding rows retry on the next run."""
+    import time
+
+    import app.services.summarize_engine as se
+
+    from app.worker import tasks as tasks_mod
+
+    monkeypatch.setattr(
+        se, "summarize_row", lambda pdf_path, row, model=None, prompt=None: time.sleep(1.5)
+    )
+
+    scheduled: dict = {}
+
+    class _FakeQueue:
+        def enqueue_in(self, td, fn, arg, job_timeout=None):
+            scheduled["arg"] = arg
+            return type("_J", (), {"id": "rq-resume-timeout"})()
+
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind: _FakeQueue())
+    settings = get_settings()  # shrink the size-aware pool budget to ~1s
+    monkeypatch.setattr(settings, "job_timeout", 1)
+    monkeypatch.setattr(settings, "job_timeout_per_page", 0.0)
+    monkeypatch.setattr(settings, "future_timeout_margin_seconds", 0)
+
+    doc_id, job_id = _doc_with_summarize_rows(2)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "paused"
+        assert job.rq_job_id == "rq-resume-timeout"
+        assert session.get(Document, doc_id).status == "summarizing"
+    assert str(scheduled["arg"]) == str(job_id)
+
+
 def test_second_job_conflicts_while_paused(monkeypatch):
     """A paused summarize job is in-flight: a second job for the same document must 409."""
     doc_id, job_id = _doc_with_summarize_rows(1)
