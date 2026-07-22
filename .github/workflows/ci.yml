@@ -1,5 +1,9 @@
 name: CI
 
+# main IS the Next.js + FastAPI rewrite (backend/ + frontend/). This workflow tests that stack:
+# the backend suite on real Postgres + Redis with coverage, the frontend unit/component suite,
+# and a Playwright E2E pass over the core non-AI flows against the docker-compose app. The legacy
+# Flask app (mrr_ai/) is being phased out and is no longer covered here.
 on:
   push:
     branches: [main]
@@ -7,8 +11,36 @@ on:
     branches: [main]
 
 jobs:
-  quality:
+  backend:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    # Same images + credentials as docker-compose.dev.yml; a fresh empty DB that
+    # `alembic upgrade head` builds from the baseline, plus Redis for the RQ job-queue tests.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mrr
+          POSTGRES_PASSWORD: mrr_dev_only
+          POSTGRES_DB: mrr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mrr -d mrr"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v5
 
@@ -17,26 +49,142 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        run: uv sync
+      - name: Install deps (core + docs; no torch)
+        run: uv sync --extra docs
 
-      - name: Ruff lint
-        run: uv run ruff check .
+      - name: Ruff lint + format check
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
 
-      - name: Ruff format check
-        run: uv run ruff format --check .
-
-      - name: Pyright (advisory while code is untyped)
-        run: uv run pyright
-        continue-on-error: true
-
-      - name: Import smoke test
+      - name: Import smoke (models map, app builds)
         env:
-          GEMINI_API_KEY: dummy-ci-key
-          OPENAI_API_KEY: dummy-ci-key
-          SECRET_KEY: dummy-ci-secret
-          SECURITY_PASSWORD_SALT: dummy-ci-salt
-        run: uv run python -c "import app; print('import OK')"
+          DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci
+          SECRET_KEY: ci-import-smoke
+          SECURITY_PASSWORD_SALT: ci-import-smoke
+        run: uv run python -c "from sqlalchemy.orm import configure_mappers; import app.main; configure_mappers(); print('import OK')"
+
+      - name: Migrate + run tests with coverage
+        env:
+          DATABASE_URL: postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr
+          SECRET_KEY: ci-test-secret
+          SECURITY_PASSWORD_SALT: ci-test-salt
+          ENVIRONMENT: dev
+        run: |
+          uv run alembic upgrade head
+          uv run pytest --cov=app --cov-report=xml --cov-report=term-missing
+
+      - name: Upload backend coverage
+        uses: actions/upload-artifact@v5
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          retention-days: 1
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm (corepack)
+        run: corepack enable
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build (authoritative production build)
+        run: pnpm build
+
+      - name: Unit + component tests with coverage
+        run: pnpm test:coverage
+
+      - name: Upload frontend coverage
+        uses: actions/upload-artifact@v5
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/lcov.info
+          retention-days: 1
+
+  e2e:
+    runs-on: ubuntu-latest
+    # Boot the real app stack (proxy + api + web + Postgres + Redis) and run Playwright against it.
+    # The torch segment/summarize workers and Vertex are intentionally NOT started: CI cannot run
+    # Vertex (auth/quota/no-BAA), so the AI identify/summarize flows stay live-manually-verified.
+    env:
+      SECRET_KEY: ci-e2e-secret-key-that-is-at-least-32-bytes
+      SECURITY_PASSWORD_SALT: ci-e2e-salt
+      ENVIRONMENT: dev
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm (corepack)
+        run: corepack enable
+
+      - name: Build app images (api + web only; no torch workers)
+        run: docker compose build api web
+
+      - name: Start Postgres + Redis
+        run: docker compose up -d --wait postgres redis
+
+      - name: Migrate the database
+        run: docker compose run --rm api alembic upgrade head
+
+      - name: Start api + web + proxy
+        run: docker compose up -d --wait api web proxy
+
+      - name: Wait for the app to be ready (web AND api)
+        run: |
+          # The web probe (nginx -> Next) alone does not prove uvicorn has bound :8000, and the
+          # first E2E action POSTs to /api immediately. Require both: /login served AND the api's
+          # /health OK (probed inside the container, since nginx routes / to web not the api).
+          for i in $(seq 1 60); do
+            web=$(curl -fsS -o /dev/null -w '%{http_code}' http://localhost:8080/login 2>/dev/null || true)
+            if [ "$web" = "200" ] && docker compose exec -T api \
+                 python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status == 200 else 1)" 2>/dev/null; then
+              echo "web + api ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "app did not become ready on :8080"
+          docker compose logs --no-color proxy web api
+          exit 1
+
+      - name: Install frontend deps + Playwright browser
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+
+      - name: Run E2E specs
+        working-directory: frontend
+        run: pnpm exec playwright test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          retention-days: 3
+
+      - name: Tear down the stack
+        if: always()
+        run: docker compose down -v
 
   secret-scan:
     runs-on: ubuntu-latest
@@ -54,51 +202,37 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks dir . --redact --no-banner --exit-code 1
 
-  tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Pytest with coverage
-        env:
-          GEMINI_API_KEY: dummy-ci-key
-          OPENAI_API_KEY: dummy-ci-key
-        run: >-
-          uv run pytest
-          --cov=mrr_ai
-          --cov-report=xml
-          --cov-report=term-missing
-          --cov-fail-under=85
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v5
-        with:
-          name: coverage-xml
-          path: coverage.xml
-          retention-days: 1
-
-  # Separate job so a quality-gate failure reads as "sonarcloud", not "tests".
-  # Consumes the coverage.xml produced by the tests job.
+  # Separate job so a quality-gate failure reads as "sonarcloud", not "tests". Consumes the
+  # coverage reports produced by the backend + frontend jobs.
   sonarcloud:
-    needs: tests
+    needs: [backend, frontend]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # full history improves SonarCloud reporting relevance
 
-      - name: Download coverage report
+      - name: Download backend coverage
         uses: actions/download-artifact@v5
         with:
-          name: coverage-xml
+          name: backend-coverage
+          path: backend
+
+      - name: Download frontend coverage
+        uses: actions/download-artifact@v5
+        with:
+          name: frontend-coverage
+          path: frontend/coverage
+
+      # Monorepo path fix: the reports carry module-relative paths that do NOT resolve against
+      # sonar.sources from the repo root, so Sonar would silently import ZERO coverage (an inert
+      # gate). Rewrite the paths to repo-root-relative before the scan.
+      - name: Normalize coverage report paths to repo root
+        run: |
+          # backend coverage.xml: <source>app</source> + filename="config.py" -> backend/app/config.py
+          sed -i 's#<source>app</source>#<source>backend/app</source>#' backend/coverage.xml
+          # frontend lcov: SF paths are relative to frontend/ (e.g. SF:lib/..) -> prefix frontend/
+          sed -i 's#^SF:#SF:frontend/#' frontend/coverage/lcov.info
 
       - name: SonarQube Cloud scan
         uses: SonarSource/sonarqube-scan-action@v8.2.0

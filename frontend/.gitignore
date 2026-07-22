@@ -4,3 +4,13 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 .env*.local
+
+# test + coverage artifacts (Vitest coverage, Playwright reports)
+/coverage
+/test-results
+/playwright-report
+/blob-report
+/.playwright
+
+# Synthetic E2E fixtures (no PHI) MUST be committed even though *.pdf is git-ignored repo-wide.
+!e2e/fixtures/**
