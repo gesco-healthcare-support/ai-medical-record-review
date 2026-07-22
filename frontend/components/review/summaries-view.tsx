@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { FileText, Flag, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ApiError } from "@/lib/api";
+import { humanizeError } from "@/lib/errors";
 import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summaries";
 import type { CategoryOption, SummaryItem } from "@/lib/types";
 import type { HeaderFields } from "@/lib/review-api";
@@ -56,7 +56,7 @@ export function SummariesView({
   const [editText, setEditText] = useState("");
 
   const redraftingIdx = redraft.isPending ? (redraft.variables ?? -1) : -1;
-  const loadError = error instanceof ApiError ? error.message : error ? "Could not load summaries." : "";
+  const loadError = error ? humanizeError(error, { fallback: "Could not load summaries." }) : "";
 
   function categoryLabel(id: string) {
     const found = categories.find((c) => String(c.id) === String(id));
@@ -81,7 +81,7 @@ export function SummariesView({
       setEditingIdx(-1);
       setSaveMsg("Saved");
     } catch (err) {
-      setSaveMsg(err instanceof ApiError ? `Not saved: ${err.message}` : "Not saved");
+      setSaveMsg(`Not saved: ${humanizeError(err, { fallback: "please try again" })}`);
     }
   }
 
@@ -89,7 +89,7 @@ export function SummariesView({
     try {
       await save.mutateAsync({ idx, body: { excluded: !inExport } });
     } catch (err) {
-      setSaveMsg(err instanceof ApiError ? `Not saved: ${err.message}` : "Not saved");
+      setSaveMsg(`Not saved: ${humanizeError(err, { fallback: "please try again" })}`);
     }
   }
 
@@ -107,7 +107,7 @@ export function SummariesView({
       await redraft.mutateAsync(item.idx);
       setSaveMsg("Re-drafted");
     } catch (err) {
-      setSaveMsg(err instanceof ApiError ? `Re-draft failed: ${err.message}` : "Re-draft failed");
+      setSaveMsg(`Re-draft failed: ${humanizeError(err, { fallback: "please try again" })}`);
     }
   }
 

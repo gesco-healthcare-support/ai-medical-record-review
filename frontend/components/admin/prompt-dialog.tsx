@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { getPrompt, type AdminCategory } from "@/lib/admin-api";
 import { useSavePrompt } from "@/hooks/use-admin";
+import { humanizeError } from "@/lib/errors";
 
 // The general summary prompt lives under category 100 (catalog.get_prompt falls back to it); we read
 // it via the existing endpoint so the reference panel can show what a category would otherwise use.
@@ -63,7 +64,7 @@ export function PromptDialog({
       await save.mutateAsync({ id, text });
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the prompt.");
+      setError(humanizeError(err, { fallback: "Could not save the prompt." }));
     }
   }
 

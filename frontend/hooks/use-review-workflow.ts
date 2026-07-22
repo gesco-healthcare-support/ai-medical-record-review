@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ApiError } from "@/lib/api";
+import { humanizeError } from "@/lib/errors";
 import {
   getDocument,
   getStatus,
@@ -32,7 +32,11 @@ const STAGE_LABELS: Record<string, string> = {
 type PollResult = { outcome: "done" | "needs_attention"; message?: string };
 
 function message(err: unknown, fallback: string) {
-  return err instanceof Error ? err.message : fallback;
+  return humanizeError(err, {
+    fallback,
+    notFound:
+      "This record is no longer available to you - it may have been moved or deleted. Go back and refresh.",
+  });
 }
 
 /** The identify -> review (-> summaries) lifecycle shared by /records/[id] and the category-bundle
@@ -48,6 +52,13 @@ export function useReviewWorkflow(
   const [section, setSection] = useState<Section>("loading");
   const [activeStep, setActiveStep] = useState<StepId>("identify");
   const [rows, setRows] = useState<EditorRow[]>([]);
+  // Mirror rows into a ref so async flows (watchSummarize is kicked off at boot) read the CURRENT
+  // rows, not the empty closure captured when the flow started.
+  const rowsRef = useRef<EditorRow[]>([]);
+  const applyRows = (next: EditorRow[]) => {
+    rowsRef.current = next;
+    setRows(next);
+  };
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [totalPages, setTotalPages] = useState(0);
   const [, setStatus] = useState<DocumentStatus | "">("");
@@ -130,7 +141,7 @@ export function useReviewWorkflow(
     try {
       await pollJob("Identifying documents", "identify");
       const detail = await getDocument(documentId as string);
-      setRows(sortRows(withKeys(detail.rows || [])));
+      applyRows(sortRows(withKeys(detail.rows || [])));
       setStatus(detail.status);
       setHeader({
         patient_first_name: detail.patient_first_name || "",
@@ -157,13 +168,13 @@ export function useReviewWorkflow(
         // editor (the reviewer fixes/excludes them, then summarizes again). Partial results kept.
         setAttention({ message: result.message || "Some documents need attention." });
         setStatus("needs_attention");
-        if (rows.length) enterEditor();
+        if (rowsRef.current.length) enterEditor();
         else showStart();
         return;
       }
       setStatus("done");
       if (enableSummaries) showSummaries();
-      else if (rows.length) enterEditor();
+      else if (rowsRef.current.length) enterEditor();
       else showStart();
     } catch (err) {
       setWatching(false);
@@ -195,7 +206,7 @@ export function useReviewWorkflow(
       if (cancelled) return;
       setTotalPages(detail.page_count);
       setCategories(detail.categories || []);
-      setRows(sortRows(withKeys(detail.rows || [])));
+      applyRows(sortRows(withKeys(detail.rows || [])));
       setStatus(detail.status);
       setFilename(detail.original_filename || "");
       setHeader({
@@ -287,17 +298,22 @@ export function useReviewWorkflow(
   function onRowsChange(next: EditorRow[]) {
     if (!documentId) return;
     const sorted = sortRows(next);
-    setRows(sorted);
+    applyRows(sorted);
     setSaveState({ kind: "dirty", message: "Unsaved changes..." });
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      if (!sorted.length || rowErrors(sorted, totalPages).size) return; // invalid states stay local
+      if (!sorted.length) return; // nothing to save yet (transient mid-edit)
+      if (rowErrors(sorted, totalPages).size) {
+        // Don't silently leave changes unsaved: tell the user why (and Summarize stays blocked).
+        setSaveState({ kind: "error", message: "Not saved - fix the highlighted page ranges first." });
+        return;
+      }
       saveRows(documentId, stripKeys(sorted))
         .then(() => setSaveState({ kind: "saved" }))
         .catch((err) =>
           setSaveState({
             kind: "error",
-            message: `Not saved: ${err instanceof ApiError ? err.message : "error"}`,
+            message: `Not saved: ${humanizeError(err, { fallback: "please try again" })}`,
           }),
         );
     }, 800);

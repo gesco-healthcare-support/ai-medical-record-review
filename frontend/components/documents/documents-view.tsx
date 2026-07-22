@@ -9,7 +9,7 @@ import {
   useStartIdentification,
   useUploadDocument,
 } from "@/hooks/use-documents";
-import { ApiError } from "@/lib/api";
+import { humanizeError } from "@/lib/errors";
 import type { DocumentListItem } from "@/lib/types";
 import { DocumentsTable } from "./documents-table";
 import { EmptyState } from "./empty-state";
@@ -20,7 +20,10 @@ function isPdf(file: File) {
   return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 }
 function errMessage(err: unknown, fallback: string) {
-  return err instanceof ApiError ? err.message : fallback;
+  return humanizeError(err, {
+    fallback,
+    notFound: "That record is no longer available - it may have been deleted. Refresh the list.",
+  });
 }
 
 /** My documents: the documents table + upload (button / browse / drag-drop) + first-run empty

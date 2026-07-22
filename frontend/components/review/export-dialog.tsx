@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { HeaderFields } from "@/lib/review-api";
+import { humanizeError } from "@/lib/errors";
 
 const DEFAULT_QME = "PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)";
 
@@ -78,7 +79,7 @@ export function ExportDialog({
       URL.revokeObjectURL(url);
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Export failed.");
+      setError(humanizeError(err, { fallback: "Export failed." }));
     } finally {
       setBusy(false);
     }

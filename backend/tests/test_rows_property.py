@@ -127,3 +127,13 @@ def test_out_of_range_row_is_rejected(total, mode):
         row = {"start": 2, "end": 1, "category": VALID_CATEGORY}
     result = validate_rows(None, [row], total)
     assert result is not None and "1 <= start <= end" in result
+
+
+@_SETTINGS
+@given(base=st.integers(min_value=1, max_value=40))
+def test_fractional_page_is_rejected(base):
+    """Invariant 6: a fractional float page (e.g. 3.5) is rejected, not silently truncated - so the
+    server agrees with the client's Number.isInteger check instead of quietly accepting int(3.5)==3."""
+    row = {"start": float(base) + 0.5, "end": base + 2, "category": VALID_CATEGORY}
+    result = validate_rows(None, [row], base + 5)
+    assert result is not None and "integers" in result

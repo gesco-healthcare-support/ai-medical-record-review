@@ -176,6 +176,38 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
     expect(result.current.banner).toBe(""); // paused must not resolve to an error
   });
 
+  it("routes a boot-active summarize job ending needs_attention to the editor, not the start panel", async () => {
+    // Regression guard for the stale-rows-closure bug: a summarize job discovered at boot that ends
+    // needs_attention must land in the editor (rows present) with the notice, via rowsRef.
+    mockDoc.mockResolvedValue(
+      detail({
+        status: "summarizing",
+        active_job: {
+          kind: "summarize",
+          state: "running",
+          stage: "summarizing",
+          current: 1,
+          total: 2,
+          error: null,
+        },
+      }),
+    );
+    mockStatus.mockResolvedValue({
+      status: "needs_attention",
+      job: {
+        kind: "summarize",
+        state: "needs_attention",
+        stage: "summarizing",
+        current: 2,
+        total: 2,
+        error: "One document needs attention.",
+      },
+    });
+    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+    expect(result.current.attention?.message).toBe("One document needs attention.");
+  });
+
   it("shows a failure banner for an errored document", async () => {
     mockDoc.mockResolvedValue(detail({ status: "error", rows: [] }));
     const { result } = renderHook(() => useReviewWorkflow("d1"));
@@ -227,6 +259,8 @@ describe("useReviewWorkflow autosave gating", () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 900)); // past the 800ms debounce
     expect(mockSave).not.toHaveBeenCalled();
-    expect(result.current.saveState.kind).toBe("dirty");
+    // Loud, not silent: the state flips to error with a fix-the-rows message (Summarize stays blocked).
+    expect(result.current.saveState.kind).toBe("error");
+    expect(result.current.saveState.message).toMatch(/fix the highlighted page ranges/i);
   });
 });

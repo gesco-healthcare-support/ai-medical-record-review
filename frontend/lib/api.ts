@@ -27,7 +27,14 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
   ) {
     headers.set("Content-Type", "application/json");
   }
-  const resp = await fetch(`/api${path}`, { ...options, headers, credentials: "include" });
+  let resp: Response;
+  try {
+    resp = await fetch(`/api${path}`, { ...options, headers, credentials: "include" });
+  } catch {
+    // Network / transport failure (offline, DNS, connection reset) - not an HTTP status. Surface
+    // as ApiError(status 0) so callers + humanizeError treat it as "couldn't reach the server".
+    throw new ApiError("network", 0);
+  }
   if (resp.status === 401) {
     // Session gone -> go to login (guard against a loop when already there).
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {

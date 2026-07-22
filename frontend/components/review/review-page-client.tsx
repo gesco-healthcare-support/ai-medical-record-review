@@ -47,6 +47,10 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   const save = wf.saveState;
   // The paused stage label is stable (STAGE_LABELS.paused); style the bar distinctly while waiting.
   const paused = wf.watching && wf.progress.detail.toLowerCase().startsWith("paused");
+  // Block Summarize while any row is invalid, nothing is selected, or a save failed/is pending -
+  // so a user never summarizes stale or invalid rows.
+  const summarizeDisabled =
+    errors.size > 0 || included === 0 || save.kind === "error" || save.kind === "dirty";
 
   const reSummarizeAll = () => {
     if (
@@ -109,7 +113,16 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                   <button
                     type="button"
                     className="ev-btn ev-btn-primary"
-                    disabled={errors.size > 0 || included === 0}
+                    disabled={summarizeDisabled}
+                    title={
+                      !summarizeDisabled
+                        ? undefined
+                        : errors.size > 0
+                          ? "Fix the highlighted page ranges before summarizing."
+                          : included === 0
+                            ? "Select at least one document to summarize."
+                            : "Your latest changes aren't saved yet."
+                    }
                     onClick={() => wf.onSummarize()}
                   >
                     {included
@@ -127,6 +140,23 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
       {wf.attention ? (
         <div className="notice-attention" role="status">
           {wf.attention.message}
+        </div>
+      ) : null}
+      {tab === "review" && save.kind === "error" && errors.size === 0 ? (
+        <div className="banner" role="alert">
+          {save.message}
+        </div>
+      ) : null}
+      {tab === "review" && errors.size > 0 ? (
+        <div className="banner" role="status">
+          <strong>Fix these before summarizing:</strong>
+          <ul>
+            {[...errors.entries()].map(([i, msg]) => (
+              <li key={i}>
+                Document {i + 1}: {msg}
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
 

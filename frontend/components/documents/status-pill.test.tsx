@@ -28,6 +28,7 @@ const CASES: Array<[DocumentListItem["status"], string, string]> = [
   ["reviewing", "Ready for review", "hd-badge-warning"],
   ["summarizing", "Summarizing", "hd-badge-info"],
   ["done", "Summarized", "hd-badge-success"],
+  ["needs_attention", "Needs attention", "hd-badge-warning"],
   ["error", "Failed", "hd-badge-danger"],
   ["interrupted", "Interrupted", "hd-badge-danger"],
 ];

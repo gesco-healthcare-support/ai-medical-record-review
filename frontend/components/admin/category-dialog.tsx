@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { AdminCategory, CategoryInput } from "@/lib/admin-api";
+import { humanizeError } from "@/lib/errors";
 
 /** Add / edit a category. The id is entered only when creating (immutable - it keys existing
  *  records), so it is disabled while editing. Business rules (numeric id, duplicate, empty name)
@@ -66,7 +67,7 @@ export function CategoryDialog({
       else if (editing) await onUpdate(editing.id, body);
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the category.");
+      setError(humanizeError(err, { fallback: "Could not save the category." }));
     }
   }
 
