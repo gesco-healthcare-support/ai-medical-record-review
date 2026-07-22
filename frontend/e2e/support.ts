@@ -9,6 +9,13 @@ export function uniqueEmail(): string {
 // Meets the register rule: >= 8 chars, a digit, a symbol. Synthetic - never a real credential.
 export const PASSWORD = "E2eTest#2026";
 
+/** The user-menu trigger is the app bar's (role=banner) only button. The display name sits in a
+ *  responsive `sm:block` span, so its accessible name is unreliable across viewports - locate it
+ *  structurally instead. */
+export function userMenuTrigger(page: Page) {
+  return page.getByRole("banner").getByRole("button");
+}
+
 /** Register a new account (which auto-logs in) and wait for the signed-in home screen. */
 export async function registerAndLogin(page: Page, name = "E2E Tester") {
   const email = uniqueEmail();

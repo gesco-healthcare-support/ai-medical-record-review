@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-import { registerAndLogin } from "./support";
+import { registerAndLogin, userMenuTrigger } from "./support";
 
 test("a non-admin user has no Admin menu item", async ({ page }) => {
-  const { name } = await registerAndLogin(page);
-  await page.getByRole("button", { name: new RegExp(name) }).click();
+  await registerAndLogin(page);
+  await userMenuTrigger(page).click();
   await expect(page.getByRole("menuitem", { name: "Diagnostic & Operative" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Admin" })).toHaveCount(0);
 });

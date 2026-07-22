@@ -11,3 +11,6 @@ next-env.d.ts
 /playwright-report
 /blob-report
 /.playwright
+
+# Synthetic E2E fixtures (no PHI) MUST be committed even though *.pdf is git-ignored repo-wide.
+!e2e/fixtures/**

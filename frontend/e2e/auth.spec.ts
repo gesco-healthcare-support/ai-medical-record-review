@@ -1,12 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-import { PASSWORD, registerAndLogin } from "./support";
+import { PASSWORD, registerAndLogin, userMenuTrigger } from "./support";
 
 test("register, sign out, and sign back in", async ({ page }) => {
-  const { email, name } = await registerAndLogin(page);
+  const { email } = await registerAndLogin(page);
 
   // Sign out via the user menu -> back to the login screen.
-  await page.getByRole("button", { name: new RegExp(name) }).click();
+  await userMenuTrigger(page).click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login/);
   await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
