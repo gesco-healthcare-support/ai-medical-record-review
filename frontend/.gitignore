@@ -4,3 +4,10 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 .env*.local
+
+# test + coverage artifacts (Vitest coverage, Playwright reports)
+/coverage
+/test-results
+/playwright-report
+/blob-report
+/.playwright
