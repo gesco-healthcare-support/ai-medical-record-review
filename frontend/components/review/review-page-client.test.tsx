@@ -86,3 +86,19 @@ describe("ReviewPageClient summarize gating", () => {
     expect(summarize()).toBeEnabled();
   });
 });
+
+describe("ReviewPageClient needs-attention notice", () => {
+  it("lists each sub-document that could not be summarized, with page range, title, and reason", () => {
+    mockWf({
+      rows: [row({ start: 5, end: 5, title: "Laboratory Report" })],
+      attention: {
+        message: "1 of 2 documents could not be summarized.",
+        rows: [{ idx: 0, pages: "5-5", reason: "No readable text was found in this document." }],
+      },
+    });
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.getByText(/1 of 2 documents could not be summarized/i)).toBeInTheDocument();
+    expect(screen.getByText(/Pages 5-5 - Laboratory Report:/i)).toBeInTheDocument();
+    expect(screen.getByText(/No readable text was found in this document\./i)).toBeInTheDocument();
+  });
+});

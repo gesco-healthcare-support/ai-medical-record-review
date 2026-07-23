@@ -33,8 +33,23 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
     lastSection.current = wf.section;
   }, [wf.section]);
 
+  // A needs_attention run highlights the failed rows in the editor, so surface the Review tab when
+  // the notice appears (the user may have been on Summaries when the run finished).
+  useEffect(() => {
+    if (wf.attention) setTab("review");
+  }, [wf.attention]);
+
   const errors = rowErrors(wf.rows, wf.totalPages);
   const included = wf.rows.filter((r) => r.include !== false).length;
+
+  // The sub-documents a needs_attention run could not summarize, keyed by page range for matching
+  // to editor rows (the idx in attention is the included-position, not review_row.idx - match on
+  // pages).
+  const failedRows = wf.attention?.rows ?? [];
+  const attentionPages = new Set(failedRows.map((r) => r.pages));
+  const titleByPages = new Map(
+    wf.rows.map((r) => [`${r.start}-${r.end}`, r.title && r.title !== "-" ? r.title : ""]),
+  );
 
   const tabs = [
     { value: "review" as const, label: "Review & correct" },
@@ -51,6 +66,13 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   // so a user never summarizes stale or invalid rows.
   const summarizeDisabled =
     errors.size > 0 || included === 0 || save.kind === "error" || save.kind === "dirty";
+
+  // Un-nested reason for the disabled Summarize button (Sonar S3358: no nested ternary in JSX).
+  let summarizeHint: string | undefined;
+  if (!summarizeDisabled) summarizeHint = undefined;
+  else if (errors.size > 0) summarizeHint = "Fix the highlighted page ranges before summarizing.";
+  else if (included === 0) summarizeHint = "Select at least one document to summarize.";
+  else summarizeHint = "Your latest changes aren't saved yet.";
 
   const reSummarizeAll = () => {
     if (
@@ -114,15 +136,7 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                     type="button"
                     className="ev-btn ev-btn-primary"
                     disabled={summarizeDisabled}
-                    title={
-                      !summarizeDisabled
-                        ? undefined
-                        : errors.size > 0
-                          ? "Fix the highlighted page ranges before summarizing."
-                          : included === 0
-                            ? "Select at least one document to summarize."
-                            : "Your latest changes aren't saved yet."
-                    }
+                    title={summarizeHint}
                     onClick={() => wf.onSummarize()}
                   >
                     {included
@@ -139,7 +153,23 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
       {wf.banner ? <div className="banner">{wf.banner}</div> : null}
       {wf.attention ? (
         <div className="notice-attention" role="status">
-          {wf.attention.message}
+          <p>{wf.attention.message}</p>
+          {failedRows.length ? (
+            <ul className="notice-attention-list">
+              {failedRows.map((r) => {
+                const title = titleByPages.get(r.pages);
+                return (
+                  <li key={r.pages}>
+                    <strong>
+                      Pages {r.pages}
+                      {title ? ` - ${title}` : ""}:
+                    </strong>{" "}
+                    {r.reason}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
         </div>
       ) : null}
       {tab === "review" && save.kind === "error" && errors.size === 0 ? (
@@ -148,7 +178,7 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
         </div>
       ) : null}
       {tab === "review" && errors.size > 0 ? (
-        <div className="banner" role="status">
+        <div className="banner" aria-live="polite">
           <strong>Fix these before summarizing:</strong>
           <ul>
             {[...errors.entries()].map(([i, msg]) => (
@@ -181,6 +211,7 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                   categories={wf.categories}
                   totalPages={wf.totalPages}
                   onRowsChange={wf.onRowsChange}
+                  attentionPages={attentionPages}
                 />
               </div>
             </>
@@ -190,6 +221,7 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
             documentId={documentId}
             categories={wf.categories}
             header={wf.header}
+            onHeaderSaved={wf.setHeader}
             onGotoReview={() => setTab("review")}
           />
         )}

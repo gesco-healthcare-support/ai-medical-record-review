@@ -236,6 +236,10 @@ class Job(Base):
             "current": self.current,
             "total": self.total,
             "error": self.error,
+            # The per-row failure detail (idx, page range, reason) a needs_attention run recorded,
+            # so the UI can list + highlight exactly which sub-documents to fix/exclude. Null when
+            # the run had no permanent per-row failures.
+            "attention": self.attention,
         }
 
 

@@ -400,6 +400,52 @@ async def test_extract_header_mocked(authed, monkeypatch):
     }
 
 
+async def test_extract_header_persists_on_the_document(authed, monkeypatch):
+    """Detect-once: a successful extract-header saves the fields onto the document, so a later GET
+    reflects them without a separate PUT /header (Vertex mocked)."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "extract_header",
+        lambda pdf_path, pages: {
+            "first_name": "Synthetic",
+            "last_name": "Patient",
+            "dob": "01/02/1990",
+            "lawfirm": "Example Law",
+        },
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert resp.status_code == 200
+
+    got = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert got["patient_first_name"] == "Synthetic"
+    assert got["patient_last_name"] == "Patient"
+    assert got["patient_dob"] == "01/02/1990"
+    assert got["law_firm"] == "Example Law"
+
+
+async def test_extract_header_ocr_unavailable_does_not_persist(authed, monkeypatch):
+    """A PipelineError leaves the stored header untouched (nothing half-saved)."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+
+    import app.api.documents as documents_module
+
+    def boom(pdf_path, pages):
+        raise OcrUnavailableError("no tesseract")
+
+    monkeypatch.setattr(documents_module, "extract_header", boom)
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert resp.status_code == 503
+
+    got = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert got["patient_first_name"] == "" and got["law_firm"] == ""
+
+
 async def test_extract_header_ocr_unavailable_returns_503(authed, monkeypatch):
     client, _ = authed
     doc_id = await _upload(client, pages=1)

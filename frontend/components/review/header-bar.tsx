@@ -12,9 +12,10 @@ const EMPTY: HeaderFields = {
   law_firm: "",
 };
 
-/** Editable report-header bar at the top of Review & correct: patient first/last name, DOB, and law
- *  firm auto-extracted on identify. Edits are explicit-save (PUT /header); Auto-fill re-extracts from
- *  the record into the fields without saving. Persisted values feed the export filename + header. */
+/** Editable report-header bar shown on Review & correct and Summaries: patient first/last name, DOB,
+ *  and law firm. Auto-fill / Re-detect extracts from the record AND persists it in one action (no
+ *  separate Save needed); manual edits still save explicitly via PUT /header. Persisted values feed
+ *  the export filename + header and are shared across pages through the parent's header state. */
 export function HeaderBar({
   documentId,
   header,
@@ -57,15 +58,29 @@ export function HeaderBar({
     setAutoFilling(true);
     try {
       const data = await extractHeader(documentId);
+      // extractHeader now persists server-side; reflect it as the shared saved header (no Save step).
       setFields(data);
-      setDirty(true);
-      toast.success("Header filled from the record - review and Save.");
+      setDirty(false);
+      onSaved(data);
+      toast.success("Header detected and saved.");
     } catch (err) {
       toast.error(humanizeError(err, { fallback: "Could not read the header." }));
     } finally {
       setAutoFilling(false);
     }
   }
+
+  // Once any header value is stored, the button re-detects (overwrites) rather than first-fills.
+  const hasHeader = Boolean(
+    header &&
+      (header.patient_first_name ||
+        header.patient_last_name ||
+        header.patient_dob ||
+        header.law_firm),
+  );
+  let autoFillLabel = "Auto-fill";
+  if (autoFilling) autoFillLabel = "Reading...";
+  else if (hasHeader) autoFillLabel = "Re-detect";
 
   return (
     <div className="rc-headerbar">
@@ -114,7 +129,7 @@ export function HeaderBar({
           onClick={autoFill}
           disabled={autoFilling || saving}
         >
-          {autoFilling ? "Reading..." : "Auto-fill"}
+          {autoFillLabel}
         </button>
         <button
           type="button"

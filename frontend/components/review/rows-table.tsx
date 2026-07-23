@@ -38,6 +38,7 @@ export function RowsTable({
   onSplitConfirm,
   onSplitCancel,
   onDelete,
+  attentionPages,
 }: {
   rows: EditorRow[];
   categories: CategoryOption[];
@@ -52,6 +53,7 @@ export function RowsTable({
   onSplitConfirm: (i: number, atPage: number) => void;
   onSplitCancel: () => void;
   onDelete: (i: number) => void;
+  attentionPages?: Set<string>;
 }) {
   const splitRef = useRef<HTMLInputElement>(null);
   let previousEnd = 0;
@@ -83,6 +85,8 @@ export function RowsTable({
           const gapTo = Number(row.start) - 1;
           previousEnd = Math.max(previousEnd, Number(row.end) || previousEnd);
           const titleValue = row.title && row.title !== "-" ? row.title : "";
+          // A sub-document a needs_attention summarize run could not process (matched by page range).
+          const failed = attentionPages?.has(`${row.start}-${row.end}`) ?? false;
 
           return (
             <Fragment key={row._key}>
@@ -99,6 +103,7 @@ export function RowsTable({
                   "doc-row title-row",
                   selected === i && "selected",
                   !included && "skipped",
+                  failed && "attention",
                 )}
                 onClick={() => onSelect(i)}
               >
@@ -114,6 +119,14 @@ export function RowsTable({
                       onClick={stop}
                       onChange={(e) => onField(i, { title: e.target.value })}
                     />
+                    {failed ? (
+                      <span
+                        className="rc-attn-chip"
+                        title="This document could not be summarized - exclude it or fix its pages, then summarize again"
+                      >
+                        Could not summarize
+                      </span>
+                    ) : null}
                     <span className="rc-rowactions">
                       {splitting === i ? (
                         <>
@@ -214,6 +227,7 @@ export function RowsTable({
                   errors.has(i) && "invalid",
                   selected === i && "selected",
                   !included && "skipped",
+                  failed && "attention",
                 )}
                 onClick={() => onSelect(i)}
               >

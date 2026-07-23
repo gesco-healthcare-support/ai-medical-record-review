@@ -259,16 +259,26 @@ def _header_shape(data: dict) -> dict:
 
 
 @router.post("/{document_id}/extract-header")
-def extract_header_route(document: Document = Depends(get_owned_document)):
+def extract_header_route(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+):
     """Re-extract {patient_first_name, patient_last_name, patient_dob, law_firm} from the record's
-    first pages (Vertex) to repopulate the editable header. Does NOT persist - the reviewer saves
-    via PUT /header. Sync-AI: FastAPI runs this sync handler in its threadpool."""
+    first pages (Vertex) AND persist them onto the document, so a single detect is available
+    everywhere (Review, Summaries, Export, bundles) without a separate Save. On a PipelineError
+    nothing is persisted. Sync-AI: FastAPI runs this sync handler in its threadpool."""
     pages = list(range(1, min(15, document.page_count) + 1))
     try:
         data = extract_header(document.stored_path, pages)
     except PipelineError as exc:
         return _pipeline_error_response(document.id, exc)
-    return _header_shape(data)
+    shape = _header_shape(data)
+    document.patient_first_name = shape["patient_first_name"]
+    document.patient_last_name = shape["patient_last_name"]
+    document.patient_dob = shape["patient_dob"]
+    document.law_firm = shape["law_firm"]
+    session.commit()
+    return shape
 
 
 @router.put("/{document_id}/header")

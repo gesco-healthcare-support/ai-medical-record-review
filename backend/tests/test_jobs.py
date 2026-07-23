@@ -172,7 +172,9 @@ def test_summarize_document_persists_summaries(monkeypatch):
 
     summarize_document(job_id)
     with get_sessionmaker()() as session:
-        assert session.get(Job, job_id).state == "done"
+        job = session.get(Job, job_id)
+        assert job.state == "done"
+        assert job.progress()["attention"] is None  # a clean run carries no failure detail
         summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
         assert len(summaries) == 1 and summaries[0].title == "T (Pages 1-1)"
 
@@ -421,6 +423,29 @@ def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
         assert job.attention and job.attention["rows"][0]["pages"] == "1-1"
         summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
         assert len(summaries) == 1 and summaries[0].row_start == 2  # readable row kept
+
+
+def test_job_progress_exposes_attention_rows(monkeypatch):
+    """H1: the status payload (Job.progress) surfaces the per-row failure detail so the UI can list
+    + highlight exactly which sub-documents failed, with the reason. (Worker persistence itself is
+    covered by test_summarize_needs_attention_on_permanent_keeps_partial.)"""
+    import app.services.summarize_engine as se
+
+    def fake(pdf_path, row, model=None, prompt=None):
+        if int(row["start"]) == 1:
+            raise EmptyExtractionError("no OCR text for pages 1-1")
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+
+    doc_id, job_id = _doc_with_summarize_rows(2)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        progress = session.get(Job, job_id).progress()
+        assert progress["state"] == "needs_attention"
+        assert progress["attention"]["rows"][0]["pages"] == "1-1"
+        assert "readable text" in progress["attention"]["rows"][0]["reason"].lower()
 
 
 def test_summarize_pauses_when_pool_times_out(monkeypatch):
