@@ -9,8 +9,9 @@ import re
 from datetime import datetime
 
 from docx import Document
+from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-from docx.shared import Pt
+from docx.shared import Inches, Pt
 
 DOCX_MIMETYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -115,12 +116,22 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     fourth_title_format.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     fourth_title_format.font.name = "Times New Roman"
 
+    # Two-column borderless table: date | title + body. The default "Table Normal" style has no
+    # cell borders, matching the canonical MRR summary layout (date sits in its own left column,
+    # the summary flows in the right column) instead of the old inline date-tab-title paragraph.
+    table = doc.add_table(rows=0, cols=2)
+    table.autofit = False
     for entry in entries:
-        para = doc.add_paragraph()
-        _run(para, f"{entry['summaryDate']}\t", italic=True)
-        _add_inline_runs(para, entry["summaryTitle"], bold=True)
-        _run(para, ": ")
-        _add_inline_runs(para, entry["summaryText"])
+        cells = table.add_row().cells
+        cells[0].width = Inches(0.9)
+        cells[1].width = Inches(5.6)
+        cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        cells[1].vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        _run(cells[0].paragraphs[0], entry["summaryDate"])
+        body = cells[1].paragraphs[0]
+        _add_inline_runs(body, entry["summaryTitle"], bold=True)
+        _run(body, ": ")
+        _add_inline_runs(body, entry["summaryText"])
 
     nine_title = doc.add_paragraph(this_concludes_text)  # noqa: F841
     nine_title_format = fourth_title.runs[0]

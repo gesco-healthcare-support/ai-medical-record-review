@@ -42,6 +42,7 @@ from app.services.extraction import extract_header
 from app.services.files import safe_name
 from app.services.gemini import PROMPT_VERSION
 from app.services.jobs import JobConflict, enqueue
+from app.services.linked_pdf import build_linked_pdf
 from app.services.pdf import get_pdf_page_count
 from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
 from app.services.rows import validate_rows
@@ -553,6 +554,28 @@ def _export_entry(summary: Summary) -> dict:
     }
 
 
+def _pdf_entry(summary: Summary) -> dict:
+    """Linked-PDF entry: like _export_entry, but the [ManualCheck] tag stays OUT of ``linkTitle``
+    (it renders as a plain prefix outside the hyperlink) and ``startPage`` carries the 1-based
+    source page the title links to."""
+    title = re.sub(r"^\[ManualCheck\]\s*", "", summary.effective_title().strip())
+    title = _PAGES_SUFFIX.sub("", title).rstrip()
+    if str(summary.row_category) == "3" and "[Diagnostic Study]" not in title:
+        title = f"{title} [Diagnostic Study]"
+    title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
+    text = summary.effective_text()
+    doi = re.match(r"\s*(\*\*DOI\*\*:[^,]*,)", summary.text or "")
+    if doi and "**DOI**" not in text:
+        text = f"{doi.group(1)} {text}"
+    return {
+        "summaryDate": summary.effective_date(),
+        "linkTitle": title,
+        "manualCheck": bool(summary.manual_check),
+        "summaryText": text,
+        "startPage": summary.row_start,
+    }
+
+
 def _download_name(label: str | None, ext: str) -> str:
     """Safe download filename from a free-text label ('Diagnostic & Operative' -> ...)."""
     slug = _BUNDLE_NAME_CHARS.sub("-", (label or "records").lower()).strip("-") or "records"
@@ -574,6 +597,23 @@ def _summary_filename(document: Document) -> str:
         base = f"{stem}_summary"
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_") or "summaries"
     return f"{safe}.docx"
+
+
+def _linked_filename(document: Document) -> str:
+    """Lastname_Firstname_Medical_Records_linked.pdf from the persisted header; falls back to
+    <original-filename>_linked.pdf when no patient name was extracted."""
+    parts = [
+        p.strip()
+        for p in (document.patient_last_name, document.patient_first_name)
+        if (p or "").strip()
+    ]
+    if parts:
+        base = "_".join([*parts, "Medical_Records_linked"])
+    else:
+        stem = os.path.splitext(os.path.basename(document.original_filename or "record"))[0]
+        base = f"{stem}_linked"
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_") or "record"
+    return f"{safe}.pdf"
 
 
 def _matched_rows(session: Session, document: Document, categories):
@@ -621,6 +661,37 @@ def export_document(
         buffer,
         media_type=DOCX_MIMETYPE,
         headers={"Content-Disposition": f'attachment; filename="{_summary_filename(document)}"'},
+    )
+
+
+@router.post("/{document_id}/export/pdf")
+def export_document_pdf(
+    payload: ExportPayload | None = None,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Combined linked PDF: the summary letter (two-column, blue linked titles) followed by the
+    full source record, each title linking to that sub-document's first source page."""
+    payload = payload or ExportPayload()
+    included = [s for s in document.summaries if not s.excluded]
+    if not included:
+        raise HTTPException(status_code=409, detail="no summaries to export yet")
+    entries = [_pdf_entry(s) for s in included]
+    pdf_bytes = build_linked_pdf(
+        document.stored_path,
+        entries,
+        document.page_count,
+        payload.patientName,
+        payload.patientdob,
+        payload.QMEorAME,
+        payload.lawfirm,
+    )
+    audit(session, "export_pdf", user.id, document.id)
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{_linked_filename(document)}"'},
     )
 
 

@@ -32,3 +32,27 @@ def test_build_mrr_document_blank_qme_ame_does_not_crash():
     buffer = io.BytesIO()
     doc.save(buffer)
     assert buffer.tell() > 0
+
+
+def test_build_mrr_document_renders_two_column_table():
+    # Entries render as a borderless 2-column table (date | title + text), sorted chronologically.
+    entries = [
+        {"summaryDate": "01/02/2020", "summaryTitle": "Report A", "summaryText": "text A"},
+        {"summaryDate": "03/04/2019", "summaryTitle": "Report B", "summaryText": "text B"},
+    ]
+    doc = build_mrr_document(
+        entries,
+        num_pages=2,
+        patient_name="Synthetic Patient",
+        patient_dob="-",
+        qme_or_ame="QME",
+        lawfirm="Example Law Firm",
+    )
+    assert len(doc.tables) == 1
+    table = doc.tables[0]
+    assert len(table.columns) == 2
+    assert len(table.rows) == 2
+    # 03/04/2019 sorts before 01/02/2020; left cell = date, right cell = title + text.
+    assert table.rows[0].cells[0].text == "03/04/2019"
+    assert "Report B" in table.rows[0].cells[1].text
+    assert "text B" in table.rows[0].cells[1].text

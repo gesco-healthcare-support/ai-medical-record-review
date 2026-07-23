@@ -14,8 +14,10 @@ import { humanizeError } from "@/lib/errors";
 
 const DEFAULT_QME = "PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)";
 
-/** Export-to-Word dialog: the four report-header fields (POST /export -> .docx download). Patient
- *  name / DOB / law firm prefill from the record's Auto-fill header when it has been run. */
+/** Export dialog: the four report-header fields feed two outputs. "Export to Word" (POST /export
+ *  -> .docx) is the summary letter alone; "Export to linked PDF" (POST /export/pdf) is the summary
+ *  letter followed by the full source record, each summary title linking to its source page.
+ *  Patient name / DOB / law firm prefill from the record's Auto-fill header when it has been run. */
 export function ExportDialog({
   open,
   onOpenChange,
@@ -48,11 +50,12 @@ export function ExportDialog({
     setFirm(defaults.law_firm || "");
   }, [open, defaults]);
 
-  async function submit() {
+  // Both export buttons share the header fields; only the endpoint + fallback filename differ.
+  async function runExport(endpoint: string, fallbackName: string) {
     setBusy(true);
     setError("");
     try {
-      const resp = await fetch(`/api/documents/${documentId}/export`, {
+      const resp = await fetch(`/api/documents/${documentId}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -74,7 +77,7 @@ export function ExportDialog({
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = match ? match[1] : "summaries.docx";
+      link.download = match ? match[1] : fallbackName;
       link.click();
       URL.revokeObjectURL(url);
       onOpenChange(false);
@@ -89,13 +92,13 @@ export function ExportDialog({
   const note =
     `These details fill the report header. ${plural(includedCount)} will be exported` +
     (excludedCount ? `; ${excludedCount} excluded` : "") +
-    ". Enter only what the report requires — no additional PHI.";
+    ". Enter only what the report requires - no additional PHI.";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Export to Word</DialogTitle>
+          <DialogTitle>Export</DialogTitle>
           <DialogDescription>{note}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
@@ -149,7 +152,7 @@ export function ExportDialog({
             />
           </div>
         </div>
-        <DialogFooter>
+        <DialogFooter className="flex-wrap">
           {error ? <span className="error-text mr-auto">{error}</span> : null}
           <button
             type="button"
@@ -159,8 +162,21 @@ export function ExportDialog({
           >
             Cancel
           </button>
-          <button type="button" className="ev-btn ev-btn-primary" onClick={submit} disabled={busy}>
-            {busy ? "Preparing report..." : `Export ${plural(includedCount)}`}
+          <button
+            type="button"
+            className="ev-btn ev-btn-ghost"
+            onClick={() => runExport("export", "summaries.docx")}
+            disabled={busy}
+          >
+            {busy ? "Preparing..." : "Export to Word"}
+          </button>
+          <button
+            type="button"
+            className="ev-btn ev-btn-primary"
+            onClick={() => runExport("export/pdf", "record_linked.pdf")}
+            disabled={busy}
+          >
+            {busy ? "Preparing..." : "Export to linked PDF"}
           </button>
         </DialogFooter>
       </DialogContent>
