@@ -8,6 +8,7 @@ import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summar
 import type { CategoryOption, SummaryItem } from "@/lib/types";
 import type { HeaderFields } from "@/lib/review-api";
 import { ExportDialog } from "./export-dialog";
+import { HeaderBar } from "./header-bar";
 import { MarkdownText } from "./markdown-text";
 
 const PAGE_SIZE = 20;
@@ -29,17 +30,20 @@ function parseDisplay(item: SummaryItem) {
 }
 
 /** Summaries & export (DS §4): a reading column of SummaryCards with Edited / Manual check /
- *  Excluded badges, inline edit, Re-draft, and an "In export" toggle. The Export dialog prefills
- *  from the record header (Auto-fill) when available. */
+ *  Excluded badges, inline edit, Re-draft, and an "In export" toggle. The same editable report
+ *  header as Review & correct sits on top (shared via onHeaderSaved), and the Export dialog
+ *  prefills from it. */
 export function SummariesView({
   documentId,
   categories,
   header,
+  onHeaderSaved,
   onGotoReview,
 }: {
   documentId: string;
   categories: CategoryOption[];
   header?: HeaderFields | null;
+  onHeaderSaved?: (fields: HeaderFields) => void;
   onGotoReview: () => void;
 }) {
   const { data: summaries = [], isLoading, error } = useSummaries(documentId);
@@ -124,6 +128,11 @@ export function SummariesView({
   return (
     <section id="step-summaries">
       <div className="sum-column">
+        <HeaderBar
+          documentId={documentId}
+          header={header ?? null}
+          onSaved={(f) => onHeaderSaved?.(f)}
+        />
         <div className="sum-header">
           <div>
             <h1>Summaries</h1>

@@ -20,6 +20,19 @@ export type JobState =
   | "error"
   | "interrupted";
 
+/** One sub-document that permanently failed to summarize (non-PHI: position + page range + reason). */
+export type FailedRow = {
+  idx: number;
+  pages: string;
+  reason: string;
+};
+
+/** Detail a needs_attention summarize run carries: the friendly message + the rows that failed. */
+export type JobAttention = {
+  message: string;
+  rows: FailedRow[];
+};
+
 /** Job.progress() from the backend, embedded per document in the listing. */
 export type JobProgress = {
   kind: JobKind;
@@ -28,6 +41,7 @@ export type JobProgress = {
   current: number;
   total: number;
   error: string | null;
+  attention?: JobAttention | null;
 };
 
 /** Document.status lifecycle (see app/services/jobs.py + worker/tasks.py). */

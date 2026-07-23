@@ -18,6 +18,7 @@ def test_job_progress():
         "current": 2,
         "total": 10,
         "error": None,
+        "attention": None,
     }
 
 

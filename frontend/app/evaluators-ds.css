@@ -90,6 +90,9 @@ a:hover { color: var(--blue-600); }
     padding: 10px 28px; background: var(--warning-100); color: var(--warning-500);
     border-bottom: 1px solid var(--warning-500); font-size: 13.5px;
 }
+.notice-attention p { margin: 0; }
+.notice-attention-list { margin: 6px 0 0; padding-left: 18px; }
+.notice-attention-list li { margin: 2px 0; }
 
 button:focus-visible, input:focus-visible, select:focus-visible,
 textarea:focus-visible, a:focus-visible {
@@ -621,6 +624,15 @@ td.rc-titletd.col-num { color: var(--gray-400); font: 13px/1.8 var(--font-body),
 #rowsTable tbody tr.doc-row.invalid { background: var(--danger-100); }
 #rowsTable tbody tr.doc-row.skipped td { opacity: .5; }
 #rowsTable tbody tr.doc-row.skipped td.col-sum { opacity: 1; }
+/* A sub-document a needs_attention summarize run could not process: amber (matching the notice),
+   distinct from the red .invalid page-range error. Left accent on the title row locates it fast. */
+#rowsTable tbody tr.doc-row.attention { background: var(--warning-100); }
+#rowsTable tbody tr.doc-row.attention.title-row td { box-shadow: inset 3px 0 0 var(--warning-500); }
+.rc-attn-chip {
+    flex: none; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    font: 600 11px/1.5 var(--font-body), sans-serif;
+    color: var(--warning-500); background: #fff; border: 1px solid var(--warning-500);
+}
 #rowsTable tbody tr.gap-row td {
     padding: 4px 10px; font: 12px/1.4 var(--font-body), sans-serif;
     color: var(--warning-500); background: var(--warning-100);

@@ -25,6 +25,7 @@ export function ReviewEditor({
   categories,
   totalPages,
   onRowsChange,
+  attentionPages,
 }: {
   documentId: string;
   filename: string;
@@ -32,6 +33,7 @@ export function ReviewEditor({
   categories: CategoryOption[];
   totalPages: number;
   onRowsChange: (rows: EditorRow[]) => void;
+  attentionPages?: Set<string>;
 }) {
   const pdfRef = useRef<PdfViewerHandle>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -218,6 +220,7 @@ export function ReviewEditor({
               onSplitConfirm={splitConfirm}
               onSplitCancel={() => setSplittingKey(null)}
               onDelete={remove}
+              attentionPages={attentionPages}
             />
           </div>
         }

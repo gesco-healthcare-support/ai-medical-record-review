@@ -10,7 +10,7 @@ import {
   startSummarize,
   type HeaderFields,
 } from "@/lib/review-api";
-import type { CategoryOption, DocumentStatus } from "@/lib/types";
+import type { CategoryOption, DocumentStatus, FailedRow } from "@/lib/types";
 import { rowErrors, sortRows, stripKeys, withKeys, type EditorRow } from "@/lib/review-rows";
 import type { StepId } from "@/components/review/stepper";
 
@@ -28,8 +28,9 @@ const STAGE_LABELS: Record<string, string> = {
   paused: "Paused - waiting for capacity, will retry automatically",
 };
 
-/** How a polled job settled: finished cleanly, or ended needing the reviewer's attention. */
-type PollResult = { outcome: "done" | "needs_attention"; message?: string };
+/** How a polled job settled: finished cleanly, or ended needing the reviewer's attention (with the
+ *  sub-documents that failed, so the UI can name + highlight them). */
+type PollResult = { outcome: "done" | "needs_attention"; message?: string; rows?: FailedRow[] };
 
 function message(err: unknown, fallback: string) {
   return humanizeError(err, {
@@ -69,8 +70,9 @@ export function useReviewWorkflow(
   const [progress, setProgress] = useState({ title: "Working...", pct: 4, detail: "Starting..." });
   const [saveState, setSaveState] = useState<SaveState>({ kind: "" });
   const [header, setHeader] = useState<HeaderFields | null>(null);
-  // A calm, non-error notice when a summarize run ended "needs attention" (item 7).
-  const [attention, setAttention] = useState<{ message: string } | null>(null);
+  // A calm, non-error notice when a summarize run ended "needs attention" (item 7): the message
+  // plus the sub-documents that failed, so the UI can list + highlight exactly which ones.
+  const [attention, setAttention] = useState<{ message: string; rows: FailedRow[] } | null>(null);
 
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -125,6 +127,7 @@ export function useReviewWorkflow(
           return resolve({
             outcome: "needs_attention",
             message: job.error || "Some documents need attention.",
+            rows: job.attention?.rows ?? [],
           });
         if (job.state === "error") return reject(new Error(job.error || "the run failed"));
         if (job.state === "interrupted") return reject(new Error("the run was interrupted"));
@@ -166,7 +169,10 @@ export function useReviewWorkflow(
       if (result.outcome === "needs_attention") {
         // Calm terminal state: some documents could not be summarized. Show the notice + the
         // editor (the reviewer fixes/excludes them, then summarizes again). Partial results kept.
-        setAttention({ message: result.message || "Some documents need attention." });
+        setAttention({
+          message: result.message || "Some documents need attention.",
+          rows: result.rows ?? [],
+        });
         setStatus("needs_attention");
         if (rowsRef.current.length) enterEditor();
         else showStart();
@@ -224,9 +230,12 @@ export function useReviewWorkflow(
         // Reopened after a run that needs attention: recover the reason from the latest job.
         try {
           const snap = await getStatus(documentId as string);
-          setAttention({ message: snap.job?.error || "Some documents need attention." });
+          setAttention({
+            message: snap.job?.error || "Some documents need attention.",
+            rows: snap.job?.attention?.rows ?? [],
+          });
         } catch {
-          setAttention({ message: "Some documents need attention." });
+          setAttention({ message: "Some documents need attention.", rows: [] });
         }
         if ((detail.rows || []).length) return enterEditor();
         return showStart();

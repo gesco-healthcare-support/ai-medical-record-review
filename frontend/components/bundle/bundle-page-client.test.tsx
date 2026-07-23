@@ -64,6 +64,7 @@ vi.mock("@/lib/review-api", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
+import { getDocument } from "@/lib/review-api";
 import { BundlePageClient } from "@/components/bundle/bundle-page-client";
 
 function withClient(ui: ReactNode) {
@@ -85,5 +86,43 @@ describe("BundlePageClient error handling", () => {
     await user.click(await screen.findByRole("button", { name: "Select" }));
     await user.click(await screen.findByRole("button", { name: /Download combined PDF/i }));
     expect(await screen.findByText(/couldn't reach the server/i)).toBeInTheDocument();
+  });
+
+  it("prefills the export fields from the record's persisted header", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      id: "b1",
+      original_filename: "rec.pdf",
+      page_count: 5,
+      status: "reviewing",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "Jane",
+      patient_last_name: "Roe",
+      patient_name: "Jane Roe",
+      patient_dob: "01/02/1990",
+      law_firm: "Acme LLP",
+      rows: [
+        {
+          start: 1,
+          end: 3,
+          category: "3",
+          title: "MRI",
+          date: "",
+          injury_date: "",
+          flag: "-",
+          suggest_merge: false,
+          include: true,
+        },
+      ],
+      categories: [{ id: "3", name: "Imaging" }],
+    });
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(await screen.findByLabelText("Patient name")).toHaveValue("Jane Roe");
+    expect(screen.getByLabelText("DOB")).toHaveValue("01/02/1990");
+    expect(screen.getByLabelText("Attorney law firm")).toHaveValue("Acme LLP");
   });
 });

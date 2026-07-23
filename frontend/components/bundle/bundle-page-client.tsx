@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
@@ -58,6 +58,17 @@ export function BundlePageClient({ config }: { config: BundleConfig }) {
   const [pdfBusy, setPdfBusy] = useState(false);
   const [sumBusy, setSumBusy] = useState(false);
   const [result, setResult] = useState<{ kind: "ok" | "err" | ""; msg: string }>({ kind: "", msg: "" });
+
+  // Reuse the record's persisted header: prefill the export fields when they are still empty, so a
+  // header detected once on Review carries here. A manual edit or a prior Auto-fill wins; qme stays
+  // bundle-local (DEFAULT_QME).
+  useEffect(() => {
+    if (!detail) return;
+    const full = `${detail.patient_first_name || ""} ${detail.patient_last_name || ""}`.trim();
+    setPatient((p) => p || full);
+    setDob((d) => d || detail.patient_dob || "");
+    setFirm((f) => f || detail.law_firm || "");
+  }, [detail]);
 
   const rows = detail?.rows ?? [];
   const categories = detail?.categories ?? [];
