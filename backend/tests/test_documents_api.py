@@ -148,6 +148,63 @@ async def test_summaries_empty_and_export_conflict(authed):
     assert export.status_code == 409  # no summaries to export yet
 
 
+async def test_export_pdf_conflict_when_no_summaries(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export/pdf", json={"patientName": "Synthetic Patient"}
+    )
+    assert resp.status_code == 409  # no summaries to export yet
+
+
+async def test_export_pdf_returns_linked_pdf_with_working_links(authed):
+    """The runnable link-proof: summary letter first + source appended, one GOTO link per summary
+    with a non-zero hotspot targeting its source page (row_start)."""
+    import pymupdf
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=0,
+                title="Progress Report",
+                text="summary body text",
+                row_start=2,
+                row_end=2,
+                row_category=_VALID_CATEGORY,
+            )
+        )
+        session.commit()
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export/pdf", json={"patientName": "Synthetic Patient"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/pdf"
+
+    doc = pymupdf.open(stream=resp.content, filetype="pdf")
+    src_pages = 2
+    summ = doc.page_count - src_pages
+    assert summ >= 1  # a summary letter precedes the source
+    gotos = [
+        link
+        for pno in range(doc.page_count)
+        for link in doc[pno].get_links()
+        if link.get("kind") == pymupdf.LINK_GOTO
+    ]
+    assert len(gotos) == 1
+    link = gotos[0]
+    assert link["page"] == summ + (2 - 1)  # source page row_start=2 -> combined index
+    assert link["from"].width > 1 and link["from"].height > 1  # real, clickable hotspot
+    doc.close()
+
+
 async def test_bundle_pdf_and_category_errors(authed):
     client, _ = authed
     doc_id = await _upload(client, pages=2)

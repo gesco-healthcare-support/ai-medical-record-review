@@ -19,7 +19,7 @@ describe("ExportDialog error handling", () => {
         excludedCount={0}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /Export/ }));
+    await user.click(screen.getByRole("button", { name: "Export to Word" }));
     expect(await screen.findByText("Export failed.")).toBeInTheDocument();
   });
 });

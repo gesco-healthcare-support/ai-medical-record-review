@@ -147,7 +147,7 @@ export function SummariesView({
             disabled={summaries.length === 0 || includedCount === 0}
             onClick={() => setExportOpen(true)}
           >
-            Export to Word
+            Export
           </button>
         </div>
 
