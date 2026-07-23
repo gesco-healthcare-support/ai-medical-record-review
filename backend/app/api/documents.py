@@ -531,11 +531,11 @@ _PAGES_SUFFIX = re.compile(r"\(pages\s++\d++\s*+[-–]\s*+\d++\)\s*+$", re.IGNOR
 _BUNDLE_NAME_CHARS = re.compile(r"[^a-z0-9]+")
 
 
-def _export_entry(summary: Summary) -> dict:
-    """One docx entry: [Diagnostic Study] / (Pages X-Y) / DOI decorations recomposed around
-    reviewer edits. The [ManualCheck] review flag is INTENTIONALLY dropped from exports (it stays
-    visible in the app) - a reader cannot edit a finished report, especially a PDF, to remove it.
-    """
+def _export_title_and_text(summary: Summary) -> tuple[str, str]:
+    """Shared export title + body used by BOTH the Word and linked-PDF entries (so the two stay
+    identical). Strips the internal [ManualCheck] review flag - dropped from exports because a
+    finished report/PDF cannot be edited to remove it, though it stays visible in the app - and the
+    stale page suffix, then re-applies [Diagnostic Study] + (Pages X-Y) and prepends the DOI."""
     title = re.sub(r"^\[ManualCheck\]\s*", "", summary.effective_title().strip())
     title = _PAGES_SUFFIX.sub("", title).rstrip()
     if str(summary.row_category) == "3" and "[Diagnostic Study]" not in title:
@@ -545,6 +545,13 @@ def _export_entry(summary: Summary) -> dict:
     doi = re.match(r"\s*(\*\*DOI\*\*:[^,]*,)", summary.text or "")
     if doi and "**DOI**" not in text:
         text = f"{doi.group(1)} {text}"
+    return title, text
+
+
+def _export_entry(summary: Summary) -> dict:
+    """One docx entry; the [ManualCheck] review flag is dropped from exports (see
+    _export_title_and_text)."""
+    title, text = _export_title_and_text(summary)
     return {
         "summaryDate": summary.effective_date(),
         "summaryTitle": title,
@@ -553,17 +560,9 @@ def _export_entry(summary: Summary) -> dict:
 
 
 def _pdf_entry(summary: Summary) -> dict:
-    """Linked-PDF entry: like _export_entry (so the [ManualCheck] flag is dropped from
-    ``linkTitle``), plus ``startPage`` carrying the 1-based source page the title links to."""
-    title = re.sub(r"^\[ManualCheck\]\s*", "", summary.effective_title().strip())
-    title = _PAGES_SUFFIX.sub("", title).rstrip()
-    if str(summary.row_category) == "3" and "[Diagnostic Study]" not in title:
-        title = f"{title} [Diagnostic Study]"
-    title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
-    text = summary.effective_text()
-    doi = re.match(r"\s*(\*\*DOI\*\*:[^,]*,)", summary.text or "")
-    if doi and "**DOI**" not in text:
-        text = f"{doi.group(1)} {text}"
+    """Linked-PDF entry: like _export_entry, plus ``startPage`` (the 1-based source page the title
+    links to)."""
+    title, text = _export_title_and_text(summary)
     return {
         "summaryDate": summary.effective_date(),
         "linkTitle": title,
