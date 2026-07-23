@@ -81,11 +81,10 @@ def blue_title_groups(page) -> list[tuple[pymupdf.Rect, str]]:
 def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm) -> str:
     rows = []
     for e in entries:
-        prefix = "[ManualCheck] " if e.get("manualCheck") else ""  # plain, OUTSIDE the link
         rows.append(
             f"<tr><td class='d'>{html.escape(e.get('summaryDate') or '')}</td>"
-            f"<td class='b'>{html.escape(prefix)}"
-            f"<a class='ln'>{html.escape(e['linkTitle'])}</a>. {_inline_html(e['summaryText'])}</td></tr>"
+            f"<td class='b'><a class='ln'>{html.escape(e['linkTitle'])}</a>. "
+            f"{_inline_html(e['summaryText'])}</td></tr>"
         )
     return f"""<html><head><style>
       body {{ font-family: 'Times New Roman', serif; font-size: 11pt; }}
@@ -137,7 +136,7 @@ def build_linked_pdf(
 ) -> bytes:
     """Build the combined linked PDF as bytes.
 
-    ``entries``: dicts of {summaryDate, linkTitle, manualCheck, summaryText, startPage}, where
+    ``entries``: dicts of {summaryDate, linkTitle, summaryText, startPage}, where
     ``startPage`` is the sub-document's first page in the SOURCE (1-based). Entries are sorted
     chronologically here (mirrors build_mrr_document). The summary letter is placed first, then
     the full source; each title links to combined page ``summary_pages + startPage - 1``.

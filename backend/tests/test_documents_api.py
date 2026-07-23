@@ -205,6 +205,30 @@ async def test_export_pdf_returns_linked_pdf_with_working_links(authed):
     doc.close()
 
 
+def test_manualcheck_flag_is_stripped_from_both_exports():
+    """The [ManualCheck] review flag never appears in the Word title or the linked-PDF link title
+    (it stays an in-app flag only; a finished report/PDF cannot be edited to remove it)."""
+    from app.api.documents import _export_entry, _pdf_entry
+
+    summary = Summary(
+        document_id="d",
+        job_id=1,
+        idx=0,
+        title="[ManualCheck] MRI Report - Dr Scan (Pages 3-5)",
+        text="body",
+        row_start=3,
+        row_end=5,
+        row_category="3",
+        manual_check=True,
+        date="-",
+    )
+    word = _export_entry(summary)
+    pdf = _pdf_entry(summary)
+    assert "[ManualCheck]" not in word["summaryTitle"]
+    assert "[ManualCheck]" not in pdf["linkTitle"]
+    assert "MRI Report" in word["summaryTitle"] and "MRI Report" in pdf["linkTitle"]
+
+
 async def test_bundle_pdf_and_category_errors(authed):
     client, _ = authed
     doc_id = await _upload(client, pages=2)
