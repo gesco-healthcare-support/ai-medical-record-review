@@ -21,14 +21,12 @@ def test_build_linked_pdf_structure_and_links(tmp_path):
         {
             "summaryDate": "01/01/2020",
             "linkTitle": "PROGRESS REPORT (Pages 2-2)",
-            "manualCheck": False,
             "summaryText": "Some **bold** body text for the first record.",
             "startPage": 2,
         },
         {
             "summaryDate": "02/01/2020",
             "linkTitle": "OPERATIVE REPORT (Pages 3-3)",
-            "manualCheck": True,
             "summaryText": "More body text for the second record.",
             "startPage": 3,
         },
