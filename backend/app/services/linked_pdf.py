@@ -4,10 +4,15 @@
 table: date | linked-title + body), appends the entire uploaded source PDF, and adds an internal
 GOTO link from each summary's title to that sub-document's first source page.
 
+Link placement is deterministic. Each title is rendered with a unique element id (``t{index}``),
+and PyMuPDF's Story reports where it laid that element out -- its rectangle(s) and page -- via
+element_positions during rendering. We union those rectangles per title-and-page and drop the link
+there. This needs no colour detection or title text matching, so every title on every page is
+linked, including a title that wraps across a page break (it reports a rect on each page, and each
+gets its own hotspot to the same target).
+
 Why native PyMuPDF (not a docx->PDF conversion): it reproduced the reference layout most
-faithfully, needs no extra dependency, and lets us place links deterministically. The link
-hotspot is found by detecting the blue title spans on the rendered page -- Story reports inline
-anchor positions as zero-width points, so those cannot be used for hotspots.
+faithfully and needs no extra dependency.
 """
 
 import html
@@ -17,12 +22,10 @@ from datetime import datetime
 
 import pymupdf
 
-# The title link colour (#0000EE). Rendered from CSS and detected back from the page text so the
-# clickable hotspot exactly covers the (possibly multi-line) title and nothing else.
-LINK_BLUE = 0x0000EE
-
+_TITLE_COLOR = "#0000EE"  # link-blue for the clickable titles (CSS)
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_", re.DOTALL)
 _LETTER = pymupdf.paper_rect("letter")  # 612 x 792 pt
+_CONTENT = pymupdf.Rect(72, 90, _LETTER.width - 72, _LETTER.height - 72)
 
 
 def _inline_html(text: str) -> str:
@@ -48,42 +51,13 @@ def _sort_key(entry: dict):
         return datetime.min  # undated entries sort first, matching build_mrr_document
 
 
-def _norm(s: str) -> str:
-    """Collapse whitespace for tolerant title matching across line/page wraps."""
-    return " ".join((s or "").split())
-
-
-def blue_title_groups(page) -> list[tuple[pymupdf.Rect, str]]:
-    """Group the page's blue (link-coloured) text spans into per-title (rect, text) pairs.
-
-    A group is a maximal run of consecutive spans whose fill colour is LINK_BLUE; the first
-    non-blue span (e.g. the black ". " after the title, or the body) closes it. Consecutive blue
-    spans across a line wrap union into one rectangle, so a multi-line title yields one hotspot.
-    """
-    groups: list[tuple[pymupdf.Rect, str]] = []
-    cur: pymupdf.Rect | None = None
-    cur_text: list[str] = []
-    for block in page.get_text("dict").get("blocks", []):
-        for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                if span.get("color") == LINK_BLUE:
-                    rect = pymupdf.Rect(span["bbox"])
-                    cur = rect if cur is None else (cur | rect)
-                    cur_text.append(span.get("text", ""))
-                elif cur is not None:
-                    groups.append((cur, "".join(cur_text)))
-                    cur, cur_text = None, []
-    if cur is not None:
-        groups.append((cur, "".join(cur_text)))
-    return groups
-
-
 def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm) -> str:
     rows = []
-    for e in entries:
+    for i, e in enumerate(entries):
+        # id='t{i}' lets Story report this title's rendered rect (see _render_summary_pdf).
         rows.append(
             f"<tr><td class='d'>{html.escape(e.get('summaryDate') or '')}</td>"
-            f"<td class='b'><a class='ln'>{html.escape(e['linkTitle'])}</a>. "
+            f"<td class='b'><a class='ln' id='t{i}'>{html.escape(e['linkTitle'])}</a>. "
             f"{_inline_html(e['summaryText'])}</td></tr>"
         )
     return f"""<html><head><style>
@@ -95,7 +69,7 @@ def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, law
       td {{ vertical-align: top; padding: 0 0 10pt 0; }}
       td.d {{ width: 72px; }}
       td.b {{ text-align: justify; }}
-      a.ln {{ color: #0000EE; text-decoration: underline; font-weight: bold; }}
+      a.ln {{ color: {_TITLE_COLOR}; text-decoration: underline; font-weight: bold; }}
     </style></head><body>
       <p class='ttl'>{html.escape(qme_or_ame or " ")}</p>
       <p class='h2'>MEDICAL RECORD REVIEW</p>
@@ -107,20 +81,45 @@ def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, law
     </body></html>"""
 
 
-def _render_summary_pdf(html_doc: str):
-    """Render the letter HTML into a standalone PDF (paginated) and return the open Document."""
+def _render_summary_pdf(html_doc: str) -> tuple[pymupdf.Document, dict[int, list]]:
+    """Render the letter HTML to a paginated PDF AND capture each title's rendered rect(s) + page.
+
+    Returns (document, title_rects) where title_rects maps a title's index -> [(page, Rect), ...].
+    Story's element_positions fires per positioned element during layout: for a title (id='t{i}')
+    it emits a zero-width anchor point plus a real rectangle for each word, so we keep the non-empty
+    rects and union them per (title, page) into one hotspot for that page.
+    """
     story = pymupdf.Story(html=html_doc)
     buf = io.BytesIO()
     writer = pymupdf.DocumentWriter(buf)
-    content = pymupdf.Rect(72, 90, _LETTER.width - 72, _LETTER.height - 72)
+    state = {"page": 0}
+    raw: dict[tuple, list] = {}  # (title_index, page) -> [Rect]
+
+    def _record(elpos) -> None:
+        eid = getattr(elpos, "id", None)
+        if not eid or not eid.startswith("t"):
+            return
+        rect = pymupdf.Rect(elpos.rect)
+        if rect.width > 0.5 and rect.height > 0.5:  # skip the zero-width inline anchor point
+            raw.setdefault((int(eid[1:]), state["page"]), []).append(rect)
+
     more = 1
     while more:
         dev = writer.begin_page(_LETTER)
-        more, _ = story.place(content)
+        more, _ = story.place(_CONTENT)
+        story.element_positions(_record, {})
         story.draw(dev)
         writer.end_page()
+        state["page"] += 1
     writer.close()
-    return pymupdf.open(stream=buf.getvalue(), filetype="pdf")
+
+    title_rects: dict[int, list] = {}
+    for (idx, page), rects in raw.items():
+        union = rects[0]
+        for r in rects[1:]:
+            union |= r
+        title_rects.setdefault(idx, []).append((page, union))
+    return pymupdf.open(stream=buf.getvalue(), filetype="pdf"), title_rects
 
 
 def _draw_running_header(summary_doc, patient_name, patient_dob):
@@ -136,49 +135,38 @@ def build_linked_pdf(
 ) -> bytes:
     """Build the combined linked PDF as bytes.
 
-    ``entries``: dicts of {summaryDate, linkTitle, summaryText, startPage}, where
-    ``startPage`` is the sub-document's first page in the SOURCE (1-based). Entries are sorted
-    chronologically here (mirrors build_mrr_document). The summary letter is placed first, then
-    the full source; each title links to combined page ``summary_pages + startPage - 1``.
+    ``entries``: dicts of {summaryDate, linkTitle, summaryText, startPage}, where ``startPage`` is
+    the sub-document's first page in the SOURCE (1-based). Entries are sorted chronologically here
+    (mirrors build_mrr_document). The summary letter is placed first, then the full source; each
+    title links to combined page ``summary_pages + startPage - 1``.
     """
     entries = sorted(entries, key=_sort_key)
 
-    summary_doc = _render_summary_pdf(
+    summary_doc, title_rects = _render_summary_pdf(
         _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm)
     )
     _draw_running_header(summary_doc, patient_name, patient_dob)
-    summ_n = summary_doc.page_count
+    summ_n = (
+        summary_doc.page_count
+    )  # summary pages come first, so their indices == combined indices
 
     combined = pymupdf.open()
     combined.insert_pdf(summary_doc)  # summary letter first
     source_doc = pymupdf.open(source_path)
     combined.insert_pdf(source_doc)  # full source appended
 
-    # Collect the blue title hotspots across the summary pages, then link each to its source page.
-    groups = [
-        (sp, rect, text) for sp in range(summ_n) for rect, text in blue_title_groups(combined[sp])
-    ]
-    if len(groups) == len(entries):
-        pairs = [(groups[i][0], groups[i][1], entries[i]) for i in range(len(entries))]
-    else:
-        # A title split across a page break yields an extra group; match each group to the entry
-        # whose title contains its text (order-independent, page-split safe).
-        pairs = []
-        for sp, rect, text in groups:
-            norm = _norm(text)
-            match = next((e for e in entries if norm and norm in _norm(e["linkTitle"])), None)
-            if match is not None:
-                pairs.append((sp, rect, match))
-
-    for sp, rect, entry in pairs:
-        combined[sp].insert_link(
-            {
-                "kind": pymupdf.LINK_GOTO,
-                "page": summ_n + (int(entry["startPage"]) - 1),
-                "from": rect,
-                "to": pymupdf.Point(0, 0),  # top of the target page (PyMuPDF top-left origin)
-            }
-        )
+    # Link each title (by index) to its source page, at the rect(s) Story reported for it.
+    for i, entry in enumerate(entries):
+        target = summ_n + (int(entry["startPage"]) - 1)
+        for page, rect in title_rects.get(i, []):
+            combined[page].insert_link(
+                {
+                    "kind": pymupdf.LINK_GOTO,
+                    "page": target,
+                    "from": rect,
+                    "to": pymupdf.Point(0, 0),  # top of the target page (PyMuPDF top-left origin)
+                }
+            )
 
     result = combined.tobytes()
     combined.close()
