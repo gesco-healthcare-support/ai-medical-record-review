@@ -13,7 +13,14 @@ from app.services import summarize_engine as se
 
 
 def _row(**over):
-    row = {"start": 1, "end": 2, "category": "1", "date": "2026-01-01", "injury_date": "-", "flag": ""}
+    row = {
+        "start": 1,
+        "end": 2,
+        "category": "1",
+        "date": "2026-01-01",
+        "injury_date": "-",
+        "flag": "",
+    }
     row.update(over)
     return row
 
