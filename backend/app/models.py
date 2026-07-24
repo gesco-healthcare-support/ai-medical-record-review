@@ -301,6 +301,12 @@ class Summary(Base):
     edited_title = Column(String(512))
     edited_date = Column(String(16))
     edited_text = Column(Text)
+    # Faithfulness verify pass: `verified` = the pass ran; `verified_text` = the AI-corrected body
+    # (set only when issues were found); `verify_issues` = the list of {type, detail} it fixed. The
+    # raw `text` stays immutable (training data); edited_text > verified_text > text in display.
+    verified = Column(Boolean, nullable=False, default=False)
+    verified_text = Column(Text)
+    verify_issues = Column(JSON)
     excluded = Column(Boolean, nullable=False, default=False)
     manual_check = Column(Boolean, nullable=False, default=False)
     row_start = Column(Integer, nullable=False)
@@ -314,7 +320,12 @@ class Summary(Base):
         return self.edited_date if self.edited_date is not None else self.date
 
     def effective_text(self):
-        return self.edited_text if self.edited_text is not None else self.text
+        # Reviewer edits win, then the AI-verified correction, then the raw model output.
+        if self.edited_text is not None:
+            return self.edited_text
+        if self.verified_text is not None:
+            return self.verified_text
+        return self.text
 
     def listing(self):
         return {
@@ -328,6 +339,10 @@ class Summary(Base):
                 value is not None
                 for value in (self.edited_title, self.edited_date, self.edited_text)
             ),
+            "verified": self.verified,
+            "verifyIssues": self.verify_issues or [],
+            # The reviewer-facing flag: the AI actually changed this summary (issues were found).
+            "verifyChanged": bool(self.verified and self.verify_issues),
             "row": {"start": self.row_start, "end": self.row_end, "category": self.row_category},
         }
 

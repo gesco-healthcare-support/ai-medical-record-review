@@ -511,6 +511,9 @@ def resummarize(
     summary.date = output.get("summaryDate") or "-"
     summary.text = output["summaryText"]
     summary.source_text = output.get("sourceText")
+    summary.verified = bool(output.get("verified"))
+    summary.verified_text = output.get("verifiedText")
+    summary.verify_issues = output.get("verifyIssues")
     summary.manual_check = bool(output.get("manualCheck"))
     summary.row_start = int(row["start"])
     summary.row_end = int(row["end"])

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { FileText, Flag, Pencil } from "lucide-react";
+import { FileText, Flag, Pencil, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
 import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summaries";
@@ -241,6 +241,12 @@ export function SummariesView({
                       <span className="ev-chip ev-chip-review">
                         <Flag width={12} height={12} aria-hidden />
                         Manual check
+                      </span>
+                    ) : null}
+                    {item.verifyChanged ? (
+                      <span className="ev-chip ev-chip-review" title="AI verify pass corrected this summary - please confirm">
+                        <ShieldCheck width={12} height={12} aria-hidden />
+                        AI-fixed
                       </span>
                     ) : null}
                     {item.excluded ? <span className="ev-chip ev-chip-neutral">Excluded</span> : null}
