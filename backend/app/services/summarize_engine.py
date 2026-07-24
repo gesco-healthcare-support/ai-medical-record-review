@@ -29,6 +29,23 @@ TITLE_PROMPT = (
     "4. **Do Not Add Commentary**: return only the extracted information."
 )
 
+# Prepended to every category prompt. Extractive-faithfulness rules (each states its WHY so it
+# survives edits). An eval on real sub-docs showed this eliminated a 12-fabrication case without
+# worsening fabrication; residual contradictions are handled by the verify pass.
+HARDENING_PREAMBLE = (
+    "CRITICAL FACTUALITY RULES (a medical-legal report depends on these):\n"
+    "- Use ONLY information explicitly stated in the text below. Do NOT infer, assume, "
+    "extrapolate, or add anything not written - inference is how errors enter the record.\n"
+    "- If a detail is absent, OMIT it. Never guess or fill a gap, and never write a point then "
+    "say 'not specified'.\n"
+    "- Copy dates, percentages, measurements, ratings, and medication names/doses EXACTLY as "
+    "written; do not round, convert, or paraphrase a number.\n"
+    "- Do NOT contradict yourself: every statement must be consistent with the source and with "
+    "your other statements.\n"
+    "- If the text is illegible, ambiguous, or internally contradictory, omit that point rather "
+    "than resolving it by guessing.\n\n"
+)
+
 
 def _generate(model, system_msg, user_text, temperature):
     response = generate_with_retry(
@@ -51,11 +68,14 @@ def summarize_row(pdf_path, row, model=None, prompt=None):
     system prompt (blueprints resolve it DB-first via catalog.get_prompt and inject it); when
     omitted it falls back to the hardcoded prompts.py dict.
     """
-    model = model or get_settings().summary_model
+    settings = get_settings()
+    model = model or settings.summary_model
     if prompt is None:
         key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
         prompt = prompts.get(key, prompts["category_100"])
-    system_msg = prompt
+    # Prepend the factuality-hardening rules to the category prompt (applies to DB-resolved and
+    # fallback prompts alike, and to any future category).
+    system_msg = HARDENING_PREAMBLE + prompt
 
     pages = list(range(int(row["start"]), int(row["end"]) + 1))
     text = extract_text_from_selected_pages(pdf_path, pages)
@@ -64,8 +84,9 @@ def summarize_row(pdf_path, row, model=None, prompt=None):
         # "Model input cannot be empty" 400. Blank/image-only pages hit this.
         raise EmptyExtractionError(f"no OCR text for pages {row['start']}-{row['end']}")
 
-    # Legacy used temperature 0.8 for the summary body; the title is extraction, so 0.
-    summary = _generate(model, system_msg, text, temperature=0.8)
+    # Summary body runs at settings.summary_temperature (default 0.0 for determinism); the title
+    # is pure extraction, always 0.
+    summary = _generate(model, system_msg, text, temperature=settings.summary_temperature)
     title = _generate(model, TITLE_PROMPT, text, temperature=0.0)
 
     doi_final = "" if row["injury_date"] in ("", "-") else f"**DOI**:{row['injury_date']},"
