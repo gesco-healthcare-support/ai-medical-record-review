@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Classification is a short, structured enum task - the cheapest tier is enough and cuts
     # cost/latency vs full Flash. A separate knob so a quality regression reverts via env alone.
     classify_model: str = "gemini-2.5-flash-lite"
+    # Summary body temperature. Extractive medical summarization wants determinism: an eval on real
+    # duplicate sub-docs showed 0.0 makes repeat runs identical (0.8 varied down to ~0.26 similarity)
+    # and cuts fabrication. Env-overridable so a regression reverts without a redeploy. (2.5-flash
+    # only; Gemini 3 would want its default 1.0.)
+    summary_temperature: float = 0.0
 
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2
