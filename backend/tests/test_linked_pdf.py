@@ -52,13 +52,55 @@ def test_build_linked_pdf_structure_and_links(tmp_path):
         for link in doc[pno].get_links()
         if link.get("kind") == pymupdf.LINK_GOTO
     ]
-    # One link per entry (proves the blue-title-span detection produced real hotspots).
+    # One link per entry, each a real (non-zero-area) hotspot on a summary page.
     assert len(gotos) == 2
     for pno, link in gotos:
         assert pno < summ  # hotspot sits on a summary page
         assert link["from"].width > 1 and link["from"].height > 1  # clickable, non-zero area
     targets = sorted(link["page"] for _, link in gotos)
     assert targets == [summ + 1, summ + 2]  # startPage 2 and 3 -> combined source indices
+    doc.close()
+
+
+def test_build_linked_pdf_links_every_title_in_a_multipage_letter(tmp_path):
+    """Regression: a large letter spans several pages; EVERY title must still link to its correct
+    source page. The old blue-span pairing dropped ~30% of links on big real docs (48/68)."""
+    n = 30
+    source = _make_source(tmp_path, pages=n + 5)
+    entries = []
+    for i in range(n):
+        start = i + 1
+        long = " ".join(["Comprehensive"] * (1 + (i % 6)))  # vary length so some titles wrap
+        entries.append(
+            {
+                "summaryDate": f"{(i % 12) + 1:02d}/01/2020",
+                "linkTitle": f"{long} Report {i} (Pages {start}-{start})",
+                "summaryText": f"Body text for record number {i}. " * 3,
+                "startPage": start,
+            }
+        )
+    data = build_linked_pdf(
+        source,
+        entries,
+        num_pages=n + 5,
+        patient_name="Synthetic Patient",
+        patient_dob="01/01/1990",
+        qme_or_ame="QME",
+        lawfirm="Example Firm",
+    )
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    summ = doc.page_count - (n + 5)
+    assert summ >= 2  # the letter genuinely spans multiple pages
+
+    targets = [
+        link["page"]
+        for pno in range(summ)
+        for link in doc[pno].get_links()
+        if link.get("kind") == pymupdf.LINK_GOTO
+    ]
+    expected = {summ + (e["startPage"] - 1) for e in entries}
+    assert expected.issubset(set(targets))  # every title's source page is linked
+    assert len(set(targets)) == n  # all 30 distinct titles linked (none dropped)
     doc.close()
 
 
