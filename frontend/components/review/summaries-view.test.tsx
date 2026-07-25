@@ -25,3 +25,29 @@ describe("SummariesView error handling", () => {
     expect(screen.getByText(/couldn't reach the server/i)).toBeInTheDocument();
   });
 });
+
+describe("SummariesView verify flag", () => {
+  it("shows the AI-fixed flag when the verify pass corrected a summary", () => {
+    summariesState.error = null;
+    summariesState.isLoading = false;
+    summariesState.data = [
+      {
+        idx: 0,
+        summaryTitle: "Progress Note (Pages 1-1)",
+        summaryDate: "01/02/2026",
+        summaryText: "Body.",
+        manualCheck: false,
+        excluded: false,
+        edited: false,
+        verified: true,
+        verifyChanged: true,
+        verifyIssues: [{ type: "unsupported", detail: "x" }],
+        row: { start: 1, end: 1, category: "1" },
+      },
+    ];
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoReview={vi.fn()} />,
+    );
+    expect(screen.getByText(/AI-fixed/i)).toBeInTheDocument();
+  });
+});

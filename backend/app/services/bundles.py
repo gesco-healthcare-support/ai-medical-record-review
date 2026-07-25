@@ -47,7 +47,8 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
     entries = []
     for row in rows:
         prompt = prompt_for(row) if prompt_for is not None else None
-        output = summarize_engine.summarize_row(pdf_path, row, model, prompt=prompt)
+        # The bundle export is a bounded quick path: skip the faithfulness verify pass to keep it fast.
+        output = summarize_engine.summarize_row(pdf_path, row, model, prompt=prompt, verify=False)
         entries.append(
             {
                 "summaryDate": output.get("summaryDate") or "-",

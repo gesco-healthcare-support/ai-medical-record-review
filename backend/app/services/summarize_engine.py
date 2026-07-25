@@ -14,6 +14,7 @@ from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.ocr import extract_text_from_selected_pages
 from app.services.prompts import prompts
+from app.services.summary_verify import verify_summary
 
 TITLE_PROMPT = (
     "You are an intelligent assistant tasked with extracting the **title** of the document "
@@ -61,15 +62,18 @@ def _generate(model, system_msg, user_text, temperature):
     return (response.text or "").strip()
 
 
-def summarize_row(pdf_path, row, model=None, prompt=None):
+def summarize_row(pdf_path, row, model=None, prompt=None, verify=None):
     """Summarize one sub-document row -> the legacy output_dict shape.
 
     row: {start, end, category, date, injury_date, flag}. ``prompt`` is the category's summary
     system prompt (blueprints resolve it DB-first via catalog.get_prompt and inject it); when
-    omitted it falls back to the hardcoded prompts.py dict.
+    omitted it falls back to the hardcoded prompts.py dict. ``verify`` runs the faithfulness verify
+    pass (defaults to settings.summary_verify); callers pass False to skip it (e.g. bundle export).
     """
     settings = get_settings()
     model = model or settings.summary_model
+    if verify is None:
+        verify = settings.summary_verify
     if prompt is None:
         key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
         prompt = prompts.get(key, prompts["category_100"])
@@ -93,11 +97,26 @@ def summarize_row(pdf_path, row, model=None, prompt=None):
     diag_tag = " [Diagnostic Study]" if str(row["category"]) == "3" else ""
     manual_tag = "[ManualCheck] " if str(row["flag"]).strip().lower() == "x" else ""
 
+    # Faithfulness verify pass (problem #3): audit the body against its source and, ONLY when the
+    # pass flags issues, keep the corrected body as verifiedText (the raw summaryText stays as the
+    # immutable model output). No issues -> verifiedText/verifyIssues stay None, so the summary is
+    # unchanged and unflagged. verify_summary is fail-safe (returns the original on any error).
+    verified_text = None
+    verify_issues = None
+    if verify:
+        result = verify_summary(model, text, summary)
+        if result["issues"]:
+            verified_text = f"{doi_final} {result['fixed_text']}"
+            verify_issues = result["issues"]
+
     return {
         "summaryDate": row["date"],
         "summaryTitle": f"{manual_tag}{title}{diag_tag} (Pages {row['start']}-{row['end']})",
         "manualCheck": manual_tag,
         "summaryText": f"{doi_final} {summary}",
+        "verified": bool(verify),
+        "verifiedText": verified_text,
+        "verifyIssues": verify_issues,
         # The exact model input, so callers can persist the fine-tuning pair.
         "sourceText": text,
     }

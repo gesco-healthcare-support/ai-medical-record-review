@@ -92,3 +92,28 @@ def test_summary_effective_and_listing():
     assert listing["summaryTitle"] == "Edited"
     assert listing["edited"] is True
     assert listing["row"] == {"start": 1, "end": 2, "category": "3"}
+
+
+def test_summary_effective_text_precedence_and_verify_flag():
+    summary = Summary(
+        idx=0,
+        title="T",
+        date="-",
+        text="RAW",
+        row_start=1,
+        row_end=2,
+        row_category="1",
+    )
+    assert summary.effective_text() == "RAW"  # raw model output when nothing else set
+
+    summary.verified = True
+    summary.verified_text = "VERIFIED"
+    summary.verify_issues = [{"type": "unsupported", "detail": "x"}]
+    assert summary.effective_text() == "VERIFIED"  # AI fix wins over raw
+    listing = summary.listing()
+    assert listing["summaryText"] == "VERIFIED"
+    assert listing["verifyChanged"] is True
+
+    summary.edited_text = "HUMAN"
+    assert summary.effective_text() == "HUMAN"  # reviewer edit wins over the AI fix
+    assert summary.listing()["summaryText"] == "HUMAN"

@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # and cuts fabrication. Env-overridable so a regression reverts without a redeploy. (2.5-flash
     # only; Gemini 3 would want its default 1.0.)
     summary_temperature: float = 0.0
+    # Summary faithfulness verify pass: a second temp-0 call rewrites each summary to drop
+    # statements unsupported by / contradicting its OCR source (problem #3), keeping the raw output
+    # too. On by default; a regression reverts via env with no redeploy. Distinct from the
+    # segmentation verify_* knobs below.
+    summary_verify: bool = True
 
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2

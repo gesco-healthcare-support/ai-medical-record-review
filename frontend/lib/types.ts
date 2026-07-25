@@ -89,6 +89,8 @@ export type Row = {
 export type CategoryOption = { id: string; name: string };
 
 /** A drafted summary (Summary.listing()). */
+export type VerifyIssue = { type: string; detail: string };
+
 export type SummaryItem = {
   idx: number;
   summaryTitle: string;
@@ -97,6 +99,11 @@ export type SummaryItem = {
   manualCheck: boolean;
   excluded: boolean;
   edited: boolean;
+  // Faithfulness verify pass: `verified` = the pass ran; `verifyChanged` = the AI corrected this
+  // summary (issues were found). `verifyIssues` carries the {type, detail} list for later UIs.
+  verified: boolean;
+  verifyChanged: boolean;
+  verifyIssues: VerifyIssue[];
   row: { start: number; end: number; category: string };
 };
 
