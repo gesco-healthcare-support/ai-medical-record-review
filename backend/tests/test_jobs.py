@@ -584,3 +584,69 @@ def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):
     assert rows[0].dupe_group is not None
     assert rows[0].dupe_group == rows[1].dupe_group  # the two copies share a group
     assert rows[2].dupe_group is None  # the distinct document is not grouped
+
+
+def test_dedup_document_skips_ocred_rows_survives_failure_and_rejects(monkeypatch):
+    """dedup_document reuses stored source_text (no re-OCR), tolerates a per-row OCR failure, and
+    assigns NO group when the confirm step rejects a candidate cluster."""
+    doc_id = _make_user_and_doc(page_count=3)
+    with get_sessionmaker()() as session:
+        # row0 already has OCR text (should be skipped); row1's page will fail OCR; row2 is normal
+        # and shares row0's text so they form a candidate cluster.
+        session.add(
+            ReviewRow(
+                document_id=doc_id,
+                idx=0,
+                start=1,
+                end=1,
+                category="1",
+                title="T",
+                date="-",
+                injury_date="-",
+                flag="-",
+                include=True,
+                source_text="alpha beta gamma delta epsilon",
+            )
+        )
+        for idx, (start, end) in ((1, (2, 2)), (2, (3, 3))):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=start,
+                    end=end,
+                    category="1",
+                    title="T",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1").id
+
+    ocr_calls = []
+
+    def fake_ocr(path, pages):
+        ocr_calls.append(pages[0])
+        if pages[0] == 2:
+            raise RuntimeError("ocr boom")  # row1: per-row OCR failure is tolerated
+        return "alpha beta gamma delta epsilon"  # row2: same text as row0 -> candidate cluster
+
+    monkeypatch.setattr("app.services.ocr.extract_text_from_selected_pages", fake_ocr)
+    # Confirm rejects the candidate cluster -> no group is assigned.
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: [])
+
+    dedup_document(job_id)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        rows = {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+    assert 1 not in ocr_calls  # row0 already had source_text -> its page was not re-OCR'd
+    assert rows[0].source_text == "alpha beta gamma delta epsilon"  # unchanged
+    assert rows[1].source_text == ""  # OCR failed -> empty, run still completed
+    assert all(r.dupe_group is None for r in rows.values())  # confirm rejected the cluster

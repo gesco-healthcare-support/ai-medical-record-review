@@ -654,3 +654,38 @@ async def test_duplicates_dismiss_and_error_paths(authed):
 
     started = await client.post(f"/api/documents/{doc_id}/dedup/start")
     assert started.status_code == 200 and started.json()["ok"] is True
+
+
+async def test_duplicates_keep_one_bad_primary_is_400(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 1, 6), (2, 2, 6)])
+    bad = await client.post(
+        f"/api/documents/{doc_id}/duplicates/6/resolve",
+        json={"action": "keep_one", "primary_idx": 999},  # not a member of the cluster
+    )
+    assert bad.status_code == 400
+
+
+async def test_duplicates_paths_while_a_job_is_active(authed):
+    """A queued job makes the document active: GET /duplicates still surfaces the dedup job's
+    progress, but resolve and dedup/start are blocked (409)."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 1, 5), (2, 2, 5)])
+    with get_sessionmaker()() as session:
+        session.add(
+            Job(document_id=doc_id, kind="dedup", state="queued", model="m", prompt_version="1")
+        )
+        session.commit()
+
+    dup = await client.get(f"/api/documents/{doc_id}/duplicates")
+    assert dup.status_code == 200 and dup.json()["job"] is not None  # progress surfaced
+
+    resolved = await client.post(
+        f"/api/documents/{doc_id}/duplicates/5/resolve", json={"action": "dismiss"}
+    )
+    assert resolved.status_code == 409  # blocked while a job runs
+
+    started = await client.post(f"/api/documents/{doc_id}/dedup/start")
+    assert started.status_code == 409  # one-active-job conflict
