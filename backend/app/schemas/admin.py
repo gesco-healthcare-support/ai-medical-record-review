@@ -17,6 +17,7 @@ class CategoryCreate(BaseModel):
     examples: list[Any] = []
     active: bool = True
     auto_assign: bool = True
+    summarize_default: bool = True
 
 
 class CategoryUpdate(BaseModel):
@@ -27,6 +28,7 @@ class CategoryUpdate(BaseModel):
     examples: list[Any] | None = None
     active: bool | None = None
     auto_assign: bool | None = None
+    summarize_default: bool | None = None
 
 
 class PromptPut(BaseModel):

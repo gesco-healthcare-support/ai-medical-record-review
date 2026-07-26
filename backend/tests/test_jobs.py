@@ -108,21 +108,22 @@ def test_run_marks_error_with_a_friendly_message():
 def test_segment_document_persists_segment_and_review_rows(monkeypatch):
     import app.services.segment_engine as se
 
+    def _row(start, category):
+        return {
+            "start": start,
+            "end": start,
+            "category": category,
+            "title": "A",
+            "date": "-",
+            "injury_date": "-",
+            "flag": "-",
+            "suggest_merge": False,
+        }
+
     monkeypatch.setattr(
         se,
         "run_segmentation",
-        lambda pdf_path, total_pages, progress=None: [
-            {
-                "start": 1,
-                "end": 1,
-                "category": "1",
-                "title": "A",
-                "date": "-",
-                "injury_date": "-",
-                "flag": "-",
-                "suggest_merge": False,
-            }
-        ],
+        lambda pdf_path, total_pages, progress=None: [_row(1, "1"), _row(2, "9")],
     )
     doc_id = _make_user_and_doc()
     with get_sessionmaker()() as session:
@@ -131,10 +132,15 @@ def test_segment_document_persists_segment_and_review_rows(monkeypatch):
     segment_document(job_id)
     with get_sessionmaker()() as session:
         assert session.get(Job, job_id).state == "done"
-        review = session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        review = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+        ).all()
         segment = session.scalars(select(SegmentRow).where(SegmentRow.job_id == job_id)).all()
-        assert len(review) == 1 and review[0].category == "1"
-        assert len(segment) == 1
+        assert [r.category for r in review] == ["1", "9"]
+        assert len(segment) == 2
+        # include follows the category summarize_default: cat 1 on, Depositions (9) off.
+        assert review[0].include is True
+        assert review[1].include is False
 
 
 def test_summarize_document_persists_summaries(monkeypatch):
@@ -501,10 +507,11 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
     from app.services.classification import Classification
     from app.worker.tasks import classify_document
 
+    # Classify to Depositions (9), which is off-by-default, so include must flip to False.
     monkeypatch.setattr(
         classification,
         "classify",
-        lambda title, page_text=None: Classification("3", "high", "rules", needs_review=False),
+        lambda title, page_text=None: Classification("9", "high", "rules", needs_review=False),
     )
     doc_id = _make_user_and_doc(page_count=2)
     with get_sessionmaker()() as session:
@@ -532,7 +539,9 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
         rows = session.scalars(
             select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
         ).all()
-        assert [r.category for r in rows] == ["3", "3"]  # per-row classification applied
+        assert [r.category for r in rows] == ["9", "9"]  # per-row classification applied
+        # include re-derived from the new category: Depositions (9) is off-by-default.
+        assert all(r.include is False for r in rows)
 
 
 def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):

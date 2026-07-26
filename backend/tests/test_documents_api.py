@@ -569,6 +569,8 @@ async def test_aggregate_merges_creates_rows_and_enqueues_classify(authed):
         assert len(rows) == 2
         assert (rows[0]["start"], rows[0]["end"]) == (1, 2)
         assert (rows[1]["start"], rows[1]["end"]) == (3, 5)
+        # General (100) seeds off-by-default (classify re-derives per row afterwards).
+        assert rows[0]["include"] is False and rows[1]["include"] is False
 
         assert queue.count == 1
         assert queue.jobs[0].func_name.endswith("classify_document")

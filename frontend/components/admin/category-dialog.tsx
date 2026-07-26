@@ -36,6 +36,7 @@ export function CategoryDialog({
   const [description, setDescription] = useState("");
   const [examples, setExamples] = useState("");
   const [autoAssign, setAutoAssign] = useState(true);
+  const [summarizeDefault, setSummarizeDefault] = useState(true);
   const [active, setActive] = useState(true);
   const [error, setError] = useState("");
 
@@ -47,6 +48,7 @@ export function CategoryDialog({
     setDescription(editing?.description ?? "");
     setExamples((editing?.examples ?? []).join("\n"));
     setAutoAssign(editing ? editing.auto_assign : true);
+    setSummarizeDefault(editing ? editing.summarize_default : true);
     setActive(editing ? editing.active : true);
   }, [open, editing]);
 
@@ -60,6 +62,7 @@ export function CategoryDialog({
         .map((line) => line.trim())
         .filter(Boolean),
       auto_assign: autoAssign,
+      summarize_default: summarizeDefault,
       active,
     };
     try {
@@ -142,6 +145,14 @@ export function CategoryDialog({
                 onChange={(e) => setAutoAssign(e.target.checked)}
               />{" "}
               Auto-assign (classifier may pick this)
+            </label>
+            <label className="ev-check">
+              <input
+                type="checkbox"
+                checked={summarizeDefault}
+                onChange={(e) => setSummarizeDefault(e.target.checked)}
+              />{" "}
+              Summarize by default
             </label>
             <label className="ev-check">
               <input

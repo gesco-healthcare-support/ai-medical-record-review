@@ -32,4 +32,15 @@ describe("CategoryDialog error handling", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("category 15 already exists")).toBeInTheDocument();
   });
+
+  it("includes summarize_default in the payload and reflects the toggle", async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    renderDialog(onCreate);
+    await user.click(screen.getByLabelText(/Summarize by default/i)); // default on -> toggle off
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ summarize_default: false }),
+    );
+  });
 });

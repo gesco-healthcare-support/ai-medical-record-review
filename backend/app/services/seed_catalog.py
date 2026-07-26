@@ -20,7 +20,11 @@ _ID_SIX = {
     "examples": [],
     "active": True,
     "auto_assign": False,
+    "summarize_default": True,
 }
+
+# Categories unchecked for summarization by default (rarely summarized): General + Depositions.
+_SUMMARIZE_OFF_BY_DEFAULT = {"9", "100"}
 
 
 def _prompt_key(category_id) -> str:
@@ -39,6 +43,7 @@ def constants_categories() -> list[dict]:
             "examples": list(category.examples),
             "active": True,
             "auto_assign": True,
+            "summarize_default": category.id not in _SUMMARIZE_OFF_BY_DEFAULT,
         }
         for category in CATEGORIES.values()
     ]
