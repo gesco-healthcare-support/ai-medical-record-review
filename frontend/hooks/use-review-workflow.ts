@@ -304,6 +304,19 @@ export function useReviewWorkflow(
     }
   }
 
+  // Re-pull the persisted rows into the editor's local state. Called after a Duplicates-tab action
+  // changes `include` server-side, so a subsequent Summarize (which flushes these local rows) does
+  // not resurrect the copies the reviewer just excluded.
+  async function reloadRows() {
+    if (!documentId) return;
+    try {
+      const detail = await getDocument(documentId);
+      applyRows(sortRows(withKeys(detail.rows || [])));
+    } catch {
+      /* keep the current rows if the refresh fails */
+    }
+  }
+
   function onRowsChange(next: EditorRow[]) {
     if (!documentId) return;
     const sorted = sortRows(next);
@@ -347,6 +360,7 @@ export function useReviewWorkflow(
     onStart,
     onSummarize,
     onRowsChange,
+    reloadRows,
     gotoStep,
   };
 }

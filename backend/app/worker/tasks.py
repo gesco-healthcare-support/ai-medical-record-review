@@ -221,6 +221,7 @@ def segment_document(job_id) -> None:
             logger.warning("header extraction skipped for document %s", document.id, exc_info=True)
 
     _run(job_id, work)
+    _chain_dedup(job_id)
 
 
 def classify_document(job_id) -> None:
@@ -249,6 +250,93 @@ def classify_document(job_id) -> None:
             if result.needs_review:
                 row.flag = "x"
         report("categorizing", len(rows), len(rows))
+
+    _run(job_id, work)
+    _chain_dedup(job_id)
+
+
+def _chain_dedup(job_id) -> None:
+    """After a successful identify (segment/classify), enqueue the background duplicate-clustering
+    job. Best-effort: a failure here must never fail the identify that just succeeded - dedup is
+    advisory and can be re-run from the Duplicates tab."""
+    from app.services import jobs
+    from app.services.gemini import PROMPT_VERSION
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        if job is None or job.state != "done":
+            return  # identify did not finish cleanly; nothing to dedup
+        document_id = job.document_id
+        try:
+            jobs.enqueue(
+                session,
+                document_id,
+                "dedup",
+                model=get_settings().classify_model,
+                prompt_version=PROMPT_VERSION,
+                catalog_revision=catalog.catalog_version(session),
+            )
+        except jobs.JobConflict:
+            pass  # a job is somehow already active; skip the chain
+        except Exception:
+            logger.warning("could not enqueue dedup for document %s", document_id, exc_info=True)
+
+
+def dedup_document(job_id) -> None:
+    """RQ entry: OCR each included ReviewRow once (persist source_text), cluster likely-duplicate
+    sub-documents by content, confirm each candidate with one cheap model call, and store a shared
+    `dupe_group` per confirmed set. Advisory/precompute: it never edits summaries - it only
+    annotates rows for the Duplicates review."""
+    import gc
+
+    from app.services.dedup import cluster_rows, confirm_cluster
+    from app.services.ocr import extract_text_from_selected_pages
+
+    def work(session, job, report):
+        document = session.get(Document, job.document_id)
+        rows = session.scalars(
+            select(ReviewRow)
+            .where(ReviewRow.document_id == job.document_id, ReviewRow.include.is_(True))
+            .order_by(ReviewRow.idx)
+        ).all()
+        total = len(rows)
+        # OCR each row's pages once (persist), clearing any stale grouping so a re-run reclusters
+        # from scratch. Per-page OCR + gc keeps memory flat on a large record.
+        for i, row in enumerate(rows):
+            report("deduping", i, total)
+            row.dupe_group = None
+            row.dupe_primary = False
+            row.dupe_dismissed = False
+            if not (row.source_text or "").strip():
+                try:
+                    row.source_text = extract_text_from_selected_pages(
+                        document.stored_path, list(range(row.start, row.end + 1))
+                    )
+                except Exception:
+                    logger.warning(
+                        "dedup OCR skipped a row on document %s", job.document_id, exc_info=True
+                    )
+                    row.source_text = row.source_text or ""
+            session.commit()
+            gc.collect()
+        report("deduping", total, total)
+
+        # Candidate clusters (content similarity) -> confirm each is truly the same document ->
+        # assign a shared per-document group number to the confirmed members.
+        items = [
+            {"id": row.id, "title": row.title, "date": row.date, "text": row.source_text or ""}
+            for row in rows
+        ]
+        by_id = {row.id: row for row in rows}
+        group_no = 0
+        for cluster in cluster_rows(items):
+            confirmed = confirm_cluster(cluster["members"])
+            if len(confirmed) < 2:
+                continue
+            group_no += 1
+            for member in confirmed:
+                by_id[member["id"]].dupe_group = group_no
+        session.commit()
 
     _run(job_id, work)
 

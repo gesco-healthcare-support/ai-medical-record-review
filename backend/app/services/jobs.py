@@ -17,9 +17,21 @@ from sqlalchemy.orm import Session
 from app.models import Document, Job
 
 # `classify` (P6 individual-record auto-categorization) shares segment's status transitions:
-# it prepares rows for review, so done -> reviewing.
-STATUS_ON_ENQUEUE = {"segment": "segmenting", "classify": "segmenting", "summarize": "summarizing"}
-STATUS_ON_DONE = {"segment": "reviewing", "classify": "reviewing", "summarize": "done"}
+# it prepares rows for review, so done -> reviewing. `dedup` (duplicate clustering) runs in the
+# background AFTER identify while the reviewer works, so it keeps document.status "reviewing" on both
+# enqueue and done - it never changes the pipeline stage the UI shows.
+STATUS_ON_ENQUEUE = {
+    "segment": "segmenting",
+    "classify": "segmenting",
+    "summarize": "summarizing",
+    "dedup": "reviewing",
+}
+STATUS_ON_DONE = {
+    "segment": "reviewing",
+    "classify": "reviewing",
+    "summarize": "done",
+    "dedup": "reviewing",
+}
 # `paused` is a resumable summarize run awaiting its delayed resume (item 7): still in-flight, so
 # it blocks a second job for the same document and is inspected by orphan recovery.
 ACTIVE_STATES = ("queued", "running", "paused")

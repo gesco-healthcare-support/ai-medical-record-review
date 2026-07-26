@@ -28,6 +28,7 @@ from app.errors import EmptyExtractionError, OcrUnavailableError, PipelineError
 from app.models import Document, Job, ReviewRow, Summary, User
 from app.schemas.documents import (
     BundlePayload,
+    DuplicateResolvePayload,
     ExportPayload,
     HeaderPayload,
     ResummarizePayload,
@@ -331,6 +332,34 @@ def get_pdf(
     return FileResponse(document.stored_path, media_type="application/pdf")
 
 
+def _dupe_groups(document: Document) -> dict[int, list[ReviewRow]]:
+    """Confirmed duplicate clusters keyed by group id (rows with a non-null dupe_group)."""
+    groups: dict[int, list[ReviewRow]] = {}
+    for row in document.review_rows:
+        if row.dupe_group is not None:
+            groups.setdefault(row.dupe_group, []).append(row)
+    return groups
+
+
+def _unreviewed_dupe_count(groups: dict[int, list[ReviewRow]]) -> int:
+    """Clusters the reviewer has neither resolved (a primary chosen) nor dismissed - the advisory
+    count that drives the non-blocking 'you have duplicates to review' hint."""
+    return sum(
+        1
+        for members in groups.values()
+        if not any(m.dupe_primary for m in members) and not any(m.dupe_dismissed for m in members)
+    )
+
+
+def _dupe_date_key(date: str | None) -> tuple[int, int, int]:
+    """Sort key for MM/DD/YYYY dates (unknown/"-" sorts last), so a cluster lists copies oldest-first."""
+    match = re.match(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", date or "")
+    if not match:
+        return (9999, 12, 31)
+    month, day, year = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    return (year + 2000 if year < 100 else year, month, day)
+
+
 @router.get("/{document_id}/status")
 def get_status(
     document: Document = Depends(get_owned_document),
@@ -339,7 +368,103 @@ def get_status(
     latest = session.scalars(
         select(Job).where(Job.document_id == document.id).order_by(Job.id.desc())
     ).first()
-    return {"status": document.status, "job": latest.progress() if latest else None}
+    return {
+        "status": document.status,
+        "job": latest.progress() if latest else None,
+        # Advisory only - the FE badges/notices this but Summarize is never blocked on it.
+        "unreviewed_duplicate_groups": _unreviewed_dupe_count(_dupe_groups(document)),
+    }
+
+
+@router.get("/{document_id}/duplicates")
+def get_duplicates(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+):
+    """The confirmed duplicate clusters (each: rows sorted oldest-first) plus the latest dedup job's
+    progress, so the Duplicates tab can show 'checking...' while the background job runs."""
+    groups = _dupe_groups(document)
+    clusters = []
+    for group_id in sorted(groups):
+        members = sorted(groups[group_id], key=lambda r: _dupe_date_key(r.date))
+        clusters.append(
+            {
+                "group": group_id,
+                "dismissed": any(m.dupe_dismissed for m in members),
+                "rows": [
+                    {
+                        "idx": m.idx,
+                        "title": m.title,
+                        "date": m.date,
+                        "pages": {"start": m.start, "end": m.end},
+                        "include": m.include,
+                        "primary": m.dupe_primary,
+                    }
+                    for m in members
+                ],
+            }
+        )
+    dedup_job = session.scalars(
+        select(Job)
+        .where(Job.document_id == document.id, Job.kind == "dedup")
+        .order_by(Job.id.desc())
+    ).first()
+    return {"clusters": clusters, "job": dedup_job.progress() if dedup_job else None}
+
+
+@router.post("/{document_id}/dedup/start")
+def dedup_start(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+):
+    """Manually (re)run duplicate clustering (it also runs automatically after identify). 409 if a
+    job is already active for this document."""
+    try:
+        enqueue(
+            session,
+            document.id,
+            "dedup",
+            model=get_settings().classify_model,
+            prompt_version=PROMPT_VERSION,
+            catalog_revision=catalog.catalog_version(session),
+        )
+    except JobConflict:
+        raise HTTPException(status_code=409, detail="a job is already running for this document")
+    return {"ok": True}
+
+
+@router.post("/{document_id}/duplicates/{group}/resolve")
+def resolve_duplicate(
+    group: int,
+    payload: DuplicateResolvePayload,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+):
+    """Resolve one cluster: keep_one (mark the primary, exclude the rest) or dismiss (not duplicates)."""
+    members = [r for r in document.review_rows if r.dupe_group == group]
+    if not members:
+        raise HTTPException(status_code=404, detail="no such duplicate group")
+    if document.active_job is not None:
+        raise HTTPException(
+            status_code=409, detail="a job is running for this document; wait for it"
+        )
+    if payload.action == "keep_one":
+        primary = next((m for m in members if m.idx == payload.primary_idx), None)
+        if primary is None:
+            raise HTTPException(status_code=400, detail="primary_idx is not in this cluster")
+        for member in members:
+            is_primary = member.idx == payload.primary_idx
+            member.dupe_primary = is_primary
+            member.dupe_dismissed = False
+            member.include = is_primary  # keep the chosen copy, exclude the rest from summarization
+    elif payload.action == "dismiss":
+        for member in members:
+            member.dupe_dismissed = True
+            member.dupe_primary = False
+    else:
+        raise HTTPException(status_code=400, detail="action must be 'keep_one' or 'dismiss'")
+    session.commit()
+    return {"ok": True}
 
 
 @router.put("/{document_id}/rows")

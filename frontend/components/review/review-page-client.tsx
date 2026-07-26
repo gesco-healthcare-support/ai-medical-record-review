@@ -6,15 +6,17 @@ import { cn } from "@/lib/utils";
 import { rowErrors } from "@/lib/review-rows";
 import { useReviewWorkflow } from "@/hooks/use-review-workflow";
 import { useSummaries } from "@/hooks/use-summaries";
+import { useDuplicates } from "@/hooks/use-duplicates";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
 import { BackLink } from "@/components/app/back-link";
 import { ReviewEditor } from "./review-editor";
 import { SummariesView } from "./summaries-view";
+import { DuplicatesView } from "./duplicates-view";
 import { HeaderBar } from "./header-bar";
 import { StartPanel } from "./start-panel";
 import { ProgressPanel } from "./progress-panel";
 
-type Tab = "review" | "summaries";
+type Tab = "review" | "duplicates" | "summaries";
 
 /** The /records/[id] workbench: one slim header (back, record name + count, SegmentedTabs, autosave,
  *  Auto-fill / Segment / Summarize) over a tab body - the always-on Review & correct editor or the
@@ -23,7 +25,12 @@ type Tab = "review" | "summaries";
 export function ReviewPageClient({ documentId }: { documentId: string }) {
   const wf = useReviewWorkflow(documentId);
   const { data: summaries = [] } = useSummaries(documentId);
+  const { data: dupData } = useDuplicates(documentId);
   const [tab, setTab] = useState<Tab>("review");
+  // A cluster still needs the reviewer when it is neither dismissed nor has a kept copy.
+  const unresolvedDupes = (dupData?.clusters ?? []).filter(
+    (c) => !c.dismissed && !c.rows.some((r) => r.primary),
+  ).length;
   const lastSection = useRef(wf.section);
 
   // The hook lands on "summaries" after a summarize job finishes (or when a done record boots);
@@ -53,6 +60,10 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
 
   const tabs = [
     { value: "review" as const, label: "Review & correct" },
+    {
+      value: "duplicates" as const,
+      label: unresolvedDupes ? `Duplicates · ${unresolvedDupes}` : "Duplicates",
+    },
     {
       value: "summaries" as const,
       label: summaries.length ? `Summaries · ${summaries.length}` : "Summaries",
@@ -151,6 +162,19 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
       </header>
 
       {wf.banner ? <div className="banner">{wf.banner}</div> : null}
+      {unresolvedDupes > 0 && tab !== "duplicates" ? (
+        <div className="banner" role="status">
+          {unresolvedDupes} possible duplicate {unresolvedDupes === 1 ? "group" : "groups"} to
+          review before summarizing.{" "}
+          <button
+            type="button"
+            className="ev-btn ev-btn-ghost ev-btn-sm"
+            onClick={() => setTab("duplicates")}
+          >
+            Review duplicates
+          </button>
+        </div>
+      ) : null}
       {wf.attention ? (
         <div className="notice-attention" role="status">
           <p>{wf.attention.message}</p>
@@ -216,6 +240,8 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
               </div>
             </>
           )
+        ) : tab === "duplicates" ? (
+          <DuplicatesView documentId={documentId} onResolved={wf.reloadRows} />
         ) : (
           <SummariesView
             documentId={documentId}

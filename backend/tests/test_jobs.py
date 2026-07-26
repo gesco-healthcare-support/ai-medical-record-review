@@ -18,7 +18,7 @@ from app.errors import EmptyExtractionError, OcrUnavailableError
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary, User
 from app.services import jobs
 from app.worker.queues import queue_for, worker_fn
-from app.worker.tasks import _run, segment_document, summarize_document
+from app.worker.tasks import _run, dedup_document, segment_document, summarize_document
 from tests.conftest import unique_test_email
 
 
@@ -533,3 +533,175 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
             select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
         ).all()
         assert [r.category for r in rows] == ["3", "3"]  # per-row classification applied
+
+
+def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):
+    """dedup_document OCRs each row once, clusters near-identical text, and stores a shared
+    dupe_group for the confirmed copies (OCR + confirm are mocked; cluster_rows runs for real)."""
+    doc_id = _make_user_and_doc(page_count=3)
+    with get_sessionmaker()() as session:
+        for idx, (start, end) in enumerate([(1, 1), (2, 2), (3, 3)]):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=start,
+                    end=end,
+                    category="1",
+                    title="T",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1").id
+
+    # Pages 1 and 2 are the same document; page 3 is distinct.
+    texts = {
+        1: "alpha beta gamma delta epsilon zeta eta theta",
+        2: "alpha beta gamma delta epsilon zeta eta theta",
+        3: "completely different words nothing shared at all here",
+    }
+    monkeypatch.setattr(
+        "app.services.ocr.extract_text_from_selected_pages", lambda path, pages: texts[pages[0]]
+    )
+    # Trust the algorithmic candidate (no Vertex call in the test).
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
+
+    dedup_document(job_id)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        rows = {
+            r.idx: r
+            for r in session.scalars(
+                select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+            ).all()
+        }
+    assert rows[0].source_text and rows[1].source_text  # OCR text persisted per row
+    assert rows[0].dupe_group is not None
+    assert rows[0].dupe_group == rows[1].dupe_group  # the two copies share a group
+    assert rows[2].dupe_group is None  # the distinct document is not grouped
+
+
+def test_dedup_document_skips_ocred_rows_survives_failure_and_rejects(monkeypatch):
+    """dedup_document reuses stored source_text (no re-OCR), tolerates a per-row OCR failure, and
+    assigns NO group when the confirm step rejects a candidate cluster."""
+    doc_id = _make_user_and_doc(page_count=3)
+    with get_sessionmaker()() as session:
+        # row0 already has OCR text (should be skipped); row1's page will fail OCR; row2 is normal
+        # and shares row0's text so they form a candidate cluster.
+        session.add(
+            ReviewRow(
+                document_id=doc_id,
+                idx=0,
+                start=1,
+                end=1,
+                category="1",
+                title="T",
+                date="-",
+                injury_date="-",
+                flag="-",
+                include=True,
+                source_text="alpha beta gamma delta epsilon",
+            )
+        )
+        for idx, (start, end) in ((1, (2, 2)), (2, (3, 3))):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=start,
+                    end=end,
+                    category="1",
+                    title="T",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1").id
+
+    ocr_calls = []
+
+    def fake_ocr(path, pages):
+        ocr_calls.append(pages[0])
+        if pages[0] == 2:
+            raise RuntimeError("ocr boom")  # row1: per-row OCR failure is tolerated
+        return "alpha beta gamma delta epsilon"  # row2: same text as row0 -> candidate cluster
+
+    monkeypatch.setattr("app.services.ocr.extract_text_from_selected_pages", fake_ocr)
+    # Confirm rejects the candidate cluster -> no group is assigned.
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: [])
+
+    dedup_document(job_id)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        rows = {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+    assert 1 not in ocr_calls  # row0 already had source_text -> its page was not re-OCR'd
+    assert rows[0].source_text == "alpha beta gamma delta epsilon"  # unchanged
+    assert rows[1].source_text == ""  # OCR failed -> empty, run still completed
+    assert all(r.dupe_group is None for r in rows.values())  # confirm rejected the cluster
+
+
+def _dedup_jobs(doc_id):
+    with get_sessionmaker()() as session:
+        return session.scalars(
+            select(Job).where(Job.document_id == doc_id, Job.kind == "dedup")
+        ).all()
+
+
+def test_chain_dedup_skips_when_identify_not_done():
+    from app.worker.tasks import _chain_dedup
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(
+            session, doc_id, "segment", model="m", prompt_version="1"
+        ).id  # queued
+    _chain_dedup(job_id)  # identify did not finish -> no dedup enqueued
+    assert _dedup_jobs(doc_id) == []
+
+
+def test_chain_dedup_swallows_conflict_when_a_job_is_active():
+    from app.worker.tasks import _chain_dedup
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        seg = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
+        seg.state = "done"
+        session.add(
+            Job(
+                document_id=doc_id, kind="summarize", state="running", model="m", prompt_version="1"
+            )
+        )
+        session.commit()
+        seg_id = seg.id
+    _chain_dedup(seg_id)  # a job is already active -> JobConflict is swallowed, no raise
+    assert _dedup_jobs(doc_id) == []
+
+
+def test_chain_dedup_swallows_generic_error(monkeypatch):
+    from app.worker.tasks import _chain_dedup
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        seg = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
+        seg.state = "done"
+        session.commit()
+        seg_id = seg.id
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr("app.services.jobs.enqueue", _boom)
+    _chain_dedup(seg_id)  # a non-conflict failure is logged + swallowed (never fails identify)
+    assert _dedup_jobs(doc_id) == []

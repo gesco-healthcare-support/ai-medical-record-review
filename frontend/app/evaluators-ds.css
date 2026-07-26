@@ -917,3 +917,14 @@ body[data-bundle-slug] #step-editor { flex: none; }
 }
 .hd-table tbody tr.admin-inactive td { opacity: .55; }
 .hd-table tbody tr.admin-inactive td.hd-admin-actions { opacity: 1; }
+
+/* Duplicates review: the copies listed inside a cluster card. */
+.dupe-copies { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.dupe-copy {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px;
+    padding: 8px 12px; border: 1px solid var(--gray-200); border-radius: var(--radius-lg);
+}
+.dupe-copy.primary { border-color: var(--blue-500); background: rgba(37, 99, 235, .06); }
+.dupe-copy .meta { flex: 0 0 auto; }
+.dupe-copy-title { flex: 1 1 55%; font: 500 14px/1.4 var(--font-body), sans-serif; color: var(--gray-700); }
+.dupe-copy .ev-btn-sm { margin-left: auto; }

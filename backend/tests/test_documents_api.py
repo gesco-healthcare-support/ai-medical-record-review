@@ -15,7 +15,7 @@ from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.errors import OcrUnavailableError
-from app.models import Job, Summary, User
+from app.models import Job, ReviewRow, Summary, User
 from app.services.seed_catalog import constants_categories
 from tests.conftest import unique_test_email
 
@@ -104,7 +104,11 @@ async def test_upload_list_get_status_delete(authed):
     assert body["id"] == doc_id and body["rows"] == [] and "categories" in body
 
     status = await client.get(f"/api/documents/{doc_id}/status")
-    assert status.json() == {"status": "uploaded", "job": None}
+    assert status.json() == {
+        "status": "uploaded",
+        "job": None,
+        "unreviewed_duplicate_groups": 0,
+    }
 
     assert (await client.delete(f"/api/documents/{doc_id}")).status_code == 200
     assert (await client.get(f"/api/documents/{doc_id}")).status_code == 404
@@ -570,3 +574,127 @@ async def test_aggregate_merges_creates_rows_and_enqueues_classify(authed):
         assert queue.jobs[0].func_name.endswith("classify_document")
     finally:
         queue.empty()
+
+
+def _seed_rows(doc_id, specs):
+    """Seed ReviewRows for a document. `specs` = list of (start, end, dupe_group)."""
+    with get_sessionmaker()() as session:
+        for idx, (start, end, group) in enumerate(specs):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=start,
+                    end=end,
+                    category=_VALID_CATEGORY,
+                    title=f"Doc {idx}",
+                    date=f"0{idx + 1}/01/2026",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                    dupe_group=group,
+                )
+            )
+        session.commit()
+
+
+async def test_duplicates_list_status_and_keep_one(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, None)])
+
+    dup = await client.get(f"/api/documents/{doc_id}/duplicates")
+    assert dup.status_code == 200
+    clusters = dup.json()["clusters"]
+    assert len(clusters) == 1
+    assert clusters[0]["group"] == 1
+    assert {r["idx"] for r in clusters[0]["rows"]} == {0, 1}
+
+    status = await client.get(f"/api/documents/{doc_id}/status")
+    assert status.json()["unreviewed_duplicate_groups"] == 1  # advisory count
+
+    resolved = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve",
+        json={"action": "keep_one", "primary_idx": 0},
+    )
+    assert resolved.status_code == 200
+    with get_sessionmaker()() as session:
+        rows = {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+    assert rows[0].dupe_primary is True and rows[0].include is True
+    assert rows[1].include is False  # the other copy is excluded from summarization
+
+    status2 = await client.get(f"/api/documents/{doc_id}/status")
+    assert status2.json()["unreviewed_duplicate_groups"] == 0  # resolved -> no longer advised
+
+
+async def test_duplicates_dismiss_and_error_paths(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, 2), (3, 4, 2)])
+
+    dismissed = await client.post(
+        f"/api/documents/{doc_id}/duplicates/2/resolve", json={"action": "dismiss"}
+    )
+    assert dismissed.status_code == 200
+    with get_sessionmaker()() as session:
+        rows = session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+    assert all(r.dupe_dismissed for r in rows)
+
+    missing = await client.post(
+        f"/api/documents/{doc_id}/duplicates/999/resolve", json={"action": "dismiss"}
+    )
+    assert missing.status_code == 404
+    bad = await client.post(
+        f"/api/documents/{doc_id}/duplicates/2/resolve", json={"action": "nope"}
+    )
+    assert bad.status_code == 400
+
+    started = await client.post(f"/api/documents/{doc_id}/dedup/start")
+    assert started.status_code == 200 and started.json()["ok"] is True
+
+
+async def test_duplicates_keep_one_bad_primary_is_400(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 1, 6), (2, 2, 6)])
+    bad = await client.post(
+        f"/api/documents/{doc_id}/duplicates/6/resolve",
+        json={"action": "keep_one", "primary_idx": 999},  # not a member of the cluster
+    )
+    assert bad.status_code == 400
+
+
+async def test_duplicates_paths_while_a_job_is_active(authed):
+    """A queued job makes the document active: GET /duplicates still surfaces the dedup job's
+    progress, but resolve and dedup/start are blocked (409)."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 1, 5), (2, 2, 5)])
+    with get_sessionmaker()() as session:
+        session.add(
+            Job(document_id=doc_id, kind="dedup", state="queued", model="m", prompt_version="1")
+        )
+        session.commit()
+
+    dup = await client.get(f"/api/documents/{doc_id}/duplicates")
+    assert dup.status_code == 200 and dup.json()["job"] is not None  # progress surfaced
+
+    resolved = await client.post(
+        f"/api/documents/{doc_id}/duplicates/5/resolve", json={"action": "dismiss"}
+    )
+    assert resolved.status_code == 409  # blocked while a job runs
+
+    started = await client.post(f"/api/documents/{doc_id}/dedup/start")
+    assert started.status_code == 409  # one-active-job conflict
+
+
+def test_dupe_date_key_parses_dates_and_defaults_unknown():
+    from app.api.documents import _dupe_date_key
+
+    assert _dupe_date_key("03/10/2026") == (2026, 3, 10)
+    assert _dupe_date_key("1/2/26") == (2026, 1, 2)  # 2-digit year -> 2000s
+    assert _dupe_date_key("-") == (9999, 12, 31)  # unknown sorts last
+    assert _dupe_date_key("") == (9999, 12, 31)

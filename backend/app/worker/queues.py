@@ -17,16 +17,20 @@ SUMMARIZE_QUEUE = "summarize"
 QUEUE_NAMES = (SEGMENT_QUEUE, SUMMARIZE_QUEUE)
 
 # `classify` (individual-record auto-categorization, P6) runs the classifier, so it goes on the
-# segment (torch) queue - not the torch-free summarize queue.
+# segment (torch) queue - not the torch-free summarize queue. `dedup` (duplicate clustering) is OCR
+# + one cheap Gemini call with NO torch, so it rides the summarize queue's worker (which already has
+# Tesseract/Poppler); no new worker container is needed.
 _QUEUE_FOR_KIND = {
     "segment": SEGMENT_QUEUE,
     "classify": SEGMENT_QUEUE,
     "summarize": SUMMARIZE_QUEUE,
+    "dedup": SUMMARIZE_QUEUE,
 }
 _WORKER_FN = {
     "segment": "app.worker.tasks.segment_document",
     "classify": "app.worker.tasks.classify_document",
     "summarize": "app.worker.tasks.summarize_document",
+    "dedup": "app.worker.tasks.dedup_document",
 }
 
 
