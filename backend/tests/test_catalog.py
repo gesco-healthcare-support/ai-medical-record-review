@@ -28,8 +28,27 @@ def test_constants_categories_shape():
     cats = constants_categories()
     assert cats
     assert "6" in {c["id"] for c in cats}  # manually-selectable, non-auto-assign
-    keys = {"id", "name", "description", "examples", "active", "auto_assign"}
+    keys = {"id", "name", "description", "examples", "active", "auto_assign", "summarize_default"}
     assert all(keys <= c.keys() for c in cats)
+    by_id = {c["id"]: c for c in cats}
+    assert by_id["9"]["summarize_default"] is False  # Depositions off by default
+    assert by_id["100"]["summarize_default"] is False  # General off by default
+    assert by_id["1"]["summarize_default"] is True  # everything else on
+
+
+@pytest.mark.parametrize(
+    "category_id,expected", [("9", False), ("100", False), ("1", True), ("999", True)]
+)
+def test_summarize_default_for_constants_fallback(session, category_id, expected):
+    # Unseeded -> constants fallback; 9/100 off, others (incl. unknown) on.
+    assert catalog.summarize_default_for(session, category_id) is expected
+
+
+def test_summarize_default_for_db_backed(session):
+    seed_catalog(session)
+    assert catalog.summarize_default_for(session, "9") is False
+    assert catalog.summarize_default_for(session, "100") is False
+    assert catalog.summarize_default_for(session, "1") is True
 
 
 def test_catalog_falls_back_to_constants_when_unseeded(session):

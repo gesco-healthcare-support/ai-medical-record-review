@@ -20,6 +20,7 @@ vi.mock("@/hooks/use-admin", () => ({
         description: "",
         examples: [],
         auto_assign: true,
+        summarize_default: false,
         active: true,
         has_summary_prompt: false,
       },
@@ -57,5 +58,19 @@ describe("AdminView error handling", () => {
         expect.stringMatching(/couldn't reach the server/i),
       ),
     );
+  });
+});
+
+describe("AdminView summarize-default column", () => {
+  it("shows a Summarize column reflecting the category flag", async () => {
+    withClient(<AdminView />);
+    expect(await screen.findByRole("columnheader", { name: "Summarize" })).toBeInTheDocument();
+  });
+
+  it("exposes a summarize-by-default toggle in the add-category dialog", async () => {
+    const user = userEvent.setup();
+    withClient(<AdminView />);
+    await user.click(await screen.findByRole("button", { name: /Add category/i }));
+    expect(await screen.findByLabelText(/Summarize by default/i)).toBeInTheDocument();
   });
 });

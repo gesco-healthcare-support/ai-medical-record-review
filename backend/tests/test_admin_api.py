@@ -88,10 +88,18 @@ async def test_create_category_and_validation(admin_client):
     body = created.json()
     assert body["id"] == "9001" and body["name"] == "Test Category"
     assert body["has_summary_prompt"] is False
+    assert body["summarize_default"] is True  # on by default
 
     # It shows up in the listing.
     listing = (await admin_client.get("/api/admin/categories")).json()
     assert any(c["id"] == "9001" for c in listing)
+
+    # summarize_default can be set off at creation.
+    off = await admin_client.post(
+        "/api/admin/categories",
+        json={"id": "9005", "name": "Off", "summarize_default": False},
+    )
+    assert off.status_code == 201 and off.json()["summarize_default"] is False
 
     # Validation: non-numeric id, duplicate, empty name -> 400.
     assert (
@@ -112,6 +120,11 @@ async def test_update_category_soft_delete(admin_client):
     # Soft-deleted, not gone: still present in the admin listing.
     listing = (await admin_client.get("/api/admin/categories")).json()
     assert any(c["id"] == "9003" and c["active"] is False for c in listing)
+    # summarize_default toggles via PATCH.
+    toggled = await admin_client.patch(
+        "/api/admin/categories/9003", json={"summarize_default": False}
+    )
+    assert toggled.status_code == 200 and toggled.json()["summarize_default"] is False
     # Unknown category -> 404.
     assert (
         await admin_client.patch("/api/admin/categories/9999", json={"name": "z"})

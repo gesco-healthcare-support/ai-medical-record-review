@@ -367,6 +367,10 @@ class Category(Base):
     examples = Column(JSON, nullable=False, default=list)
     active = Column(Boolean, nullable=False, default=True)
     auto_assign = Column(Boolean, nullable=False, default=True)
+    # Whether documents in this category are checked for summarization BY DEFAULT. General (100)
+    # and Depositions (9) seed to False (rarely summarized); distinct from auto_assign, which gates
+    # whether the classifier may assign the category at all.
+    summarize_default = Column(Boolean, nullable=False, default=True)
     updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 
     def listing(self):
@@ -377,6 +381,7 @@ class Category(Base):
             "examples": list(self.examples or []),
             "active": self.active,
             "auto_assign": self.auto_assign,
+            "summarize_default": self.summarize_default,
         }
 
 

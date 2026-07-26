@@ -199,7 +199,8 @@ def aggregate_documents(
                 date="-",
                 injury_date="-",
                 flag="-",
-                include=True,
+                # category 100 (General) seeds to unchecked; classify_document re-derives per row.
+                include=catalog.summarize_default_for(session, "100"),
             )
         )
     session.commit()

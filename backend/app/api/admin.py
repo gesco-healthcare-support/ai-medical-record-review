@@ -72,6 +72,7 @@ def create_category(
         examples=payload.examples,
         active=payload.active,
         auto_assign=payload.auto_assign,
+        summarize_default=payload.summarize_default,
     )
     session.add(category)
     session.commit()
@@ -102,6 +103,8 @@ def update_category(
         category.examples = body["examples"] or []
     if "auto_assign" in body:
         category.auto_assign = bool(body["auto_assign"])
+    if "summarize_default" in body:
+        category.summarize_default = bool(body["summarize_default"])
     if "active" in body:
         category.active = bool(body["active"])  # active=False is the soft-delete
     session.commit()

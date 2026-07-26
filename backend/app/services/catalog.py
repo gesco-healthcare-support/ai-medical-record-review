@@ -46,6 +46,19 @@ def get_category_options(session: Session, active_only: bool = True):
     ]
 
 
+def summarize_default_for(session: Session, category_id) -> bool:
+    """Whether this category is checked for summarization by default (DB-first, constants fallback).
+
+    Only explicitly-off categories (General, Depositions) return False; an unknown id defaults to
+    True (include), so a new/unseeded category is never silently excluded.
+    """
+    category_id = str(category_id)
+    for category in get_categories(session):
+        if category["id"] == category_id:
+            return bool(category.get("summarize_default", True))
+    return True
+
+
 def get_prompt(session: Session, role: str, category_id) -> str | None:
     """The current prompt text for (role, category_id), DB-first.
 

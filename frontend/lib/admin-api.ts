@@ -8,6 +8,7 @@ export type AdminCategory = {
   examples: string[];
   active: boolean;
   auto_assign: boolean;
+  summarize_default: boolean;
   has_summary_prompt: boolean;
 };
 
@@ -25,6 +26,7 @@ export type CategoryInput = {
   description: string;
   examples: string[];
   auto_assign: boolean;
+  summarize_default: boolean;
   active: boolean;
 };
 

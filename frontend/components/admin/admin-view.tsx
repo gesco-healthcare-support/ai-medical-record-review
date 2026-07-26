@@ -131,6 +131,7 @@ export function AdminView() {
                 <th>Name &amp; description</th>
                 <th>Examples</th>
                 <th className="hd-w-found">Auto-assign</th>
+                <th className="hd-w-found">Summarize</th>
                 <th className="hd-w-status">Active</th>
                 <th className="hd-w-status">Summary prompt</th>
                 <th className="hd-w-menu" aria-label="Actions" />
@@ -139,7 +140,7 @@ export function AdminView() {
             <tbody>
               {isLoading ? null : categories.length === 0 ? (
                 <tr className="hd-norows">
-                  <td colSpan={7}>No categories yet.</td>
+                  <td colSpan={8}>No categories yet.</td>
                 </tr>
               ) : (
                 categories.map((cat) => (
@@ -155,6 +156,7 @@ export function AdminView() {
                       </span>
                     </td>
                     <td className="hd-muted">{cat.auto_assign ? "Yes" : "No"}</td>
+                    <td className="hd-muted">{cat.summarize_default ? "Yes" : "No"}</td>
                     <td>
                       <Badge tone={cat.active ? "success" : "neutral"}>
                         {cat.active ? "Active" : "Inactive"}
