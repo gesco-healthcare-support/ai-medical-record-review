@@ -107,6 +107,29 @@ export type SummaryItem = {
   row: { start: number; end: number; category: string };
 };
 
+/** One copy within a duplicate cluster (Duplicates tab). */
+export type DuplicateRow = {
+  idx: number;
+  title: string;
+  date: string;
+  pages: { start: number; end: number };
+  include: boolean;
+  primary: boolean;
+};
+
+/** A confirmed cluster of sub-documents the dedup pass believes are the same document. */
+export type DuplicateCluster = {
+  group: number;
+  dismissed: boolean;
+  rows: DuplicateRow[];
+};
+
+/** GET /documents/{id}/duplicates - the clusters plus the latest dedup job's progress. */
+export type DuplicatesResponse = {
+  clusters: DuplicateCluster[];
+  job: JobProgress | null;
+};
+
 /** GET /api/documents/{id} - the full editor payload (listing + rows + category options). */
 export type DocumentDetail = {
   id: string;

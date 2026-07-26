@@ -279,11 +279,22 @@ class ReviewRow(Base):
     flag = Column(String(4), nullable=False, default="-")
     suggest_merge = Column(Boolean, nullable=False, default=False)
     include = Column(Boolean, nullable=False, default=True)
+    # Duplicate clustering (pre-summarize): the dedup job stores each row's full OCR text once
+    # (reused by the Duplicates view + the AI-confirm call), and groups confirmed re-scans of the
+    # same document under a per-document `dupe_group` int (null = singleton). The reviewer marks one
+    # copy `dupe_primary` and dismisses false clusters (`dupe_dismissed`).
+    source_text = Column(Text)
+    dupe_group = Column(Integer, index=True)
+    dupe_primary = Column(Boolean, nullable=False, default=False)
+    dupe_dismissed = Column(Boolean, nullable=False, default=False)
 
     def as_row(self):
         row = {field: getattr(self, field) for field in ROW_FIELDS}
         row["suggest_merge"] = self.suggest_merge
         row["include"] = self.include
+        row["dupe_group"] = self.dupe_group
+        row["dupe_primary"] = self.dupe_primary
+        row["dupe_dismissed"] = self.dupe_dismissed
         return row
 
 

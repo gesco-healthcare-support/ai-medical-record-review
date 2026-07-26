@@ -2,6 +2,7 @@ import { apiFetch } from "@/lib/api";
 import type {
   DocumentDetail,
   DocumentStatus,
+  DuplicatesResponse,
   JobProgress,
   Row,
   SummaryItem,
@@ -12,11 +13,37 @@ export function getDocument(id: string) {
   return apiFetch<DocumentDetail>(`/documents/${id}`);
 }
 
-/** GET /api/documents/{id}/status - polled every 1s while a job runs. */
+/** GET /api/documents/{id}/status - polled every 1s while a job runs. `unreviewed_duplicate_groups`
+ *  is advisory only (drives the Duplicates badge/notice); it never blocks Summarize. */
 export function getStatus(id: string) {
-  return apiFetch<{ status: DocumentStatus; job: JobProgress | null }>(
-    `/documents/${id}/status`,
-  );
+  return apiFetch<{
+    status: DocumentStatus;
+    job: JobProgress | null;
+    unreviewed_duplicate_groups?: number;
+  }>(`/documents/${id}/status`);
+}
+
+/** GET /api/documents/{id}/duplicates - confirmed duplicate clusters + the latest dedup progress. */
+export function getDuplicates(id: string) {
+  return apiFetch<DuplicatesResponse>(`/documents/${id}/duplicates`);
+}
+
+/** POST /api/documents/{id}/dedup/start - (re)run duplicate clustering (409 if a job is active). */
+export function startDedup(id: string) {
+  return apiFetch<{ ok: boolean }>(`/documents/${id}/dedup/start`, { method: "POST" });
+}
+
+/** POST /api/documents/{id}/duplicates/{group}/resolve - keep-one (with primaryIdx) or dismiss. */
+export function resolveDuplicate(
+  id: string,
+  group: number,
+  action: "keep_one" | "dismiss",
+  primaryIdx?: number,
+) {
+  return apiFetch<{ ok: boolean }>(`/documents/${id}/duplicates/${group}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ action, primary_idx: primaryIdx ?? null }),
+  });
 }
 
 /** PUT /api/documents/{id}/rows - autosave the editor rows (only sent for valid states). */

@@ -104,7 +104,11 @@ async def test_upload_list_get_status_delete(authed):
     assert body["id"] == doc_id and body["rows"] == [] and "categories" in body
 
     status = await client.get(f"/api/documents/{doc_id}/status")
-    assert status.json() == {"status": "uploaded", "job": None}
+    assert status.json() == {
+        "status": "uploaded",
+        "job": None,
+        "unreviewed_duplicate_groups": 0,
+    }
 
     assert (await client.delete(f"/api/documents/{doc_id}")).status_code == 200
     assert (await client.get(f"/api/documents/{doc_id}")).status_code == 404

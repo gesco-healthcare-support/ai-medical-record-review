@@ -59,3 +59,13 @@ class HeaderPayload(BaseModel):
     patient_last_name: str = ""
     patient_dob: str = ""
     law_firm: str = ""
+
+
+class DuplicateResolvePayload(BaseModel):
+    """Resolve one duplicate cluster (POST /documents/{id}/duplicates/{group}/resolve).
+
+    action="keep_one" keeps `primary_idx` and excludes the other members; action="dismiss" marks the
+    cluster as not-duplicates. The route validates action + primary_idx (-> 400)."""
+
+    action: str  # "keep_one" | "dismiss"
+    primary_idx: int | None = None
