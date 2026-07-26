@@ -5,8 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 // logic (the core of this change). rowErrors stays REAL so invalid rows are computed genuinely.
 vi.mock("@/hooks/use-review-workflow", () => ({ useReviewWorkflow: vi.fn() }));
 vi.mock("@/hooks/use-summaries", () => ({ useSummaries: () => ({ data: [] }) }));
+vi.mock("@/hooks/use-duplicates", () => ({ useDuplicates: () => ({ data: undefined }) }));
 vi.mock("@/components/review/review-editor", () => ({ ReviewEditor: () => <div data-testid="editor" /> }));
 vi.mock("@/components/review/summaries-view", () => ({ SummariesView: () => <div /> }));
+vi.mock("@/components/review/duplicates-view", () => ({ DuplicatesView: () => <div /> }));
 vi.mock("@/components/review/header-bar", () => ({ HeaderBar: () => <div /> }));
 vi.mock("@/components/review/start-panel", () => ({ StartPanel: () => <div /> }));
 vi.mock("@/components/review/progress-panel", () => ({ ProgressPanel: () => <div /> }));
