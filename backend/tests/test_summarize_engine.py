@@ -14,6 +14,13 @@ from app.services import summarize_engine as se
 _NO_ISSUES = {"fixed_text": "", "issues": []}
 
 
+@pytest.fixture(autouse=True)
+def _stub_doi(monkeypatch):
+    # Isolated DOI extraction hits a real PDF/Vertex; existing tests don't exercise it, so default
+    # it to "-" (no DOI). DOI-specific tests below re-patch it.
+    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
+
+
 def _row(**over):
     row = {
         "start": 1,
@@ -87,6 +94,39 @@ def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
     assert "fabrication" not in out["verifiedText"]
     # The raw model output stays the un-fixed body (immutable training data).
     assert "fabrication" in out["summaryText"]
+
+
+def test_doi_prefix_from_isolated_extraction(monkeypatch):
+    # WHEN extract_doi and the isolated extraction returns a date, THE SYSTEM SHALL prefix it.
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "OCR text")
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "09/25/2023")
+    out = se.summarize_row("/x.pdf", _row(injury_date="-"), prompt="P", extract_doi=True)
+    assert out["summaryText"].startswith("**DOI**:09/25/2023,")
+
+
+def test_doi_prefix_omitted_when_isolated_returns_dash(monkeypatch):
+    # WHEN the isolated extraction returns "-", THE SYSTEM SHALL omit the prefix even though the
+    # (propagated) row value carries a date.
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "OCR text")
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
+    out = se.summarize_row("/x.pdf", _row(injury_date="05/08/2022"), prompt="P", extract_doi=True)
+    assert "**DOI**" not in out["summaryText"]
+
+
+def test_extract_doi_false_uses_row_value_without_calling(monkeypatch):
+    # WHEN extract_doi is False, THE SYSTEM SHALL use row["injury_date"] and NOT call extraction.
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "OCR text")
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    called = []
+    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: called.append(1) or "99/99/9999")
+    out = se.summarize_row("/x.pdf", _row(injury_date="05/07/2018"), prompt="P", extract_doi=False)
+    assert out["summaryText"].startswith("**DOI**:05/07/2018,")
+    assert called == []
 
 
 def test_verify_skipped_when_disabled(monkeypatch):
