@@ -650,3 +650,58 @@ def test_dedup_document_skips_ocred_rows_survives_failure_and_rejects(monkeypatc
     assert rows[0].source_text == "alpha beta gamma delta epsilon"  # unchanged
     assert rows[1].source_text == ""  # OCR failed -> empty, run still completed
     assert all(r.dupe_group is None for r in rows.values())  # confirm rejected the cluster
+
+
+def _dedup_jobs(doc_id):
+    with get_sessionmaker()() as session:
+        return session.scalars(
+            select(Job).where(Job.document_id == doc_id, Job.kind == "dedup")
+        ).all()
+
+
+def test_chain_dedup_skips_when_identify_not_done():
+    from app.worker.tasks import _chain_dedup
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(
+            session, doc_id, "segment", model="m", prompt_version="1"
+        ).id  # queued
+    _chain_dedup(job_id)  # identify did not finish -> no dedup enqueued
+    assert _dedup_jobs(doc_id) == []
+
+
+def test_chain_dedup_swallows_conflict_when_a_job_is_active():
+    from app.worker.tasks import _chain_dedup
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        seg = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
+        seg.state = "done"
+        session.add(
+            Job(
+                document_id=doc_id, kind="summarize", state="running", model="m", prompt_version="1"
+            )
+        )
+        session.commit()
+        seg_id = seg.id
+    _chain_dedup(seg_id)  # a job is already active -> JobConflict is swallowed, no raise
+    assert _dedup_jobs(doc_id) == []
+
+
+def test_chain_dedup_swallows_generic_error(monkeypatch):
+    from app.worker.tasks import _chain_dedup
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        seg = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
+        seg.state = "done"
+        session.commit()
+        seg_id = seg.id
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr("app.services.jobs.enqueue", _boom)
+    _chain_dedup(seg_id)  # a non-conflict failure is logged + swallowed (never fails identify)
+    assert _dedup_jobs(doc_id) == []

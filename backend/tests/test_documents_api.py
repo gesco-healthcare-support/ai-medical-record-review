@@ -689,3 +689,12 @@ async def test_duplicates_paths_while_a_job_is_active(authed):
 
     started = await client.post(f"/api/documents/{doc_id}/dedup/start")
     assert started.status_code == 409  # one-active-job conflict
+
+
+def test_dupe_date_key_parses_dates_and_defaults_unknown():
+    from app.api.documents import _dupe_date_key
+
+    assert _dupe_date_key("03/10/2026") == (2026, 3, 10)
+    assert _dupe_date_key("1/2/26") == (2026, 1, 2)  # 2-digit year -> 2000s
+    assert _dupe_date_key("-") == (9999, 12, 31)  # unknown sorts last
+    assert _dupe_date_key("") == (9999, 12, 31)
