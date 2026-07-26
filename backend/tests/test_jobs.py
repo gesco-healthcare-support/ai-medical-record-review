@@ -18,7 +18,7 @@ from app.errors import EmptyExtractionError, OcrUnavailableError
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary, User
 from app.services import jobs
 from app.worker.queues import queue_for, worker_fn
-from app.worker.tasks import _run, segment_document, summarize_document
+from app.worker.tasks import _run, dedup_document, segment_document, summarize_document
 from tests.conftest import unique_test_email
 
 
@@ -533,3 +533,54 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
             select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
         ).all()
         assert [r.category for r in rows] == ["3", "3"]  # per-row classification applied
+
+
+def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):
+    """dedup_document OCRs each row once, clusters near-identical text, and stores a shared
+    dupe_group for the confirmed copies (OCR + confirm are mocked; cluster_rows runs for real)."""
+    doc_id = _make_user_and_doc(page_count=3)
+    with get_sessionmaker()() as session:
+        for idx, (start, end) in enumerate([(1, 1), (2, 2), (3, 3)]):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=start,
+                    end=end,
+                    category="1",
+                    title="T",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1").id
+
+    # Pages 1 and 2 are the same document; page 3 is distinct.
+    texts = {
+        1: "alpha beta gamma delta epsilon zeta eta theta",
+        2: "alpha beta gamma delta epsilon zeta eta theta",
+        3: "completely different words nothing shared at all here",
+    }
+    monkeypatch.setattr(
+        "app.services.ocr.extract_text_from_selected_pages", lambda path, pages: texts[pages[0]]
+    )
+    # Trust the algorithmic candidate (no Vertex call in the test).
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
+
+    dedup_document(job_id)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        rows = {
+            r.idx: r
+            for r in session.scalars(
+                select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+            ).all()
+        }
+    assert rows[0].source_text and rows[1].source_text  # OCR text persisted per row
+    assert rows[0].dupe_group is not None
+    assert rows[0].dupe_group == rows[1].dupe_group  # the two copies share a group
+    assert rows[2].dupe_group is None  # the distinct document is not grouped
