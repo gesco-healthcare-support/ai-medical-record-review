@@ -14,6 +14,7 @@ from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.ocr import extract_text_from_selected_pages
 from app.services.prompts import prompts
+from app.services.summary_doi import extract_injury_date
 from app.services.summary_verify import verify_summary
 
 TITLE_PROMPT = (
@@ -62,18 +63,22 @@ def _generate(model, system_msg, user_text, temperature):
     return (response.text or "").strip()
 
 
-def summarize_row(pdf_path, row, model=None, prompt=None, verify=None):
+def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_doi=None):
     """Summarize one sub-document row -> the legacy output_dict shape.
 
     row: {start, end, category, date, injury_date, flag}. ``prompt`` is the category's summary
     system prompt (blueprints resolve it DB-first via catalog.get_prompt and inject it); when
     omitted it falls back to the hardcoded prompts.py dict. ``verify`` runs the faithfulness verify
     pass (defaults to settings.summary_verify); callers pass False to skip it (e.g. bundle export).
+    ``extract_doi`` (defaults to settings.summary_doi_extract) reads the DOI per-document in
+    isolation instead of trusting the propagated row value; False keeps the legacy row value.
     """
     settings = get_settings()
     model = model or settings.summary_model
     if verify is None:
         verify = settings.summary_verify
+    if extract_doi is None:
+        extract_doi = settings.summary_doi_extract
     if prompt is None:
         key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
         prompt = prompts.get(key, prompts["category_100"])
@@ -93,7 +98,15 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None):
     summary = _generate(model, system_msg, text, temperature=settings.summary_temperature)
     title = _generate(model, TITLE_PROMPT, text, temperature=0.0)
 
-    doi_final = "" if row["injury_date"] in ("", "-") else f"**DOI**:{row['injury_date']},"
+    # DOI only when THIS document states it: an isolated per-document vision call (no neighbours to
+    # copy from) supersedes the segmentation-propagated injury_date. extract_doi=False keeps the
+    # legacy row value. extract_injury_date is fail-safe (returns "-" -> no prefix).
+    injury = (
+        extract_injury_date(pdf_path, row["start"], row["end"], model)
+        if extract_doi
+        else row["injury_date"]
+    )
+    doi_final = "" if injury in ("", "-") else f"**DOI**:{injury},"
     diag_tag = " [Diagnostic Study]" if str(row["category"]) == "3" else ""
     manual_tag = "[ManualCheck] " if str(row["flag"]).strip().lower() == "x" else ""
 

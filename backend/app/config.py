@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # too. On by default; a regression reverts via env with no redeploy. Distinct from the
     # segmentation verify_* knobs below.
     summary_verify: bool = True
+    # DOI extraction: the segmentation model propagates the claim's date of injury onto documents
+    # that never state one (it sees a whole window at once). Instead, at summarize time a per-
+    # sub-document ISOLATED vision call reads the DOI from THAT document alone (no neighbours to
+    # copy from), so a summary shows a DOI only when its own document states one. On by default; a
+    # regression reverts via env with no redeploy.
+    summary_doi_extract: bool = True
 
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2
