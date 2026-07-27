@@ -94,26 +94,26 @@ describe("DuplicatesView", () => {
     expect(screen.getByText("No duplicates")).toBeInTheDocument();
   });
 
-  it("offers a manual re-check when the clusters are stale", async () => {
+  it("hints at a manual re-check when the clusters are stale", () => {
     dupState.error = null;
     dupState.data = { job: null, clusters: [], stale: true };
     render(<DuplicatesView documentId="d1" />);
     expect(screen.getByText(/boundaries changed since the last duplicate check/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /re-check duplicates/i }));
-    await waitFor(() => expect(startDedupMock).toHaveBeenCalled());
+    // The re-check button lives in the page header (one per screen), not in this view.
+    expect(screen.queryByRole("button", { name: /re-check duplicates/i })).not.toBeInTheDocument();
   });
 
   it("hides the re-check hint when not stale", () => {
     dupState.error = null;
     dupState.data = { job: null, clusters: [], stale: false };
     render(<DuplicatesView documentId="d1" />);
-    expect(screen.queryByRole("button", { name: /re-check duplicates/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/boundaries changed since the last duplicate check/i)).not.toBeInTheDocument();
   });
 
   it("hides the re-check hint while a dedup job is running", () => {
     dupState.error = null;
     dupState.data = { job: { state: "running", current: 3, total: 9 }, clusters: [], stale: true };
     render(<DuplicatesView documentId="d1" />);
-    expect(screen.queryByRole("button", { name: /re-check duplicates/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/boundaries changed since the last duplicate check/i)).not.toBeInTheDocument();
   });
 });

@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { rowErrors } from "@/lib/review-rows";
+import { humanizeError } from "@/lib/errors";
 import { useReviewWorkflow } from "@/hooks/use-review-workflow";
 import { useSummaries } from "@/hooks/use-summaries";
-import { useDuplicates } from "@/hooks/use-duplicates";
+import { useDuplicates, useStartDedup } from "@/hooks/use-duplicates";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
 import { BackLink } from "@/components/app/back-link";
 import { ReviewEditor } from "./review-editor";
@@ -26,11 +27,16 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   const wf = useReviewWorkflow(documentId);
   const { data: summaries = [] } = useSummaries(documentId);
   const { data: dupData } = useDuplicates(documentId);
+  const recheck = useStartDedup(documentId);
   const [tab, setTab] = useState<Tab>("review");
-  // A cluster still needs the reviewer when it is neither dismissed nor has a kept copy.
+  // A cluster still needs the reviewer while 2+ of its copies would be summarized - the same rule the
+  // API's advisory count and the cluster chip use, so every surface agrees.
   const unresolvedDupes = (dupData?.clusters ?? []).filter(
-    (c) => !c.dismissed && !c.rows.some((r) => r.primary),
+    (c) => !c.dismissed && c.rows.filter((r) => r.include !== false).length >= 2,
   ).length;
+  // A dedup job blocks both /dedup/start and /summarize/start server-side (409), so disable rather
+  // than surface the conflict.
+  const dedupRunning = dupData?.job?.state === "queued" || dupData?.job?.state === "running";
   const lastSection = useRef(wf.section);
 
   // The hook lands on "summaries" after a summarize job finishes (or when a done record boots);
@@ -73,17 +79,33 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   const save = wf.saveState;
   // The paused stage label is stable (STAGE_LABELS.paused); style the bar distinctly while waiting.
   const paused = wf.watching && wf.progress.detail.toLowerCase().startsWith("paused");
-  // Block Summarize while any row is invalid, nothing is selected, or a save failed/is pending -
-  // so a user never summarizes stale or invalid rows.
+  // Block Summarize while any row is invalid, nothing is selected, a save failed/is pending, or a
+  // duplicate check is running - so a user never summarizes stale or invalid rows.
   const summarizeDisabled =
-    errors.size > 0 || included === 0 || save.kind === "error" || save.kind === "dirty";
+    errors.size > 0 ||
+    included === 0 ||
+    save.kind === "error" ||
+    save.kind === "dirty" ||
+    dedupRunning;
 
   // Un-nested reason for the disabled Summarize button (Sonar S3358: no nested ternary in JSX).
   let summarizeHint: string | undefined;
   if (!summarizeDisabled) summarizeHint = undefined;
   else if (errors.size > 0) summarizeHint = "Fix the highlighted page ranges before summarizing.";
   else if (included === 0) summarizeHint = "Select at least one document to summarize.";
+  else if (dedupRunning) summarizeHint = "Wait for the duplicate check to finish.";
   else summarizeHint = "Your latest changes aren't saved yet.";
+
+  const onRecheck = async () => {
+    wf.setBanner("");
+    try {
+      await recheck.mutateAsync();
+    } catch (err) {
+      wf.setBanner(
+        humanizeError(err, { fallback: "Could not start the check - please try again." }),
+      );
+    }
+  };
 
   const reSummarizeAll = () => {
     if (
@@ -133,16 +155,32 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                   )}
                 </span>
               ) : null}
-              <button type="button" className="ev-btn ev-btn-outline" onClick={wf.onStart}>
-                {wf.rows.length ? "Re-run segment" : "Segment"}
-              </button>
+              {/* Each tab carries its own step's actions: correct the documents, then clear the
+                  duplicates, then summarize - so the reviewer passes the duplicates gate. */}
               {tab === "review" ? (
                 <>
-                  {summaries.length > 0 ? (
-                    <button type="button" className="ev-btn ev-btn-ghost" onClick={reSummarizeAll}>
-                      Re-summarize all
-                    </button>
-                  ) : null}
+                  <button type="button" className="ev-btn ev-btn-outline" onClick={wf.onStart}>
+                    {wf.rows.length ? "Re-run segment" : "Segment"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ev-btn ev-btn-primary"
+                    onClick={() => setTab("duplicates")}
+                  >
+                    Check duplicates
+                  </button>
+                </>
+              ) : null}
+              {tab === "duplicates" ? (
+                <>
+                  <button
+                    type="button"
+                    className="ev-btn ev-btn-outline"
+                    disabled={recheck.isPending || dedupRunning}
+                    onClick={onRecheck}
+                  >
+                    {recheck.isPending ? "Starting..." : "Re-check duplicates"}
+                  </button>
                   <button
                     type="button"
                     className="ev-btn ev-btn-primary"
@@ -155,6 +193,11 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                       : "Summarize"}
                   </button>
                 </>
+              ) : null}
+              {tab === "summaries" && summaries.length > 0 ? (
+                <button type="button" className="ev-btn ev-btn-ghost" onClick={reSummarizeAll}>
+                  Re-summarize all
+                </button>
               ) : null}
             </>
           )}
