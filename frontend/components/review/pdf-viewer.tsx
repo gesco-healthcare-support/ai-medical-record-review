@@ -69,14 +69,17 @@ export const PdfViewer = forwardRef<PdfViewerHandle, { documentId: string; filen
       ref,
       () => ({
         jumpTo(page: number) {
-          if (page === lastPage.current) return;
-          lastPage.current = page;
           const app = viewerApp();
           if (app?.pdfViewer?.pagesCount) {
+            // Always re-apply once the viewer is live: the reader may have scrolled away since the
+            // last jump, so re-clicking the same row must bring them back to its first page.
+            lastPage.current = page;
             app.page = page;
             setPageInfo((p) => ({ ...p, page }));
             return;
           }
+          if (page === lastPage.current) return; // not ready: don't reload the iframe for a no-op
+          lastPage.current = page;
           const frame = frameRef.current;
           if (frame) frame.src = srcFor(page); // viewer not ready yet: (re)load opened at the page
         },

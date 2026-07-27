@@ -1,25 +1,32 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
 import { useDuplicates, useResolveDuplicate } from "@/hooks/use-duplicates";
-import type { DuplicateCluster } from "@/lib/types";
+import type { DuplicateCluster, DuplicateRow } from "@/lib/types";
+import { PdfViewer, type PdfViewerHandle } from "./pdf-viewer";
+import { SplitPane } from "./split-pane";
 
-/** Duplicates review (before summarization): each confirmed cluster lists its copies oldest-first;
- *  the reviewer keeps one copy (excluding the rest from summarization) or dismisses the cluster as
- *  not-duplicates. Advisory - it never blocks Summarize. `onResolved` lets the parent refresh the
- *  Review editor's rows so a later Summarize respects the exclusions. */
+/** Duplicates review (before summarization): each confirmed cluster lists its copies oldest-first
+ *  beside the record's PDF, so the reviewer can read the pages before deciding; clicking a copy jumps
+ *  the viewer to its first page. The reviewer keeps one copy (excluding the rest from summarization)
+ *  or dismisses the cluster as not-duplicates. Advisory - it never blocks Summarize. `onResolved`
+ *  lets the parent refresh the Review editor's rows so a later Summarize respects the exclusions. */
 export function DuplicatesView({
   documentId,
+  filename,
   onResolved,
 }: {
   documentId: string;
+  filename?: string;
   onResolved?: () => void;
 }) {
   const { data, isLoading, error } = useDuplicates(documentId);
   const resolve = useResolveDuplicate(documentId);
+  const pdfRef = useRef<PdfViewerHandle>(null);
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [msg, setMsg] = useState("");
 
   const job = data?.job;
@@ -28,6 +35,11 @@ export function DuplicatesView({
   // Boundaries changed since the last check: point at the header's "Re-check duplicates" (a re-run
   // is always manual - it costs AI calls). Hidden while a check is already in flight.
   const stale = Boolean(data?.stale) && !running;
+
+  function openRow(row: DuplicateRow) {
+    setSelectedIdx(row.idx);
+    pdfRef.current?.jumpTo(row.pages.start);
+  }
 
   async function act(group: number, action: "keep_one" | "dismiss", primaryIdx?: number) {
     setMsg("");
@@ -41,56 +53,76 @@ export function DuplicatesView({
 
   const loadError = error ? humanizeError(error, { fallback: "Could not load duplicates." }) : "";
 
-  return (
-    <section id="step-duplicates" className="sum-column">
-      <div className="sum-header">
-        <div>
-          <h1>Duplicate documents</h1>
-          <div className="sum-countline">
-            <span>
-              {running
-                ? `Checking for duplicates${job?.total ? ` (${job.current}/${job.total})` : "..."}`
-                : clusters.length
-                  ? `${clusters.length} possible duplicate ${clusters.length === 1 ? "group" : "groups"}`
-                  : "No duplicate documents found"}
-            </span>
-            <span className="muted">{msg || loadError}</span>
+  const countLine = clusters.length
+    ? `${clusters.length} possible duplicate ${clusters.length === 1 ? "group" : "groups"}`
+    : "No duplicate documents found";
+
+  const list = (
+    <div className="rce-splitcol">
+      <div className="sum-column">
+        <div className="sum-header">
+          <div>
+            <h1>Duplicate documents</h1>
+            <div className="sum-countline">
+              <span>
+                {running
+                  ? `Checking for duplicates${job?.total ? ` (${job.current}/${job.total})` : "..."}`
+                  : countLine}
+              </span>
+              <span className="muted">{msg || loadError}</span>
+            </div>
           </div>
         </div>
+
+        {stale ? (
+          <div className="banner" aria-live="polite">
+            <span>
+              Document boundaries changed since the last duplicate check, so this list may be
+              incomplete. Use &quot;Re-check duplicates&quot; above to scan again.
+            </span>
+          </div>
+        ) : null}
+
+        {isLoading ? null : clusters.length === 0 ? (
+          <div className="summary-empty">
+            <Copy width={34} height={34} aria-hidden />
+            <p className="empty-title">{running ? "Checking for duplicates..." : "No duplicates"}</p>
+            <p>
+              {running
+                ? "Scanning the record for documents that were scanned more than once."
+                : "The record has no groups of duplicate documents to review."}
+            </p>
+          </div>
+        ) : (
+          <div className="summary-list">
+            {clusters.map((cluster) => (
+              <ClusterCard
+                key={cluster.group}
+                cluster={cluster}
+                busy={resolve.isPending}
+                selectedIdx={selectedIdx}
+                onOpen={openRow}
+                onKeep={(idx) => act(cluster.group, "keep_one", idx)}
+                onDismiss={() => act(cluster.group, "dismiss")}
+              />
+            ))}
+          </div>
+        )}
       </div>
+    </div>
+  );
 
-      {stale ? (
-        <div className="banner" aria-live="polite">
-          <span>
-            Document boundaries changed since the last duplicate check, so this list may be
-            incomplete. Use &quot;Re-check duplicates&quot; above to scan again.
-          </span>
-        </div>
-      ) : null}
-
-      {isLoading ? null : clusters.length === 0 ? (
-        <div className="summary-empty">
-          <Copy width={34} height={34} aria-hidden />
-          <p className="empty-title">{running ? "Checking for duplicates..." : "No duplicates"}</p>
-          <p>
-            {running
-              ? "Scanning the record for documents that were scanned more than once."
-              : "The record has no groups of duplicate documents to review."}
-          </p>
-        </div>
-      ) : (
-        <div className="summary-list">
-          {clusters.map((cluster) => (
-            <ClusterCard
-              key={cluster.group}
-              cluster={cluster}
-              busy={resolve.isPending}
-              onKeep={(idx) => act(cluster.group, "keep_one", idx)}
-              onDismiss={() => act(cluster.group, "dismiss")}
-            />
-          ))}
-        </div>
-      )}
+  return (
+    <section id="step-duplicates" className="rce-split">
+      <SplitPane
+        storageKey="mrr.duplicates.split"
+        left={list}
+        right={
+          <div className="rce-viewer">
+            <PdfViewer ref={pdfRef} documentId={documentId} filename={filename} />
+          </div>
+        }
+      />
     </section>
   );
 }
@@ -98,11 +130,15 @@ export function DuplicatesView({
 function ClusterCard({
   cluster,
   busy,
+  selectedIdx,
+  onOpen,
   onKeep,
   onDismiss,
 }: {
   cluster: DuplicateCluster;
   busy: boolean;
+  selectedIdx: number | null;
+  onOpen: (row: DuplicateRow) => void;
   onKeep: (idx: number) => void;
   onDismiss: () => void;
 }) {
@@ -127,14 +163,28 @@ function ClusterCard({
       </div>
       <ul className="dupe-copies">
         {cluster.rows.map((row) => (
-          <li key={row.idx} className={cn("dupe-copy", row.primary && "primary")}>
-            <span className="meta">
-              {row.date && row.date !== "-" ? row.date : "no date"} - pages {row.pages.start}
-              {"–"}
-              {row.pages.end}
-              {row.primary ? " - kept" : row.include === false ? " - excluded" : ""}
-            </span>
-            <span className="dupe-copy-title">{row.title && row.title !== "-" ? row.title : "Untitled"}</span>
+          // The copy's date/pages/title are one BUTTON that opens it in the viewer: a click handler
+          // on the <li> itself would be mouse-only (no keyboard path), and making the <li> the
+          // control would nest "Keep this one" inside another interactive element.
+          <li
+            key={row.idx}
+            className={cn(
+              "dupe-copy",
+              row.primary && "primary",
+              selectedIdx === row.idx && "selected",
+            )}
+          >
+            <button type="button" className="row-jump dupe-copy-main" onClick={() => onOpen(row)}>
+              <span className="meta">
+                {row.date && row.date !== "-" ? row.date : "no date"} - pages {row.pages.start}
+                {"–"}
+                {row.pages.end}
+                {row.primary ? " - kept" : row.include === false ? " - excluded" : ""}
+              </span>
+              <span className="dupe-copy-title">
+                {row.title && row.title !== "-" ? row.title : "Untitled"}
+              </span>
+            </button>
             {!cluster.dismissed ? (
               <button
                 type="button"

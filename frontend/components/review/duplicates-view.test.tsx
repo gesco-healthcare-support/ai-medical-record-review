@@ -3,6 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 
 const resolveMock = vi.fn().mockResolvedValue({ ok: true });
 const startDedupMock = vi.fn().mockResolvedValue({ ok: true });
+const jumpTo = vi.fn();
+// jsdom cannot run the pdf.js iframe; stub the viewer and record the page it is asked to show.
+vi.mock("@/components/review/pdf-viewer", async () => {
+  const { forwardRef, useImperativeHandle } = await import("react");
+  return {
+    PdfViewer: forwardRef(function PdfViewerStub(_props: unknown, ref: unknown) {
+      useImperativeHandle(ref as never, () => ({ jumpTo }), []);
+      return <div data-testid="pdf-viewer" />;
+    }),
+  };
+});
 const dupState: { data: unknown; error: unknown; isLoading: boolean } = {
   data: undefined,
   error: null,
@@ -44,6 +55,58 @@ describe("DuplicatesView", () => {
       expect(resolveMock).toHaveBeenCalledWith({ group: 1, action: "keep_one", primaryIdx: 0 }),
     );
     await waitFor(() => expect(onResolved).toHaveBeenCalled());
+  });
+
+  it("opens a copy's first page in the viewer when its row or title is clicked", async () => {
+    jumpTo.mockClear();
+    resolveMock.mockClear();
+    dupState.error = null;
+    dupState.data = {
+      job: null,
+      clusters: [
+        {
+          group: 1,
+          dismissed: false,
+          rows: [
+            { idx: 0, title: "Progress Note", date: "01/02/2026", pages: { start: 4, end: 6 }, include: true, primary: false },
+            { idx: 3, title: "Progress Note", date: "02/02/2026", pages: { start: 10, end: 11 }, include: true, primary: false },
+          ],
+        },
+      ],
+    };
+    render(<DuplicatesView documentId="d1" filename="record.pdf" />);
+    expect(screen.getByTestId("pdf-viewer")).toBeInTheDocument();
+
+    // Each copy's date/pages/title is one real button, so mouse and keyboard both reach the jump.
+    fireEvent.click(screen.getByRole("button", { name: /pages 10.*Progress Note/ }));
+    expect(jumpTo).toHaveBeenLastCalledWith(10);
+
+    fireEvent.click(screen.getByText(/pages 4/));
+    expect(jumpTo).toHaveBeenLastCalledWith(4);
+    expect(resolveMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a copy without treating the click as a jump", async () => {
+    jumpTo.mockClear();
+    resolveMock.mockClear();
+    dupState.error = null;
+    dupState.data = {
+      job: null,
+      clusters: [
+        {
+          group: 2,
+          dismissed: false,
+          rows: [
+            { idx: 0, title: "Progress Note", date: "01/02/2026", pages: { start: 1, end: 2 }, include: true, primary: false },
+            { idx: 1, title: "Progress Note", date: "02/02/2026", pages: { start: 3, end: 4 }, include: true, primary: false },
+          ],
+        },
+      ],
+    };
+    render(<DuplicatesView documentId="d1" />);
+    fireEvent.click(screen.getAllByRole("button", { name: /keep this one/i })[0]);
+    await waitFor(() => expect(resolveMock).toHaveBeenCalled());
+    expect(jumpTo).not.toHaveBeenCalled();
   });
 
   it("reads a cluster as resolved once at most one copy is still included", () => {

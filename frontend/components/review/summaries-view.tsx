@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { FileText, Flag, Pencil, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
@@ -10,6 +10,8 @@ import type { HeaderFields } from "@/lib/review-api";
 import { ExportDialog } from "./export-dialog";
 import { HeaderBar } from "./header-bar";
 import { MarkdownText } from "./markdown-text";
+import { PdfViewer, type PdfViewerHandle } from "./pdf-viewer";
+import { SplitPane } from "./split-pane";
 
 const PAGE_SIZE = 20;
 
@@ -30,17 +32,20 @@ function parseDisplay(item: SummaryItem) {
 }
 
 /** Summaries & export (DS §4): a reading column of SummaryCards with Edited / Manual check /
- *  Excluded badges, inline edit, Re-draft, and an "In export" toggle. The same editable report
- *  header as Review & correct sits on top (shared via onHeaderSaved), and the Export dialog
- *  prefills from it. */
+ *  Excluded badges, inline edit, Re-draft, and an "In export" toggle, beside the same PDF viewer as
+ *  Review & correct - clicking a card jumps the viewer to that summary's first source page so the
+ *  reviewer can check it against the record. The same editable report header as Review & correct sits
+ *  on top (shared via onHeaderSaved), and the Export dialog prefills from it. */
 export function SummariesView({
   documentId,
+  filename,
   categories,
   header,
   onHeaderSaved,
   onGotoReview,
 }: {
   documentId: string;
+  filename?: string;
   categories: CategoryOption[];
   header?: HeaderFields | null;
   onHeaderSaved?: (fields: HeaderFields) => void;
@@ -50,6 +55,8 @@ export function SummariesView({
   const save = useSaveSummary(documentId);
   const redraft = useResummarize(documentId);
 
+  const pdfRef = useRef<PdfViewerHandle>(null);
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const [editingIdx, setEditingIdx] = useState(-1);
   const [saveMsg, setSaveMsg] = useState("");
@@ -65,6 +72,12 @@ export function SummariesView({
   function categoryLabel(id: string) {
     const found = categories.find((c) => String(c.id) === String(id));
     return found ? `${found.id} - ${found.name}` : String(id);
+  }
+
+  /** Show this summary's source pages in the PDF pane (its first page). */
+  function openSummary(item: SummaryItem) {
+    setSelectedIdx(item.idx);
+    pdfRef.current?.jumpTo(Number(item.row.start) || 1);
   }
 
   function startEdit(item: SummaryItem) {
@@ -125,8 +138,8 @@ export function SummariesView({
   const curPage = Math.min(page, pageCount - 1);
   const pageItems = summaries.slice(curPage * PAGE_SIZE, curPage * PAGE_SIZE + PAGE_SIZE);
 
-  return (
-    <section id="step-summaries">
+  const column = (
+    <div className="rce-splitcol">
       <div className="sum-column">
         <HeaderBar
           documentId={documentId}
@@ -219,17 +232,23 @@ export function SummariesView({
               }
 
               return (
+                // The title and the meta line are BUTTONS that show the summary's source pages: a
+                // click handler on the card itself would be mouse-only (no keyboard path), and
+                // making the card the control would nest Re-draft / Edit inside another control.
                 <div
                   key={item.idx}
                   className={cn(
                     "summary-card",
                     item.excluded && "excluded",
                     redraftingIdx === item.idx && "busy",
+                    selectedIdx === item.idx && "selected",
                   )}
                 >
                   <div className="summary-head">
                     <h3 className="sum-heading">
-                      <MarkdownText text={title} />
+                      <button type="button" className="row-jump" onClick={() => openSummary(item)}>
+                        <MarkdownText text={title} />
+                      </button>
                     </h3>
                     {item.edited ? (
                       <span className="ev-chip ev-chip-edit">
@@ -277,7 +296,9 @@ export function SummariesView({
                       </label>
                     </span>
                   </div>
-                  <div className="meta">{meta}</div>
+                  <button type="button" className="row-jump meta-jump" onClick={() => openSummary(item)}>
+                    <span className="meta">{meta}</span>
+                  </button>
                   <p className="body">
                     <MarkdownText text={text} />
                   </p>
@@ -319,6 +340,20 @@ export function SummariesView({
           </div>
         ) : null}
       </div>
+    </div>
+  );
+
+  return (
+    <section id="step-summaries" className="rce-split">
+      <SplitPane
+        storageKey="mrr.summaries.split"
+        left={column}
+        right={
+          <div className="rce-viewer">
+            <PdfViewer ref={pdfRef} documentId={documentId} filename={filename} />
+          </div>
+        }
+      />
 
       <ExportDialog
         open={exportOpen}

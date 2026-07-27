@@ -284,10 +284,15 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
             </>
           )
         ) : tab === "duplicates" ? (
-          <DuplicatesView documentId={documentId} onResolved={wf.reloadRows} />
+          <DuplicatesView
+            documentId={documentId}
+            filename={wf.filename}
+            onResolved={wf.reloadRows}
+          />
         ) : (
           <SummariesView
             documentId={documentId}
+            filename={wf.filename}
             categories={wf.categories}
             header={wf.header}
             onHeaderSaved={wf.setHeader}
