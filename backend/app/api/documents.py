@@ -374,12 +374,17 @@ def _dupe_groups(document: Document) -> dict[int, list[ReviewRow]]:
 
 
 def _unreviewed_dupe_count(groups: dict[int, list[ReviewRow]]) -> int:
-    """Clusters the reviewer has neither resolved (a primary chosen) nor dismissed - the advisory
-    count that drives the non-blocking 'you have duplicates to review' hint."""
+    """Clusters where 2+ copies would still be summarized and which are not dismissed - the advisory
+    count that drives the non-blocking 'you have duplicates to review' hint.
+
+    Inclusion, not the primary mark, is the test: a keep-one resolution excludes the other copies, so
+    the cluster stops being advised even after a dedup re-run recomputes its group. A cluster that
+    later gains another included copy is correctly advised again.
+    """
     return sum(
         1
         for members in groups.values()
-        if not any(m.dupe_primary for m in members) and not any(m.dupe_dismissed for m in members)
+        if not any(m.dupe_dismissed for m in members) and sum(1 for m in members if m.include) >= 2
     )
 
 
@@ -441,14 +446,15 @@ def get_duplicates(
         .where(Job.document_id == document.id, Job.kind == "dedup")
         .order_by(Job.id.desc())
     ).first()
-    # "stale" = the clusters no longer cover every included row, so the tab can offer a MANUAL
-    # re-check (never an automatic AI run). A completed dedup stores source_text on every included
-    # row and a metadata edit keeps it (_store_rows), so a missing one means a boundary changed or a
-    # row was newly included since that run. While a dedup is in flight there is nothing to nudge.
+    # "stale" = the clusters no longer cover every row dedup would look at, so the tab can offer a
+    # MANUAL re-check (never an automatic AI run). A completed dedup stores source_text on every
+    # non-dismissed row and a metadata edit keeps it (_store_rows), so a missing one means a boundary
+    # changed or a row appeared since that run. Dismissed rows are out of dedup's scope, so they never
+    # make the list stale. While a dedup is in flight there is nothing to nudge.
     stale = bool(
         dedup_job
         and dedup_job.state == "done"
-        and any(row.source_text is None for row in document.review_rows if row.include)
+        and any(row.source_text is None for row in document.review_rows if not row.dupe_dismissed)
     )
     return {
         "clusters": clusters,

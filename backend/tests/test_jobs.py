@@ -661,6 +661,115 @@ def test_dedup_document_skips_ocred_rows_survives_failure_and_rejects(monkeypatc
     assert all(r.dupe_group is None for r in rows.values())  # confirm rejected the cluster
 
 
+def test_dedup_document_covers_excluded_rows_and_leaves_dismissed_alone(monkeypatch):
+    """Scope is every NON-DISMISSED row: an excluded copy is still clustered (General/Depositions
+    rows are excluded by default, and that is where re-scanned letters live), while a dismissed row
+    keeps its group + flags and is not even OCR'd. New groups number above the dismissed one so the
+    two clusters cannot collide on the same group id."""
+    doc_id = _make_user_and_doc(page_count=4)
+    with get_sessionmaker()() as session:
+        for idx, (start, include, dismissed, group) in enumerate(
+            [
+                (1, True, False, None),
+                (2, False, False, None),
+                (3, True, True, 7),
+                (4, True, False, None),
+            ]
+        ):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=start,
+                    end=start,
+                    category="1",
+                    title="T",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=include,
+                    dupe_dismissed=dismissed,
+                    dupe_group=group,
+                    source_text="dismissed text kept" if dismissed else None,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1").id
+
+    # Pages 1 and 2 are the same document (page 2's row is EXCLUDED); page 4 is distinct.
+    texts = {
+        1: "alpha beta gamma delta epsilon zeta eta theta",
+        2: "alpha beta gamma delta epsilon zeta eta theta",
+        4: "completely different words nothing shared at all here",
+    }
+    ocr_pages = []
+
+    def fake_ocr(path, pages):
+        ocr_pages.append(pages[0])
+        return texts[pages[0]]
+
+    monkeypatch.setattr("app.services.ocr.extract_text_from_selected_pages", fake_ocr)
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
+
+    dedup_document(job_id)
+
+    with get_sessionmaker()() as session:
+        rows = {
+            r.idx: r
+            for r in session.scalars(
+                select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+            ).all()
+        }
+    assert 3 not in ocr_pages  # the dismissed row is out of scope entirely
+    assert rows[1].include is False and rows[1].dupe_group is not None
+    assert rows[0].dupe_group == rows[1].dupe_group  # the excluded copy is clustered with its twin
+    assert rows[0].dupe_group > 7  # numbered above the group the dismissed row still holds
+    assert (rows[2].dupe_group, rows[2].dupe_dismissed) == (7, True)  # dismissal untouched
+    assert rows[3].dupe_group is None
+
+
+def test_dedup_document_keeps_the_reviewers_kept_copy(monkeypatch):
+    """A re-check must not forget a keep-one resolution: dupe_primary survives the run (only
+    dupe_group is recomputed), so the cluster comes back resolved rather than needing review."""
+    doc_id = _make_user_and_doc(page_count=2)
+    with get_sessionmaker()() as session:
+        for idx, (include, primary) in enumerate([(True, True), (False, False)]):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=idx + 1,
+                    end=idx + 1,
+                    category="1",
+                    title="T",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=include,
+                    dupe_group=1,
+                    dupe_primary=primary,
+                    source_text="alpha beta gamma delta epsilon zeta eta theta",
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1").id
+
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
+
+    dedup_document(job_id)
+
+    with get_sessionmaker()() as session:
+        rows = {
+            r.idx: r
+            for r in session.scalars(
+                select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+            ).all()
+        }
+    assert rows[0].dupe_group == rows[1].dupe_group is not None  # re-clustered
+    assert rows[0].dupe_primary is True  # the kept copy is still marked
+    assert rows[1].dupe_primary is False
+
+
 def _dedup_jobs(doc_id):
     with get_sessionmaker()() as session:
         return session.scalars(

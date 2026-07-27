@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.config import get_settings
 from app.db import get_sessionmaker
@@ -294,10 +294,18 @@ def _chain_dedup(job_id) -> None:
 
 
 def dedup_document(job_id) -> None:
-    """RQ entry: OCR each included ReviewRow once (persist source_text), cluster likely-duplicate
+    """RQ entry: OCR each non-dismissed ReviewRow once (persist source_text), cluster likely-duplicate
     sub-documents by content, confirm each candidate with one cheap model call, and store a shared
     `dupe_group` per confirmed set. Advisory/precompute: it never edits summaries - it only
-    annotates rows for the Duplicates review."""
+    annotates rows for the Duplicates review.
+
+    Scope is every row the reviewer has NOT dismissed - not just the ones marked for summarization.
+    Excluded rows must be checked too: General/Depositions are unchecked by default and that is
+    exactly where re-scanned cover letters and exhibit lists live, and a keep-one resolution excludes
+    the copies it just found. Dismissed rows ("not duplicates") stay untouched, so their groups
+    survive; new groups are therefore numbered above the highest surviving one to avoid colliding
+    with a dismissed cluster's id.
+    """
     import gc
 
     from app.services.dedup import cluster_rows, confirm_cluster
@@ -307,17 +315,20 @@ def dedup_document(job_id) -> None:
         document = session.get(Document, job.document_id)
         rows = session.scalars(
             select(ReviewRow)
-            .where(ReviewRow.document_id == job.document_id, ReviewRow.include.is_(True))
+            .where(
+                ReviewRow.document_id == job.document_id,
+                ReviewRow.dupe_dismissed.is_(False),
+            )
             .order_by(ReviewRow.idx)
         ).all()
         total = len(rows)
         # OCR each row's pages once (persist), clearing any stale grouping so a re-run reclusters
-        # from scratch. Per-page OCR + gc keeps memory flat on a large record.
+        # from scratch. `dupe_primary` is deliberately NOT cleared: it is the reviewer's "this is the
+        # copy I kept", and _store_rows already resets it when a row's page range changes.
+        # Per-page OCR + gc keeps memory flat on a large record.
         for i, row in enumerate(rows):
             report("deduping", i, total)
             row.dupe_group = None
-            row.dupe_primary = False
-            row.dupe_dismissed = False
             if not (row.source_text or "").strip():
                 try:
                     row.source_text = extract_text_from_selected_pages(
@@ -339,7 +350,16 @@ def dedup_document(job_id) -> None:
             for row in rows
         ]
         by_id = {row.id: row for row in rows}
-        group_no = 0
+        # Only dismissed rows still hold a group at this point (the loop above cleared the rest), so
+        # numbering above the maximum keeps a re-run's clusters distinct from a dismissed one.
+        group_no = (
+            session.scalar(
+                select(func.max(ReviewRow.dupe_group)).where(
+                    ReviewRow.document_id == job.document_id
+                )
+            )
+            or 0
+        )
         for cluster in cluster_rows(items):
             confirmed = confirm_cluster(cluster["members"])
             if len(confirmed) < 2:

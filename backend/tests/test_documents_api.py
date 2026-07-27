@@ -272,6 +272,44 @@ async def test_duplicates_hides_single_member_groups(authed):
     assert len(body["clusters"][0]["rows"]) == 2
 
 
+async def test_unreviewed_count_follows_inclusion_not_the_primary_mark(authed):
+    """A cluster needs the reviewer only while 2+ of its copies would still be summarized, so a
+    keep-one stays resolved even after a re-check clears the group and re-derives it."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_dedup_fields(doc_id, [(1, 2), (3, 4)])
+
+    async def count():
+        return (await client.get(f"/api/documents/{doc_id}/status")).json()[
+            "unreviewed_duplicate_groups"
+        ]
+
+    def patch(**values):
+        with get_sessionmaker()() as session:
+            for row in session.scalars(
+                select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.start == 3)
+            ).all():
+                for key, value in values.items():
+                    setattr(row, key, value)
+            session.commit()
+
+    patch(dupe_primary=False)  # two included copies, no primary marked -> needs review
+    assert await count() == 1
+
+    patch(include=False)  # only one copy would be summarized -> resolved
+    assert await count() == 0
+
+    patch(include=True, dupe_dismissed=True)  # "not duplicates" -> never advised again
+    assert await count() == 0
+
+
 async def test_duplicates_stale_flag_tracks_unchecked_included_rows(authed):
     # stale = a dedup finished AND an included row has no stored OCR text (boundary change).
     client, _ = authed
@@ -313,6 +351,46 @@ async def test_duplicates_stale_flag_tracks_unchecked_included_rows(authed):
         await client.put(f"/api/documents/{doc_id}/rows", json={"rows": changed})
     ).status_code == 200
     assert (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["stale"] is True
+
+
+async def test_duplicates_stale_flag_covers_excluded_but_not_dismissed_rows(authed):
+    """Staleness follows the dedup SCOPE (every non-dismissed row): an excluded row dedup never saw
+    means the list may be incomplete, while a dismissed row is deliberately out of scope."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY, "include": False},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_dedup_fields(doc_id, [(1, 2)])  # only the included row was checked
+    with get_sessionmaker()() as session:
+        session.add(
+            Job(
+                document_id=doc_id,
+                kind="dedup",
+                state="done",
+                stage="deduping",
+                model="m",
+                prompt_version="1",
+            )
+        )
+        session.commit()
+
+    async def stale():
+        return (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["stale"]
+
+    assert await stale() is True  # the excluded row has no stored text -> re-check is worthwhile
+
+    with get_sessionmaker()() as session:
+        row = session.scalar(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.start == 3)
+        )
+        row.dupe_dismissed = True
+        session.commit()
+    assert await stale() is False  # dismissed rows are out of scope, so nothing is missing
 
 
 async def test_summaries_empty_and_export_conflict(authed):

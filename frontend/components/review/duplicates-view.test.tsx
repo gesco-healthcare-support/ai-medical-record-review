@@ -46,6 +46,47 @@ describe("DuplicatesView", () => {
     await waitFor(() => expect(onResolved).toHaveBeenCalled());
   });
 
+  it("reads a cluster as resolved once at most one copy is still included", () => {
+    dupState.error = null;
+    dupState.data = {
+      job: null,
+      clusters: [
+        {
+          group: 1,
+          dismissed: false,
+          rows: [
+            { idx: 0, title: "Progress Note", date: "01/02/2026", pages: { start: 1, end: 2 }, include: true, primary: false },
+            { idx: 3, title: "Progress Note", date: "02/02/2026", pages: { start: 10, end: 11 }, include: false, primary: false },
+          ],
+        },
+      ],
+    };
+    render(<DuplicatesView documentId="d1" />);
+    // No copy is marked "kept" (a re-check recomputed the group), but only one is still included.
+    expect(screen.getByText("Resolved")).toBeInTheDocument();
+    expect(screen.queryByText("Needs review")).not.toBeInTheDocument();
+  });
+
+  it("flags a cluster that still has two included copies", () => {
+    dupState.error = null;
+    dupState.data = {
+      job: null,
+      clusters: [
+        {
+          group: 1,
+          dismissed: false,
+          rows: [
+            { idx: 0, title: "Progress Note", date: "01/02/2026", pages: { start: 1, end: 2 }, include: true, primary: true },
+            { idx: 3, title: "Progress Note", date: "02/02/2026", pages: { start: 10, end: 11 }, include: true, primary: false },
+          ],
+        },
+      ],
+    };
+    render(<DuplicatesView documentId="d1" />);
+    // A primary is marked, but a second copy is included again -> the reviewer must look.
+    expect(screen.getByText("Needs review")).toBeInTheDocument();
+  });
+
   it("shows the empty state when there are no clusters", () => {
     dupState.error = null;
     dupState.data = { job: null, clusters: [] };
