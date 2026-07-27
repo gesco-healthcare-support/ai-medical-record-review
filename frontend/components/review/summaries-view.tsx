@@ -23,7 +23,9 @@ function parseDisplay(item: SummaryItem) {
     .replace(/\s*\[Diagnostic Study\]\s*$/i, "");
   let text = item.summaryText || "";
   let doi: string | null = null;
-  const match = text.match(/^\s*\*\*DOI\*\*:\s*([^,]*),?\s*/);
+  // Mirrors _DOI_PREFIX in backend/app/services/summary_doi.py: the prefix is a COMMA-JOINED date
+  // list, so match every date - stopping at the first comma would hide a second stated injury date.
+  const match = text.match(/^\s*\*\*DOI\*\*:\s*([\d/.\-]{4,}(?:\s*,\s*[\d/.\-]{4,})*)\s*,\s*/);
   if (match) {
     doi = match[1].trim();
     text = text.slice(match[0].length);
