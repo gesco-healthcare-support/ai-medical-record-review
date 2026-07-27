@@ -90,11 +90,12 @@ describe("SummariesView source pages", () => {
     );
     expect(screen.getByTestId("pdf-viewer")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Body."));
+    // Both the title and the meta line are buttons, so either one (mouse or keyboard) jumps.
+    fireEvent.click(screen.getByRole("button", { name: /Progress Note/ }));
     expect(jumpTo).toHaveBeenLastCalledWith(12);
 
     jumpTo.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: /Progress Note/ }));
+    fireEvent.click(screen.getByText(/pages 12/));
     expect(jumpTo).toHaveBeenLastCalledWith(12);
   });
 

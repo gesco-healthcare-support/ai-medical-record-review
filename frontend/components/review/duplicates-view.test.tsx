@@ -77,11 +77,10 @@ describe("DuplicatesView", () => {
     render(<DuplicatesView documentId="d1" filename="record.pdf" />);
     expect(screen.getByTestId("pdf-viewer")).toBeInTheDocument();
 
-    // The title is a real button, so keyboard users reach the same jump.
-    fireEvent.click(screen.getAllByRole("button", { name: "Progress Note" })[1]);
+    // Each copy's date/pages/title is one real button, so mouse and keyboard both reach the jump.
+    fireEvent.click(screen.getByRole("button", { name: /pages 10.*Progress Note/ }));
     expect(jumpTo).toHaveBeenLastCalledWith(10);
 
-    // Clicking anywhere else on the row does it too.
     fireEvent.click(screen.getByText(/pages 4/));
     expect(jumpTo).toHaveBeenLastCalledWith(4);
     expect(resolveMock).not.toHaveBeenCalled();

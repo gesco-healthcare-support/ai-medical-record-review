@@ -163,43 +163,34 @@ function ClusterCard({
       </div>
       <ul className="dupe-copies">
         {cluster.rows.map((row) => (
-          // The row is a plain <li> (not a button) so the actions inside stay valid; clicking
-          // anywhere opens the copy in the viewer, and the title button is the keyboard path.
+          // The copy's date/pages/title are one BUTTON that opens it in the viewer: a click handler
+          // on the <li> itself would be mouse-only (no keyboard path), and making the <li> the
+          // control would nest "Keep this one" inside another interactive element.
           <li
             key={row.idx}
             className={cn(
               "dupe-copy",
-              "clickable",
               row.primary && "primary",
               selectedIdx === row.idx && "selected",
             )}
-            onClick={() => onOpen(row)}
           >
-            <span className="meta">
-              {row.date && row.date !== "-" ? row.date : "no date"} - pages {row.pages.start}
-              {"–"}
-              {row.pages.end}
-              {row.primary ? " - kept" : row.include === false ? " - excluded" : ""}
-            </span>
-            <button
-              type="button"
-              className="row-jump dupe-copy-title"
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpen(row);
-              }}
-            >
-              {row.title && row.title !== "-" ? row.title : "Untitled"}
+            <button type="button" className="row-jump dupe-copy-main" onClick={() => onOpen(row)}>
+              <span className="meta">
+                {row.date && row.date !== "-" ? row.date : "no date"} - pages {row.pages.start}
+                {"–"}
+                {row.pages.end}
+                {row.primary ? " - kept" : row.include === false ? " - excluded" : ""}
+              </span>
+              <span className="dupe-copy-title">
+                {row.title && row.title !== "-" ? row.title : "Untitled"}
+              </span>
             </button>
             {!cluster.dismissed ? (
               <button
                 type="button"
                 className="ev-btn ev-btn-ghost ev-btn-sm"
                 disabled={busy || row.primary}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onKeep(row.idx);
-                }}
+                onClick={() => onKeep(row.idx)}
               >
                 {row.primary ? "Kept" : "Keep this one"}
               </button>

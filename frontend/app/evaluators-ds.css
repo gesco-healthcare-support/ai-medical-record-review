@@ -860,15 +860,19 @@ body[data-bundle-slug] #step-editor { flex: none; }
 }
 .rce-splitcol { flex: 1; min-height: 0; overflow: auto; padding-right: 14px; }
 .rce-split .sum-column { max-width: none; margin: 0; padding: 0 0 12px; }
-.dupe-copy.clickable { cursor: pointer; }
 .dupe-copy.selected, .summary-card.selected {
     border-color: var(--blue-500); box-shadow: var(--shadow-focus);
 }
-/* A row's title doubles as the keyboard-reachable "open this in the viewer" control. */
+/* "Open this in the viewer" is a real button (keyboard-reachable) styled as plain row text. */
 .row-jump {
     background: none; border: 0; padding: 0; font: inherit; color: inherit;
     text-align: left; cursor: pointer;
 }
+/* In a duplicate row the button covers the date/pages + title, leaving Keep this one beside it. */
+.dupe-copy-main {
+    display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: baseline; gap: 6px 12px;
+}
+.summary-card .meta-jump { align-self: flex-start; }
 @media (max-width: 900px) {
     .rce-table { height: 60vh; }
     .rce-viewer { height: 70vh; }

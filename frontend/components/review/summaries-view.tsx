@@ -232,8 +232,9 @@ export function SummariesView({
               }
 
               return (
-                // Clicking the card shows its source pages; the card is a plain div (not a button)
-                // so the actions inside stay valid, and the title button is the keyboard path.
+                // The title and the meta line are BUTTONS that show the summary's source pages: a
+                // click handler on the card itself would be mouse-only (no keyboard path), and
+                // making the card the control would nest Re-draft / Edit inside another control.
                 <div
                   key={item.idx}
                   className={cn(
@@ -242,18 +243,10 @@ export function SummariesView({
                     redraftingIdx === item.idx && "busy",
                     selectedIdx === item.idx && "selected",
                   )}
-                  onClick={() => openSummary(item)}
                 >
                   <div className="summary-head">
                     <h3 className="sum-heading">
-                      <button
-                        type="button"
-                        className="row-jump"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openSummary(item);
-                        }}
-                      >
+                      <button type="button" className="row-jump" onClick={() => openSummary(item)}>
                         <MarkdownText text={title} />
                       </button>
                     </h3>
@@ -281,24 +274,18 @@ export function SummariesView({
                         type="button"
                         className="ev-btn ev-btn-ghost ev-btn-sm"
                         disabled={redraftingIdx === item.idx}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          reDraft(item);
-                        }}
+                        onClick={() => reDraft(item)}
                       >
                         {redraftingIdx === item.idx ? "Re-drafting..." : "Re-draft"}
                       </button>
                       <button
                         type="button"
                         className="ev-btn ev-btn-ghost ev-btn-sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          startEdit(item);
-                        }}
+                        onClick={() => startEdit(item)}
                       >
                         Edit
                       </button>
-                      <label className="exclude-toggle" onClick={(e) => e.stopPropagation()}>
+                      <label className="exclude-toggle">
                         <input
                           type="checkbox"
                           className="ev-cb"
@@ -309,7 +296,9 @@ export function SummariesView({
                       </label>
                     </span>
                   </div>
-                  <div className="meta">{meta}</div>
+                  <button type="button" className="row-jump meta-jump" onClick={() => openSummary(item)}>
+                    <span className="meta">{meta}</span>
+                  </button>
                   <p className="body">
                     <MarkdownText text={text} />
                   </p>
