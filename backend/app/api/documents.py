@@ -48,6 +48,7 @@ from app.services.pdf import get_pdf_page_count
 from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
 from app.services.rows import validate_rows
 from app.services.summarize_engine import summarize_row
+from app.services.summary_doi import doi_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -721,9 +722,12 @@ def _export_title_and_text(summary: Summary) -> tuple[str, str]:
         title = f"{title} [Diagnostic Study]"
     title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
     text = summary.effective_text()
-    doi = re.match(r"\s*(\*\*DOI\*\*:[^,]*,)", summary.text or "")
-    if doi and "**DOI**" not in text:
-        text = f"{doi.group(1)} {text}"
+    # The Summaries UI strips the DOI prefix into its edit box, so a reviewer-saved body carries
+    # none; restore it from the raw model output. doi_prefix owns the grammar, so a document that
+    # states two injury dates keeps both.
+    prefix = doi_prefix(summary.text)
+    if prefix and "**DOI**" not in text:
+        text = f"{prefix} {text}"
     return title, text
 
 

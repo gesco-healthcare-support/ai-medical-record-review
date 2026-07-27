@@ -110,3 +110,24 @@ def test_apply_prefix_strips_multi_doi_prefix():
 
 def test_apply_prefix_leaves_non_prefixed_body_when_dash():
     assert sd.apply_doi_prefix("No prefix here.", "-") == "No prefix here."
+
+
+def test_doi_prefix_returns_the_stored_prefix_with_every_stated_date():
+    assert sd.doi_prefix("**DOI**:05/08/2022, Body.") == "**DOI**:05/08/2022,"
+    # Two stated dates must both survive - the export re-applies exactly this string.
+    assert (
+        sd.doi_prefix("**DOI**:05/08/2022, 06/01/2023, Body.") == "**DOI**:05/08/2022, 06/01/2023,"
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Body with no prefix.",
+        "Body mentioning **DOI**:05/08/2022, in the middle.",
+        "",
+        None,
+    ],
+)
+def test_doi_prefix_is_empty_without_a_leading_prefix(body):
+    assert sd.doi_prefix(body) == ""

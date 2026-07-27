@@ -65,6 +65,44 @@ describe("SummariesView verify flag", () => {
   });
 });
 
+describe("SummariesView date of injury", () => {
+  const withText = (summaryText: string) => [
+    {
+      idx: 0,
+      summaryTitle: "Progress Note (Pages 1-2)",
+      summaryDate: "01/02/2026",
+      summaryText,
+      manualCheck: false,
+      excluded: false,
+      edited: false,
+      verified: false,
+      verifyChanged: false,
+      verifyIssues: [],
+      row: { start: 1, end: 2, category: "1" },
+    },
+  ];
+
+  it("shows every injury date the document stated, and none of the prefix in the body", () => {
+    summariesState.error = null;
+    summariesState.data = withText("**DOI**:05/08/2022, 06/01/2023, Lumbar strain noted.");
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoReview={vi.fn()} />,
+    );
+    expect(screen.getByText(/DOI 05\/08\/2022, 06\/01\/2023/)).toBeInTheDocument();
+    expect(screen.getByText("Lumbar strain noted.")).toBeInTheDocument();
+    expect(screen.queryByText(/\*\*DOI\*\*/)).not.toBeInTheDocument();
+  });
+
+  it("shows no date when the summary states none", () => {
+    summariesState.error = null;
+    summariesState.data = withText("Lumbar strain noted.");
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoReview={vi.fn()} />,
+    );
+    expect(screen.queryByText(/DOI /)).not.toBeInTheDocument();
+  });
+});
+
 describe("SummariesView source pages", () => {
   const summary = (over: Record<string, unknown> = {}) => ({
     idx: 0,

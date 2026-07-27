@@ -34,8 +34,10 @@ _ISOLATION_PROMPT = (
 )
 
 _DATE = re.compile(r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})\b")
-# A leading "**DOI**:<date-list>, " prefix as summarize_row builds it (single or comma-joined).
-_DOI_PREFIX = re.compile(r"^\s*\*\*DOI\*\*:\s*\d[\d/.\-]*(?:\s*,\s*\d[\d/.\-]*)*\s*,\s*")
+# A leading "**DOI**:<date-list>, " prefix as summarize_row builds it (single or comma-joined). The
+# capture group is the prefix WITHOUT its trailing separator comma, so doi_prefix can hand the whole
+# thing back. Mirrored in the frontend's parseDisplay (components/review/summaries-view.tsx).
+_DOI_PREFIX = re.compile(r"^\s*(\*\*DOI\*\*:\s*\d[\d/.\-]*(?:\s*,\s*\d[\d/.\-]*)*)\s*,\s*")
 
 
 def _clean(reply: str) -> str:
@@ -76,6 +78,17 @@ def extract_injury_date(pdf_path, start, end, model=None) -> str:
     except Exception:
         logger.warning("isolated DOI extraction failed for pages %s-%s", start, end, exc_info=True)
         return "-"
+
+
+def doi_prefix(body) -> str:
+    """The leading ``**DOI**:<dates>,`` prefix of a stored summary body, or ``""`` when it has none.
+
+    Returns the prefix INCLUDING its trailing comma, ready to prepend. This is the single place that
+    knows the prefix grammar (a comma-joined date list, per ``_clean``), so callers cannot re-derive
+    it with a pattern that stops at the first comma and silently drops a second stated date.
+    """
+    match = _DOI_PREFIX.match(body or "")
+    return f"{match.group(1)}," if match else ""
 
 
 def apply_doi_prefix(body, injury):

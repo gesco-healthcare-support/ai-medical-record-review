@@ -484,6 +484,42 @@ def test_manualcheck_flag_is_stripped_from_both_exports():
     assert "MRI Report" in word["summaryTitle"] and "MRI Report" in pdf["linkTitle"]
 
 
+def _exported(**over):
+    """One Summary through the shared export path -> its exported body."""
+    from app.api.documents import _export_title_and_text
+
+    fields = dict(
+        document_id="d",
+        job_id=1,
+        idx=0,
+        title="Work Status Report (Pages 1-2)",
+        text="**DOI**:05/08/2022, Body.",
+        row_start=1,
+        row_end=2,
+        row_category="1",
+        date="-",
+    )
+    fields.update(over)
+    return _export_title_and_text(Summary(**fields))[1]
+
+
+def test_export_restores_every_stated_injury_date():
+    """The Summaries UI strips the DOI prefix into its edit box, so an edited body has none and the
+    export re-applies it from the raw text - it must carry EVERY date the document stated, not just
+    the first."""
+    body = _exported(
+        text="**DOI**:05/08/2022, 06/01/2023, Body.", edited_text="Reviewer's rewrite."
+    )
+    assert body == "**DOI**:05/08/2022, 06/01/2023, Reviewer's rewrite."
+
+
+def test_export_does_not_double_up_or_invent_a_doi():
+    # The effective text already carries the prefix -> no second one.
+    assert _exported() == "**DOI**:05/08/2022, Body."
+    # Nothing stated -> nothing added.
+    assert _exported(text="Body with no injury date.") == "Body with no injury date."
+
+
 async def test_bundle_pdf_and_category_errors(authed):
     client, _ = authed
     doc_id = await _upload(client, pages=2)
