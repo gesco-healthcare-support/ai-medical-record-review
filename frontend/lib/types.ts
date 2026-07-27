@@ -128,6 +128,9 @@ export type DuplicateCluster = {
 export type DuplicatesResponse = {
   clusters: DuplicateCluster[];
   job: JobProgress | null;
+  /** Boundaries changed since the last duplicate check, so the clusters may be incomplete. Drives
+   *  the manual "re-check duplicates" hint - the app never re-runs clustering on its own. */
+  stale: boolean;
 };
 
 /** GET /api/documents/{id} - the full editor payload (listing + rows + category options). */

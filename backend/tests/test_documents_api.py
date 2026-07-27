@@ -142,6 +142,179 @@ async def test_rows_put_validation_and_persistence(authed):
     assert len(got.json()["rows"]) == 1  # the valid PUT persisted; the bad one did not replace it
 
 
+def _set_dedup_fields(doc_id, ranges, group=1):
+    """Mark the given (start, end) rows as a confirmed duplicate cluster with stored OCR text."""
+    with get_sessionmaker()() as session:
+        for start, end in ranges:
+            row = session.scalar(
+                select(ReviewRow).where(
+                    ReviewRow.document_id == doc_id,
+                    ReviewRow.start == start,
+                    ReviewRow.end == end,
+                )
+            )
+            row.source_text = f"ocr text {start}-{end}"
+            row.dupe_group = group
+            row.dupe_primary = start == ranges[0][0]
+            row.dupe_dismissed = False
+        session.commit()
+
+
+def _dedup_state(doc_id):
+    """[(start, end, source_text is not None, dupe_group, dupe_primary, dupe_dismissed)] by idx."""
+    with get_sessionmaker()() as session:
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+        ).all()
+        return [
+            (
+                r.start,
+                r.end,
+                r.source_text is not None,
+                r.dupe_group,
+                r.dupe_primary,
+                r.dupe_dismissed,
+            )
+            for r in rows
+        ]
+
+
+async def test_row_save_preserves_dedup_fields_on_unchanged_ranges(authed):
+    # WHEN only category/include/title change, THE SYSTEM SHALL retain the dedup annotations.
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_dedup_fields(doc_id, [(1, 2), (3, 4)])
+
+    edited = [
+        {"start": 1, "end": 2, "category": "3", "include": False, "title": "Renamed"},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY, "include": True},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": edited})
+    ).status_code == 200
+
+    state = _dedup_state(doc_id)
+    assert state[0] == (1, 2, True, 1, True, False)
+    assert state[1] == (3, 4, True, 1, False, False)
+
+
+async def test_summarize_start_sees_rows_written_in_the_same_request(authed):
+    """Regression: _store_rows loads document.review_rows to snapshot the dedup fields, so the
+    collection must be expired after the rewrite - otherwise summarize_start's "at least one row is
+    included" check reads the stale (pre-delete) collection and wrongly 400s."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    resp = await client.post(
+        f"/api/documents/{doc_id}/summarize/start",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
+    )
+    assert resp.status_code != 400, resp.text  # must not be "no rows are marked for summarization"
+
+
+async def test_row_save_drops_dedup_fields_when_boundary_changes(authed):
+    # WHEN a row's (start,end) no longer matches a pre-save row, its dedup fields reset; untouched
+    # rows keep theirs (the merge case: three copies -> one merged row leaves a 2-copy cluster).
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    rows = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY},
+        {"start": 5, "end": 5, "category": _VALID_CATEGORY},
+        {"start": 6, "end": 6, "category": _VALID_CATEGORY},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_dedup_fields(doc_id, [(1, 2), (3, 4), (5, 5)])
+
+    # Merge pages 5-6 into one row: that row is new, so it loses the grouping.
+    merged = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY},
+        {"start": 5, "end": 6, "category": _VALID_CATEGORY},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": merged})
+    ).status_code == 200
+
+    state = _dedup_state(doc_id)
+    assert state[0] == (1, 2, True, 1, True, False)  # untouched copy keeps its group
+    assert state[1] == (3, 4, True, 1, False, False)  # untouched copy keeps its group
+    assert state[2] == (5, 6, False, None, False, False)  # merged row: defaults
+
+
+async def test_duplicates_hides_single_member_groups(authed):
+    # WHEN a group has one member it is not a cluster; >=2 members are returned.
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 3, "category": _VALID_CATEGORY},
+        {"start": 4, "end": 4, "category": _VALID_CATEGORY},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_dedup_fields(doc_id, [(1, 2)], group=7)  # a lone member -> must not surface
+    body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
+    assert body["clusters"] == []
+
+    _set_dedup_fields(doc_id, [(3, 3), (4, 4)], group=8)  # a real pair -> surfaces
+    body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
+    assert [c["group"] for c in body["clusters"]] == [8]
+    assert len(body["clusters"][0]["rows"]) == 2
+
+
+async def test_duplicates_stale_flag_tracks_unchecked_included_rows(authed):
+    # stale = a dedup finished AND an included row has no stored OCR text (boundary change).
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_dedup_fields(doc_id, [(1, 2), (3, 4)])
+
+    # No dedup job yet -> nothing to be stale against.
+    assert (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["stale"] is False
+
+    with get_sessionmaker()() as session:
+        session.add(
+            Job(
+                document_id=doc_id,
+                kind="dedup",
+                state="done",
+                stage="deduping",
+                model="m",
+                prompt_version="1",
+            )
+        )
+        session.commit()
+
+    # Every included row still has stored text -> not stale.
+    assert (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["stale"] is False
+
+    # A boundary change leaves an included row with no stored text -> stale.
+    changed = [
+        {"start": 1, "end": 3, "category": _VALID_CATEGORY},
+        {"start": 4, "end": 4, "category": _VALID_CATEGORY},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": changed})
+    ).status_code == 200
+    assert (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["stale"] is True
+
+
 async def test_summaries_empty_and_export_conflict(authed):
     client, _ = authed
     doc_id = await _upload(client, pages=1)

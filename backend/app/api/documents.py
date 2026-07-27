@@ -81,14 +81,31 @@ def _store_rows(session: Session, document: Document, rows) -> str | None:
     error = validate_rows(session, rows, document.page_count)
     if error:
         return error
+    # The editor payload carries no dedup fields, so a plain delete+recreate would wipe the
+    # duplicate clustering on every autosave. Carry them across by page range: the same (start, end)
+    # is the same pages, hence the same OCR text the grouping was computed from. A row whose range
+    # changed (merge/split/boundary edit) is genuinely different content and correctly starts fresh.
+    preserved = {
+        (row.start, row.end): (
+            row.source_text,
+            row.dupe_group,
+            row.dupe_primary,
+            row.dupe_dismissed,
+        )
+        for row in document.review_rows
+    }
     session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
     for idx, row in enumerate(rows):
+        start, end = int(row["start"]), int(row["end"])
+        source_text, dupe_group, dupe_primary, dupe_dismissed = preserved.get(
+            (start, end), (None, None, False, False)
+        )
         session.add(
             ReviewRow(
                 document_id=document.id,
                 idx=idx,
-                start=int(row["start"]),
-                end=int(row["end"]),
+                start=start,
+                end=end,
                 category=str(row["category"]),
                 title=str(row.get("title") or "-"),
                 date=str(row.get("date") or "-"),
@@ -96,9 +113,17 @@ def _store_rows(session: Session, document: Document, rows) -> str | None:
                 flag=str(row.get("flag") or "-"),
                 suggest_merge=bool(row.get("suggest_merge")),
                 include=bool(row.get("include", True)),
+                source_text=source_text,
+                dupe_group=dupe_group,
+                dupe_primary=dupe_primary,
+                dupe_dismissed=dupe_dismissed,
             )
         )
     session.commit()
+    # Snapshotting above LOADED document.review_rows, so the collection is cached and now stale
+    # (its rows were deleted and replaced). Expire it so callers that read it next - e.g.
+    # summarize_start's "at least one row is included" check - see the rows just written.
+    session.expire(document, ["review_rows"])
     return None
 
 
@@ -334,12 +359,18 @@ def get_pdf(
 
 
 def _dupe_groups(document: Document) -> dict[int, list[ReviewRow]]:
-    """Confirmed duplicate clusters keyed by group id (rows with a non-null dupe_group)."""
+    """Confirmed duplicate clusters keyed by group id (rows with a non-null dupe_group).
+
+    Groups with a single surviving member are dropped: a "duplicate" of one is meaningless, and a
+    boundary edit can orphan a member (its row starts fresh - see _store_rows). Filtering here, the
+    one read path both the Duplicates tab and the unreviewed count use, keeps the guard in one place
+    without mutating rows; a dedup re-run reclusters from scratch anyway.
+    """
     groups: dict[int, list[ReviewRow]] = {}
     for row in document.review_rows:
         if row.dupe_group is not None:
             groups.setdefault(row.dupe_group, []).append(row)
-    return groups
+    return {group: rows for group, rows in groups.items() if len(rows) >= 2}
 
 
 def _unreviewed_dupe_count(groups: dict[int, list[ReviewRow]]) -> int:
@@ -410,7 +441,20 @@ def get_duplicates(
         .where(Job.document_id == document.id, Job.kind == "dedup")
         .order_by(Job.id.desc())
     ).first()
-    return {"clusters": clusters, "job": dedup_job.progress() if dedup_job else None}
+    # "stale" = the clusters no longer cover every included row, so the tab can offer a MANUAL
+    # re-check (never an automatic AI run). A completed dedup stores source_text on every included
+    # row and a metadata edit keeps it (_store_rows), so a missing one means a boundary changed or a
+    # row was newly included since that run. While a dedup is in flight there is nothing to nudge.
+    stale = bool(
+        dedup_job
+        and dedup_job.state == "done"
+        and any(row.source_text is None for row in document.review_rows if row.include)
+    )
+    return {
+        "clusters": clusters,
+        "job": dedup_job.progress() if dedup_job else None,
+        "stale": stale,
+    }
 
 
 @router.post("/{document_id}/dedup/start")
