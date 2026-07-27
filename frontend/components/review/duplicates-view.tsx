@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
-import { useDuplicates, useResolveDuplicate } from "@/hooks/use-duplicates";
+import { useDuplicates, useResolveDuplicate, useStartDedup } from "@/hooks/use-duplicates";
 import type { DuplicateCluster } from "@/lib/types";
 
 /** Duplicates review (before summarization): each confirmed cluster lists its copies oldest-first;
@@ -20,11 +20,24 @@ export function DuplicatesView({
 }) {
   const { data, isLoading, error } = useDuplicates(documentId);
   const resolve = useResolveDuplicate(documentId);
+  const recheck = useStartDedup(documentId);
   const [msg, setMsg] = useState("");
 
   const job = data?.job;
   const running = job?.state === "queued" || job?.state === "running";
   const clusters = data?.clusters ?? [];
+  // Boundaries changed since the last check: offer a MANUAL re-check (never automatic - a re-run
+  // costs AI calls). Hidden while a check is already in flight.
+  const stale = Boolean(data?.stale) && !running;
+
+  async function onRecheck() {
+    setMsg("");
+    try {
+      await recheck.mutateAsync();
+    } catch (err) {
+      setMsg(humanizeError(err, { fallback: "Could not start the check - please try again." }));
+    }
+  }
 
   async function act(group: number, action: "keep_one" | "dismiss", primaryIdx?: number) {
     setMsg("");
@@ -55,6 +68,23 @@ export function DuplicatesView({
           </div>
         </div>
       </div>
+
+      {stale ? (
+        <div className="banner" aria-live="polite">
+          <span>
+            Document boundaries changed since the last duplicate check, so this list may be
+            incomplete.
+          </span>{" "}
+          <button
+            type="button"
+            className="ev-btn ev-btn-ghost ev-btn-sm"
+            disabled={recheck.isPending}
+            onClick={onRecheck}
+          >
+            {recheck.isPending ? "Starting..." : "Re-check duplicates"}
+          </button>
+        </div>
+      ) : null}
 
       {isLoading ? null : clusters.length === 0 ? (
         <div className="summary-empty">
