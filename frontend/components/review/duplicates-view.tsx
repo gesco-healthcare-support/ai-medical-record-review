@@ -124,7 +124,11 @@ function ClusterCard({
   onKeep: (idx: number) => void;
   onDismiss: () => void;
 }) {
-  const resolved = cluster.rows.some((r) => r.primary);
+  // Resolved = at most one copy would still be summarized (the reviewer kept one, or excluded the
+  // rest by hand). Inclusion - not the "kept" mark - is the test, so a cluster stays resolved after a
+  // re-check recomputes its group, and is flagged again if it gains another included copy.
+  const includedCount = cluster.rows.filter((r) => r.include !== false).length;
+  const resolved = includedCount < 2;
   return (
     <div className={cn("summary-card", cluster.dismissed && "excluded")}>
       <div className="summary-head">
