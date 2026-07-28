@@ -96,6 +96,11 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   else if (dedupRunning) summarizeHint = "Wait for the duplicate check to finish.";
   else summarizeHint = "Your latest changes aren't saved yet.";
 
+  // Summarize lives on the Duplicates step, so the reasons it is blocked have to be readable THERE
+  // too - otherwise the reviewer faces a disabled button whose only explanation is a hover tooltip.
+  // Summaries has no Summarize button, so the same banners would be noise on that tab.
+  const showSummarizeBlockers = tab === "review" || tab === "duplicates";
+
   const onRecheck = async () => {
     wf.setBanner("");
     try {
@@ -162,7 +167,16 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                   duplicates, then summarize - so the reviewer passes the duplicates gate. */}
               {tab === "review" ? (
                 <>
-                  <button type="button" className="ev-btn ev-btn-outline" onClick={wf.onStart}>
+                  {/* Re-segmenting discards every row correction AND /segment/start returns 409
+                      while a dedup job holds the document lock - so it must not look clickable
+                      mid-check. */}
+                  <button
+                    type="button"
+                    className="ev-btn ev-btn-outline"
+                    disabled={dedupRunning}
+                    title={dedupRunning ? "Wait for the duplicate check to finish." : undefined}
+                    onClick={wf.onStart}
+                  >
                     {wf.rows.length ? "Re-run segment" : "Segment"}
                   </button>
                   <button
@@ -247,12 +261,12 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
           ) : null}
         </div>
       ) : null}
-      {tab === "review" && save.kind === "error" && errors.size === 0 ? (
+      {showSummarizeBlockers && save.kind === "error" && errors.size === 0 ? (
         <div className="banner" role="alert">
           {save.message}
         </div>
       ) : null}
-      {tab === "review" && errors.size > 0 ? (
+      {showSummarizeBlockers && errors.size > 0 ? (
         <div className="banner" aria-live="polite">
           <strong>Fix these before summarizing:</strong>
           <ul>
@@ -304,7 +318,7 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
             categories={wf.categories}
             header={wf.header}
             onHeaderSaved={wf.setHeader}
-            onGotoReview={() => setTab("review")}
+            onGotoSummarizeStep={() => setTab("duplicates")}
           />
         )}
       </div>

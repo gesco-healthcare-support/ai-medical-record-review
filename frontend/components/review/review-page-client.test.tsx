@@ -226,3 +226,52 @@ describe("ReviewPageClient needs-attention notice", () => {
     expect(screen.getByText(/No readable text was found in this document\./i)).toBeInTheDocument();
   });
 });
+
+describe("ReviewPageClient blocking reasons follow the Summarize button", () => {
+  const gotoSummaries = () => fireEvent.click(screen.getByRole("tab", { name: /Summaries/ }));
+
+  it("lists the invalid page ranges on the step that holds Summarize", () => {
+    mockWf({ rows: [row({ start: 1, end: 5 }), row({ start: 3, end: 7 })] }); // row 2 overlaps
+    render(<ReviewPageClient documentId="d1" />);
+    gotoDuplicates();
+    expect(screen.getByText(/Fix these before summarizing/i)).toBeInTheDocument();
+    expect(screen.getByText(/Document 2: overlaps the previous document/i)).toBeInTheDocument();
+    expect(summarize()).toBeDisabled();
+  });
+
+  it("repeats an autosave failure on the step that holds Summarize", () => {
+    mockWf({ saveState: { kind: "error", message: "Not saved: couldn't reach the server." } });
+    render(<ReviewPageClient documentId="d1" />);
+    gotoDuplicates();
+    expect(screen.getByRole("alert")).toHaveTextContent("Not saved: couldn't reach the server.");
+  });
+
+  it("keeps both banners off Summaries, which has no Summarize button", () => {
+    mockWf({
+      rows: [row({ start: 1, end: 5 }), row({ start: 3, end: 7 })],
+      saveState: { kind: "error", message: "Not saved: couldn't reach the server." },
+    });
+    render(<ReviewPageClient documentId="d1" />);
+    gotoSummaries();
+    expect(screen.queryByText(/Fix these before summarizing/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("ReviewPageClient re-segment gating", () => {
+  it("disables the segment button while a duplicate check runs", () => {
+    dupState.data = { clusters: [], job: { state: "running", current: 1, total: 4 }, stale: false };
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    const segment = button(/Re-run segment/);
+    expect(segment).toBeDisabled();
+    expect(segment).toHaveAttribute("title", expect.stringMatching(/duplicate check/i));
+  });
+
+  it("leaves the segment button available when no check is running", () => {
+    dupState.data = { clusters: [], job: null, stale: false };
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    expect(button(/Re-run segment/)).toBeEnabled();
+  });
+});

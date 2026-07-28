@@ -47,14 +47,15 @@ export function SummariesView({
   categories,
   header,
   onHeaderSaved,
-  onGotoReview,
+  onGotoSummarizeStep,
 }: {
   documentId: string;
   filename?: string;
   categories: CategoryOption[];
   header?: HeaderFields | null;
   onHeaderSaved?: (fields: HeaderFields) => void;
-  onGotoReview: () => void;
+  /** Opens the step that owns the Summarize button, for the empty state to send the reviewer there. */
+  onGotoSummarizeStep: () => void;
 }) {
   const { data: summaries = [], isLoading, error } = useSummaries(documentId);
   const save = useSaveSummary(documentId);
@@ -173,9 +174,9 @@ export function SummariesView({
           <div className="summary-empty">
             <FileText width={34} height={34} aria-hidden />
             <p className="empty-title">No summaries yet</p>
-            <p>Summaries appear here after you run summarization from Review &amp; correct.</p>
-            <button type="button" className="ev-btn ev-btn-primary" onClick={onGotoReview}>
-              Go to Review &amp; correct
+            <p>Summaries appear here once you run summarization from the Duplicates step.</p>
+            <button type="button" className="ev-btn ev-btn-primary" onClick={onGotoSummarizeStep}>
+              Go to Duplicates
             </button>
           </div>
         ) : (

@@ -180,3 +180,36 @@ describe("DuplicatesView", () => {
     expect(screen.queryByText(/boundaries changed since the last duplicate check/i)).not.toBeInTheDocument();
   });
 });
+
+describe("DuplicatesView similarity", () => {
+  // Same two copies each time; only the stored score differs.
+  const payload = (similarity: number | null) => ({
+    job: null,
+    stale: false,
+    clusters: [
+      {
+        group: 1,
+        dismissed: false,
+        similarity,
+        rows: [
+          { idx: 0, title: "Progress Note", date: "01/02/2026", pages: { start: 1, end: 2 }, include: true, primary: false },
+          { idx: 3, title: "Progress Note", date: "02/02/2026", pages: { start: 10, end: 11 }, include: true, primary: false },
+        ],
+      },
+    ],
+  });
+
+  it("shows how alike the copies are as a percentage", () => {
+    dupState.error = null;
+    dupState.data = payload(0.974);
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.getByText(/97% of the text matches/i)).toBeInTheDocument();
+  });
+
+  it("says nothing for a cluster stored before the score was kept", () => {
+    dupState.error = null;
+    dupState.data = payload(null);
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.queryByText(/of the text matches/i)).not.toBeInTheDocument();
+  });
+});
