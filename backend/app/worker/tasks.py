@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select, update
 
 from app.config import get_settings
 from app.db import get_sessionmaker
@@ -296,17 +296,20 @@ def _chain_dedup(job_id) -> None:
 
 
 def dedup_document(job_id) -> None:
-    """RQ entry: OCR each non-dismissed ReviewRow once (persist source_text), cluster likely-duplicate
+    """RQ entry: OCR every ReviewRow once (persist source_text), cluster likely-duplicate
     sub-documents by content, confirm each candidate with one cheap model call, and store a shared
-    `dupe_group` per confirmed set. Advisory/precompute: it never edits summaries - it only
-    annotates rows for the Duplicates review.
+    `dupe_group` + similarity per confirmed set. Advisory/precompute: it never edits summaries - it
+    only annotates rows for the Duplicates review.
 
-    Scope is every row the reviewer has NOT dismissed - not just the ones marked for summarization.
-    Excluded rows must be checked too: General/Depositions are unchecked by default and that is
-    exactly where re-scanned cover letters and exhibit lists live, and a keep-one resolution excludes
-    the copies it just found. Dismissed rows ("not duplicates") stay untouched, so their groups
-    survive; new groups are therefore numbered above the highest surviving one to avoid colliding
-    with a dismissed cluster's id.
+    Scope is EVERY row, not just the ones marked for summarization: General/Depositions are unchecked
+    by default and that is exactly where re-scanned cover letters and exhibit lists live, and a
+    keep-one resolution excludes the copies it just found.
+
+    Dismissed clusters ("not duplicates") are re-examined, but the dismissal is re-applied when the
+    new cluster holds exactly the same copies - so a settled answer stays quiet while a cluster that
+    gains or loses a copy is a fresh question. The grouping is rewritten in ONE transaction at the
+    end, so a run that dies during OCR leaves the previous clusters intact rather than emptying the
+    tab.
     """
     import gc
 
@@ -317,20 +320,27 @@ def dedup_document(job_id) -> None:
         document = session.get(Document, job.document_id)
         rows = session.scalars(
             select(ReviewRow)
-            .where(
-                ReviewRow.document_id == job.document_id,
-                ReviewRow.dupe_dismissed.is_(False),
-            )
+            .where(ReviewRow.document_id == job.document_id)
             .order_by(ReviewRow.idx)
         ).all()
         total = len(rows)
-        # OCR each row's pages once (persist), clearing any stale grouping so a re-run reclusters
-        # from scratch. `dupe_primary` is deliberately NOT cleared: it is the reviewer's "this is the
-        # copy I kept", and _store_rows already resets it when a row's page range changes.
-        # Per-page OCR + gc keeps memory flat on a large record.
+
+        # Which clusters the reviewer dismissed, keyed by their exact set of page ranges. Captured
+        # BEFORE anything is rewritten so the answer can be re-applied to an identical cluster below.
+        dismissed_sets = set()
+        previous_groups: dict[int, list[ReviewRow]] = {}
+        for row in rows:
+            if row.dupe_group is not None:
+                previous_groups.setdefault(row.dupe_group, []).append(row)
+        for members in previous_groups.values():
+            if any(member.dupe_dismissed for member in members):
+                dismissed_sets.add(frozenset((member.start, member.end) for member in members))
+
+        # OCR each row's pages once (persist). The existing grouping is deliberately left in place:
+        # a run that dies here must not empty the Duplicates tab, so clearing happens in one
+        # transaction after clustering. Per-page OCR + gc keeps memory flat on a large record.
         for i, row in enumerate(rows):
             report("deduping", i, total)
-            row.dupe_group = None
             if not (row.source_text or "").strip():
                 try:
                     row.source_text = extract_text_from_selected_pages(
@@ -352,23 +362,31 @@ def dedup_document(job_id) -> None:
             for row in rows
         ]
         by_id = {row.id: row for row in rows}
-        # Only dismissed rows still hold a group at this point (the loop above cleared the rest), so
-        # numbering above the maximum keeps a re-run's clusters distinct from a dismissed one.
-        group_no = (
-            session.scalar(
-                select(func.max(ReviewRow.dupe_group)).where(
-                    ReviewRow.document_id == job.document_id
-                )
-            )
-            or 0
-        )
+        confirmed_clusters = []
         for cluster in cluster_rows(items):
             confirmed = confirm_cluster(cluster["members"])
-            if len(confirmed) < 2:
-                continue
-            group_no += 1
-            for member in confirmed:
-                by_id[member["id"]].dupe_group = group_no
+            if len(confirmed) >= 2:
+                confirmed_clusters.append((confirmed, cluster["similarity"]))
+
+        # Everything below is one transaction: the old grouping is dropped and the new one written
+        # together, so the tab never shows a half-rewritten state (and a crash above changed nothing).
+        # `dupe_primary` is NOT cleared - it is the reviewer's "this is the copy I kept", and
+        # _store_rows already resets it when a row's page range changes.
+        session.execute(
+            update(ReviewRow)
+            .where(ReviewRow.document_id == job.document_id)
+            .values(dupe_group=None, dupe_dismissed=False, dupe_similarity=None)
+            .execution_options(synchronize_session="fetch")
+        )
+        for group_no, (confirmed, similarity) in enumerate(confirmed_clusters, start=1):
+            members = [by_id[member["id"]] for member in confirmed]
+            # Same copies as a cluster the reviewer dismissed -> keep it dismissed; a cluster that
+            # gained or lost a copy is a new question and surfaces for review.
+            dismissed = frozenset((row.start, row.end) for row in members) in dismissed_sets
+            for row in members:
+                row.dupe_group = group_no
+                row.dupe_similarity = similarity
+                row.dupe_dismissed = dismissed
         session.commit()
 
     _run(job_id, work)

@@ -121,6 +121,10 @@ export type DuplicateRow = {
 export type DuplicateCluster = {
   group: number;
   dismissed: boolean;
+  /** How alike the members' text is, 0-1: ~1.0 means re-scans of one document, a low value means a
+   *  recurring form series that merely shares a template. Null for clusters stored before the score
+   *  was kept. */
+  similarity: number | null;
   rows: DuplicateRow[];
 };
 

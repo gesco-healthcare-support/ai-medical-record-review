@@ -18,6 +18,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -287,6 +288,11 @@ class ReviewRow(Base):
     dupe_group = Column(Integer, index=True)
     dupe_primary = Column(Boolean, nullable=False, default=False)
     dupe_dismissed = Column(Boolean, nullable=False, default=False)
+    # The cluster's lowest pairwise character similarity (0-1), stored on every member: ~1.0 means
+    # re-scans of ONE document, a low value means a recurring form series that merely shares a
+    # template (measured on real records: 1.000 vs 0.219). Null for a singleton row, or for a row
+    # grouped before this column existed.
+    dupe_similarity = Column(Float)
 
     def as_row(self):
         row = {field: getattr(self, field) for field in ROW_FIELDS}
