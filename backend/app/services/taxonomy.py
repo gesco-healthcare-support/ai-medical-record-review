@@ -218,8 +218,20 @@ CATEGORIES: dict[str, "Category"] = {
     "100": Category(
         "100",
         "General or uncategorized documents",
-        "Documents that do not clearly fit any specific category.",
-        ("General Documents", "Everything else"),
+        # The embedding and LLM stages read this text, so it names what actually lands here: the
+        # administrative paperwork around a record. A bare "everything else" gave the classifier
+        # nothing to match on, which is why correspondence kept landing in clinical categories.
+        "Administrative, correspondence and other documents that do not fit a specific clinical "
+        "category: in-house routing slips, cover letters, emails and faxes, legal declarations, "
+        "proofs of service, records requests and record indexes.",
+        (
+            "Medical Records Routing Sheet",
+            "Email - Evaluation Cover Letter",
+            "Declaration of Compliance",
+            "Proof of Service",
+            "Schedule of Records",
+            "Medical Evaluation Request",
+        ),
     ),
 }
 

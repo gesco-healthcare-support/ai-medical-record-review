@@ -35,6 +35,29 @@ _EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
     (re.compile(pattern), category)
     for pattern, category in (
+        # Administrative paperwork that leads a record - routing slips, cover letters, emails,
+        # declarations, proofs of service, records requests. These come FIRST because such a title
+        # usually names the document it accompanies ("Email - AME Evaluation Cover Letter"), and the
+        # QME/AME rule below would otherwise claim it. They are deliberately narrow: General (100) is
+        # unchecked for summarization by default, so a false positive silently drops a real report
+        # out of the summary. Anything ambiguous is left to the embedding + LLM stages.
+        (r"routing (sheet|slip|form)|records? routing", "100"),
+        (r"\b(cover|transmittal) letter\b|\bcorrespondence\b|^\s*e-?mail\s*$", "100"),
+        (
+            r"^declaration\b|proof of service|certificate of (service|mailing)"
+            r"|declaration under penalty",
+            "100",
+        ),
+        (
+            r"schedule of records|index of records|records? (request|index)"
+            r"|request for (medical )?records",
+            "100",
+        ),
+        (
+            r"\b(request|notice|scheduling) (for |of |to )?[\w\s-]{0,24}\b(evaluation|examination)\b"
+            r"|\b(evaluation|examination) (request|notice|appointment)\b",
+            "100",
+        ),
         (r"supplement\w*.{0,40}\b(qme|ame|pqme)\b|\b(qme|ame|pqme)\b.{0,40}supplement", "12"),
         (r"\b(qme|ame|pqme)\b|qualified medical evaluator|agreed medical evaluator", "13"),
         (r"physical therapy|chiropractic|chiropractor|acupuncture|\bpt\b initial|pt progress", "5"),
@@ -214,7 +237,11 @@ def llm_classify(text, model=None):
     allowed = _allowed_ids()
     prompt = (
         "Classify the medical-record document below into exactly one category id from this "
-        "list. Choose 100 only if none of the specific categories fit.\n\n"
+        "list. Choose 100 only if none of the specific categories fit.\n"
+        "Administrative and correspondence documents - routing slips, cover letters, emails and "
+        "faxes, legal declarations, proofs of service, records requests and record indexes - are "
+        "100 even when they mention a QME/AME or another document type, because they accompany "
+        "that document rather than being it.\n\n"
         f"{_catalog_text()}\n\nDocument:\n{text}\n\nReturn only the category id."
     )
     config = types.GenerateContentConfig(
