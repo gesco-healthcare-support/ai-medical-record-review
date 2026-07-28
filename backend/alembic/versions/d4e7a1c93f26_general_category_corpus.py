@@ -38,19 +38,31 @@ _NEW_EXAMPLES = (
 )
 
 
-def _swap(description: str, examples: str, expected: str) -> None:
-    """Set 100's corpus, but only while it still matches `expected` (never clobber an admin edit)."""
+def _swap(
+    description: str, examples: str, expected_description: str, expected_examples: str
+) -> None:
+    """Set 100's corpus, but only while BOTH fields still hold the text this migration expects.
+
+    Guarding on the description alone would silently revert examples an admin had edited, since the
+    statement rewrites both columns.
+    """
     op.execute(
         f"UPDATE categories SET description = '{description}', examples = '{examples}'::json "  # noqa: S608
-        f"WHERE id = '100' AND description = '{expected}'"
+        f"WHERE id = '100' AND description = '{expected_description}' "
+        f"AND examples::text = '{expected_examples}'::json::text"
     )
-    # The classifier caches the catalog + embedding matrix per revision; bump so it reloads.
-    op.execute("UPDATE catalog_meta SET revision = revision + 1 WHERE id = 1")
+    # The classifier caches the catalog + embedding matrix per revision, so bump it to force a
+    # reload. Upsert, not UPDATE: an unseeded catalog has no meta row and the bump would be a no-op
+    # (this mirrors catalog.bump_revision, which creates the row).
+    op.execute(
+        "INSERT INTO catalog_meta (id, revision) VALUES (1, 1) "
+        "ON CONFLICT (id) DO UPDATE SET revision = catalog_meta.revision + 1"
+    )
 
 
 def upgrade() -> None:
-    _swap(_NEW_DESCRIPTION, _NEW_EXAMPLES, _OLD_DESCRIPTION)
+    _swap(_NEW_DESCRIPTION, _NEW_EXAMPLES, _OLD_DESCRIPTION, _OLD_EXAMPLES)
 
 
 def downgrade() -> None:
-    _swap(_OLD_DESCRIPTION, _OLD_EXAMPLES, _NEW_DESCRIPTION)
+    _swap(_OLD_DESCRIPTION, _OLD_EXAMPLES, _NEW_DESCRIPTION, _NEW_EXAMPLES)

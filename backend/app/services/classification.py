@@ -30,34 +30,37 @@ logger = logging.getLogger(__name__)
 
 _EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 
+# Administrative paperwork that wraps a record: routing slips, cover letters, emails, declarations,
+# proofs of service, records requests, appointment/evaluation notices. These are checked SEPARATELY
+# from the document-type rules below (see match_rules), because such a title routinely names the
+# document it accompanies - "Cover Letter - PR-2 Progress Report" is a progress report with a cover
+# page, while "Email - AME Evaluation Cover Letter" is only correspondence. General (100) is
+# unchecked for summarization by default, so claiming the first of those would silently drop a real
+# report from the summary.
+_ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"routing (sheet|slip|form)|records? routing",
+        r"\b(cover|transmittal) letter\b|\bcorrespondence\b|^\s*e-?mail\s*$",
+        r"^declaration\b|proof of service|certificate of (service|mailing)"
+        r"|declaration under penalty",
+        r"schedule of records|index of records|records? (request|index)"
+        r"|request for (medical )?records",
+        r"\b(request|notice|scheduling) (for |of |to )?[\w\s-]{0,24}\b(evaluation|examination)\b"
+        r"|\b(evaluation|examination) (request|notice|appointment)\b",
+    )
+)
+
+# The one rule that fires on a MENTION of the evaluator rather than on a document type. A cover
+# letter or an appointment notice about an AME says "AME" too, so this category alone does not
+# outrank an administrative match - any other rule does.
+_EVALUATOR_MENTION = "13"
+
 # Ordered high-precision rules; first match wins. Specific categories precede the categories they
 # could be confused with (e.g. supplemental QME/AME -> 12 before QME/AME -> 13).
 _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
     (re.compile(pattern), category)
     for pattern, category in (
-        # Administrative paperwork that leads a record - routing slips, cover letters, emails,
-        # declarations, proofs of service, records requests. These come FIRST because such a title
-        # usually names the document it accompanies ("Email - AME Evaluation Cover Letter"), and the
-        # QME/AME rule below would otherwise claim it. They are deliberately narrow: General (100) is
-        # unchecked for summarization by default, so a false positive silently drops a real report
-        # out of the summary. Anything ambiguous is left to the embedding + LLM stages.
-        (r"routing (sheet|slip|form)|records? routing", "100"),
-        (r"\b(cover|transmittal) letter\b|\bcorrespondence\b|^\s*e-?mail\s*$", "100"),
-        (
-            r"^declaration\b|proof of service|certificate of (service|mailing)"
-            r"|declaration under penalty",
-            "100",
-        ),
-        (
-            r"schedule of records|index of records|records? (request|index)"
-            r"|request for (medical )?records",
-            "100",
-        ),
-        (
-            r"\b(request|notice|scheduling) (for |of |to )?[\w\s-]{0,24}\b(evaluation|examination)\b"
-            r"|\b(evaluation|examination) (request|notice|appointment)\b",
-            "100",
-        ),
         (r"supplement\w*.{0,40}\b(qme|ame|pqme)\b|\b(qme|ame|pqme)\b.{0,40}supplement", "12"),
         (r"\b(qme|ame|pqme)\b|qualified medical evaluator|agreed medical evaluator", "13"),
         (r"physical therapy|chiropractic|chiropractor|acupuncture|\bpt\b initial|pt progress", "5"),
@@ -100,12 +103,20 @@ class Classification:
 
 
 def match_rules(title):
-    """Return a category id if a high-precision rule matches the title, else None."""
+    """Return a category id if a high-precision rule matches the title, else None.
+
+    Document type beats administrative wrapper. A title often names both - "Transmittal Letter - MRI
+    Lumbar Spine" is an MRI report that arrived under a transmittal letter - and the substantive
+    document is what a reviewer needs summarized, so a document-type rule wins over an
+    administrative one. The single exception is category 13, which fires on a mere mention of the
+    evaluator ("Email - AME Evaluation Cover Letter"); that alone does not make a document an
+    evaluation, so the administrative match stands.
+    """
     text = (title or "").lower()
-    for pattern, category in _RULES:
-        if pattern.search(text):
-            return category
-    return None
+    matches = [category for pattern, category in _RULES if pattern.search(text)]
+    if not any(pattern.search(text) for pattern in _ADMIN_RULES):
+        return matches[0] if matches else None
+    return next((c for c in matches if c != _EVALUATOR_MENTION), DEFAULT_ID)
 
 
 # --- catalog cache (DB-backed, invalidated on edit) -----------------------------------------

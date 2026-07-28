@@ -84,6 +84,26 @@ def test_clinical_titles_keep_their_category(title, expected):
     assert classification.match_rules(title) == expected
 
 
+# A title routinely names BOTH the wrapper and the document inside it. The substantive document is
+# what the reviewer needs summarized, so it must win - otherwise the record silently loses a report.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Transmittal Letter - MRI Lumbar Spine", "3"),
+        ("Cover Letter - PR-2 Progress Report", "1"),
+        ("Correspondence - Operative Report", "8"),
+        ("Cover Letter and Operative Report - Dr Sample", "8"),
+        ("Request for Authorization for QME evaluation", "10"),
+        ("Physical Therapy Evaluation Appointment", "5"),
+        ("Chiropractic Evaluation Request", "5"),
+        ("Email - Deposition Transcript", "9"),
+        ("Supplemental QME Report - Cover Letter", "12"),
+    ],
+)
+def test_document_type_beats_administrative_wrapper(title, expected):
+    assert classification.match_rules(title) == expected
+
+
 def test_general_corpus_names_the_administrative_documents():
     """The embedding + LLM stages read this text, so it must describe what actually lands here."""
     from app.services.taxonomy import CATEGORIES
