@@ -777,6 +777,11 @@ body[data-bundle-slug] #step-editor { flex: none; }
 }
 .ev-split-handle:hover, .ev-split.dragging .ev-split-handle { background: var(--navy-300); }
 .ev-split.dragging { user-select: none; }
+/* The right pane holds the pdf.js <iframe>, which is a separate document: once the pointer crosses
+   it mid-drag the parent window stops seeing pointermove/pointerup, so the drag dies and the handle
+   sticks. Making the frame transparent to hit-testing FOR THE DURATION OF THE DRAG returns the
+   pointer stream to this document. */
+.ev-split.dragging iframe { pointer-events: none; }
 @media (max-width: 900px) {
     .ev-split { flex-direction: column; }
     .ev-split-left, .ev-split-right { flex: none; width: 100%; }
