@@ -6,7 +6,11 @@ prompt is omitted it falls back to the hardcoded prompts.py dict (category_11 ha
 general prompt, avoiding the historical KeyError).
 """
 
+import io
+import logging
+
 from google.genai import types
+from pdf2image import convert_from_path
 
 from app.config import get_settings
 from app.errors import EmptyExtractionError
@@ -16,6 +20,8 @@ from app.services.ocr import extract_text_from_selected_pages
 from app.services.prompts import prompts
 from app.services.summary_doi import extract_injury_date
 from app.services.summary_verify import verify_summary
+
+logger = logging.getLogger(__name__)
 
 TITLE_PROMPT = (
     "You are an intelligent assistant tasked with extracting the **title** of the document "
@@ -46,6 +52,21 @@ HARDENING_PREAMBLE = (
     "your other statements.\n"
     "- If the text is illegible, ambiguous, or internally contradictory, omit that point rather "
     "than resolving it by guessing.\n\n"
+    "FORMATTING (STRICT - overrides any layout instruction in the category rules below):\n"
+    "- Write the ENTIRE summary as ONE continuous paragraph. Do NOT use line breaks, blank lines, "
+    "bullet points, or numbered lists to separate points; when the rules below organize the content "
+    "into named points or sections, run those points together inline in one single paragraph.\n"
+    "- Bold ONLY the short point/section labels, e.g. **Subjective Complaints**, **Diagnoses**, "
+    "**Work Status**. Do NOT bold the text that follows a label, and NEVER bold a whole sentence, a "
+    "whole point, or the entire summary - bolding everything makes the emphasis meaningless.\n\n"
+)
+
+
+_MULTIMODAL_INSTRUCTION = (
+    "The images above are the scanned page(s) of this sub-document; the OCR text of the same pages "
+    "follows. Use BOTH - treat the images as authoritative wherever the OCR is garbled, missing, or "
+    "from a table, checkbox, or handwriting - and summarize per the system instructions.\n\n"
+    "OCR TEXT:\n"
 )
 
 
@@ -61,22 +82,46 @@ def _hit_token_cap(response) -> bool:
     return False
 
 
-def _generate(model, system_msg, user_text, temperature, max_output_tokens=None):
-    """One Gemini call -> ``(text, truncated)``. ``truncated`` is True when the reply hit the token
+def _generate(model, system_msg, contents, temperature, max_output_tokens=None):
+    """One Gemini call -> ``(text, truncated)``. ``contents`` is the OCR text, or (multimodal) a list
+    of page-image Parts followed by the OCR text. ``truncated`` is True when the reply hit the token
     budget, which callers surface instead of storing a half summary as finished."""
+    settings = get_settings()
     if max_output_tokens is None:
-        max_output_tokens = get_settings().summary_max_output_tokens
+        max_output_tokens = settings.summary_max_output_tokens
     response = generate_with_retry(
         get_genai_client(),
         model=model,
-        contents=user_text,
+        contents=contents,
         config=types.GenerateContentConfig(
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             system_instruction=system_msg,
+            # summary_model is 2.5-pro, a thinking model that rejects the seam's default budget 0;
+            # set dynamic thinking here so the seam leaves it (budget 0 only suits the flash tiers).
+            thinking_config=types.ThinkingConfig(thinking_budget=settings.summary_thinking_budget),
         ),
     )
     return (response.text or "").strip(), _hit_token_cap(response)
+
+
+def _page_image_parts(pdf_path, start, end):
+    """Rasterize a sub-document's pages to lean JPEG image Parts for multimodal summarization.
+
+    Capped at settings.summary_image_max_pages so a long sub-document cannot blow the payload; the
+    full OCR text still covers every page. Rasterized one page at a time to cap peak memory.
+    """
+    settings = get_settings()
+    last = min(int(end), int(start) + settings.summary_image_max_pages - 1)
+    parts = []
+    for page in range(int(start), last + 1):
+        for image in convert_from_path(
+            pdf_path, first_page=page, last_page=page, dpi=settings.summary_image_dpi
+        ):
+            buffer = io.BytesIO()
+            image.convert("RGB").save(buffer, format="JPEG", quality=70)
+            parts.append(types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/jpeg"))
+    return parts
 
 
 def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_doi=None):
@@ -109,12 +154,27 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
         # "Model input cannot be empty" 400. Blank/image-only pages hit this.
         raise EmptyExtractionError(f"no OCR text for pages {row['start']}-{row['end']}")
 
-    # Summary body runs at settings.summary_temperature (default 0.0 for determinism); the title
-    # is pure extraction, always 0.
+    # Summary body runs at settings.summary_temperature (default 0.0 for determinism); the title is
+    # pure extraction, always 0. When multimodal is on, the body also gets the page images (OCR text
+    # alone garbles tables/handwriting); a rasterize failure degrades to OCR-only rather than failing
+    # the row. The title stays OCR-text-only (cheaper and adequate).
+    body_contents = text
+    if settings.summary_multimodal:
+        try:
+            body_contents = _page_image_parts(pdf_path, row["start"], row["end"]) + [
+                _MULTIMODAL_INSTRUCTION + text
+            ]
+        except Exception as exc:  # noqa: BLE001 - degrade to OCR-only; never fail a summary on this
+            logger.warning(
+                "multimodal rasterize failed for pages %s-%s; using OCR-only: %s",
+                row["start"],
+                row["end"],
+                exc,
+            )
     summary, truncated = _generate(
         model,
         system_msg,
-        text,
+        body_contents,
         temperature=settings.summary_temperature,
         max_output_tokens=settings.summary_max_output_tokens,
     )

@@ -60,6 +60,18 @@ class Settings(BaseSettings):
     # copy from), so a summary shows a DOI only when its own document states one. On by default; a
     # regression reverts via env with no redeploy.
     summary_doi_extract: bool = True
+    # Summarization also sends the page IMAGES alongside the OCR text (multimodal): the images
+    # recover tables, checkboxes, and handwriting the OCR garbles (an eval on real sub-docs showed it
+    # adds missing vitals/allergies with no loss). Env-toggle to revert to OCR-only.
+    summary_multimodal: bool = True
+    # Cap page images per sub-document so a long record cannot blow the request payload/latency; the
+    # full OCR text still covers every page beyond the cap.
+    summary_image_max_pages: int = 15
+    # DPI for the summary page images (lean JPEG); 120 was enough to read tables/handwriting in the eval.
+    summary_image_dpi: int = 120
+    # 2.5-pro is a thinking model and REJECTS the seam's default thinking_budget=0; give summary
+    # calls dynamic thinking (-1). If SUMMARY_MODEL is reverted to a flash tier, set this to 0.
+    summary_thinking_budget: int = -1
 
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2
@@ -145,7 +157,10 @@ class Settings(BaseSettings):
     def _derive(self) -> "Settings":
         default_model = "gemini-2.5-flash" if self.use_vertex else "gemini-flash-latest"
         self.genai_model = self.genai_model or default_model
-        self.summary_model = self.summary_model or self.genai_model
+        # Summarization uses 2.5-pro: its condensing + faithfulness on long/complex records beat
+        # 2.5-flash in a real A/B. Summary-ONLY - genai_model (segmentation, header/DOI) and
+        # classify_model (categorization) are untouched, so neither can regress. SUMMARY_MODEL overrides.
+        self.summary_model = self.summary_model or "gemini-2.5-pro"
         self.verify_model = self.verify_model or self.genai_model
         if self.environment == "prod" and not self.use_vertex:
             raise RuntimeError(
