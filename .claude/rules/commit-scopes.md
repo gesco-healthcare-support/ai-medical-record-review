@@ -15,5 +15,7 @@ Allowed commit/PR scopes for this repo (kebab-case). Keeps history grep-able.
 - `export` - Word/CSV output generation
 - `pipeline` - cross-cutting flow / orchestration
 - `ui` - templates / static
+- `review` - the /records/[id] review workbench (steps, gating, banners)
+- `duplicates` - duplicate clustering review + resolution
 
 If a change does not fit, add the scope here in the same PR.
