@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 
 from app import models  # noqa: F401 - registers all tables on Base.metadata
 from app.db import Base
+from app.models import Prompt
 from app.services import catalog
+from app.services.prompts import prompts
 from app.services.rows import validate_rows
 from app.services.seed_catalog import constants_categories, seed_catalog
 
@@ -68,6 +70,41 @@ def test_seed_then_db_backed(session):
 def test_bump_revision(session):
     seed_catalog(session)
     assert catalog.bump_revision(session) == 2
+
+
+def _general_row(session, text="GENERAL ROW PROMPT"):
+    """A custom general (100) prompt row, the only row on an otherwise code-driven box."""
+    session.add(Prompt(role="summary", category_id="100", text=text, revision=1))
+    session.commit()
+
+
+def test_code_prompt_beats_the_general_row(session):
+    """WHEN a category has no prompt row but the code defines one, THE SYSTEM SHALL return the code
+    prompt even though a general (100) row exists. Otherwise deleting the seeded shadows would hand
+    every category the catch-all prompt - a diagnostic study summarized with the general rules."""
+    _general_row(session)
+    diagnostics = catalog.get_prompt(session, "summary", "3")
+    assert diagnostics == prompts["category_03"]
+    assert diagnostics != "GENERAL ROW PROMPT"
+
+
+def test_category_row_still_wins(session):
+    # WHEN a category has a prompt row, THE SYSTEM SHALL return that row's text (an admin override).
+    session.add(Prompt(role="summary", category_id="3", text="CUSTOM FOR 3", revision=1))
+    _general_row(session)
+    assert catalog.get_prompt(session, "summary", "3") == "CUSTOM FOR 3"
+
+
+def test_category_without_a_code_prompt_falls_back_to_the_general_row(session):
+    # Category 11 has neither a row nor a code prompt -> the general ROW, then the general constant.
+    _general_row(session)
+    assert catalog.get_prompt(session, "summary", "11") == "GENERAL ROW PROMPT"
+
+
+def test_unseeded_box_falls_back_to_the_code_constants(session):
+    assert catalog.get_prompt(session, "summary", "3") == prompts["category_03"]
+    assert catalog.get_prompt(session, "summary", "11") == prompts["category_100"]
+    assert catalog.get_prompt(session, "verify", "3") is None  # only summaries have a fallback
 
 
 def test_validate_rows_ok_and_errors(session):

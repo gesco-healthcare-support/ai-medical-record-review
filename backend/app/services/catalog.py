@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import CatalogMeta, Category, Prompt
-from app.services.seed_catalog import constants_categories, constants_summary_prompt
+from app.services.seed_catalog import (
+    code_summary_prompt,
+    constants_categories,
+    constants_summary_prompt,
+)
 
 
 def _by_id(categories: list[dict]) -> list[dict]:
@@ -60,10 +64,16 @@ def summarize_default_for(session: Session, category_id) -> bool:
 
 
 def get_prompt(session: Session, role: str, category_id) -> str | None:
-    """The current prompt text for (role, category_id), DB-first.
+    """The current prompt text for (role, category_id).
 
-    For summaries, a category with no prompt row falls back to the general (100) prompt, and the
-    constants back-stop it when the DB is unseeded.
+    Resolution order for summaries, most specific first:
+      1. this category's own prompt row  - an admin edit, which always wins;
+      2. this category's own CODE prompt  - prompts.py is the source of truth, so a deployed prompt
+         change reaches every box;
+      3. the general (100) prompt row     - only for a category the code has no prompt for (11);
+      4. the general code prompt          - back-stop on an unseeded DB.
+    Step 2 must come before step 3: otherwise a category with no row of its own is summarized with
+    the catch-all prompt rather than its own rules.
     """
     category_id = str(category_id)
     row = session.scalar(
@@ -71,12 +81,23 @@ def get_prompt(session: Session, role: str, category_id) -> str | None:
     )
     if row is not None:
         return row.text
-    if role == "summary":
-        general = session.scalar(
-            select(Prompt).where(Prompt.role == "summary", Prompt.category_id == "100")
-        )
-        return general.text if general is not None else constants_summary_prompt(category_id)
-    return None
+    if role != "summary":
+        return None
+    return builtin_summary_prompt(session, category_id)
+
+
+def builtin_summary_prompt(session: Session, category_id) -> str:
+    """The summary prompt a category resolves to when it has NO custom row of its own - steps 2-4 of
+    get_prompt's chain. The admin UI shows this as "the built-in prompt" so a reviewer can see what
+    reverting would restore."""
+    category_id = str(category_id)
+    code_prompt = code_summary_prompt(category_id)
+    if code_prompt is not None:
+        return code_prompt
+    general = session.scalar(
+        select(Prompt).where(Prompt.role == "summary", Prompt.category_id == "100")
+    )
+    return general.text if general is not None else constants_summary_prompt(category_id)
 
 
 def catalog_version(session: Session) -> int:
