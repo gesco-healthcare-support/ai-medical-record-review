@@ -63,9 +63,16 @@ def scoped_document_ids(session, user_email=None, document_ids=None, every=False
     return list(document_ids)
 
 
-def run(session, document_ids, dry_run: bool = False) -> int:
-    """Rewrite each summary's DOI prefix from an isolated re-extraction. Returns the changed count."""
+def run(session, document_ids, dry_run: bool = False) -> tuple[int, int]:
+    """Rewrite each summary's DOI prefix from an isolated re-extraction.
+
+    Returns (changed, skipped). A summary whose extraction FAILS is skipped, never rewritten: "-"
+    means "this document states no injury date", so treating an unreadable page as "-" would delete
+    a correct DOI. If nothing could be read at all - the shape of an expired credential - the run
+    aborts without committing rather than reporting a successful-looking mass deletion.
+    """
     changed = 0
+    skipped = 0
     doc_paths: dict = {}
     summaries = session.scalars(
         select(Summary).where(Summary.document_id.in_(document_ids)).order_by(Summary.id)
@@ -77,7 +84,12 @@ def run(session, document_ids, dry_run: bool = False) -> int:
             if document is None:
                 continue
             path = doc_paths[summary.document_id] = document.stored_path
-        injury = extract_injury_date(path, summary.row_start, summary.row_end)
+        try:
+            injury = extract_injury_date(path, summary.row_start, summary.row_end, strict=True)
+        except Exception as exc:  # noqa: BLE001 - any read failure means "leave this one alone"
+            skipped += 1
+            print(f"backfill_doi: skipped summary {summary.id} (unreadable): {exc}", flush=True)
+            continue
         new_text = apply_doi_prefix(summary.text, injury)
         new_verified = apply_doi_prefix(summary.verified_text, injury)
         new_edited = apply_doi_prefix(summary.edited_text, injury)
@@ -91,9 +103,16 @@ def run(session, document_ids, dry_run: bool = False) -> int:
                 summary.text = new_text
                 summary.verified_text = new_verified
                 summary.edited_text = new_edited
+    if skipped and not changed:
+        # Every read failed: almost certainly the credentials or the files, not the documents.
+        session.rollback()
+        raise SystemExit(
+            f"backfill_doi: every extraction failed ({skipped} summaries) - nothing written. "
+            "Check the Vertex credentials and the stored files, then run again."
+        )
     if not dry_run:
         session.commit()
-    return changed
+    return changed, skipped
 
 
 def main() -> None:
@@ -119,9 +138,10 @@ def main() -> None:
         print(
             f"backfill_doi: scope {len(ids)} document(s): {', '.join(ids) or '(none)'}", flush=True
         )
-        changed = run(session, ids, dry_run=args.dry_run)
+        changed, skipped = run(session, ids, dry_run=args.dry_run)
     verb = "would change" if args.dry_run else "changed"
-    print(f"backfill_doi: {verb} {changed} summary/summaries")
+    tail = f", skipped {skipped} unreadable" if skipped else ""
+    print(f"backfill_doi: {verb} {changed} summary/summaries{tail}")
 
 
 if __name__ == "__main__":

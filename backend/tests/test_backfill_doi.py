@@ -15,7 +15,7 @@ import pytest
 
 from app.auth.password import MrrPasswordHelper
 from app.db import get_sessionmaker
-from app.models import Document, User
+from app.models import Document, Job, Summary, User
 from tests.conftest import unique_test_email
 
 _PATH = os.path.join(
@@ -85,3 +85,100 @@ def test_unknown_email_is_refused():
     with get_sessionmaker()() as session, pytest.raises(SystemExit) as exit_info:
         backfill_doi.scoped_document_ids(session, user_email="nobody@example.invalid")
     assert "nobody@example.invalid" in str(exit_info.value)
+
+
+_BODY = "**DOI**:01/01/2000, Lumbar strain noted."
+
+
+def _summary_for(session, doc_id, **over):
+    fields = dict(
+        document_id=doc_id,
+        job_id=Job(
+            document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1"
+        ),
+        idx=0,
+        title="Work Status Report (Pages 1-2)",
+        date="-",
+        text=_BODY,
+        row_start=1,
+        row_end=2,
+        row_category="1",
+    )
+    fields.update(over)
+    job = fields.pop("job_id")
+    session.add(job)
+    session.flush()
+    summary = Summary(job_id=job.id, **fields)
+    session.add(summary)
+    session.commit()
+    return summary.id
+
+
+def _texts(session, summary_id):
+    summary = session.get(Summary, summary_id)
+    session.refresh(summary)
+    return (summary.text, summary.verified_text, summary.edited_text)
+
+
+def test_dry_run_writes_nothing(monkeypatch):
+    with get_sessionmaker()() as session:
+        _, doc_id = _user_with_document(session)
+        summary_id = _summary_for(session, doc_id)
+        monkeypatch.setattr(backfill_doi, "extract_injury_date", lambda *a, **k: "-")
+
+        changed, skipped = backfill_doi.run(session, [doc_id], dry_run=True)
+        assert (changed, skipped) == (1, 0)  # it WOULD strip the propagated date
+    with get_sessionmaker()() as check:
+        assert _texts(check, summary_id) == (_BODY, None, None)  # but wrote nothing
+
+
+def test_an_unreadable_document_never_loses_its_stored_date(monkeypatch):
+    """ "-" means "this document states no injury date". A read failure must not say that."""
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Reauthentication is needed")
+
+    with get_sessionmaker()() as session:
+        _, doc_id = _user_with_document(session)
+        summary_id = _summary_for(session, doc_id)
+        monkeypatch.setattr(backfill_doi, "extract_injury_date", boom)
+
+        with pytest.raises(SystemExit) as exit_info:
+            backfill_doi.run(session, [doc_id])
+        assert "every extraction failed" in str(exit_info.value)
+    with get_sessionmaker()() as check:
+        assert _texts(check, summary_id) == (_BODY, None, None)
+
+
+def test_a_working_run_rewrites_once_and_is_idempotent(monkeypatch):
+    with get_sessionmaker()() as session:
+        _, doc_id = _user_with_document(session)
+        summary_id = _summary_for(session, doc_id)
+        monkeypatch.setattr(backfill_doi, "extract_injury_date", lambda *a, **k: "05/08/2022")
+
+        assert backfill_doi.run(session, [doc_id]) == (1, 0)
+        assert backfill_doi.run(session, [doc_id]) == (0, 0)
+    with get_sessionmaker()() as check:
+        text, _, _ = _texts(check, summary_id)
+        assert text == "**DOI**:05/08/2022, Lumbar strain noted."
+
+
+def test_one_unreadable_summary_does_not_block_the_others(monkeypatch):
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("quota exceeded")
+        return "05/08/2022"
+
+    with get_sessionmaker()() as session:
+        _, doc_id = _user_with_document(session)
+        first = _summary_for(session, doc_id)
+        second = _summary_for(session, doc_id, idx=1, row_start=3, row_end=4)
+        monkeypatch.setattr(backfill_doi, "extract_injury_date", flaky)
+
+        assert backfill_doi.run(session, [doc_id]) == (1, 1)
+    with get_sessionmaker()() as check:
+        assert _texts(check, first)[0] == _BODY  # untouched
+        assert _texts(check, second)[0] == "**DOI**:05/08/2022, Lumbar strain noted."
