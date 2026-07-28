@@ -76,7 +76,8 @@ export function CategoryDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      {/* Wide: at the 384px default the description and the examples list are unusably cramped. */}
+      <DialogContent className="ev-dialog-wide">
         <DialogHeader>
           <DialogTitle>{creating ? "Add category" : `Edit category ${editing?.id}`}</DialogTitle>
           <DialogDescription>

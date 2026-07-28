@@ -717,11 +717,16 @@ body[data-bundle-slug] #step-editor { flex: none; }
 }
 .ev-check input { width: 16px; height: 16px; accent-color: var(--blue-500); }
 
-/* Wider dialog + monospace textarea for editing prompt bodies. */
-.ev-dialog-wide { max-width: 820px; }
+/* Wider dialog + monospace textarea for editing prompt bodies. The dialog is centred with a
+   translate, so content taller than the viewport is clipped at BOTH ends and unreachable; cap the
+   height and scroll the body instead. */
+.ev-dialog-wide { max-width: 820px; max-height: 85vh; overflow-y: auto; }
 .ev-mono {
     font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
-    font-size: 13px; line-height: 1.5; white-space: pre; overflow-wrap: normal;
+    font-size: 13px; line-height: 1.5;
+    /* A category prompt is one long line per rule; `pre` made every line demand horizontal
+       scrolling to read or edit (measured: 3047px of scrollWidth in an 820px dialog). */
+    white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
 /* The prompt dialog's reference panel: the general prompt this category would otherwise inherit,

@@ -103,7 +103,7 @@ export function PromptDialog({
           <textarea
             id="promptText"
             className="ev-inp ev-mono"
-            rows={14}
+            rows={20}
             value={text}
             disabled={isLoading}
             onChange={(e) => setText(e.target.value)}
