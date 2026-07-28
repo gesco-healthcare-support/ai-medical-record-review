@@ -956,6 +956,7 @@ body[data-bundle-slug] #step-editor { flex: none; }
 .hd-table tbody tr.admin-inactive td.hd-admin-actions { opacity: 1; }
 
 /* Duplicates review: the copies listed inside a cluster card. */
+.dupe-similarity { margin: 6px 0 0; }
 .dupe-copies { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .dupe-copy {
     display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px;

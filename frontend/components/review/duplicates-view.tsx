@@ -161,6 +161,14 @@ function ClusterCard({
           <span className="ev-chip ev-chip-review">Needs review</span>
         )}
       </div>
+      {/* Advisory only, so it reads as a plain number: a colour scale would imply a cut-off the app
+          does not enforce. Absent on clusters stored before the score was kept. */}
+      {typeof cluster.similarity === "number" ? (
+        <p className="meta dupe-similarity">
+          {Math.round(cluster.similarity * 100)}% of the text matches - a high score means one
+          document scanned twice, a low one means forms that share a template.
+        </p>
+      ) : null}
       <ul className="dupe-copies">
         {cluster.rows.map((row) => (
           // The copy's date/pages/title are one BUTTON that opens it in the viewer: a click handler
