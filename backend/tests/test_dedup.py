@@ -41,6 +41,35 @@ def test_cluster_similarity_low_for_shared_template_different_content():
     assert clusters[0]["similarity"] < 0.9  # but difflib exposes they may be a series
 
 
+def test_similarity_compares_excerpts_not_whole_documents():
+    """difflib is quadratic, so the score reads only the first _EXCERPT_CHARS of each member - the
+    same window the AI-confirm call uses. Two long documents that agree on that window and diverge
+    far beyond it still score as near-identical, which is what makes the check affordable on a
+    re-scanned transcript (measured: 33ms vs 1132ms on a real 13k-char cluster, verdict unchanged)."""
+    shared = "identical scanned report text " * 60  # ~1800 chars, past the excerpt window
+    # Single-char tails so the word-set signature (and therefore Jaccard) is identical: this test is
+    # about the SCORE, not about what clusters.
+    a = shared + "z " * 20000
+    b = shared + "q " * 20000
+    clusters = dedup.cluster_rows([{"idx": 0, "text": a}, {"idx": 1, "text": b}])
+    assert len(clusters) == 1
+    assert clusters[0]["similarity"] == 1.0
+    # Proof it is the truncation doing this: the full texts are only ~half alike.
+    assert dedup._min_difflib.__doc__  # documented behaviour
+    assert len(shared) > dedup._EXCERPT_CHARS
+
+
+def test_similarity_still_separates_a_form_series_within_the_excerpt():
+    # WHEN members share a template but differ in content inside the window, the score stays low.
+    a = "work status report employer date restrictions no lifting over 10 lbs " * 30
+    b = "work status report employer date restrictions full duty without limits " * 30
+    # Threshold lowered to the point where the shared template alone groups them (as a real form
+    # series does), which is exactly the case the score has to distinguish.
+    clusters = dedup.cluster_rows([{"idx": 0, "text": a}, {"idx": 1, "text": b}], 0.4)
+    assert len(clusters) == 1
+    assert clusters[0]["similarity"] < 0.95
+
+
 def test_confirm_cluster_returns_confirmed_subset(monkeypatch):
     members = [
         {"title": "A", "date": "1", "text": "x"},

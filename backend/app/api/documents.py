@@ -92,15 +92,27 @@ def _store_rows(session: Session, document: Document, rows) -> str | None:
             row.dupe_group,
             row.dupe_primary,
             row.dupe_dismissed,
+            row.dupe_similarity,
         )
         for row in document.review_rows
+    }
+    # Editing ONE copy's boundaries reopens the whole duplicate question, so the surviving copies drop
+    # their dismissal too. Otherwise the eroded cluster still looks like an intact dismissed one and a
+    # re-check would silently re-dismiss a set the reviewer never judged.
+    incoming_ranges = {(int(row["start"]), int(row["end"])) for row in rows}
+    reopened_groups = {
+        group
+        for (start, end), (_text, group, _primary, _dismissed, _sim) in preserved.items()
+        if group is not None and (start, end) not in incoming_ranges
     }
     session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
     for idx, row in enumerate(rows):
         start, end = int(row["start"]), int(row["end"])
-        source_text, dupe_group, dupe_primary, dupe_dismissed = preserved.get(
-            (start, end), (None, None, False, False)
+        source_text, dupe_group, dupe_primary, dupe_dismissed, dupe_similarity = preserved.get(
+            (start, end), (None, None, False, False, None)
         )
+        if dupe_group in reopened_groups:
+            dupe_dismissed = False
         session.add(
             ReviewRow(
                 document_id=document.id,
@@ -118,6 +130,7 @@ def _store_rows(session: Session, document: Document, rows) -> str | None:
                 dupe_group=dupe_group,
                 dupe_primary=dupe_primary,
                 dupe_dismissed=dupe_dismissed,
+                dupe_similarity=dupe_similarity,
             )
         )
     session.commit()
@@ -429,6 +442,11 @@ def get_duplicates(
             {
                 "group": group_id,
                 "dismissed": any(m.dupe_dismissed for m in members),
+                # Every member carries the cluster's score; None for rows grouped before the column
+                # existed. ~1.0 = re-scans of one document, low = a recurring form series.
+                "similarity": next(
+                    (m.dupe_similarity for m in members if m.dupe_similarity is not None), None
+                ),
                 "rows": [
                     {
                         "idx": m.idx,
@@ -448,14 +466,14 @@ def get_duplicates(
         .order_by(Job.id.desc())
     ).first()
     # "stale" = the clusters no longer cover every row dedup would look at, so the tab can offer a
-    # MANUAL re-check (never an automatic AI run). A completed dedup stores source_text on every
-    # non-dismissed row and a metadata edit keeps it (_store_rows), so a missing one means a boundary
-    # changed or a row appeared since that run. Dismissed rows are out of dedup's scope, so they never
-    # make the list stale. While a dedup is in flight there is nothing to nudge.
+    # MANUAL re-check (never an automatic AI run). A completed dedup stores source_text on EVERY row -
+    # dismissed ones included, since they are back in scope - and a metadata edit keeps it
+    # (_store_rows), so a missing one means a boundary changed or a row appeared since that run.
+    # While a dedup is in flight there is nothing to nudge.
     stale = bool(
         dedup_job
         and dedup_job.state == "done"
-        and any(row.source_text is None for row in document.review_rows if not row.dupe_dismissed)
+        and any(row.source_text is None for row in document.review_rows)
     )
     return {
         "clusters": clusters,
@@ -504,11 +522,17 @@ def resolve_duplicate(
         primary = next((m for m in members if m.idx == payload.primary_idx), None)
         if primary is None:
             raise HTTPException(status_code=400, detail="primary_idx is not in this cluster")
+        # Keeping a copy must not RAISE inclusion above what the cluster already had: three copies of
+        # a routing slip are category 100, which is unchecked by default, and turning the kept one on
+        # would put paperwork nobody asked for into the report. The cluster's existing intent moves
+        # onto the kept copy - so an all-excluded cluster stays excluded, and a normal cluster still
+        # produces exactly one summary.
+        wanted = any(m.include for m in members)
         for member in members:
             is_primary = member.idx == payload.primary_idx
             member.dupe_primary = is_primary
             member.dupe_dismissed = False
-            member.include = is_primary  # keep the chosen copy, exclude the rest from summarization
+            member.include = is_primary and wanted
     elif payload.action == "dismiss":
         for member in members:
             member.dupe_dismissed = True

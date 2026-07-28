@@ -353,9 +353,9 @@ async def test_duplicates_stale_flag_tracks_unchecked_included_rows(authed):
     assert (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["stale"] is True
 
 
-async def test_duplicates_stale_flag_covers_excluded_but_not_dismissed_rows(authed):
-    """Staleness follows the dedup SCOPE (every non-dismissed row): an excluded row dedup never saw
-    means the list may be incomplete, while a dismissed row is deliberately out of scope."""
+async def test_duplicates_stale_flag_covers_every_row_including_dismissed(authed):
+    """Staleness follows the dedup SCOPE, which is now EVERY row: a row dedup never saw - excluded or
+    dismissed - means the list may be incomplete and a manual re-check is worthwhile."""
     client, _ = authed
     doc_id = await _upload(client, pages=4)
     rows = [
@@ -390,7 +390,17 @@ async def test_duplicates_stale_flag_covers_excluded_but_not_dismissed_rows(auth
         )
         row.dupe_dismissed = True
         session.commit()
-    assert await stale() is False  # dismissed rows are out of scope, so nothing is missing
+    # Dismissing does NOT settle staleness any more: that row is back in dedup's scope and still has
+    # no stored text, so the re-check offer stands.
+    assert await stale() is True
+
+    with get_sessionmaker()() as session:
+        row = session.scalar(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.start == 3)
+        )
+        row.source_text = "ocr text 3-4"
+        session.commit()
+    assert await stale() is False  # every row has been looked at -> nothing missing
 
 
 async def test_summaries_empty_and_export_conflict(authed):
@@ -966,6 +976,100 @@ async def test_duplicates_list_status_and_keep_one(authed):
 
     status2 = await client.get(f"/api/documents/{doc_id}/status")
     assert status2.json()["unreviewed_duplicate_groups"] == 0  # resolved -> no longer advised
+
+
+def _set_include(doc_id, include):
+    with get_sessionmaker()() as session:
+        for row in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all():
+            row.include = include
+        session.commit()
+
+
+async def test_editing_one_copys_pages_reopens_the_whole_dismissed_cluster(authed):
+    """WHEN a dismissed cluster loses a copy to a boundary edit, the copies that remain SHALL drop the
+    dismissal - otherwise the eroded cluster still looks intact and the next re-check silently
+    re-dismisses a set the reviewer never judged (found live, 2026-07-28)."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=9)
+    rows = [
+        {"start": 1, "end": 3, "category": _VALID_CATEGORY},
+        {"start": 4, "end": 6, "category": _VALID_CATEGORY},
+        {"start": 7, "end": 9, "category": _VALID_CATEGORY},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    with get_sessionmaker()() as session:
+        for row in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all():
+            row.source_text = "same scanned text"
+            row.dupe_group = 1
+            row.dupe_dismissed = True
+            row.dupe_similarity = 1.0
+        session.commit()
+
+    # Shrink the third copy: same cluster, different membership.
+    shrunk = [*rows[:2], {"start": 7, "end": 8, "category": _VALID_CATEGORY}]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": shrunk})
+    ).status_code == 200
+
+    with get_sessionmaker()() as session:
+        by_range = {
+            (r.start, r.end): r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+    assert by_range[(1, 3)].dupe_dismissed is False  # surviving copies reopened
+    assert by_range[(4, 6)].dupe_dismissed is False
+    assert by_range[(7, 8)].dupe_group is None  # the edited row starts fresh
+    # The grouping itself is kept so the tab still shows the cluster until the re-check runs.
+    assert by_range[(1, 3)].dupe_group == 1
+    assert by_range[(1, 3)].dupe_similarity == 1.0  # the score survives an unrelated metadata edit
+
+
+async def test_keep_one_does_not_opt_an_excluded_cluster_into_the_report(authed):
+    """WHEN every copy in a cluster is excluded and the reviewer keeps one, all copies stay excluded.
+    Three copies of a routing slip are category 100 (unchecked by default); turning the kept one on
+    would summarize paperwork nobody asked for."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, None)])
+    _set_include(doc_id, False)
+
+    resolved = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve",
+        json={"action": "keep_one", "primary_idx": 0},
+    )
+    assert resolved.status_code == 200
+    with get_sessionmaker()() as session:
+        rows = {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+    assert rows[0].dupe_primary is True  # the kept copy is still recorded
+    assert rows[0].include is False and rows[1].include is False  # but nothing was opted in
+    # Resolving still clears the cluster from the advisory count.
+    status = await client.get(f"/api/documents/{doc_id}/status")
+    assert status.json()["unreviewed_duplicate_groups"] == 0
+
+
+async def test_duplicates_report_the_cluster_similarity(authed):
+    """The API returns the stored score per cluster (null before a re-run has computed one)."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, None)])
+
+    before = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["clusters"]
+    assert before[0]["similarity"] is None
+
+    with get_sessionmaker()() as session:
+        for row in session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.dupe_group == 1)
+        ).all():
+            row.dupe_similarity = 0.97
+        session.commit()
+
+    after = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["clusters"]
+    assert after[0]["similarity"] == 0.97
 
 
 async def test_duplicates_dismiss_and_error_paths(authed):

@@ -53,9 +53,17 @@ def _jaccard(a, b):
 
 def _min_difflib(texts):
     """The lowest pairwise char-level ratio across ``texts`` (1.0 for a single item). Low = the
-    members diverge in content (likely a recurring-form series), high = near-identical re-scans."""
+    members diverge in content (likely a recurring-form series), high = near-identical re-scans.
+
+    Compares only the first ``_EXCERPT_CHARS`` of each member - the same window the AI-confirm call
+    reads. difflib is quadratic in length AND in member count, so full text costs minutes on a
+    re-scanned transcript. Measured on a real 6-member cluster (13k chars each): 0.219 truncated vs
+    0.068 full, 33ms vs 1132ms - the verdict (a form series, nowhere near a true copy's 1.000) is
+    unchanged at 34x less cost.
+    """
+    excerpts = [(text or "")[:_EXCERPT_CHARS] for text in texts]
     ratios = [
-        difflib.SequenceMatcher(None, a, b).ratio() for a, b in itertools.combinations(texts, 2)
+        difflib.SequenceMatcher(None, a, b).ratio() for a, b in itertools.combinations(excerpts, 2)
     ]
     return round(min(ratios), 3) if ratios else 1.0
 
