@@ -56,6 +56,17 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
 # outrank an administrative match - any other rule does.
 _EVALUATOR_MENTION = "13"
 
+# Words that name a DOCUMENT rather than the paperwork wrapped around it. The segmenter is told to
+# fold a cover sheet into the document it travels with and to title the record from the visible
+# header (services/gemini.py), so "Cover Letter - AME Report" is one record containing a report.
+# When a title names a document like this, the administrative rules stand down and the normal
+# cascade decides - including the embedding + LLM stages for report types no rule covers.
+# "records" is deliberately absent: "Schedule of Records" and "Cover Letter - Submission of Medical
+# Records" are paperwork about records, not records.
+_DOCUMENT_NOUN = re.compile(
+    r"\b(report|transcript|notes?|study|scan|imaging|x-? ?ray|chart|questionnaire|results?)\b"
+)
+
 # Ordered high-precision rules; first match wins. Specific categories precede the categories they
 # could be confused with (e.g. supplemental QME/AME -> 12 before QME/AME -> 13).
 _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
@@ -105,16 +116,18 @@ class Classification:
 def match_rules(title):
     """Return a category id if a high-precision rule matches the title, else None.
 
-    Document type beats administrative wrapper. A title often names both - "Transmittal Letter - MRI
-    Lumbar Spine" is an MRI report that arrived under a transmittal letter - and the substantive
-    document is what a reviewer needs summarized, so a document-type rule wins over an
-    administrative one. The single exception is category 13, which fires on a mere mention of the
-    evaluator ("Email - AME Evaluation Cover Letter"); that alone does not make a document an
-    evaluation, so the administrative match stands.
+    Document beats wrapper, in two steps. If the title names a document at all (_DOCUMENT_NOUN, e.g.
+    "Cover Letter - Psychological Evaluation Report"), the administrative rules stand down entirely
+    and the normal cascade answers - falling through to the embedding + LLM stages when no keyword
+    rule fits, rather than burying an unrecognised report in General. Otherwise the administrative
+    match holds, except where a document-type rule also fired ("Transmittal Letter - MRI Lumbar
+    Spine" is an MRI); category 13 does not count there, because it fires on a mere mention of the
+    evaluator, which correspondence about an AME contains too.
     """
     text = (title or "").lower()
     matches = [category for pattern, category in _RULES if pattern.search(text)]
-    if not any(pattern.search(text) for pattern in _ADMIN_RULES):
+    administrative = any(pattern.search(text) for pattern in _ADMIN_RULES)
+    if not administrative or _DOCUMENT_NOUN.search(text):
         return matches[0] if matches else None
     return next((c for c in matches if c != _EVALUATOR_MENTION), DEFAULT_ID)
 

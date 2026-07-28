@@ -50,12 +50,16 @@ def _clean(reply: str) -> str:
     return ", ".join(seen) if seen else "-"
 
 
-def extract_injury_date(pdf_path, start, end, model=None) -> str:
+def extract_injury_date(pdf_path, start, end, model=None, strict=False) -> str:
     """The injury date THIS sub-document (pages ``start``..``end``) states, or ``"-"``.
 
     Isolated + vision: sends only this document's first pages as a PDF Part, so the model cannot
     copy a DOI from neighbouring documents and reads it from the image, not OCR. Fail-safe: returns
-    ``"-"`` on any error or empty reply - a wrong/propagated DOI is worse than none.
+    ``"-"`` on any error or empty reply - at write time a wrong/propagated DOI is worse than none.
+
+    ``strict=True`` re-raises instead, for callers that REWRITE stored summaries: there, "-" means
+    "delete this summary's DOI", so a read failure (expired credentials, a moved file, a quota
+    error) must not be mistaken for "this document states no injury date".
     """
     settings = get_settings()
     model = model or settings.genai_model
@@ -77,6 +81,8 @@ def extract_injury_date(pdf_path, start, end, model=None) -> str:
         return _clean(response.text or "")
     except Exception:
         logger.warning("isolated DOI extraction failed for pages %s-%s", start, end, exc_info=True)
+        if strict:
+            raise
         return "-"
 
 

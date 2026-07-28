@@ -104,6 +104,39 @@ def test_document_type_beats_administrative_wrapper(title, expected):
     assert classification.match_rules(title) == expected
 
 
+# The segmenter folds a cover sheet into the document it travels with and titles the record from that
+# cover page (services/gemini.py), so "wrapper + document" titles are its normal output. When the
+# title names a document, the wrapper must not decide - least of all for a QME/AME evaluation, the
+# most valuable document in the file.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("AME Report with Cover Letter", "13"),
+        ("QME Report - Proof of Service", "13"),
+        ("Cover Letter - AME Report of Dr Sample", "13"),
+        ("Email Correspondence - QME Report", "13"),
+        ("Panel QME Report with Declaration of Service", "13"),
+    ],
+)
+def test_evaluation_reports_survive_their_cover_page(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# A report type with no keyword rule must fall through to the embedding + LLM stages rather than be
+# answered - at high confidence, with no review flag - by the wrapper.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Cover Letter - Psychological Evaluation Report",
+        "Correspondence - Work Status Report",
+        "Transmittal Letter - Nerve Conduction Study Report",
+        "Cover Letter - Narrative Medical Report",
+    ],
+)
+def test_unruled_report_behind_a_wrapper_reaches_the_cascade(title):
+    assert classification.match_rules(title) is None
+
+
 def test_general_corpus_names_the_administrative_documents():
     """The embedding + LLM stages read this text, so it must describe what actually lands here."""
     from app.services.taxonomy import CATEGORIES
