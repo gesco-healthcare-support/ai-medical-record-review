@@ -691,7 +691,7 @@ def resummarize(
     summary.verified = bool(output.get("verified"))
     summary.verified_text = output.get("verifiedText")
     summary.verify_issues = output.get("verifyIssues")
-    summary.manual_check = bool(output.get("manualCheck"))
+    summary.manual_check = bool(output.get("manualCheck")) or bool(output.get("truncated"))
     summary.row_start = int(row["start"])
     summary.row_end = int(row["end"])
     summary.row_category = str(row["category"])
@@ -711,16 +711,22 @@ _PAGES_SUFFIX = re.compile(r"\(pages\s++\d++\s*+[-–]\s*+\d++\)\s*+$", re.IGNOR
 _BUNDLE_NAME_CHARS = re.compile(r"[^a-z0-9]+")
 
 
-def _export_title_and_text(summary: Summary) -> tuple[str, str]:
+def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tuple[str, str]:
     """Shared export title + body used by BOTH the Word and linked-PDF entries (so the two stay
     identical). Strips the internal [ManualCheck] review flag - dropped from exports because a
     finished report/PDF cannot be edited to remove it, though it stays visible in the app - and the
-    stale page suffix, then re-applies [Diagnostic Study] + (Pages X-Y) and prepends the DOI."""
+    stale page suffix, then re-applies [Diagnostic Study] and prepends the DOI.
+
+    ``with_pages`` re-applies the ``(Pages X-Y)`` suffix from the row's CURRENT range. It is off by
+    default because the presentable report carries no internal page ranges; the stored suffix is
+    stripped either way, since a row edit leaves it stale.
+    """
     title = re.sub(r"^\[ManualCheck\]\s*", "", summary.effective_title().strip())
     title = _PAGES_SUFFIX.sub("", title).rstrip()
     if str(summary.row_category) == "3" and "[Diagnostic Study]" not in title:
         title = f"{title} [Diagnostic Study]"
-    title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
+    if with_pages:
+        title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
     text = summary.effective_text()
     # The Summaries UI strips the DOI prefix into its edit box, so a reviewer-saved body carries
     # none; restore it from the raw model output. doi_prefix owns the grammar, so a document that
@@ -731,10 +737,10 @@ def _export_title_and_text(summary: Summary) -> tuple[str, str]:
     return title, text
 
 
-def _export_entry(summary: Summary) -> dict:
+def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     """One docx entry; the [ManualCheck] review flag is dropped from exports (see
     _export_title_and_text)."""
-    title, text = _export_title_and_text(summary)
+    title, text = _export_title_and_text(summary, with_pages=with_pages)
     return {
         "summaryDate": summary.effective_date(),
         "summaryTitle": title,
@@ -742,10 +748,10 @@ def _export_entry(summary: Summary) -> dict:
     }
 
 
-def _pdf_entry(summary: Summary) -> dict:
+def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     """Linked-PDF entry: like _export_entry, plus ``startPage`` (the 1-based source page the title
-    links to)."""
-    title, text = _export_title_and_text(summary)
+    links to - unaffected by whether the page range is printed in the text)."""
+    title, text = _export_title_and_text(summary, with_pages=with_pages)
     return {
         "summaryDate": summary.effective_date(),
         "linkTitle": title,
@@ -822,7 +828,7 @@ def export_document(
     included = [s for s in document.summaries if not s.excluded]
     if not included:
         raise HTTPException(status_code=409, detail="no summaries to export yet")
-    entries = [_export_entry(s) for s in included]
+    entries = [_export_entry(s, with_pages=payload.includePageNumbers) for s in included]
     docx = build_mrr_document(
         entries,
         document.page_count,
@@ -855,7 +861,7 @@ def export_document_pdf(
     included = [s for s in document.summaries if not s.excluded]
     if not included:
         raise HTTPException(status_code=409, detail="no summaries to export yet")
-    entries = [_pdf_entry(s) for s in included]
+    entries = [_pdf_entry(s, with_pages=payload.includePageNumbers) for s in included]
     pdf_bytes = build_linked_pdf(
         document.stored_path,
         entries,

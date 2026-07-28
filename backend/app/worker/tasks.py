@@ -174,7 +174,9 @@ def _build_summary(job, idx, row, output) -> Summary:
         verified=bool(output.get("verified")),
         verified_text=output.get("verifiedText"),
         verify_issues=output.get("verifyIssues"),
-        manual_check=bool(output.get("manualCheck")),
+        # The row's own review flag OR a body the model cut off at the token cap: both mean a human
+        # has to look at this summary before it ships.
+        manual_check=bool(output.get("manualCheck")) or bool(output.get("truncated")),
         row_start=row["start"],
         row_end=row["end"],
         row_category=row["category"],

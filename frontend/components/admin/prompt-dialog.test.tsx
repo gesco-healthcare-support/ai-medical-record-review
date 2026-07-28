@@ -42,3 +42,29 @@ describe("PromptDialog error handling", () => {
     expect(await screen.findByText(/couldn't reach the server/i)).toBeInTheDocument();
   });
 });
+
+describe("PromptDialog editing room", () => {
+  it("opens wide and gives the prompt a tall wrapping editor", async () => {
+    vi.mocked(getPrompt).mockResolvedValue({
+      category_id: "3",
+      text: "a".repeat(4000),
+      effective_text: "a".repeat(4000),
+      custom: true,
+    });
+    vi.mocked(useSavePrompt).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useSavePrompt>);
+
+    withClient(
+      <PromptDialog open onOpenChange={vi.fn()} category={{ id: "3", name: "Imaging" } as never} />,
+    );
+    // ev-dialog-wide carries the width + the height ceiling; ev-mono now wraps instead of
+    // demanding horizontal scrolling (both live in evaluators-ds.css).
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveClass("ev-dialog-wide");
+    const editor = await screen.findByLabelText(/prompt sent to the model/i);
+    expect(editor).toHaveClass("ev-mono");
+    expect(editor).toHaveAttribute("rows", "20");
+  });
+});

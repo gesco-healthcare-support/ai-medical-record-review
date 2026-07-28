@@ -37,13 +37,18 @@ export function ExportDialog({
   const [dob, setDob] = useState("");
   const [qme, setQme] = useState(DEFAULT_QME);
   const [firm, setFirm] = useState("");
+  // Off by default: "(Pages X-Y)" is a reviewing aid, so the presentable report is what you get
+  // without thinking about it.
+  const [withPages, setWithPages] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   // Prefill from Auto-fill header each time the dialog opens (without clobbering manual edits mid-
   // session: we only seed on open). Empty header fields leave the inputs blank.
   useEffect(() => {
-    if (!open || !defaults) return;
+    if (!open) return;
+    setWithPages(false); // reset on every open, like the header fields below
+    if (!defaults) return;
     const full = `${defaults.patient_first_name || ""} ${defaults.patient_last_name || ""}`.trim();
     setPatient(full);
     setDob(defaults.patient_dob || "");
@@ -64,6 +69,7 @@ export function ExportDialog({
           patientdob: dob,
           QMEorAME: qme,
           lawfirm: firm,
+          includePageNumbers: withPages,
         }),
       });
       if (resp.status === 401) {
@@ -151,6 +157,15 @@ export function ExportDialog({
               onChange={(e) => setFirm(e.target.value)}
             />
           </div>
+          <label className="ev-check" htmlFor="expPages">
+            <input
+              id="expPages"
+              type="checkbox"
+              checked={withPages}
+              onChange={(e) => setWithPages(e.target.checked)}
+            />{" "}
+            Include page numbers after each title, e.g. (Pages 3-5)
+          </label>
         </div>
         <DialogFooter className="flex-wrap">
           {error ? <span className="error-text mr-auto">{error}</span> : null}

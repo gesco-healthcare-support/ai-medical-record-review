@@ -43,4 +43,10 @@ describe("CategoryDialog error handling", () => {
       expect.objectContaining({ summarize_default: false }),
     );
   });
+
+  it("opens wide so description and examples are usable", () => {
+    renderDialog();
+    // .ev-dialog-wide (evaluators-ds.css) replaces the 384px shadcn default.
+    expect(screen.getByRole("dialog")).toHaveClass("ev-dialog-wide");
+  });
 });

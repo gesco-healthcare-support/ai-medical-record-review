@@ -34,15 +34,23 @@ def _row(**over):
     return row
 
 
-def _fake_generate(model, system_msg, user_text, temperature):
-    return "Progress Note - Dr Smith" if system_msg == se.TITLE_PROMPT else "SUMMARY BODY"
+def _fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+    """_generate's contract: (text, truncated). Nothing here hits the token cap."""
+    text = "Progress Note - Dr Smith" if system_msg == se.TITLE_PROMPT else "SUMMARY BODY"
+    return text, False
 
 
 def test_summary_call_uses_hardening_preamble_and_configured_temperature(monkeypatch):
     calls = []
 
-    def fake_generate(model, system_msg, user_text, temperature):
-        calls.append({"system_msg": system_msg, "temperature": temperature})
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        calls.append(
+            {
+                "system_msg": system_msg,
+                "temperature": temperature,
+                "max_output_tokens": max_output_tokens,
+            }
+        )
         return _fake_generate(model, system_msg, user_text, temperature)
 
     monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "raw OCR text")
@@ -62,7 +70,7 @@ def test_summary_call_uses_hardening_preamble_and_configured_temperature(monkeyp
 
 def test_empty_ocr_fails_fast(monkeypatch):
     monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "   ")
-    monkeypatch.setattr(se, "_generate", lambda *a, **k: "unused")
+    monkeypatch.setattr(se, "_generate", lambda *a, **k: ("unused", False))
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
     with pytest.raises(EmptyExtractionError):
         se.summarize_row("/x.pdf", _row(), prompt="CATEGORY PROMPT")
@@ -73,8 +81,10 @@ def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
     monkeypatch.setattr(
         se,
         "_generate",
-        lambda model, system_msg, user_text, temperature: (
-            "Title - Dr" if system_msg == se.TITLE_PROMPT else "SUMMARY BODY with a fabrication"
+        lambda model, system_msg, user_text, temperature, max_output_tokens=None: (
+            ("Title - Dr", False)
+            if system_msg == se.TITLE_PROMPT
+            else ("SUMMARY BODY with a fabrication", False)
         ),
     )
     monkeypatch.setattr(
@@ -134,8 +144,8 @@ def test_verify_skipped_when_disabled(monkeypatch):
     monkeypatch.setattr(
         se,
         "_generate",
-        lambda model, system_msg, user_text, temperature: (
-            "Title - Dr" if system_msg == se.TITLE_PROMPT else "BODY"
+        lambda model, system_msg, user_text, temperature, max_output_tokens=None: (
+            ("Title - Dr", False) if system_msg == se.TITLE_PROMPT else ("BODY", False)
         ),
     )
     called = []
@@ -152,3 +162,76 @@ def test_verify_skipped_when_disabled(monkeypatch):
     assert out["verified"] is False
     assert out["verifiedText"] is None
     assert out["verifyIssues"] is None
+
+
+def test_configured_token_budget_reaches_the_model_and_max_tokens_is_reported(monkeypatch):
+    # WHERE SUMMARY_MAX_OUTPUT_TOKENS is set, THE SYSTEM SHALL pass that budget to the model; WHEN
+    # the model reports a MAX_TOKENS finish, _generate SHALL report the reply as truncated.
+    from types import SimpleNamespace
+
+    from google.genai import types
+
+    captured = {}
+
+    def fake_retry(client, *, model, contents, config):
+        captured["config"] = config
+        return SimpleNamespace(
+            text="HALF A SUMMARY",
+            candidates=[SimpleNamespace(finish_reason=types.FinishReason.MAX_TOKENS)],
+        )
+
+    monkeypatch.setattr(se, "get_genai_client", lambda: object())
+    monkeypatch.setattr(se, "generate_with_retry", fake_retry)
+
+    text, truncated = se._generate("m", "sys", "user text", 0.0, max_output_tokens=4321)
+
+    assert captured["config"].max_output_tokens == 4321
+    assert text == "HALF A SUMMARY"
+    assert truncated is True
+
+
+def test_normal_finish_is_not_reported_as_truncated(monkeypatch):
+    # WHEN the model finishes normally, THE SYSTEM SHALL NOT report truncation.
+    from types import SimpleNamespace
+
+    from google.genai import types
+
+    monkeypatch.setattr(se, "get_genai_client", lambda: object())
+    monkeypatch.setattr(
+        se,
+        "generate_with_retry",
+        lambda client, **kw: SimpleNamespace(
+            text=" BODY ", candidates=[SimpleNamespace(finish_reason=types.FinishReason.STOP)]
+        ),
+    )
+    assert se._generate("m", "sys", "user text", 0.0) == ("BODY", False)
+
+
+def test_truncated_summary_is_flagged_for_manual_check(monkeypatch):
+    # WHEN the body hit the token cap, THE SYSTEM SHALL flag the summary and SHALL NOT alter its
+    # text (a cut-off summary must be visible to the reviewer, not stored as if it were finished).
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "raw OCR text")
+    monkeypatch.setattr(
+        se,
+        "_generate",
+        lambda model, system_msg, user_text, temperature, max_output_tokens=None: (
+            ("Title - Dr", False)
+            if system_msg == se.TITLE_PROMPT
+            else ("SUMMARY BODY cut off mid-sen", True)
+        ),
+    )
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert out["truncated"] is True
+    assert out["manualCheck"] == ""  # the row's own review flag is untouched
+    assert out["summaryText"].endswith("SUMMARY BODY cut off mid-sen")
+    assert "Truncated" not in out["summaryTitle"]
+
+
+def test_untruncated_summary_reports_no_truncation(monkeypatch):
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "raw OCR text")
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    assert se.summarize_row("/x.pdf", _row(), prompt="P")["truncated"] is False

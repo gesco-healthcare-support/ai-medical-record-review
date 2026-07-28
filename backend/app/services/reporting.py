@@ -129,6 +129,9 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
         cells[1].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         _run(cells[0].paragraphs[0], entry["summaryDate"])
         body = cells[1].paragraphs[0]
+        # Justified: the report is read as a finished document, and a ragged right edge on every
+        # record is what made the export look like a draft.
+        body.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
         _add_inline_runs(body, entry["summaryTitle"], bold=True)
         _run(body, ": ")
         _add_inline_runs(body, entry["summaryText"])

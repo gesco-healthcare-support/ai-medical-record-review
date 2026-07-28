@@ -49,18 +49,34 @@ HARDENING_PREAMBLE = (
 )
 
 
-def _generate(model, system_msg, user_text, temperature):
+def _hit_token_cap(response) -> bool:
+    """True when the model stopped because it exhausted max_output_tokens, i.e. the reply is cut
+    off. Read defensively (name or str) so a client-library enum change cannot crash a summary."""
+    for candidate in getattr(response, "candidates", None) or []:
+        reason = getattr(candidate, "finish_reason", None)
+        if reason is None:
+            continue
+        if str(getattr(reason, "name", reason)).upper().endswith("MAX_TOKENS"):
+            return True
+    return False
+
+
+def _generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+    """One Gemini call -> ``(text, truncated)``. ``truncated`` is True when the reply hit the token
+    budget, which callers surface instead of storing a half summary as finished."""
+    if max_output_tokens is None:
+        max_output_tokens = get_settings().summary_max_output_tokens
     response = generate_with_retry(
         get_genai_client(),
         model=model,
         contents=user_text,
         config=types.GenerateContentConfig(
             temperature=temperature,
-            max_output_tokens=2048,
+            max_output_tokens=max_output_tokens,
             system_instruction=system_msg,
         ),
     )
-    return (response.text or "").strip()
+    return (response.text or "").strip(), _hit_token_cap(response)
 
 
 def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_doi=None):
@@ -95,8 +111,14 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
 
     # Summary body runs at settings.summary_temperature (default 0.0 for determinism); the title
     # is pure extraction, always 0.
-    summary = _generate(model, system_msg, text, temperature=settings.summary_temperature)
-    title = _generate(model, TITLE_PROMPT, text, temperature=0.0)
+    summary, truncated = _generate(
+        model,
+        system_msg,
+        text,
+        temperature=settings.summary_temperature,
+        max_output_tokens=settings.summary_max_output_tokens,
+    )
+    title, _ = _generate(model, TITLE_PROMPT, text, temperature=0.0)
 
     # DOI only when THIS document states it: an isolated per-document vision call (no neighbours to
     # copy from) supersedes the segmentation-propagated injury_date. extract_doi=False keeps the
@@ -126,6 +148,9 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
         "summaryDate": row["date"],
         "summaryTitle": f"{manual_tag}{title}{diag_tag} (Pages {row['start']}-{row['end']})",
         "manualCheck": manual_tag,
+        # The body was cut off at the token budget: nothing is appended to the text (the report must
+        # not carry a marker), but callers flag the row so the reviewer knows to check it.
+        "truncated": truncated,
         "summaryText": f"{doi_final} {summary}",
         "verified": bool(verify),
         "verifiedText": verified_text,
