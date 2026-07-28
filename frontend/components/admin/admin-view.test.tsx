@@ -31,9 +31,12 @@ vi.mock("@/hooks/use-admin", () => ({
   useUpdateCategory: () => update,
   useReprocess: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSavePrompt: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useRevertPrompt: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock("@/lib/admin-api", () => ({
-  getPrompt: vi.fn().mockResolvedValue({ text: "", effective_text: "", custom: false }),
+  getPrompt: vi
+    .fn()
+    .mockResolvedValue({ text: "", effective_text: "", builtin_text: "", custom: false }),
 }));
 
 import { toast } from "sonner";

@@ -148,6 +148,33 @@ async def test_prompt_get_and_put(admin_client):
     ).status_code == 404
 
 
+async def test_prompt_delete_reverts_to_the_built_in(admin_client):
+    """WHEN a category has a custom row, reverting SHALL delete it so the code prompt applies again;
+    the response reports the built-in text now in effect."""
+    await admin_client.post("/api/admin/categories", json={"id": "9005", "name": "Revertible"})
+    await admin_client.put("/api/admin/prompts/9005", json={"text": "Custom text."})
+    assert (await admin_client.get("/api/admin/prompts/9005")).json()["custom"] is True
+
+    deleted = await admin_client.delete("/api/admin/prompts/9005")
+    assert deleted.status_code == 200
+    assert deleted.json()["custom"] is False
+
+    got = (await admin_client.get("/api/admin/prompts/9005")).json()
+    assert got["text"] is None and got["custom"] is False
+    # 9005 has no code prompt of its own, so the effective text is the general one.
+    assert got["effective_text"]
+
+    # Nothing to revert -> 404, so the UI cannot offer it on a built-in prompt.
+    assert (await admin_client.delete("/api/admin/prompts/9005")).status_code == 404
+    assert (await admin_client.delete("/api/admin/prompts/9998")).status_code == 404
+
+
+async def test_prompt_delete_requires_superuser(client, seeded_user):
+    email, password = seeded_user
+    await client.post("/api/auth/login", data={"username": email, "password": password})
+    assert (await client.delete("/api/admin/prompts/1")).status_code == 403
+
+
 async def test_reprocess_acts_on_any_owner(admin_client):
     from app.worker.queues import queue_for
 

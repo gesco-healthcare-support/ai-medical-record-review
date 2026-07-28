@@ -122,6 +122,10 @@ def get_summary_prompt(category_id: str, session: Session = Depends(get_db)):
         "category_id": category_id,
         "text": row.text if row is not None else None,
         "effective_text": catalog.get_prompt(session, "summary", category_id),
+        # What a revert would restore: this category's prompt from the app code. Surfaced so the
+        # dialog can show the built-in beside a custom prompt instead of the general one, which is
+        # no longer what an un-customized category uses.
+        "builtin_text": catalog.builtin_summary_prompt(session, category_id),
         "custom": row is not None,
     }
 
@@ -151,6 +155,34 @@ def put_summary_prompt(
     catalog.bump_revision(session)
     audit(session, "prompt.update", user.id)
     return {"category_id": category_id, "text": text, "custom": True}
+
+
+@router.delete("/prompts/{category_id}")
+def delete_summary_prompt(
+    category_id: str,
+    session: Session = Depends(get_db),
+    user: User = Depends(current_superuser),
+):
+    """Revert a category to its built-in prompt by dropping the custom row.
+
+    Deleting IS the mechanism: with no row of its own, catalog.get_prompt resolves this category's
+    prompt from prompts.py, so it tracks the deployed code again.
+    """
+    row = session.scalar(
+        select(Prompt).where(Prompt.role == "summary", Prompt.category_id == category_id)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="this category has no custom prompt")
+    session.delete(row)
+    session.commit()
+    catalog.bump_revision(session)
+    audit(session, "prompt.revert", user.id)
+    return {
+        "category_id": category_id,
+        "text": None,
+        "effective_text": catalog.get_prompt(session, "summary", category_id),
+        "custom": False,
+    }
 
 
 @router.post("/reprocess/{document_id}")
