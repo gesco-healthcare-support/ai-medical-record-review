@@ -107,10 +107,13 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
     }
   };
 
+  // The only control that regenerates EVERY summary from scratch - the one to use after a prompt
+  // change, since a plain Summarize keeps summaries whose page range and category are unchanged.
   const reSummarizeAll = () => {
     if (
       window.confirm(
-        "Re-summarize all documents? This discards the current summaries and any edits to them.",
+        `Regenerate all ${summaries.length} summaries from scratch with the current prompts? ` +
+          "Every current summary, including your edits to them, is discarded and re-written by the AI.",
       )
     ) {
       void wf.onSummarize(true);
@@ -195,8 +198,13 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                 </>
               ) : null}
               {tab === "summaries" && summaries.length > 0 ? (
-                <button type="button" className="ev-btn ev-btn-ghost" onClick={reSummarizeAll}>
-                  Re-summarize all
+                <button
+                  type="button"
+                  className="ev-btn ev-btn-ghost"
+                  title="Regenerates every summary from scratch with the current prompts, discarding your edits. Use this after a prompt change."
+                  onClick={reSummarizeAll}
+                >
+                  Re-summarize all from scratch
                 </button>
               ) : null}
             </>
