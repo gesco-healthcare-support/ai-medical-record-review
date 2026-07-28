@@ -124,6 +124,27 @@ describe("ReviewPageClient step-flow actions", () => {
     expect(maybeButton(/Re-run segment/)).not.toBeInTheDocument();
     expect(maybeButton(/^Summarize \d/)).not.toBeInTheDocument();
   });
+
+  it("spells out that the full re-run regenerates everything with the current prompts", () => {
+    sumState.data = [{ idx: 0 }, { idx: 1 }];
+    const onSummarize = vi.fn();
+    mockWf({ onSummarize });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<ReviewPageClient documentId="d1" />);
+    fireEvent.click(screen.getByRole("tab", { name: /Summaries/ }));
+
+    const control = button(/Re-summarize all/);
+    expect(control).toHaveAttribute("title", expect.stringMatching(/current prompts/i));
+    fireEvent.click(control);
+
+    const message = confirm.mock.calls[0][0] as string;
+    expect(message).toMatch(/all 2 summaries/i);
+    expect(message).toMatch(/from scratch/i);
+    expect(message).toMatch(/current prompts/i);
+    expect(message).toMatch(/discarded/i);
+    expect(onSummarize).toHaveBeenCalledWith(true); // fresh=true, so the worker deletes first
+    confirm.mockRestore();
+  });
 });
 
 describe("ReviewPageClient duplicate advisory count", () => {

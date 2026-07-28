@@ -51,6 +51,16 @@ def constants_categories() -> list[dict]:
     return categories
 
 
+def code_summary_prompt(category_id) -> str | None:
+    """The hardcoded summary prompt for THIS category id, or None when the code defines none.
+
+    Distinct from constants_summary_prompt, which falls back to the general prompt: callers that
+    must ask "does the code own a prompt for this category?" (prompt resolution) need the
+    unsubstituted answer, or every category looks like it has one.
+    """
+    return prompt_texts.get(_prompt_key(category_id))
+
+
 def constants_summary_prompt(category_id) -> str:
     """The hardcoded summary prompt for a category id, with the general (100) fallback."""
     return prompt_texts.get(_prompt_key(category_id), prompt_texts["category_100"])

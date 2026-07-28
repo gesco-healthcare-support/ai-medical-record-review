@@ -12,11 +12,13 @@ export type AdminCategory = {
   has_summary_prompt: boolean;
 };
 
-/** GET /api/admin/prompts/{id}: the stored custom prompt (if any) + the effective text. */
+/** GET /api/admin/prompts/{id}: the stored custom prompt (if any), the effective text, and the
+ *  built-in prompt from the app code that a revert would restore. */
 export type PromptInfo = {
   category_id: string;
   text: string | null;
   effective_text: string;
+  builtin_text: string;
   custom: boolean;
 };
 
@@ -57,6 +59,11 @@ export function putPrompt(id: string, text: string) {
     method: "PUT",
     body: JSON.stringify({ text }),
   });
+}
+
+/** DELETE /api/admin/prompts/{id}: drop the custom row so the built-in (code) prompt applies. */
+export function deletePrompt(id: string) {
+  return apiFetch<PromptInfo>(`/admin/prompts/${id}`, { method: "DELETE" });
 }
 
 /** Re-summarize any owner's document with the current prompts (admin-scoped). */

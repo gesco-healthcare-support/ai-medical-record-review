@@ -11,16 +11,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { getPrompt, type AdminCategory } from "@/lib/admin-api";
-import { useSavePrompt } from "@/hooks/use-admin";
+import { useRevertPrompt, useSavePrompt } from "@/hooks/use-admin";
 import { humanizeError } from "@/lib/errors";
 
-// The general summary prompt lives under category 100 (catalog.get_prompt falls back to it); we read
-// it via the existing endpoint so the reference panel can show what a category would otherwise use.
-const GENERAL_CATEGORY_ID = "100";
-
-/** Edit a category's summary prompt (wide dialog + monospace textarea). Shows the general prompt the
- *  category would otherwise inherit as a read-only reference, with a one-click revert. The current
- *  prompt is fetched on open; saving creates/updates a custom prompt for the category. */
+/** Edit a category's summary prompt (wide dialog + monospace textarea).
+ *
+ *  Prompts live in the app code and ship with a deploy; saving here creates a CUSTOM prompt that
+ *  overrides the built-in one for this category until it is reverted. When a custom prompt exists the
+ *  built-in is shown read-only alongside it, so the difference is visible before reverting. */
 export function PromptDialog({
   open,
   onOpenChange,
@@ -31,10 +29,10 @@ export function PromptDialog({
   category: AdminCategory | null;
 }) {
   const id = category?.id ?? "";
-  const isGeneral = id === GENERAL_CATEGORY_ID;
   const [text, setText] = useState("");
   const [error, setError] = useState("");
   const save = useSavePrompt();
+  const revert = useRevertPrompt();
 
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "prompt", id],
@@ -42,13 +40,8 @@ export function PromptDialog({
     enabled: open && Boolean(id),
   });
 
-  // The general (category-100) prompt, for the reference panel + revert (skip when editing 100).
-  const { data: general } = useQuery({
-    queryKey: ["admin", "prompt", GENERAL_CATEGORY_ID],
-    queryFn: () => getPrompt(GENERAL_CATEGORY_ID),
-    enabled: open && Boolean(id) && !isGeneral,
-  });
-  const generalText = general?.effective_text ?? "";
+  const isCustom = Boolean(data?.custom);
+  const builtinText = data?.builtin_text ?? "";
 
   useEffect(() => {
     if (open) setError("");
@@ -68,31 +61,50 @@ export function PromptDialog({
     }
   }
 
+  async function revertToBuiltIn() {
+    setError("");
+    if (
+      !window.confirm(
+        "Discard this custom prompt? The category goes back to the built-in prompt that ships with the app.",
+      )
+    ) {
+      return;
+    }
+    try {
+      await revert.mutateAsync(id); // the hook refetches this category's prompt + the list
+      onOpenChange(false);
+    } catch (err) {
+      setError(humanizeError(err, { fallback: "Could not revert the prompt." }));
+    }
+  }
+
+  const busy = save.isPending || revert.isPending;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="ev-dialog-wide">
         <DialogHeader>
           <DialogTitle>Summary prompt{category ? ` - ${category.name}` : ""}</DialogTitle>
           <DialogDescription>
-            {data?.custom
-              ? "This category uses a custom summary prompt."
-              : "This category is inheriting the general prompt; saving creates a custom one for it."}
+            {isCustom
+              ? "This category uses a custom prompt saved here, which overrides the built-in one."
+              : "This category uses the built-in prompt that ships with the app. Saving creates a custom prompt that overrides it until you revert."}
           </DialogDescription>
         </DialogHeader>
 
-        {!isGeneral && generalText ? (
+        {isCustom && builtinText ? (
           <div className="ev-refpanel">
             <div className="ev-refpanel-head">
-              <span>General prompt this category would otherwise use</span>
+              <span>Built-in prompt this category would use without the custom one</span>
               <button
                 type="button"
                 className="ev-btn ev-btn-ghost ev-btn-sm"
-                onClick={() => setText(generalText)}
+                onClick={() => setText(builtinText)}
               >
-                Revert editor to this
+                Copy into editor
               </button>
             </div>
-            <pre className="ev-mono ev-refpanel-body">{generalText}</pre>
+            <pre className="ev-mono ev-refpanel-body">{builtinText}</pre>
           </div>
         ) : null}
 
@@ -115,11 +127,21 @@ export function PromptDialog({
             re-run.
           </span>
           {error ? <span className="error-text">{error}</span> : null}
+          {isCustom ? (
+            <button
+              type="button"
+              className="ev-btn ev-btn-ghost"
+              onClick={revertToBuiltIn}
+              disabled={busy}
+            >
+              {revert.isPending ? "Reverting..." : "Revert to built-in"}
+            </button>
+          ) : null}
           <button
             type="button"
             className="ev-btn ev-btn-ghost"
             onClick={() => onOpenChange(false)}
-            disabled={save.isPending}
+            disabled={busy}
           >
             Cancel
           </button>
@@ -127,7 +149,7 @@ export function PromptDialog({
             type="button"
             className="ev-btn ev-btn-primary"
             onClick={submit}
-            disabled={save.isPending || isLoading}
+            disabled={busy || isLoading}
           >
             {save.isPending ? "Saving..." : "Save prompt"}
           </button>
