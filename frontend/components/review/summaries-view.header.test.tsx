@@ -31,7 +31,7 @@ describe("SummariesView header", () => {
         categories={[]}
         header={null}
         onHeaderSaved={vi.fn()}
-        onGotoReview={vi.fn()}
+        onGotoSummarizeStep={vi.fn()}
       />,
     );
     expect(screen.getByPlaceholderText("First")).toBeInTheDocument();
@@ -55,7 +55,7 @@ describe("SummariesView header", () => {
         categories={[]}
         header={null}
         onHeaderSaved={onHeaderSaved}
-        onGotoReview={vi.fn()}
+        onGotoSummarizeStep={vi.fn()}
       />,
     );
     await user.click(screen.getByRole("button", { name: "Auto-fill" }));

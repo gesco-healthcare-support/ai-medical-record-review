@@ -33,7 +33,7 @@ describe("SummariesView error handling", () => {
   it("shows a humanized message when the summaries fail to load", () => {
     summariesState.error = new ApiError("network", 0);
     render(
-      <SummariesView documentId="d1" categories={[]} header={null} onGotoReview={vi.fn()} />,
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
     );
     expect(screen.getByText(/couldn't reach the server/i)).toBeInTheDocument();
   });
@@ -59,7 +59,7 @@ describe("SummariesView verify flag", () => {
       },
     ];
     render(
-      <SummariesView documentId="d1" categories={[]} header={null} onGotoReview={vi.fn()} />,
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
     );
     expect(screen.getByText(/AI-fixed/i)).toBeInTheDocument();
   });
@@ -86,7 +86,7 @@ describe("SummariesView date of injury", () => {
     summariesState.error = null;
     summariesState.data = withText("**DOI**:05/08/2022, 06/01/2023, Lumbar strain noted.");
     render(
-      <SummariesView documentId="d1" categories={[]} header={null} onGotoReview={vi.fn()} />,
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
     );
     expect(screen.getByText(/DOI 05\/08\/2022, 06\/01\/2023/)).toBeInTheDocument();
     expect(screen.getByText("Lumbar strain noted.")).toBeInTheDocument();
@@ -97,7 +97,7 @@ describe("SummariesView date of injury", () => {
     summariesState.error = null;
     summariesState.data = withText("Lumbar strain noted.");
     render(
-      <SummariesView documentId="d1" categories={[]} header={null} onGotoReview={vi.fn()} />,
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
     );
     expect(screen.queryByText(/DOI /)).not.toBeInTheDocument();
   });
@@ -124,7 +124,7 @@ describe("SummariesView source pages", () => {
     summariesState.error = null;
     summariesState.data = [summary()];
     render(
-      <SummariesView documentId="d1" categories={[]} header={null} onGotoReview={vi.fn()} />,
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
     );
     expect(screen.getByTestId("pdf-viewer")).toBeInTheDocument();
 
@@ -143,7 +143,7 @@ describe("SummariesView source pages", () => {
     summariesState.error = null;
     summariesState.data = [summary()];
     render(
-      <SummariesView documentId="d1" categories={[]} header={null} onGotoReview={vi.fn()} />,
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
     expect(jumpTo).not.toHaveBeenCalled();
@@ -151,5 +151,25 @@ describe("SummariesView source pages", () => {
     // The card is in edit mode now: typing in it must not move the viewer either.
     fireEvent.click(screen.getByRole("textbox", { name: /Summary text/i }));
     expect(jumpTo).not.toHaveBeenCalled();
+  });
+});
+
+describe("SummariesView empty state", () => {
+  it("points at the step that owns Summarize, not the tab that lacks it", () => {
+    summariesState.error = null;
+    summariesState.isLoading = false;
+    summariesState.data = [];
+    const onGotoSummarizeStep = vi.fn();
+    render(
+      <SummariesView
+        documentId="d1"
+        categories={[]}
+        header={null}
+        onGotoSummarizeStep={onGotoSummarizeStep}
+      />,
+    );
+    expect(screen.getByText(/summarization from the Duplicates step/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Go to Duplicates/i }));
+    expect(onGotoSummarizeStep).toHaveBeenCalled();
   });
 });
