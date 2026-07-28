@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # and cuts fabrication. Env-overridable so a regression reverts without a redeploy. (2.5-flash
     # only; Gemini 3 would want its default 1.0.)
     summary_temperature: float = 0.0
+    # Output budget for one summary. 2048 cut long category-1 narratives off mid-sentence and the
+    # partial reply was stored as if it were finished; 8192 fits the longest real notes with
+    # headroom, well under 2.5-flash's 65k output ceiling. Env-overridable so a box can raise it
+    # without a redeploy, and a reply that still hits the cap is flagged for manual check.
+    summary_max_output_tokens: int = 8192
     # Summary faithfulness verify pass: a second temp-0 call rewrites each summary to drop
     # statements unsupported by / contradicting its OCR source (problem #3), keeping the raw output
     # too. On by default; a regression reverts via env with no redeploy. Distinct from the

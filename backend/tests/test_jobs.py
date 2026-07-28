@@ -183,6 +183,49 @@ def test_summarize_document_persists_summaries(monkeypatch):
         assert job.progress()["attention"] is None  # a clean run carries no failure detail
         summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
         assert len(summaries) == 1 and summaries[0].title == "T (Pages 1-1)"
+        assert summaries[0].manual_check is False
+
+
+def test_summarize_document_flags_a_truncated_summary_for_manual_check(monkeypatch):
+    """A reply the model cut at the token cap is stored flagged, so the reviewer sees the chip on a
+    summary that stops mid-sentence instead of trusting it as complete."""
+    import app.services.summarize_engine as se
+
+    monkeypatch.setattr(
+        se,
+        "summarize_row",
+        lambda pdf_path, row, model=None, prompt=None: {
+            "summaryTitle": "T (Pages 1-1)",
+            "summaryDate": "-",
+            "summaryText": "body cut off mid-sen",
+            "manualCheck": "",
+            "truncated": True,
+            "sourceText": "x",
+        },
+    )
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        session.add(
+            ReviewRow(
+                document_id=doc_id,
+                idx=0,
+                start=1,
+                end=1,
+                category="1",
+                title="A",
+                date="-",
+                injury_date="-",
+                flag="-",
+                include=True,
+            )
+        )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "summarize", model="m", prompt_version="1").id
+
+    summarize_document(job_id)
+    with get_sessionmaker()() as session:
+        summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
+        assert len(summaries) == 1 and summaries[0].manual_check is True
 
 
 def test_summarize_document_preserves_row_order_under_parallelism(monkeypatch):
