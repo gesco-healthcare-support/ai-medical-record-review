@@ -40,6 +40,9 @@ class ExportPayload(BaseModel):
     patientdob: str = ""
     QMEorAME: str = ""
     lawfirm: str = ""
+    # Per-record "(Pages X-Y)" suffixes are an internal reviewing aid, so the presentable export is
+    # what a caller gets by default; the export dialog opts in.
+    includePageNumbers: bool = False
 
 
 class BundlePayload(BaseModel):

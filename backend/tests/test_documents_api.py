@@ -484,6 +484,55 @@ def test_manualcheck_flag_is_stripped_from_both_exports():
     assert "MRI Report" in word["summaryTitle"] and "MRI Report" in pdf["linkTitle"]
 
 
+def _diagnostic_summary(**over):
+    """A stored diagnostic summary whose title already carries an engine page suffix."""
+    fields = dict(
+        document_id="d",
+        job_id=1,
+        idx=0,
+        title="MRI Report - Dr Scan (Pages 3-5)",
+        text="body",
+        row_start=3,
+        row_end=5,
+        row_category="3",
+        date="-",
+    )
+    fields.update(over)
+    return Summary(**fields)
+
+
+def test_page_range_is_omitted_by_default_and_included_on_request():
+    """A presentable report carries no per-record page ranges; the reviewer opts in per export."""
+    from app.api.documents import _export_entry, _export_title_and_text, _pdf_entry
+
+    summary = _diagnostic_summary()
+    plain, _ = _export_title_and_text(summary)
+    with_pages, _ = _export_title_and_text(summary, with_pages=True)
+
+    assert "(Pages" not in plain
+    assert plain.endswith("[Diagnostic Study]")  # the other decorations survive
+    assert with_pages == "MRI Report - Dr Scan [Diagnostic Study] (Pages 3-5)"
+
+    assert _export_entry(summary)["summaryTitle"] == plain
+    assert _export_entry(summary, with_pages=True)["summaryTitle"] == with_pages
+    assert _pdf_entry(summary)["linkTitle"] == plain
+    assert _pdf_entry(summary, with_pages=True)["linkTitle"] == with_pages
+    # Dropping the text must not disturb the hyperlink target.
+    assert _pdf_entry(summary)["startPage"] == 3
+
+
+def test_stale_page_suffix_is_stripped_either_way():
+    """A stored suffix can be stale (wrong range after a row edit, or an en-dash range from the web
+    view), so the export rebuilds it from row_start/row_end instead of trusting the title."""
+    from app.api.documents import _export_title_and_text
+
+    stale = _diagnostic_summary(edited_title="MRI Report (Pages 1-9)")
+    assert "(Pages" not in _export_title_and_text(stale)[0]
+    assert _export_title_and_text(stale, with_pages=True)[0].endswith("(Pages 3-5)")
+    en_dash = _diagnostic_summary(edited_title="MRI Report (Pages 1\u20139)")
+    assert "(Pages" not in _export_title_and_text(en_dash)[0]
+
+
 def _exported(**over):
     """One Summary through the shared export path -> its exported body."""
     from app.api.documents import _export_title_and_text

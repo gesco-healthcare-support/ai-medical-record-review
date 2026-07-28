@@ -2,6 +2,8 @@
 
 import io
 
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+
 from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
 
 
@@ -56,3 +58,22 @@ def test_build_mrr_document_renders_two_column_table():
     assert table.rows[0].cells[0].text == "03/04/2019"
     assert "Report B" in table.rows[0].cells[1].text
     assert "text B" in table.rows[0].cells[1].text
+
+
+def test_summary_body_is_justified():
+    # A finished report reads as justified prose; the date column stays left-aligned (default).
+    entries = [
+        {"summaryDate": "01/02/2020", "summaryTitle": "Report A", "summaryText": "text A"},
+        {"summaryDate": "03/04/2019", "summaryTitle": "Report B", "summaryText": "text B"},
+    ]
+    doc = build_mrr_document(
+        entries,
+        num_pages=2,
+        patient_name="Synthetic Patient",
+        patient_dob="-",
+        qme_or_ame="QME",
+        lawfirm="Example Law Firm",
+    )
+    for row in doc.tables[0].rows:
+        assert row.cells[1].paragraphs[0].alignment == WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+        assert row.cells[0].paragraphs[0].alignment != WD_PARAGRAPH_ALIGNMENT.JUSTIFY
