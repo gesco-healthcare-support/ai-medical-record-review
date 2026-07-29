@@ -520,8 +520,10 @@ def test_page_range_is_omitted_by_default_and_included_on_request():
     with_pages, _ = _export_title_and_text(summary, with_pages=True)
 
     assert "(Pages" not in plain
-    assert plain.endswith("[Diagnostic Study]")  # the other decorations survive
-    assert with_pages == "MRI Report - Dr Scan [Diagnostic Study] (Pages 3-5)"
+    # The internal [Diagnostic Study] tag no longer survives either: like [ManualCheck] it is a
+    # review marker, and the human-written deliverables this output is measured against carry none.
+    assert "[Diagnostic Study]" not in plain
+    assert with_pages == "MRI Report - Dr Scan (Pages 3-5)"
 
     assert _export_entry(summary)["summaryTitle"] == plain
     assert _export_entry(summary, with_pages=True)["summaryTitle"] == with_pages
