@@ -82,7 +82,8 @@ describe("SummariesView date of injury", () => {
     },
   ];
 
-  it("shows every injury date the document stated, and none of the prefix in the body", () => {
+  it("shows every injury date a legacy stored summary stated, and none of the prefix in the body", () => {
+    // 709 summaries predate the house grammar; their comma-terminated prefix must still parse.
     summariesState.error = null;
     summariesState.data = withText("**DOI**:05/08/2022, 06/01/2023, Lumbar strain noted.");
     render(
@@ -91,6 +92,27 @@ describe("SummariesView date of injury", () => {
     expect(screen.getByText(/DOI 05\/08\/2022, 06\/01\/2023/)).toBeInTheDocument();
     expect(screen.getByText("Lumbar strain noted.")).toBeInTheDocument();
     expect(screen.queryByText(/\*\*DOI\*\*/)).not.toBeInTheDocument();
+  });
+
+  it("shows every injury date in the house grammar", () => {
+    summariesState.error = null;
+    summariesState.data = withText("**DOI**: 05/08/22 & 06/01/23. Lumbar strain noted.");
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+    expect(screen.getByText(/DOI 05\/08\/22 & 06\/01\/23/)).toBeInTheDocument();
+    expect(screen.getByText("Lumbar strain noted.")).toBeInTheDocument();
+    expect(screen.queryByText(/\*\*DOI\*\*/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a cumulative-trauma period as one value", () => {
+    summariesState.error = null;
+    summariesState.data = withText("**DOI**: CT 01/02/20-03/04/21. Lumbar strain noted.");
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+    expect(screen.getByText(/DOI CT 01\/02\/20-03\/04\/21/)).toBeInTheDocument();
+    expect(screen.getByText("Lumbar strain noted.")).toBeInTheDocument();
   });
 
   it("shows no date when the summary states none", () => {

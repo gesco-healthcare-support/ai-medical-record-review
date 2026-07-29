@@ -15,10 +15,20 @@ import { SplitPane } from "./split-pane";
 
 const PAGE_SIZE = 20;
 
-// Mirrors _DOI_PREFIX in backend/app/services/summary_doi.py: the stored prefix is a COMMA-JOINED
-// date list, so every date must be matched - stopping at the first comma would hide a second injury
+// Mirrors summary_doi.py. TWO grammars are read, because summaries stored before 2026-07-29 carry
+// the older one and must keep showing their DOI in the chip instead of leaving a raw "**DOI**:..."
+// in the body:
+//   house  "**DOI**: 05/08/22 & 06/01/23."  /  "**DOI**: CT 01/02/20-03/04/21."
+//   legacy "**DOI**:05/08/2022, 06/01/2023,"
+// Every date must be matched in both - stopping at the first separator would hide a second injury
 // date the document actually stated.
-const DOI_PREFIX = /^\s*\*\*DOI\*\*:\s*([\d/.-]{4,}(?:\s*,\s*[\d/.-]{4,})*)\s*,\s*/;
+const DOI_DATE = String.raw`\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}`;
+const DOI_ITEM = String.raw`(?:CT\s*)?${DOI_DATE}(?:\s*-\s*${DOI_DATE})?`;
+const DOI_PREFIX_NEW = new RegExp(
+  String.raw`^\s*\*\*DOI\*\*:\s*(${DOI_ITEM}(?:\s*&\s*${DOI_ITEM})*)\s*\.\s*`,
+  "i",
+);
+const DOI_PREFIX_LEGACY = /^\s*\*\*DOI\*\*:\s*([\d/.-]{4,}(?:\s*,\s*[\d/.-]{4,})*)\s*,\s*/;
 
 /** Strip the decorations the engine bakes into stored strings; the web view shows chips/meta. */
 function parseDisplay(item: SummaryItem) {
@@ -28,7 +38,7 @@ function parseDisplay(item: SummaryItem) {
     .replace(/\s*\[Diagnostic Study\]\s*$/i, "");
   let text = item.summaryText || "";
   let doi: string | null = null;
-  const match = DOI_PREFIX.exec(text);
+  const match = DOI_PREFIX_NEW.exec(text) ?? DOI_PREFIX_LEGACY.exec(text);
   if (match) {
     doi = match[1].trim();
     text = text.slice(match[0].length);
