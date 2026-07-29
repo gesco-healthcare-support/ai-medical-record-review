@@ -318,11 +318,13 @@ class Summary(Base):
     edited_title = Column(String(512))
     edited_date = Column(String(16))
     edited_text = Column(Text)
-    # Faithfulness verify pass: `verified` = the pass ran; `verified_text` = the AI-corrected body
-    # (set only when issues were found); `verify_issues` = the list of {type, detail} it fixed. The
-    # raw `text` stays immutable (training data); edited_text > verified_text > text in display.
+    # Faithfulness verify pass: `verified` = the pass ran; `verified_text` / `verified_title` = the
+    # AI-corrected body and header (each set only when the pass found something to fix);
+    # `verify_issues` = the list of {type, detail} it fixed. The raw `text` and `title` stay
+    # immutable (training data); display precedence is edited > verified > raw for BOTH.
     verified = Column(Boolean, nullable=False, default=False)
     verified_text = Column(Text)
+    verified_title = Column(String(512))
     verify_issues = Column(JSON)
     excluded = Column(Boolean, nullable=False, default=False)
     manual_check = Column(Boolean, nullable=False, default=False)
@@ -331,7 +333,14 @@ class Summary(Base):
     row_category = Column(String(8), nullable=False)
 
     def effective_title(self):
-        return self.edited_title if self.edited_title is not None else self.title
+        # Same precedence as effective_text: reviewer edit, then the AI-verified correction, then
+        # the raw model output. A verified title is applied without the reviewer having to accept
+        # it, because leaving a title the pass KNOWS is wrong on screen is the worse default.
+        if self.edited_title is not None:
+            return self.edited_title
+        if self.verified_title is not None:
+            return self.verified_title
+        return self.title
 
     def effective_date(self):
         return self.edited_date if self.edited_date is not None else self.date

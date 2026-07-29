@@ -737,9 +737,12 @@ _BUNDLE_NAME_CHARS = re.compile(r"[^a-z0-9]+")
 
 def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tuple[str, str]:
     """Shared export title + body used by BOTH the Word and linked-PDF entries (so the two stay
-    identical). Strips the internal [ManualCheck] review flag - dropped from exports because a
-    finished report/PDF cannot be edited to remove it, though it stays visible in the app - and the
-    stale page suffix, then re-applies [Diagnostic Study] and prepends the DOI.
+    identical). Strips the internal [ManualCheck] and [Diagnostic Study] tags and the stale page
+    suffix, then prepends the DOI.
+
+    Both tags are internal review markers. They stay visible in the app, but a finished report or
+    PDF cannot be edited to remove them, and the human-written deliverables this output is measured
+    against carry neither. [Diagnostic Study] used to be RE-APPLIED here; it is now removed.
 
     ``with_pages`` re-applies the ``(Pages X-Y)`` suffix from the row's CURRENT range. It is off by
     default because the presentable report carries no internal page ranges; the stored suffix is
@@ -747,8 +750,7 @@ def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tup
     """
     title = re.sub(r"^\[ManualCheck\]\s*", "", summary.effective_title().strip())
     title = _PAGES_SUFFIX.sub("", title).rstrip()
-    if str(summary.row_category) == "3" and "[Diagnostic Study]" not in title:
-        title = f"{title} [Diagnostic Study]"
+    title = re.sub(r"\s*\[Diagnostic Study\]\s*", " ", title).strip()
     if with_pages:
         title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
     text = summary.effective_text()

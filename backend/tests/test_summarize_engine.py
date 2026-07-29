@@ -90,8 +90,9 @@ def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
     monkeypatch.setattr(
         se,
         "verify_summary",
-        lambda model, source, summary: {
+        lambda model, source, summary, title=None: {
             "fixed_text": "SUMMARY BODY",
+            "fixed_title": title,
             "issues": [{"type": "unsupported", "detail": "a fabrication"}],
         },
     )
@@ -104,6 +105,63 @@ def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
     assert "fabrication" not in out["verifiedText"]
     # The raw model output stays the un-fixed body (immutable training data).
     assert "fabrication" in out["summaryText"]
+    # The title came back unchanged, so nothing is stored to override it.
+    assert out["verifiedTitle"] is None
+
+
+def test_verified_title_is_stored_decorated_when_the_pass_corrects_it(monkeypatch):
+    # WHEN the verify pass corrects the title, THE SYSTEM SHALL store it with the same decorations
+    # as the raw title, so it is a drop-in replacement in every view.
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "raw OCR text")
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None: {
+            "fixed_text": "SUMMARY BODY",
+            "fixed_title": "CORRECTED HEADER",
+            "issues": [{"type": "laterality", "detail": "left/right"}],
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(category="3", flag="x"), prompt="P", verify=True)
+
+    assert out["verifiedTitle"] == "[ManualCheck] CORRECTED HEADER [Diagnostic Study] (Pages 1-2)"
+    # The raw title keeps the model's own output.
+    assert "Progress Note" in out["summaryTitle"]
+
+
+def test_verified_title_stays_none_when_the_pass_finds_nothing(monkeypatch):
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "raw OCR text")
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None: {
+            "fixed_text": "",
+            "fixed_title": "SOMETHING ELSE",
+            "issues": [],
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+    assert out["verifiedTitle"] is None
+    assert out["verifiedText"] is None
+
+
+def test_the_title_is_handed_to_the_verify_pass(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "raw OCR text")
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+
+    def fake_verify(model, source, summary, title=None):
+        seen["title"] = title
+        return {"fixed_text": summary, "fixed_title": title, "issues": []}
+
+    monkeypatch.setattr(se, "verify_summary", fake_verify)
+    se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+    # The BARE model title, without the page suffix or tags - those are added after verification.
+    assert seen["title"] == "Progress Note - Dr Smith"
 
 
 def test_doi_prefix_from_isolated_extraction(monkeypatch):
@@ -111,9 +169,20 @@ def test_doi_prefix_from_isolated_extraction(monkeypatch):
     monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "OCR text")
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
-    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "09/25/2023")
+    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "09/25/23")
     out = se.summarize_row("/x.pdf", _row(injury_date="-"), prompt="P", extract_doi=True)
-    assert out["summaryText"].startswith("**DOI**:09/25/2023,")
+    assert out["summaryText"].startswith("**DOI**: 09/25/23.")
+
+
+def test_doi_prefix_carries_a_cumulative_trauma_period(monkeypatch):
+    # WHEN the document states a cumulative-trauma period, THE SYSTEM SHALL carry the whole period
+    # as one value rather than splitting it into two injury dates.
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "OCR text")
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "CT 01/02/20-03/04/21")
+    out = se.summarize_row("/x.pdf", _row(injury_date="-"), prompt="P", extract_doi=True)
+    assert out["summaryText"].startswith("**DOI**: CT 01/02/20-03/04/21.")
 
 
 def test_doi_prefix_omitted_when_isolated_returns_dash(monkeypatch):
@@ -135,7 +204,7 @@ def test_extract_doi_false_uses_row_value_without_calling(monkeypatch):
     called = []
     monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: called.append(1) or "99/99/9999")
     out = se.summarize_row("/x.pdf", _row(injury_date="05/07/2018"), prompt="P", extract_doi=False)
-    assert out["summaryText"].startswith("**DOI**:05/07/2018,")
+    assert out["summaryText"].startswith("**DOI**: 05/07/2018.")
     assert called == []
 
 

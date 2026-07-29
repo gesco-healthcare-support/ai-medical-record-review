@@ -157,10 +157,11 @@ def test_a_working_run_rewrites_once_and_is_idempotent(monkeypatch):
         monkeypatch.setattr(backfill_doi, "extract_injury_date", lambda *a, **k: "05/08/2022")
 
         assert backfill_doi.run(session, [doc_id]) == (1, 0)
+        # Idempotent: the second run sees the house-grammar prefix it just wrote and changes nothing.
         assert backfill_doi.run(session, [doc_id]) == (0, 0)
     with get_sessionmaker()() as check:
         text, _, _ = _texts(check, summary_id)
-        assert text == "**DOI**:05/08/2022, Lumbar strain noted."
+        assert text == "**DOI**: 05/08/2022. Lumbar strain noted."
 
 
 def test_one_unreadable_summary_does_not_block_the_others(monkeypatch):
@@ -181,4 +182,4 @@ def test_one_unreadable_summary_does_not_block_the_others(monkeypatch):
         assert backfill_doi.run(session, [doc_id]) == (1, 1)
     with get_sessionmaker()() as check:
         assert _texts(check, first)[0] == _BODY  # untouched
-        assert _texts(check, second)[0] == "**DOI**:05/08/2022, Lumbar strain noted."
+        assert _texts(check, second)[0] == "**DOI**: 05/08/2022. Lumbar strain noted."

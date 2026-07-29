@@ -23,18 +23,37 @@ from app.services.summary_verify import verify_summary
 
 logger = logging.getLogger(__name__)
 
+# The header line a human reviewer writes, measured across 812 of 813 entries in ten completed MRR
+# deliverables: ALL CAPS, "AUTHOR, CREDENTIALS. FACILITY. DOCUMENT TYPE.". The old prompt inverted
+# that order, had no facility slot (so the model put letterhead in the title instead), mandated
+# dashes, and banned the comma the credential form needs. Diagnostics get an explicit naming form
+# because ~18 of 36 measured category-3 titles named the document class ("Radiology Report") rather
+# than the study. The date is NOT here: it is already its own column, as in the human layout.
 TITLE_PROMPT = (
-    "You are an intelligent assistant tasked with extracting the **title** of the document "
-    "and the **entity responsible for the encounter**. Follow these instructions:\n\n"
-    "1. **Title Extraction**: extract the title if explicitly clear, else infer it from "
-    'context (e.g. "PT Progress Note", "Office Visit", "Hospital Discharge"); it can be at '
-    'the top or towards the end of the document. If it cannot be inferred, respond `" unknown"`.\n'
-    "2. **Name of Entity Responsible for the Encounter**: the person or entity that directly "
-    "conducted the encounter (prefer the signature section); never the referring provider. "
-    'If unavailable, return `"Unknown"`.\n'
-    "3. **Output Format**: a single line `[Title] - [Name of Responsible for Encounter]`. "
-    "Never use commas; separate with dashes.\n"
-    "4. **Do Not Add Commentary**: return only the extracted information."
+    "You extract the header line for ONE medical sub-document. Return exactly one line, in this "
+    "order, with the elements separated by a period and a space, and the WHOLE line in capital "
+    "letters:\n\n"
+    "AUTHOR, CREDENTIALS. FACILITY. DOCUMENT TYPE.\n\n"
+    "1. AUTHOR - the person who conducted and signed THIS encounter, read from the signature "
+    "block where there is one. Never the referring provider. Write the name, then a comma, "
+    'then the credentials with periods, for example "JANE SMITH, M.D." Non-physicians are '
+    "included: M.D., D.O., D.C., P.T., R.N., P.A., N.P., PSY.D., L.V.N., O.D., D.D.S.\n"
+    "2. FACILITY - the clinic, imaging centre, hospital, laboratory, or practice that produced "
+    "the document, usually on the letterhead.\n"
+    "3. DOCUMENT TYPE - what the document IS.\n"
+    "   For a diagnostic study, name the study, never its class. Use the form "
+    "<MODALITY> OF THE <SIDE IF STATED> <BODY PART> <CONTRAST STATUS IF STATED>, for example "
+    '"MRI OF THE CERVICAL SPINE WITHOUT CONTRAST", "CT OF THE HEAD WITHOUT CONTRAST", '
+    '"X-RAY OF THE LEFT WRIST", "EMG/NCS OF THE UPPER EXTREMITIES". Never "RADIOLOGY REPORT", '
+    '"GENERAL RADIOLOGY PROCEDURE", or "DIAGNOSTIC REPORT". Ultrasound and mammogram studies '
+    'are named organ-first, for example "THYROID ULTRASOUND".\n'
+    "   A facility name is NOT a document type. If the top of the page carries only letterhead, "
+    "read on for the study or report heading, which often sits above the findings.\n\n"
+    "If an element is not stated in the document, omit that element and its separator. Do not "
+    'write "UNKNOWN", "UNSPECIFIED", or any placeholder - an absent element is left out, the same '
+    "way an absent point is left out of the summary body.\n\n"
+    "Never include page numbers or page ranges, dates, or the patient's name. Return only the "
+    "line, with no commentary."
 )
 
 # Prepended to every category prompt. Extractive-faithfulness rules (each states its WHY so it
@@ -52,6 +71,23 @@ HARDENING_PREAMBLE = (
     "your other statements.\n"
     "- If the text is illegible, ambiguous, or internally contradictory, omit that point rather "
     "than resolving it by guessing.\n\n"
+    # Content scope lives here, once, so a category prompt only has to name its own points.
+    # Measured cause of long summaries: nothing forbade a point the category never asked for, so
+    # our bodies run 2-5x the human median (240 chars). The employer/occupation carve-out is
+    # deliberate - only categories 7 and 13 name those fields, and the editors want them on any
+    # report that states them, so the first rule alone would have suppressed them everywhere else.
+    "CONTENT RULES (what belongs in the summary):\n"
+    "- Include a point ONLY if the category rules below name it for this document type. Do not "
+    "add a point the rules do not list, however relevant it looks - unrequested detail is the "
+    "main reason summaries run long.\n"
+    "- Employer and occupation are exceptions to the rule above: include either whenever the "
+    "document states it, on any document type.\n"
+    "- Report positive and abnormal findings only. Omit anything recorded as normal, negative, "
+    "unremarkable, or within normal limits; a reader assumes anything not mentioned was normal.\n"
+    "- Do NOT write ICD, CPT, or other billing codes, even when the document lists them.\n"
+    "- For pain, give frequency, intensity on the scale the document uses, and location, and "
+    "nothing else. Do not add qualitative descriptors, and never state intensity twice - write "
+    '"6/10", not "moderate 6/10".\n\n'
     "FORMATTING (STRICT - overrides any layout instruction in the category rules below):\n"
     "- Write the ENTIRE summary as ONE continuous paragraph. Do NOT use line breaks, blank lines, "
     "bullet points, or numbered lists to separate points; when the rules below organize the content "
@@ -188,21 +224,34 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
         if extract_doi
         else row["injury_date"]
     )
-    doi_final = "" if injury in ("", "-") else f"**DOI**:{injury},"
+    # House grammar (see summary_doi): "**DOI**: <value>." - colon-space, period terminator. Stored
+    # summaries written before 2026-07-29 carry the old "**DOI**:<value>," form and stay readable;
+    # summary_doi.doi_prefix parses both.
+    doi_final = "" if injury in ("", "-") else f"**DOI**: {injury}."
     diag_tag = " [Diagnostic Study]" if str(row["category"]) == "3" else ""
     manual_tag = "[ManualCheck] " if str(row["flag"]).strip().lower() == "x" else ""
 
-    # Faithfulness verify pass (problem #3): audit the body against its source and, ONLY when the
-    # pass flags issues, keep the corrected body as verifiedText (the raw summaryText stays as the
-    # immutable model output). No issues -> verifiedText/verifyIssues stay None, so the summary is
-    # unchanged and unflagged. verify_summary is fail-safe (returns the original on any error).
+    # Faithfulness verify pass (problem #3): audit the title AND the body against their source and,
+    # ONLY when the pass flags issues, keep the corrected pair as verifiedTitle/verifiedText (the raw
+    # summaryTitle/summaryText stay as the immutable model output). No issues -> both stay None, so
+    # the summary is unchanged and unflagged. verify_summary is fail-safe (returns the originals on
+    # any error). The title is audited because it is the first thing a client reads and it carries
+    # dates and laterality that a body-only check never saw.
     verified_text = None
+    verified_title = None
     verify_issues = None
     if verify:
-        result = verify_summary(model, text, summary)
+        result = verify_summary(model, text, summary, title=title)
         if result["issues"]:
             verified_text = f"{doi_final} {result['fixed_text']}"
             verify_issues = result["issues"]
+            # Decorated exactly like the stored title, so a verified title is a drop-in replacement
+            # in every view; the export path strips the tags either way.
+            fixed_title = (result.get("fixed_title") or "").strip()
+            if fixed_title and fixed_title != title:
+                verified_title = (
+                    f"{manual_tag}{fixed_title}{diag_tag} (Pages {row['start']}-{row['end']})"
+                )
 
     return {
         "summaryDate": row["date"],
@@ -214,6 +263,7 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
         "summaryText": f"{doi_final} {summary}",
         "verified": bool(verify),
         "verifiedText": verified_text,
+        "verifiedTitle": verified_title,
         "verifyIssues": verify_issues,
         # The exact model input, so callers can persist the fine-tuning pair.
         "sourceText": text,

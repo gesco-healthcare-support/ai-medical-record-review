@@ -520,8 +520,10 @@ def test_page_range_is_omitted_by_default_and_included_on_request():
     with_pages, _ = _export_title_and_text(summary, with_pages=True)
 
     assert "(Pages" not in plain
-    assert plain.endswith("[Diagnostic Study]")  # the other decorations survive
-    assert with_pages == "MRI Report - Dr Scan [Diagnostic Study] (Pages 3-5)"
+    # The internal [Diagnostic Study] tag no longer survives either: like [ManualCheck] it is a
+    # review marker, and the human-written deliverables this output is measured against carry none.
+    assert "[Diagnostic Study]" not in plain
+    assert with_pages == "MRI Report - Dr Scan (Pages 3-5)"
 
     assert _export_entry(summary)["summaryTitle"] == plain
     assert _export_entry(summary, with_pages=True)["summaryTitle"] == with_pages
@@ -577,6 +579,32 @@ def test_export_does_not_double_up_or_invent_a_doi():
     assert _exported() == "**DOI**:05/08/2022, Body."
     # Nothing stated -> nothing added.
     assert _exported(text="Body with no injury date.") == "Body with no injury date."
+
+
+def test_export_restores_a_house_grammar_prefix():
+    # WHEN a summary stored in the house grammar has its prefix stripped by a reviewer edit,
+    # THE SYSTEM SHALL restore it in the same grammar, including a cumulative-trauma period.
+    assert (
+        _exported(text="**DOI**: 05/08/22. Body.", edited_text="Rewrite.")
+        == "**DOI**: 05/08/22. Rewrite."
+    )
+    assert (
+        _exported(text="**DOI**: CT 01/02/20-03/04/21. Body.", edited_text="Rewrite.")
+        == "**DOI**: CT 01/02/20-03/04/21. Rewrite."
+    )
+
+
+def test_export_title_carries_no_internal_tags():
+    # WHEN a category-3 summary is exported, THE SYSTEM SHALL emit a title with neither internal
+    # tag: [Diagnostic Study] used to be re-applied here, and the human-written deliverables this
+    # output is measured against carry neither marker.
+    from app.api.documents import _export_title_and_text
+
+    tagged = _diagnostic_summary(title="[ManualCheck] MRI OF THE LUMBAR SPINE [Diagnostic Study]")
+    title = _export_title_and_text(tagged)[0]
+    assert "[Diagnostic Study]" not in title
+    assert "[ManualCheck]" not in title
+    assert title == "MRI OF THE LUMBAR SPINE"
 
 
 async def test_bundle_pdf_and_category_errors(authed):
