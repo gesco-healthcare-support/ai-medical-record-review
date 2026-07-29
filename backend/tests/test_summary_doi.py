@@ -159,15 +159,12 @@ def test_apply_prefix_removes_either_grammar_when_dash():
 
 def test_apply_prefix_upgrades_a_legacy_prefix_to_the_house_grammar():
     assert (
-        sd.apply_doi_prefix("**DOI**:01/01/2000, Body.", "09/25/23")
-        == "**DOI**: 09/25/23. Body."
+        sd.apply_doi_prefix("**DOI**:01/01/2000, Body.", "09/25/23") == "**DOI**: 09/25/23. Body."
     )
 
 
 def test_apply_prefix_replaces_a_new_grammar_prefix():
-    assert (
-        sd.apply_doi_prefix("**DOI**: 01/01/00. Body.", "09/25/23") == "**DOI**: 09/25/23. Body."
-    )
+    assert sd.apply_doi_prefix("**DOI**: 01/01/00. Body.", "09/25/23") == "**DOI**: 09/25/23. Body."
 
 
 def test_apply_prefix_strips_multi_date_prefixes_in_both_grammars():
@@ -182,9 +179,7 @@ def test_apply_prefix_leaves_non_prefixed_body_when_dash():
 def test_doi_prefix_reads_the_house_grammar():
     assert sd.doi_prefix("**DOI**: 05/08/22. Body.") == "**DOI**: 05/08/22."
     assert sd.doi_prefix("**DOI**: 05/08/22 & 06/01/23. Body.") == "**DOI**: 05/08/22 & 06/01/23."
-    assert (
-        sd.doi_prefix("**DOI**: CT 01/02/20-03/04/21. Body.") == "**DOI**: CT 01/02/20-03/04/21."
-    )
+    assert sd.doi_prefix("**DOI**: CT 01/02/20-03/04/21. Body.") == "**DOI**: CT 01/02/20-03/04/21."
 
 
 def test_doi_prefix_still_reads_legacy_stored_prefixes_verbatim():
