@@ -72,6 +72,14 @@ def get_prompt(session: Session, role: str, category_id) -> str | None:
          change reaches every box;
       3. the general (100) prompt row     - only for a category the code has no prompt for (11);
       4. the general code prompt          - back-stop on an unseeded DB.
+
+    Step 3 exists for exactly ONE category and that is DELIBERATE, not an oversight (register B-16,
+    decided 2026-07-30). Category 11 (comprehensive interval history / medical decision making) has no
+    prompt of its own and resolves to the general one. The editors report never seeing this document
+    type, and the corpus holds two entries for it - too thin to author a point set from without
+    inventing a convention. It is not deactivated either: 6 live review rows carry category 11 and
+    rows.validate_rows accepts only ACTIVE categories, so deactivating would make every document
+    holding one of those rows unsaveable.
     Step 2 must come before step 3: otherwise a category with no row of its own is summarized with
     the catch-all prompt rather than its own rules.
     """
