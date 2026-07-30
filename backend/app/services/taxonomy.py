@@ -8,11 +8,16 @@ embedding and LLM stages. It is NOT yet the curated B6 taxonomy (deferred).
 Notes:
 - Category ids are strings to match the CSV ``category`` column and ``summarize`` options.
 - Category 6 is intentionally omitted: it is empty in ``groups.py`` (no titles) and was never
-  assignable, so there is nothing to mirror.
-- Some group-5 entries are section headers ("History of Present Illness", "Physical
-  Examination", "Diagnosis") rather than document types. They are kept to match ``groups.py``
-  by decision; because they appear in nearly every report they can add matching noise, which
-  the cascade's embedding-vs-LLM cross-check is relied on to dampen. Refining this is B6.
+  assignable, so there is nothing to mirror. It exists downstream (a prompt + an editor label,
+  seeded by ``seed_catalog._ID_SIX``) and its document types - daily encounter and SOAP notes -
+  are auto-assigned into category 5, whose prompt now carries the same specification.
+- The classifier reads the DB catalog first (``catalog.get_categories``) and only falls back to
+  these constants, so a change here reaches an EXISTING box only with a migration that updates
+  the ``categories`` rows. See ``alembic/.../category_modality_vs_specimen``.
+- The bare section headers that used to sit under category 5 ("History of Present Illness",
+  "Physical Examination", "Diagnosis") were removed on 2026-07-30 (register D-05): they appear in
+  nearly every report, so they attracted anything with a physical-exam heading rather than the
+  therapy notes the category is for.
 """
 
 from dataclasses import dataclass
@@ -37,7 +42,15 @@ CATEGORIES: dict[str, "Category"] = {
     "1": Category(
         "1",
         "Treating progress and follow-up reports (PR-2)",
-        "Routine treating-physician progress notes, office/clinic visits, and follow-ups.",
+        # D-03: emergency-department provider notes moved here from category 3 - an ED encounter is
+        # a treating visit, not a diagnostic study, and this category's prompt already carries an
+        # "Emergency Department Report" point set. D-04: the unqualified "Supplemental Report" moved
+        # to category 12, which owns QME/AME supplementals; the pain-management one stays, since it
+        # is a treating supplemental.
+        "Routine treating-physician progress notes, office/clinic visits, follow-ups, and "
+        "emergency-department encounter notes. A supplemental report responding to a prior "
+        "medical-legal (QME or AME) evaluation belongs to the QME/AME supplemental category, "
+        "not here.",
         (
             "Medical Progress Reports (PR-2)",
             "Primary Treating Physician's Progress Report (PR-2)",
@@ -62,9 +75,9 @@ CATEGORIES: dict[str, "Category"] = {
             "Admission History & Physical",
             "Preoperative Hospital Admission History and Physical",
             "Physical Examination Reevaluation",
-            "Supplemental Report",
             "Supplemental Report on Pain Management Process",
             "Initial Comprehensive Examination",
+            "Ed (Emergency Department) Provider Notes",
         ),
     ),
     "2": Category(
@@ -87,13 +100,17 @@ CATEGORIES: dict[str, "Category"] = {
     "3": Category(
         "3",
         "Diagnostic studies and imaging",
-        "Imaging and diagnostic studies: X-Ray, MRI, CT, EMG/NCS, laboratory reports, sleep "
-        "studies, and similar.",
+        # D-01/D-02: this category is MODALITY-based and 14 is SPECIMEN-based. Both descriptions name
+        # the distinction and each points at the other, because the classifier's LLM stage sees only
+        # this text - listing "Laboratory Report" here (as it did) told it the opposite.
+        "Studies performed ON THE BODY with an instrument, reported as an image or a tracing that a "
+        "physician reads: X-Ray, MRI, CT, ultrasound, mammogram, EMG/NCS, ECG, sleep study, bone "
+        "density, and endoscopy. A test run on a SPECIMEN taken from the body - blood, urine, or a "
+        "toxicology screen - is a laboratory result and belongs to the laboratory category, not here.",
         (
             "Diagnostic Study (X-Ray, MRI, CT scan)",
             "Diagnostic Study",
             "Diagnostic",
-            "Laboratory Report",
             "NCS/EMG Report",
             "Electrodiagnostic Study",
             "Unattended Sleep Study",
@@ -102,7 +119,6 @@ CATEGORIES: dict[str, "Category"] = {
             "Dexa Bone Density Hip and Spine",
             "Bilateral Mammogram Screening",
             "Diabetic Muscle Infraction",
-            "Ed (Emergency Department) Provider Notes",
             "X-Ray Report",
             "X Ray Report",
             "XRay Report",
@@ -130,7 +146,11 @@ CATEGORIES: dict[str, "Category"] = {
     "5": Category(
         "5",
         "Physical therapy, chiropractic, and acupuncture",
-        "Physical therapy, chiropractic, and acupuncture evaluations and progress reports.",
+        # D-06: category 6 (daily / SOAP notes) defines the same document types with a conflicting
+        # spec and is never auto-assigned, so those notes land here. Naming them makes the auto-assign
+        # target explicit; category 5's prompt now carries category 6's point set for them.
+        "Physical therapy, occupational therapy, chiropractic, and acupuncture evaluations, progress "
+        "reports, and daily encounter or SOAP notes.",
         (
             "Initial Acupuncture Intake Form",
             "Initial Chiropractic Evaluation",
@@ -141,6 +161,10 @@ CATEGORIES: dict[str, "Category"] = {
             "Acupuncture Worksheet Final",
             "Physical Therapy Note",
             "Physical Therapy Daily Note",
+            # Added live by an admin via PATCH /admin/categories/5 before 2026-07-30; folded into the
+            # code so a fresh box and the server agree (they plainly belong beside the PT notes).
+            "Occupational Therapy Daily Note",
+            "Occupational Therapy Progress Notes",
             "PT Initial Report",
             "PT Progress",
             "PT Daily",
@@ -148,11 +172,6 @@ CATEGORIES: dict[str, "Category"] = {
             "Daily Encounter",
             "SOAP Notes",
             "Chiropractor Notes",
-            # Section headers kept to mirror groups.py (see module docstring): present in
-            # nearly every report, so they add matching noise the cross-check must dampen.
-            "History of Present Illness",
-            "Physical Examination",
-            "Diagnosis",
         ),
     ),
     "7": Category(
@@ -193,13 +212,19 @@ CATEGORIES: dict[str, "Category"] = {
     "12": Category(
         "12",
         "QME/AME supplemental reports",
+        # D-04: an unqualified "Supplemental Report" used to sit under category 1 as well. It resolves
+        # here, because a supplemental that answers a prior evaluation is medico-legal work whatever
+        # its header says; a treating supplemental names its subject (e.g. pain management).
         "Supplemental reports from a QME (Qualified Medical Evaluator) or AME (Agreed Medical "
-        "Evaluator) - follow-ups to a prior medical-legal evaluation.",
+        "Evaluator) - follow-ups to a prior medical-legal evaluation. A report headed only "
+        '"Supplemental Report" that responds to a prior medical-legal evaluation, an attorney letter, '
+        "or newly served records belongs here.",
         (
             "QME/AME Supplemental Reports",
             "QME Supplemental Report",
             "AME Supplemental Report",
             "Supplemental Reports",
+            "Supplemental Report",
         ),
     ),
     "13": Category(
@@ -211,9 +236,26 @@ CATEGORIES: dict[str, "Category"] = {
     ),
     "14": Category(
         "14",
-        "Laboratory and test results",
-        "Standalone laboratory or test result documents.",
-        ("Results", "Laboratory Results", "Test Results"),
+        "Laboratory and specimen test results",
+        # D-01/D-02: the mirror of category 3. The old examples ("Results", "Test Results") were broad
+        # enough to attract imaging reports, which is half of why lab work and studies were confused;
+        # they are replaced by specimen-named titles.
+        "Results of a test run on a SPECIMEN taken from the body: blood panels, urinalysis, cultures, "
+        "and toxicology or drug screens. The document reports measured values, often against reference "
+        "ranges, rather than an image. A study performed on the body itself - X-Ray, MRI, CT, "
+        "ultrasound, EMG/NCS, ECG - is a diagnostic study and belongs to that category, not here.",
+        (
+            "Laboratory Results",
+            "Laboratory Report",
+            "Laboratory Test Results",
+            "Blood Test Results",
+            "Complete Blood Count",
+            "Comprehensive Metabolic Panel",
+            "Urinalysis",
+            "Urine Toxicology Screen",
+            "Toxicology Report",
+            "Culture and Sensitivity",
+        ),
     ),
     "100": Category(
         "100",

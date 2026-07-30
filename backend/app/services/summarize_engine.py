@@ -117,6 +117,62 @@ HARDENING_PREAMBLE = (
 )
 
 
+# Only categories 12 and 13 (QME/AME supplementals and evaluations) mention an embedded records
+# review - verified by scanning all 14 category prompts - so only they can act on a list of the
+# record's other studies. Sending it to every category would add tokens to category 1, the
+# highest-volume one, for no rule that reads them.
+_EMBEDDED_REVIEW_CATEGORIES = frozenset({"12", "13"})
+
+
+def standalone_studies_from_rows(rows, exclude=None) -> list[dict]:
+    """The record's standalone diagnostic studies as ``[{title, date}]``, excluding one row.
+
+    ``rows`` are the row dicts that WILL be summarized: a study the reviewer unchecked is not
+    summarized anywhere, so suppressing it from the embedded review too would drop it from the
+    record entirely. ``exclude`` is the row being summarized, matched on its page range, so a
+    category-3 row is never listed against itself.
+    """
+    skip = None if exclude is None else (int(exclude["start"]), int(exclude["end"]))
+    studies = []
+    for row in rows:
+        if str(row["category"]) != "3":
+            continue
+        if skip is not None and (int(row["start"]), int(row["end"])) == skip:
+            continue
+        studies.append({"title": row.get("title"), "date": row.get("date")})
+    return studies
+
+
+def _standalone_studies_block(studies) -> str:
+    """The system-message block naming the diagnostic studies that appear as their OWN sub-document
+    in this record, so an embedded records review does not restate what is summarized elsewhere.
+
+    Rendered from the record's already-loaded rows, so this costs no extra AI call. The MODEL does
+    the matching: a study's title here and its wording inside the review differ by OCR variance and
+    phrasing, which is the problem the duplicate check needed a model call to solve - code-side title
+    matching would either miss variants or over-suppress. Returns "" when nothing is listable, so the
+    caller sends the system message unchanged.
+    """
+    lines = []
+    for study in studies:
+        title = str(study.get("title") or "").strip()
+        if not title or title == "-":
+            continue
+        date = str(study.get("date") or "").strip()
+        lines.append(f"- {title} ({date})" if date and date != "-" else f"- {title}")
+    if not lines:
+        return ""
+    return (
+        "\n\nDIAGNOSTIC STUDIES THAT APPEAR AS THEIR OWN DOCUMENT ELSEWHERE IN THIS RECORD:\n"
+        + "\n".join(lines)
+        + "\n\nEach study listed above is summarized in its own right elsewhere in this record. If "
+        "the records review inside THIS document reports one of them, do NOT restate it here - "
+        "report only the studies the review reports that are not in the list above. The list is "
+        "context, not content: never copy it into the summary and never mention that you were "
+        "given it."
+    )
+
+
 _MULTIMODAL_INSTRUCTION = (
     "The images above are the scanned page(s) of this sub-document; the OCR text of the same pages "
     "follows. Use BOTH - treat the images as authoritative wherever the OCR is garbled, missing, or "
@@ -179,7 +235,9 @@ def _page_image_parts(pdf_path, start, end):
     return parts
 
 
-def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_doi=None):
+def summarize_row(
+    pdf_path, row, model=None, prompt=None, verify=None, extract_doi=None, standalone_studies=None
+):
     """Summarize one sub-document row -> the legacy output_dict shape.
 
     row: {start, end, category, date, injury_date, flag} and OPTIONALLY ``source_text`` - the OCR
@@ -195,6 +253,11 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
     False to skip it (e.g. bundle export). ``extract_doi`` (defaults to settings.summary_doi_extract)
     reads the DOI per-document in isolation instead of trusting the propagated row value; False keeps
     the legacy row value.
+
+    ``standalone_studies`` is DOCUMENT-set context, not row data: ``[{title, date}]`` for the record's
+    other diagnostic studies (build it with standalone_studies_from_rows). It reaches the model only
+    for the categories whose rules discuss an embedded records review, so that review does not restate
+    a study which is summarized in its own right elsewhere in the record.
     """
     settings = get_settings()
     model = model or settings.summary_model
@@ -208,6 +271,12 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
     # Prepend the factuality-hardening rules to the category prompt (applies to DB-resolved and
     # fallback prompts alike, and to any future category).
     system_msg = HARDENING_PREAMBLE + prompt
+    # E-08: append the record's other diagnostic studies AFTER the category rules, so the list reads
+    # as a qualification of the rule that just told the model to take studies out of the embedded
+    # review. Appended to the SYSTEM message, not the user content, so the multimodal ordering
+    # (images -> instruction -> OCR text) is untouched.
+    if standalone_studies and str(row["category"]) in _EMBEDDED_REVIEW_CATEGORIES:
+        system_msg += _standalone_studies_block(standalone_studies)
 
     # Depositions are summarized one line per transcript page, so this category needs to SEE where
     # each page ends. The stored text cannot be reused for them: page boundaries cannot be retrofitted

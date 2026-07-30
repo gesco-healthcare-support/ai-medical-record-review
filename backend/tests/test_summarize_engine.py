@@ -438,6 +438,98 @@ def test_truncated_summary_is_flagged_for_manual_check(monkeypatch):
     assert "Truncated" not in out["summaryTitle"]
 
 
+def _system_messages(monkeypatch, row, **kw):
+    """Run summarize_row against stubs and return every system message it sent."""
+    seen = []
+
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        seen.append(system_msg)
+        return _fake_generate(model, system_msg, user_text, temperature)
+
+    monkeypatch.setattr(
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR text"
+    )
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    se.summarize_row("/x.pdf", row, prompt="CATEGORY PROMPT", **kw)
+    return [msg for msg in seen if msg != se.TITLE_PROMPT]
+
+
+_STUDIES = [
+    {"title": "MRI OF THE LUMBAR SPINE", "date": "03/12/24"},
+    {"title": "X-RAY OF THE LEFT WRIST", "date": "-"},
+]
+
+
+@pytest.mark.parametrize("category", ["12", "13"])
+def test_standalone_studies_reach_the_system_message_for_a_review_category(monkeypatch, category):
+    # E-08: WHEN a category-12 or 13 row is summarized in a record that has standalone diagnostic
+    # studies, THE SYSTEM SHALL name those studies in the system message, so the embedded records
+    # review does not restate a study summarized in its own right elsewhere.
+    (system_msg,) = _system_messages(
+        monkeypatch, _row(category=category), standalone_studies=_STUDIES
+    )
+
+    assert system_msg.startswith(se.HARDENING_PREAMBLE + "CATEGORY PROMPT")  # rules come first
+    assert "MRI OF THE LUMBAR SPINE (03/12/24)" in system_msg
+    assert "X-RAY OF THE LEFT WRIST" in system_msg
+    assert "X-RAY OF THE LEFT WRIST (-)" not in system_msg  # a missing date is omitted, not printed
+
+
+@pytest.mark.parametrize("category", ["1", "3", "5", "9", "100"])
+def test_other_categories_never_receive_the_study_list(monkeypatch, category):
+    # Only categories 12 and 13 have a rule that reads the list. Sending it to category 1 - the
+    # highest-volume one - would spend tokens on context nothing acts on.
+    (system_msg,) = _system_messages(
+        monkeypatch, _row(category=category), standalone_studies=_STUDIES
+    )
+    assert system_msg == se.HARDENING_PREAMBLE + "CATEGORY PROMPT"
+
+
+@pytest.mark.parametrize("studies", [None, [], [{"title": "-", "date": "-"}], [{"title": ""}]])
+def test_nothing_listable_leaves_the_system_message_unchanged(monkeypatch, studies):
+    # A record with no standalone studies, or rows whose titles never got extracted, must send the
+    # prompt exactly as before - not an empty heading the model has to interpret.
+    (system_msg,) = _system_messages(monkeypatch, _row(category="12"), standalone_studies=studies)
+    assert system_msg == se.HARDENING_PREAMBLE + "CATEGORY PROMPT"
+
+
+def test_standalone_studies_from_rows_takes_only_diagnostic_studies():
+    rows = [
+        {"start": 1, "end": 2, "category": "1", "title": "PROGRESS NOTE", "date": "01/01/24"},
+        {"start": 3, "end": 4, "category": "3", "title": "MRI OF THE KNEE", "date": "02/02/24"},
+        {"start": 5, "end": 9, "category": "13", "title": "QME REPORT", "date": "03/03/24"},
+        {"start": 10, "end": 10, "category": "14", "title": "LABORATORY RESULTS", "date": "-"},
+    ]
+    assert se.standalone_studies_from_rows(rows) == [
+        {"title": "MRI OF THE KNEE", "date": "02/02/24"}
+    ]
+
+
+def test_a_study_is_never_listed_against_itself():
+    # WHEN the row being summarized is itself a category-3 study, THE SYSTEM SHALL leave it out of
+    # its own context list. Matched on the page range, which identifies a row within a record.
+    rows = [
+        {"start": 1, "end": 2, "category": "3", "title": "MRI OF THE KNEE", "date": "-"},
+        {"start": 3, "end": 4, "category": "3", "title": "CT OF THE HEAD", "date": "-"},
+    ]
+    studies = se.standalone_studies_from_rows(rows, exclude=rows[0])
+    assert [study["title"] for study in studies] == ["CT OF THE HEAD"]
+
+
+def test_neither_review_category_still_tells_the_model_to_ignore_the_review():
+    # The shared preamble rule (take the review's diagnostic studies) and these two category prompts
+    # contradicted each other until 2026-07-30: the prompts said to treat the review as absent. A
+    # prompt edit that reinstates that wording silently reverts E-08's whole point.
+    from app.services.prompts import prompts
+
+    for key in ("category_12", "category_13"):
+        text = prompts[key].lower()
+        assert "as if it does not exist" not in text
+        assert "do not take info from the mrr" not in text
+        assert "only the diagnostic studies it reports" in text
+
+
 def test_untruncated_summary_reports_no_truncation(monkeypatch):
     monkeypatch.setattr(
         se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"

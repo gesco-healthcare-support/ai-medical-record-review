@@ -47,7 +47,7 @@ from app.services.linked_pdf import build_linked_pdf
 from app.services.pdf import get_pdf_page_count
 from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
 from app.services.rows import validate_rows
-from app.services.summarize_engine import summarize_row
+from app.services.summarize_engine import standalone_studies_from_rows, summarize_row
 from app.services.summary_doi import doi_prefix
 
 logger = logging.getLogger(__name__)
@@ -703,8 +703,27 @@ def resummarize(
 
     model = (payload.model if payload else None) or get_settings().summary_model
     prompt = catalog.get_prompt(session, "summary", str(row["category"]))
+    # E-08 document-set context: the record's OTHER standalone diagnostic studies, so a document
+    # carrying a records review does not restate a study summarized in its own right elsewhere. Only
+    # the included rows count - an unchecked study is summarized nowhere, so suppressing it here would
+    # drop it from the record entirely.
+    studies = standalone_studies_from_rows(
+        [
+            other.as_row()
+            for other in session.scalars(
+                select(ReviewRow).where(
+                    ReviewRow.document_id == document.id,
+                    ReviewRow.include.is_(True),
+                    ReviewRow.category == "3",
+                )
+            ).all()
+        ],
+        exclude=row,
+    )
     try:
-        output = summarize_row(document.stored_path, row, model, prompt=prompt)
+        output = summarize_row(
+            document.stored_path, row, model, prompt=prompt, standalone_studies=studies
+        )
     except PipelineError as exc:
         return _pipeline_error_response(document.id, exc)
 

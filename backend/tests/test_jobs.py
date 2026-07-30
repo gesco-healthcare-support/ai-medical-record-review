@@ -149,7 +149,7 @@ def test_summarize_document_persists_summaries(monkeypatch):
     monkeypatch.setattr(
         se,
         "summarize_row",
-        lambda pdf_path, row, model=None, prompt=None: {
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None: {
             "summaryTitle": "T (Pages 1-1)",
             "summaryDate": "-",
             "summaryText": "body",
@@ -194,7 +194,7 @@ def test_summarize_document_flags_a_truncated_summary_for_manual_check(monkeypat
     monkeypatch.setattr(
         se,
         "summarize_row",
-        lambda pdf_path, row, model=None, prompt=None: {
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None: {
             "summaryTitle": "T (Pages 1-1)",
             "summaryDate": "-",
             "summaryText": "body cut off mid-sen",
@@ -235,7 +235,7 @@ def test_summarize_document_preserves_row_order_under_parallelism(monkeypatch):
 
     import app.services.summarize_engine as se
 
-    def fake_summarize(pdf_path, row, model=None, prompt=None):
+    def fake_summarize(pdf_path, row, model=None, prompt=None, standalone_studies=None):
         time.sleep(0.02 * (4 - int(row["start"])))  # higher start finishes first
         return {
             "summaryTitle": f"T{row['start']} (Pages {row['start']}-{row['end']})",
@@ -367,6 +367,48 @@ def _ok_output(row) -> dict:
     }
 
 
+def test_the_worker_hands_each_row_the_records_other_diagnostic_studies(monkeypatch):
+    """E-08: WHEN a record holds standalone diagnostic studies, THE SYSTEM SHALL pass their titles
+    with every row it summarizes, so a sub-document carrying a records review can tell which studies
+    are already summarized in their own right. A study is never listed against itself."""
+    import app.services.summarize_engine as se
+
+    seen: dict[int, list] = {}
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+        seen[int(row["start"])] = standalone_studies
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+
+    doc_id = _make_user_and_doc(page_count=3)
+    with get_sessionmaker()() as session:
+        for idx, (category, title) in enumerate(
+            [("3", "MRI OF THE KNEE"), ("3", "CT OF THE HEAD"), ("13", "QME REPORT")]
+        ):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=idx + 1,
+                    end=idx + 1,
+                    category=category,
+                    title=title,
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "summarize", model="m", prompt_version="1").id
+
+    summarize_document(job_id)
+
+    assert [study["title"] for study in seen[3]] == ["MRI OF THE KNEE", "CT OF THE HEAD"]
+    assert [study["title"] for study in seen[1]] == ["CT OF THE HEAD"]  # itself excluded
+
+
 def test_summarize_persists_per_row_and_reuses_done_on_rerun(monkeypatch):
     """Skip-done by row identity: an existing summary is reused (its edit preserved), only the
     missing row is generated, and it is positioned to the current row order."""
@@ -374,7 +416,7 @@ def test_summarize_persists_per_row_and_reuses_done_on_rerun(monkeypatch):
 
     calls: list[int] = []
 
-    def fake(pdf_path, row, model=None, prompt=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
         calls.append(int(row["start"]))
         return _ok_output(row)
 
@@ -419,7 +461,7 @@ def test_summarize_pauses_and_schedules_resume_on_transient(monkeypatch):
 
     from app.worker import tasks as tasks_mod
 
-    def fake(pdf_path, row, model=None, prompt=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
         raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
 
     monkeypatch.setattr(se, "summarize_row", fake)
@@ -454,7 +496,7 @@ def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
     while every readable row is still persisted."""
     import app.services.summarize_engine as se
 
-    def fake(pdf_path, row, model=None, prompt=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
         if int(row["start"]) == 1:
             raise EmptyExtractionError("no OCR text for pages 1-1")
         return _ok_output(row)
@@ -480,7 +522,7 @@ def test_job_progress_exposes_attention_rows(monkeypatch):
     covered by test_summarize_needs_attention_on_permanent_keeps_partial.)"""
     import app.services.summarize_engine as se
 
-    def fake(pdf_path, row, model=None, prompt=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
         if int(row["start"]) == 1:
             raise EmptyExtractionError("no OCR text for pages 1-1")
         return _ok_output(row)
@@ -507,7 +549,9 @@ def test_summarize_pauses_when_pool_times_out(monkeypatch):
     from app.worker import tasks as tasks_mod
 
     monkeypatch.setattr(
-        se, "summarize_row", lambda pdf_path, row, model=None, prompt=None: time.sleep(1.5)
+        se,
+        "summarize_row",
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None: time.sleep(1.5),
     )
 
     scheduled: dict = {}
