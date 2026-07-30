@@ -179,6 +179,23 @@ describe("DuplicatesView", () => {
     render(<DuplicatesView documentId="d1" />);
     expect(screen.queryByText(/boundaries changed since the last duplicate check/i)).not.toBeInTheDocument();
   });
+
+  it("shows progress in the empty state, not just a static message", () => {
+    // A 1498-page record measured ~47 minutes. Without a moving counter in the empty state - the
+    // element that fills the tab while a check runs - a slow job reads as a hung one, which is
+    // exactly how a reviewer reported it.
+    dupState.error = null;
+    dupState.data = { job: { state: "running", current: 137, total: 435 }, clusters: [] };
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.getAllByText(/Checking for duplicates \(137\/435\)/).length).toBeGreaterThan(1);
+  });
+
+  it("falls back to an ellipsis before the total is known", () => {
+    dupState.error = null;
+    dupState.data = { job: { state: "queued", current: 0, total: 0 }, clusters: [] };
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.getAllByText(/Checking for duplicates\.\.\./).length).toBeGreaterThan(0);
+  });
 });
 
 describe("DuplicatesView similarity", () => {
