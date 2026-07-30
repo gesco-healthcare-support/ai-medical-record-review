@@ -143,7 +143,7 @@ def test_the_audit_enforces_house_style_not_only_faithfulness():
     prompt = sv.VERIFY_PROMPT
     assert "HOUSE RULES" in prompt
     for operative in (
-        "VITALS",
+        "HEIGHT AND WEIGHT",
         "PAIN",
         "CAPITALISATION",
         "RANGE OF MOTION",
@@ -158,6 +158,9 @@ def test_the_audit_enforces_house_style_not_only_faithfulness():
     # The title is an all-capitals header by design (812 of 813 measured human entries), so the
     # capitalisation rule must exempt it or the audit would "fix" every title.
     assert "The TITLE is exempt" in prompt
+    # Rule 1 is height and weight only; the audit must not strip vitals Adrian has not ruled on.
+    assert "Those two ONLY" in prompt
+    assert "never remove a BMI" in prompt
 
 
 def test_every_house_rule_has_its_own_issue_type():

@@ -98,16 +98,17 @@ HARDENING_PREAMBLE = (
     "the embedded review in whole - it restates records that are summarized in their own right "
     "elsewhere in the set.\n"
     "- Do NOT write ICD, CPT, or other billing codes, even when the document lists them.\n"
-    # Measured on the 55-deliverable human corpus (2115 entries): a stated height appears once, a
-    # weight 8 times, a blood-pressure value once. They are recorded at almost every encounter and
-    # summarized at almost none. The BMI carve-out is not cosmetic: BMI appears 52 times in that
-    # corpus and every occurrence is a numbered DIAGNOSIS ("6. BMI 42.5, severe obesity
-    # equivalent"), so a blanket vitals ban would start deleting diagnoses.
-    "- Do NOT report vital signs: height, weight, blood pressure, pulse, respiration rate, "
-    "temperature, or oxygen saturation. They appear in nearly every encounter note and belong in "
-    "none of these summaries. The one exception is a measurement the document itself lists as a "
-    "diagnosis - a numbered diagnosis of obesity by BMI is a diagnosis, not a vital sign, and it "
-    "stays.\n"
+    # Height and weight ONLY, deliberately. Measured on the 55-deliverable human corpus (2115
+    # entries): a stated height appears once and a weight 8 times, so omitting them is safe. Adrian
+    # scoped this to those two on 2026-07-30 and reserved the other vitals for a later call, so the
+    # rule must not creep: blood pressure, pulse, respiration, temperature and oxygen saturation stay
+    # at the model's discretion. BMI is excluded from the restriction outright - it appears 52 times
+    # in that corpus and EVERY occurrence is a numbered DIAGNOSIS ("6. BMI 42.5, severe obesity
+    # equivalent"), so a rule that swept it up would start deleting diagnoses.
+    "- Do NOT report the patient's height or weight. They are recorded at nearly every encounter and "
+    "belong in none of these summaries. This covers height and weight ONLY: other vital signs are "
+    "left to your judgement, and BMI is not restricted - where the document states a BMI as a "
+    "diagnosis, keep it.\n"
     "- For pain, give frequency, intensity on the scale the document uses, and location, and "
     "nothing else. Do not add qualitative descriptors, and never state intensity twice - write "
     '"6/10", not "moderate 6/10". The common failure is a list of quality words in front of the '

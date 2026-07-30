@@ -550,12 +550,24 @@ def test_the_preamble_carries_the_house_rules_the_editors_asked_for():
     # whole sentences, so the wording can be tuned without breaking the test, but a rule cannot be
     # deleted silently.
     preamble = se.HARDENING_PREAMBLE
-    assert "Do NOT report vital signs" in preamble  # item 1
+    assert "Do NOT report the patient's height or weight" in preamble  # item 1
     assert "drop quality (sharp, dull, aching" in preamble  # item 5
     assert "Range of motion" in preamble  # item 4
     assert "ordinary sentence case" in preamble  # item 6
     # Acronyms must stay exempt, or the rule renders MRI as "Mri".
     assert "MRI, CT, EMG" in preamble
+
+
+def test_the_vitals_rule_covers_height_and_weight_only():
+    # Adrian scoped this to height and weight on 2026-07-30 and reserved the other vitals for a later
+    # call, so a broader ban would be taking a decision that is not ours. Pinned as an ABSENCE, which
+    # is the only way to stop the rule quietly creeping back to "all vital signs".
+    preamble = se.HARDENING_PREAMBLE
+    assert "height and weight ONLY" in preamble
+    assert "other vital signs are left to your judgement" in preamble
+    # BMI is 52 numbered DIAGNOSES in the human corpus, never a vital sign; sweeping it up would
+    # delete diagnoses.
+    assert "BMI is not restricted" in preamble
 
 
 def test_the_range_of_motion_rule_names_itself_as_the_one_inference_exception():

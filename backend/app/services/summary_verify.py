@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 # second reader, not louder wording.
 _HOUSE_RULES = (
     "HOUSE RULES (a violation here is a defect even though the SOURCE supports it):\n"
-    "1. VITALS: no height, weight, blood pressure, pulse, respiration, temperature, or oxygen "
-    "saturation. Exception: a measurement the SOURCE lists as a diagnosis (a numbered diagnosis of "
-    "obesity by BMI) stays.\n"
+    "1. HEIGHT AND WEIGHT: remove the patient's height and weight. Those two ONLY - leave every "
+    "other vital sign (blood pressure, pulse, respiration, temperature, oxygen saturation) exactly "
+    "as the summary has it, and never remove a BMI the SOURCE states as a diagnosis.\n"
     "2. PAIN: keep frequency, the numeric rating, and the location. Remove quality words (sharp, "
     "dull, aching, stabbing, throbbing, burning, cramping, shooting) and never let intensity be "
     'stated twice ("moderate 6/10").\n'
