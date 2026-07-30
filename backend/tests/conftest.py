@@ -17,7 +17,16 @@ import pytest
 # Dev-only defaults so `uv run pytest` works without an inline export; real env (CI, prod) wins via
 # setdefault. These are the published local docker credentials (docker-compose.dev.yml), never a
 # production secret. Set BEFORE importing app.* so the cached get_settings() reads them.
-os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr")
+#
+# connect_timeout is load-bearing, not cosmetic: psycopg blocks indefinitely on a TCP connect, so
+# without it a missing or misconfigured database makes the whole suite HANG with no output at all
+# (pytest buffers, so a Ctrl-C or a kill loses even the header). Two separate sessions lost hours to
+# that silence, each concluding "pytest is broken". Five seconds turns it into a legible
+# OperationalError naming the host, port and reason.
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr?connect_timeout=5",
+)
 os.environ.setdefault("SECRET_KEY", "dev-only-secret")
 os.environ.setdefault("SECURITY_PASSWORD_SALT", "dev-only-salt")
 os.environ.setdefault("ENVIRONMENT", "dev")
