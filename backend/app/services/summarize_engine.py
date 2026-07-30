@@ -209,14 +209,20 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
     # fallback prompts alike, and to any future category).
     system_msg = HARDENING_PREAMBLE + prompt
 
+    # Depositions are summarized one line per transcript page, so this category needs to SEE where
+    # each page ends. The stored text cannot be reused for them: page boundaries cannot be retrofitted
+    # onto text that was already concatenated without them, so a marked re-extraction is the only
+    # way. Confined to category 9 - markers in every category's input would push page numbers into
+    # ordinary summaries and pollute the duplicate check's similarity scoring.
+    deposition = str(row["category"]) == "9"
     # Reuse the duplicate check's OCR when it exists: it ran the SAME extraction over the SAME pages
     # and persisted it per row, so a second full pass is pure waste - on a 1500-page record that is
     # ~45 minutes of OCR done twice. Blank text is not reused, so a page whose OCR failed the first
     # time is retried here rather than being permanently condemned to EmptyExtractionError.
-    text = (row.get("source_text") or "").strip()
+    text = "" if deposition else (row.get("source_text") or "").strip()
     if not text:
         pages = list(range(int(row["start"]), int(row["end"]) + 1))
-        text = extract_text_from_selected_pages(pdf_path, pages)
+        text = extract_text_from_selected_pages(pdf_path, pages, mark_pages=deposition)
     if not text.strip():
         # Fail fast with a clear reason: sending empty text to Gemini yields a cryptic
         # "Model input cannot be empty" 400. Blank/image-only pages hit this.
