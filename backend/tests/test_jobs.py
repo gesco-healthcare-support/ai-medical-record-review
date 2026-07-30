@@ -617,7 +617,8 @@ def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):
         3: "completely different words nothing shared at all here",
     }
     monkeypatch.setattr(
-        "app.services.ocr.extract_text_from_selected_pages", lambda path, pages: texts[pages[0]]
+        "app.services.ocr.extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False: texts[pages[0]],
     )
     # Trust the algorithmic candidate (no Vertex call in the test).
     monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
@@ -680,7 +681,7 @@ def test_dedup_document_skips_ocred_rows_survives_failure_and_rejects(monkeypatc
 
     ocr_calls = []
 
-    def fake_ocr(path, pages):
+    def fake_ocr(path, pages, mark_pages=False):
         ocr_calls.append(pages[0])
         if pages[0] == 2:
             raise RuntimeError("ocr boom")  # row1: per-row OCR failure is tolerated
@@ -758,7 +759,8 @@ def test_dedup_document_covers_excluded_rows_and_keeps_an_unchanged_dismissal(mo
     )
     texts = {1: same, 2: same, 5: "completely different words nothing shared at all here"}
     monkeypatch.setattr(
-        "app.services.ocr.extract_text_from_selected_pages", lambda path, pages: texts[pages[0]]
+        "app.services.ocr.extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False: texts[pages[0]],
     )
     monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
 

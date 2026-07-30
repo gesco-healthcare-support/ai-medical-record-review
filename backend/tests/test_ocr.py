@@ -53,6 +53,49 @@ def test_selected_pages_skips_failing_page(monkeypatch):
     assert ocr.extract_text_from_selected_pages("dummy.pdf", [1, 2]) == ""
 
 
+def test_selected_pages_marks_absolute_page_numbers_when_asked(monkeypatch):
+    # Depositions are summarised one line per transcript page, so the model has to SEE where each
+    # page ends. The markers carry the ABSOLUTE record page, not a 1-based offset within the range.
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", lambda image, timeout=0: "body")
+    monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [_Sentinel()])
+    ocr._configured = True
+
+    out = ocr.extract_text_from_selected_pages("dummy.pdf", [143, 144], mark_pages=True)
+    assert out == "Page 143:\nbody\nPage 144:\nbody\n"
+
+
+def test_selected_pages_is_unmarked_by_default(monkeypatch):
+    # Every existing caller (the duplicate check, and summarization for every category except 9) must
+    # be byte-for-byte unchanged: markers in the dedup text would pollute similarity scoring, and in
+    # other categories they would push page numbers into ordinary summaries.
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", lambda image, timeout=0: "body")
+    monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [_Sentinel()])
+    ocr._configured = True
+
+    assert ocr.extract_text_from_selected_pages("dummy.pdf", [143, 144]) == "bodybody"
+    assert "Page" not in ocr.extract_text_from_selected_pages("dummy.pdf", [143])
+
+
+def test_marked_page_is_skipped_without_losing_the_following_markers(monkeypatch):
+    # A page whose OCR times out must not emit a marker with no body attached, and must not stop the
+    # remaining pages from being marked.
+    calls = {"n": 0}
+
+    def flaky(image, timeout=0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("Tesseract process timeout")
+        return "body"
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", flaky)
+    monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [_Sentinel()])
+    ocr._configured = True
+
+    out = ocr.extract_text_from_selected_pages("dummy.pdf", [7, 8], mark_pages=True)
+    assert "Page 7:" not in out  # the failed page contributes nothing at all
+    assert out == "Page 8:\nbody\n"
+
+
 def test_all_pages_skips_failing_page(monkeypatch):
     def fake_image_to_string(image, timeout=0):
         raise RuntimeError("Tesseract process timeout")

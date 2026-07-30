@@ -61,7 +61,16 @@ def extract_text_from_image(image) -> str:
     return _ocr_image(image)
 
 
-def extract_text_from_selected_pages(pdf_path, selected_pages) -> str:
+def extract_text_from_selected_pages(pdf_path, selected_pages, *, mark_pages: bool = False) -> str:
+    """OCR ``selected_pages`` into one string.
+
+    ``mark_pages`` prefixes each page with ``Page <n>:`` - the ABSOLUTE record page, since
+    ``selected_pages`` already carries absolute numbers. Depositions need it: their convention is one
+    summary line per transcript page, and a model handed concatenated text cannot see where a page
+    ends. Off by default, because those markers would otherwise reach every category's model input,
+    and because the duplicate check feeds this text into similarity scoring where a shared
+    ``Page 1: Page 2: ...`` vocabulary would make unrelated documents look alike.
+    """
     extracted_text = ""
     for page_number in sorted(set(selected_pages)):
         try:
@@ -75,12 +84,14 @@ def extract_text_from_selected_pages(pdf_path, selected_pages) -> str:
             continue
         for page_image in images:
             try:
-                extracted_text += _ocr_image(page_image)
+                page_text = _ocr_image(page_image)
             except OcrUnavailableError:
                 raise  # Tesseract missing: fail fast
             except Exception as exc:
                 logger.warning("OCR skipped page %s: %s", page_number, exc)  # timeout/bad page
                 continue
+            # Same marker shape as extract_text_from_all_pages, so both extractors read alike.
+            extracted_text += f"Page {page_number}:\n{page_text}\n" if mark_pages else page_text
     return extracted_text
 
 
