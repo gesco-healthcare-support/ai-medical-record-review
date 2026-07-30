@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.errors import EmptyExtractionError
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
+from app.services.house_style import sentence_case_caps_runs
 from app.services.ocr import extract_text_from_selected_pages
 from app.services.prompts import prompts
 from app.services.summary_doi import extract_injury_date
@@ -56,10 +57,17 @@ TITLE_PROMPT = (
     "line, with no commentary."
 )
 
-# Prepended to every category prompt. Extractive-faithfulness rules (each states its WHY so it
-# survives edits). An eval on real sub-docs showed this eliminated a 12-fabrication case without
-# worsening fabrication; residual contradictions are handled by the verify pass.
-HARDENING_PREAMBLE = (
+# The shared rules, as BLOCKS rather than one string, because they are not all universal. Assembled
+# per category by build_preamble: the block reached 4,927 characters, which is 81% of the system
+# message for a one-line laboratory summary - so category 14 was being instructed about depositions,
+# embedded records reviews, range of motion and pain scales, none of which can apply to it.
+#
+# Each block states its WHY so it survives edits. Two blocks were reworded to stand ALONE when this
+# was split: the diagnostic-verdict rule used to open "That rule does NOT apply..." (referring to the
+# normal-findings rule) and the deposition rule used to open "The single-paragraph rule does NOT
+# apply...". Under per-category assembly those references can be dropped from the message, leaving a
+# dangling "that rule" - so both now say what they mean without pointing at a neighbour.
+_FACTUALITY = (
     "CRITICAL FACTUALITY RULES (a medical-legal report depends on these):\n"
     "- Use ONLY information explicitly stated in the text below. Do NOT infer, assume, "
     "extrapolate, or add anything not written - inference is how errors enter the record.\n"
@@ -71,55 +79,78 @@ HARDENING_PREAMBLE = (
     "your other statements.\n"
     "- If the text is illegible, ambiguous, or internally contradictory, omit that point rather "
     "than resolving it by guessing.\n\n"
-    # Content scope lives here, once, so a category prompt only has to name its own points.
-    # Measured against 55 eData deliverables (2115 entries): the length gap is per-category, not
-    # uniform - labs 25x, diagnostic studies 4.3x, therapy notes 3.3x, treating reports 2.4x, while
-    # medico-legal evaluations and depositions run SHORTER than the human convention. The old note
-    # here cited a corpus-wide median of 240 chars; that figure is a mix artifact (a quarter of the
-    # corpus is labs, forms and one-line impressions) and must not be used as a target.
-    #
-    # The employer/occupation carve-out was removed on measured evidence: the human corpus confines
-    # both to WCAB filings (51%/39%) and comprehensive evaluations (40%/25%), and uses them in 1%
-    # of treating notes and 0% of imaging, therapy and lab entries. A blanket carve-out added them
-    # to ~1600 entries where the convention omits them. Categories 2 and 7 name them directly.
-    "CONTENT RULES (what belongs in the summary):\n"
+)
+
+# Content scope lives here, once, so a category prompt only has to name its own points.
+# Measured against 55 eData deliverables (2115 entries): the length gap is per-category, not uniform -
+# labs 25x, diagnostic studies 4.3x, therapy notes 3.3x, treating reports 2.4x, while medico-legal
+# evaluations and depositions run SHORTER than the human convention. A corpus-wide median must not be
+# used as a target: a quarter of the corpus is labs, forms and one-line impressions.
+#
+# The employer/occupation carve-out was removed on measured evidence: the human corpus confines both
+# to WCAB filings (51%/39%) and comprehensive evaluations (40%/25%), and uses them in 1% of treating
+# notes and 0% of imaging, therapy and lab entries. Categories 2 and 7 name them directly.
+_CONTENT_HEADER = "CONTENT RULES (what belongs in the summary):\n"
+
+_C_POINT_SCOPE = (
     "- Include a point ONLY if the category rules below name it for this document type. Do not "
     "add a point the rules do not list, however relevant it looks - unrequested detail is the "
     "main reason summaries run long.\n"
+)
+
+_C_NORMAL_FINDINGS = (
     "- Report positive and abnormal findings only when describing an examination, a history, or a "
     "clinical assessment. Omit anything recorded as normal, negative, unremarkable, or within "
     "normal limits; a reader assumes anything not mentioned was normal.\n"
-    "- That rule does NOT apply to the conclusion of a diagnostic study or to a laboratory or test "
-    "result. Report the impression, result, or verdict exactly as stated even when it is normal or "
-    "negative - for those documents the verdict IS the content, and omitting it leaves the summary "
-    "empty.\n"
+)
+
+# Stands alone deliberately: it used to open "That rule does NOT apply...", which dangles once the
+# normal-findings rule is not sent to this category.
+_C_VERDICT = (
+    "- For the conclusion of a diagnostic study or a laboratory or test result, report the "
+    "impression, result, or verdict exactly as stated EVEN WHEN it is normal, negative, or "
+    "unremarkable. For those documents the verdict IS the content, and omitting it leaves the "
+    "summary empty.\n"
+)
+
+_C_EMBEDDED_REVIEW = (
     "- If the document contains a review of earlier medical records inside it, record that the "
     "review is present and take from it only the diagnostic studies it reports. Never summarize "
     "the embedded review in whole - it restates records that are summarized in their own right "
     "elsewhere in the set.\n"
-    "- Do NOT write ICD, CPT, or other billing codes, even when the document lists them.\n"
-    # Height and weight ONLY, deliberately. Measured on the 55-deliverable human corpus (2115
-    # entries): a stated height appears once and a weight 8 times, so omitting them is safe. Adrian
-    # scoped this to those two on 2026-07-30 and reserved the other vitals for a later call, so the
-    # rule must not creep: blood pressure, pulse, respiration, temperature and oxygen saturation stay
-    # at the model's discretion. BMI is excluded from the restriction outright - it appears 52 times
-    # in that corpus and EVERY occurrence is a numbered DIAGNOSIS ("6. BMI 42.5, severe obesity
-    # equivalent"), so a rule that swept it up would start deleting diagnoses.
+)
+
+_C_CODES = "- Do NOT write ICD, CPT, or other billing codes, even when the document lists them.\n"
+
+# Height and weight ONLY, deliberately. Measured on the 55-deliverable human corpus (2115 entries): a
+# stated height appears once and a weight 8 times, so omitting them is safe. Adrian scoped this to
+# those two on 2026-07-30 and reserved the other vitals for a later call, so the rule must not creep:
+# blood pressure, pulse, respiration, temperature and oxygen saturation stay at the model's
+# discretion. BMI is excluded outright - it appears 52 times in that corpus and EVERY occurrence is a
+# numbered DIAGNOSIS ("6. BMI 42.5, severe obesity equivalent"), so a rule that swept it up would
+# start deleting diagnoses.
+_C_VITALS = (
     "- Do NOT report the patient's height or weight. They are recorded at nearly every encounter and "
     "belong in none of these summaries. This covers height and weight ONLY: other vital signs are "
     "left to your judgement, and BMI is not restricted - where the document states a BMI as a "
     "diagnosis, keep it.\n"
+)
+
+_C_PAIN = (
     "- For pain, give frequency, intensity on the scale the document uses, and location, and "
     "nothing else. Do not add qualitative descriptors, and never state intensity twice - write "
     '"6/10", not "moderate 6/10". The common failure is a list of quality words in front of the '
     'word pain: write "constant right wrist pain rated 6/10", NEVER "frequent, sharp, stabbing, '
     'aching, dull pain rated 6/10". Keep frequency (constant, intermittent, occasional, frequent); '
     "drop quality (sharp, dull, aching, stabbing, throbbing, burning, cramping, shooting).\n"
-    # The human corpus describes range of motion qualitatively 473 times and quotes degrees only 31
-    # times, so a bare measurement is not what a reader expects. The reference-range fallback is a
-    # DELIBERATE and narrowly-bounded exception to the no-inference rule above (Adrian's call,
-    # 2026-07-30): normal joint ranges are textbook reference values, not a claim about this
-    # patient. It must stay the only exception, and it must never change the measured number.
+)
+
+# The human corpus describes range of motion qualitatively 473 times and quotes degrees only 31 times,
+# so a bare measurement is not what a reader expects. The reference-range fallback is a DELIBERATE and
+# narrowly-bounded exception to the no-inference rule (Adrian's call, 2026-07-30): normal joint ranges
+# are textbook reference values, not a claim about this patient. It must stay the only exception, and
+# it must never change the measured number.
+_C_RANGE_OF_MOTION = (
     "- Range of motion: a bare measurement does not tell the reader whether the joint moves. Say "
     "whether it is reduced. Use the document's own word when it gives one (decreased, limited, "
     "restricted, within normal limits). When the document prints a normal value beside the "
@@ -128,32 +159,101 @@ HARDENING_PREAMBLE = (
     "joint and motion and say whether it is reduced, normal, or increased. Reference ranges for "
     "joints are the ONE exception to the no-inference rule above, because they are textbook values "
     "rather than a statement about this patient; keep the measured value exactly as written "
-    "either way, and never replace a number with a word.\n\n"
+    "either way, and never replace a number with a word.\n"
+)
+
+_FORMAT_HEADER = (
     "FORMATTING (STRICT - overrides any layout instruction in the category rules below):\n"
+)
+
+_F_ONE_PARAGRAPH = (
     "- Write the ENTIRE summary as ONE continuous paragraph. Do NOT use line breaks, blank lines, "
     "bullet points, or numbered lists to separate points; when the rules below organize the content "
     "into named points or sections, run those points together inline in one single paragraph.\n"
-    # Depositions are the one measured exception: the human convention is one line per transcript
-    # page (median gap between referenced pages is 1, across 978 transitions), so the single-
-    # paragraph rule would destroy the format rather than tidy it.
-    "- The single-paragraph rule does NOT apply to deposition or recorded-statement transcripts. "
-    "Summarize those page by page, one line per page, each beginning with the page and line "
-    "reference, and do not merge them into a paragraph.\n"
+)
+
+# Depositions are the one measured exception: the human convention is one line per transcript page
+# (median gap between referenced pages is 1, across 978 transitions), so a single-paragraph rule would
+# destroy the format rather than tidy it. Stands alone - it used to be phrased as an exception to the
+# paragraph rule, which is not sent to this category at all.
+_F_DEPOSITION = (
+    "- Summarize this transcript page by page, one line per page, each beginning with the page and "
+    "line reference. Do NOT merge the lines into a paragraph: the page structure is what a reader "
+    "relies on to locate testimony.\n"
+)
+
+_F_BOLD = (
     "- Bold ONLY the short point/section labels, e.g. **Subjective Complaints**, **Diagnoses**, "
     "**Work Status**. Do NOT bold the text that follows a label, and NEVER bold a whole sentence, a "
     "whole point, or the entire summary - bolding everything makes the emphasis meaningless.\n"
-    # Forms print employer, occupation and headings in capitals, and the model was copying that
-    # through: no all-caps run of three or more words appears in the body of any of the 2115 measured
-    # human entries. Acronyms are exempted explicitly, or the rule turns MRI into "Mri". The header
-    # line above the body is a separate artefact and IS all caps by convention (812 of 813 entries),
-    # which is why this rule names the summary body.
+)
+
+# Forms print employer, occupation and headings in capitals, and the model was copying that through:
+# no all-caps run of three or more words appears in the body of any of the 2115 measured human
+# entries. Acronyms are exempted explicitly, or the rule turns MRI into "Mri". The header line above
+# the body is a separate artefact and IS all caps by convention (812 of 813 entries), which is why
+# this rule names the summary body. house_style.sentence_case_caps_runs enforces the same thing
+# deterministically afterwards; this block still earns its place by stopping the model producing it.
+_F_SENTENCE_CASE = (
     "- Write the summary body in ordinary sentence case. Do NOT write any word, sentence, line, or "
     "point in capital letters, even where the document does. Put a company or facility name in "
     'title case ("Cedar Ridge Logistics, Inc.", not "CEDAR RIDGE LOGISTICS, INC"), an occupation in '
     'sentence case ("General laborer", not "GENERAL LABORER"), and a heading you carry over in '
     "sentence case. Genuine acronyms and initialisms are the exception and stay as written: MRI, CT, "
-    "EMG, NCS, ECG, QME, AME, PR-2, PR-4, RFA, ADL, TTD, WPI, MMI, HPI, PE, ROM, ICD, CPT.\n\n"
+    "EMG, NCS, ECG, QME, AME, PR-2, PR-4, RFA, ADL, TTD, WPI, MMI, HPI, PE, ROM, ICD, CPT.\n"
 )
+
+# Categories whose documents describe a physical examination, and so can carry normal findings, a
+# height and weight, a pain rating and a range of motion.
+_EXAM_CATEGORIES = frozenset({"1", "2", "5", "6", "12", "13"})
+# Categories whose whole content IS a verdict, where a normal result must still be reported.
+_VERDICT_CATEGORIES = frozenset({"3", "14"})
+# Depositions and recorded statements: page-per-line, never one paragraph.
+_DEPOSITION_CATEGORIES = frozenset({"9"})
+# Only categories 12 and 13 (QME/AME supplementals and evaluations) mention an embedded records
+# review - verified by scanning all 14 category prompts - so only they carry that rule and only they
+# can act on a list of the record's other studies.
+_EMBEDDED_REVIEW_CATEGORIES = frozenset({"12", "13"})
+# Every id the catalog ships. An id outside this set gets EVERY block (see build_preamble).
+_KNOWN_CATEGORIES = (
+    _EXAM_CATEGORIES
+    | _VERDICT_CATEGORIES
+    | _DEPOSITION_CATEGORIES
+    | _EMBEDDED_REVIEW_CATEGORIES
+    | frozenset({"4", "7", "8", "10", "11", "100"})
+)
+
+
+def build_preamble(category) -> str:
+    """The shared rules that can bind on THIS category, assembled in a fixed order.
+
+    Default is INCLUDE: an id the catalog does not ship yet (an admin can create one at any time via
+    POST /admin/categories) receives every block except the deposition format, so a new category is
+    never silently under-instructed. Only a KNOWN id has blocks withheld, and only where its documents
+    structurally cannot contain the thing - a laboratory result has no range of motion, and a
+    deposition transcript is not written as one paragraph.
+    """
+    cat = str(category)
+    unknown = cat not in _KNOWN_CATEGORIES
+    deposition = cat in _DEPOSITION_CATEGORIES
+    exam = unknown or cat in _EXAM_CATEGORIES
+    verdict = unknown or cat in _VERDICT_CATEGORIES
+    embedded = unknown or cat in _EMBEDDED_REVIEW_CATEGORIES
+
+    parts = [_FACTUALITY, _CONTENT_HEADER, _C_POINT_SCOPE]
+    if exam:
+        parts.append(_C_NORMAL_FINDINGS)
+    if verdict:
+        parts.append(_C_VERDICT)
+    if embedded:
+        parts.append(_C_EMBEDDED_REVIEW)
+    parts.append(_C_CODES)
+    if exam:
+        parts += [_C_VITALS, _C_PAIN, _C_RANGE_OF_MOTION]
+    parts += ["\n", _FORMAT_HEADER]
+    parts.append(_F_DEPOSITION if deposition else _F_ONE_PARAGRAPH)
+    parts += [_F_BOLD, _F_SENTENCE_CASE, "\n"]
+    return "".join(parts)
 
 
 # Categories 1 and 2 are follow-up and comprehensive treating reports, the two that recount an
@@ -184,13 +284,6 @@ def _document_date_block(document_date) -> str:
         "mechanism of injury and the injury history stay where the category rules ask for them, "
         "stated once; what you leave out is the previous visit's own findings."
     )
-
-
-# Only categories 12 and 13 (QME/AME supplementals and evaluations) mention an embedded records
-# review - verified by scanning all 14 category prompts - so only they can act on a list of the
-# record's other studies. Sending it to every category would add tokens to category 1, the
-# highest-volume one, for no rule that reads them.
-_EMBEDDED_REVIEW_CATEGORIES = frozenset({"12", "13"})
 
 
 def standalone_studies_from_rows(rows, exclude=None) -> list[dict]:
@@ -242,12 +335,18 @@ def _standalone_studies_block(studies) -> str:
     )
 
 
+# Sent AFTER both the images and the OCR text (register G-03). It used to sit between them, which put
+# the instruction in the middle of the payload; Google's guidance is context first and the instruction
+# last, and a rule buried mid-payload is a plausible cause of the generation misses measured on
+# 2026-07-30 (range of motion and capitalisation skipped despite being in the prompt). Worded in the
+# past tense about both inputs, since both are now above it.
 _MULTIMODAL_INSTRUCTION = (
-    "The images above are the scanned page(s) of this sub-document; the OCR text of the same pages "
-    "follows. Use BOTH - treat the images as authoritative wherever the OCR is garbled, missing, or "
-    "from a table, checkbox, or handwriting - and summarize per the system instructions.\n\n"
-    "OCR TEXT:\n"
+    "\n\nThe images above are the scanned page(s) of this sub-document, and the OCR text above is "
+    "those same pages. Use BOTH - treat the images as authoritative wherever the OCR is garbled, "
+    "missing, or from a table, checkbox, or handwriting. Now summarize per the system instructions, "
+    "following every rule they state."
 )
+_OCR_TEXT_HEADER = "OCR TEXT:\n"
 
 
 def _hit_token_cap(response) -> bool:
@@ -337,13 +436,13 @@ def summarize_row(
     if prompt is None:
         key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
         prompt = prompts.get(key, prompts["category_100"])
-    # Prepend the factuality-hardening rules to the category prompt (applies to DB-resolved and
-    # fallback prompts alike, and to any future category).
-    system_msg = HARDENING_PREAMBLE + prompt
+    # Prepend the shared rules that can bind on THIS category (applies to DB-resolved and fallback
+    # prompts alike, and to any future category - build_preamble defaults an unknown id to everything).
+    system_msg = build_preamble(row["category"]) + prompt
     # E-08: append the record's other diagnostic studies AFTER the category rules, so the list reads
     # as a qualification of the rule that just told the model to take studies out of the embedded
-    # review. Appended to the SYSTEM message, not the user content, so the multimodal ordering
-    # (images -> instruction -> OCR text) is untouched.
+    # review. Appended to the SYSTEM message, not the user content, so the payload ordering
+    # (images -> OCR text -> instruction) is untouched.
     if standalone_studies and str(row["category"]) in _EMBEDDED_REVIEW_CATEGORIES:
         system_msg += _standalone_studies_block(standalone_studies)
     # Tell a treating report which encounter it is, so a recap of the previous visit can be told
@@ -377,8 +476,12 @@ def summarize_row(
     body_contents = text
     if settings.summary_multimodal:
         try:
+            # Order matters (G-03): page images, then the OCR text, then the instruction LAST. The
+            # instruction used to sit between the images and the text, i.e. in the middle of the
+            # payload, against Google's context-first / instruction-last guidance.
             body_contents = _page_image_parts(pdf_path, row["start"], row["end"]) + [
-                _MULTIMODAL_INSTRUCTION + text
+                _OCR_TEXT_HEADER + text,
+                _MULTIMODAL_INSTRUCTION,
             ]
         except Exception as exc:  # noqa: BLE001 - degrade to OCR-only; never fail a summary on this
             logger.warning(
@@ -395,6 +498,10 @@ def summarize_row(
         max_output_tokens=settings.summary_max_output_tokens,
     )
     title, _ = _generate(model, TITLE_PROMPT, text, temperature=0.0)
+    # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
+    # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
+    # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
+    summary = sentence_case_caps_runs(summary)
 
     # DOI only when THIS document states it: an isolated per-document vision call (no neighbours to
     # copy from) supersedes the segmentation-propagated injury_date. extract_doi=False keeps the
@@ -428,7 +535,9 @@ def summarize_row(
     if verify:
         result = verify_summary(model, text, summary, title=title, document_date=row.get("date"))
         if result["issues"]:
-            verified_text = f"{doi_final} {result['fixed_text']}"
+            # The audit may reintroduce capitals while fixing something else, so the transform runs
+            # over its output too - the verified text is what effective_text() delivers.
+            verified_text = f"{doi_final} {sentence_case_caps_runs(result['fixed_text'])}"
             verify_issues = result["issues"]
             # Decorated exactly like the stored title, so a verified title is a drop-in replacement
             # in every view; the export path strips the tags either way.

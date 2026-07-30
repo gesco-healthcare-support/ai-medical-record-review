@@ -36,7 +36,7 @@ def _row(**over):
 
 def _fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
     """_generate's contract: (text, truncated). Nothing here hits the token cap."""
-    text = "Progress Note - Dr Smith" if system_msg == se.TITLE_PROMPT else "SUMMARY BODY"
+    text = "Progress Note - Dr Smith" if system_msg == se.TITLE_PROMPT else "Summary body"
     return text, False
 
 
@@ -65,10 +65,10 @@ def test_summary_call_uses_hardening_preamble_and_configured_temperature(monkeyp
     title_call = next(c for c in calls if c["system_msg"] == se.TITLE_PROMPT)
     # The rules come first; a category-1 row then gets its document-date block appended (see the
     # current-visit tests below), so this is a prefix assertion rather than an equality one.
-    assert summary_call["system_msg"].startswith(se.HARDENING_PREAMBLE + "CATEGORY PROMPT")
+    assert summary_call["system_msg"].startswith(se.build_preamble("1") + "CATEGORY PROMPT")
     assert summary_call["temperature"] == get_settings().summary_temperature
     assert title_call["temperature"] == 0.0  # title is pure extraction, always deterministic
-    assert "SUMMARY BODY" in out["summaryText"]
+    assert "Summary body" in out["summaryText"]
     assert out["sourceText"] == "raw OCR text"
 
 
@@ -92,14 +92,14 @@ def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
         lambda model, system_msg, user_text, temperature, max_output_tokens=None: (
             ("Title - Dr", False)
             if system_msg == se.TITLE_PROMPT
-            else ("SUMMARY BODY with a fabrication", False)
+            else ("Summary body with a fabrication", False)
         ),
     )
     monkeypatch.setattr(
         se,
         "verify_summary",
         lambda model, source, summary, title=None, document_date=None: {
-            "fixed_text": "SUMMARY BODY",
+            "fixed_text": "Summary body",
             "fixed_title": title,
             "issues": [{"type": "unsupported", "detail": "a fabrication"}],
         },
@@ -109,7 +109,7 @@ def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
 
     assert out["verified"] is True
     assert out["verifyIssues"] == [{"type": "unsupported", "detail": "a fabrication"}]
-    assert "SUMMARY BODY" in out["verifiedText"]
+    assert "Summary body" in out["verifiedText"]
     assert "fabrication" not in out["verifiedText"]
     # The raw model output stays the un-fixed body (immutable training data).
     assert "fabrication" in out["summaryText"]
@@ -128,7 +128,7 @@ def test_verified_title_is_stored_decorated_when_the_pass_corrects_it(monkeypatc
         se,
         "verify_summary",
         lambda model, source, summary, title=None, document_date=None: {
-            "fixed_text": "SUMMARY BODY",
+            "fixed_text": "Summary body",
             "fixed_title": "CORRECTED HEADER",
             "issues": [{"type": "laterality", "detail": "left/right"}],
         },
@@ -353,7 +353,7 @@ def test_verify_skipped_when_disabled(monkeypatch):
         se,
         "_generate",
         lambda model, system_msg, user_text, temperature, max_output_tokens=None: (
-            ("Title - Dr", False) if system_msg == se.TITLE_PROMPT else ("BODY", False)
+            ("Title - Dr", False) if system_msg == se.TITLE_PROMPT else ("Body text", False)
         ),
     )
     called = []
@@ -427,7 +427,7 @@ def test_truncated_summary_is_flagged_for_manual_check(monkeypatch):
         lambda model, system_msg, user_text, temperature, max_output_tokens=None: (
             ("Title - Dr", False)
             if system_msg == se.TITLE_PROMPT
-            else ("SUMMARY BODY cut off mid-sen", True)
+            else ("Summary body cut off mid-sen", True)
         ),
     )
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -436,7 +436,7 @@ def test_truncated_summary_is_flagged_for_manual_check(monkeypatch):
 
     assert out["truncated"] is True
     assert out["manualCheck"] == ""  # the row's own review flag is untouched
-    assert out["summaryText"].endswith("SUMMARY BODY cut off mid-sen")
+    assert out["summaryText"].endswith("Summary body cut off mid-sen")
     assert "Truncated" not in out["summaryTitle"]
 
 
@@ -472,7 +472,7 @@ def test_standalone_studies_reach_the_system_message_for_a_review_category(monke
         monkeypatch, _row(category=category), standalone_studies=_STUDIES
     )
 
-    assert system_msg.startswith(se.HARDENING_PREAMBLE + "CATEGORY PROMPT")  # rules come first
+    assert system_msg.startswith(se.build_preamble(category) + "CATEGORY PROMPT")  # rules first
     assert "MRI OF THE LUMBAR SPINE (03/12/24)" in system_msg
     assert "X-RAY OF THE LEFT WRIST" in system_msg
     assert "X-RAY OF THE LEFT WRIST (-)" not in system_msg  # a missing date is omitted, not printed
@@ -496,7 +496,7 @@ def test_nothing_listable_leaves_the_system_message_unchanged(monkeypatch, studi
     # A record with no standalone studies, or rows whose titles never got extracted, must send the
     # prompt exactly as before - not an empty heading the model has to interpret.
     (system_msg,) = _system_messages(monkeypatch, _row(category="12"), standalone_studies=studies)
-    assert system_msg == se.HARDENING_PREAMBLE + "CATEGORY PROMPT"
+    assert system_msg == se.build_preamble("12") + "CATEGORY PROMPT"
 
 
 @pytest.mark.parametrize("category", ["1", "2"])
@@ -506,7 +506,7 @@ def test_a_treating_report_is_told_which_encounter_it_is(monkeypatch, category):
     # at. That earlier visit has its own sub-document here and is summarized in its own right.
     (system_msg,) = _system_messages(monkeypatch, _row(category=category, date="03/09/2023"))
 
-    assert system_msg.startswith(se.HARDENING_PREAMBLE + "CATEGORY PROMPT")
+    assert system_msg.startswith(se.build_preamble(category) + "CATEGORY PROMPT")
     assert "THIS DOCUMENT IS DATED 03/09/2023" in system_msg
     assert "has its own document in this record" in system_msg
 
@@ -524,7 +524,7 @@ def test_no_document_date_means_no_date_block(monkeypatch, date):
     # Segmentation could not read a date. Asserting an empty or "-" date would be worse than saying
     # nothing: the model would have to interpret a broken instruction.
     (system_msg,) = _system_messages(monkeypatch, _row(category="1", date=date))
-    assert system_msg == se.HARDENING_PREAMBLE + "CATEGORY PROMPT"
+    assert system_msg == se.build_preamble("1") + "CATEGORY PROMPT"
 
 
 def test_the_document_date_is_handed_to_the_verify_pass(monkeypatch):
@@ -549,7 +549,7 @@ def test_the_preamble_carries_the_house_rules_the_editors_asked_for():
     # Six rules requested 2026-07-30 off a live export. Pinned by their operative words rather than
     # whole sentences, so the wording can be tuned without breaking the test, but a rule cannot be
     # deleted silently.
-    preamble = se.HARDENING_PREAMBLE
+    preamble = se.build_preamble("1")  # an exam category, which receives every content block
     assert "Do NOT report the patient's height or weight" in preamble  # item 1
     assert "drop quality (sharp, dull, aching" in preamble  # item 5
     assert "Range of motion" in preamble  # item 4
@@ -562,7 +562,7 @@ def test_the_vitals_rule_covers_height_and_weight_only():
     # Adrian scoped this to height and weight on 2026-07-30 and reserved the other vitals for a later
     # call, so a broader ban would be taking a decision that is not ours. Pinned as an ABSENCE, which
     # is the only way to stop the rule quietly creeping back to "all vital signs".
-    preamble = se.HARDENING_PREAMBLE
+    preamble = se.build_preamble("1")
     assert "height and weight ONLY" in preamble
     assert "other vital signs are left to your judgement" in preamble
     # BMI is 52 numbered DIAGNOSES in the human corpus, never a vital sign; sweeping it up would
@@ -575,9 +575,149 @@ def test_the_range_of_motion_rule_names_itself_as_the_one_inference_exception():
     # textbook normal range IS inference, so the rule has to say so explicitly - an unacknowledged
     # contradiction between a shared rule and a specific one is the defect class that produced #53
     # and E-08, where the model was told opposite things and picked one at random.
-    preamble = se.HARDENING_PREAMBLE
+    preamble = se.build_preamble("1")
     assert "Do NOT infer" in preamble
     assert "ONE exception to the no-inference rule" in preamble
+
+
+def test_the_preamble_is_assembled_per_category():
+    """T4: the shared block reached 4,927 chars, 81% of the system message for a one-line laboratory
+    summary - so category 14 was being instructed about depositions, embedded reviews, range of motion
+    and pain scales, none of which can apply to it. Each block now goes only where it can bind."""
+    lab = se.build_preamble("14")
+    treating = se.build_preamble("1")
+    deposition = se.build_preamble("9")
+
+    # A laboratory result has no examination, no pain scale and no joint.
+    for absent in ("Range of motion", "For pain, give frequency", "height or weight"):
+        assert absent not in lab, absent
+    # But it MUST keep the verdict rule, or a normal result is dropped and the summary is empty.
+    assert "verdict IS the content" in lab
+    # A treating report is the mirror image.
+    assert "Range of motion" in treating
+    assert "For pain, give frequency" in treating
+    assert "verdict IS the content" not in treating
+    # Only the two medico-legal categories are told about an embedded records review.
+    assert "review of earlier medical records" in se.build_preamble("13")
+    assert "review of earlier medical records" not in treating
+    # Every category keeps the factuality rules, the point-scope rule and the style rules.
+    for preamble in (lab, treating, deposition):
+        assert "Do NOT infer" in preamble
+        assert "Include a point ONLY if" in preamble
+        assert "ordinary sentence case" in preamble
+        assert "Bold ONLY the short point/section labels" in preamble
+    # The paragraph rule and the deposition rule are mutually exclusive, never both.
+    assert "ONE continuous paragraph" in treating and "page by page" not in treating
+    assert "page by page" in deposition and "ONE continuous paragraph" not in deposition
+    # And the point of the exercise: the laboratory prompt is materially shorter.
+    assert len(lab) < len(treating) * 0.7
+
+
+def test_a_block_reference_never_dangles_after_assembly():
+    # Two blocks used to open by pointing at a neighbour ("That rule does NOT apply...", "The
+    # single-paragraph rule does NOT apply..."). Under per-category assembly the neighbour can be
+    # absent, which would leave the model reading an exception to a rule it was never given.
+    for cat in ("1", "3", "9", "14", "100"):
+        preamble = se.build_preamble(cat)
+        assert "That rule does NOT apply" not in preamble
+        assert "The single-paragraph rule does NOT apply" not in preamble
+
+
+def test_an_unknown_category_receives_every_block():
+    # An admin can create a category at any time via POST /admin/categories. A new id must not be
+    # silently under-instructed, so the default is INCLUDE - only a KNOWN id has blocks withheld.
+    unknown = se.build_preamble("777")
+    for block in (
+        "Do NOT infer",
+        "Report positive and abnormal findings",
+        "verdict IS the content",
+        "review of earlier medical records",
+        "height or weight",
+        "For pain, give frequency",
+        "Range of motion",
+        "ONE continuous paragraph",
+        "ordinary sentence case",
+    ):
+        assert block in unknown, block
+    # ...except the deposition format, which contradicts the paragraph rule.
+    assert "page by page" not in unknown
+
+
+def test_the_instruction_is_the_last_thing_in_a_multimodal_payload(monkeypatch):
+    """G-03: Google's guidance is context first, instruction last. The instruction used to sit
+    BETWEEN the page images and the OCR text, i.e. in the middle of the payload."""
+    captured = {}
+
+    def fake_generate(model, system_msg, contents, temperature, max_output_tokens=None):
+        if system_msg != se.TITLE_PROMPT:
+            captured["contents"] = contents
+        return _fake_generate(model, system_msg, contents, temperature)
+
+    monkeypatch.setattr(
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR BODY"
+    )
+    monkeypatch.setattr(se, "_page_image_parts", lambda path, start, end: ["IMG1", "IMG2"])
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setattr(se.get_settings(), "summary_multimodal", True, raising=False)
+
+    se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    parts = captured["contents"]
+    assert parts[:2] == ["IMG1", "IMG2"]  # images first
+    assert "OCR BODY" in parts[2]  # then the text
+    assert parts[-1] == se._MULTIMODAL_INSTRUCTION  # instruction LAST, on its own
+    # It must no longer claim the text is still to come.
+    assert "follows" not in se._MULTIMODAL_INSTRUCTION
+    assert "OCR text above" in se._MULTIMODAL_INSTRUCTION
+
+
+def test_the_caps_transform_runs_on_the_body_but_never_the_title(monkeypatch):
+    # T6: capitalisation is mechanical, so a transform is right every time where a prompt rule is not.
+    # The title is exempt - it is an ALL CAPS header by design in 812 of 813 measured human entries.
+    monkeypatch.setattr(
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR"
+    )
+    monkeypatch.setattr(
+        se,
+        "_generate",
+        lambda model, system_msg, contents, temperature, max_output_tokens=None: (
+            ("JANE SMITH, M.D. MRI OF THE LEFT KNEE", False)
+            if system_msg == se.TITLE_PROMPT
+            else ("**Diagnoses**: CARPAL TUNNEL SYNDROME of the right wrist.", False)
+        ),
+    )
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert "Carpal tunnel syndrome" in out["summaryText"]
+    assert "CARPAL TUNNEL SYNDROME" not in out["summaryText"]
+    # The title keeps every capital.
+    assert "MRI OF THE LEFT KNEE" in out["summaryTitle"]
+    # The stored model input is the fine-tuning pair and must stay byte-exact.
+    assert out["sourceText"] == "OCR"
+
+
+def test_the_caps_transform_also_cleans_the_audits_rewrite(monkeypatch):
+    # effective_text() delivers verified_text, so a capital reintroduced by the audit would ship.
+    monkeypatch.setattr(
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR"
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": "**Employer**: CEDAR RIDGE LOGISTICS, INC.",
+            "fixed_title": None,
+            "issues": [{"type": "capitalization", "detail": "employer in capitals"}],
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+    assert "Cedar Ridge Logistics, Inc." in out["verifiedText"]
+    assert "CEDAR RIDGE LOGISTICS" not in out["verifiedText"]
 
 
 def test_standalone_studies_from_rows_takes_only_diagnostic_studies():
