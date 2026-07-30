@@ -405,7 +405,7 @@ def summarize_document(job_id) -> None:
     keeping every successful summary. The "Re-summarize all" path clears summaries in the route
     first, so nothing is reused here.
     """
-    from app.services.summarize_engine import summarize_row
+    from app.services.summarize_engine import standalone_studies_from_rows, summarize_row
 
     def work(session, job, report):
         settings = get_settings()
@@ -469,7 +469,15 @@ def summarize_document(job_id) -> None:
         with ThreadPoolExecutor(max_workers=settings.pipeline_workers) as pool:
             futures = {
                 pool.submit(
-                    summarize_row, pdf_path, row, model, prompt_by_cat[str(row["category"])]
+                    summarize_row,
+                    pdf_path,
+                    row,
+                    model,
+                    prompt_by_cat[str(row["category"])],
+                    # E-08 document-set context, derived from the FULL included row set rather than
+                    # `pending`: a study already summarized on an earlier attempt still stands as its
+                    # own sub-document, so a resumed run must give the same context as the first.
+                    standalone_studies=standalone_studies_from_rows(rows, exclude=row),
                 ): (i, row)
                 for i, row in pending
             }

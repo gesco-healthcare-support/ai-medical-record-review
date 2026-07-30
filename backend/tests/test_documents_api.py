@@ -662,7 +662,7 @@ async def test_bundle_summarize_happy_path_returns_docx(authed, monkeypatch):
 
     import app.services.summarize_engine as se
 
-    def fake(_pdf_path, row, _model=None, prompt=None, verify=None):
+    def fake(_pdf_path, row, _model=None, prompt=None, verify=None, standalone_studies=None):
         return {
             "summaryDate": row.get("date", "-"),
             "summaryTitle": "T (Pages 1-1)",
@@ -705,7 +705,7 @@ async def test_resummarize_mocked_happy_path(authed, monkeypatch):
 
     import app.api.documents as documents_module
 
-    def fake(_pdf_path, _row, _model=None, prompt=None):
+    def fake(_pdf_path, _row, _model=None, prompt=None, standalone_studies=None):
         return {
             "summaryTitle": "New Title (Pages 1-1)",
             "summaryDate": "-",
