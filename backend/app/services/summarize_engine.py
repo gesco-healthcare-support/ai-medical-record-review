@@ -182,12 +182,19 @@ def _page_image_parts(pdf_path, start, end):
 def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_doi=None):
     """Summarize one sub-document row -> the legacy output_dict shape.
 
-    row: {start, end, category, date, injury_date, flag}. ``prompt`` is the category's summary
-    system prompt (blueprints resolve it DB-first via catalog.get_prompt and inject it); when
-    omitted it falls back to the hardcoded prompts.py dict. ``verify`` runs the faithfulness verify
-    pass (defaults to settings.summary_verify); callers pass False to skip it (e.g. bundle export).
-    ``extract_doi`` (defaults to settings.summary_doi_extract) reads the DOI per-document in
-    isolation instead of trusting the propagated row value; False keeps the legacy row value.
+    row: {start, end, category, date, injury_date, flag} and OPTIONALLY ``source_text`` - the OCR
+    text of exactly those pages, which the duplicate check already extracted and stored. When it is
+    present and non-blank this reuses it instead of OCRing the same pages a second time; blank or
+    absent means OCR here as before, so a page whose OCR failed still gets another chance.
+    ``_store_rows`` carries ``source_text`` across edits keyed by (start, end), so reused text
+    always belongs to the row's current page range.
+
+    ``prompt`` is the category's summary system prompt (blueprints resolve it DB-first via
+    catalog.get_prompt and inject it); when omitted it falls back to the hardcoded prompts.py dict.
+    ``verify`` runs the faithfulness verify pass (defaults to settings.summary_verify); callers pass
+    False to skip it (e.g. bundle export). ``extract_doi`` (defaults to settings.summary_doi_extract)
+    reads the DOI per-document in isolation instead of trusting the propagated row value; False keeps
+    the legacy row value.
     """
     settings = get_settings()
     model = model or settings.summary_model
@@ -202,8 +209,14 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
     # fallback prompts alike, and to any future category).
     system_msg = HARDENING_PREAMBLE + prompt
 
-    pages = list(range(int(row["start"]), int(row["end"]) + 1))
-    text = extract_text_from_selected_pages(pdf_path, pages)
+    # Reuse the duplicate check's OCR when it exists: it ran the SAME extraction over the SAME pages
+    # and persisted it per row, so a second full pass is pure waste - on a 1500-page record that is
+    # ~45 minutes of OCR done twice. Blank text is not reused, so a page whose OCR failed the first
+    # time is retried here rather than being permanently condemned to EmptyExtractionError.
+    text = (row.get("source_text") or "").strip()
+    if not text:
+        pages = list(range(int(row["start"]), int(row["end"]) + 1))
+        text = extract_text_from_selected_pages(pdf_path, pages)
     if not text.strip():
         # Fail fast with a clear reason: sending empty text to Gemini yields a cryptic
         # "Model input cannot be empty" 400. Blank/image-only pages hit this.
@@ -238,8 +251,13 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, extract_d
     # DOI only when THIS document states it: an isolated per-document vision call (no neighbours to
     # copy from) supersedes the segmentation-propagated injury_date. extract_doi=False keeps the
     # legacy row value. extract_injury_date is fail-safe (returns "-" -> no prefix).
+    #
+    # Deliberately NOT passed `model`: that handed it summary_model (2.5-pro), whose quota is the
+    # binding constraint - one evening measured 498 accepted vs 181 rejected 2.5-pro calls, enough to
+    # pause a summarize job. Reading a date off a page is extraction, not prose, so it belongs on
+    # genai_model (flash), which is what the function defaults to.
     injury = (
-        extract_injury_date(pdf_path, row["start"], row["end"], model)
+        extract_injury_date(pdf_path, row["start"], row["end"])
         if extract_doi
         else row["injury_date"]
     )

@@ -301,6 +301,10 @@ class ReviewRow(Base):
         row["dupe_group"] = self.dupe_group
         row["dupe_primary"] = self.dupe_primary
         row["dupe_dismissed"] = self.dupe_dismissed
+        # The duplicate check's OCR of exactly these pages, so summarize_row can reuse it instead of
+        # extracting the same text again. _store_rows only carries it across for an unchanged
+        # (start, end), so it can never describe a different page range than this row's.
+        row["source_text"] = self.source_text
         return row
 
 

@@ -164,6 +164,65 @@ def test_the_title_is_handed_to_the_verify_pass(monkeypatch):
     assert seen["title"] == "Progress Note - Dr Smith"
 
 
+def test_the_doi_call_runs_on_the_flash_model_not_the_summary_model(monkeypatch):
+    # summary_model (2.5-pro) quota is the binding constraint - a measured evening saw 181 rejected
+    # calls, enough to pause a summarize job. Reading a date off a page is extraction, so it must run
+    # on genai_model. Passing summarize_row's own model here is the regression.
+    seen = {}
+    monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "OCR text")
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    def fake_extract(pdf_path, start, end, model=None, strict=False):
+        seen["model"] = model
+        return "-"
+
+    monkeypatch.setattr(se, "extract_injury_date", fake_extract)
+    se.summarize_row("/x.pdf", _row(), prompt="P", model="gemini-2.5-pro", extract_doi=True)
+    # None means "use the function's own default", which is genai_model (flash).
+    assert seen["model"] is None
+
+
+def test_stored_ocr_is_reused_instead_of_extracting_twice(monkeypatch):
+    # WHEN the row already carries the duplicate check's OCR of these pages, THE SYSTEM SHALL reuse it
+    # and NOT run OCR again - on a 1500-page record that second pass is ~45 wasted minutes.
+    calls = []
+    monkeypatch.setattr(
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages: calls.append(pages) or "FRESH OCR",
+    )
+    seen = {}
+
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        if system_msg != se.TITLE_PROMPT:
+            seen["body"] = user_text
+        return _fake_generate(model, system_msg, user_text, temperature)
+
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    se.summarize_row("/x.pdf", _row(source_text="STORED OCR TEXT"), prompt="P")
+    assert calls == []  # no OCR
+    assert seen["body"] == "STORED OCR TEXT"
+
+
+@pytest.mark.parametrize("stored", [None, "", "   "])
+def test_blank_stored_ocr_falls_back_to_extracting(monkeypatch, stored):
+    # A row whose OCR failed carries "" (dedup's sentinel). That must NOT be reused as "no text" -
+    # it gets another attempt, otherwise one bad page condemns the row forever.
+    calls = []
+    monkeypatch.setattr(
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages: calls.append(pages) or "FRESH OCR",
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    out = se.summarize_row("/x.pdf", _row(source_text=stored), prompt="P")
+    assert calls == [[1, 2]]
+    assert out["sourceText"] == "FRESH OCR"
+
+
 def test_doi_prefix_from_isolated_extraction(monkeypatch):
     # WHEN extract_doi and the isolated extraction returns a date, THE SYSTEM SHALL prefix it.
     monkeypatch.setattr(se, "extract_text_from_selected_pages", lambda path, pages: "OCR text")

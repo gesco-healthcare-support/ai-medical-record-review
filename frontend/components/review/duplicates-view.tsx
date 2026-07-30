@@ -86,7 +86,15 @@ export function DuplicatesView({
         {isLoading ? null : clusters.length === 0 ? (
           <div className="summary-empty">
             <Copy width={34} height={34} aria-hidden />
-            <p className="empty-title">{running ? "Checking for duplicates..." : "No duplicates"}</p>
+            {/* The counter belongs HERE, not only in the count line above: a large record takes tens
+                of minutes (1498 pages measured at ~47), and a static "Checking for duplicates..."
+                in the middle of an empty tab is indistinguishable from a hung job - which is exactly
+                how it was reported. */}
+            <p className="empty-title">
+              {running
+                ? `Checking for duplicates${job?.total ? ` (${job.current}/${job.total})` : "..."}`
+                : "No duplicates"}
+            </p>
             <p>
               {running
                 ? "Scanning the record for documents that were scanned more than once."
