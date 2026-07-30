@@ -17,22 +17,64 @@ from app.services.genai_retry import generate_with_retry
 
 logger = logging.getLogger(__name__)
 
+# The house rules the audit enforces IN ADDITION to faithfulness. Kept here rather than imported
+# from summarize_engine because that module imports this one; the generation-side wording lives in
+# HARDENING_PREAMBLE and the two must be edited together. They are deliberately phrased differently:
+# generation says "do not write X", the audit says "find and remove X", which is what makes a second
+# pass worth paying for at all.
+#
+# Why this exists: every one of these violations is FAITHFUL to the source, so the faithfulness audit
+# was structurally forbidden from touching them ("do NOT re-style a faithful sentence"). A live
+# 2026-07-30 export showed the generation-side rules for pain descriptors and capitalisation being
+# ignored even though both had been deployed for a day. A rule the model skips at generation needs a
+# second reader, not louder wording.
+_HOUSE_RULES = (
+    "HOUSE RULES (a violation here is a defect even though the SOURCE supports it):\n"
+    "1. VITALS: no height, weight, blood pressure, pulse, respiration, temperature, or oxygen "
+    "saturation. Exception: a measurement the SOURCE lists as a diagnosis (a numbered diagnosis of "
+    "obesity by BMI) stays.\n"
+    "2. PAIN: keep frequency, the numeric rating, and the location. Remove quality words (sharp, "
+    "dull, aching, stabbing, throbbing, burning, cramping, shooting) and never let intensity be "
+    'stated twice ("moderate 6/10").\n'
+    "3. CAPITALISATION: no word, sentence, line, or point in the SUMMARY body may be in capital "
+    "letters, even where the SOURCE capitalises it. Rewrite a company or facility name in title "
+    "case, an occupation in sentence case. Genuine acronyms stay: MRI, CT, EMG, NCS, ECG, QME, AME, "
+    "PR-2, PR-4, RFA, ADL, TTD, WPI, MMI, HPI, PE, ROM, ICD, CPT. The TITLE is exempt - it is an "
+    "all-capitals header by design.\n"
+    "4. RANGE OF MOTION: a measurement must carry whether it is reduced, normal, or increased. Do "
+    "not remove or alter the measured number; add the direction if it is missing, taking it from the "
+    "SOURCE's own wording or from the normal value the SOURCE prints beside it where either exists.\n"
+    "5. DUPLICATION: if the summary reports Findings and Impression (or Conclusion) saying the same "
+    "thing, keep the Impression and drop the Findings. Keep both only where Findings states "
+    "something the Impression does not.\n"
+    "6. PREVIOUS VISITS: content the SOURCE attributes to an EARLIER date than this document's own "
+    "date is a recap of a prior encounter and does not belong in this summary. The mechanism of "
+    "injury and the injury history may stay, stated once. This rule applies ONLY when a document "
+    "date is given below.\n"
+)
+
 VERIFY_PROMPT = (
-    "You audit the TITLE and SUMMARY of a medical-record sub-document for faithfulness to its "
-    "SOURCE text.\n"
+    "You audit the TITLE and SUMMARY of a medical-record sub-document on two counts: faithfulness "
+    "to its SOURCE text, and compliance with the house rules below.\n"
     "- Find every statement in the SUMMARY that is NOT supported by the SOURCE, that CONTRADICTS "
     "the SOURCE, or that contradicts another statement in the summary.\n"
     "- Audit the TITLE the same way, and specifically check its dates, its left/right laterality, "
     "and that it invents no study, body part, author, or facility the SOURCE does not name. A "
     "title is the first thing a reader trusts, so a wrong side or a wrong date there is as "
     "damaging as one in the body.\n"
-    "- Return a corrected summary and a corrected title that fix ONLY those problems. Do NOT add "
-    "new information, do NOT re-style a faithful sentence or title, and do NOT drop content that "
-    "IS supported. Copy dates, percentages, measurements, ratings, and medication names/doses "
-    "exactly. Keep the title in the capitalised header form it already uses.\n"
-    "- If both are already fully faithful, return them unchanged with an empty issues list.\n"
-    "- Each issue: `type` is 'unsupported', 'contradiction', 'date', or 'laterality'; `detail` is "
-    "a short phrase naming the offending claim (no PHI beyond what the claim already states)."
+    "- Then apply the HOUSE RULES. These are the one reason you may edit a sentence that is "
+    "perfectly faithful.\n"
+    "- Return a corrected summary and a corrected title that fix ONLY those problems: the "
+    "faithfulness defects and the house-rule violations, nothing else. Do NOT add new information, "
+    "do NOT re-style a sentence that breaks neither, and do NOT drop content that IS supported and "
+    "breaks no house rule. Copy dates, percentages, measurements, ratings, and medication "
+    "names/doses exactly. Keep the title in the capitalised header form it already uses.\n"
+    "- If both are already faithful and compliant, return them unchanged with an empty issues "
+    "list.\n"
+    "- Each issue: `type` is one of 'unsupported', 'contradiction', 'date', 'laterality', 'vitals', "
+    "'pain_descriptor', 'capitalization', 'range_of_motion', 'duplicate_finding', 'prior_visit'; "
+    "`detail` is a short phrase naming the offending claim (no PHI beyond what the claim already "
+    "states).\n\n" + _HOUSE_RULES
 )
 
 # google-genai accepts a dict schema alongside response_mime_type=application/json (same dict-schema
@@ -51,8 +93,21 @@ _RESPONSE_SCHEMA = {
                         "type": "STRING",
                         # date + laterality added with title auditing: a wrong date or a
                         # left/right flip is neither "unsupported" nor a self-contradiction, so
-                        # the old pair could not name what was actually wrong.
-                        "enum": ["unsupported", "contradiction", "date", "laterality"],
+                        # the old pair could not name what was actually wrong. The six house-rule
+                        # types are named separately so the stored issues say WHICH rule fired -
+                        # that is the only way to measure whether a rule is working.
+                        "enum": [
+                            "unsupported",
+                            "contradiction",
+                            "date",
+                            "laterality",
+                            "vitals",
+                            "pain_descriptor",
+                            "capitalization",
+                            "range_of_motion",
+                            "duplicate_finding",
+                            "prior_visit",
+                        ],
                     },
                     "detail": {"type": "STRING"},
                 },
@@ -64,8 +119,8 @@ _RESPONSE_SCHEMA = {
 }
 
 
-def verify_summary(model, source_text, summary_text, title=None):
-    """Audit ``summary_text`` and (when given) ``title`` against ``source_text``.
+def verify_summary(model, source_text, summary_text, title=None, document_date=None):
+    """Audit ``summary_text`` and (when given) ``title`` against ``source_text`` and the house rules.
 
     Returns ``{"fixed_text": str, "fixed_title": str, "issues": list[dict]}``. ``issues`` is
     non-empty only when the model found something to fix. On empty input or ANY failure, returns the
@@ -74,10 +129,17 @@ def verify_summary(model, source_text, summary_text, title=None):
     Title and body share ONE call: the model can then compare them against each other (a title
     naming a study the body never mentions is exactly the kind of drift worth catching), and a
     summary costs one verification call rather than two.
+
+    ``document_date`` is this sub-document's own date. It is what makes house rule 6 checkable: a
+    complaint or finding the source attributes to an earlier date is a recap of a visit that has its
+    own document elsewhere in the record. Omit it and the rule is skipped rather than guessed at.
     """
     if not (summary_text or "").strip():
         return {"fixed_text": summary_text, "fixed_title": title, "issues": []}
     prompt = f"SOURCE:\n{source_text}\n\n"
+    date = str(document_date or "").strip()
+    if date and date != "-":
+        prompt += f"THIS DOCUMENT'S DATE:\n{date}\n\n"
     if title:
         prompt += f"TITLE:\n{title}\n\n"
     prompt += f"SUMMARY:\n{summary_text}"

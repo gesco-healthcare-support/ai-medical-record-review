@@ -63,7 +63,9 @@ def test_summary_call_uses_hardening_preamble_and_configured_temperature(monkeyp
 
     summary_call = next(c for c in calls if c["system_msg"] != se.TITLE_PROMPT)
     title_call = next(c for c in calls if c["system_msg"] == se.TITLE_PROMPT)
-    assert summary_call["system_msg"] == se.HARDENING_PREAMBLE + "CATEGORY PROMPT"
+    # The rules come first; a category-1 row then gets its document-date block appended (see the
+    # current-visit tests below), so this is a prefix assertion rather than an equality one.
+    assert summary_call["system_msg"].startswith(se.HARDENING_PREAMBLE + "CATEGORY PROMPT")
     assert summary_call["temperature"] == get_settings().summary_temperature
     assert title_call["temperature"] == 0.0  # title is pure extraction, always deterministic
     assert "SUMMARY BODY" in out["summaryText"]
@@ -96,7 +98,7 @@ def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
     monkeypatch.setattr(
         se,
         "verify_summary",
-        lambda model, source, summary, title=None: {
+        lambda model, source, summary, title=None, document_date=None: {
             "fixed_text": "SUMMARY BODY",
             "fixed_title": title,
             "issues": [{"type": "unsupported", "detail": "a fabrication"}],
@@ -125,7 +127,7 @@ def test_verified_title_is_stored_decorated_when_the_pass_corrects_it(monkeypatc
     monkeypatch.setattr(
         se,
         "verify_summary",
-        lambda model, source, summary, title=None: {
+        lambda model, source, summary, title=None, document_date=None: {
             "fixed_text": "SUMMARY BODY",
             "fixed_title": "CORRECTED HEADER",
             "issues": [{"type": "laterality", "detail": "left/right"}],
@@ -147,7 +149,7 @@ def test_verified_title_stays_none_when_the_pass_finds_nothing(monkeypatch):
     monkeypatch.setattr(
         se,
         "verify_summary",
-        lambda model, source, summary, title=None: {
+        lambda model, source, summary, title=None, document_date=None: {
             "fixed_text": "",
             "fixed_title": "SOMETHING ELSE",
             "issues": [],
@@ -166,7 +168,7 @@ def test_the_title_is_handed_to_the_verify_pass(monkeypatch):
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
 
-    def fake_verify(model, source, summary, title=None):
+    def fake_verify(model, source, summary, title=None, document_date=None):
         seen["title"] = title
         return {"fixed_text": summary, "fixed_title": title, "issues": []}
 
@@ -483,7 +485,10 @@ def test_other_categories_never_receive_the_study_list(monkeypatch, category):
     (system_msg,) = _system_messages(
         monkeypatch, _row(category=category), standalone_studies=_STUDIES
     )
-    assert system_msg == se.HARDENING_PREAMBLE + "CATEGORY PROMPT"
+    # Asserted on the study block alone, not on the whole message: categories 1 and 2 legitimately
+    # carry a document-date block of their own (see the current-visit tests).
+    assert "APPEAR AS THEIR OWN DOCUMENT" not in system_msg
+    assert "MRI OF THE LUMBAR SPINE" not in system_msg
 
 
 @pytest.mark.parametrize("studies", [None, [], [{"title": "-", "date": "-"}], [{"title": ""}]])
@@ -492,6 +497,75 @@ def test_nothing_listable_leaves_the_system_message_unchanged(monkeypatch, studi
     # prompt exactly as before - not an empty heading the model has to interpret.
     (system_msg,) = _system_messages(monkeypatch, _row(category="12"), standalone_studies=studies)
     assert system_msg == se.HARDENING_PREAMBLE + "CATEGORY PROMPT"
+
+
+@pytest.mark.parametrize("category", ["1", "2"])
+def test_a_treating_report_is_told_which_encounter_it_is(monkeypatch, category):
+    # WHEN a category-1 or 2 row is summarized, THE SYSTEM SHALL name the document's own date in the
+    # system message, so a recap of an earlier visit can be identified by date rather than guessed
+    # at. That earlier visit has its own sub-document here and is summarized in its own right.
+    (system_msg,) = _system_messages(monkeypatch, _row(category=category, date="03/09/2023"))
+
+    assert system_msg.startswith(se.HARDENING_PREAMBLE + "CATEGORY PROMPT")
+    assert "THIS DOCUMENT IS DATED 03/09/2023" in system_msg
+    assert "has its own document in this record" in system_msg
+
+
+@pytest.mark.parametrize("category", ["3", "5", "9", "12", "13", "100"])
+def test_other_categories_are_not_given_a_document_date(monkeypatch, category):
+    # A medico-legal evaluation is REQUIRED to carry the injury history, and a diagnostic study has
+    # no prior visit to confuse, so the rule would only cost tokens and risk dropping wanted content.
+    (system_msg,) = _system_messages(monkeypatch, _row(category=category, date="03/09/2023"))
+    assert "THIS DOCUMENT IS DATED" not in system_msg
+
+
+@pytest.mark.parametrize("date", [None, "", "   ", "-"])
+def test_no_document_date_means_no_date_block(monkeypatch, date):
+    # Segmentation could not read a date. Asserting an empty or "-" date would be worse than saying
+    # nothing: the model would have to interpret a broken instruction.
+    (system_msg,) = _system_messages(monkeypatch, _row(category="1", date=date))
+    assert system_msg == se.HARDENING_PREAMBLE + "CATEGORY PROMPT"
+
+
+def test_the_document_date_is_handed_to_the_verify_pass(monkeypatch):
+    # House rule 6 (no previous-visit content) is only checkable against the document's own date, so
+    # the audit needs it too - the source text alone cannot say which of its dates is this one.
+    seen = {}
+    monkeypatch.setattr(
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR text"
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+
+    def fake_verify(model, source, summary, title=None, document_date=None):
+        seen["date"] = document_date
+        return {"fixed_text": summary, "fixed_title": title, "issues": []}
+
+    monkeypatch.setattr(se, "verify_summary", fake_verify)
+    se.summarize_row("/x.pdf", _row(date="03/09/2023"), prompt="P", verify=True)
+    assert seen["date"] == "03/09/2023"
+
+
+def test_the_preamble_carries_the_house_rules_the_editors_asked_for():
+    # Six rules requested 2026-07-30 off a live export. Pinned by their operative words rather than
+    # whole sentences, so the wording can be tuned without breaking the test, but a rule cannot be
+    # deleted silently.
+    preamble = se.HARDENING_PREAMBLE
+    assert "Do NOT report vital signs" in preamble  # item 1
+    assert "drop quality (sharp, dull, aching" in preamble  # item 5
+    assert "Range of motion" in preamble  # item 4
+    assert "ordinary sentence case" in preamble  # item 6
+    # Acronyms must stay exempt, or the rule renders MRI as "Mri".
+    assert "MRI, CT, EMG" in preamble
+
+
+def test_the_range_of_motion_rule_names_itself_as_the_one_inference_exception():
+    # The preamble opens with "Do NOT infer, assume, extrapolate". Comparing a measurement against a
+    # textbook normal range IS inference, so the rule has to say so explicitly - an unacknowledged
+    # contradiction between a shared rule and a specific one is the defect class that produced #53
+    # and E-08, where the model was told opposite things and picked one at random.
+    preamble = se.HARDENING_PREAMBLE
+    assert "Do NOT infer" in preamble
+    assert "ONE exception to the no-inference rule" in preamble
 
 
 def test_standalone_studies_from_rows_takes_only_diagnostic_studies():

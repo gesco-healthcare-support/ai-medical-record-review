@@ -98,9 +98,36 @@ HARDENING_PREAMBLE = (
     "the embedded review in whole - it restates records that are summarized in their own right "
     "elsewhere in the set.\n"
     "- Do NOT write ICD, CPT, or other billing codes, even when the document lists them.\n"
+    # Measured on the 55-deliverable human corpus (2115 entries): a stated height appears once, a
+    # weight 8 times, a blood-pressure value once. They are recorded at almost every encounter and
+    # summarized at almost none. The BMI carve-out is not cosmetic: BMI appears 52 times in that
+    # corpus and every occurrence is a numbered DIAGNOSIS ("6. BMI 42.5, severe obesity
+    # equivalent"), so a blanket vitals ban would start deleting diagnoses.
+    "- Do NOT report vital signs: height, weight, blood pressure, pulse, respiration rate, "
+    "temperature, or oxygen saturation. They appear in nearly every encounter note and belong in "
+    "none of these summaries. The one exception is a measurement the document itself lists as a "
+    "diagnosis - a numbered diagnosis of obesity by BMI is a diagnosis, not a vital sign, and it "
+    "stays.\n"
     "- For pain, give frequency, intensity on the scale the document uses, and location, and "
     "nothing else. Do not add qualitative descriptors, and never state intensity twice - write "
-    '"6/10", not "moderate 6/10".\n\n'
+    '"6/10", not "moderate 6/10". The common failure is a list of quality words in front of the '
+    'word pain: write "constant right wrist pain rated 6/10", NEVER "frequent, sharp, stabbing, '
+    'aching, dull pain rated 6/10". Keep frequency (constant, intermittent, occasional, frequent); '
+    "drop quality (sharp, dull, aching, stabbing, throbbing, burning, cramping, shooting).\n"
+    # The human corpus describes range of motion qualitatively 473 times and quotes degrees only 31
+    # times, so a bare measurement is not what a reader expects. The reference-range fallback is a
+    # DELIBERATE and narrowly-bounded exception to the no-inference rule above (Adrian's call,
+    # 2026-07-30): normal joint ranges are textbook reference values, not a claim about this
+    # patient. It must stay the only exception, and it must never change the measured number.
+    "- Range of motion: a bare measurement does not tell the reader whether the joint moves. Say "
+    "whether it is reduced. Use the document's own word when it gives one (decreased, limited, "
+    "restricted, within normal limits). When the document prints a normal value beside the "
+    'measurement ("flexion 40/60"), state the comparison from those two numbers. Only when the '
+    "document gives neither, compare the measurement against the standard normal range for that "
+    "joint and motion and say whether it is reduced, normal, or increased. Reference ranges for "
+    "joints are the ONE exception to the no-inference rule above, because they are textbook values "
+    "rather than a statement about this patient; keep the measured value exactly as written "
+    "either way, and never replace a number with a word.\n\n"
     "FORMATTING (STRICT - overrides any layout instruction in the category rules below):\n"
     "- Write the ENTIRE summary as ONE continuous paragraph. Do NOT use line breaks, blank lines, "
     "bullet points, or numbered lists to separate points; when the rules below organize the content "
@@ -113,8 +140,49 @@ HARDENING_PREAMBLE = (
     "reference, and do not merge them into a paragraph.\n"
     "- Bold ONLY the short point/section labels, e.g. **Subjective Complaints**, **Diagnoses**, "
     "**Work Status**. Do NOT bold the text that follows a label, and NEVER bold a whole sentence, a "
-    "whole point, or the entire summary - bolding everything makes the emphasis meaningless.\n\n"
+    "whole point, or the entire summary - bolding everything makes the emphasis meaningless.\n"
+    # Forms print employer, occupation and headings in capitals, and the model was copying that
+    # through: no all-caps run of three or more words appears in the body of any of the 2115 measured
+    # human entries. Acronyms are exempted explicitly, or the rule turns MRI into "Mri". The header
+    # line above the body is a separate artefact and IS all caps by convention (812 of 813 entries),
+    # which is why this rule names the summary body.
+    "- Write the summary body in ordinary sentence case. Do NOT write any word, sentence, line, or "
+    "point in capital letters, even where the document does. Put a company or facility name in "
+    'title case ("Cedar Ridge Logistics, Inc.", not "CEDAR RIDGE LOGISTICS, INC"), an occupation in '
+    'sentence case ("General laborer", not "GENERAL LABORER"), and a heading you carry over in '
+    "sentence case. Genuine acronyms and initialisms are the exception and stay as written: MRI, CT, "
+    "EMG, NCS, ECG, QME, AME, PR-2, PR-4, RFA, ADL, TTD, WPI, MMI, HPI, PE, ROM, ICD, CPT.\n\n"
 )
+
+
+# Categories 1 and 2 are follow-up and comprehensive treating reports, the two that recount an
+# earlier visit before reporting the current one. The recap is not wrong, it is redundant: the
+# earlier visit has its own sub-document in the same record and is summarized there in its own
+# right - the same argument as the embedded-review rule above. Confined to these two because a
+# medico-legal evaluation (12, 13) is REQUIRED to carry the injury history.
+_CURRENT_VISIT_CATEGORIES = frozenset({"1", "2"})
+
+
+def _document_date_block(document_date) -> str:
+    """The system-message block telling the model which encounter this document IS.
+
+    Segmentation already extracts the document's date per row, so handing it over is free and far
+    more reliable than asking the model to work out which of the dates in the text is the document's
+    own. Returns "" when the date is missing or the "-" sentinel, so the caller sends the system
+    message unchanged rather than an empty assertion the model has to interpret.
+    """
+    date = str(document_date or "").strip()
+    if not date or date == "-":
+        return ""
+    return (
+        f"\n\nTHIS DOCUMENT IS DATED {date}, AND IT RECORDS THAT ENCOUNTER.\n"
+        "Where the text recounts an EARLIER visit - its complaints, its examination findings, its "
+        "treatment, or its work status - and attributes them to an earlier date, that is a recap. "
+        "Do NOT summarize it: that visit has its own document in this record and is summarized "
+        f"there. Summarize the findings, complaints, treatment and work status of {date} only. The "
+        "mechanism of injury and the injury history stay where the category rules ask for them, "
+        "stated once; what you leave out is the previous visit's own findings."
+    )
 
 
 # Only categories 12 and 13 (QME/AME supplementals and evaluations) mention an embedded records
@@ -277,6 +345,10 @@ def summarize_row(
     # (images -> instruction -> OCR text) is untouched.
     if standalone_studies and str(row["category"]) in _EMBEDDED_REVIEW_CATEGORIES:
         system_msg += _standalone_studies_block(standalone_studies)
+    # Tell a treating report which encounter it is, so a recap of the previous visit can be told
+    # apart from this visit's own findings by date rather than by guesswork.
+    if str(row["category"]) in _CURRENT_VISIT_CATEGORIES:
+        system_msg += _document_date_block(row.get("date"))
 
     # Depositions are summarized one line per transcript page, so this category needs to SEE where
     # each page ends. The stored text cannot be reused for them: page boundaries cannot be retrofitted
@@ -353,7 +425,7 @@ def summarize_row(
     verified_title = None
     verify_issues = None
     if verify:
-        result = verify_summary(model, text, summary, title=title)
+        result = verify_summary(model, text, summary, title=title, document_date=row.get("date"))
         if result["issues"]:
             verified_text = f"{doi_final} {result['fixed_text']}"
             verify_issues = result["issues"]

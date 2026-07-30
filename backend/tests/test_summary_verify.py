@@ -5,6 +5,8 @@ Pure: the genai client + generate_with_retry are monkeypatched, so no Vertex cal
 
 import json
 
+import pytest
+
 from app.services import summary_verify as sv
 
 
@@ -131,6 +133,86 @@ def test_the_call_sets_its_own_thinking_budget(monkeypatch):
     sv.verify_summary("m", "src", "Body.")
     assert seen["thinking"] is not None
     assert seen["thinking"].thinking_budget != 0
+
+
+def test_the_audit_enforces_house_style_not_only_faithfulness():
+    """The six rules the editors asked for on 2026-07-30 are all FAITHFUL to the source, so the
+    original prompt - which said "do NOT re-style a faithful sentence" and "do NOT drop content that
+    IS supported" - forbade the audit from touching any of them. It now carries them explicitly, and
+    still forbids restyling anything else."""
+    prompt = sv.VERIFY_PROMPT
+    assert "HOUSE RULES" in prompt
+    for operative in (
+        "VITALS",
+        "PAIN",
+        "CAPITALISATION",
+        "RANGE OF MOTION",
+        "DUPLICATION",
+        "PREVIOUS VISITS",
+    ):
+        assert operative in prompt, operative
+    # The licence to restyle must stay bounded to those rules, or the pass starts rewriting good
+    # prose and the raw/verified distinction stops meaning anything.
+    assert "the one reason you may edit a sentence that is perfectly faithful" in prompt
+    assert "do NOT re-style a sentence that breaks neither" in prompt
+    # The title is an all-capitals header by design (812 of 813 measured human entries), so the
+    # capitalisation rule must exempt it or the audit would "fix" every title.
+    assert "The TITLE is exempt" in prompt
+
+
+def test_every_house_rule_has_its_own_issue_type():
+    # Stored issues are the only way to measure whether a rule fires, so a rule without its own type
+    # is a rule nobody can audit. Kept in step with the six HOUSE RULES above.
+    types = set(_RESPONSE_SCHEMA_ISSUE_TYPES())
+    assert {
+        "unsupported",
+        "contradiction",
+        "date",
+        "laterality",
+    } <= types  # faithfulness, unchanged
+    assert {
+        "vitals",
+        "pain_descriptor",
+        "capitalization",
+        "range_of_motion",
+        "duplicate_finding",
+        "prior_visit",
+    } <= types
+
+
+def _RESPONSE_SCHEMA_ISSUE_TYPES():
+    return sv._RESPONSE_SCHEMA["properties"]["issues"]["items"]["properties"]["type"]["enum"]
+
+
+def test_the_document_date_reaches_the_model_when_given(monkeypatch):
+    # Rule 6 cannot be checked without it: the source names several dates and only the caller knows
+    # which one is this sub-document's.
+    seen = {}
+
+    def gen(client, *, model, contents, config):
+        seen["contents"] = contents
+        return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
+
+    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
+    monkeypatch.setattr(sv, "generate_with_retry", gen)
+    sv.verify_summary("m", "the source", "Body.", document_date="03/09/2023")
+    assert "THIS DOCUMENT'S DATE:\n03/09/2023" in seen["contents"]
+
+
+@pytest.mark.parametrize("date", [None, "", "   ", "-"])
+def test_a_missing_document_date_is_omitted_rather_than_asserted(monkeypatch, date):
+    # Segmentation could not read a date -> rule 6 is skipped. Sending "-" would invite the model to
+    # treat everything as a prior visit.
+    seen = {}
+
+    def gen(client, *, model, contents, config):
+        seen["contents"] = contents
+        return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
+
+    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
+    monkeypatch.setattr(sv, "generate_with_retry", gen)
+    sv.verify_summary("m", "the source", "Body.", document_date=date)
+    assert "THIS DOCUMENT'S DATE" not in seen["contents"]
 
 
 def test_blank_fixed_title_falls_back_to_the_original(monkeypatch):
