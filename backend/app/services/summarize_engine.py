@@ -72,18 +72,31 @@ HARDENING_PREAMBLE = (
     "- If the text is illegible, ambiguous, or internally contradictory, omit that point rather "
     "than resolving it by guessing.\n\n"
     # Content scope lives here, once, so a category prompt only has to name its own points.
-    # Measured cause of long summaries: nothing forbade a point the category never asked for, so
-    # our bodies run 2-5x the human median (240 chars). The employer/occupation carve-out is
-    # deliberate - only categories 7 and 13 name those fields, and the editors want them on any
-    # report that states them, so the first rule alone would have suppressed them everywhere else.
+    # Measured against 55 eData deliverables (2115 entries): the length gap is per-category, not
+    # uniform - labs 25x, diagnostic studies 4.3x, therapy notes 3.3x, treating reports 2.4x, while
+    # medico-legal evaluations and depositions run SHORTER than the human convention. The old note
+    # here cited a corpus-wide median of 240 chars; that figure is a mix artifact (a quarter of the
+    # corpus is labs, forms and one-line impressions) and must not be used as a target.
+    #
+    # The employer/occupation carve-out was removed on measured evidence: the human corpus confines
+    # both to WCAB filings (51%/39%) and comprehensive evaluations (40%/25%), and uses them in 1%
+    # of treating notes and 0% of imaging, therapy and lab entries. A blanket carve-out added them
+    # to ~1600 entries where the convention omits them. Categories 2 and 7 name them directly.
     "CONTENT RULES (what belongs in the summary):\n"
     "- Include a point ONLY if the category rules below name it for this document type. Do not "
     "add a point the rules do not list, however relevant it looks - unrequested detail is the "
     "main reason summaries run long.\n"
-    "- Employer and occupation are exceptions to the rule above: include either whenever the "
-    "document states it, on any document type.\n"
-    "- Report positive and abnormal findings only. Omit anything recorded as normal, negative, "
-    "unremarkable, or within normal limits; a reader assumes anything not mentioned was normal.\n"
+    "- Report positive and abnormal findings only when describing an examination, a history, or a "
+    "clinical assessment. Omit anything recorded as normal, negative, unremarkable, or within "
+    "normal limits; a reader assumes anything not mentioned was normal.\n"
+    "- That rule does NOT apply to the conclusion of a diagnostic study or to a laboratory or test "
+    "result. Report the impression, result, or verdict exactly as stated even when it is normal or "
+    "negative - for those documents the verdict IS the content, and omitting it leaves the summary "
+    "empty.\n"
+    "- If the document contains a review of earlier medical records inside it, record that the "
+    "review is present and take from it only the diagnostic studies it reports. Never summarize "
+    "the embedded review in whole - it restates records that are summarized in their own right "
+    "elsewhere in the set.\n"
     "- Do NOT write ICD, CPT, or other billing codes, even when the document lists them.\n"
     "- For pain, give frequency, intensity on the scale the document uses, and location, and "
     "nothing else. Do not add qualitative descriptors, and never state intensity twice - write "
@@ -92,6 +105,12 @@ HARDENING_PREAMBLE = (
     "- Write the ENTIRE summary as ONE continuous paragraph. Do NOT use line breaks, blank lines, "
     "bullet points, or numbered lists to separate points; when the rules below organize the content "
     "into named points or sections, run those points together inline in one single paragraph.\n"
+    # Depositions are the one measured exception: the human convention is one line per transcript
+    # page (median gap between referenced pages is 1, across 978 transitions), so the single-
+    # paragraph rule would destroy the format rather than tidy it.
+    "- The single-paragraph rule does NOT apply to deposition or recorded-statement transcripts. "
+    "Summarize those page by page, one line per page, each beginning with the page and line "
+    "reference, and do not merge them into a paragraph.\n"
     "- Bold ONLY the short point/section labels, e.g. **Subjective Complaints**, **Diagnoses**, "
     "**Work Status**. Do NOT bold the text that follows a label, and NEVER bold a whole sentence, a "
     "whole point, or the entire summary - bolding everything makes the emphasis meaningless.\n\n"
