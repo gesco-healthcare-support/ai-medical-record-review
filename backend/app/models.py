@@ -431,4 +431,8 @@ class AuditLog(Base):
     user_id = Column(Integer, ForeignKey("user.id"), nullable=False, index=True)
     action = Column(String(32), nullable=False)
     document_id = Column(String(36))
+    # What CHANGED, when the action alone does not say it - e.g. a category edit needs the id it came
+    # from as well as the one it went to. Free text rather than JSON: nothing queries this yet, and a
+    # human reading a row is the only consumer a write-only trail can have.
+    detail = Column(Text)
     at = Column(DateTime, nullable=False, default=_utcnow)

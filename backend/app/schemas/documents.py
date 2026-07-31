@@ -29,6 +29,11 @@ class SummaryEditPayload(BaseModel):
     summaryDate: str | None = None
     summaryText: str | None = None
     excluded: bool | None = None
+    # Re-classify this sub-document. Unlike the fields above it does NOT land on the Summary: it is
+    # written through to the owning ReviewRow, so this edit and the same edit on Review & correct are
+    # the same edit and cannot diverge. The next re-draft picks up the new category's prompt on its
+    # own, because resummarize already resolves the prompt from the row.
+    category: str | None = None
 
 
 class ResummarizePayload(BaseModel):

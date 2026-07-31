@@ -28,7 +28,8 @@ function useSummaryPatch(documentId: string) {
     );
 }
 
-/** Edit a summary (title/date/text) or toggle its export inclusion. */
+/** Edit a summary (title/date/text), toggle its export inclusion, or re-classify it (`category`,
+ *  which the server writes to the owning ReviewRow). */
 export function useSaveSummary(documentId: string) {
   const patch = useSummaryPatch(documentId);
   return useMutation({
@@ -39,6 +40,7 @@ export function useSaveSummary(documentId: string) {
         summaryDate: string;
         summaryText: string;
         excluded: boolean;
+        category: string;
       }>;
     }) => putSummary(documentId, vars.idx, vars.body),
     onSuccess: patch,

@@ -335,6 +335,7 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
             header={wf.header}
             onHeaderSaved={wf.setHeader}
             onGotoSummarizeStep={() => setTab("duplicates")}
+            onRowsChanged={wf.reloadRows}
           />
         )}
       </div>

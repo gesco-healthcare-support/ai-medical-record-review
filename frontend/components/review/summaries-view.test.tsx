@@ -25,7 +25,7 @@ vi.mock("@/components/review/pdf-viewer", async () => {
   };
 });
 
-import { fireEvent } from "@testing-library/react";
+import { fireEvent, waitFor } from "@testing-library/react";
 import { ApiError } from "@/lib/api";
 import { SummariesView } from "@/components/review/summaries-view";
 
@@ -62,6 +62,191 @@ describe("SummariesView verify flag", () => {
       <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
     );
     expect(screen.getByText(/AI-fixed/i)).toBeInTheDocument();
+  });
+});
+
+describe("SummariesView category", () => {
+  const CATS = [
+    { id: "1", name: "Treating progress and follow-up reports (PR-2)" },
+    { id: "3", name: "Diagnostic studies" },
+  ];
+  /** One summary generated under category `generated`, whose row now says `live`. */
+  const card = (generated: string, live: string | null | undefined) => [
+    {
+      idx: 0,
+      summaryTitle: "Progress Note (Pages 1-2)",
+      summaryDate: "01/02/2026",
+      summaryText: "Body.",
+      manualCheck: false,
+      excluded: false,
+      edited: false,
+      verified: false,
+      verifyChanged: false,
+      verifyIssues: [],
+      row: { start: 1, end: 2, category: generated },
+      ...(live === undefined ? {} : { rowCategoryLive: live }),
+    },
+  ];
+
+  const renderCard = () =>
+    render(
+      <SummariesView documentId="d1" categories={CATS} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+
+  it("saves a new category without touching the summary text", async () => {
+    saveMock.mockClear();
+    summariesState.error = null;
+    summariesState.data = card("1", "1");
+    renderCard();
+
+    fireEvent.change(screen.getByRole("combobox", { name: /document category/i }), {
+      target: { value: "3" },
+    });
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalledWith({ idx: 0, body: { category: "3" } }));
+    // The body is deliberately NOT re-written here - only a re-draft rewrites the text.
+    expect(screen.getByText("Body.")).toBeInTheDocument();
+  });
+
+  it("flags a summary whose row was re-classified after it was written", () => {
+    summariesState.error = null;
+    summariesState.data = card("1", "3");
+    renderCard();
+    expect(screen.getByText(/Category changed - re-draft to apply/i)).toBeInTheDocument();
+  });
+
+  it("stays quiet while the row still carries the generating category", () => {
+    summariesState.error = null;
+    summariesState.data = card("1", "1");
+    renderCard();
+    expect(screen.queryByText(/Category changed/i)).not.toBeInTheDocument();
+  });
+
+  it("stays quiet when no row covers the summary's pages any more", () => {
+    // null = the boundaries were re-segmented. There is no live category to disagree with, so
+    // claiming a mismatch would send the reviewer to re-draft for no reason.
+    summariesState.error = null;
+    summariesState.data = card("1", null);
+    renderCard();
+    expect(screen.queryByText(/Category changed/i)).not.toBeInTheDocument();
+  });
+
+  it("stays quiet when the field is missing entirely", () => {
+    // An older backend serves no rowCategoryLive at all. `undefined !== null` is TRUE, so a plain
+    // null check reported EVERY card as stale mid-deploy; the value is coalesced instead.
+    summariesState.error = null;
+    summariesState.data = card("1", undefined);
+    renderCard();
+    expect(screen.queryByText(/Category changed/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the live category in the select, not the generating snapshot", () => {
+    summariesState.error = null;
+    summariesState.data = card("1", "3");
+    renderCard();
+    expect(screen.getByRole("combobox", { name: /document category/i })).toHaveValue("3");
+  });
+
+  it("reports a refused category change instead of silently keeping it", async () => {
+    // The server returns 409 while any job runs, because a segment job would overwrite the row.
+    saveMock.mockClear();
+    saveMock.mockRejectedValueOnce(new ApiError("a job is running for this document", 409));
+    summariesState.error = null;
+    summariesState.data = card("1", "1");
+    renderCard();
+
+    fireEvent.change(screen.getByRole("combobox", { name: /document category/i }), {
+      target: { value: "3" },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/Category not saved/i)).toBeInTheDocument(),
+    );
+    saveMock.mockResolvedValue({});
+  });
+
+  it("re-pulls the editor's rows so a later edit cannot revert the category", async () => {
+    // Review & correct renders from an in-memory buffer and autosaves the WHOLE row set. Leaving it
+    // stale after a category write means the reviewer's next edit there sends the old category back
+    // and silently undoes this change - found live, not by a mock.
+    saveMock.mockClear();
+    const onRowsChanged = vi.fn();
+    summariesState.error = null;
+    summariesState.data = card("1", "1");
+    render(
+      <SummariesView
+        documentId="d1"
+        categories={CATS}
+        header={null}
+        onGotoSummarizeStep={vi.fn()}
+        onRowsChanged={onRowsChanged}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("combobox", { name: /document category/i }), {
+      target: { value: "3" },
+    });
+
+    await waitFor(() => expect(onRowsChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not re-pull the rows when the category save failed", async () => {
+    saveMock.mockClear();
+    saveMock.mockRejectedValueOnce(new ApiError("a job is running", 409));
+    const onRowsChanged = vi.fn();
+    summariesState.error = null;
+    summariesState.data = card("1", "1");
+    render(
+      <SummariesView
+        documentId="d1"
+        categories={CATS}
+        header={null}
+        onGotoSummarizeStep={vi.fn()}
+        onRowsChanged={onRowsChanged}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("combobox", { name: /document category/i }), {
+      target: { value: "3" },
+    });
+
+    await waitFor(() => expect(screen.getByText(/Category not saved/i)).toBeInTheDocument());
+    expect(onRowsChanged).not.toHaveBeenCalled(); // nothing changed server-side, nothing to re-pull
+    saveMock.mockResolvedValue({});
+  });
+
+  it("clears the badge once the re-draft catches the snapshot up", async () => {
+    // The transition a reviewer actually performs, which no other test covered: badge visible, then
+    // re-draft, then gone. resummarize re-snapshots row_category from the live row, so its response has
+    // the two fields equal - this asserts the component reads that as "no longer stale" rather than
+    // needing a full refetch. Proven at the API level in
+    // test_redraft_after_a_category_change_uses_the_new_categorys_prompt; this is the render half.
+    summariesState.error = null;
+    summariesState.data = card("1", "3"); // generated as 1, row now says 3
+    const { rerender } = render(
+      <SummariesView documentId="d1" categories={CATS} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+    expect(screen.getByText(/Category changed - re-draft to apply/i)).toBeInTheDocument();
+
+    // What the server returns after the re-draft: the snapshot now equals the row.
+    summariesState.data = card("3", "3");
+    rerender(
+      <SummariesView documentId="d1" categories={CATS} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+
+    expect(screen.queryByText(/Category changed/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /document category/i })).toHaveValue("3");
+  });
+
+  it("does not jump the viewer when the category select is used", () => {
+    jumpTo.mockClear();
+    saveMock.mockClear();
+    summariesState.error = null;
+    summariesState.data = card("1", "1");
+    renderCard();
+
+    fireEvent.click(screen.getByRole("combobox", { name: /document category/i }));
+    expect(jumpTo).not.toHaveBeenCalled();
   });
 });
 

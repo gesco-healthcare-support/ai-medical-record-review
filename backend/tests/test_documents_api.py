@@ -720,6 +720,304 @@ async def test_resummarize_mocked_happy_path(authed, monkeypatch):
     assert resp.json()["summaryTitle"].startswith("New Title")
 
 
+def _seed_summary(doc_id, *, verified_title=None, row_category=None, idx=0, pages=(1, 1)):
+    """Seed one Summary (and its owning Job) as a resummarize / category-change target."""
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=idx,
+                title="old title",
+                text="old text",
+                verified=verified_title is not None,
+                verified_title=verified_title,
+                row_start=pages[0],
+                row_end=pages[1],
+                row_category=row_category or _VALID_CATEGORY,
+            )
+        )
+        session.commit()
+
+
+def _fake_summarize(**over):
+    """A summarize_row stand-in returning a fresh draft; `over` adds or replaces output keys."""
+
+    def fake(_pdf_path, _row, _model=None, prompt=None, standalone_studies=None):
+        return {
+            "summaryTitle": "New Title (Pages 1-1)",
+            "summaryDate": "-",
+            "summaryText": "new body",
+            "manualCheck": "",
+            "sourceText": "x",
+            **over,
+        }
+
+    return fake
+
+
+async def test_resummarize_drops_a_stale_verified_title(authed, monkeypatch):
+    """WHEN a summary carrying a verified_title is re-drafted and the new output has none, THE SYSTEM
+    SHALL return the new raw title.
+
+    effective_title() prefers verified_title over title, and resummarize reset verified/verified_text/
+    verify_issues but not verified_title - so a re-draft showed the NEW body under the OLD verified
+    header. It is the only one of the fifteen fields _build_summary sets that resummarize missed.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    _seed_summary(doc_id, verified_title="STALE verified title")
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(documents_module, "summarize_row", _fake_summarize())
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 200
+    assert resp.json()["summaryTitle"].startswith("New Title")
+    with get_sessionmaker()() as session:
+        assert session.scalar(select(Summary.verified_title)) is None
+
+
+async def test_resummarize_keeps_a_fresh_verified_title(authed, monkeypatch):
+    """WHEN a re-draft's output carries a verifiedTitle, THE SYSTEM SHALL store and return it - the
+    same assignment must not throw the corrected header away."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    _seed_summary(doc_id, verified_title="STALE verified title")
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module, "summarize_row", _fake_summarize(verifiedTitle="Corrected Title")
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 200
+    assert resp.json()["summaryTitle"] == "Corrected Title"
+
+
+async def test_put_summary_category_writes_through_to_the_row(authed):
+    """WHEN a valid category is PUT, THE SYSTEM SHALL set ReviewRow.category, leave the summary's
+    generating snapshot alone, and audit the change with both ids.
+
+    The snapshot must NOT move: the gap between it and the row IS the staleness signal the badge
+    reads, so updating both would erase the very thing that says "re-draft me".
+    """
+    from app.models import AuditLog
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, pages=(1, 2))
+
+    resp = await client.put(
+        f"/api/documents/{doc_id}/summaries/0", json={"category": _OTHER_CATEGORY}
+    )
+
+    assert resp.status_code == 200, resp.text
+    with get_sessionmaker()() as session:
+        assert session.scalar(select(ReviewRow.category)) == _OTHER_CATEGORY
+        assert session.scalar(select(Summary.row_category)) == _VALID_CATEGORY  # snapshot untouched
+        entry = session.scalar(select(AuditLog).where(AuditLog.action == "summary.category"))
+        assert entry is not None
+        assert _VALID_CATEGORY in entry.detail and _OTHER_CATEGORY in entry.detail
+
+
+async def test_audit_detail_defaults_to_null_for_existing_callers(authed):
+    """WHEN audit() is called without detail, THE SYSTEM SHALL write NULL there.
+
+    The parameter is keyword-only precisely so the fourteen positional callers cannot be broken by
+    adding it; upload is one of them.
+    """
+    from app.models import AuditLog
+
+    client, _ = authed
+    await _upload(client, pages=1)
+
+    with get_sessionmaker()() as session:
+        entry = session.scalar(select(AuditLog).where(AuditLog.action == "upload"))
+        assert entry is not None
+        assert entry.detail is None
+
+
+async def test_put_summary_rejects_an_unknown_category(authed):
+    """IF the category is not an active catalog id, THEN THE SYSTEM SHALL return 400 and change
+    nothing - an unknown id would resolve to no prompt and the next re-draft would fail opaquely."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, pages=(1, 2))
+
+    resp = await client.put(
+        f"/api/documents/{doc_id}/summaries/0", json={"category": "not-a-category"}
+    )
+
+    assert resp.status_code == 400
+    with get_sessionmaker()() as session:
+        assert session.scalar(select(ReviewRow.category)) == _VALID_CATEGORY
+
+
+async def test_put_summary_category_refuses_while_a_job_runs(authed):
+    """IF any job is active, THEN THE SYSTEM SHALL return 409 for a category write.
+
+    Stricter than this endpoint's existing summarize-only guard, and deliberately so: a category write
+    lands on a ReviewRow, and a finishing SEGMENT job replaces the whole row set via _store_rows, so
+    the edit would be silently overwritten.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, pages=(1, 2))
+    with get_sessionmaker()() as session:
+        session.add(
+            Job(
+                document_id=doc_id,
+                kind="segment",
+                state="running",
+                model="m",
+                prompt_version="1",
+            )
+        )
+        session.commit()
+
+    resp = await client.put(
+        f"/api/documents/{doc_id}/summaries/0", json={"category": _OTHER_CATEGORY}
+    )
+
+    assert resp.status_code == 409
+    with get_sessionmaker()() as session:
+        assert session.scalar(select(ReviewRow.category)) == _VALID_CATEGORY
+
+
+async def test_put_summary_category_refuses_when_no_row_matches(authed):
+    """IF no ReviewRow matches the summary's stored page range, THEN THE SYSTEM SHALL return 409.
+
+    Writing only the snapshot would leave Review & correct and Summaries permanently disagreeing,
+    which is worse than an error the reviewer can act on by re-segmenting.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    _seed_rows(doc_id, [(1, 1, None)])  # the summary below covers 2-3, so nothing matches
+    _seed_summary(doc_id, pages=(2, 3))
+
+    resp = await client.put(
+        f"/api/documents/{doc_id}/summaries/0", json={"category": _OTHER_CATEGORY}
+    )
+
+    assert resp.status_code == 409
+    assert "boundar" in resp.json()["detail"].lower()
+
+
+async def test_get_summaries_reports_the_rows_live_category(authed):
+    """WHEN a row's category changed after generation, THE SYSTEM SHALL return the CURRENT value as
+    rowCategoryLive while row.category still holds the generating snapshot."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, pages=(1, 2))
+
+    before = (await client.get(f"/api/documents/{doc_id}/summaries")).json()
+    assert before[0]["rowCategoryLive"] == _VALID_CATEGORY  # in step -> no badge
+    assert before[0]["row"]["category"] == _VALID_CATEGORY
+
+    await client.put(f"/api/documents/{doc_id}/summaries/0", json={"category": _OTHER_CATEGORY})
+    after = (await client.get(f"/api/documents/{doc_id}/summaries")).json()
+
+    assert after[0]["rowCategoryLive"] == _OTHER_CATEGORY  # diverged -> badge
+    assert after[0]["row"]["category"] == _VALID_CATEGORY
+
+
+async def test_every_summary_response_carries_the_live_category(authed, monkeypatch):
+    """WHEN any route returns a summary, THE SYSTEM SHALL include rowCategoryLive.
+
+    The client patches its cache with whatever a mutation returns, replacing the item wholesale. A
+    single route answering with the bare listing() therefore DELETES this field from the cache - which
+    is how the badge failed to appear after a successful category save, with the write itself correct
+    in the database. Three routes return a summary; all three must agree on the shape.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, pages=(1, 2))
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(documents_module, "summarize_row", _fake_summarize())
+
+    listing = (await client.get(f"/api/documents/{doc_id}/summaries")).json()[0]
+    put = (
+        await client.put(f"/api/documents/{doc_id}/summaries/0", json={"category": _OTHER_CATEGORY})
+    ).json()
+    redraft = (await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")).json()
+
+    for name, body in (("get", listing), ("put", put), ("resummarize", redraft)):
+        assert "rowCategoryLive" in body, f"{name} dropped rowCategoryLive"
+    # The PUT must report the category it just wrote, not the pre-change value it was holding.
+    assert put["rowCategoryLive"] == _OTHER_CATEGORY
+    # A re-draft re-snapshots row_category from the row, so the two agree again -> badge clears.
+    assert redraft["rowCategoryLive"] == redraft["row"]["category"] == _OTHER_CATEGORY
+
+
+async def test_redraft_after_a_category_change_uses_the_new_categorys_prompt(authed, monkeypatch):
+    """WHEN a summary is re-drafted after its category changed, THE SYSTEM SHALL resolve the prompt for
+    the NEW category and re-snapshot row_category, so the badge clears.
+
+    This is the whole feature, and the other tests do not cover it: row_category could be updated
+    correctly while the prompt lookup still used the old id, and every assertion would still pass. So
+    capture the prompt actually handed to summarize_row and prove it is the new category's.
+    """
+    from app.services import catalog
+    from app.db import get_sessionmaker as _sm
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, pages=(1, 2))
+
+    with _sm()() as session:
+        old_prompt = catalog.get_prompt(session, "summary", _VALID_CATEGORY)
+        new_prompt = catalog.get_prompt(session, "summary", _OTHER_CATEGORY)
+    assert old_prompt != new_prompt, (
+        "fixture categories must have distinct prompts for this to prove anything"
+    )
+
+    seen = {}
+
+    def fake(_pdf_path, row, _model=None, prompt=None, standalone_studies=None):
+        seen["prompt"] = prompt
+        seen["row_category"] = row["category"]
+        return _fake_summarize()(_pdf_path, row, _model, prompt, standalone_studies)
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(documents_module, "summarize_row", fake)
+
+    await client.put(f"/api/documents/{doc_id}/summaries/0", json={"category": _OTHER_CATEGORY})
+    redraft = (await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")).json()
+
+    assert seen["row_category"] == _OTHER_CATEGORY  # the engine was handed the NEW category
+    assert seen["prompt"] == new_prompt  # ...and the NEW category's prompt, not the old one
+    # Snapshot caught up with the row -> the two agree -> the frontend badge condition goes false.
+    assert redraft["row"]["category"] == redraft["rowCategoryLive"] == _OTHER_CATEGORY
+
+
+async def test_get_summaries_reports_null_when_no_row_matches(authed):
+    """WHEN no ReviewRow matches a summary's page range, THE SYSTEM SHALL return rowCategoryLive as
+    null - there is no live category to compare against, so the UI must not claim a mismatch."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    _seed_rows(doc_id, [(1, 1, None)])
+    _seed_summary(doc_id, pages=(2, 3))
+
+    body = (await client.get(f"/api/documents/{doc_id}/summaries")).json()
+
+    assert body[0]["rowCategoryLive"] is None
+
+
 async def test_segment_start_enqueues_then_conflicts(authed):
     """P4b: segment/start enqueues a job; a second start while it's active returns 409."""
     from tests.conftest import lanes

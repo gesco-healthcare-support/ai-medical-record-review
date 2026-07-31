@@ -101,7 +101,10 @@ export function getSummaries(id: string) {
   return apiFetch<SummaryItem[]>(`/documents/${id}/summaries`);
 }
 
-/** PUT /api/documents/{id}/summaries/{idx} - reviewer edits (title/date/text) or exclude toggle. */
+/** PUT /api/documents/{id}/summaries/{idx} - reviewer edits (title/date/text), exclude toggle, or a
+ *  re-classification. `category` is unlike the others: the server writes it to the owning ReviewRow,
+ *  not to the summary, and refuses it (409) while ANY job is running - a segment job would replace the
+ *  row set and swallow the edit. */
 export function putSummary(
   id: string,
   idx: number,
@@ -110,6 +113,7 @@ export function putSummary(
     summaryDate: string;
     summaryText: string;
     excluded: boolean;
+    category: string;
   }>,
 ) {
   return apiFetch<SummaryItem>(`/documents/${id}/summaries/${idx}`, {
