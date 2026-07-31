@@ -240,7 +240,10 @@ function ClusterCard({
               </span>
             </button>
             {!cluster.dismissed ? (
-              <>
+              // One wrapper carries the auto-margin for BOTH buttons. Putting `margin-left: auto` on
+              // each of them would distribute the row's free space BETWEEN them and strand the first
+              // mid-row, which is what the single-button rule did once a second button appeared.
+              <span className="dupe-copy-actions">
                 <button
                   type="button"
                   className="ev-btn ev-btn-ghost ev-btn-sm"
@@ -261,7 +264,7 @@ function ClusterCard({
                 >
                   Not a duplicate
                 </button>
-              </>
+              </span>
             ) : null}
           </li>
         ))}

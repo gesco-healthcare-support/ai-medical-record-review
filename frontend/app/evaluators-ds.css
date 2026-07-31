@@ -965,4 +965,7 @@ body[data-bundle-slug] #step-editor { flex: none; }
 .dupe-copy.primary { border-color: var(--blue-500); background: rgba(37, 99, 235, .06); }
 .dupe-copy .meta { flex: 0 0 auto; }
 .dupe-copy-title { flex: 1 1 55%; font: 500 14px/1.4 var(--font-body), sans-serif; color: var(--gray-700); }
-.dupe-copy .ev-btn-sm { margin-left: auto; }
+/* A copy's actions travel together at the right edge. The auto-margin belongs to the GROUP: applied
+   to each button, flex would share the row's free space BETWEEN them and strand the first one in the
+   middle of the row - which is what the old single-button rule did once a second button appeared. */
+.dupe-copy-actions { display: flex; flex: 0 0 auto; align-items: baseline; gap: 8px; margin-left: auto; }
