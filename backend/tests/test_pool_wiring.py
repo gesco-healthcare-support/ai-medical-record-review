@@ -56,3 +56,21 @@ def test_categorize_pool_timeout_defaults_rows(monkeypatch):
     # merge inserts a single coverage row; a stalled categorize defaults it to the catch-all + review.
     assert rows
     assert all(r["category"] == DEFAULT_ID and r["flag"] == "x" for r in rows)
+
+
+def test_compose_passes_through_the_settings_it_claims_to_control():
+    """A key in .env reaches a container ONLY if docker-compose.yml names it: compose uses .env for
+    ${VAR} substitution inside the file, not as an env_file. On 2026-07-31 VERTEX_MAX_RPM=20 and
+    SEGMENT_WINDOW_WORKERS=1 were added to the server .env, the containers were recreated, and both
+    still reported the code defaults 60 and 3 - the pacing fix was silently inert. This pins the
+    passthrough so that cannot happen again."""
+    from pathlib import Path
+
+    compose = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    for key in ("VERTEX_MAX_RPM", "SEGMENT_WINDOW_WORKERS"):
+        assert f"{key}: ${{{key}" in compose, f"{key} is not passed through to containers"
+    # TESSERACT_CMD must stay OUT: it is a Windows host path, and injecting it would point the
+    # containers' pytesseract at a nonexistent binary and break OCR everywhere.
+    assert "TESSERACT_CMD: ${TESSERACT_CMD" not in compose
