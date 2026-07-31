@@ -41,6 +41,16 @@ x-backend-env: &backend-env
   # that is a reason to choose 8, not a reason to hide the dial.
   GENAI_MAX_RETRIES: ${GENAI_MAX_RETRIES:-8}
   GENAI_RETRY_MAX_DELAY: ${GENAI_RETRY_MAX_DELAY:-30}
+  # Duplicate-detection thresholds, named here for the same reason as the two blocks above. #66 shipped
+  # these three settings and its own body advertised them as the way to loosen or disable the new
+  # accuracy gate without a code change - which they were not, since an unreferenced key never reaches
+  # a container. It matters for these specifically because the gate decides what a reviewer is SHOWN:
+  # if it proves too strict on a real record, editing .env and recreating is the only mitigation that
+  # does not need a deploy. Set both overrides to 1.1 to restore the pre-#66 behaviour of sending every
+  # candidate to the model. Fallbacks mirror app/config.py, so an unset key behaves exactly as now.
+  DUPE_JACCARD_THRESHOLD: ${DUPE_JACCARD_THRESHOLD:-0.70}
+  DUPE_SIMILARITY_OVERRIDE: ${DUPE_SIMILARITY_OVERRIDE:-0.90}
+  DUPE_MODEL_OVERRIDE: ${DUPE_MODEL_OVERRIDE:-0.95}
   # TESSERACT_CMD is deliberately NOT passed through. It is set in .env for the Windows HOST, and
   # injecting a "C:\..." path here would point the containers' pytesseract at a binary that does not
   # exist, breaking OCR everywhere. The Linux images have tesseract on PATH already.
