@@ -76,6 +76,13 @@ services:
         UV_EXTRAS: "--extra docs --extra classifier"   # torch/embeddings for the classifier
     image: mrr-backend-classifier
     command: ["python", "-m", "app.worker", "segment"]
+    # One replica serialised every tester behind whoever queued first (measured 2026-07-30: a
+    # 427-second unstarted wait behind another user's job). Three matches the tester count; the
+    # ceiling is 4, because the binding resource is CPU during OCR on 4 vCPU, not RAM (~2-4 GB for
+    # six workers against 13 GB free). Pairs with the per-user lanes in app/worker/queues.py -
+    # replicas alone stop helping the moment one user queues more documents than there are workers.
+    deploy:
+      replicas: 3
     environment: *backend-env
     volumes:
       - mrr_uploads:/app/uploads
@@ -92,6 +99,9 @@ services:
         UV_EXTRAS: "--extra docs"
     image: mrr-backend-web
     command: ["python", "-m", "app.worker", "summarize"]
+    # Three replicas, same reasoning as segment-worker above.
+    deploy:
+      replicas: 3
     environment: *backend-env
     volumes:
       - mrr_uploads:/app/uploads

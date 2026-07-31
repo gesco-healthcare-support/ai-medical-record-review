@@ -111,9 +111,13 @@ def enqueue(
         # Size-aware job_timeout: RQ's 180s default is far too short for large records, and a flat
         # cap either starves big docs or makes small ones hang. Scale by page count.
         settings = get_settings()
-        pages = getattr(session.get(Document, document_id), "page_count", 0) or 0
+        document = session.get(Document, document_id)
+        pages = getattr(document, "page_count", 0) or 0
         timeout = settings.effective_job_timeout(pages)
-        rq_job = queue_for(kind).enqueue(
+        # Route onto the OWNER's lane so one tester's backlog cannot serialise the others (measured
+        # 2026-07-30: a 427-second unstarted wait behind another user's job). A document with no owner
+        # falls back to the base queue, which every worker still listens to.
+        rq_job = queue_for(kind, getattr(document, "user_id", None)).enqueue(
             worker_fn(kind),
             job.id,
             job_id=str(job.id),

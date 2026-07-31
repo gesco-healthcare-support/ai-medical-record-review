@@ -176,7 +176,7 @@ async def test_prompt_delete_requires_superuser(client, seeded_user):
 
 
 async def test_reprocess_acts_on_any_owner(admin_client):
-    from app.worker.queues import queue_for
+    from tests.conftest import lanes
 
     # A document owned by a DIFFERENT (non-admin) user, with an included row.
     with get_sessionmaker()() as session:
@@ -215,7 +215,7 @@ async def test_reprocess_acts_on_any_owner(admin_client):
         session.commit()
         doc_id = document.id
 
-    queue = queue_for("summarize")
+    queue = lanes("summarize")
     queue.empty()
     try:
         resp = await admin_client.post(f"/api/admin/reprocess/{doc_id}")

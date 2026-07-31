@@ -114,7 +114,10 @@ def _finalize_paused(session, job_id, sig: JobPaused) -> None:
     job.current, job.total = sig.done, sig.total
     job.attempts = (job.attempts or 0) + 1
     try:
-        rq_job = queue_for(job.kind).enqueue_in(
+        # Same lane as the original dispatch: a resumed job must not jump onto the shared base queue,
+        # or a paused summarize would start blocking other users on every retry cycle.
+        owner = getattr(session.get(Document, job.document_id), "user_id", None)
+        rq_job = queue_for(job.kind, owner).enqueue_in(
             timedelta(seconds=sig.delay),
             worker_fn(job.kind),
             job.id,
