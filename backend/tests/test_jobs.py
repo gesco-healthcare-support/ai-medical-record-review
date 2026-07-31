@@ -9,7 +9,6 @@ jobs/rows.
 import uuid
 
 import pytest
-from rq import Queue
 from sqlalchemy import select
 
 from app.auth.password import MrrPasswordHelper
@@ -97,9 +96,81 @@ def test_the_worker_dequeues_round_robin_not_by_priority():
     assert issubclass(RoundRobinWorker, Worker)
     assert "with_scheduler" in inspect.signature(Worker.work).parameters
 
-    # Behaviour, not just the class name: after serving a queue, that queue moves to the BACK of the
-    # order, so the next dequeue starts from the following lane. On a default Worker the order never
-    # changes, which is precisely how the last-listed user starves.
+
+class _FakeWorker:
+    """Captures how main() builds its worker, so the entrypoint is testable without blocking on work()."""
+
+    last: dict = {}
+
+    def __init__(self, queues, connection=None, **kwargs):
+        _FakeWorker.last = {"names": [q.name for q in queues], "kwargs": kwargs}
+
+    def work(self, **kwargs):
+        _FakeWorker.last["work_kwargs"] = kwargs
+
+
+def test_the_entrypoint_expands_lanes_and_passes_the_scheduler_through(monkeypatch):
+    # Asserted on what main() actually BUILDS rather than on its source text, which also covers the
+    # entrypoint itself - nothing else in the suite calls it.
+    from app.worker import __main__ as worker_main
+
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [2, 3])
+    worker_main.main(["summarize"])
+
+    assert _FakeWorker.last["names"] == ["summarize", "summarize:2", "summarize:3"]
+    # with_scheduler must survive the class swap: delayed summarize resumes depend on it.
+    assert _FakeWorker.last["work_kwargs"] == {"with_scheduler": True}
+
+
+def test_the_entrypoint_serves_both_bases_when_given_no_arguments(monkeypatch):
+    from app.worker import __main__ as worker_main
+
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [4])
+    worker_main.main([])
+    assert _FakeWorker.last["names"] == ["segment", "segment:4", "summarize", "summarize:4"]
+
+
+def test_the_entrypoint_rejects_an_unknown_queue(monkeypatch):
+    from app.worker import __main__ as worker_main
+
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [])
+    with pytest.raises(SystemExit):
+        worker_main.main(["nonesuch"])
+
+
+def test_no_users_still_yields_a_workable_base_queue(monkeypatch):
+    from app.worker import __main__ as worker_main
+
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [])
+    worker_main.main(["segment"])
+    assert _FakeWorker.last["names"] == ["segment"]
+
+
+def test_the_user_lookup_fails_soft(monkeypatch):
+    """A worker that refuses to boot because it could not list users is worse than one serving fewer
+    lanes - a transient DB blip at startup would otherwise stop the whole pipeline."""
+    from app.worker import __main__ as worker_main
+
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("app.db.get_sessionmaker", boom)
+    assert worker_main._user_ids() == []
+
+
+def test_serving_a_lane_moves_it_to_the_back_of_the_order():
+    """The rotation itself, not just the class name: after a queue is served it goes to the BACK, so
+    the next dequeue starts from the following lane. A default Worker never reorders, which is exactly
+    how the last-listed user starves. Demonstrated end to end in the fairness check on 2026-07-31:
+    with one worker and a 5-job backlog, a default Worker ran the second user's job 6th of 6 while
+    RoundRobinWorker ran it 2nd."""
+    from rq import Queue
+    from rq.worker import RoundRobinWorker
+
     from app.worker.queues import get_redis
 
     redis = get_redis()
