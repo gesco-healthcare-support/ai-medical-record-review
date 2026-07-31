@@ -115,3 +115,62 @@ async def client() -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+def lane_queues(kind: str):
+    """Every RQ queue a job of this kind could land on: the base plus each per-user lane.
+
+    Jobs are routed onto their owner's lane (app/worker/queues.queue_for), so a test that only wants
+    to assert "this was enqueued" must not pin one lane name - it would pass or fail depending on
+    which user the fixture happened to create. Tests that care about WHICH lane assert on the name
+    directly instead.
+    """
+    from rq import Queue
+
+    from app.worker.queues import base_queue_name, get_redis
+
+    base = base_queue_name(kind)
+    return [
+        q
+        for q in Queue.all(connection=get_redis())
+        if q.name == base or q.name.startswith(base + ":")
+    ]
+
+
+def empty_lanes(kind: str) -> None:
+    for queue in lane_queues(kind):
+        queue.empty()
+
+
+def lane_count(kind: str) -> int:
+    return sum(queue.count for queue in lane_queues(kind))
+
+
+def lane_jobs(kind: str) -> list:
+    return [job for queue in lane_queues(kind) for job in queue.jobs]
+
+
+class LaneGroup:
+    """All lanes for one kind, exposing the slice of the RQ Queue API these tests use.
+
+    Lets a test say "a job was enqueued for this kind" without naming a lane, which is what those
+    tests actually mean; the lane-routing behaviour itself is asserted directly in test_jobs.py.
+    """
+
+    def __init__(self, kind: str):
+        self.kind = kind
+
+    def empty(self) -> None:
+        empty_lanes(self.kind)
+
+    @property
+    def count(self) -> int:
+        return lane_count(self.kind)
+
+    @property
+    def jobs(self) -> list:
+        return lane_jobs(self.kind)
+
+
+def lanes(kind: str) -> LaneGroup:
+    return LaneGroup(kind)

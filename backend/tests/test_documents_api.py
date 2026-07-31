@@ -722,11 +722,11 @@ async def test_resummarize_mocked_happy_path(authed, monkeypatch):
 
 async def test_segment_start_enqueues_then_conflicts(authed):
     """P4b: segment/start enqueues a job; a second start while it's active returns 409."""
-    from app.worker.queues import queue_for
+    from tests.conftest import lanes
 
     client, _ = authed
     doc_id = await _upload(client, pages=2)
-    queue = queue_for("segment")
+    queue = lanes("segment")
     queue.empty()
     try:
         first = await client.post(f"/api/documents/{doc_id}/segment/start")
@@ -750,11 +750,11 @@ async def test_summarize_start_requires_included_rows(authed):
 
 async def test_summarize_start_enqueues_with_rows(authed):
     """P4b: passing rows flushes them, then summarize/start enqueues on the summarize queue."""
-    from app.worker.queues import queue_for
+    from tests.conftest import lanes
 
     client, _ = authed
     doc_id = await _upload(client, pages=2)
-    queue = queue_for("summarize")
+    queue = lanes("summarize")
     queue.empty()
     try:
         resp = await client.post(
@@ -773,7 +773,7 @@ async def test_summarize_start_fresh_clears_existing_summaries(authed):
     without it the summaries are left for the resumable worker to reuse."""
     from app.db import get_sessionmaker
     from app.models import Job, Summary
-    from app.worker.queues import queue_for
+    from tests.conftest import lanes
 
     client, _ = authed
     doc_id = await _upload(client, pages=2)
@@ -798,7 +798,7 @@ async def test_summarize_start_fresh_clears_existing_summaries(authed):
         )
         session.commit()
 
-    queue = queue_for("summarize")
+    queue = lanes("summarize")
     queue.empty()
     try:
         resp = await client.post(
@@ -921,10 +921,10 @@ async def test_extract_header_ocr_unavailable_returns_503(authed, monkeypatch):
 
 async def test_aggregate_merges_creates_rows_and_enqueues_classify(authed):
     """P6: multi-file upload merges into one Document, seeds a row per record, enqueues classify."""
-    from app.worker.queues import queue_for
+    from tests.conftest import lanes
 
     client, _ = authed
-    queue = queue_for("segment")  # classify routes to the segment queue
+    queue = lanes("segment")  # classify routes to the segment queue
     queue.empty()
     try:
         resp = await client.post(

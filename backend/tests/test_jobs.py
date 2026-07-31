@@ -19,7 +19,7 @@ from app.models import Document, Job, ReviewRow, SegmentRow, Summary, User
 from app.services import jobs
 from app.worker.queues import queue_for, worker_fn
 from app.worker.tasks import _run, dedup_document, segment_document, summarize_document
-from tests.conftest import unique_test_email
+from tests.conftest import lanes, unique_test_email
 
 
 def _make_user_and_doc(page_count: int = 2) -> str:
@@ -47,10 +47,181 @@ def _make_user_and_doc(page_count: int = 2) -> str:
 
 
 def test_queue_routing_maps_kind_to_queue_and_task():
-    assert queue_for("segment").name == "segment"
-    assert queue_for("summarize").name == "summarize"
+    assert queue_for("segment", 7).name == "segment:7"
+    assert queue_for("summarize", 7).name == "summarize:7"
     assert worker_fn("segment").endswith("tasks.segment_document")
     assert worker_fn("summarize").endswith("tasks.summarize_document")
+
+
+def test_classify_and_dedup_keep_riding_their_task_queue():
+    # The user lane is orthogonal to the task split: classify still needs the torch image and dedup
+    # still does not, so adding lanes must not move either onto the wrong worker.
+    assert queue_for("classify", 7).name == "segment:7"
+    assert queue_for("dedup", 7).name == "summarize:7"
+
+
+def test_a_job_with_no_owner_falls_back_to_the_base_queue():
+    # A document with no user has nowhere else to go, and jobs enqueued before lanes existed sit on
+    # the bare name. Every worker listens to it, so neither is stranded.
+    assert queue_for("segment").name == "segment"
+    assert queue_for("segment", None).name == "segment"
+
+
+def test_worker_listens_to_the_base_plus_one_lane_per_user():
+    # WHEN a worker starts, THE SYSTEM SHALL listen to the base queue AND one lane per user, so a
+    # pre-lane job is still claimed and each user has a lane of their own.
+    from app.worker.queues import lanes_for
+
+    assert lanes_for("segment", [2, 3, 4]) == ["segment", "segment:2", "segment:3", "segment:4"]
+    assert lanes_for("segment", []) == ["segment"]
+    # Duplicate ids collapse; the base is never repeated as a lane.
+    assert lanes_for("summarize", [3, 3]) == ["summarize", "summarize:3"]
+
+
+def test_the_worker_dequeues_round_robin_not_by_priority():
+    """The whole point of lanes. RQ's default Worker reads its queues in STRICT PRIORITY order, so
+    listing user lanes on it would starve whichever user sorts last - the head-of-line bug this
+    change exists to remove, with extra steps. RoundRobinWorker rotates instead."""
+    import inspect
+
+    from rq.worker import RoundRobinWorker, Worker
+
+    from app.worker import __main__ as worker_main
+
+    source = inspect.getsource(worker_main.main)
+    assert "RoundRobinWorker(" in source
+    assert "Worker(" not in source.replace("RoundRobinWorker(", "")
+    # It must still be a Worker, so work(with_scheduler=True) keeps firing delayed summarize resumes
+    # (verified live: the scheduler lock is acquired after the class swap).
+    assert issubclass(RoundRobinWorker, Worker)
+    assert "with_scheduler" in inspect.signature(Worker.work).parameters
+
+
+class _FakeWorker:
+    """Captures how main() builds its worker, so the entrypoint is testable without blocking on work()."""
+
+    last: dict = {}
+
+    def __init__(self, queues, connection=None, **kwargs):
+        _FakeWorker.last = {"names": [q.name for q in queues], "kwargs": kwargs}
+
+    def work(self, **kwargs):
+        _FakeWorker.last["work_kwargs"] = kwargs
+
+
+def test_the_entrypoint_expands_lanes_and_passes_the_scheduler_through(monkeypatch):
+    # Asserted on what main() actually BUILDS rather than on its source text, which also covers the
+    # entrypoint itself - nothing else in the suite calls it.
+    from app.worker import __main__ as worker_main
+
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [2, 3])
+    worker_main.main(["summarize"])
+
+    assert _FakeWorker.last["names"] == ["summarize", "summarize:2", "summarize:3"]
+    # with_scheduler must survive the class swap: delayed summarize resumes depend on it.
+    assert _FakeWorker.last["work_kwargs"] == {"with_scheduler": True}
+
+
+def test_the_entrypoint_serves_both_bases_when_given_no_arguments(monkeypatch):
+    from app.worker import __main__ as worker_main
+
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [4])
+    worker_main.main([])
+    assert _FakeWorker.last["names"] == ["segment", "segment:4", "summarize", "summarize:4"]
+
+
+def test_the_entrypoint_rejects_an_unknown_queue(monkeypatch):
+    from app.worker import __main__ as worker_main
+
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [])
+    with pytest.raises(SystemExit):
+        worker_main.main(["nonesuch"])
+
+
+def test_no_users_still_yields_a_workable_base_queue(monkeypatch):
+    from app.worker import __main__ as worker_main
+
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [])
+    worker_main.main(["segment"])
+    assert _FakeWorker.last["names"] == ["segment"]
+
+
+def test_the_user_lookup_fails_soft(monkeypatch):
+    """A worker that refuses to boot because it could not list users is worse than one serving fewer
+    lanes - a transient DB blip at startup would otherwise stop the whole pipeline."""
+    from app.worker import __main__ as worker_main
+
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("app.db.get_sessionmaker", boom)
+    assert worker_main._user_ids() == []
+
+
+def test_serving_a_lane_moves_it_to_the_back_of_the_order():
+    """The rotation itself, not just the class name: after a queue is served it goes to the BACK, so
+    the next dequeue starts from the following lane. A default Worker never reorders, which is exactly
+    how the last-listed user starves. Demonstrated end to end in the fairness check on 2026-07-31:
+    with one worker and a 5-job backlog, a default Worker ran the second user's job 6th of 6 while
+    RoundRobinWorker ran it 2nd."""
+    from rq import Queue
+    from rq.worker import RoundRobinWorker
+
+    from app.worker.queues import get_redis
+
+    redis = get_redis()
+    names = ["segment", "segment:2", "segment:3"]
+    worker = RoundRobinWorker([Queue(n, connection=redis) for n in names], connection=redis)
+    worker._ordered_queues = list(worker.queues)
+    worker.reorder_queues(reference_queue=worker._ordered_queues[0])
+    assert [q.name for q in worker._ordered_queues] == ["segment:2", "segment:3", "segment"]
+    worker.reorder_queues(reference_queue=worker._ordered_queues[0])
+    assert [q.name for q in worker._ordered_queues] == ["segment:3", "segment", "segment:2"]
+
+
+def test_enqueue_routes_a_job_onto_its_owners_lane():
+    # WHEN a job is enqueued, THE SYSTEM SHALL place it on the lane of the document's OWNER, so one
+    # tester's backlog cannot serialise another's (measured: a 427-second unstarted wait).
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        owner = session.get(Document, doc_id).user_id
+    queue = queue_for("segment", owner)
+    queue.empty()
+    base = queue_for("segment")
+    base.empty()
+    try:
+        with get_sessionmaker()() as session:
+            jobs.enqueue(session, doc_id, "segment", model="m", prompt_version="1")
+        assert queue.name == f"segment:{owner}"
+        assert queue.count == 1
+        # And NOT on the shared base queue, which would reintroduce the blocking.
+        assert base.count == 0
+    finally:
+        queue.empty()
+
+
+def test_two_users_land_on_separate_lanes():
+    # The invariant that makes head-of-line blocking impossible: two owners, two queues.
+    doc_a, doc_b = _make_user_and_doc(), _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        owner_a = session.get(Document, doc_a).user_id
+        owner_b = session.get(Document, doc_b).user_id
+    queue_a, queue_b = queue_for("segment", owner_a), queue_for("segment", owner_b)
+    queue_a.empty()
+    queue_b.empty()
+    try:
+        with get_sessionmaker()() as session:
+            jobs.enqueue(session, doc_a, "segment", model="m", prompt_version="1")
+            jobs.enqueue(session, doc_b, "segment", model="m", prompt_version="1")
+        assert queue_a.name != queue_b.name
+        assert queue_a.count == 1 and queue_b.count == 1
+    finally:
+        queue_a.empty()
+        queue_b.empty()
 
 
 def test_create_job_sets_queued_and_document_status():
@@ -281,7 +452,7 @@ def test_summarize_document_preserves_row_order_under_parallelism(monkeypatch):
 
 def test_enqueue_dispatches_to_the_right_queue():
     doc_id = _make_user_and_doc()
-    queue = queue_for("segment")
+    queue = lanes("segment")
     queue.empty()
     try:
         with get_sessionmaker()() as session:
@@ -318,6 +489,8 @@ def test_recover_orphans_leaves_a_healthy_job():
     with get_sessionmaker()() as session:
         job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
 
+    # Any real queue will do: RQ job ids are GLOBAL (rq:job:{id}), not per-queue, so recovery
+    # correlates by id and never enumerates queues - which is why per-user lanes leave it untouched.
     queue = queue_for("segment")
     # A real RQ job whose id matches the DB job -> recover_orphans sees it queued (healthy).
     queue.enqueue("app.worker.tasks.segment_document", job_id, job_id=str(job_id))
@@ -474,7 +647,7 @@ def test_summarize_pauses_and_schedules_resume_on_transient(monkeypatch):
             scheduled["arg"] = arg
             return type("_J", (), {"id": "rq-resume-1"})()
 
-    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind: _FakeQueue())
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _FakeQueue())
     monkeypatch.setattr(get_settings(), "summarize_pause_after", 1)
     monkeypatch.setattr(get_settings(), "summarize_resume_delay", 60)
 
@@ -561,7 +734,7 @@ def test_summarize_pauses_when_pool_times_out(monkeypatch):
             scheduled["arg"] = arg
             return type("_J", (), {"id": "rq-resume-timeout"})()
 
-    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind: _FakeQueue())
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _FakeQueue())
     settings = get_settings()  # shrink the size-aware pool budget to ~1s
     monkeypatch.setattr(settings, "job_timeout", 1)
     monkeypatch.setattr(settings, "job_timeout_per_page", 0.0)
