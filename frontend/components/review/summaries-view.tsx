@@ -5,6 +5,7 @@ import { FileText, Flag, Pencil, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
 import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summaries";
+import { categoryOptions } from "@/components/review/rows-table";
 import type { CategoryOption, SummaryItem } from "@/lib/types";
 import type { HeaderFields } from "@/lib/review-api";
 import { ExportDialog } from "./export-dialog";
@@ -58,6 +59,7 @@ export function SummariesView({
   header,
   onHeaderSaved,
   onGotoSummarizeStep,
+  onRowsChanged,
 }: {
   documentId: string;
   filename?: string;
@@ -66,6 +68,11 @@ export function SummariesView({
   onHeaderSaved?: (fields: HeaderFields) => void;
   /** Opens the step that owns the Summarize button, for the empty state to send the reviewer there. */
   onGotoSummarizeStep: () => void;
+  /** Re-pull the editor's rows after a category change wrote to one server-side. NOT optional in
+   *  practice: the Review & correct tab renders from an in-memory buffer and autosaves the WHOLE set,
+   *  so leaving it stale means the reviewer's next edit there silently reverts the category. Same
+   *  reason DuplicatesView takes onResolved. */
+  onRowsChanged?: () => void;
 }) {
   const { data: summaries = [], isLoading, error } = useSummaries(documentId);
   const save = useSaveSummary(documentId);
@@ -124,6 +131,34 @@ export function SummariesView({
     } catch (err) {
       setSaveMsg(`Not saved: ${humanizeError(err, { fallback: "please try again" })}`);
     }
+  }
+
+  /** Re-classify this sub-document. The server writes it to the owning row, so the change is shared
+   *  with Review & correct; the summary TEXT is untouched until the reviewer re-drafts. */
+  async function changeCategory(idx: number, category: string) {
+    setSaveMsg("Saving category...");
+    try {
+      await save.mutateAsync({ idx, body: { category } });
+      // The write landed on a ReviewRow, so the editor's buffer is now stale. It autosaves the whole
+      // set, so without this the reviewer's next edit on Review & correct sends the OLD category back
+      // and undoes this change with no error anywhere.
+      onRowsChanged?.();
+      setSaveMsg("Category saved - re-draft to apply it to the summary");
+    } catch (err) {
+      // A 409 here means a job is running: the row would be overwritten, so the server refused.
+      setSaveMsg(`Category not saved: ${humanizeError(err, { fallback: "please try again" })}`);
+    }
+  }
+
+  /** True when the row was re-classified after this summary was written.
+   *
+   *  `??` rather than a `!== null` guard, and deliberately: null means no row covers these pages any
+   *  more, and UNDEFINED means the field is missing entirely because an older backend is serving this
+   *  page. Neither is a mismatch, but `undefined !== null` is true, so the explicit null check reported
+   *  every card as stale during a rolling deploy. Coalescing to the snapshot makes both absences
+   *  compare equal and stay silent. */
+  function categoryIsStale(item: SummaryItem) {
+    return (item.rowCategoryLive ?? item.row.category) !== item.row.category;
   }
 
   async function reDraft(item: SummaryItem) {
@@ -193,10 +228,12 @@ export function SummariesView({
           <div className="summary-list">
             {pageItems.map((item) => {
               const { title, text, doi } = parseDisplay(item);
+              // No category here any more: the select beside this line owns that value. Printing the
+              // generating snapshot as well would put two different category values on one card with
+              // nothing to explain the difference.
               const meta = [
                 item.summaryDate || "no date",
                 `pages ${item.row.start}–${item.row.end}`,
-                categoryLabel(item.row.category),
                 doi ? `DOI ${doi}` : "",
               ]
                 .filter(Boolean)
@@ -284,6 +321,15 @@ export function SummariesView({
                         AI-fixed
                       </span>
                     ) : null}
+                    {categoryIsStale(item) ? (
+                      <span
+                        className="ev-chip ev-chip-review"
+                        title={`This summary was written as ${categoryLabel(item.row.category)}. Re-draft it to rewrite under ${categoryLabel(item.rowCategoryLive as string)}.`}
+                      >
+                        <Flag width={12} height={12} aria-hidden />
+                        Category changed - re-draft to apply
+                      </span>
+                    ) : null}
                     {item.excluded ? <span className="ev-chip ev-chip-neutral">Excluded</span> : null}
                     <span className="card-actions">
                       <button
@@ -312,9 +358,28 @@ export function SummariesView({
                       </label>
                     </span>
                   </div>
-                  <button type="button" className="row-jump meta-jump" onClick={() => openSummary(item)}>
-                    <span className="meta">{meta}</span>
-                  </button>
+                  <div className="sum-meta-row">
+                    <button type="button" className="row-jump meta-jump" onClick={() => openSummary(item)}>
+                      <span className="meta">{meta}</span>
+                    </button>
+                    {/* The select shows the row's CURRENT classification, which is what the reviewer
+                        acts on; the category that generated the text is named in the badge's tooltip
+                        when the two differ. Outside the meta button on purpose - a select nested in a
+                        button is invalid, and a click on it must not jump the viewer. */}
+                    <label className="sum-category">
+                      <span className="sum-category-label">Category</span>
+                      <select
+                        className="rc-sel"
+                        aria-label="Document category"
+                        value={item.rowCategoryLive ?? item.row.category}
+                        disabled={redraftingIdx === item.idx}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => changeCategory(item.idx, e.target.value)}
+                      >
+                        {categoryOptions(categories, item.rowCategoryLive ?? item.row.category)}
+                      </select>
+                    </label>
+                  </div>
                   <p className="body">
                     <MarkdownText text={text} />
                   </p>

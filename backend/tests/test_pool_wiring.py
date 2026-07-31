@@ -62,8 +62,16 @@ def test_compose_passes_through_the_settings_it_claims_to_control():
     """A key in .env reaches a container ONLY if docker-compose.yml names it: compose uses .env for
     ${VAR} substitution inside the file, not as an env_file. On 2026-07-31 VERTEX_MAX_RPM=20 and
     SEGMENT_WINDOW_WORKERS=1 were added to the server .env, the containers were recreated, and both
-    still reported the code defaults 60 and 3 - the pacing fix was silently inert. This pins the
-    passthrough so that cannot happen again."""
+    still reported the code defaults 60 and 3 - the pacing fix was silently inert.
+
+    It then happened AGAIN the same day: #66 shipped the three DUPE_* thresholds and advertised them in
+    its own body as the env-tunable way to loosen the new duplicate gate, past the warning comment
+    already sitting in the compose file. #67 added them. Twice is a pattern, so the list below is the
+    check that has to grow whenever config.py gains a setting ops will tune.
+
+    Note the limit of this test: the list is HARDCODED, so it only guards keys someone remembered to
+    add. It cannot catch the next forgotten one. Deriving it from .env.example - the actual contract
+    with ops, since anything advertised there must work - would close that gap."""
     from pathlib import Path
 
     compose = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(
@@ -74,6 +82,9 @@ def test_compose_passes_through_the_settings_it_claims_to_control():
         "SEGMENT_WINDOW_WORKERS",
         "GENAI_MAX_RETRIES",
         "GENAI_RETRY_MAX_DELAY",
+        "DUPE_JACCARD_THRESHOLD",
+        "DUPE_SIMILARITY_OVERRIDE",
+        "DUPE_MODEL_OVERRIDE",
     ):
         assert f"{key}: ${{{key}" in compose, f"{key} is not passed through to containers"
     # TESSERACT_CMD must stay OUT: it is a Windows host path, and injecting it would point the

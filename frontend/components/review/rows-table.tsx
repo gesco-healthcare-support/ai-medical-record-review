@@ -5,7 +5,10 @@ import { cn } from "@/lib/utils";
 import type { CategoryOption, Row } from "@/lib/types";
 import type { EditorRow } from "@/lib/review-rows";
 
-function categoryOptions(categories: CategoryOption[], current: string) {
+/** Exported so the Summaries tab's per-card select offers the IDENTICAL list, including the
+ *  synthesized entry for a `current` value the catalog no longer carries: two divergent option lists
+ *  for one field is how a reviewer ends up unable to see what a row is actually set to. */
+export function categoryOptions(categories: CategoryOption[], current: string) {
   const has = categories.some((c) => String(c.id) === String(current));
   const opts = has ? categories : [{ id: String(current), name: String(current) }, ...categories];
   return opts.map((c) => (

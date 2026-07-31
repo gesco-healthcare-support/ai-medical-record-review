@@ -106,7 +106,12 @@ export type SummaryItem = {
   verified: boolean;
   verifyChanged: boolean;
   verifyIssues: VerifyIssue[];
+  // `row.category` is the category that GENERATED this text. `rowCategoryLive` is what the row says
+  // NOW: they differ when the reviewer re-classified the sub-document but has not re-drafted yet, and
+  // that difference is what the "Category changed" badge reads. Null when no row covers this summary's
+  // page range any more (boundaries were re-segmented) - absence of a live value, not a mismatch.
   row: { start: number; end: number; category: string };
+  rowCategoryLive: string | null;
 };
 
 /** One copy within a duplicate cluster (Duplicates tab). */

@@ -883,6 +883,11 @@ body[data-bundle-slug] #step-editor { flex: none; }
     display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: baseline; gap: 6px 12px;
 }
 .summary-card .meta-jump { align-self: flex-start; }
+/* The meta line and the category select share one row. `wrap` matters: the select has a real minimum
+   width, and on a narrow viewport it drops below the meta text rather than squeezing it. */
+.sum-meta-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.sum-category { display: inline-flex; align-items: baseline; gap: 6px; margin-left: auto; }
+.sum-category-label { font: 500 12px/1.4 var(--font-body), sans-serif; color: var(--gray-600); }
 @media (max-width: 900px) {
     .rce-table { height: 60vh; }
     .rce-viewer { height: 70vh; }

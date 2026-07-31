@@ -141,6 +141,64 @@ def _store_rows(session: Session, document: Document, rows) -> str | None:
     return None
 
 
+def _apply_row_category(
+    session: Session, document: Document, summary: Summary, category: str, user: User
+) -> None:
+    """Re-classify the ReviewRow behind ``summary``. Raises the 4xx itself; commits nothing.
+
+    Three deliberate choices:
+
+    ANY active job is refused, not just a summarize one. The edit fields in put_summary only touch the
+    Summary, so a segment job cannot disturb them; this write lands on a ReviewRow, and a finishing
+    segment job replaces the entire row set via _store_rows - the edit would vanish with no error.
+
+    A missing row is a 409, not a partial write. Writing only summary.row_category would leave Review
+    & correct and Summaries permanently disagreeing about what this sub-document is; an error the
+    reviewer can act on by re-segmenting is the better failure.
+
+    summary.row_category is left ALONE. It is the snapshot of the category that generated the current
+    text, and the gap between it and the row is exactly what tells the reviewer to re-draft. Updating
+    it here would erase the signal in the act of creating it.
+    """
+    if document.active_job is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="a job is running for this document; wait for it before changing the category",
+        )
+    if category not in catalog.get_category_ids(session, active_only=True):
+        raise HTTPException(status_code=400, detail="unknown category")
+
+    review_row = session.scalar(
+        select(ReviewRow).where(
+            ReviewRow.document_id == document.id,
+            ReviewRow.start == summary.row_start,
+            ReviewRow.end == summary.row_end,
+        )
+    )
+    if review_row is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this summary's sub-document boundaries changed; re-run the segment check before "
+                "changing its category"
+            ),
+        )
+    if review_row.category == category:
+        return  # no-op: do not spend an audit row saying nothing happened
+
+    previous = review_row.category
+    review_row.category = category
+    session.commit()
+    audit(
+        session,
+        "summary.category",
+        user.id,
+        document.id,
+        detail=f"idx {summary.idx} pages {summary.row_start}-{summary.row_end}: "
+        f"{previous} -> {category}",
+    )
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_document(
     pdf: UploadFile | None = File(default=None),
@@ -656,9 +714,33 @@ def summarize_start(
     return {"ok": True}
 
 
+def _summary_response(document: Document, summary: Summary) -> dict:
+    """One summary's listing plus ``rowCategoryLive``: the CURRENT category of the row behind it.
+
+    ``listing()["row"]["category"]`` is the snapshot of what generated the text; this is what the row
+    says NOW. The Summaries tab compares the two to flag a summary as needing a re-draft, and the
+    comparison has to be against what is SAVED - joining client-side against the editor's in-memory
+    rows would warn about an unsaved edit the reviewer cannot see from that tab.
+
+    ``None`` when no row covers the summary's stored page range (boundaries were re-segmented): there
+    is no live category to compare, so the UI must not claim a mismatch.
+
+    EVERY route that returns a summary must go through this, not bare ``listing()``. The client patches
+    its cache with whatever a mutation returns (``useSummaryPatch`` replaces the item wholesale), so a
+    single endpoint answering with the un-enriched shape silently deletes this field from the cache -
+    which is exactly how the badge failed to appear after a successful save. Built here rather than in
+    ``listing()`` because that is a pure model method with no session.
+    """
+    live = {(row.start, row.end): row.category for row in document.review_rows}
+    return {
+        **summary.listing(),
+        "rowCategoryLive": live.get((summary.row_start, summary.row_end)),
+    }
+
+
 @router.get("/{document_id}/summaries")
 def get_summaries(document: Document = Depends(get_owned_document)):
-    return [summary.listing() for summary in document.summaries]
+    return [_summary_response(document, summary) for summary in document.summaries]
 
 
 @router.put("/{document_id}/summaries/{idx}")
@@ -667,20 +749,29 @@ def put_summary(
     payload: SummaryEditPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Reviewer edits to one summary: title/date/text land in edited_* (the raw model output stays
-    immutable - training data), excluded toggles export membership."""
+    immutable - training data), excluded toggles export membership.
+
+    ``category`` is the odd one out and is handled first: it re-classifies the sub-document, so it is
+    written to the owning ReviewRow rather than to the Summary, and it carries a STRICTER job guard
+    than the edit fields below (see _apply_row_category)."""
     summary = session.scalar(
         select(Summary).where(Summary.document_id == document.id, Summary.idx == idx)
     )
     if summary is None:
         raise HTTPException(status_code=404, detail="not found")
+
+    body = payload.model_dump(exclude_unset=True) if payload else {}
+    if "category" in body:
+        _apply_row_category(session, document, summary, str(body.pop("category")), user)
+
     if document.active_job is not None and document.active_job.kind == "summarize":
         raise HTTPException(
             status_code=409, detail="summarization is rewriting these summaries; wait"
         )
 
-    body = payload.model_dump(exclude_unset=True) if payload else {}
     for field, column, cap in (
         ("summaryTitle", "edited_title", 512),
         ("summaryDate", "edited_date", 16),
@@ -692,7 +783,11 @@ def put_summary(
     if "excluded" in body:
         summary.excluded = bool(body["excluded"])
     session.commit()
-    return summary.listing()
+    # _summary_response, not listing(): a category write changed a ReviewRow, so review_rows is stale
+    # on this identity-mapped document. Expire it or the response echoes the PRE-change category and
+    # the client patches its cache with a value that is already wrong.
+    session.expire(document, ["review_rows"])
+    return _summary_response(document, summary)
 
 
 @router.post("/{document_id}/summaries/{idx}/resummarize")
@@ -703,8 +798,15 @@ def resummarize(
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
-    """Re-run one summary from scratch: re-OCR its pages, re-summarize with its category prompt,
-    replace the stored model output, and CLEAR the reviewer's edits. Synchronous."""
+    """Re-run one summary: re-summarize its pages with its CURRENT category's prompt, replace the
+    stored model output, and CLEAR the reviewer's edits. Synchronous.
+
+    It does NOT necessarily re-OCR. ``as_row()`` carries the row's stored ``source_text`` (the duplicate
+    check's extraction of exactly these pages) and ``summarize_row`` reuses it when non-blank, which is
+    the point - re-OCRing a long row is minutes of work for the same bytes. Fresh OCR happens only when
+    that text is blank or absent. This docstring claimed "re-OCR its pages" until 2026-07-31, which is
+    how a hand-seeded row whose source_text did not match its pages produced a summary of the WRONG
+    text with no error: legitimate reuse, misleading documentation."""
     summary = session.scalar(
         select(Summary).where(Summary.document_id == document.id, Summary.idx == idx)
     )
@@ -768,6 +870,10 @@ def resummarize(
     summary.source_text = output.get("sourceText")
     summary.verified = bool(output.get("verified"))
     summary.verified_text = output.get("verifiedText")
+    # Assigned, not left alone: effective_title() PREFERS verified_title over title, so a stale one
+    # from the previous draft would show the old header above the new body. output.get() both stores a
+    # fresh correction and clears an absent one.
+    summary.verified_title = output.get("verifiedTitle")
     summary.verify_issues = output.get("verifyIssues")
     summary.manual_check = bool(output.get("manualCheck")) or bool(output.get("truncated"))
     summary.row_start = int(row["start"])
@@ -779,7 +885,9 @@ def resummarize(
     summary.edited_text = None
     session.commit()
     audit(session, "resummarize", user.id, document.id)
-    return summary.listing()
+    # Enriched, like every other summary response. A re-draft re-snapshots row_category from the row,
+    # so this is also what CLEARS the "category changed" badge on the client.
+    return _summary_response(document, summary)
 
 
 # A trailing engine-style page suffix; en dash included because the web view displays ranges with
