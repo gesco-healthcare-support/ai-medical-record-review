@@ -33,16 +33,22 @@ export function startDedup(id: string) {
   return apiFetch<{ ok: boolean }>(`/documents/${id}/dedup/start`, { method: "POST" });
 }
 
-/** POST /api/documents/{id}/duplicates/{group}/resolve - keep-one (with primaryIdx) or dismiss. */
+/** One resolution of a duplicate cluster: keep a copy, dismiss the cluster, or drop one member out
+ *  of it (the mixed cluster where some copies are real duplicates and others are not). */
+export type DuplicateAction = "keep_one" | "dismiss" | "remove_member";
+
+/** POST /api/documents/{id}/duplicates/{group}/resolve - keep-one (primaryIdx), dismiss, or
+ *  remove_member (idx). */
 export function resolveDuplicate(
   id: string,
   group: number,
-  action: "keep_one" | "dismiss",
+  action: DuplicateAction,
   primaryIdx?: number,
+  idx?: number,
 ) {
   return apiFetch<{ ok: boolean }>(`/documents/${id}/duplicates/${group}/resolve`, {
     method: "POST",
-    body: JSON.stringify({ action, primary_idx: primaryIdx ?? null }),
+    body: JSON.stringify({ action, primary_idx: primaryIdx ?? null, idx: idx ?? null }),
   });
 }
 

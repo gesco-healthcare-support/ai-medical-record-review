@@ -102,7 +102,33 @@ describe("ReviewPageClient step-flow actions", () => {
     render(<ReviewPageClient documentId="d1" />);
     gotoDuplicates();
     fireEvent.click(button(/Re-check duplicates/));
+    // Nothing on screen to lose (no clusters yet), so the first check asks nothing.
     await waitFor(() => expect(startDedupMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("warns before a re-check discards per-copy curation", async () => {
+    // A re-check reclusters from scratch and only re-applies a dismissal to a cluster holding exactly
+    // the same copies, so copies the reviewer removed one at a time come back.
+    dupState.data = { clusters: [{ group: 1, dismissed: false, rows: [] }], job: null, stale: false };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    gotoDuplicates();
+    fireEvent.click(button(/Re-check duplicates/));
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/asked about again/i));
+    await waitFor(() => expect(startDedupMock).toHaveBeenCalledTimes(1));
+    confirm.mockRestore();
+  });
+
+  it("does not re-check when the warning is declined", () => {
+    dupState.data = { clusters: [{ group: 1, dismissed: false, rows: [] }], job: null, stale: false };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    gotoDuplicates();
+    fireEvent.click(button(/Re-check duplicates/));
+    expect(startDedupMock).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 
   it("disables both Duplicates actions while a check is running", () => {

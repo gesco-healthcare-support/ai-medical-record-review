@@ -132,6 +132,20 @@ class Settings(BaseSettings):
     # the limiter caps the aggregate). Speed lever; keep modest so it does not dominate the quota.
     segment_window_workers: int = 3
 
+    # Duplicate detection. `dupe_jaccard_threshold` is the candidate finder's word-set cut (was a
+    # hardcoded default argument). The two similarity knobs are char-level difflib scores and they
+    # gate DIFFERENT steps, which is why there are two:
+    #   `dupe_similarity_override` lets high-scoring content pass the date+title accuracy gate, for
+    #     the genuine re-scan that carries two different dates. Measured on 22 live clusters: real
+    #     duplicates scored 0.994 and above, the worst false positive 0.823. Anything in 0.85-0.95
+    #     separates that sample; 0.90 sits furthest from both edges.
+    #   `dupe_model_override` is higher and skips the confirm call entirely - at that similarity the
+    #     text has already answered the question the model would be asked, and the confirm step's
+    #     silent "these are all distinct" verdict is a known way to lose a real duplicate.
+    dupe_jaccard_threshold: float = 0.70
+    dupe_similarity_override: float = 0.90
+    dupe_model_override: float = 0.95
+
     # Segmentation + verification tuning (ported verbatim).
     window_budget_mb: float = 12.5
     window_overlap: int = 30

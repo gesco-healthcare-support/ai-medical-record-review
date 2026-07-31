@@ -95,6 +95,46 @@ def extract_text_from_selected_pages(pdf_path, selected_pages, *, mark_pages: bo
     return extracted_text
 
 
+def extract_pages_with_report(pdf_path, selected_pages, *, retries: int = 1):
+    """OCR ``selected_pages``, retrying pages that ERRORED, and report what each page did.
+
+    Returns ``(text, report)`` where report is ``{"pages", "errored", "blank"}``: ``errored`` lists
+    pages whose rasterize/OCR raised on every attempt, ``blank`` lists pages that read cleanly but
+    carried no text.
+
+    The distinction is the whole point. ``extract_text_from_selected_pages`` collapses both into a
+    silent skip, so a row that produced no text is indistinguishable from a row nobody tried to read
+    - which is how a dedup run that could not read a fifth of a document presented as a clean one.
+    An errored page may be a transient Tesseract timeout worth one more attempt; a film,
+    photograph or separator sheet is legitimately textless and no number of retries will yield
+    words, so only the errors are retried.
+    """
+    pages = sorted(set(selected_pages))
+    text, errored, blank = "", [], []
+    for page_number in pages:
+        page_text, failed = None, None
+        for _ in range(max(1, retries + 1)):
+            try:
+                images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
+                page_text = "".join(_ocr_image(image) for image in images)
+                failed = None
+                break
+            except OcrUnavailableError:
+                raise  # config failure (no Tesseract/Poppler): fail fast, never retry
+            except Exception as exc:
+                failed = exc
+        if failed is not None:
+            logger.warning(
+                "OCR gave up on page %s after %d attempt(s): %s", page_number, retries + 1, failed
+            )
+            errored.append(page_number)
+            continue
+        if not (page_text or "").strip():
+            blank.append(page_number)
+        text += page_text or ""
+    return text, {"pages": len(pages), "errored": errored, "blank": blank}
+
+
 def extract_text_from_all_pages(pdf_path) -> str:
     extracted_text = ""
     try:

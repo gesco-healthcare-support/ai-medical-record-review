@@ -804,6 +804,24 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
         assert all(r.include is False for r in rows)
 
 
+def _fake_ocr(texts, fail_on=()):
+    """Stand-in for ocr.extract_pages_with_report keyed on a row's first page.
+
+    Returns the (text, report) pair the real helper does; a page in ``fail_on`` raises, and a page
+    absent from ``texts`` reads blank - the two outcomes dedup now has to tell apart.
+    """
+
+    def fake(path, pages, **kwargs):
+        first = pages[0]
+        if first in fail_on:
+            raise RuntimeError("ocr boom")
+        text = texts.get(first, "")
+        blank = [] if text.strip() else list(pages)
+        return text, {"pages": len(pages), "errored": [], "blank": blank}
+
+    return fake
+
+
 def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):
     """dedup_document OCRs each row once, clusters near-identical text, and stores a shared
     dupe_group for the confirmed copies (OCR + confirm are mocked; cluster_rows runs for real)."""
@@ -833,10 +851,7 @@ def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):
         2: "alpha beta gamma delta epsilon zeta eta theta",
         3: "completely different words nothing shared at all here",
     }
-    monkeypatch.setattr(
-        "app.services.ocr.extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False: texts[pages[0]],
-    )
+    monkeypatch.setattr("app.services.ocr.extract_pages_with_report", _fake_ocr(texts))
     # Trust the algorithmic candidate (no Vertex call in the test).
     monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
 
@@ -856,9 +871,12 @@ def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):
     assert rows[2].dupe_group is None  # the distinct document is not grouped
 
 
-def test_dedup_document_skips_ocred_rows_survives_failure_and_rejects(monkeypatch):
-    """dedup_document reuses stored source_text (no re-OCR), tolerates a per-row OCR failure, and
-    assigns NO group when the confirm step rejects a candidate cluster."""
+def test_dedup_document_skips_ocred_rows_and_survives_an_ocr_failure(monkeypatch):
+    """dedup_document reuses stored source_text (no re-OCR) and tolerates a per-row OCR failure.
+
+    The confirm step no longer decides this case: at similarity 1.0 the text has already answered the
+    question, so the cluster is kept without a model call (see the model-override test below).
+    """
     doc_id = _make_user_and_doc(page_count=3)
     with get_sessionmaker()() as session:
         # row0 already has OCR text (should be skipped); row1's page will fail OCR; row2 is normal
@@ -897,16 +915,20 @@ def test_dedup_document_skips_ocred_rows_survives_failure_and_rejects(monkeypatc
         job_id = jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1").id
 
     ocr_calls = []
+    same = "alpha beta gamma delta epsilon"
 
-    def fake_ocr(path, pages, mark_pages=False):
+    def fake_ocr(path, pages, **kwargs):
         ocr_calls.append(pages[0])
         if pages[0] == 2:
             raise RuntimeError("ocr boom")  # row1: per-row OCR failure is tolerated
-        return "alpha beta gamma delta epsilon"  # row2: same text as row0 -> candidate cluster
+        return same, {"pages": len(pages), "errored": [], "blank": []}
 
-    monkeypatch.setattr("app.services.ocr.extract_text_from_selected_pages", fake_ocr)
-    # Confirm rejects the candidate cluster -> no group is assigned.
-    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: [])
+    monkeypatch.setattr("app.services.ocr.extract_pages_with_report", fake_ocr)
+    confirm_calls = []
+    monkeypatch.setattr(
+        "app.services.dedup.confirm_cluster",
+        lambda members, model=None: confirm_calls.append(members) or members,
+    )
 
     dedup_document(job_id)
 
@@ -917,13 +939,105 @@ def test_dedup_document_skips_ocred_rows_survives_failure_and_rejects(monkeypatc
             for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
         }
     assert 1 not in ocr_calls  # row0 already had source_text -> its page was not re-OCR'd
-    assert rows[0].source_text == "alpha beta gamma delta epsilon"  # unchanged
+    assert rows[0].source_text == same  # unchanged
     assert rows[1].source_text == ""  # OCR failed -> empty, run still completed
-    assert all(r.dupe_group is None for r in rows.values())  # confirm rejected the cluster
+    # row1 has no text, so it cannot match anything; rows 0 and 2 are identical and cluster.
+    assert rows[1].dupe_group is None
+    assert rows[0].dupe_group == rows[2].dupe_group is not None
+    assert confirm_calls == []  # similarity 1.0 settled it without spending a Vertex call
 
 
-def _dedup_rows(doc_id, specs):
-    """Seed ReviewRows from (start, end, include, dismissed, group, text) tuples + a dedup job id."""
+def test_dedup_document_rejects_a_form_series_before_spending_a_confirm_call(monkeypatch):
+    """WHEN candidate members share neither a date nor a title and their content is not near-identical,
+    THE SYSTEM SHALL drop the candidate WITHOUT calling the model.
+
+    This is the dominant false positive on real records: a recurring form whose members span many
+    dates. Gating before the call improves precision and removes a Vertex call per rejected cluster.
+    """
+    doc_id = _make_user_and_doc(page_count=2)
+    shared = "a1 b2 c3 d4 e5 f6 g7 h8 i9 j0"
+    job_id = _dedup_rows(
+        doc_id,
+        [
+            (1, 1, True, False, None, f"{shared} {'x' * 40}"),
+            (2, 2, True, False, None, f"{shared} {'y' * 40}"),
+        ],
+        dates=["05/08/2022", "06/12/2022"],  # different visits
+        titles=["Work Status Report", "Progress Note"],  # and different documents
+    )
+    confirm_calls = []
+    monkeypatch.setattr(
+        "app.services.dedup.confirm_cluster",
+        lambda members, model=None: confirm_calls.append(members) or members,
+    )
+
+    dedup_document(job_id)
+
+    rows = _rows_by_idx(doc_id)
+    assert all(r.dupe_group is None for r in rows.values())
+    assert confirm_calls == []  # rejected by metadata, so no quota was spent on it
+
+
+def test_dedup_document_still_honours_a_confirm_rejection_below_the_override(monkeypatch):
+    """The model keeps its say on the ambiguous cluster: same date AND title (so the accuracy gate
+    passes on metadata) but middling content similarity, which is exactly where a form filled out
+    twice on one day is indistinguishable from a re-scan without reading it."""
+    doc_id = _make_user_and_doc(page_count=2)
+    shared = "a1 b2 c3 d4 e5 f6 g7 h8 i9 j0"
+    job_id = _dedup_rows(
+        doc_id,
+        [
+            (1, 1, True, False, None, f"{shared} {'x' * 40}"),
+            (2, 2, True, False, None, f"{shared} {'y' * 40}"),
+        ],
+        dates=["05/08/2022", "05/08/2022"],
+        titles=["Work Status Report", "Work Status Report"],
+    )
+    confirm_calls = []
+    monkeypatch.setattr(
+        "app.services.dedup.confirm_cluster",
+        lambda members, model=None: confirm_calls.append(members) or [],
+    )
+
+    dedup_document(job_id)
+
+    rows = _rows_by_idx(doc_id)
+    assert len(confirm_calls) == 1  # the gate let it through to the model
+    assert all(r.dupe_group is None for r in rows.values())  # and the model's rejection stands
+
+
+def test_dedup_document_counts_rows_it_could_not_read(monkeypatch):
+    """WHEN a row's pages yield no text, THE SYSTEM SHALL leave it ungrouped and record that it was
+    never compared - empty text scores 0.0 against everything, so such a row is invisible to the
+    check rather than merely unmatched (measured live at 18 of 91 rows)."""
+    doc_id = _make_user_and_doc(page_count=3)
+    same = "alpha beta gamma delta epsilon zeta eta theta"
+    job_id = _dedup_rows(
+        doc_id,
+        [
+            (1, 1, True, False, None, None),
+            (2, 2, True, False, None, None),
+            (3, 3, True, False, None, None),
+        ],
+    )
+    # Page 3 reads clean but carries no words (a film or separator sheet).
+    monkeypatch.setattr("app.services.ocr.extract_pages_with_report", _fake_ocr({1: same, 2: same}))
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
+
+    dedup_document(job_id)
+
+    rows = _rows_by_idx(doc_id)
+    assert rows[0].dupe_group == rows[1].dupe_group is not None
+    assert rows[2].source_text == ""  # persisted as read-and-empty, not left NULL
+    assert rows[2].dupe_group is None
+
+
+def _dedup_rows(doc_id, specs, dates=None, titles=None):
+    """Seed ReviewRows from (start, end, include, dismissed, group, text) tuples + a dedup job id.
+
+    ``dates`` / ``titles`` override the per-row metadata, which the accuracy gate reads: the default
+    "-" date is UNKNOWN and never matches, so a default-seeded cluster is judged on content alone.
+    """
     with get_sessionmaker()() as session:
         for idx, (start, end, include, dismissed, group, text) in enumerate(specs):
             session.add(
@@ -933,8 +1047,8 @@ def _dedup_rows(doc_id, specs):
                     start=start,
                     end=end,
                     category="1",
-                    title="T",
-                    date="-",
+                    title=titles[idx] if titles else "T",
+                    date=dates[idx] if dates else "-",
                     injury_date="-",
                     flag="-",
                     include=include,
@@ -975,10 +1089,7 @@ def test_dedup_document_covers_excluded_rows_and_keeps_an_unchanged_dismissal(mo
         ],
     )
     texts = {1: same, 2: same, 5: "completely different words nothing shared at all here"}
-    monkeypatch.setattr(
-        "app.services.ocr.extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False: texts[pages[0]],
-    )
+    monkeypatch.setattr("app.services.ocr.extract_pages_with_report", _fake_ocr(texts))
     monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
 
     dedup_document(job_id)

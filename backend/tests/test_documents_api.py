@@ -1161,6 +1161,130 @@ async def test_duplicates_paths_while_a_job_is_active(authed):
     assert started.status_code == 409  # one-active-job conflict
 
 
+def _finish_dedup(doc_id):
+    """A completed dedup job, so the derived `unreadable` count is reported."""
+    with get_sessionmaker()() as session:
+        session.add(
+            Job(
+                document_id=doc_id,
+                kind="dedup",
+                state="done",
+                stage="deduping",
+                model="m",
+                prompt_version="1",
+            )
+        )
+        session.commit()
+
+
+async def test_remove_member_drops_one_copy_and_keeps_the_rest_clustered(authed):
+    """WHEN a reviewer removes one copy from a 3-member cluster, THE SYSTEM SHALL clear only that
+    row's group and leave the other two clustered - the mixed-cluster case a whole-group dismiss
+    cannot express."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+
+    removed = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve",
+        json={"action": "remove_member", "idx": 2},
+    )
+    assert removed.status_code == 200
+
+    with get_sessionmaker()() as session:
+        rows = {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+    assert rows[2].dupe_group is None
+    assert rows[0].dupe_group == 1 and rows[1].dupe_group == 1
+    # The removed copy stays in the report: it is a distinct document, not an excluded duplicate.
+    assert rows[2].include is True
+
+    clusters = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["clusters"]
+    assert {r["idx"] for r in clusters[0]["rows"]} == {0, 1}
+
+
+async def test_remove_member_clears_the_group_when_one_copy_would_remain(authed):
+    """A cluster of one is not a duplicate set, so removing the second-to-last member SHALL clear the
+    group outright rather than leave a row pointing at a group no surface will render."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+
+    assert (
+        await client.post(
+            f"/api/documents/{doc_id}/duplicates/1/resolve",
+            json={"action": "remove_member", "idx": 1},
+        )
+    ).status_code == 200
+
+    with get_sessionmaker()() as session:
+        groups = [
+            r.dupe_group
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        ]
+    assert groups == [None, None]
+    assert (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["clusters"] == []
+
+
+async def test_remove_member_rejects_an_idx_outside_the_cluster(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, None)])
+
+    bad = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve",
+        json={"action": "remove_member", "idx": 2},  # idx 2 is not in group 1
+    )
+    assert bad.status_code == 400
+    missing = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve", json={"action": "remove_member"}
+    )
+    assert missing.status_code == 400
+
+
+async def test_unknown_resolve_action_names_all_three(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+
+    bad = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve", json={"action": "explode"}
+    )
+    assert bad.status_code == 400
+    assert "remove_member" in bad.json()["detail"]
+
+
+async def test_duplicates_report_sub_documents_that_could_not_be_read(authed):
+    """WHEN a completed check left a row with no OCR text, THE SYSTEM SHALL report it as unreadable.
+
+    Empty text matches nothing (the word-set signature is a null set), so such a row was never
+    compared against anything - measured live at 18 of 91 rows on one record, where the run still
+    presented as clean.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, None), (3, 4, None), (5, 6, None)])
+
+    # No completed dedup run yet -> nothing to report against.
+    assert (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["unreadable"] == 0
+    _finish_dedup(doc_id)
+
+    with get_sessionmaker()() as session:
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+        ).all()
+        rows[0].source_text = "readable scanned text"
+        rows[1].source_text = "   \n "  # read cleanly, carried no words
+        rows[2].source_text = None  # never attempted -> `stale`'s business, not this count
+        session.commit()
+
+    body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
+    assert body["unreadable"] == 1
+    assert body["stale"] is True  # the untouched row is what staleness is for
+
+
 def test_dupe_date_key_parses_dates_and_defaults_unknown():
     from app.api.documents import _dupe_date_key
 

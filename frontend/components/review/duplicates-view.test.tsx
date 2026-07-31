@@ -198,6 +198,107 @@ describe("DuplicatesView", () => {
   });
 });
 
+describe("DuplicatesView per-copy removal", () => {
+  const mixedCluster = {
+    job: null,
+    stale: false,
+    unreadable: 0,
+    clusters: [
+      {
+        group: 4,
+        dismissed: false,
+        similarity: 0.514,
+        rows: [
+          { idx: 0, title: "Work Status Report", date: "01/02/2026", pages: { start: 1, end: 2 }, include: true, primary: false },
+          { idx: 1, title: "Work Status Report", date: "02/02/2026", pages: { start: 3, end: 4 }, include: true, primary: false },
+        ],
+      },
+    ],
+  };
+
+  it("drops one copy out of a mixed cluster once confirmed", async () => {
+    // Real records produce 7-member groups spanning 7 dates: some copies belong and some do not, so
+    // dismissing the whole group would throw away the genuine duplicates with the false ones.
+    resolveMock.mockClear();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    dupState.error = null;
+    dupState.data = mixedCluster;
+    const onResolved = vi.fn();
+    render(<DuplicatesView documentId="d1" onResolved={onResolved} />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /not a duplicate/i })[1]);
+    await waitFor(() =>
+      expect(resolveMock).toHaveBeenCalledWith({ group: 4, action: "remove_member", idx: 1 }),
+    );
+    await waitFor(() => expect(onResolved).toHaveBeenCalled());
+    confirm.mockRestore();
+  });
+
+  it("warns that a later re-check will ask about the removed copy again", () => {
+    // Removals are keyed on the cluster's exact page-range set, so a re-check re-forms the group with
+    // this copy back in it. The reviewer has to know that before pruning a seven-member cluster.
+    resolveMock.mockClear();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    dupState.error = null;
+    dupState.data = mixedCluster;
+    render(<DuplicatesView documentId="d1" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /not a duplicate/i })[0]);
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/ask about it again/i));
+    expect(resolveMock).not.toHaveBeenCalled(); // declining the warning changes nothing
+    confirm.mockRestore();
+  });
+
+  it("offers no per-copy removal on a dismissed cluster", () => {
+    dupState.error = null;
+    dupState.data = { ...mixedCluster, clusters: [{ ...mixedCluster.clusters[0], dismissed: true }] };
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.queryByRole("button", { name: /not a duplicate/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("DuplicatesView unreadable sub-documents", () => {
+  const withUnreadable = (unreadable: number, job: unknown = null) => ({
+    job,
+    stale: false,
+    unreadable,
+    clusters: [],
+  });
+
+  it("says how many sub-documents could not be read", () => {
+    // Text-free rows match nothing, so they were never compared. Presenting that run as "No
+    // duplicates" hands the reviewer a conclusion the check did not reach.
+    dupState.error = null;
+    dupState.data = withUnreadable(18);
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.getByText(/18 sub-documents could not be read/i)).toBeInTheDocument();
+    expect(screen.getByText(/were not compared/i)).toBeInTheDocument();
+  });
+
+  it("reads correctly for a single sub-document", () => {
+    dupState.error = null;
+    dupState.data = withUnreadable(1);
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.getByText(/1 sub-document could not be read/i)).toBeInTheDocument();
+    expect(screen.getByText(/was not compared/i)).toBeInTheDocument();
+  });
+
+  it("stays quiet when every sub-document was read", () => {
+    dupState.error = null;
+    dupState.data = withUnreadable(0);
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.queryByText(/could not be read/i)).not.toBeInTheDocument();
+  });
+
+  it("stays quiet while the check is still running", () => {
+    // Mid-run the count is a partial tally of rows not yet reached, which would read as a fault.
+    dupState.error = null;
+    dupState.data = withUnreadable(5, { state: "running", current: 2, total: 9 });
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.queryByText(/could not be read/i)).not.toBeInTheDocument();
+  });
+});
+
 describe("DuplicatesView similarity", () => {
   // Same two copies each time; only the stored score differs.
   const payload = (similarity: number | null) => ({
