@@ -68,7 +68,10 @@ class DuplicateResolvePayload(BaseModel):
     """Resolve one duplicate cluster (POST /documents/{id}/duplicates/{group}/resolve).
 
     action="keep_one" keeps `primary_idx` and excludes the other members; action="dismiss" marks the
-    cluster as not-duplicates. The route validates action + primary_idx (-> 400)."""
+    whole cluster as not-duplicates; action="remove_member" drops the single row `idx` out of the
+    cluster, for the mixed cluster where some copies are real and others are not. The route validates
+    action + the referenced idx (-> 400)."""
 
-    action: str  # "keep_one" | "dismiss"
+    action: str  # "keep_one" | "dismiss" | "remove_member"
     primary_idx: int | None = None
+    idx: int | None = None  # remove_member: the member to drop

@@ -34,7 +34,17 @@ describe("use-duplicates", () => {
       expect.objectContaining({ method: "POST" }),
     );
     const body = JSON.parse(apiFetch.mock.calls[0][1].body);
-    expect(body).toEqual({ action: "keep_one", primary_idx: 2 });
+    // `idx` rides along as null: the endpoint takes one optional target per action, and sending the
+    // whole shape every time keeps the client from having to know which action reads which field.
+    expect(body).toEqual({ action: "keep_one", primary_idx: 2, idx: null });
+  });
+
+  it("removes one member from a cluster", async () => {
+    apiFetch.mockResolvedValue({ ok: true });
+    const { result } = renderHook(() => useResolveDuplicate("d1"), { wrapper: makeWrapper() });
+    await result.current.mutateAsync({ group: 4, action: "remove_member", idx: 5 });
+    const body = JSON.parse(apiFetch.mock.calls[0][1].body);
+    expect(body).toEqual({ action: "remove_member", primary_idx: null, idx: 5 });
   });
 
   it("starts a dedup run", async () => {

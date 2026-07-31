@@ -68,13 +68,17 @@ def _min_difflib(texts):
     return round(min(ratios), 3) if ratios else 1.0
 
 
-def cluster_rows(items, jaccard_threshold=0.7):
+def cluster_rows(items, jaccard_threshold=None):
     """Group ``items`` (dicts with at least ``text``) by word-set Jaccard >= threshold via union-find.
 
     Returns a list of candidate clusters, each ``{"members": [items...], "similarity": float}``, only
     for clusters with >= 2 members, in input order. ``similarity`` is the min pairwise char-difflib
     ratio - a cheap true-dupe vs shared-template signal the UI shows and the confirm step refines.
+
+    ``jaccard_threshold`` defaults to ``dupe_jaccard_threshold`` so the cut is tunable by env.
     """
+    if jaccard_threshold is None:
+        jaccard_threshold = get_settings().dupe_jaccard_threshold
     sigs = [_sig(it.get("text")) for it in items]
     n = len(items)
     parent = list(range(n))
@@ -103,6 +107,44 @@ def cluster_rows(items, jaccard_threshold=0.7):
             {"members": members, "similarity": _min_difflib([m.get("text") or "" for m in members])}
         )
     return clusters
+
+
+_UNKNOWN = {"", "-", "n/a", "none", "unknown"}
+
+
+def _norm(value) -> str:
+    """Lowercased, whitespace-collapsed comparison key; "" for the absent-value sentinels."""
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return "" if text in _UNKNOWN else text
+
+
+def date_title_gate(members, similarity, override=None) -> bool:
+    """Whether a candidate cluster is plausible enough to spend a confirm call on.
+
+    Two sub-documents that share NEITHER a date nor a title are very likely a recurring form series
+    rather than copies of one document - the dominant false positive on real records, where a
+    7-member cluster spanned 7 distinct dates. High content similarity overrides the rule, because a
+    genuine re-scan can legitimately carry two different transcribed dates.
+
+    Applied to the 22 live clusters this rejects the multi-date series, keeps every member scoring
+    0.994+, and keeps the 0.998 pair whose two dates made it look like a series - matching the
+    reviewer's own verdicts.
+
+    Runs BEFORE the model call deliberately: it improves precision AND removes a Vertex call per
+    rejected cluster, which matters directly under shared-quota pressure. An absent date or title is
+    UNKNOWN, never a match - two rows that both say "-" have told us nothing. On records built by
+    the aggregate path every row carries "-" for both, so the gate correctly falls back to content
+    similarity alone there.
+    """
+    if override is None:
+        override = get_settings().dupe_similarity_override
+    dates = {_norm(m.get("date")) for m in members}
+    titles = {_norm(m.get("title")) for m in members}
+    same_date = len(dates) == 1 and "" not in dates
+    same_title = len(titles) == 1 and "" not in titles
+    if same_date and same_title:
+        return True
+    return similarity is not None and similarity >= override
 
 
 def confirm_cluster(members, model=None):

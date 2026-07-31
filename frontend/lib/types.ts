@@ -8,7 +8,9 @@ export type CurrentUser = {
   is_verified: boolean;
 };
 
-export type JobKind = "segment" | "classify" | "summarize";
+// "dedup" belongs here: GET /documents/{id}/duplicates returns a dedup Job.progress(), so leaving it
+// out made every read of that job's kind unsound.
+export type JobKind = "segment" | "classify" | "summarize" | "dedup";
 // paused/needs_attention are resumable-summarize states (item 7): paused = auto-resuming after a
 // transient failure; needs_attention = a permanent failure the reviewer must resolve.
 export type JobState =
@@ -135,6 +137,10 @@ export type DuplicatesResponse = {
   /** Boundaries changed since the last duplicate check, so the clusters may be incomplete. Drives
    *  the manual "re-check duplicates" hint - the app never re-runs clustering on its own. */
   stale: boolean;
+  /** Sub-documents the last completed check could not read (no OCR text). Empty text matches
+   *  nothing, so these were never compared and any duplicate involving them was missed - the tab has
+   *  to say so rather than present the run as a clean result. */
+  unreadable: number;
 };
 
 /** GET /api/documents/{id} - the full editor payload (listing + rows + category options). */

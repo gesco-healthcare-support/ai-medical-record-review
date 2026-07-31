@@ -58,6 +58,12 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# The suite is tests/ only. Without this a bare `uv run pytest` also collects anything under
+# scripts/ whose filename matches *_test.py - one-off eval harnesses that are untracked, absent from
+# CI, and free to go stale against the app they probe. One such file broke collection of the ENTIRE
+# suite by importing a constant a later PR had deleted, so the documented validation command failed
+# while CI stayed green.
+testpaths = ["tests"]
 
 [tool.coverage.run]
 # Measure the application package only; tests + caches are scaffolding, not exercised code.

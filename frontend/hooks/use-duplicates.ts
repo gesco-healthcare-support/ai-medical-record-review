@@ -1,7 +1,12 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getDuplicates, resolveDuplicate, startDedup } from "@/lib/review-api";
+import {
+  getDuplicates,
+  resolveDuplicate,
+  startDedup,
+  type DuplicateAction,
+} from "@/lib/review-api";
 
 /** react-query key for one record's duplicate clusters (shared by the tab badge + the view). */
 export function duplicatesKey(documentId: string) {
@@ -21,12 +26,16 @@ export function useDuplicates(documentId: string) {
   });
 }
 
-/** Resolve one cluster (keep-one or dismiss); refetch the clusters afterward. */
+/** Resolve one cluster (keep-one, dismiss, or drop one member); refetch the clusters afterward. */
 export function useResolveDuplicate(documentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { group: number; action: "keep_one" | "dismiss"; primaryIdx?: number }) =>
-      resolveDuplicate(documentId, vars.group, vars.action, vars.primaryIdx),
+    mutationFn: (vars: {
+      group: number;
+      action: DuplicateAction;
+      primaryIdx?: number;
+      idx?: number;
+    }) => resolveDuplicate(documentId, vars.group, vars.action, vars.primaryIdx, vars.idx),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: duplicatesKey(documentId) }),
   });
 }

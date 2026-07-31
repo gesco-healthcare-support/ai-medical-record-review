@@ -37,6 +37,10 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   // A dedup job blocks both /dedup/start and /summarize/start server-side (409), so disable rather
   // than surface the conflict.
   const dedupRunning = dupData?.job?.state === "queued" || dupData?.job?.state === "running";
+  // A per-copy removal leaves no trace in the response (the row simply has no group), so there is no
+  // way to detect one. Gate the re-check warning on clusters existing at all: the first-ever check has
+  // nothing to lose, and once groups are on screen the reviewer may have curated them.
+  const hasClusters = (dupData?.clusters ?? []).length > 0;
   const lastSection = useRef(wf.section);
 
   // The hook lands on "summaries" after a summarize job finishes (or when a done record boots);
@@ -102,6 +106,18 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   const showSummarizeBlockers = tab === "review" || tab === "duplicates";
 
   const onRecheck = async () => {
+    // A re-check reclusters from scratch and re-applies a dismissal only to a cluster holding exactly
+    // the same copies, so per-copy removals do not survive it - a pruned group comes back intact.
+    // Warn only when there is something to lose.
+    if (
+      hasClusters &&
+      !window.confirm(
+        "Re-checking finds duplicate groups again from scratch. Copies you removed from a group " +
+          "individually will be asked about again. Continue?",
+      )
+    ) {
+      return;
+    }
     wf.setBanner("");
     try {
       await recheck.mutateAsync();

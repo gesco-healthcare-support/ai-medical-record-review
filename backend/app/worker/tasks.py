@@ -317,10 +317,11 @@ def dedup_document(job_id) -> None:
     """
     import gc
 
-    from app.services.dedup import cluster_rows, confirm_cluster
-    from app.services.ocr import extract_text_from_selected_pages
+    from app.services.dedup import cluster_rows, confirm_cluster, date_title_gate
+    from app.services.ocr import extract_pages_with_report
 
     def work(session, job, report):
+        settings = get_settings()
         document = session.get(Document, job.document_id)
         rows = session.scalars(
             select(ReviewRow)
@@ -343,14 +344,35 @@ def dedup_document(job_id) -> None:
         # OCR each row's pages once (persist). The existing grouping is deliberately left in place:
         # a run that dies here must not empty the Duplicates tab, so clearing happens in one
         # transaction after clustering. Per-page OCR + gc keeps memory flat on a large record.
+        unreadable = 0
         for i, row in enumerate(rows):
             report("deduping", i, total)
             if not (row.source_text or "").strip():
                 try:
-                    row.source_text = extract_text_from_selected_pages(
+                    text, ocr_report = extract_pages_with_report(
                         document.stored_path, list(range(row.start, row.end + 1))
                     )
+                    row.source_text = text
+                    # A row with no text can never cluster with anything (_jaccard returns 0.0 when
+                    # either side is empty), so it is invisible to the whole check rather than merely
+                    # unmatched. Say so, and say WHICH failure it was: pages that errored may be
+                    # transient, pages that read blank are films/photos/separators and will never
+                    # yield words. Measured on a real 91-row record: 18 rows were structurally
+                    # uncomparable and the run still reported success.
+                    if not text.strip():
+                        unreadable += 1
+                        logger.warning(
+                            "dedup could not read row %d (pages %d-%d) of document %s: "
+                            "%d page(s) errored, %d blank - it cannot match any duplicate",
+                            row.idx,
+                            row.start,
+                            row.end,
+                            job.document_id,
+                            len(ocr_report["errored"]),
+                            len(ocr_report["blank"]),
+                        )
                 except Exception:
+                    unreadable += 1
                     logger.warning(
                         "dedup OCR skipped a row on document %s", job.document_id, exc_info=True
                     )
@@ -358,6 +380,14 @@ def dedup_document(job_id) -> None:
             session.commit()
             gc.collect()
         report("deduping", total, total)
+        if unreadable:
+            logger.warning(
+                "dedup on document %s compared %d of %d sub-documents; %d could not be read",
+                job.document_id,
+                total - unreadable,
+                total,
+                unreadable,
+            )
 
         # Candidate clusters (content similarity) -> confirm each is truly the same document ->
         # assign a shared per-document group number to the confirmed members.
@@ -368,9 +398,48 @@ def dedup_document(job_id) -> None:
         by_id = {row.id: row for row in rows}
         confirmed_clusters = []
         for cluster in cluster_rows(items):
-            confirmed = confirm_cluster(cluster["members"])
+            members, similarity = cluster["members"], cluster["similarity"]
+            pages = ", ".join(f"{by_id[m['id']].start}-{by_id[m['id']].end}" for m in members)
+            if not date_title_gate(members, similarity):
+                # Neither date nor title shared and the content is not near-identical: a recurring
+                # form series, not copies. Rejected without spending a confirm call.
+                logger.info(
+                    "dedup rejected a %d-member candidate on document %s (similarity %s, pages %s): "
+                    "no shared date or title",
+                    len(members),
+                    job.document_id,
+                    similarity,
+                    pages,
+                )
+                continue
+            # Above dupe_model_override the text has already settled it. Skipping the call both saves
+            # quota and removes the confirm step's silent-discard failure mode, which is the one way a
+            # real duplicate can vanish with no trace anywhere.
+            if similarity is not None and similarity >= settings.dupe_model_override:
+                logger.info(
+                    "dedup accepted a %d-member candidate on document %s by similarity %s "
+                    "(pages %s); confirm call skipped",
+                    len(members),
+                    job.document_id,
+                    similarity,
+                    pages,
+                )
+                confirmed_clusters.append((members, similarity))
+                continue
+            confirmed = confirm_cluster(members)
             if len(confirmed) >= 2:
-                confirmed_clusters.append((confirmed, cluster["similarity"]))
+                confirmed_clusters.append((confirmed, similarity))
+            else:
+                # Previously invisible: the candidate was dropped with no record, so a reported miss
+                # could not be explained from the logs at all.
+                logger.warning(
+                    "dedup discarded a %d-member candidate on document %s after confirm "
+                    "(similarity %s, pages %s): the model judged them distinct documents",
+                    len(members),
+                    job.document_id,
+                    similarity,
+                    pages,
+                )
 
         # Everything below is one transaction: the old grouping is dropped and the new one written
         # together, so the tab never shows a half-rewritten state (and a crash above changed nothing).

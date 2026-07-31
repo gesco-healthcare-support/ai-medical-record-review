@@ -5,6 +5,7 @@ import { Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
 import { useDuplicates, useResolveDuplicate } from "@/hooks/use-duplicates";
+import type { DuplicateAction } from "@/lib/review-api";
 import type { DuplicateCluster, DuplicateRow } from "@/lib/types";
 import { PdfViewer, type PdfViewerHandle } from "./pdf-viewer";
 import { SplitPane } from "./split-pane";
@@ -32,6 +33,7 @@ export function DuplicatesView({
   const job = data?.job;
   const running = job?.state === "queued" || job?.state === "running";
   const clusters = data?.clusters ?? [];
+  const unreadable = data?.unreadable ?? 0;
   // Boundaries changed since the last check: point at the header's "Re-check duplicates" (a re-run
   // is always manual - it costs AI calls). Hidden while a check is already in flight.
   const stale = Boolean(data?.stale) && !running;
@@ -41,14 +43,33 @@ export function DuplicatesView({
     pdfRef.current?.jumpTo(row.pages.start);
   }
 
-  async function act(group: number, action: "keep_one" | "dismiss", primaryIdx?: number) {
+  async function act(
+    group: number,
+    action: DuplicateAction,
+    opts: { primaryIdx?: number; idx?: number } = {},
+  ) {
     setMsg("");
     try {
-      await resolve.mutateAsync({ group, action, primaryIdx });
+      await resolve.mutateAsync({ group, action, ...opts });
       onResolved?.();
     } catch (err) {
       setMsg(humanizeError(err, { fallback: "Could not save - please try again." }));
     }
+  }
+
+  /** Dropping one copy out of a mixed cluster. Removals are keyed on the cluster's exact set of page
+   *  ranges, so a later re-check re-forms the cluster WITH this copy back in it - say so up front
+   *  rather than let the reviewer discover it after pruning a seven-member group. */
+  function removeMember(group: number, row: DuplicateRow) {
+    if (
+      !window.confirm(
+        `Remove pages ${row.pages.start}-${row.pages.end} from this group? ` +
+          "It stops being treated as a duplicate. Re-checking duplicates later will ask about it again.",
+      )
+    ) {
+      return;
+    }
+    void act(group, "remove_member", { idx: row.idx });
   }
 
   const loadError = error ? humanizeError(error, { fallback: "Could not load duplicates." }) : "";
@@ -83,6 +104,20 @@ export function DuplicatesView({
           </div>
         ) : null}
 
+        {/* A run that could not read part of the record is not a clean result: text-free
+            sub-documents match nothing, so any duplicate involving them was never even considered.
+            Silence here reads as "no duplicates", which is the wrong conclusion to hand a reviewer. */}
+        {unreadable > 0 && !running ? (
+          <div className="banner" aria-live="polite">
+            <span>
+              {unreadable} sub-document{unreadable === 1 ? "" : "s"} could not be read (no text
+              recognized) and {unreadable === 1 ? "was" : "were"} not compared. Scanned images,
+              photographs and blank separator pages have no text; duplicates among them cannot be
+              found automatically.
+            </span>
+          </div>
+        ) : null}
+
         {isLoading ? null : clusters.length === 0 ? (
           <div className="summary-empty">
             <Copy width={34} height={34} aria-hidden />
@@ -110,8 +145,9 @@ export function DuplicatesView({
                 busy={resolve.isPending}
                 selectedIdx={selectedIdx}
                 onOpen={openRow}
-                onKeep={(idx) => act(cluster.group, "keep_one", idx)}
+                onKeep={(idx) => act(cluster.group, "keep_one", { primaryIdx: idx })}
                 onDismiss={() => act(cluster.group, "dismiss")}
+                onRemove={(row) => removeMember(cluster.group, row)}
               />
             ))}
           </div>
@@ -142,6 +178,7 @@ function ClusterCard({
   onOpen,
   onKeep,
   onDismiss,
+  onRemove,
 }: {
   cluster: DuplicateCluster;
   busy: boolean;
@@ -149,6 +186,7 @@ function ClusterCard({
   onOpen: (row: DuplicateRow) => void;
   onKeep: (idx: number) => void;
   onDismiss: () => void;
+  onRemove: (row: DuplicateRow) => void;
 }) {
   // Resolved = at most one copy would still be summarized (the reviewer kept one, or excluded the
   // rest by hand). Inclusion - not the "kept" mark - is the test, so a cluster stays resolved after a
@@ -202,14 +240,28 @@ function ClusterCard({
               </span>
             </button>
             {!cluster.dismissed ? (
-              <button
-                type="button"
-                className="ev-btn ev-btn-ghost ev-btn-sm"
-                disabled={busy || row.primary}
-                onClick={() => onKeep(row.idx)}
-              >
-                {row.primary ? "Kept" : "Keep this one"}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="ev-btn ev-btn-ghost ev-btn-sm"
+                  disabled={busy || row.primary}
+                  onClick={() => onKeep(row.idx)}
+                >
+                  {row.primary ? "Kept" : "Keep this one"}
+                </button>
+                {/* Per-copy escape from a MIXED cluster: real records produce 7-member groups
+                    spanning 7 dates, where some copies belong and others do not. Dismissing the whole
+                    group would discard the genuine duplicates along with the false ones. */}
+                <button
+                  type="button"
+                  className="ev-btn ev-btn-ghost ev-btn-sm"
+                  disabled={busy}
+                  title="This copy is a different document - take it out of this group"
+                  onClick={() => onRemove(row)}
+                >
+                  Not a duplicate
+                </button>
+              </>
             ) : null}
           </li>
         ))}

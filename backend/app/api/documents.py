@@ -475,10 +475,25 @@ def get_duplicates(
         and dedup_job.state == "done"
         and any(row.source_text is None for row in document.review_rows)
     )
+    # Sub-documents a completed check could not read. Their text is empty, and empty text matches
+    # nothing (the Jaccard signature is a null set), so they were not compared against anything - a
+    # run that could not read a fifth of the record is not a clean bill of health and must not
+    # present as one. Derived, so no column and no migration: "" means read-and-textless, None means
+    # never attempted (which `stale` already covers).
+    unreadable = (
+        sum(
+            1
+            for row in document.review_rows
+            if row.source_text is not None and not row.source_text.strip()
+        )
+        if dedup_job and dedup_job.state == "done"
+        else 0
+    )
     return {
         "clusters": clusters,
         "job": dedup_job.progress() if dedup_job else None,
         "stale": stale,
+        "unreadable": unreadable,
     }
 
 
@@ -537,8 +552,28 @@ def resolve_duplicate(
         for member in members:
             member.dupe_dismissed = True
             member.dupe_primary = False
+    elif payload.action == "remove_member":
+        target = next((m for m in members if m.idx == payload.idx), None)
+        if target is None:
+            raise HTTPException(status_code=400, detail="idx is not in this cluster")
+        # Leaving the group outright, rather than a per-row dismissed flag: `dismissed` is derived
+        # cluster-wide with any(...), so a per-row flag would make it ambiguous everywhere it is read.
+        target.dupe_group = None
+        target.dupe_primary = False
+        target.dupe_dismissed = False
+        remaining = [m for m in members if m is not target]
+        if len(remaining) < 2:
+            # A cluster of one is not a duplicate set. _dupe_groups already hides it on read; clear it
+            # here too so the stored state matches what every surface shows.
+            for member in remaining:
+                member.dupe_group = None
+                member.dupe_primary = False
+                member.dupe_dismissed = False
     else:
-        raise HTTPException(status_code=400, detail="action must be 'keep_one' or 'dismiss'")
+        raise HTTPException(
+            status_code=400,
+            detail="action must be 'keep_one', 'dismiss' or 'remove_member'",
+        )
     session.commit()
     return {"ok": True}
 
