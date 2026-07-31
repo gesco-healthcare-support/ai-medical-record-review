@@ -26,6 +26,20 @@ x-backend-env: &backend-env
   # on the api/web tiers (they never OCR).
   OMP_THREAD_LIMIT: "1"
   OMP_NUM_THREADS: "1"
+  # Vertex pacing. These MUST be named here to have any effect: compose reads .env only for ${VAR}
+  # substitution inside this file, so a key added to .env and not referenced here never reaches a
+  # container. Found the hard way on 2026-07-31 - VERTEX_MAX_RPM=20 and SEGMENT_WINDOW_WORKERS=1 were
+  # added to the server .env, the containers were recreated, and both processes still reported 60 and
+  # 3. Fallbacks mirror app/config.py so an unset key behaves exactly as before.
+  VERTEX_MAX_RPM: ${VERTEX_MAX_RPM:-60}
+  SEGMENT_WINDOW_WORKERS: ${SEGMENT_WINDOW_WORKERS:-3}
+  # TESSERACT_CMD is deliberately NOT passed through. It is set in .env for the Windows HOST, and
+  # injecting a "C:\..." path here would point the containers' pytesseract at a binary that does not
+  # exist, breaking OCR everywhere. The Linux images have tesseract on PATH already.
+  # GENAI_MAX_RETRIES / GENAI_RETRY_MAX_DELAY are also inert for the same substitution reason. Left
+  # that way on purpose: the worker-scaling plan says not to raise retries above 8, because a job
+  # already burns ~17 minutes before reporting failure and more retries lengthen the block without
+  # improving the odds. Passing them through would silently activate 10 retries and a 60s cap.
 
 services:
   postgres:
