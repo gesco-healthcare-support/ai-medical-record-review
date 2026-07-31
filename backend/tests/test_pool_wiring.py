@@ -69,7 +69,12 @@ def test_compose_passes_through_the_settings_it_claims_to_control():
     compose = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(
         encoding="utf-8"
     )
-    for key in ("VERTEX_MAX_RPM", "SEGMENT_WINDOW_WORKERS"):
+    for key in (
+        "VERTEX_MAX_RPM",
+        "SEGMENT_WINDOW_WORKERS",
+        "GENAI_MAX_RETRIES",
+        "GENAI_RETRY_MAX_DELAY",
+    ):
         assert f"{key}: ${{{key}" in compose, f"{key} is not passed through to containers"
     # TESSERACT_CMD must stay OUT: it is a Windows host path, and injecting it would point the
     # containers' pytesseract at a nonexistent binary and break OCR everywhere.

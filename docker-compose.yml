@@ -33,13 +33,17 @@ x-backend-env: &backend-env
   # 3. Fallbacks mirror app/config.py so an unset key behaves exactly as before.
   VERTEX_MAX_RPM: ${VERTEX_MAX_RPM:-60}
   SEGMENT_WINDOW_WORKERS: ${SEGMENT_WINDOW_WORKERS:-3}
+  # Retry budget. Also inert until named here, and .env.example has advertised both since 2026-07-21,
+  # so anyone following it would set a value that did nothing. A setting the app reads should be
+  # settable: the way to run 8 retries is to put 8 in .env, not to have the file silently ignored.
+  # The worker-scaling plan's advice still stands - raising retries above 8 lengthens the block
+  # without improving the odds, since a job already burns ~17 minutes before reporting failure - but
+  # that is a reason to choose 8, not a reason to hide the dial.
+  GENAI_MAX_RETRIES: ${GENAI_MAX_RETRIES:-8}
+  GENAI_RETRY_MAX_DELAY: ${GENAI_RETRY_MAX_DELAY:-30}
   # TESSERACT_CMD is deliberately NOT passed through. It is set in .env for the Windows HOST, and
   # injecting a "C:\..." path here would point the containers' pytesseract at a binary that does not
   # exist, breaking OCR everywhere. The Linux images have tesseract on PATH already.
-  # GENAI_MAX_RETRIES / GENAI_RETRY_MAX_DELAY are also inert for the same substitution reason. Left
-  # that way on purpose: the worker-scaling plan says not to raise retries above 8, because a job
-  # already burns ~17 minutes before reporting failure and more retries lengthen the block without
-  # improving the odds. Passing them through would silently activate 10 retries and a 60s cap.
 
 services:
   postgres:
