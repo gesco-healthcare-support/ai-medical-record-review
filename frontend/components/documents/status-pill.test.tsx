@@ -43,7 +43,7 @@ describe("StatusPill", () => {
 
   it("appends the (current/total) progress suffix while a job runs", () => {
     const job: JobProgress = {
-      kind: "segment",
+      id: 1, kind: "segment",
       state: "running",
       stage: "segmenting",
       current: 2,
@@ -56,7 +56,7 @@ describe("StatusPill", () => {
 
   it("omits the suffix when the running job has no total yet", () => {
     const job: JobProgress = {
-      kind: "segment",
+      id: 1, kind: "segment",
       state: "running",
       stage: "segmenting",
       current: 0,

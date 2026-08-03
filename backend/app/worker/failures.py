@@ -57,6 +57,24 @@ class JobPaused(Exception):
         self.total = total
 
 
+class JobCancelled(Exception):
+    """Signal: the reviewer asked for this job to stop.
+
+    A THIRD cooperative signal in the same shape as JobPaused / JobNeedsAttention, deliberately - a
+    stop is a normal outcome rather than a fault, and reusing the existing mechanism means the runner
+    already knows how to end it cleanly without a rollback.
+
+    Carries the progress so the finalizer can persist where it stopped, which is what a later Continue
+    shows as its starting point. No message field: the reviewer knows why they pressed Stop, and
+    inventing one would put "cancelled" in the `error` column, which is for real faults.
+    """
+
+    def __init__(self, done: int, total: int) -> None:
+        super().__init__(f"cancelled at {done}/{total}")
+        self.done = done
+        self.total = total
+
+
 class JobNeedsAttention(Exception):
     """Signal: one or more sub-documents permanently failed. End the job calmly (not "error"),
     keep every successful summary, and carry a friendly message + the affected rows (non-PHI:

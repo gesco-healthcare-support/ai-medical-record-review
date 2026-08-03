@@ -146,6 +146,13 @@ class Settings(BaseSettings):
     dupe_similarity_override: float = 0.90
     dupe_model_override: float = 0.95
 
+    # How long the UI waits for a COOPERATIVE stop before offering "Force stop". The cooperative path
+    # normally lands within a second, because the retry backoff polls for a cancel between one-second
+    # sleep slices - so this is patience for the pathological case (a worker wedged somewhere that
+    # reaches no check at all), not an expected wait. Raising it delays the escape hatch; lowering it
+    # invites a hard kill that leaves orphan recovery to tidy up a half-finished run.
+    job_cancel_grace_seconds: int = 10
+
     # Segmentation + verification tuning (ported verbatim).
     window_budget_mb: float = 12.5
     window_overlap: int = 30

@@ -1018,6 +1018,154 @@ async def test_get_summaries_reports_null_when_no_row_matches(authed):
     assert body[0]["rowCategoryLive"] is None
 
 
+async def test_cancel_flags_a_running_job(authed):
+    """WHEN cancel is posted for a running job, THE SYSTEM SHALL set cancel_requested, publish the
+    Redis signal the retry backoff reads, and return the job."""
+    from app.models import AuditLog
+    from app.worker import cancel as cancel_mod
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    with get_sessionmaker()() as session:
+        job = Job(
+            document_id=doc_id, kind="segment", state="running", model="m", prompt_version="1"
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    try:
+        resp = await client.post(f"/api/documents/{doc_id}/jobs/{job_id}/cancel")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["kind"] == "segment"
+        assert cancel_mod.is_cancel_requested(job_id) is True
+        with get_sessionmaker()() as session:
+            assert session.get(Job, job_id).cancel_requested is True
+            entry = session.scalar(select(AuditLog).where(AuditLog.action == "job.cancel"))
+            assert entry is not None and "force False" in entry.detail
+    finally:
+        cancel_mod.clear_cancel(job_id)
+
+
+async def test_cancel_of_another_documents_job_is_404(authed):
+    """IF the job belongs to a different document, THEN THE SYSTEM SHALL return 404 - the job id is
+    guessable, so it must be scoped to the document the ownership guard already checked."""
+    client, _ = authed
+    mine = await _upload(client, pages=1)
+    other = await _upload(client, pages=1)
+    with get_sessionmaker()() as session:
+        job = Job(document_id=other, kind="segment", state="running", model="m", prompt_version="1")
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    assert (await client.post(f"/api/documents/{mine}/jobs/{job_id}/cancel")).status_code == 404
+
+
+async def test_cancel_of_a_finished_job_is_a_no_op_not_an_error(authed):
+    """IF the job is already terminal, THEN THE SYSTEM SHALL return 200 and change nothing.
+
+    A job can finish between the reviewer's click and the request landing. That race is normal, and
+    answering it with a 409 would show an alarming message for a stop that merely arrived late.
+    """
+    from app.worker import cancel as cancel_mod
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="segment", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    resp = await client.post(f"/api/documents/{doc_id}/jobs/{job_id}/cancel")
+
+    assert resp.status_code == 200
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).cancel_requested is False  # untouched
+    assert cancel_mod.is_cancel_requested(job_id) is False  # no signal published either
+
+
+async def test_force_cancel_still_succeeds_when_the_work_horse_is_gone(authed, monkeypatch):
+    """WHEN force is posted and the stop command cannot be delivered, THE SYSTEM SHALL still return
+    200 - the DB row and the cooperative flag are already set, and orphan recovery reaps the rest."""
+    import app.api.documents as documents_module
+    from app.models import AuditLog
+    from app.worker import cancel as cancel_mod
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    with get_sessionmaker()() as session:
+        job = Job(
+            document_id=doc_id, kind="summarize", state="running", model="m", prompt_version="1"
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    def boom(*_a, **_k):
+        raise RuntimeError("no such work-horse")
+
+    monkeypatch.setattr(documents_module, "send_stop_job_command", boom)
+    try:
+        resp = await client.post(
+            f"/api/documents/{doc_id}/jobs/{job_id}/cancel", json={"force": True}
+        )
+        assert resp.status_code == 200
+        with get_sessionmaker()() as session:
+            entry = session.scalar(select(AuditLog).where(AuditLog.action == "job.cancel"))
+            assert "force True" in entry.detail
+    finally:
+        cancel_mod.clear_cancel(job_id)
+
+
+async def test_dedup_start_fresh_clears_the_stored_ocr(authed):
+    """WHEN dedup is started with fresh, THE SYSTEM SHALL clear each row's source_text so the run
+    re-OCRs. Reusing that text is exactly what makes a Continue nearly free, so Start over has to
+    discard it or the two buttons would do the same thing."""
+    from tests.conftest import lanes
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 1, None), (2, 2, None)])
+    with get_sessionmaker()() as session:
+        for row in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all():
+            row.source_text = "previous extraction"
+        session.commit()
+    lanes("segment")  # the dedup enqueue lands on the segment lane; keep the fixture consistent
+
+    resp = await client.post(f"/api/documents/{doc_id}/dedup/start", json={"fresh": True})
+
+    assert resp.status_code == 200
+    with get_sessionmaker()() as session:
+        texts = [
+            r.source_text
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        ]
+    assert texts == [None, None]
+
+
+async def test_dedup_start_without_fresh_keeps_the_stored_ocr(authed):
+    """WHEN dedup is started without fresh, THE SYSTEM SHALL keep source_text - the default is a
+    continue."""
+    from tests.conftest import lanes
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 1, None)])
+    with get_sessionmaker()() as session:
+        row = session.scalar(select(ReviewRow).where(ReviewRow.document_id == doc_id))
+        row.source_text = "previous extraction"
+        session.commit()
+    lanes("segment")
+
+    resp = await client.post(f"/api/documents/{doc_id}/dedup/start")
+
+    assert resp.status_code == 200
+    with get_sessionmaker()() as session:
+        assert session.scalar(select(ReviewRow.source_text)) == "previous extraction"
+
+
 async def test_segment_start_enqueues_then_conflicts(authed):
     """P4b: segment/start enqueues a job; a second start while it's active returns 409."""
     from tests.conftest import lanes

@@ -12,6 +12,10 @@ from app.models import Document, Job, ReviewRow, SegmentRow, Summary
 def test_job_progress():
     job = Job(kind="segment", state="running", stage="segmenting", current=2, total=10)
     assert job.progress() == {
+        # None here only because this instance is transient (the pk is assigned at flush). The field
+        # exists so the UI can address a specific job when cancelling it, rather than "whatever is
+        # active on this document", which could kill a job that started after the button rendered.
+        "id": None,
         "kind": "segment",
         "state": "running",
         "stage": "segmenting",

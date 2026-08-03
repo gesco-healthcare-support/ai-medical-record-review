@@ -10,7 +10,7 @@ and carried as the Job row.
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,18 @@ STATUS_ON_DONE = {
     "summarize": "done",
     "dedup": "reviewing",
 }
+# Where a CANCELLED job leaves the document. Not the same as STATUS_ON_DONE, and segment is the reason
+# why: a cancelled first segment run has no rows, and "reviewing" would open an empty editor as though
+# segmentation had succeeded and found nothing in the record. "uploaded" is honest - the work has not
+# been done - and it is also what the Start / Re-run controls key off, so the reviewer gets an obvious
+# way forward. The other three ran against rows that already exist, so "reviewing" renders whatever
+# partial output was committed, which the reviewer is entitled to see.
+STATUS_ON_CANCEL = {
+    "segment": "uploaded",
+    "classify": "reviewing",
+    "summarize": "reviewing",
+    "dedup": "reviewing",
+}
 # `paused` is a resumable summarize run awaiting its delayed resume (item 7): still in-flight, so
 # it blocks a second job for the same document and is inspected by orphan recovery.
 ACTIVE_STATES = ("queued", "running", "paused")
@@ -43,6 +55,64 @@ class JobConflict(Exception):
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def mark_terminal(
+    session: Session,
+    job_id,
+    state: str,
+    *,
+    stage: str | None = None,
+    done: int | None = None,
+    total: int | None = None,
+    document_status: str | None = None,
+    document_status_only_when: tuple[str, ...] | None = None,
+) -> bool:
+    """Move an ACTIVE job to a terminal state exactly once. True if this call made the transition.
+
+    The single writer for every terminal outcome that is not the job's own success, so a stop
+    finalizes identically whether the work-horse cooperated or was killed - the two paths cannot
+    drift apart.
+
+    Idempotent on purpose, because several processes legitimately race to finalize the same job:
+    RQ runs the stopped callback AND THEN handle_job_failure for one stop; abandoned-job cleanup
+    can overlap boot-time orphan recovery; and as the worker fleet grows, parent workers finalize
+    concurrently. The conditional UPDATE on ACTIVE_STATES is what makes that safe - it is resolved
+    by the database, so the first writer wins and later ones become no-ops instead of overwriting
+    an outcome the reviewer has already been shown.
+
+    ``document_status_only_when`` narrows the document write to those statuses, mirroring orphan
+    recovery: a background dedup leaves the document "reviewing", and marking that "interrupted"
+    would report a failed review over a job the reviewer never watched.
+    """
+    job = session.get(Job, int(job_id))
+    if job is None:
+        return False
+
+    values: dict = {"state": state, "finished_at": _utcnow()}
+    if stage is not None:
+        values["stage"] = stage
+    if done is not None:
+        values["current"] = done
+    if total is not None:
+        values["total"] = total
+
+    changed = session.execute(
+        update(Job).where(Job.id == job.id, Job.state.in_(ACTIVE_STATES)).values(**values)
+    )
+    if not changed.rowcount:
+        session.rollback()  # someone else finalized it first; leave their outcome alone
+        return False
+
+    if document_status is not None:
+        document = session.get(Document, job.document_id)
+        if document is not None and (
+            document_status_only_when is None or document.status in document_status_only_when
+        ):
+            document.status = document_status
+    session.commit()
+    session.expire(job)  # the identity-mapped copy still holds the pre-UPDATE state
+    return True
 
 
 def active_job(session: Session, document_id: str) -> Job | None:
@@ -95,7 +165,10 @@ def enqueue(
 ) -> Job:
     """create_job + dispatch to the kind's RQ queue. If the dispatch fails (e.g. Redis down), the
     job is marked interrupted rather than left stuck queued."""
+    from rq import Callback
+
     from app.config import get_settings
+    from app.worker.finalizers import on_job_failed, on_job_stopped
     from app.worker.queues import queue_for, worker_fn
 
     job = create_job(
@@ -122,6 +195,11 @@ def enqueue(
             job.id,
             job_id=str(job.id),
             job_timeout=timeout,
+            # A killed work-horse cannot finalize itself, so the PARENT worker does it. Without
+            # these the row stays "running" forever and wedges the document until the API restarts.
+            # Wrapped in Callback because rq 2.10 deprecates passing a bare function.
+            on_stopped=Callback(on_job_stopped),
+            on_failure=Callback(on_job_failed),
         )
         # Record the RQ job id so orphan recovery can correlate it. On the first run this equals
         # str(job.id); a resumable summarize pause reassigns it to the fresh scheduled resume.

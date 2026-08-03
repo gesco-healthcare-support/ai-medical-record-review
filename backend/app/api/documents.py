@@ -17,7 +17,8 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from sqlalchemy import delete, func, select
+from rq.command import send_stop_job_command
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_owned_document
@@ -28,11 +29,14 @@ from app.errors import EmptyExtractionError, OcrUnavailableError, PipelineError
 from app.models import Document, Job, ReviewRow, Summary, User
 from app.schemas.documents import (
     BundlePayload,
+    CancelPayload,
+    DedupStartPayload,
     DuplicateResolvePayload,
     ExportPayload,
     HeaderPayload,
     ResummarizePayload,
     RowsPayload,
+    SegmentStartPayload,
     SummarizeStartPayload,
     SummaryEditPayload,
 )
@@ -42,13 +46,15 @@ from app.services.audit import audit
 from app.services.extraction import extract_header
 from app.services.files import safe_name
 from app.services.gemini import PROMPT_VERSION
-from app.services.jobs import JobConflict, enqueue
+from app.services.jobs import ACTIVE_STATES, JobConflict, enqueue
 from app.services.linked_pdf import build_linked_pdf
 from app.services.pdf import get_pdf_page_count
 from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
 from app.services.rows import validate_rows
 from app.services.summarize_engine import standalone_studies_from_rows, summarize_row
 from app.services.summary_doi import doi_prefix
+from app.worker.cancel import request_cancel
+from app.worker.queues import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -557,11 +563,21 @@ def get_duplicates(
 
 @router.post("/{document_id}/dedup/start")
 def dedup_start(
+    payload: DedupStartPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
 ):
     """Manually (re)run duplicate clustering (it also runs automatically after identify). 409 if a
-    job is already active for this document."""
+    job is already active for this document.
+
+    ``fresh`` clears every row's stored ``source_text`` first, so the run re-OCRs instead of reusing
+    the previous extraction. That is the meaningful difference between Start over and Continue here:
+    the OCR is the expensive part, and reusing it is what makes a continue nearly free."""
+    if payload is not None and payload.fresh:
+        session.execute(
+            update(ReviewRow).where(ReviewRow.document_id == document.id).values(source_text=None)
+        )
+        session.commit()
     try:
         enqueue(
             session,
@@ -654,12 +670,68 @@ def put_rows(
     return {"ok": True, "count": len(rows)}
 
 
+@router.post("/{document_id}/jobs/{job_id}/cancel")
+def cancel_job(
+    job_id: int,
+    payload: CancelPayload | None = None,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Ask a job to stop. Cooperative by default; ``force`` also kills the RQ work-horse.
+
+    Terminal jobs are a 200 NO-OP, not a 409. A job can finish between the reviewer's click and this
+    request arriving - that race is normal, and answering it with an error would surface a scary
+    message for a stop that simply arrived a moment late.
+    """
+    job = session.get(Job, job_id)
+    if job is None or job.document_id != document.id:
+        raise HTTPException(status_code=404, detail="not found")
+
+    # The UI needs to know when to offer "Force stop", and that number must come from the SERVER:
+    # hardcoding it in the client would let JOB_CANCEL_GRACE_SECONDS drift from the moment the button
+    # actually changes, so the setting would be a lie.
+    grace = {"graceSeconds": get_settings().job_cancel_grace_seconds}
+
+    force = bool(payload.force) if payload else False
+    if job.state not in ACTIVE_STATES:
+        return {**job.progress(), **grace}  # already terminal: nothing to ask
+
+    job.cancel_requested = True
+    session.commit()
+    request_cancel(job.id)  # the signal the retry backoff can see without a session
+
+    if force:
+        try:
+            send_stop_job_command(get_redis(), job.rq_job_id or str(job.id))
+        except Exception:
+            # No work-horse to stop (already exited), or Redis is down. The cooperative flag and the
+            # DB row are already set, and orphan recovery reaps whatever is left, so this is not a
+            # failure worth returning to a reviewer who just asked for a stop.
+            logger.info("force stop could not be delivered for job %s", job_id, exc_info=True)
+
+    audit(
+        session,
+        "job.cancel",
+        user.id,
+        document.id,
+        detail=f"job {job.id} kind {job.kind} state {job.state} force {force}",
+    )
+    return {**job.progress(), **grace}
+
+
 @router.post("/{document_id}/segment/start")
 def segment_start(
+    payload: SegmentStartPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
 ):
-    """Enqueue a segmentation job on the `segment` queue. The DB one-active-job index -> 409."""
+    """Enqueue a segmentation job on the `segment` queue. The DB one-active-job index -> 409.
+
+    ``fresh`` is accepted now and is currently a no-op WITHOUT pretending otherwise: segmentation keeps
+    no checkpoints yet, so every run already recomputes every window. It exists so the UI can offer
+    the same Continue / Start over pair for all four kinds, and the checkpoint-clearing half arrives
+    with the checkpoint table itself."""
     try:
         enqueue(
             session,

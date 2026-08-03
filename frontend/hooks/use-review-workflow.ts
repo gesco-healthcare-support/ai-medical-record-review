@@ -3,14 +3,16 @@
 import { useEffect, useRef, useState } from "react";
 import { humanizeError } from "@/lib/errors";
 import {
+  cancelJob,
   getDocument,
   getStatus,
   saveRows,
+  startDedup,
   startSegment,
   startSummarize,
   type HeaderFields,
 } from "@/lib/review-api";
-import type { CategoryOption, DocumentStatus, FailedRow } from "@/lib/types";
+import type { CategoryOption, DocumentStatus, FailedRow, JobKind } from "@/lib/types";
 import { rowErrors, sortRows, stripKeys, withKeys, type EditorRow } from "@/lib/review-rows";
 import type { StepId } from "@/components/review/stepper";
 
@@ -28,9 +30,17 @@ const STAGE_LABELS: Record<string, string> = {
   paused: "Paused - waiting for capacity, will retry automatically",
 };
 
-/** How a polled job settled: finished cleanly, or ended needing the reviewer's attention (with the
- *  sub-documents that failed, so the UI can name + highlight them). */
-type PollResult = { outcome: "done" | "needs_attention"; message?: string; rows?: FailedRow[] };
+/** How a polled job settled: finished cleanly, ended needing the reviewer's attention (with the
+ *  sub-documents that failed, so the UI can name + highlight them), or was stopped by the reviewer.
+ *
+ *  `cancelled` has to be a SETTLED outcome, not merely a state the poller tolerates: any state this
+ *  union does not name falls through to the keep-polling branch below, so a stopped job would spin the
+ *  progress bar forever and a working stop button would look broken. */
+type PollResult = {
+  outcome: "done" | "needs_attention" | "cancelled";
+  message?: string;
+  rows?: FailedRow[];
+};
 
 function message(err: unknown, fallback: string) {
   return humanizeError(err, {
@@ -75,6 +85,12 @@ export function useReviewWorkflow(
   const [attention, setAttention] = useState<{ message: string; rows: FailedRow[] } | null>(null);
 
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The job the poller last saw, so Stop can name it. A ref rather than state because it is read by
+  // an event handler, never rendered - keeping it out of state avoids a re-render per poll tick.
+  const activeJobRef = useRef<{ id: number; kind: JobKind } | null>(null);
+  // Set when a run settles as cancelled, and the only thing that puts the Continue / Start over pair
+  // on screen. Carries the kind because each kind restarts through its own endpoint.
+  const [cancelledJob, setCancelledJob] = useState<{ kind: JobKind } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function clearPoll() {
@@ -115,6 +131,8 @@ export function useReviewWorkflow(
           resolve({ outcome: "done" });
           return;
         }
+        // Remember which job this is, so Stop can address it by id rather than "whatever is active".
+        activeJobRef.current = { id: job.id, kind: job.kind };
         const pct = job.total ? Math.round((100 * job.current) / job.total) : 5;
         const label = STAGE_LABELS[job.stage] || job.stage || "Working";
         setProgress({
@@ -131,6 +149,9 @@ export function useReviewWorkflow(
           });
         if (job.state === "error") return reject(new Error(job.error || "the run failed"));
         if (job.state === "interrupted") return reject(new Error("the run was interrupted"));
+        // A stop is NOT a rejection: the reviewer asked for it, so it resolves and the page offers
+        // Continue / Start over instead of an error banner.
+        if (job.state === "cancelled") return resolve({ outcome: "cancelled" });
         // queued / running / paused: keep polling. A paused run auto-resumes; its "paused" stage
         // label keeps the bar visible and reassuring rather than surfacing an error.
         pollTimer.current = setTimeout(tick, 1000);
@@ -139,10 +160,52 @@ export function useReviewWorkflow(
     });
   }
 
+  /** Ask the running job to stop. `force` kills the work-horse; it is the second press, never the
+   *  first. Safe to call when nothing is running - there is simply no job to name. */
+  async function cancelActiveJob(force = false) {
+    const job = activeJobRef.current;
+    if (!documentId || !job) return 0;
+    try {
+      const { graceSeconds } = await cancelJob(documentId, job.id, force);
+      return graceSeconds;
+    } catch (err) {
+      // The poll keeps running, so a failed request leaves the bar moving rather than lying about
+      // having stopped. Say so instead of failing silently.
+      setBanner(message(err, "could not stop the run"));
+      return 0;
+    }
+  }
+
+  /** Restart the kind that was cancelled. `fresh` is Start over; otherwise Continue. */
+  async function restartCancelled(fresh: boolean) {
+    const kind = cancelledJob?.kind;
+    if (!documentId || !kind) return;
+    setCancelledJob(null);
+    try {
+      if (kind === "summarize") await startSummarize(documentId, stripKeys(rowsRef.current), fresh);
+      else if (kind === "dedup") await startDedup(documentId, fresh);
+      else await startSegment(documentId, fresh);
+      if (kind === "summarize") void watchSummarize();
+      else void watchSegment();
+    } catch (err) {
+      setBanner(message(err, "could not restart the run"));
+    }
+  }
+
   async function watchSegment() {
     setWatching(true);
+    setCancelledJob(null);
     try {
-      await pollJob("Identifying documents", "identify");
+      const result = await pollJob("Identifying documents", "identify");
+      if (result.outcome === "cancelled") {
+        setWatching(false);
+        setCancelledJob({ kind: activeJobRef.current?.kind ?? "segment" });
+        // Whatever rows survive are the reviewer's to see; with none, the start screen is the only
+        // honest thing to show.
+        if (rowsRef.current.length) enterEditor();
+        else showStart();
+        return;
+      }
       const detail = await getDocument(documentId as string);
       applyRows(sortRows(withKeys(detail.rows || [])));
       setStatus(detail.status);
@@ -163,9 +226,17 @@ export function useReviewWorkflow(
 
   async function watchSummarize() {
     setWatching(true);
+    setCancelledJob(null);
     try {
       const result = await pollJob("Summarizing documents", "summaries");
       setWatching(false);
+      if (result.outcome === "cancelled") {
+        setCancelledJob({ kind: "summarize" });
+        // Summaries finished before the stop are already committed and stay visible.
+        if (rowsRef.current.length) enterEditor();
+        else showStart();
+        return;
+      }
       if (result.outcome === "needs_attention") {
         // Calm terminal state: some documents could not be summarized. Show the notice + the
         // editor (the reviewer fixes/excludes them, then summarizes again). Partial results kept.
@@ -357,6 +428,11 @@ export function useReviewWorkflow(
     header,
     setHeader,
     attention,
+    // The stop/restart trio. `cancelledJob` is non-null ONLY after a run settles as cancelled, which
+    // is what puts the Continue / Start over pair on screen; the progress bar has unmounted by then.
+    cancelledJob,
+    cancelActiveJob,
+    restartCancelled,
     onStart,
     onSummarize,
     onRowsChange,

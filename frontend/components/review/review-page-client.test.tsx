@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The heavy children + data hooks are stubbed so the test isolates the header's gating + banner
 // logic (the core of this change). rowErrors stays REAL so invalid rows are computed genuinely.
@@ -299,5 +299,70 @@ describe("ReviewPageClient re-segment gating", () => {
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
     expect(button(/Re-run segment/)).toBeEnabled();
+  });
+});
+
+// Stop is two-stage: cooperative first, escalating to a hard kill only after the SERVER's grace
+// period. The escalation is a timer, and a timer that outlives its run is the failure mode worth
+// pinning - a force stop can land mid-transaction, so it must never be what the FIRST press does.
+describe("ReviewPageClient stop escalation", () => {
+  const stop = (c: HTMLElement) => c.querySelector(".rce-stop") as HTMLButtonElement;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("offers Force stop only once the grace period has passed", async () => {
+    const cancelActiveJob = vi.fn().mockResolvedValue(10);
+    mockWf({ watching: true, cancelActiveJob });
+    const { container } = render(<ReviewPageClient documentId="d1" />);
+
+    expect(stop(container).textContent).toBe("Stop");
+
+    await act(async () => {
+      fireEvent.click(stop(container));
+    });
+    // Cooperative: the reviewer is told it was asked to stop, not offered a kill yet.
+    expect(stop(container).textContent).toBe("Stopping...");
+    expect(cancelActiveJob).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(stop(container).textContent).toBe("Force stop");
+  });
+
+  it("does not carry a pending escalation into the next run", async () => {
+    // The regression: the escalation timer is scheduled on the first Stop. When the run ends BEFORE
+    // it fires, an uncleared timer lands after the reset and leaves the button stuck on "Force stop",
+    // so the reviewer's first press on the NEXT job is silently a hard kill.
+    const cancelActiveJob = vi.fn().mockResolvedValue(10);
+    mockWf({ watching: true, cancelActiveJob });
+    const { container, rerender } = render(<ReviewPageClient documentId="d1" />);
+
+    await act(async () => {
+      fireEvent.click(stop(container));
+    });
+
+    // It stops cooperatively at 4s - comfortably inside the 10s grace.
+    await act(async () => {
+      vi.advanceTimersByTime(4000);
+    });
+    mockWf({ watching: false, cancelActiveJob, cancelledJob: { kind: "segment" } });
+    rerender(<ReviewPageClient documentId="d1" />);
+
+    // The original deadline passes while nothing is running.
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    // A new run starts on the same page.
+    mockWf({ watching: true, cancelActiveJob });
+    rerender(<ReviewPageClient documentId="d1" />);
+
+    expect(stop(container).textContent).toBe("Stop");
   });
 });

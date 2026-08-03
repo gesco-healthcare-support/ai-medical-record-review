@@ -36,6 +36,26 @@ class SummaryEditPayload(BaseModel):
     category: str | None = None
 
 
+class CancelPayload(BaseModel):
+    # `force` escalates from the cooperative stop to RQ's send_stop_job_command, which kills the
+    # work-horse outright and leaves orphan recovery to reap the row. It is the second press of the
+    # button, never the first: a hard kill can land between a delete and its re-insert, which is
+    # exactly the state the cooperative path is designed to avoid.
+    force: bool = False
+
+
+class DedupStartPayload(BaseModel):
+    # `fresh` re-OCRs from scratch by clearing each row's stored source_text. The default reuses it,
+    # which is the same "continue" the duplicate check has always done implicitly.
+    fresh: bool = False
+
+
+class SegmentStartPayload(BaseModel):
+    # `fresh` discards the segmentation checkpoints so every window is recomputed. The default
+    # continues from whatever completed windows survive a previous cancel or timeout.
+    fresh: bool = False
+
+
 class ResummarizePayload(BaseModel):
     model: str | None = None
 
