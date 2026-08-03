@@ -763,3 +763,210 @@ def test_untruncated_summary_reports_no_truncation(monkeypatch):
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
     assert se.summarize_row("/x.pdf", _row(), prompt="P")["truncated"] is False
+
+
+# The heading guard (plan 2026-07-31 task 1). Measured on the current build: 7 of 16 audited summaries
+# lost their bold point headings, 5 of them every heading, against 7.3% before the audit's house rules
+# landed. The audit was reading `**Body part being treated**:` - required structure - as a stray
+# capitalised header and folding it into prose, storing its own reason as "Summary contains capitalized
+# headers". The prompt now forbids that, but a prompt is a request; the guard is the guarantee.
+_LABELLED = "**Body part being treated**: Lower back. **Treatment provided**: Shockwave therapy."
+_PROSE = "The lower back was treated with shockwave therapy."
+
+
+def _labelled_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+    """Like _fake_generate, but the body carries two bold point headings for the guard to protect."""
+    text = "Progress Note - Dr Smith" if system_msg == se.TITLE_PROMPT else _LABELLED
+    return text, False
+
+
+def _stub_verify(monkeypatch, fixed_text, issues, fixed_title=None):
+    monkeypatch.setattr(
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+    )
+    monkeypatch.setattr(se, "_generate", _labelled_generate)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": fixed_text,
+            "fixed_title": fixed_title if fixed_title is not None else title,
+            "issues": issues,
+        },
+    )
+
+
+def test_a_cosmetic_rewrite_that_drops_headings_is_rejected(monkeypatch, caplog):
+    """WHEN the audit returns fewer bold headings and every issue is correction-only, THE SYSTEM SHALL
+    keep the raw body, still store the issues, and warn naming the page range and issue types."""
+    _stub_verify(monkeypatch, _PROSE, [{"type": "capitalization", "detail": "capitalized headers"}])
+
+    with caplog.at_level("WARNING"):
+        out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    # verifiedText None means effective_text() falls back to the raw body - the labels survive.
+    assert out["verifiedText"] is None
+    assert "**Body part being treated**" in out["summaryText"]
+    # The reviewer still sees what was flagged; the guard is not a silent swallow.
+    assert out["verifyIssues"] == [{"type": "capitalization", "detail": "capitalized headers"}]
+    assert "1-2" in caplog.text and "capitalization" in caplog.text
+
+
+def test_a_substantive_rewrite_that_drops_headings_is_accepted(monkeypatch):
+    """WHEN an issue lies outside the correction-only pair, THE SYSTEM SHALL store the audited body.
+
+    An unsupported claim can legitimately take a whole point - and its heading - with it. Blocking
+    that would suppress exactly the faithfulness fix this pass exists for.
+    """
+    _stub_verify(
+        monkeypatch,
+        _PROSE,
+        [
+            {"type": "capitalization", "detail": "capitalized headers"},
+            {"type": "unsupported", "detail": "a fabricated diagnosis"},
+        ],
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert "shockwave therapy" in out["verifiedText"].lower()
+
+
+def test_a_renamed_heading_passes_the_guard_untouched(monkeypatch):
+    """WHEN the audit RENAMES a heading without reducing the count, THE SYSTEM SHALL store its body.
+
+    The distinction the whole design turns on: correcting a wrong heading is the behaviour being asked
+    for. A guard that compared heading TEXT instead of counts would block precisely that.
+    """
+    renamed = "**Body part treated**: Lower back. **Treatment given**: Shockwave therapy."
+    _stub_verify(monkeypatch, renamed, [{"type": "capitalization", "detail": "heading case"}])
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert "**Body part treated**" in out["verifiedText"]
+
+
+def test_a_vitals_fix_that_empties_a_point_may_drop_its_heading(monkeypatch):
+    """House rule 1 removes height and weight, so a vitals fix can legitimately empty a point and take
+    its heading. `vitals` is excluded from the correction-only set for exactly this reason."""
+    _stub_verify(
+        monkeypatch,
+        "**Body part being treated**: Lower back.",
+        [{"type": "vitals", "detail": "height and weight"}],
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert "Treatment provided" not in out["verifiedText"]
+
+
+def test_a_rewrite_that_keeps_every_heading_is_accepted(monkeypatch):
+    """Regression guard on today's behaviour: no heading lost, so the guard must not fire."""
+    fixed = "**Body part being treated**: Lower back. **Treatment provided**: Shockwave to L4-L5."
+    _stub_verify(monkeypatch, fixed, [{"type": "capitalization", "detail": "word case"}])
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert "L4-L5" in out["verifiedText"]
+
+
+def test_a_rejected_body_still_stores_a_corrected_title(monkeypatch):
+    """WHEN the body rewrite is rejected but the title was corrected, THE SYSTEM SHALL store the title.
+
+    effective_title() and effective_text() fall back independently, so a wrong date or laterality in
+    the title must still be fixed - it is the first thing a client reads.
+    """
+    _stub_verify(
+        monkeypatch,
+        _PROSE,
+        [{"type": "capitalization", "detail": "capitalized headers"}],
+        fixed_title="CORRECTED HEADER",
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is None  # body rejected
+    assert out["verifiedTitle"] == "CORRECTED HEADER (Pages 1-2)"  # title still corrected
+
+
+def test_the_guard_never_fires_on_a_body_that_had_no_headings(monkeypatch):
+    """A prose-format category has nothing to lose, so the guard must stay out of the way entirely."""
+    monkeypatch.setattr(
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)  # returns "Summary body", no bold
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": "Summary body, re-cased.",
+            "fixed_title": title,
+            "issues": [{"type": "capitalization", "detail": "word case"}],
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert "re-cased" in out["verifiedText"]
+
+
+def test_the_real_row_252_shape_is_rejected(monkeypatch):
+    """Replay of the live defect: two headings to zero, two capitalization issues. This is the exact
+    shape that reached the tester as a format inconsistency between four copies of one form."""
+    _stub_verify(
+        monkeypatch,
+        _PROSE,
+        [
+            {"type": "capitalization", "detail": "Summary contains capitalized headers."},
+            {"type": "capitalization", "detail": "facility name in capitals"},
+        ],
+    )
+
+    out = se.summarize_row(
+        "/x.pdf", _row(category="5", start=252, end=258), prompt="P", verify=True
+    )
+
+    assert out["verifiedText"] is None
+    assert out["summaryText"].count("**") == 4  # both headings intact in the stored raw body
+
+
+# "Only positives" widened to absences, refusals and inconclusives (plan 2026-07-31 task 3). The
+# boundary that must not move is the diagnostic verdict: half of human imaging entries state a normal
+# impression and a third contain nothing else, so telling categories 3 and 14 to omit a normal result
+# would empty them - the exact regression PR #55 was written to fix.
+def test_the_widened_omission_reaches_an_examination_category():
+    preamble = se.build_preamble("1")
+    assert "REFUSED" in preamble
+    assert "INCONCLUSIVE" in preamble
+    assert "no known allergies" in preamble
+
+
+@pytest.mark.parametrize("category", ["3", "14"])
+def test_a_verdict_category_is_never_told_to_omit_its_verdict(category):
+    """WHEN the category is 3 or 14, THE SYSTEM SHALL ask for the impression even when it is normal."""
+    preamble = se.build_preamble(category)
+    assert "the verdict IS the content" in preamble
+    # The widened omission must not reach it at all - for these documents the verdict is the content.
+    assert "REFUSED" not in preamble
+    assert "INCONCLUSIVE" not in preamble
+
+
+def test_an_unknown_category_receives_both_blocks_without_them_contradicting():
+    """WHEN build_preamble is called with an id in neither set, THE SYSTEM SHALL emit both blocks and
+    the carve-out that reconciles them.
+
+    Unknown ids default to INCLUDE, so a category an admin creates at runtime gets both the widened
+    omission and the verdict rule. Without the carve-out sentence it would be told to omit an
+    inconclusive result by one block and to report it by the next.
+    """
+    preamble = se.build_preamble("999")
+    assert "INCONCLUSIVE" in preamble  # widened omission present
+    assert "the verdict IS the content" in preamble  # verdict rule present
+    # The reconciling sentence, and it must come before the verdict rule it defers to.
+    assert "that rule wins" in preamble
+    assert preamble.index("that rule wins") < preamble.index("the verdict IS the content")

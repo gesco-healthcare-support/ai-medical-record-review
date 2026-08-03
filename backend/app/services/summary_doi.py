@@ -20,9 +20,15 @@ from app.services.genai_retry import generate_with_retry
 
 logger = logging.getLogger(__name__)
 
-# A stated DOI sits on a document's first pages (a form field or report header), so the isolated
-# call sends at most this many pages - bounding the payload on long QME/deposition sub-documents.
-_MAX_PAGES = 5
+# A stated DOI sits on a document's first pages (a form field or report header), so the isolated call
+# sends at most this many pages - bounding the payload on long QME/deposition sub-documents.
+#
+# Raised 5 -> 10 on measurement (2026-07-31): the old bound was the single largest cause of a missed
+# DOI. On rows whose DOI label is followed by a digit, capture was 83.5% (n=79) for spans of 1-5 pages
+# against 59.5% (n=37) for 6 pages and over - past page 5 the field simply was not in the payload.
+# 85.9% of summarized sub-documents are 1-5 pages, so only 14.1% send a larger payload at all, and 10
+# pages covers 96.2% of sub-documents in full.
+_MAX_PAGES = 10
 
 _ISOLATION_PROMPT = (
     "The attached pages are ONE medical document. Does THIS document itself state the patient's "
@@ -43,8 +49,15 @@ _D = r"\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}"
 # would make "01-02-20" (one date) read as a range.
 _DS = r"\d{1,2}[/.]\d{1,2}[/.]\d{2,4}"
 # Ranges must be tried BEFORE single dates, or a range parses as two unrelated injury dates.
+#
+# The CT group admits an optional colon and internal dots because `CT\s*` alone silently dropped the
+# marker: a source reading "Date of injury: CT: 11/30/2015 - 12/04/2025" degraded to a bare date
+# range, losing the fact that it is a cumulative-trauma PERIOD rather than a single injury - a
+# correctness bug in a medical-legal field. `\b` anchors it so a bare "C" or "T" cannot match, and so
+# that the letters inside a word cannot either: "IMPACT 11/30/2015 - 12/04/2025" previously came out
+# marked "CT", inventing the classification this module exists to avoid inventing.
 _ITEM = re.compile(
-    rf"(?P<ct>CT\s*)?(?P<from>{_DS})\s*(?:-|--|to|through)\s*(?P<to>{_DS})|(?P<one>{_D})",
+    rf"(?P<ct>\bC\.?T\.?\s*:?\s*)?(?P<from>{_DS})\s*(?:-|--|to|through)\s*(?P<to>{_DS})|(?P<one>{_D})",
     re.IGNORECASE,
 )
 
