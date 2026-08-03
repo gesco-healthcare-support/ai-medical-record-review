@@ -4,20 +4,32 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // The hook calls the review-api module directly (no react-query), so mock that module. The stub
 // factory references nothing external, so vitest's hoisting of vi.mock above the imports is safe.
 vi.mock("@/lib/review-api", () => ({
+  cancelJob: vi.fn(),
   getDocument: vi.fn(),
   getStatus: vi.fn(),
   saveRows: vi.fn(),
+  startDedup: vi.fn(),
   startSegment: vi.fn(),
   startSummarize: vi.fn(),
 }));
 
 import { useReviewWorkflow } from "@/hooks/use-review-workflow";
-import { getDocument, getStatus, saveRows } from "@/lib/review-api";
+import {
+  cancelJob,
+  getDocument,
+  getStatus,
+  saveRows,
+  startSegment,
+  startSummarize,
+} from "@/lib/review-api";
 import type { DocumentDetail } from "@/lib/types";
 
 const mockDoc = vi.mocked(getDocument);
 const mockStatus = vi.mocked(getStatus);
 const mockSave = vi.mocked(saveRows);
+const mockCancel = vi.mocked(cancelJob);
+const mockStartSegment = vi.mocked(startSegment);
+const mockStartSummarize = vi.mocked(startSummarize);
 
 const detail = (over: Partial<DocumentDetail> = {}): DocumentDetail => ({
   id: "d1",
@@ -90,7 +102,7 @@ describe("useReviewWorkflow boot routing", () => {
         detail({
           status: "segmenting",
           active_job: {
-            kind: "segment",
+            id: 1, kind: "segment",
             state: "running",
             stage: "segmenting",
             current: 1,
@@ -114,7 +126,7 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
     mockStatus.mockResolvedValue({
       status: "needs_attention",
       job: {
-        kind: "summarize",
+        id: 1, kind: "summarize",
         state: "needs_attention",
         stage: "summarizing",
         current: 0,
@@ -134,7 +146,7 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
     mockStatus.mockResolvedValue({
       status: "needs_attention",
       job: {
-        kind: "summarize",
+        id: 1, kind: "summarize",
         state: "needs_attention",
         stage: "summarizing",
         current: 1,
@@ -158,7 +170,7 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
       detail({
         status: "summarizing",
         active_job: {
-          kind: "summarize",
+          id: 1, kind: "summarize",
           state: "running",
           stage: "summarizing",
           current: 0,
@@ -169,7 +181,7 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
     );
     mockStatus.mockResolvedValue({
       status: "summarizing",
-      job: { kind: "summarize", state: "paused", stage: "paused", current: 0, total: 5, error: null },
+      job: { id: 1, kind: "summarize", state: "paused", stage: "paused", current: 0, total: 5, error: null },
     });
     const { result } = renderHook(() => useReviewWorkflow("d1"));
     await waitFor(() => expect(result.current.section).toBe("progress"));
@@ -183,7 +195,7 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
       detail({
         status: "summarizing",
         active_job: {
-          kind: "summarize",
+          id: 1, kind: "summarize",
           state: "running",
           stage: "summarizing",
           current: 1,
@@ -195,7 +207,7 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
     mockStatus.mockResolvedValue({
       status: "needs_attention",
       job: {
-        kind: "summarize",
+        id: 1, kind: "summarize",
         state: "needs_attention",
         stage: "summarizing",
         current: 2,
@@ -262,5 +274,196 @@ describe("useReviewWorkflow autosave gating", () => {
     // Loud, not silent: the state flips to error with a fix-the-rows message (Summarize stays blocked).
     expect(result.current.saveState.kind).toBe("error");
     expect(result.current.saveState.message).toMatch(/fix the highlighted page ranges/i);
+  });
+});
+
+// The stop/restart cycle. The critical one is the FIRST test: `cancelled` is not in the poller's
+// keep-polling exclusion list by accident, and if it falls through there the progress bar spins
+// forever - a working stop button that looks broken.
+describe("useReviewWorkflow stop and restart", () => {
+  it("settles a cancelled run instead of polling forever", async () => {
+    mockDoc.mockResolvedValue(
+      detail({
+        status: "segmenting",
+        active_job: {
+          id: 7,
+          kind: "segment",
+          state: "running",
+          stage: "segmenting",
+          current: 1,
+          total: 5,
+          error: null,
+        },
+      }),
+    );
+    mockStatus.mockResolvedValue({
+      status: "uploaded",
+      job: {
+        id: 7,
+        kind: "segment",
+        state: "cancelled",
+        stage: "cancelled",
+        current: 1,
+        total: 5,
+        error: null,
+      },
+    });
+
+    const { result } = renderHook(() => useReviewWorkflow("d1"));
+
+    await waitFor(() => expect(result.current.cancelledJob).toEqual({ kind: "segment" }));
+    // Settled: the bar is gone rather than left spinning on a terminal job.
+    expect(result.current.watching).toBe(false);
+    // And NOT an error - the reviewer asked for this.
+    expect(result.current.banner).toBe("");
+  });
+
+  it("cancels the job the poller actually saw, by id", async () => {
+    mockDoc.mockResolvedValue(
+      detail({
+        status: "summarizing",
+        active_job: {
+          id: 42,
+          kind: "summarize",
+          state: "running",
+          stage: "summarizing",
+          current: 2,
+          total: 9,
+          error: null,
+        },
+      }),
+    );
+    mockStatus.mockResolvedValue({
+      status: "summarizing",
+      job: {
+        id: 42,
+        kind: "summarize",
+        state: "running",
+        stage: "summarizing",
+        current: 2,
+        total: 9,
+        error: null,
+      },
+    });
+    mockCancel.mockResolvedValue({
+      id: 42,
+      kind: "summarize",
+      state: "running",
+      stage: "summarizing",
+      current: 2,
+      total: 9,
+      error: null,
+      graceSeconds: 10,
+    });
+
+    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    await waitFor(() => expect(result.current.watching).toBe(true));
+
+    let grace = 0;
+    await act(async () => {
+      grace = await result.current.cancelActiveJob(false);
+    });
+
+    // By id, not "whatever is active": a document-scoped cancel could kill a job that started
+    // between the render and the click.
+    expect(mockCancel).toHaveBeenCalledWith("d1", 42, false);
+    // The grace period comes from the server, so the Force stop moment cannot drift from the setting.
+    expect(grace).toBe(10);
+  });
+
+  it("reports a failed stop instead of pretending the run ended", async () => {
+    mockDoc.mockResolvedValue(
+      detail({
+        status: "summarizing",
+        active_job: {
+          id: 9,
+          kind: "summarize",
+          state: "running",
+          stage: "summarizing",
+          current: 1,
+          total: 4,
+          error: null,
+        },
+      }),
+    );
+    mockStatus.mockResolvedValue({
+      status: "summarizing",
+      job: {
+        id: 9,
+        kind: "summarize",
+        state: "running",
+        stage: "summarizing",
+        current: 1,
+        total: 4,
+        error: null,
+      },
+    });
+    mockCancel.mockRejectedValue(new Error("network"));
+
+    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    await waitFor(() => expect(result.current.watching).toBe(true));
+    await act(async () => {
+      await result.current.cancelActiveJob(false);
+    });
+
+    expect(result.current.banner).toMatch(/could not stop/i);
+  });
+
+  it("restarts the cancelled kind through its own endpoint, and clears the prompt", async () => {
+    mockDoc.mockResolvedValue(
+      detail({
+        status: "segmenting",
+        active_job: {
+          id: 3,
+          kind: "segment",
+          state: "running",
+          stage: "segmenting",
+          current: 0,
+          total: 2,
+          error: null,
+        },
+      }),
+    );
+    // Cancelled ONCE, then the restarted job. A cancelled job is not active, so /status reports the
+    // NEW job afterwards - mocking `cancelled` forever would have the restart immediately re-settle
+    // as cancelled, which cannot happen against the real endpoint.
+    mockStatus
+      .mockResolvedValueOnce({
+        status: "uploaded",
+        job: {
+          id: 3,
+          kind: "segment",
+          state: "cancelled",
+          stage: "cancelled",
+          current: 0,
+          total: 2,
+          error: null,
+        },
+      })
+      .mockResolvedValue({
+        status: "segmenting",
+        job: {
+          id: 4,
+          kind: "segment",
+          state: "running",
+          stage: "segmenting",
+          current: 0,
+          total: 2,
+          error: null,
+        },
+      });
+    mockStartSegment.mockResolvedValue({ ok: true });
+
+    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    await waitFor(() => expect(result.current.cancelledJob).not.toBeNull());
+
+    await act(async () => {
+      await result.current.restartCancelled(true); // Start over
+    });
+
+    expect(mockStartSegment).toHaveBeenCalledWith("d1", true);
+    // The prompt clears immediately, so a second click cannot double-enqueue.
+    expect(result.current.cancelledJob).toBeNull();
+    expect(mockStartSummarize).not.toHaveBeenCalled();
   });
 });

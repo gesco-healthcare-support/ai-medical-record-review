@@ -28,9 +28,29 @@ export function getDuplicates(id: string) {
   return apiFetch<DuplicatesResponse>(`/documents/${id}/duplicates`);
 }
 
-/** POST /api/documents/{id}/dedup/start - (re)run duplicate clustering (409 if a job is active). */
-export function startDedup(id: string) {
-  return apiFetch<{ ok: boolean }>(`/documents/${id}/dedup/start`, { method: "POST" });
+/** POST /api/documents/{id}/dedup/start - (re)run duplicate clustering (409 if a job is active).
+ *  `fresh` clears each row's stored OCR text so the run re-extracts; the default reuses it, which is
+ *  what makes a continue nearly free. */
+export function startDedup(id: string, fresh = false) {
+  return apiFetch<{ ok: boolean }>(`/documents/${id}/dedup/start`, {
+    method: "POST",
+    body: JSON.stringify({ fresh }),
+  });
+}
+
+/** POST /api/documents/{id}/jobs/{jobId}/cancel - ask a job to stop.
+ *
+ *  Cooperative by default: the worker notices at its next progress tick or within a second of a retry
+ *  backoff slice. `force` escalates to killing the RQ work-horse, which is the second press of the
+ *  button - a hard kill can land anywhere, including mid-transaction, which the cooperative path is
+ *  designed to avoid. A job that has already finished answers 200, not an error. */
+export function cancelJob(id: string, jobId: number, force = false) {
+  // `graceSeconds` comes from the server so the moment the button becomes "Force stop" always matches
+  // JOB_CANCEL_GRACE_SECONDS; a hardcoded client value would silently drift from the setting.
+  return apiFetch<JobProgress & { graceSeconds: number }>(
+    `/documents/${id}/jobs/${jobId}/cancel`,
+    { method: "POST", body: JSON.stringify({ force }) },
+  );
 }
 
 /** One resolution of a duplicate cluster: keep a copy, dismiss the cluster, or drop one member out
@@ -60,9 +80,13 @@ export function saveRows(id: string, rows: Row[]) {
   });
 }
 
-/** POST /api/documents/{id}/segment/start - enqueue identification (409 if a job runs). */
-export function startSegment(id: string) {
-  return apiFetch<{ ok: boolean }>(`/documents/${id}/segment/start`, { method: "POST" });
+/** POST /api/documents/{id}/segment/start - enqueue identification (409 if a job runs).
+ *  `fresh` discards any segmentation checkpoints so every window is recomputed. */
+export function startSegment(id: string, fresh = false) {
+  return apiFetch<{ ok: boolean }>(`/documents/${id}/segment/start`, {
+    method: "POST",
+    body: JSON.stringify({ fresh }),
+  });
 }
 
 /** POST /api/documents/{id}/summarize/start - flush rows + enqueue summarization. `fresh` clears

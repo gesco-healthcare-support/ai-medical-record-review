@@ -83,6 +83,72 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   const save = wf.saveState;
   // The paused stage label is stable (STAGE_LABELS.paused); style the bar distinctly while waiting.
   const paused = wf.watching && wf.progress.detail.toLowerCase().startsWith("paused");
+
+  // Stop is two-stage. The first press is cooperative and normally lands within a second; only if the
+  // run has not acknowledged it after the SERVER's grace period does the button escalate to a hard
+  // kill, because a force stop can land mid-transaction and leaves orphan recovery to tidy up.
+  const [stopping, setStopping] = useState(false);
+  const [forceReady, setForceReady] = useState(false);
+  // The pending escalation, held so it can be cancelled. A run that stops INSIDE the grace period
+  // would otherwise leave this timer to fire after the reset below, stranding the button on "Force
+  // stop" - making the first press on the NEXT job a hard kill the reviewer never asked for.
+  const forceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function clearForceTimer() {
+    if (forceTimer.current) {
+      clearTimeout(forceTimer.current);
+      forceTimer.current = null;
+    }
+  }
+
+  // Reset on the JOB boundary, not only when watching ends. Segmentation chains straight into the
+  // duplicate check, so the active job changes while `watching` stays true throughout - and keying
+  // only on `watching` left a grace period that expired on the finished job showing "Force stop" as
+  // the NEXT job's first state. Reproduced live: Stop at 0.2s, escalation at 10s, then the chained
+  // job appeared at 15.6s already offering a hard kill nobody had asked for.
+  useEffect(() => {
+    setStopping(false);
+    setForceReady(false);
+    clearForceTimer();
+  }, [wf.watching, wf.activeJobId]);
+
+  // Unmounting mid-stop must not leave a timer that sets state on a dead component.
+  useEffect(() => clearForceTimer, []);
+
+  async function onStop() {
+    if (forceReady) {
+      void wf.cancelActiveJob(true);
+      return;
+    }
+    setStopping(true);
+    const graceSeconds = await wf.cancelActiveJob(false);
+    if (graceSeconds > 0) {
+      clearForceTimer(); // never stack two escalations from a double press
+      forceTimer.current = setTimeout(() => setForceReady(true), graceSeconds * 1000);
+    }
+  }
+
+  /** Continue after a stop, warning first if it would discard reviewer edits.
+   *
+   *  A summarize resume keys on (start, end, category), so a summary whose row was re-classified since
+   *  it was written no longer matches and is deleted and regenerated. That is correct - the category
+   *  changed - but it takes the reviewer's edits with it, so it must not happen silently. */
+  async function onRestart(fresh: boolean) {
+    if (!fresh && wf.cancelledJob?.kind === "summarize") {
+      const atRisk = (summaries ?? []).filter(
+        (s) => s.edited && s.rowCategoryLive !== null && s.rowCategoryLive !== s.row.category,
+      ).length;
+      if (
+        atRisk > 0 &&
+        !window.confirm(
+          `${atRisk} summar${atRisk === 1 ? "y" : "ies"} you edited will be rewritten from scratch, ` +
+            "because the category changed since they were written. Your edits to those will be lost. Continue?",
+        )
+      ) {
+        return;
+      }
+    }
+    void wf.restartCancelled(fresh);
+  }
   // Block Summarize while any row is invalid, nothing is selected, a save failed/is pending, or a
   // duplicate check is running - so a user never summarizes stale or invalid rows.
   const summarizeDisabled =
@@ -165,6 +231,21 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                 <div style={{ width: `${wf.progress.pct}%` }} />
               </div>
               <span className="rce-progress-pct">{wf.progress.pct}%</span>
+              {/* Stop lives HERE, not in ProgressPanel: that panel only renders on a first segment
+                  run (no rows yet), so a Stop there would be invisible for exactly the long
+                  summarize a reviewer most wants to kill. */}
+              <button
+                type="button"
+                className="ev-btn ev-btn-ghost ev-btn-sm rce-stop"
+                onClick={onStop}
+                title={
+                  forceReady
+                    ? "This run has not acknowledged the stop; force it to end now"
+                    : "Ask this run to stop at its next safe point"
+                }
+              >
+                {forceReady ? "Force stop" : stopping ? "Stopping..." : "Stop"}
+              </button>
             </div>
           ) : (
             <>
@@ -243,6 +324,27 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
       </header>
 
       {wf.banner ? <div className="banner">{wf.banner}</div> : null}
+      {/* The post-stop choice lives HERE rather than in the progress bar, because that bar unmounts
+          the moment the job stops being active and so cannot host it. */}
+      {wf.cancelledJob ? (
+        <div className="banner" role="status">
+          <strong>Stopped.</strong> Anything already finished has been kept.{" "}
+          <button
+            type="button"
+            className="ev-btn ev-btn-primary ev-btn-sm"
+            onClick={() => onRestart(false)}
+          >
+            Continue
+          </button>{" "}
+          <button
+            type="button"
+            className="ev-btn ev-btn-outline ev-btn-sm"
+            onClick={() => onRestart(true)}
+          >
+            Start over
+          </button>
+        </div>
+      ) : null}
       {unresolvedDupes > 0 && tab !== "duplicates" ? (
         <div className="banner" role="status">
           {unresolvedDupes} possible duplicate {unresolvedDupes === 1 ? "group" : "groups"} to

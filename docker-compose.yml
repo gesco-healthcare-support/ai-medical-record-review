@@ -51,6 +51,11 @@ x-backend-env: &backend-env
   DUPE_JACCARD_THRESHOLD: ${DUPE_JACCARD_THRESHOLD:-0.70}
   DUPE_SIMILARITY_OVERRIDE: ${DUPE_SIMILARITY_OVERRIDE:-0.90}
   DUPE_MODEL_OVERRIDE: ${DUPE_MODEL_OVERRIDE:-0.95}
+  # Grace period before the Stop button offers a hard "Force stop". Named here for the same reason as
+  # every block above: an unreferenced key never reaches a container. The API reads it to tell the UI
+  # how long to wait, so a mismatch between processes would make the button offer Force stop at a
+  # different moment than the server expects.
+  JOB_CANCEL_GRACE_SECONDS: ${JOB_CANCEL_GRACE_SECONDS:-10}
   # TESSERACT_CMD is deliberately NOT passed through. It is set in .env for the Windows HOST, and
   # injecting a "C:\..." path here would point the containers' pytesseract at a binary that does not
   # exist, breaking OCR everywhere. The Linux images have tesseract on PATH already.

@@ -85,6 +85,7 @@ def test_compose_passes_through_the_settings_it_claims_to_control():
         "DUPE_JACCARD_THRESHOLD",
         "DUPE_SIMILARITY_OVERRIDE",
         "DUPE_MODEL_OVERRIDE",
+        "JOB_CANCEL_GRACE_SECONDS",
     ):
         assert f"{key}: ${{{key}" in compose, f"{key} is not passed through to containers"
     # TESSERACT_CMD must stay OUT: it is a Windows host path, and injecting it would point the

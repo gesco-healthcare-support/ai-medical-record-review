@@ -13,6 +13,9 @@ export type CurrentUser = {
 export type JobKind = "segment" | "classify" | "summarize" | "dedup";
 // paused/needs_attention are resumable-summarize states (item 7): paused = auto-resuming after a
 // transient failure; needs_attention = a permanent failure the reviewer must resolve.
+// `cancelled` is deliberately distinct from `error` and `interrupted`: error is a pipeline fault,
+// interrupted is the system losing the job, cancelled is the reviewer asking for it. Lumping them
+// together would make the failure numbers lie about how often the pipeline actually breaks.
 export type JobState =
   | "queued"
   | "running"
@@ -20,7 +23,8 @@ export type JobState =
   | "done"
   | "needs_attention"
   | "error"
-  | "interrupted";
+  | "interrupted"
+  | "cancelled";
 
 /** One sub-document that permanently failed to summarize (non-PHI: position + page range + reason). */
 export type FailedRow = {
@@ -37,6 +41,9 @@ export type JobAttention = {
 
 /** Job.progress() from the backend, embedded per document in the listing. */
 export type JobProgress = {
+  // Needed to cancel THIS job: the endpoint is scoped by job id rather than by document, so pressing
+  // Stop cannot kill a different job that started between the render and the click.
+  id: number;
   kind: JobKind;
   state: JobState;
   stage: string;

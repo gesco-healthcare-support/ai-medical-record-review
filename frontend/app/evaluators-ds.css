@@ -824,6 +824,9 @@ body[data-bundle-slug] #step-editor { flex: none; }
 }
 .rce-count { font: 12.5px/1.3 var(--font-body), sans-serif; color: var(--gray-500); }
 .rce-progress { display: flex; align-items: center; gap: 10px; min-width: min(320px, 100%); flex: 1; }
+/* Stop must not be squeezed out by the bar: the label ellipsises and the bar flexes, so without a
+   no-shrink basis the one control that ends a runaway job is the first thing to disappear. */
+.rce-stop { flex: 0 0 auto; white-space: nowrap; }
 .rce-progress-label {
     font: 12.5px/1.3 var(--font-body), sans-serif; color: var(--gray-600);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

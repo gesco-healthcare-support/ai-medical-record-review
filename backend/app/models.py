@@ -221,6 +221,10 @@ class Job(Base):
     rq_job_id = Column(String(64))
     attempts = Column(Integer, nullable=False, server_default="0", default=0)
     attention = Column(JSON)
+    # The reviewer pressed Stop. The worker also learns this from a Redis key, because the retry
+    # backoff has no session - but this column is the durable record: it survives a Redis flush and
+    # distinguishes a job that was ASKED to stop from one that died and was reaped.
+    cancel_requested = Column(Boolean, nullable=False, server_default="false", default=False)
     created_at = Column(DateTime, nullable=False, default=_utcnow)
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
@@ -231,6 +235,10 @@ class Job(Base):
 
     def progress(self):
         return {
+            # The id is here so the UI can address this job - the cancel endpoint is scoped by job id
+            # rather than by document, so that pressing Stop cannot kill a DIFFERENT job that started
+            # in the moment between the render and the click. Not PHI: a surrogate integer key.
+            "id": self.id,
             "kind": self.kind,
             "state": self.state,
             "stage": self.stage,

@@ -14,19 +14,27 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select, update
 
 from app.config import get_settings
-from app.db import get_sessionmaker
+from app.db import get_engine, get_sessionmaker
 from app.errors import user_facing_message
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary
 from app.services import catalog
-from app.services.jobs import STATUS_ON_DONE
+from app.services.jobs import STATUS_ON_CANCEL, STATUS_ON_DONE, mark_terminal
 from app.services.pools import PoolTimeout, drain_pool
+from app.worker.cancel import (
+    clear_cancel,
+    clear_current_job,
+    current_job_cancelled,
+    set_current_job,
+)
 from app.worker.failures import (
+    JobCancelled,
     JobNeedsAttention,
     JobPaused,
     classify_failure,
     reason_for,
 )
-from app.worker.queues import queue_for, worker_fn
+from app.worker.finalizers import on_job_failed, on_job_stopped
+from app.worker.queues import get_redis, queue_for, worker_fn
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +48,20 @@ def _utcnow() -> datetime:
 def _run(job_id, work) -> None:
     """Shared runner: mark running, provide a throttled report(), run work(session, job, report),
     finalize done/error. work() persists its own rows/summaries on the given session."""
+    # Give this work-horse its OWN connection pool before touching the database. This is the single
+    # entry point for every job kind, and a horse is a fork of the worker parent, which has already
+    # opened a pooled connection (`__main__._user_ids` enumerates queue lanes before `work()`). The
+    # fork inherits that socket, so without this call parent and child SHARE one connection: the
+    # horse opens a transaction on it and Force stop then SIGKILLs the horse mid-transaction, leaving
+    # the socket INTRANS. The parent's next checkout - which is exactly where the stopped callback in
+    # finalizers.py runs - dies with "can't change 'autocommit' now". pool_pre_ping does not save it,
+    # because psycopg raises ProgrammingError rather than a disconnect error, so the pool propagates
+    # it instead of reconnecting. That silently defeated force-stop finalization until this landed.
+    #
+    # dispose(close=False) is SQLAlchemy's documented fork initializer: it de-references the inherited
+    # pool WITHOUT closing the parent's sockets (close=False exists for precisely this, per the 1.4.33
+    # changelog), so the horse builds its own connections and can never corrupt one the parent reuses.
+    get_engine().dispose(close=False)
     with get_sessionmaker()() as session:
         job = session.get(Job, job_id)
         if job is None:
@@ -49,11 +71,18 @@ def _run(job_id, work) -> None:
         job.started_at = _utcnow()
         session.commit()
         logger.info("job %s (%s) started on document %s", job_id, job.kind, job.document_id)
+        # Publish which job this forked work-horse owns, so generate_with_retry's backoff can check
+        # for a cancel without a session or a job argument. Cleared in the finally below.
+        set_current_job(job_id)
 
         last_write = 0.0
 
         def report(stage, current, total):
             nonlocal last_write
+            # BEFORE the throttle, deliberately: a job that reports faster than once a second - the
+            # normal case for summarize and classify - would otherwise swallow the stop indefinitely.
+            if current_job_cancelled():
+                raise JobCancelled(current, total)
             now = time.monotonic()
             # Stage changes always write (the UI keys its label off them); same-stage ticks
             # are rate-limited so per-row progress does not contend with the job's own inserts.
@@ -66,35 +95,47 @@ def _run(job_id, work) -> None:
             last_write = now
 
         try:
-            work(session, job, report)
-        except JobPaused as sig:
-            # Resumable summarize: transient pressure -> keep the persisted rows + auto-resume.
-            _finalize_paused(session, job_id, sig)
-            return
-        except JobNeedsAttention as sig:
-            # Resumable summarize: a permanent failure -> calm terminal state, partial results kept.
-            _finalize_needs_attention(session, job_id, sig)
-            return
-        except Exception as exc:
-            session.rollback()  # the work may have died mid-transaction
-            job = session.get(Job, job_id)
-            job.state = "error"
-            job.error = user_facing_message(exc)  # friendly; never the raw vendor error
+            try:
+                work(session, job, report)
+            except JobPaused as sig:
+                # Resumable summarize: transient pressure -> keep the persisted rows + auto-resume.
+                _finalize_paused(session, job_id, sig)
+                return
+            except JobCancelled as sig:
+                # The reviewer asked to stop: a normal outcome, so no rollback and no error message.
+                _finalize_cancelled(session, job_id, sig)
+                return
+            except JobNeedsAttention as sig:
+                # Resumable summarize: a permanent failure -> calm terminal state, partial kept.
+                _finalize_needs_attention(session, job_id, sig)
+                return
+            except Exception as exc:
+                session.rollback()  # the work may have died mid-transaction
+                job = session.get(Job, job_id)
+                job.state = "error"
+                job.error = user_facing_message(exc)  # friendly; never the raw vendor error
+                job.finished_at = _utcnow()
+                document = session.get(Document, job.document_id)
+                if document is not None:
+                    document.status = "error"
+                session.commit()
+                logger.exception(
+                    "job %s (%s) failed on document %s", job_id, job.kind, job.document_id
+                )
+                return
+
+            job.state = "done"
             job.finished_at = _utcnow()
             document = session.get(Document, job.document_id)
             if document is not None:
-                document.status = "error"
+                document.status = STATUS_ON_DONE[job.kind]
             session.commit()
-            logger.exception("job %s (%s) failed on document %s", job_id, job.kind, job.document_id)
-            return
-
-        job.state = "done"
-        job.finished_at = _utcnow()
-        document = session.get(Document, job.document_id)
-        if document is not None:
-            document.status = STATUS_ON_DONE[job.kind]
-        session.commit()
-        logger.info("job %s (%s) done on document %s", job_id, job.kind, job.document_id)
+            logger.info("job %s (%s) done on document %s", job_id, job.kind, job.document_id)
+        finally:
+            # A forked work-horse exits after one job, so this is belt-and-braces there - but it is
+            # load-bearing for the tests, which run many jobs in one process, and for any future
+            # non-forking worker where a stale id would cancel the NEXT job on this process.
+            clear_current_job()
 
 
 def _job_timeout(session, document_id) -> int:
@@ -114,6 +155,8 @@ def _finalize_paused(session, job_id, sig: JobPaused) -> None:
     job.current, job.total = sig.done, sig.total
     job.attempts = (job.attempts or 0) + 1
     try:
+        from rq import Callback
+
         # Same lane as the original dispatch: a resumed job must not jump onto the shared base queue,
         # or a paused summarize would start blocking other users on every retry cycle.
         owner = getattr(session.get(Document, job.document_id), "user_id", None)
@@ -122,6 +165,11 @@ def _finalize_paused(session, job_id, sig: JobPaused) -> None:
             worker_fn(job.kind),
             job.id,
             job_timeout=_job_timeout(session, job.document_id),
+            # Same finalizers as the original dispatch: a resumed summarize is the LONGEST-running
+            # job in the system and so the likeliest to be force-stopped. Omitting them here would
+            # leave exactly those runs wedged.
+            on_stopped=Callback(on_job_stopped),
+            on_failure=Callback(on_job_failed),
         )
         job.rq_job_id = rq_job.id
         session.commit()
@@ -147,6 +195,49 @@ def _finalize_paused(session, job_id, sig: JobPaused) -> None:
         sig.delay,
         job.attempts,
     )
+
+
+def _finalize_cancelled(session, job_id, sig: JobCancelled) -> None:
+    """Terminal state for a reviewer-requested stop. Mirrors _finalize_paused, minus the resume.
+
+    Three deliberate choices:
+
+    NO session.rollback(). Whatever the job committed is the reviewer's - a cancelled summarize's
+    finished summaries, a cancelled classify's categorized rows - and hiding completed work would be
+    the surprising outcome. `error` stays NULL: a stop is not a fault, and putting "cancelled" there
+    would corrupt the failure metrics that `error` and `interrupted` exist to carry.
+
+    A SCHEDULED resume is cancelled too. After a pause, `job.rq_job_id` points at the delayed RQ job,
+    not the original run, so without this a cancelled summarize would quietly reappear minutes later.
+
+    STATUS_ON_CANCEL, not STATUS_ON_DONE: a cancelled segment run has no rows, and "reviewing" would
+    render an empty editor as though the record contained nothing.
+    """
+    job = session.get(Job, job_id)
+    # Through mark_terminal, so a cooperative stop and a forced one write the SAME terminal state
+    # via the same code path - see app/worker/finalizers.py.
+    mark_terminal(
+        session,
+        job_id,
+        "cancelled",
+        stage="cancelled",
+        done=sig.done,
+        total=sig.total,
+        document_status=STATUS_ON_CANCEL[job.kind],
+    )
+
+    if job.rq_job_id:
+        try:
+            from rq.job import Job as RQJob
+
+            RQJob.fetch(job.rq_job_id, connection=get_redis()).cancel()
+        except Exception:
+            # Already gone, never scheduled, or Redis is down. The DB row is already terminal, which
+            # is what the UI and the one-active-job index read, so this is not worth failing over.
+            logger.info("no scheduled RQ job to cancel for job %s", job_id, exc_info=True)
+
+    clear_cancel(job_id)
+    logger.info("job %s (%s) cancelled at %d/%d", job_id, job.kind, sig.done, sig.total)
 
 
 def _finalize_needs_attention(session, job_id, sig: JobNeedsAttention) -> None:

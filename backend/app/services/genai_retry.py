@@ -14,6 +14,8 @@ from google.genai import errors, types
 
 from app.config import get_settings
 from app.services import rate_limit
+from app.worker.cancel import current_job_cancelled
+from app.worker.failures import JobCancelled
 
 
 def _backoff_delay(attempt: int) -> float:
@@ -86,6 +88,32 @@ def _apply_thinking_default(config) -> None:
         config.thinking_config = budget
 
 
+_CANCEL_POLL_SECONDS = 1.0
+
+
+def _cancellable_sleep(total: float) -> None:
+    """Sleep ``total`` seconds in <= 1s slices, abandoning it if this job has been cancelled.
+
+    This is the change that makes the stop button usable. Eight retries with jitter plus rate-limiter
+    waits can park a job here for something like 17 minutes, and those wedged jobs are precisely the
+    ones a reviewer wants to kill. A bare time.sleep() means the cooperative check in report() cannot
+    run until the whole backoff has been served, so the button would appear broken on the only case
+    that motivated it.
+
+    The check is a Redis GET against a per-process job id (see worker/cancel.py), so it costs nothing
+    and needs no session - which matters because this runs on pool threads several frames below any
+    code that knows a job exists. Raising JobCancelled here unwinds through the pool and reaches
+    _run's handler exactly like a report()-raised cancel.
+    """
+    remaining = total
+    while remaining > 0:
+        if current_job_cancelled():
+            raise JobCancelled(0, 0)  # the finalizer takes progress from the job row, not this
+        slice_seconds = min(_CANCEL_POLL_SECONDS, remaining)
+        time.sleep(slice_seconds)
+        remaining -= slice_seconds
+
+
 def generate_with_retry(client, **kwargs):
     """Call client.models.generate_content, retrying transient failures. Client passed explicitly
     so route/worker modules keep a single patchable client seam."""
@@ -111,5 +139,5 @@ def generate_with_retry(client, **kwargs):
         except httpx.TransportError as exc:  # disconnect without an HTTP status
             last = exc
         if attempt < settings.genai_max_retries - 1:
-            time.sleep(_sleep_for(attempt, retry_after))
+            _cancellable_sleep(_sleep_for(attempt, retry_after))
     raise last

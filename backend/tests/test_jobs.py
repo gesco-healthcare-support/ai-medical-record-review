@@ -642,9 +642,13 @@ def test_summarize_pauses_and_schedules_resume_on_transient(monkeypatch):
     scheduled: dict = {}
 
     class _FakeQueue:
-        def enqueue_in(self, td, fn, arg, job_timeout=None):
+        def enqueue_in(self, td, fn, arg, job_timeout=None, on_stopped=None, on_failure=None):
             scheduled["delay"] = td.total_seconds()
             scheduled["arg"] = arg
+            # A resumed summarize is the longest-running job here and the likeliest to be force
+            # stopped, so the resume dispatch MUST carry the finalizers too.
+            scheduled["on_stopped"] = on_stopped
+            scheduled["on_failure"] = on_failure
             return type("_J", (), {"id": "rq-resume-1"})()
 
     monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _FakeQueue())
@@ -662,6 +666,10 @@ def test_summarize_pauses_and_schedules_resume_on_transient(monkeypatch):
         assert session.scalars(select(Summary).where(Summary.document_id == doc_id)).all() == []
     assert scheduled["delay"] == 60
     assert str(scheduled["arg"]) == str(job_id)
+    # Without these the resumed run is the one job a force stop cannot finalize, leaving the
+    # document wedged until the API restarts.
+    assert scheduled["on_stopped"] is not None
+    assert scheduled["on_failure"] is not None
 
 
 def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
@@ -730,7 +738,7 @@ def test_summarize_pauses_when_pool_times_out(monkeypatch):
     scheduled: dict = {}
 
     class _FakeQueue:
-        def enqueue_in(self, td, fn, arg, job_timeout=None):
+        def enqueue_in(self, td, fn, arg, job_timeout=None, on_stopped=None, on_failure=None):
             scheduled["arg"] = arg
             return type("_J", (), {"id": "rq-resume-timeout"})()
 
@@ -1269,3 +1277,266 @@ def test_chain_dedup_swallows_generic_error(monkeypatch):
     monkeypatch.setattr("app.services.jobs.enqueue", _boom)
     _chain_dedup(seg_id)  # a non-conflict failure is logged + swallowed (never fails identify)
     assert _dedup_jobs(doc_id) == []
+
+
+# --- Finalizers: the parent worker writing a terminal state its dead work-horse could not ---------
+#
+# The gap these close, found live 2026-08-03: a force-stopped segment job sat "running" for 30
+# minutes with RQ reporting STOPPED. The UI kept its bar spinning and the one-active-job index
+# refused every new run on that document. `recover_orphans` would have reaped it, but it only runs
+# at API startup, so the document stayed wedged until someone restarted the API.
+
+
+class _FakeRQJob:
+    """Only what the callbacks read. `id` differs from `args[0]` on purpose - that is the resumed
+    summarize case, where correlating by RQ id instead of the DB job id would finalize nothing."""
+
+    def __init__(self, db_job_id, rq_id="rq-fresh-id"):
+        self.args = [db_job_id]
+        self.id = rq_id
+
+
+def _running_job(kind: str = "segment") -> tuple[str, int]:
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(session, doc_id, kind, model="m", prompt_version="1")
+        job.state = "running"
+        session.commit()
+        return doc_id, job.id
+
+
+def test_stopped_callback_finalizes_a_force_stopped_job():
+    """Force stop kills the work-horse; the PARENT worker must write the terminal state."""
+    from app.worker.finalizers import on_job_stopped
+
+    doc_id, job_id = _running_job("segment")
+    on_job_stopped(_FakeRQJob(job_id), None)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "cancelled"
+        assert job.stage == "cancelled"
+        assert job.finished_at is not None
+        assert job.error is None  # a stop is not a fault
+        # Same terminal state the COOPERATIVE stop writes, so the two paths cannot drift.
+        assert session.get(Document, doc_id).status == jobs.STATUS_ON_CANCEL["segment"]
+
+
+def test_stopped_callback_correlates_by_db_job_id_not_rq_id():
+    """A resumed summarize runs under a fresh RQ id, so args[0] is the only reliable correlation."""
+    from app.worker.finalizers import on_job_stopped
+
+    _doc_id, job_id = _running_job("summarize")
+    on_job_stopped(_FakeRQJob(job_id, rq_id="a-completely-different-rq-id"), None)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "cancelled"
+
+
+def test_failure_callback_interrupts_an_abandoned_job():
+    """A horse that died without reporting: RQ's abandoned-job cleanup calls this."""
+    from app.worker.finalizers import on_job_failed
+
+    doc_id, job_id = _running_job("segment")
+    on_job_failed(_FakeRQJob(job_id), None, RuntimeError, RuntimeError("horse died"), None)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "interrupted"
+        assert session.get(Document, doc_id).status == "interrupted"
+
+
+def test_failure_callback_leaves_a_background_dedup_document_alone():
+    """Mirrors orphan recovery: dedup runs while the reviewer works, so the document stays
+    'reviewing'. Marking it interrupted would report a failed stage nobody was watching."""
+    from app.worker.finalizers import on_job_failed
+
+    doc_id, job_id = _running_job("dedup")
+    on_job_failed(_FakeRQJob(job_id), None, RuntimeError, RuntimeError("x"), None)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "interrupted"
+        assert session.get(Document, doc_id).status == "reviewing"  # untouched
+
+
+def test_failure_callback_does_not_overwrite_an_already_finalized_job():
+    """The in-horse failure path fires for an ordinary exception too, AFTER _run has already
+    written 'error'. Overwriting it with 'interrupted' would lose the user-facing message."""
+    from app.worker.finalizers import on_job_failed
+
+    _doc_id, job_id = _running_job("segment")
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        job.state, job.error = "error", "Something specific went wrong"
+        session.commit()
+
+    on_job_failed(_FakeRQJob(job_id), None, RuntimeError, RuntimeError("x"), None)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "error"
+        assert job.error == "Something specific went wrong"
+
+
+def test_mark_terminal_transitions_once_under_a_race():
+    """RQ runs the stopped callback AND handle_job_failure for a single stop, and at the worker
+    counts this is heading for, parent workers finalize concurrently. First writer wins."""
+    _doc_id, job_id = _running_job("segment")
+
+    with get_sessionmaker()() as session:
+        assert jobs.mark_terminal(session, job_id, "cancelled", stage="cancelled") is True
+    with get_sessionmaker()() as session:
+        assert jobs.mark_terminal(session, job_id, "interrupted") is False
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "cancelled"  # the second call changed nothing
+
+
+def test_enqueue_registers_both_finalizer_callbacks():
+    """The wiring itself: without these on the RQ job, nothing finalizes a killed horse."""
+    from app.worker.finalizers import on_job_failed, on_job_stopped
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job = jobs.enqueue(session, doc_id, "segment", model="m", prompt_version="1")
+        queue = queue_for("segment", session.get(Document, doc_id).user_id)
+        rq_job = queue.fetch_job(str(job.id))
+    try:
+        assert rq_job.stopped_callback is on_job_stopped
+        assert rq_job.failure_callback is on_job_failed
+    finally:
+        queue.empty()  # don't leave a job for a real worker to pick up
+
+
+def test_the_work_horse_replaces_the_pool_it_inherited_before_any_query(monkeypatch):
+    """WHEN a job runs in a work-horse, THE SYSTEM SHALL replace the inherited connection pool
+    before issuing any SQL, and SHALL NOT close the parent's connections.
+
+    Found live, and it silently defeated the whole force-stop fix: the parent worker opens a pooled
+    connection before forking (`app.worker.__main__._user_ids` enumerates queue lanes), the horse
+    inherits that socket, and Force stop SIGKILLs the horse mid-transaction. The parent's stopped
+    callback then checks out the same connection and dies on
+    "can't change 'autocommit' now: connection in transaction status INTRANS" - which pool_pre_ping
+    cannot recover, because psycopg raises ProgrammingError rather than a disconnect error.
+
+    Asserted as ORDER, not just "dispose was called": disposing after the first query would leave the
+    inherited connection already used and the bug intact. `close=False` is equally load-bearing - the
+    default True would close the PARENT's sockets from the child and break the worker that forked us.
+    """
+    from sqlalchemy import event
+
+    from app.db import get_engine
+    from app.worker.tasks import _run
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+        session.commit()
+
+    engine = get_engine()
+    timeline: list[str] = []
+    close_kwargs: list = []
+    real_dispose = engine.dispose
+
+    def spy_dispose(close=True):
+        timeline.append("dispose")
+        close_kwargs.append(close)
+        return real_dispose(close=close)
+
+    def on_sql(*_args, **_kwargs):
+        timeline.append("sql")
+
+    monkeypatch.setattr(engine, "dispose", spy_dispose)
+    event.listen(engine, "before_cursor_execute", on_sql)
+    try:
+        _run(job_id, lambda session, job, report: report("segmenting", 1, 1))
+    finally:
+        event.remove(engine, "before_cursor_execute", on_sql)
+
+    assert timeline, "neither a dispose nor a query was observed"
+    assert timeline[0] == "dispose", f"queried before replacing the inherited pool: {timeline[:3]}"
+    assert close_kwargs == [False], "close must be False or the child closes the parent's sockets"
+
+
+# The finalizers' defensive branches. These are not padding: D5 was a DB error inside on_job_stopped,
+# and it reached the reviewer as "nothing happened" precisely because the except swallowed it. What the
+# callback must never do is raise, because RQ re-raises out of the parent worker's monitoring loop -
+# that would turn one failed finalization into a worker that stops monitoring every other job.
+class _UncorrelatableRQJob:
+    """An RQ job whose first argument is not a DB job id - the correlation the finalizers depend on."""
+
+    def __init__(self, args):
+        self.args = args
+        self.id = "rq-uncorrelatable"
+
+
+@pytest.mark.parametrize("args", [[], ["not-a-number"], [None]])
+def test_finalizers_ignore_a_job_they_cannot_correlate(args):
+    """WHEN an RQ job carries no usable DB job id, THE SYSTEM SHALL log and return, NOT raise."""
+    from app.worker.finalizers import on_job_failed, on_job_stopped
+
+    on_job_stopped(_UncorrelatableRQJob(args), None)
+    on_job_failed(_UncorrelatableRQJob(args), None, RuntimeError, RuntimeError("x"), None)
+
+
+def test_stopped_callback_ignores_a_job_row_that_no_longer_exists():
+    """A document deleted between the kill and the callback must not take the worker down with it."""
+    from app.worker.finalizers import on_job_stopped
+
+    on_job_stopped(_FakeRQJob(2_000_000_001), None)
+
+
+def test_a_callback_that_cannot_reach_the_database_does_not_raise(monkeypatch):
+    """WHEN finalizing raises, THE SYSTEM SHALL swallow and log it rather than propagate into RQ.
+
+    This is the D5 shape exactly: the callback ran, could not reach the database, and the run looked
+    to the reviewer as though the stop had done nothing. Swallowing is still correct - boot orphan
+    recovery is the backstop - but it must be swallowing, not crashing the parent worker.
+    """
+    from app.worker import finalizers
+
+    def boom():
+        raise RuntimeError("connection in transaction status INTRANS")
+
+    monkeypatch.setattr(finalizers, "get_sessionmaker", lambda: boom)
+
+    doc_id, job_id = _running_job("segment")
+    finalizers.on_job_stopped(_FakeRQJob(job_id), None)
+    finalizers.on_job_failed(_FakeRQJob(job_id), None, RuntimeError, RuntimeError("x"), None)
+
+    # Nothing was written, and nothing escaped.
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "running"
+
+
+def test_mark_terminal_is_a_no_op_for_a_job_that_does_not_exist():
+    """Boot recovery and the callbacks can both name a job that has since been deleted."""
+    with get_sessionmaker()() as session:
+        assert jobs.mark_terminal(session, 2_000_000_002, "cancelled") is False
+
+
+def test_a_failed_dispatch_marks_the_job_interrupted_instead_of_leaving_it_queued(monkeypatch):
+    """WHEN the RQ dispatch fails, THE SYSTEM SHALL mark the job and document interrupted, and re-raise.
+
+    A job left `queued` with nothing enqueued is the worst outcome: the one-active-job index blocks
+    every retry, so the document is wedged by a job no worker will ever pick up.
+    """
+    from app.services import jobs as jobs_mod
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("redis is down")
+
+    monkeypatch.setattr(jobs_mod, "queue_for", boom, raising=False)
+    monkeypatch.setattr("app.worker.queues.queue_for", boom)
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        with pytest.raises(RuntimeError):
+            jobs.enqueue(session, doc_id, "segment", model="m", prompt_version="1")
+
+    with get_sessionmaker()() as session:
+        job = session.scalars(
+            select(Job).where(Job.document_id == doc_id).order_by(Job.id.desc())
+        ).first()
+        assert job.state == "interrupted"
+        assert job.finished_at is not None
+        assert session.get(Document, doc_id).status == "interrupted"
