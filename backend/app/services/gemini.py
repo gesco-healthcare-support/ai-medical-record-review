@@ -6,8 +6,9 @@ the non-BAA Developer endpoint and was removed with the Vertex port.
 
 # Provenance stamp stored on every Job row: bump on ANY change to the prompts or
 # schema below, or stored SegmentRows become untraceable to the prompt that made them
-# (the fine-tuning dataset needs this). "1" = original; "2" = 2026-07-06 recall-first rework.
-PROMPT_VERSION = "2"
+# (the fine-tuning dataset needs this). "1" = original; "2" = 2026-07-06 recall-first rework;
+# "3" = 2026-08-03, injury date also read from a "Date of Onset" field.
+PROMPT_VERSION = "3"
 
 SEGMENTATION_SYSTEM = (
     "You are an expert medical-records clerk. You split scanned workers' compensation "
@@ -42,7 +43,7 @@ One document produced by one author or facility for one encounter, report, or fo
 ## Fields (use "-" whenever a value is unavailable; never null)
 - "t" title: the document's own title or header wording if visible (it may sit next to a label such as "Notes"); otherwise the document type. Replace any comma with a dash so the value stays CSV-safe. A title of the form "X vs Y" is almost always a deposition: use "Deposition".
 - "d" document date: the visit/encounter date of THIS document as MM/DD/YYYY (it may be near the signature at the end); ignore fax, print, and re-send dates. Distinguish it from the injury date.
-- "i" injury date: the date of injury as MM/DD/YYYY if stated.
+- "i" injury date: the date of injury as MM/DD/YYYY if stated. A field labelled "Date of Onset" carries the same date - for a cumulative trauma or an occupational illness the onset IS the date of injury - so read it from either label. Take it from a labelled field, not from prose describing when symptoms began.
 - "m" manual check: "x" if a human should review the document - substantial handwriting (more than a signature), checkbox-style forms, work-status reports, or QME/PQME/AME reports; otherwise "-".
 
 Example output for a 10-page file (format reference):
