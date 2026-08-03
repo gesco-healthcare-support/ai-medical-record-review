@@ -365,4 +365,36 @@ describe("ReviewPageClient stop escalation", () => {
 
     expect(stop(container).textContent).toBe("Stop");
   });
+
+  it("does not carry an escalation across a chained job while it keeps watching", async () => {
+    // The live regression, and the one the `watching`-only reset could not catch: segmentation chains
+    // into the duplicate check, so the active job changes WITHOUT `watching` ever going false. The
+    // grace period legitimately expired on the finished job; the chained job then rendered "Force
+    // stop" as its first state, making the reviewer's first press a hard kill on a run that had never
+    // been asked to stop cooperatively.
+    const cancelActiveJob = vi.fn().mockResolvedValue(10);
+    mockWf({ watching: true, activeJobId: 1, cancelActiveJob });
+    const { container, rerender } = render(<ReviewPageClient documentId="d1" />);
+
+    await act(async () => {
+      fireEvent.click(stop(container));
+    });
+    // This job never acknowledges, so escalating is CORRECT for it.
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(stop(container).textContent).toBe("Force stop");
+
+    // The chain moves on: a different job, still watching, bar never gone.
+    mockWf({ watching: true, activeJobId: 2, cancelActiveJob });
+    rerender(<ReviewPageClient documentId="d1" />);
+
+    expect(stop(container).textContent).toBe("Stop");
+
+    // And the first press on it is cooperative, not a kill.
+    await act(async () => {
+      fireEvent.click(stop(container));
+    });
+    expect(cancelActiveJob).toHaveBeenLastCalledWith(false);
+  });
 });

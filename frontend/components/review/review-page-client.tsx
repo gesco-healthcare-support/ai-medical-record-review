@@ -100,13 +100,16 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
     }
   }
 
+  // Reset on the JOB boundary, not only when watching ends. Segmentation chains straight into the
+  // duplicate check, so the active job changes while `watching` stays true throughout - and keying
+  // only on `watching` left a grace period that expired on the finished job showing "Force stop" as
+  // the NEXT job's first state. Reproduced live: Stop at 0.2s, escalation at 10s, then the chained
+  // job appeared at 15.6s already offering a hard kill nobody had asked for.
   useEffect(() => {
-    if (!wf.watching) {
-      setStopping(false);
-      setForceReady(false);
-      clearForceTimer();
-    }
-  }, [wf.watching]);
+    setStopping(false);
+    setForceReady(false);
+    clearForceTimer();
+  }, [wf.watching, wf.activeJobId]);
 
   // Unmounting mid-stop must not leave a timer that sets state on a dead component.
   useEffect(() => clearForceTimer, []);

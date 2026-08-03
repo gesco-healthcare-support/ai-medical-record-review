@@ -587,3 +587,46 @@ which also confirms the backstop path.
 
 **Relevance to the concurrency target.** More workers means more parent processes that outlive dead
 forks, so this had to be fixed structurally rather than per-call-site.
+
+## D6 - the escalation leaked across a chained job (frontend)
+
+D3 fixed the escalation TIMER outliving its run. Live testing then showed the escalation FLAG leaking
+by a second route the `watching`-only reset could not see.
+
+**Symptom, recorded from the DOM at 200ms intervals.** Job started, page loaded mid-run, Stop pressed:
+
+```
+   201ms  btn="Stop"        bar=true
+  5602ms  btn=null          bar=true    <- the segment job ended; the chained job had not started
+ 15614ms  btn="Force stop"  bar=true    <- the NEW job's FIRST button state
+```
+
+The reviewer's first press on that job would have been a hard kill, on a run that had never been asked
+to stop cooperatively.
+
+**Cause.** The reset effect keyed only on `wf.watching`:
+
+```js
+useEffect(() => { if (!wf.watching) { ...setForceReady(false)... } }, [wf.watching]);
+```
+
+Segmentation chains straight into the duplicate check, so the active job changes while `watching` stays
+true for the whole handover - `bar=true` across all three samples above. The effect therefore never
+ran, and `forceReady`, which had legitimately expired on the finished job, was inherited by the next
+one. This is not an edge case: the chain is the normal path.
+
+**Fix.** Scope the escalation to a JOB, not to a watch session. The hook now publishes `activeJobId` as
+state (it existed only as `activeJobRef`, and a ref cannot drive a re-render), and the reset effect
+keys on `[wf.watching, wf.activeJobId]`.
+
+**Test.** `does not carry an escalation across a chained job while it keeps watching` - escalates on job
+1, swaps to job 2 with `watching` never false, and asserts the button is back to "Stop" AND that the
+next press calls `cancelActiveJob(false)`. Verified to fail on the unfixed code with
+`expected 'Force stop' to be 'Stop'`.
+
+**Live re-check.** Escalation still behaves for a single job: `Stop` -> `Stopping...` -> `Force stop` at
+10.8s, matching the server's 10s grace. The cooperative stop then settled and the banner appeared
+within 500ms offering Continue / Start over, with all rows intact
+(`.github/pr-media/stop-03-banner-continue-or-start-over.png`). The chain-handover race itself depends
+on the segment job finishing in the same second the stop is requested and could NOT be re-triggered on
+demand, so the deterministic unit test is the guard, not the live run.

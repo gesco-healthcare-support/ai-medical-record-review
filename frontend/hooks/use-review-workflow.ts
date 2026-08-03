@@ -88,6 +88,11 @@ export function useReviewWorkflow(
   // The job the poller last saw, so Stop can name it. A ref rather than state because it is read by
   // an event handler, never rendered - keeping it out of state avoids a re-render per poll tick.
   const activeJobRef = useRef<{ id: number; kind: JobKind } | null>(null);
+  // The same id as activeJobRef, but as STATE so the view can react to the job changing under it. A
+  // chained pipeline (segment -> dedup) swaps the active job while `watching` stays true the whole
+  // time, and anything scoped to "this run" - the Stop escalation above all - has to reset on that
+  // boundary. A ref cannot drive that, because it does not re-render.
+  const [activeJobId, setActiveJobId] = useState<number | null>(null);
   // Set when a run settles as cancelled, and the only thing that puts the Continue / Start over pair
   // on screen. Carries the kind because each kind restarts through its own endpoint.
   const [cancelledJob, setCancelledJob] = useState<{ kind: JobKind } | null>(null);
@@ -128,11 +133,13 @@ export function useReviewWorkflow(
         }
         const job = snap.job;
         if (!job) {
+          setActiveJobId(null);
           resolve({ outcome: "done" });
           return;
         }
         // Remember which job this is, so Stop can address it by id rather than "whatever is active".
         activeJobRef.current = { id: job.id, kind: job.kind };
+        setActiveJobId(job.id);
         const pct = job.total ? Math.round((100 * job.current) / job.total) : 5;
         const label = STAGE_LABELS[job.stage] || job.stage || "Working";
         setProgress({
@@ -431,6 +438,9 @@ export function useReviewWorkflow(
     // The stop/restart trio. `cancelledJob` is non-null ONLY after a run settles as cancelled, which
     // is what puts the Continue / Start over pair on screen; the progress bar has unmounted by then.
     cancelledJob,
+    // Which job the progress bar is currently showing. The view resets per-run controls when this
+    // changes, so a grace period that expired on the previous job cannot carry into the next one.
+    activeJobId,
     cancelActiveJob,
     restartCancelled,
     onStart,
