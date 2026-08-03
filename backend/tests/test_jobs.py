@@ -1455,3 +1455,88 @@ def test_the_work_horse_replaces_the_pool_it_inherited_before_any_query(monkeypa
     assert timeline, "neither a dispose nor a query was observed"
     assert timeline[0] == "dispose", f"queried before replacing the inherited pool: {timeline[:3]}"
     assert close_kwargs == [False], "close must be False or the child closes the parent's sockets"
+
+
+# The finalizers' defensive branches. These are not padding: D5 was a DB error inside on_job_stopped,
+# and it reached the reviewer as "nothing happened" precisely because the except swallowed it. What the
+# callback must never do is raise, because RQ re-raises out of the parent worker's monitoring loop -
+# that would turn one failed finalization into a worker that stops monitoring every other job.
+class _UncorrelatableRQJob:
+    """An RQ job whose first argument is not a DB job id - the correlation the finalizers depend on."""
+
+    def __init__(self, args):
+        self.args = args
+        self.id = "rq-uncorrelatable"
+
+
+@pytest.mark.parametrize("args", [[], ["not-a-number"], [None]])
+def test_finalizers_ignore_a_job_they_cannot_correlate(args):
+    """WHEN an RQ job carries no usable DB job id, THE SYSTEM SHALL log and return, NOT raise."""
+    from app.worker.finalizers import on_job_failed, on_job_stopped
+
+    on_job_stopped(_UncorrelatableRQJob(args), None)
+    on_job_failed(_UncorrelatableRQJob(args), None, RuntimeError, RuntimeError("x"), None)
+
+
+def test_stopped_callback_ignores_a_job_row_that_no_longer_exists():
+    """A document deleted between the kill and the callback must not take the worker down with it."""
+    from app.worker.finalizers import on_job_stopped
+
+    on_job_stopped(_FakeRQJob(2_000_000_001), None)
+
+
+def test_a_callback_that_cannot_reach_the_database_does_not_raise(monkeypatch):
+    """WHEN finalizing raises, THE SYSTEM SHALL swallow and log it rather than propagate into RQ.
+
+    This is the D5 shape exactly: the callback ran, could not reach the database, and the run looked
+    to the reviewer as though the stop had done nothing. Swallowing is still correct - boot orphan
+    recovery is the backstop - but it must be swallowing, not crashing the parent worker.
+    """
+    from app.worker import finalizers
+
+    def boom():
+        raise RuntimeError("connection in transaction status INTRANS")
+
+    monkeypatch.setattr(finalizers, "get_sessionmaker", lambda: boom)
+
+    doc_id, job_id = _running_job("segment")
+    finalizers.on_job_stopped(_FakeRQJob(job_id), None)
+    finalizers.on_job_failed(_FakeRQJob(job_id), None, RuntimeError, RuntimeError("x"), None)
+
+    # Nothing was written, and nothing escaped.
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "running"
+
+
+def test_mark_terminal_is_a_no_op_for_a_job_that_does_not_exist():
+    """Boot recovery and the callbacks can both name a job that has since been deleted."""
+    with get_sessionmaker()() as session:
+        assert jobs.mark_terminal(session, 2_000_000_002, "cancelled") is False
+
+
+def test_a_failed_dispatch_marks_the_job_interrupted_instead_of_leaving_it_queued(monkeypatch):
+    """WHEN the RQ dispatch fails, THE SYSTEM SHALL mark the job and document interrupted, and re-raise.
+
+    A job left `queued` with nothing enqueued is the worst outcome: the one-active-job index blocks
+    every retry, so the document is wedged by a job no worker will ever pick up.
+    """
+    from app.services import jobs as jobs_mod
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("redis is down")
+
+    monkeypatch.setattr(jobs_mod, "queue_for", boom, raising=False)
+    monkeypatch.setattr("app.worker.queues.queue_for", boom)
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        with pytest.raises(RuntimeError):
+            jobs.enqueue(session, doc_id, "segment", model="m", prompt_version="1")
+
+    with get_sessionmaker()() as session:
+        job = session.scalars(
+            select(Job).where(Job.document_id == doc_id).order_by(Job.id.desc())
+        ).first()
+        assert job.state == "interrupted"
+        assert job.finished_at is not None
+        assert session.get(Document, doc_id).status == "interrupted"

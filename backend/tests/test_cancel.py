@@ -318,3 +318,56 @@ def test_cancel_requested_defaults_to_false():
 def test_job_cancelled_carries_progress_for_the_finalizer():
     sig = JobCancelled(done=4, total=9)
     assert (sig.done, sig.total) == (4, 9)
+
+
+def test_a_job_deleted_before_the_horse_starts_is_not_an_error():
+    """WHEN the job row is gone by the time the work-horse runs, THE SYSTEM SHALL log and return.
+
+    The queue outlives the database row: a document deleted while its job sat queued leaves an RQ job
+    naming a row that no longer exists. Raising there would fail the RQ job and, now that failures are
+    finalized by a callback, write a terminal state for a job nobody can look up.
+    """
+    from app.worker.tasks import _run
+
+    ran = []
+    _run(2_000_000_003, lambda session, job, report: ran.append("ran"))
+    assert ran == []
+
+
+def test_current_job_id_reports_the_running_job():
+    """The accessor the retry backoff reads. It has no session and no job argument, so this global is
+    the only way it can know which job it belongs to."""
+    cancel_mod.set_current_job(90123)
+    assert cancel_mod.current_job_id() == 90123
+    cancel_mod.clear_current_job()
+    assert cancel_mod.current_job_id() is None
+
+
+def test_a_pause_that_cannot_be_scheduled_is_marked_interrupted_not_left_paused(monkeypatch):
+    """WHEN scheduling a paused run's resume fails, THE SYSTEM SHALL mark it interrupted, not paused.
+
+    `paused` counts as active for the one-active-job index, so a pause that never gets its resume
+    scheduled - Redis down at exactly that moment - would wedge the document behind a job no worker is
+    ever going to pick up. Failing visibly is the only recoverable outcome.
+    """
+    from app.worker import tasks as tasks_mod
+    from app.worker.failures import JobPaused
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("redis is down")
+
+    monkeypatch.setattr(tasks_mod, "queue_for", boom)
+
+    doc_id = _seed_document()
+    job_id = _job(doc_id)
+
+    def work(session, job, report):
+        raise JobPaused(delay=30, done=2, total=9)
+
+    tasks_mod._run(job_id, work)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "interrupted"
+        assert job.finished_at is not None
+        assert session.get(Document, doc_id).status == "interrupted"
