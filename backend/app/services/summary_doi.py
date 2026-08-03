@@ -20,6 +20,13 @@ from app.services.genai_retry import generate_with_retry
 
 logger = logging.getLogger(__name__)
 
+# "Date of Onset" is named as a synonym on Adrian's domain call (2026-08-03): claim forms label the same
+# field either way, and the DLSR 5021 combines them outright ("Date and hour of injury or onset of
+# illness"). This is NOT the synonym expansion the 2026-07-31 plan rejected - that measured `D/I` and
+# `Date and Hour of Injury`, both of which the prompt could already reach; "onset" was in neither the
+# prompt nor that measurement. The "labelled field, not narrative prose" clause is the guard that makes
+# it safe: "symptoms began gradually in 2015" is not a stated injury date.
+#
 # A stated DOI sits on a document's first pages (a form field or report header), so the isolated call
 # sends at most this many pages - bounding the payload on long QME/deposition sub-documents.
 #
@@ -33,7 +40,11 @@ _MAX_PAGES = 10
 _ISOLATION_PROMPT = (
     "The attached pages are ONE medical document. Does THIS document itself state the patient's "
     "DATE OF INJURY? Report it as MM/DD/YY ONLY if it is explicitly written in THIS document "
-    "(e.g. a 'Date of Injury' or 'DOI' field). If the document states a CUMULATIVE TRAUMA period "
+    "(e.g. a 'Date of Injury', 'DOI', or 'Date of Onset' field). A field labelled DATE OF ONSET, or "
+    "a combined one such as 'Date and hour of injury or onset of illness', states that same date and "
+    "counts: for a cumulative trauma or an occupational illness the onset IS the date of injury. Take "
+    "it from a LABELLED field, never from narrative prose describing when symptoms began. "
+    "If the document states a CUMULATIVE TRAUMA period "
     "instead of a single date, report it as CT MM/DD/YY-MM/DD/YY using the exact dates written. "
     "Do NOT infer either, and never use a date of exam, visit, service, report, birth, or "
     "signature. If the document states more than one injury date or period, separate them with "

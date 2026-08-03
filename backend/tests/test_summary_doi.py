@@ -257,3 +257,50 @@ def test_a_thirty_page_row_is_still_bounded(monkeypatch):
     )
     sd.extract_injury_date("/x.pdf", 1, 30)
     assert len(added) == 10
+
+
+# "Date of Onset" as a DOI synonym (Adrian's domain call, 2026-08-03). Claim forms label the same field
+# either way and the DLSR 5021 combines them outright ("Date and hour of injury or onset of illness").
+# Distinct from the synonym expansion the 2026-07-31 plan rejected: that measured `D/I` and
+# `Date and Hour of Injury`, and "onset" appeared in neither the prompt nor that measurement.
+def test_the_isolated_prompt_recognises_a_date_of_onset_field():
+    """WHEN a document labels the field "Date of Onset", THE SYSTEM SHALL treat it as the injury date."""
+    assert "Date of Onset" in sd._ISOLATION_PROMPT
+    assert "onset of illness" in sd._ISOLATION_PROMPT  # the combined DLSR 5021 wording
+    # The original labels must survive - this is an addition, not a replacement.
+    assert "Date of Injury" in sd._ISOLATION_PROMPT
+    assert "DOI" in sd._ISOLATION_PROMPT
+
+
+def test_the_isolated_prompt_still_requires_a_labelled_field():
+    """The guard that makes the synonym safe: "onset" also occurs in narrative prose about when symptoms
+    began, which is not a stated injury date. Without this the widened label would invite a date the
+    document never asserted as the DOI - the propagation problem this module exists to remove."""
+    assert "never from narrative prose" in sd._ISOLATION_PROMPT
+    # And the existing exclusions are untouched.
+    assert (
+        "never use a date of exam, visit, service, report, birth, or signature"
+        in sd._ISOLATION_PROMPT
+    )
+
+
+def test_the_segmentation_prompt_also_recognises_onset():
+    """Segmentation fills the row's injury_date, so a document labelled only "Date of Onset" would
+    otherwise reach the summary with nothing for the isolated pass to confirm."""
+    from app.services.gemini import SEGMENTATION_PROMPT
+
+    assert "Date of Onset" in SEGMENTATION_PROMPT
+    assert "not from prose describing when symptoms began" in SEGMENTATION_PROMPT
+
+
+def test_the_segmentation_prompt_version_was_bumped_with_the_prompt():
+    """WHEN the segmentation prompt changes, THE SYSTEM SHALL bump PROMPT_VERSION.
+
+    Its own contract: the stamp is stored on every Job row so SegmentRows stay traceable to the prompt
+    that produced them, which the fine-tuning dataset depends on. Leaving it at "2" after editing the
+    prompt would silently attribute new rows to the old text - the kind of error that is invisible until
+    someone trains on the dataset.
+    """
+    from app.services.gemini import PROMPT_VERSION
+
+    assert PROMPT_VERSION == "3"
