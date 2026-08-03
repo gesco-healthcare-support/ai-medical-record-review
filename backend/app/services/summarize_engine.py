@@ -8,6 +8,7 @@ general prompt, avoiding the historical KeyError).
 
 import io
 import logging
+import re
 
 from google.genai import types
 from pdf2image import convert_from_path
@@ -98,10 +99,28 @@ _C_POINT_SCOPE = (
     "main reason summaries run long.\n"
 )
 
+# Widened 2026-07-31 on tester feedback. The four banned words ("normal, negative, unremarkable,
+# within normal limits") missed three things a reviewer counts as the same noise, both current-build
+# examples being exactly these archetypes: "He denied anterior pressure, chest tightness, fever, or
+# chills" and "**Physical Exam**: The genitalia/rectal exam was refused". An absence is not a normal
+# finding, so the old wording was literally silent on it.
+#
+# The second paragraph is load-bearing, not restatement: build_preamble sends this block and _C_VERDICT
+# to disjoint category sets EXCEPT for an unknown id, which receives BOTH. Without the carve-out a new
+# category would be told to omit inconclusive results by one block and to report them by the next, and
+# emptying out imaging summaries is the exact regression PR #55 was written to fix.
 _C_NORMAL_FINDINGS = (
     "- Report positive and abnormal findings only when describing an examination, a history, or a "
     "clinical assessment. Omit anything recorded as normal, negative, unremarkable, or within "
-    "normal limits; a reader assumes anything not mentioned was normal.\n"
+    "normal limits; a reader assumes anything not mentioned was normal. The same applies to three "
+    'things that are not findings at all: an explicit ABSENCE stated against a point ("no known '
+    'allergies", "denies fever or chills") - carry such a point only when there is something to '
+    "report; a test, examination, or treatment that was REFUSED, declined, deferred, or not "
+    "performed; and a result the document itself calls INCONCLUSIVE or non-diagnostic.\n"
+    "- That omission governs examinations, histories, and assessments ONLY. Where another rule asks "
+    "for the impression, result, or verdict of a diagnostic study or a laboratory or test result, "
+    "that rule wins and the verdict is reported as written, even when it is normal, negative, or "
+    "inconclusive.\n"
 )
 
 # Stands alone deliberately: it used to open "That rule does NOT apply...", which dangles once the
@@ -187,6 +206,45 @@ _F_BOLD = (
     "**Work Status**. Do NOT bold the text that follows a label, and NEVER bold a whole sentence, a "
     "whole point, or the entire summary - bolding everything makes the emphasis meaningless.\n"
 )
+
+# The two house rules in summary_verify that are CORRECTION-ONLY: rule 3 (capitalisation) and rule 4
+# (range of motion). Neither can ever justify a bold point heading ceasing to exist, which is what
+# makes them the exact set the guard below acts on.
+#
+# `vitals` and `pain_descriptor` are deliberately NOT here even though they read as equally cosmetic:
+# house rule 1 removes height and weight and rule 2 removes pain quality words, so either can
+# legitimately empty a point and take its heading with it. Blocking those would suppress a correct fix.
+_CORRECTION_ONLY_ISSUES = frozenset({"capitalization", "range_of_motion"})
+
+
+def _bold_span_count(text: str) -> int:
+    """How many `**...**` spans a body carries.
+
+    Spans, not `**` occurrences: an unbalanced marker would otherwise inflate the count and make a
+    heading look present when it is not.
+    """
+    return len(re.findall(r"\*\*(.+?)\*\*", text or ""))
+
+
+def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> bool:
+    """True when the audit removed a bold point heading for a reason that cannot justify removing one.
+
+    Measured 2026-07-31 on the current build: 7 of 16 audited summaries lost bold headings and 5 lost
+    every one, against 7.3% before the house rules landed. One row was generated correctly as
+    `**Body part being treated**: ...` and the audit rewrote it to bare prose, storing its own reason
+    as "Summary contains capitalized headers" - it read the required structure as a stray capitalised
+    header. The prompt now says otherwise, but a prompt is a request; this is the guarantee.
+
+    Compares COUNTS, never heading text, and deliberately so: renaming or re-casing a heading is the
+    behaviour the audit is being asked for, and comparing text would block exactly that. Only a
+    heading that stopped existing is the defect.
+    """
+    # Any issue type outside the correction-only pair means the audit had a substantive reason to
+    # restructure the body - an unsupported claim, a duplicated finding - so its rewrite stands.
+    if not issue_types or not issue_types <= _CORRECTION_ONLY_ISSUES:
+        return False
+    return _bold_span_count(fixed) < _bold_span_count(raw)
+
 
 # Forms print employer, occupation and headings in capitals, and the model was copying that through:
 # no all-caps run of three or more words appears in the body of any of the 2115 measured human
@@ -535,10 +593,31 @@ def summarize_row(
     if verify:
         result = verify_summary(model, text, summary, title=title, document_date=row.get("date"))
         if result["issues"]:
-            # The audit may reintroduce capitals while fixing something else, so the transform runs
-            # over its output too - the verified text is what effective_text() delivers.
-            verified_text = f"{doi_final} {sentence_case_caps_runs(result['fixed_text'])}"
+            issue_types = {
+                str(issue.get("type") or "")
+                for issue in result["issues"]
+                if isinstance(issue, dict)
+            }
+            if _drops_required_headings(summary, result["fixed_text"], issue_types):
+                # Keep the RAW body by leaving verified_text None: effective_text() then falls back to
+                # summaryText. The issues are still stored below, so the reviewer sees what was
+                # flagged, and this logs at WARNING so the guard's firing rate stays measurable rather
+                # than becoming an invisible silent correction.
+                logger.warning(
+                    "verify pass dropped bold headings on pages %s-%s (issues: %s); keeping raw body",
+                    row["start"],
+                    row["end"],
+                    ",".join(sorted(issue_types)),
+                )
+            else:
+                # The audit may reintroduce capitals while fixing something else, so the transform runs
+                # over its output too - the verified text is what effective_text() delivers.
+                verified_text = f"{doi_final} {sentence_case_caps_runs(result['fixed_text'])}"
             verify_issues = result["issues"]
+            # The title is corrected INDEPENDENTLY of the body, including when the body rewrite was
+            # rejected above: effective_title() and effective_text() fall back separately, and a wrong
+            # date or laterality in the title is exactly what this pass exists to catch.
+            #
             # Decorated exactly like the stored title, so a verified title is a drop-in replacement
             # in every view; the export path strips the tags either way.
             fixed_title = (result.get("fixed_title") or "").strip()

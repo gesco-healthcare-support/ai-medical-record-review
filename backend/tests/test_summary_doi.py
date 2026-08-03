@@ -202,3 +202,58 @@ def test_doi_prefix_still_reads_legacy_stored_prefixes_verbatim():
 )
 def test_doi_prefix_is_empty_without_a_leading_prefix(body):
     assert sd.doi_prefix(body) == ""
+
+
+# The `CT:` / `C.T.` marker loss (plan 2026-07-31 task 4.2). `(?P<ct>CT\s*)?` admitted no colon and no
+# dots, so a cumulative-trauma PERIOD silently degraded to a bare date range - it stopped saying that
+# the injury accrued over time. CAMPUS_NIKKI page 236 literally reads "Date of injury: CT: 11/30/2015 -
+# 12/04/2025", so the variant is real rather than hypothetical.
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "CT 11/30/2015 - 12/04/2025",
+        "CT: 11/30/2015 - 12/04/2025",
+        "C.T. 11/30/2015-12/04/2025",
+        "CT:11/30/2015-12/04/2025",
+        "Date of injury: CT: 11/30/2015 - 12/04/2025",
+    ],
+)
+def test_clean_keeps_the_ct_marker_however_the_source_punctuates_it(reply):
+    """WHEN a reply states a cumulative-trauma period as CT, CT: or C.T., THE SYSTEM SHALL store one
+    item prefixed "CT "."""
+    assert sd._clean(reply) == "CT 11/30/15-12/04/25"
+
+
+def test_clean_does_not_read_a_ct_marker_out_of_a_surrounding_word():
+    """The marker must be anchored. Before the fix the letters inside "IMPACT" matched, so a bare range
+    came back classified as cumulative trauma - inventing exactly the classification this module exists
+    to avoid inventing."""
+    assert sd._clean("IMPACT 11/30/2015 - 12/04/2025") == "11/30/15-12/04/25"
+    # A lone letter is not a marker either.
+    assert sd._clean("C 11/30/2015 - 12/04/2025") == "11/30/15-12/04/25"
+    assert sd._clean("T 11/30/2015 - 12/04/2025") == "11/30/15-12/04/25"
+
+
+def test_the_isolated_call_now_sends_up_to_ten_pages():
+    """WHEN a sub-document is 6 to 10 pages, THE SYSTEM SHALL still send the page that states the DOI.
+
+    Measured 2026-07-31: capture on rows whose DOI label is followed by a digit was 83.5% (n=79) at
+    1-5 pages and 59.5% (n=37) at 6+, because past page 5 the field was never in the payload.
+    """
+    assert sd._MAX_PAGES == 10
+
+
+def test_a_thirty_page_row_is_still_bounded(monkeypatch):
+    """The cap has to keep BOUNDING the payload - raising it is not the same as removing it."""
+    added: list = []
+
+    class CountingWriter(_FakeWriter):
+        def add_page(self, page):
+            added.append(page)
+
+    _patch_pdf(monkeypatch, writer=CountingWriter)
+    monkeypatch.setattr(
+        sd, "generate_with_retry", lambda *a, **k: pytypes.SimpleNamespace(text="-")
+    )
+    sd.extract_injury_date("/x.pdf", 1, 30)
+    assert len(added) == 10
