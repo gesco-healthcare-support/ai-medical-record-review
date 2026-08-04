@@ -51,7 +51,9 @@ def test_categorize_pool_timeout_defaults_rows(monkeypatch):
     monkeypatch.setattr(segment_engine, "get_genai_client", lambda: object())
     monkeypatch.setattr(segment_engine, "byte_budgeted_windows", lambda *a, **k: [(1, 10)])
     monkeypatch.setattr(segment_engine, "_window_rows", lambda *a, **k: [])  # windows yield no rows
-    monkeypatch.setattr(segment_engine, "_categorize", lambda pdf, row: time.sleep(1.5))
+    monkeypatch.setattr(
+        segment_engine, "_categorize", lambda pdf, row, page_text_fn=None: time.sleep(1.5)
+    )
     rows = segment_engine.run_segmentation("x.pdf", 10)
     # merge inserts a single coverage row; a stalled categorize defaults it to the catch-all + review.
     assert rows

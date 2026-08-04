@@ -1,0 +1,154 @@
+"""The per-page OCR store: extract once, reuse everywhere, and keep the errored/blank distinction.
+
+The point of the store is that the pipeline used to OCR the same page up to four times per document
+and threw all of it away on a re-run. These tests pin the two properties that make it worth having -
+a stored page is never re-extracted, and a page that FAILED is distinguishable from one that is
+genuinely blank - because losing either silently turns the store into a slower version of what it
+replaced.
+"""
+
+import uuid
+
+import pytest
+from sqlalchemy import select
+
+from app.auth.password import MrrPasswordHelper
+from app.db import get_sessionmaker
+from app.models import Document, PageText, User
+from app.services import page_text as pt
+from tests.conftest import unique_test_email
+
+
+def _doc(pages: int = 3) -> str:
+    with get_sessionmaker()() as session:
+        user = User(
+            email=unique_test_email(),
+            name="PageText",
+            password=MrrPasswordHelper().hash("Str0ng#pw1"),
+            active=True,
+        )
+        session.add(user)
+        session.flush()
+        document = Document(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            original_filename="synthetic.pdf",
+            stored_path="/nonexistent/synthetic.pdf",
+            sha256="0" * 64,
+            page_count=pages,
+        )
+        session.add(document)
+        session.commit()
+        return document.id
+
+
+def test_population_stores_every_page_and_is_idempotent(monkeypatch):
+    """WHEN a document is populated twice, THE SYSTEM SHALL extract each page exactly once.
+
+    Idempotency is what lets the segment job call this unconditionally: a re-segment, a resumed run
+    and a manual re-click must all pay for the pages nobody has read yet, and nothing else.
+    """
+    calls = []
+    monkeypatch.setattr(
+        pt, "_extract", lambda path, page: (calls.append(page), (f"page {page} text", True))[1]
+    )
+    doc_id = _doc(pages=4)
+
+    with get_sessionmaker()() as session:
+        assert pt.populate_document(session, doc_id, "/x.pdf", 4) == 4
+    assert sorted(calls) == [1, 2, 3, 4]
+
+    with get_sessionmaker()() as session:
+        assert pt.populate_document(session, doc_id, "/x.pdf", 4) == 0  # nothing left to do
+    assert sorted(calls) == [1, 2, 3, 4]  # and nothing re-extracted
+
+
+def test_a_stored_page_is_never_re_extracted(monkeypatch):
+    """The whole point: a reader hits the store, not Tesseract."""
+    monkeypatch.setattr(pt, "_extract", lambda path, page: ("stored body", True))
+    doc_id = _doc(pages=1)
+    with get_sessionmaker()() as session:
+        pt.populate_document(session, doc_id, "/x.pdf", 1)
+
+    def explode(path, page):
+        raise AssertionError("re-extracted a page that was already stored")
+
+    monkeypatch.setattr(pt, "_extract", explode)
+    with get_sessionmaker()() as session:
+        assert pt.get_page_text(session, doc_id, 1, pdf_path="/x.pdf") == "stored body"
+
+
+def test_a_blank_page_is_stored_as_readable_but_empty(monkeypatch):
+    """A film or separator sheet reads cleanly and carries no text. It must be recorded as OK, or a
+    reviewer is told a page is unreadable when it is simply blank - and retrying it forever is waste."""
+    monkeypatch.setattr(pt, "_extract", lambda path, page: ("", True))
+    doc_id = _doc(pages=1)
+    with get_sessionmaker()() as session:
+        pt.populate_document(session, doc_id, "/x.pdf", 1)
+        row = session.scalar(select(PageText).where(PageText.document_id == doc_id))
+        assert row.extract_ok is True
+        assert row.char_count == 0
+
+
+def test_a_failed_page_is_recorded_as_failed_and_retried_on_read(monkeypatch):
+    """WHEN extraction itself fails, THE SYSTEM SHALL record it as failed and retry it on a later read.
+
+    A cached failure must not become permanent: an errored page is often a transient Tesseract timeout,
+    which is exactly why the direct extraction path retries it too.
+    """
+    monkeypatch.setattr(pt, "_extract", lambda path, page: ("", False))
+    doc_id = _doc(pages=1)
+    with get_sessionmaker()() as session:
+        pt.populate_document(session, doc_id, "/x.pdf", 1)
+        row = session.scalar(select(PageText).where(PageText.document_id == doc_id))
+        assert row.extract_ok is False
+
+    # Later the page reads fine; the stored failure is replaced rather than served from cache.
+    monkeypatch.setattr(pt, "_extract", lambda path, page: ("recovered", True))
+    with get_sessionmaker()() as session:
+        text, report = pt.get_row_text_with_report(session, doc_id, [1], pdf_path="/x.pdf")
+        assert text == "recovered"
+        assert report["errored"] == [] and report["blank"] == []
+
+
+def test_the_row_report_separates_errored_from_blank(monkeypatch):
+    """The contract the duplicate check depends on. Collapsing these is how a dedup run that could not
+    read a fifth of a document once presented as a clean one."""
+    outcomes = {1: ("real text", True), 2: ("", True), 3: ("", False)}
+    monkeypatch.setattr(pt, "_extract", lambda path, page: outcomes[page])
+    doc_id = _doc(pages=3)
+    with get_sessionmaker()() as session:
+        pt.populate_document(session, doc_id, "/x.pdf", 3)
+
+    # pdf_path omitted so the errored page is NOT retried and its stored state is what is reported.
+    with get_sessionmaker()() as session:
+        text, report = pt.get_row_text_with_report(session, doc_id, [1, 2, 3])
+    assert "real text" in text
+    assert report["blank"] == [2]
+    assert report["errored"] == [3]
+    assert report["pages"] == [1, 2, 3]
+
+
+def test_pages_are_joined_in_page_order_with_optional_markers(monkeypatch):
+    """Depositions need `Page N:` markers to produce one summary line per page; every other category
+    must NOT see them, or the markers reach the model input and the duplicate check's similarity
+    scoring gains a shared vocabulary that makes unrelated documents look alike."""
+    monkeypatch.setattr(pt, "_extract", lambda path, page: (f"body{page}", True))
+    doc_id = _doc(pages=3)
+    with get_sessionmaker()() as session:
+        pt.populate_document(session, doc_id, "/x.pdf", 3)
+
+    with get_sessionmaker()() as session:
+        plain = pt.get_pages_text(session, doc_id, [3, 1, 2])
+        marked = pt.get_pages_text(session, doc_id, [1, 2], mark_pages=True)
+    assert plain == "body1body2body3"  # ascending, regardless of the order asked for
+    assert marked == "Page 1:\nbody1\nPage 2:\nbody2\n"
+
+
+@pytest.mark.parametrize("pages", [[], None])
+def test_no_pages_requested_is_not_an_error(pages):
+    doc_id = _doc(pages=1)
+    with get_sessionmaker()() as session:
+        assert pt.get_pages_text(session, doc_id, pages or []) == ""
+        text, report = pt.get_row_text_with_report(session, doc_id, pages or [])
+        assert text == "" and report["pages"] == []

@@ -294,7 +294,10 @@ def test_segment_document_persists_segment_and_review_rows(monkeypatch):
     monkeypatch.setattr(
         se,
         "run_segmentation",
-        lambda pdf_path, total_pages, progress=None: [_row(1, "1"), _row(2, "9")],
+        lambda pdf_path, total_pages, progress=None, page_text_fn=None: [
+            _row(1, "1"),
+            _row(2, "9"),
+        ],
     )
     doc_id = _make_user_and_doc()
     with get_sessionmaker()() as session:
@@ -812,6 +815,26 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
         assert all(r.include is False for r in rows)
 
 
+def _fake_row_text(texts, fail_on=()):
+    """Stand-in for page_text.get_row_text_with_report, keyed on a row's first page.
+
+    Dedup reads row text from the page store now rather than OCRing it directly, so the seam these
+    tests stub moved. Same (text, report) contract, because that contract is exactly what dedup
+    depends on: an errored page and a blank page mean different things to a reviewer.
+    """
+
+    def fake(session, document_id, pages, pdf_path=None, **kwargs):
+        pages = list(pages)
+        first = pages[0]
+        if first in fail_on:
+            raise RuntimeError("ocr boom")
+        text = texts.get(first, "")
+        blank = [] if text.strip() else list(pages)
+        return text, {"pages": list(pages), "errored": [], "blank": blank}
+
+    return fake
+
+
 def _fake_ocr(texts, fail_on=()):
     """Stand-in for ocr.extract_pages_with_report keyed on a row's first page.
 
@@ -859,7 +882,7 @@ def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):
         2: "alpha beta gamma delta epsilon zeta eta theta",
         3: "completely different words nothing shared at all here",
     }
-    monkeypatch.setattr("app.services.ocr.extract_pages_with_report", _fake_ocr(texts))
+    monkeypatch.setattr("app.services.page_text.get_row_text_with_report", _fake_row_text(texts))
     # Trust the algorithmic candidate (no Vertex call in the test).
     monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
 
@@ -925,13 +948,15 @@ def test_dedup_document_skips_ocred_rows_and_survives_an_ocr_failure(monkeypatch
     ocr_calls = []
     same = "alpha beta gamma delta epsilon"
 
-    def fake_ocr(path, pages, **kwargs):
+    def fake_row_text(session, document_id, pages, pdf_path=None, **kwargs):
+        pages = list(pages)
         ocr_calls.append(pages[0])
         if pages[0] == 2:
             raise RuntimeError("ocr boom")  # row1: per-row OCR failure is tolerated
-        return same, {"pages": len(pages), "errored": [], "blank": []}
+        return same, {"pages": pages, "errored": [], "blank": []}
 
-    monkeypatch.setattr("app.services.ocr.extract_pages_with_report", fake_ocr)
+    # Dedup reads row text from the page store now, so that is the seam to stub.
+    monkeypatch.setattr("app.services.page_text.get_row_text_with_report", fake_row_text)
     confirm_calls = []
     monkeypatch.setattr(
         "app.services.dedup.confirm_cluster",
@@ -1029,7 +1054,9 @@ def test_dedup_document_counts_rows_it_could_not_read(monkeypatch):
         ],
     )
     # Page 3 reads clean but carries no words (a film or separator sheet).
-    monkeypatch.setattr("app.services.ocr.extract_pages_with_report", _fake_ocr({1: same, 2: same}))
+    monkeypatch.setattr(
+        "app.services.page_text.get_row_text_with_report", _fake_row_text({1: same, 2: same})
+    )
     monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
 
     dedup_document(job_id)
@@ -1097,7 +1124,7 @@ def test_dedup_document_covers_excluded_rows_and_keeps_an_unchanged_dismissal(mo
         ],
     )
     texts = {1: same, 2: same, 5: "completely different words nothing shared at all here"}
-    monkeypatch.setattr("app.services.ocr.extract_pages_with_report", _fake_ocr(texts))
+    monkeypatch.setattr("app.services.page_text.get_row_text_with_report", _fake_row_text(texts))
     monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
 
     dedup_document(job_id)

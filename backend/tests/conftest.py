@@ -48,6 +48,7 @@ from app.models import (  # noqa: E402
     AuditLog,
     Document,
     Job,
+    PageText,
     ReviewRow,
     SegmentRow,
     Summary,
@@ -75,6 +76,7 @@ def _delete_test_users() -> None:
         job_ids = select(Job.id).where(Job.document_id.in_(doc_ids)).scalar_subquery()
         session.execute(delete(SegmentRow).where(SegmentRow.job_id.in_(job_ids)))
         session.execute(delete(Summary).where(Summary.document_id.in_(doc_ids)))
+        session.execute(delete(PageText).where(PageText.document_id.in_(doc_ids)))
         session.execute(delete(ReviewRow).where(ReviewRow.document_id.in_(doc_ids)))
         session.execute(delete(Job).where(Job.document_id.in_(doc_ids)))
         session.execute(delete(Document).where(Document.user_id.in_(ids)))
