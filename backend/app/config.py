@@ -77,6 +77,23 @@ class Settings(BaseSettings):
     # ship without changing which model runs. Switching this to "openai" additionally requires the
     # per-call model keys and, in production, the ZDR acknowledgement - see services/llm/.
     summary_provider: str = "gemini"
+    # Per-call-type models, used ONLY when summary_provider is "openai". No defaults, deliberately:
+    # OpenAI's own guidance is to fix an accuracy target on the most capable model and then step
+    # down to the cheapest that still hits it. A silent default is how an unvalidated model reaches
+    # production, so selecting the provider without setting all three is a startup error.
+    #
+    # They are separate keys because the three calls need different capability: the body call reads
+    # page images and applies a long format spec, while the title is extraction from OCR text and the
+    # audit is a check. Title and audit may well sit a tier or two below the body.
+    summary_body_model: str = ""
+    summary_title_model: str = ""
+    audit_model: str = ""
+    openai_api_key: str = ""
+    # PHI gate. A signed BAA is NOT sufficient on its own: OpenAI additionally requires Zero Data
+    # Retention (or Modified Abuse Monitoring / Eyes Off) approved on the ORGANIZATION. Confirmed
+    # 2026-08-05 as the org default. This flag is an explicit human acknowledgement of that, so a
+    # future box cannot start sending records to an org whose retention setting nobody checked.
+    openai_zdr_acknowledged: bool = False
 
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2
@@ -208,7 +225,49 @@ class Settings(BaseSettings):
                 "GOOGLE_GENAI_USE_VERTEXAI must be true in production: PHI may only go to the "
                 "BAA-covered Vertex endpoint, never the Developer API."
             )
+        self.summary_provider = (self.summary_provider or "gemini").strip().lower()
+        if self.summary_provider == "openai":
+            # Fail at startup, not on the first summary. A worker that boots and then errors per row
+            # burns a job and leaves the reviewer with a half-processed document.
+            missing = [
+                name
+                for name, value in (
+                    ("OPENAI_API_KEY", self.openai_api_key),
+                    ("SUMMARY_BODY_MODEL", self.summary_body_model),
+                    ("SUMMARY_TITLE_MODEL", self.summary_title_model),
+                    ("AUDIT_MODEL", self.audit_model),
+                )
+                if not value
+            ]
+            if missing:
+                raise RuntimeError(
+                    "SUMMARY_PROVIDER=openai requires " + ", ".join(missing) + ". There is no "
+                    "default model on purpose: pick one by measuring it against the frozen human "
+                    "baselines, not by inheriting a guess."
+                )
+            if self.environment == "prod" and not self.openai_zdr_acknowledged:
+                raise RuntimeError(
+                    "OPENAI_ZDR_ACKNOWLEDGED must be true to send PHI to OpenAI in production. A "
+                    "signed BAA is not sufficient on its own - Zero Data Retention (or Modified "
+                    "Abuse Monitoring / Eyes Off) must also be approved on the organization. Check "
+                    "Settings > Organization > Data controls > Data retention before setting this."
+                )
         return self
+
+    def model_for(self, kind: str) -> str:
+        """The model that should answer one summarize-stage call: "body", "title" or "audit".
+
+        On Gemini this returns the existing per-stage models unchanged, so provider selection alone
+        never alters which Gemini model runs. On OpenAI it returns the configured per-call-type
+        model, which ``_derive`` has already proven to be set.
+        """
+        if self.summary_provider == "openai":
+            return {
+                "body": self.summary_body_model,
+                "title": self.summary_title_model,
+                "audit": self.audit_model,
+            }[kind]
+        return self.summary_model
 
 
 @lru_cache

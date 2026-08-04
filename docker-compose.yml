@@ -56,6 +56,17 @@ x-backend-env: &backend-env
   # added later and silently doing nothing, which is what happened to VERTEX_MAX_RPM and
   # PIPELINE_WORKERS. Fallback mirrors app/config.py.
   SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-gemini}
+  # Read ONLY when SUMMARY_PROVIDER=openai. No fallbacks: the app refuses to start if the provider
+  # is openai and any of these is unset, because a silent default model is how something unvalidated
+  # reaches production. Harmless empty strings while the provider stays gemini.
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  SUMMARY_BODY_MODEL: ${SUMMARY_BODY_MODEL:-}
+  SUMMARY_TITLE_MODEL: ${SUMMARY_TITLE_MODEL:-}
+  AUDIT_MODEL: ${AUDIT_MODEL:-}
+  # PHI gate: a signed BAA alone does not permit sending records to OpenAI - Zero Data Retention
+  # must also be approved on the ORGANIZATION. Production refuses to start without this explicit
+  # acknowledgement, so no future box can start sending records to an org nobody checked.
+  OPENAI_ZDR_ACKNOWLEDGED: ${OPENAI_ZDR_ACKNOWLEDGED:-false}
   # Retry budget. Also inert until named here, and .env.example has advertised both since 2026-07-21,
   # so anyone following it would set a value that did nothing. A setting the app reads should be
   # settable: the way to run 8 retries is to put 8 in .env, not to have the file silently ignored.
