@@ -9,11 +9,8 @@ a broken check must never degrade a good summary.
 import json
 import logging
 
-from google.genai import types
-
 from app.config import get_settings
-from app.services.genai_client import get_genai_client
-from app.services.genai_retry import generate_with_retry
+from app.services.llm import TextPart, get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -86,20 +83,26 @@ VERIFY_PROMPT = (
     "states).\n\n" + _HOUSE_RULES
 )
 
-# google-genai accepts a dict schema alongside response_mime_type=application/json (same dict-schema
-# path services.verify_pass uses for its enum). Keeps the model's output parseable without a retry.
+# Ordinary JSON Schema, lowercase types. Each provider translates to its own dialect
+# (services/llm/gemini.py uppercases these for google-genai; OpenAI strict mode takes them as-is),
+# so the schema is not written in one vendor's spelling with the other treated as a special case.
+#
+# `fixed_title` is a nullable union rather than merely absent from `required`: OpenAI strict mode
+# requires EVERY property to be required and expresses optionality as a null union. Gemini has no
+# nullable union, so its translator collapses this back to a plain string that is simply not
+# required - which is exactly the behaviour this schema had before.
 _RESPONSE_SCHEMA = {
-    "type": "OBJECT",
+    "type": "object",
     "properties": {
-        "fixed_text": {"type": "STRING"},
-        "fixed_title": {"type": "STRING"},
+        "fixed_text": {"type": "string"},
+        "fixed_title": {"type": ["string", "null"]},
         "issues": {
-            "type": "ARRAY",
+            "type": "array",
             "items": {
-                "type": "OBJECT",
+                "type": "object",
                 "properties": {
                     "type": {
-                        "type": "STRING",
+                        "type": "string",
                         # date + laterality added with title auditing: a wrong date or a
                         # left/right flip is neither "unsupported" nor a self-contradiction, so
                         # the old pair could not name what was actually wrong. The six house-rule
@@ -118,13 +121,15 @@ _RESPONSE_SCHEMA = {
                             "prior_visit",
                         ],
                     },
-                    "detail": {"type": "STRING"},
+                    "detail": {"type": "string"},
                 },
                 "required": ["type", "detail"],
+                "additionalProperties": False,
             },
         },
     },
-    "required": ["fixed_text", "issues"],
+    "required": ["fixed_text", "fixed_title", "issues"],
+    "additionalProperties": False,
 }
 
 
@@ -153,30 +158,18 @@ def verify_summary(model, source_text, summary_text, title=None, document_date=N
         prompt += f"TITLE:\n{title}\n\n"
     prompt += f"SUMMARY:\n{summary_text}"
     try:
-        response = generate_with_retry(
-            get_genai_client(),
+        response = get_provider().generate_structured(
             model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                # The reply must hold a corrected copy of the whole summary AND (on a thinking
-                # model) the reasoning tokens, which are billed against this same budget. At 4096 a
-                # long category-1 or diagnostic summary came back as truncated JSON, which the parse
-                # then discarded - silently keeping the unverified original. Track the summary
-                # budget, since the output is at minimum as long as the input.
-                max_output_tokens=get_settings().summary_max_output_tokens,
-                response_mime_type="application/json",
-                response_schema=_RESPONSE_SCHEMA,
-                system_instruction=VERIFY_PROMPT,
-                # This pass runs on summary_model, which is a THINKING model (2.5-pro). Without an
-                # explicit budget the retry seam applies its default of 0, which that model rejects
-                # with 400 INVALID_ARGUMENT - and because this function is fail-safe, the rejection
-                # was silent: every verify call returned the unchanged summary. Same dynamic budget
-                # the summary call uses.
-                thinking_config=types.ThinkingConfig(
-                    thinking_budget=get_settings().summary_thinking_budget
-                ),
-            ),
+            system=VERIFY_PROMPT,
+            parts=[TextPart(prompt)],
+            schema=_RESPONSE_SCHEMA,
+            temperature=0.0,
+            # The reply must hold a corrected copy of the whole summary AND (on a thinking model)
+            # the reasoning tokens, which are billed against this same budget. At 4096 a long
+            # category-1 or diagnostic summary came back as truncated JSON, which the parse then
+            # discarded - silently keeping the unverified original. Track the summary budget, since
+            # the output is at minimum as long as the input.
+            max_output_tokens=get_settings().summary_max_output_tokens,
         )
         data = json.loads((response.text or "").strip())
         fixed = (data.get("fixed_text") or "").strip()

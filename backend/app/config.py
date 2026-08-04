@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     # 2.5-pro is a thinking model and REJECTS the seam's default thinking_budget=0; give summary
     # calls dynamic thinking (-1). If SUMMARY_MODEL is reverted to a flash tier, set this to 0.
     summary_thinking_budget: int = -1
+    # Which vendor answers the summarize stage's calls (body, title, audit). "gemini" is the current
+    # behaviour and stays the default: the provider abstraction landed first specifically so it could
+    # ship without changing which model runs. Switching this to "openai" additionally requires the
+    # per-call model keys and, in production, the ZDR acknowledgement - see services/llm/.
+    summary_provider: str = "gemini"
 
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2

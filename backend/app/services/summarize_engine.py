@@ -1,23 +1,24 @@
-"""Per-document summarization for the review flow - Gemini on the Vertex/BAA path (ported).
+"""Per-document summarization for the review flow.
 
 Reproduces the legacy per-row behavior (same category prompts, title extraction, decorations).
 Callers pass rows + the resolved prompt explicitly, so this service stays DB-free; when the
 prompt is omitted it falls back to the hardcoded prompts.py dict (category_11 has none -> the
 general prompt, avoiding the historical KeyError).
+
+Model calls go through services.llm, so which vendor answers is a config value rather than an
+import. This module no longer names an SDK.
 """
 
 import io
 import logging
 import re
 
-from google.genai import types
 from pdf2image import convert_from_path
 
 from app.config import get_settings
 from app.errors import EmptyExtractionError
-from app.services.genai_client import get_genai_client
-from app.services.genai_retry import generate_with_retry
 from app.services.house_style import sentence_case_caps_runs
+from app.services.llm import ImagePart, TextPart, get_provider
 from app.services.ocr import extract_text_from_selected_pages
 from app.services.prompts import prompts
 from app.services.summary_doi import extract_injury_date
@@ -407,39 +408,33 @@ _MULTIMODAL_INSTRUCTION = (
 _OCR_TEXT_HEADER = "OCR TEXT:\n"
 
 
-def _hit_token_cap(response) -> bool:
-    """True when the model stopped because it exhausted max_output_tokens, i.e. the reply is cut
-    off. Read defensively (name or str) so a client-library enum change cannot crash a summary."""
-    for candidate in getattr(response, "candidates", None) or []:
-        reason = getattr(candidate, "finish_reason", None)
-        if reason is None:
-            continue
-        if str(getattr(reason, "name", reason)).upper().endswith("MAX_TOKENS"):
-            return True
-    return False
+# _hit_token_cap moved to services/llm/gemini.py: truncation is read from a vendor's finish reason,
+# so it belongs with that vendor's translation, and the audit path needs the same check.
 
 
 def _generate(model, system_msg, contents, temperature, max_output_tokens=None):
-    """One Gemini call -> ``(text, truncated)``. ``contents`` is the OCR text, or (multimodal) a list
-    of page-image Parts followed by the OCR text. ``truncated`` is True when the reply hit the token
-    budget, which callers surface instead of storing a half summary as finished."""
+    """One model call -> ``(text, truncated)``.
+
+    ``contents`` is the OCR text, or (multimodal) a list of page-image parts followed by the OCR
+    text. ``truncated`` is True when the reply hit the token budget, which callers surface instead
+    of storing a half summary as finished.
+
+    Routed through the provider registry rather than google-genai directly, so which vendor answers
+    is a config value. A bare string is accepted for convenience and wrapped, because every text-only
+    caller passes one.
+    """
     settings = get_settings()
     if max_output_tokens is None:
         max_output_tokens = settings.summary_max_output_tokens
-    response = generate_with_retry(
-        get_genai_client(),
+    parts = [TextPart(contents)] if isinstance(contents, str) else list(contents)
+    response = get_provider().generate_text(
         model=model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            system_instruction=system_msg,
-            # summary_model is 2.5-pro, a thinking model that rejects the seam's default budget 0;
-            # set dynamic thinking here so the seam leaves it (budget 0 only suits the flash tiers).
-            thinking_config=types.ThinkingConfig(thinking_budget=settings.summary_thinking_budget),
-        ),
+        system=system_msg,
+        parts=parts,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
     )
-    return (response.text or "").strip(), _hit_token_cap(response)
+    return response.text, response.truncated
 
 
 def _page_image_parts(pdf_path, start, end):
@@ -457,7 +452,7 @@ def _page_image_parts(pdf_path, start, end):
         ):
             buffer = io.BytesIO()
             image.convert("RGB").save(buffer, format="JPEG", quality=70)
-            parts.append(types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/jpeg"))
+            parts.append(ImagePart(data=buffer.getvalue(), mime_type="image/jpeg"))
     return parts
 
 
@@ -538,8 +533,8 @@ def summarize_row(
             # instruction used to sit between the images and the text, i.e. in the middle of the
             # payload, against Google's context-first / instruction-last guidance.
             body_contents = _page_image_parts(pdf_path, row["start"], row["end"]) + [
-                _OCR_TEXT_HEADER + text,
-                _MULTIMODAL_INSTRUCTION,
+                TextPart(_OCR_TEXT_HEADER + text),
+                TextPart(_MULTIMODAL_INSTRUCTION),
             ]
         except Exception as exc:  # noqa: BLE001 - degrade to OCR-only; never fail a summary on this
             logger.warning(

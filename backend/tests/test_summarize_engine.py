@@ -10,6 +10,7 @@ import pytest
 from app.config import get_settings
 from app.errors import EmptyExtractionError
 from app.services import summarize_engine as se
+from app.services.llm import gemini as gm
 
 _NO_ISSUES = {"fixed_text": "", "issues": []}
 
@@ -388,8 +389,8 @@ def test_configured_token_budget_reaches_the_model_and_max_tokens_is_reported(mo
             candidates=[SimpleNamespace(finish_reason=types.FinishReason.MAX_TOKENS)],
         )
 
-    monkeypatch.setattr(se, "get_genai_client", lambda: object())
-    monkeypatch.setattr(se, "generate_with_retry", fake_retry)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: object())
+    monkeypatch.setattr(gm, "generate_with_retry", fake_retry)
 
     text, truncated = se._generate("m", "sys", "user text", 0.0, max_output_tokens=4321)
 
@@ -404,9 +405,9 @@ def test_normal_finish_is_not_reported_as_truncated(monkeypatch):
 
     from google.genai import types
 
-    monkeypatch.setattr(se, "get_genai_client", lambda: object())
+    monkeypatch.setattr(gm, "get_genai_client", lambda: object())
     monkeypatch.setattr(
-        se,
+        gm,
         "generate_with_retry",
         lambda client, **kw: SimpleNamespace(
             text=" BODY ", candidates=[SimpleNamespace(finish_reason=types.FinishReason.STOP)]
@@ -665,8 +666,8 @@ def test_the_instruction_is_the_last_thing_in_a_multimodal_payload(monkeypatch):
 
     parts = captured["contents"]
     assert parts[:2] == ["IMG1", "IMG2"]  # images first
-    assert "OCR BODY" in parts[2]  # then the text
-    assert parts[-1] == se._MULTIMODAL_INSTRUCTION  # instruction LAST, on its own
+    assert "OCR BODY" in parts[2].text  # then the text
+    assert parts[-1].text == se._MULTIMODAL_INSTRUCTION  # instruction LAST, on its own
     # It must no longer claim the text is still to come.
     assert "follows" not in se._MULTIMODAL_INSTRUCTION
     assert "OCR text above" in se._MULTIMODAL_INSTRUCTION
