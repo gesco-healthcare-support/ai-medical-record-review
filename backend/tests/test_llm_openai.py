@@ -401,3 +401,80 @@ def test_backoff_is_abandoned_when_the_job_is_cancelled(monkeypatch):
     # served - the exact case a reviewer wants to kill.
     with pytest.raises(JobCancelled):
         provider._cancellable_sleep(30.0)
+
+
+# --- temperature capability -----------------------------------------------------------------------
+
+
+def test_a_model_that_rejects_temperature_is_retried_without_it(monkeypatch):
+    # MEASURED 2026-08-05: the whole gpt-5.6 family returns 400 for any non-default temperature,
+    # while gpt-4.1 accepts 0.0. Learned at runtime rather than hardcoded to a name prefix, which
+    # would be wrong for the next family.
+    from app.services.llm import openai as provider
+
+    provider._NO_TEMPERATURE.discard("gpt-5.6-luna")
+    rejection = _status_error(
+        400, "Unsupported value: 'temperature' does not support 0 with this model."
+    )
+    sent = []
+
+    class _WithRaw:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **kwargs):
+            sent.append(dict(kwargs))
+            self.calls += 1
+            if self.calls == 1:
+                raise rejection
+            return _Raw(_Completion("done"))
+
+    class _Completions:
+        with_raw_response = _WithRaw()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    monkeypatch.setattr(provider, "_client", lambda: _Client())
+    monkeypatch.setattr(provider, "_cancellable_sleep", lambda _s: None)
+    for name in ("acquire", "record_success", "record_rejection", "observe_limits"):
+        monkeypatch.setattr(provider.pacing, name, lambda *a, **k: True)
+
+    result = OpenAIProvider().generate_text(
+        model="gpt-5.6-luna",
+        system=None,
+        parts=[TextPart("hi")],
+        temperature=0.0,
+        max_output_tokens=16,
+    )
+    assert result.text == "done"
+    assert "temperature" in sent[0]
+    assert "temperature" not in sent[1]
+    # Remembered, so every later call skips it before it is sent.
+    assert "gpt-5.6-luna" in provider._NO_TEMPERATURE
+    provider._NO_TEMPERATURE.discard("gpt-5.6-luna")
+
+
+def test_a_model_that_accepts_temperature_keeps_receiving_it(captured):
+    from app.services.llm import openai as provider
+
+    provider._NO_TEMPERATURE.discard("gpt-4.1-mini")
+    OpenAIProvider().generate_text(
+        model="gpt-4.1-mini",
+        system=None,
+        parts=[TextPart("hi")],
+        temperature=0.0,
+        max_output_tokens=16,
+    )
+    # summary_temperature=0.0 is a measured determinism guarantee, not a default to drop casually.
+    assert captured["temperature"] == 0.0
+
+
+def test_an_unrelated_400_is_not_mistaken_for_a_temperature_rejection():
+    from app.services.llm.openai import _rejects_temperature
+
+    assert _rejects_temperature(_status_error(400, "Invalid schema for response_format")) is False
+    assert _rejects_temperature(_status_error(429, "temperature")) is False

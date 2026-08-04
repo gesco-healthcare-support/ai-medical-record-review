@@ -38,6 +38,27 @@ _PROVIDER = "openai"
 # Poll granularity while sleeping through backoff, so a cancelled job does not sit out the full wait.
 _CANCEL_POLL_SECONDS = 1.0
 
+# Models that reject `temperature` outright. Measured 2026-08-05: the whole gpt-5.6 family returns
+# 400 "Unsupported value: 'temperature' does not support 0 with this model" for ANY non-default
+# value, while the gpt-4.1 family accepts 0.0 normally.
+#
+# This is learned at runtime rather than hardcoded to a model-name prefix, because the prefix would
+# be wrong for the next family and would fail closed on a model that actually works. The first
+# rejection teaches the process and the call is retried without the parameter.
+#
+# It matters beyond plumbing: summary_temperature is 0.0 DELIBERATELY - a measured eval showed 0.0
+# makes repeat runs identical while 0.8 varied down to ~0.26 similarity, and determinism is worth
+# real money on a medical-legal document. A model that cannot take it cannot offer that guarantee,
+# which is a fact for the model decision to weigh, not something to paper over.
+_NO_TEMPERATURE: set[str] = set()
+
+
+def _rejects_temperature(exc) -> bool:
+    """True for the 400 that means "this model will not take a temperature"."""
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    return "temperature" in str(getattr(exc, "message", "") or exc).lower()
+
 
 def _client():
     """Lazily built, cached OpenAI client.
@@ -204,12 +225,13 @@ class OpenAIProvider:
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": _to_messages(system, parts),
-            "temperature": temperature,
             "max_completion_tokens": max_output_tokens,
             # PHI: never retain. ZDR forces this server-side; sending it means a misconfigured org
             # fails safe rather than silently storing a medical record.
             "store": False,
         }
+        if model not in _NO_TEMPERATURE:
+            kwargs["temperature"] = temperature
         if schema is not None:
             kwargs["response_format"] = {
                 "type": "json_schema",
@@ -228,6 +250,15 @@ class OpenAIProvider:
             try:
                 raw = client.chat.completions.with_raw_response.create(**kwargs)
             except Exception as exc:  # noqa: BLE001 - classified immediately below
+                if _rejects_temperature(exc) and "temperature" in kwargs:
+                    # Learn it once per process, then re-send without the parameter. This DOES
+                    # consume one attempt of the retry budget, which is acceptable because it
+                    # happens once per model per process rather than once per call - every
+                    # subsequent request skips the parameter before it is sent.
+                    logger.info("pacing: %s rejects temperature; resending without it", model)
+                    _NO_TEMPERATURE.add(model)
+                    kwargs.pop("temperature")
+                    continue
                 retry, advised = _retryable(exc)
                 genai_metrics.record(
                     model,
