@@ -8,9 +8,9 @@ Two things deliberately do NOT appear here:
 
 - Thinking budgets. They are a Gemini concept with no OpenAI equivalent, so they live inside the
   Gemini provider rather than being emulated or exposed as a no-op elsewhere.
-- Retry and rate-limit policy. Those wrap the provider (see services.genai_retry and
-  services.rate_limit), so a provider implementation stays a translation layer and one bucket keeps
-  bounding every vendor.
+- Retry and pacing policy. Those wrap the provider (see services.genai_retry and
+  services.llm.pacing), so a provider implementation stays a translation layer and one adaptive
+  pacer keeps bounding every vendor.
 """
 
 from dataclasses import dataclass

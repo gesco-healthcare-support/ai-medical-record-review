@@ -19,7 +19,7 @@ class _Resp:
 
 
 def _fake_gen(payload):
-    def gen(client, *, model, contents, config):
+    def gen(client, *, model, contents, config, **_kw):
         return _Resp(json.dumps(payload))
 
     return gen
@@ -109,7 +109,7 @@ def test_title_is_audited_and_corrected(monkeypatch):
 def test_title_is_sent_to_the_model_when_given(monkeypatch):
     seen = {}
 
-    def gen(client, *, model, contents, config):
+    def gen(client, *, model, contents, config, **_kw):
         seen["contents"] = contents
         return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
 
@@ -127,7 +127,7 @@ def test_the_call_sets_its_own_thinking_budget(monkeypatch):
     # carry its own thinking_config.
     seen = {}
 
-    def gen(client, *, model, contents, config):
+    def gen(client, *, model, contents, config, **_kw):
         seen["thinking"] = config.thinking_config
         return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
 
@@ -195,7 +195,7 @@ def test_the_document_date_reaches_the_model_when_given(monkeypatch):
     # which one is this sub-document's.
     seen = {}
 
-    def gen(client, *, model, contents, config):
+    def gen(client, *, model, contents, config, **_kw):
         seen["contents"] = contents
         return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
 
@@ -211,7 +211,7 @@ def test_a_missing_document_date_is_omitted_rather_than_asserted(monkeypatch, da
     # treat everything as a prior visit.
     seen = {}
 
-    def gen(client, *, model, contents, config):
+    def gen(client, *, model, contents, config, **_kw):
         seen["contents"] = contents
         return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
 

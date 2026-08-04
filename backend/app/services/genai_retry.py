@@ -13,7 +13,8 @@ import httpx
 from google.genai import errors, types
 
 from app.config import get_settings
-from app.services import genai_metrics, rate_limit
+from app.services import genai_metrics
+from app.services.llm import pacing
 from app.worker.cancel import current_job_cancelled
 from app.worker.failures import JobCancelled
 
@@ -124,14 +125,16 @@ def generate_with_retry(client, **kwargs):
     settings = get_settings()
     _apply_thinking_default(kwargs.get("config"))
     model = kwargs.get("model")
+    est_tokens = kwargs.pop("_est_tokens", 1)
     last = None
     timer = genai_metrics.WaitTimer(model)
     try:
         for attempt in range(settings.genai_max_retries):
-            # Bound the GLOBAL request rate across all processes before every attempt (retries also
-            # consume quota). Fails open if Redis is down; never blocks past the job timeout.
+            # Pace the request across all processes before every attempt (a retry consumes quota
+            # too). The rate is self-tuning: 429s halve it, successes nudge it back up. Fails open if
+            # Redis is down; never blocks past the job timeout.
             with timer:
-                rate_limit.acquire()
+                pacing.acquire("gemini", model, est_tokens)
             retry_after = None
             try:
                 response = client.models.generate_content(**kwargs)
@@ -142,15 +145,22 @@ def generate_with_retry(client, **kwargs):
                 if getattr(exc, "code", None) != 429:
                     raise
                 genai_metrics.record(model, genai_metrics.OUTCOME_RATE_LIMITED)
+                # Feed the controller BEFORE the PerDay carve-out below: a spent daily budget is
+                # still evidence that this model is unavailable right now.
+                pacing.record_rejection("gemini", model)
                 if "PerDay" in str(exc) or "free_tier" in str(exc):
                     raise
                 last = exc
-                retry_after = _retry_delay_seconds(exc)  # honor the server's RetryInfo when present
+                # Vertex does not populate RetryInfo in practice (measured 2026-08-05: the 429 body
+                # carries only code/message/status), so this returns None and backoff takes over.
+                # Kept because it costs nothing and other endpoints do send it.
+                retry_after = _retry_delay_seconds(exc)
             except httpx.TransportError as exc:  # disconnect without an HTTP status
                 last = exc
                 genai_metrics.record(model, genai_metrics.OUTCOME_TRANSPORT)
             else:
                 genai_metrics.record(model, genai_metrics.OUTCOME_ACCEPTED)
+                pacing.record_success("gemini", model)
                 return response
             if attempt < settings.genai_max_retries - 1:
                 _cancellable_sleep(_sleep_for(attempt, retry_after))

@@ -132,6 +132,21 @@ class Settings(BaseSettings):
     # so the aggregate rate across every worker process never trips dynamic-shared-quota 429s. Tune
     # empirically: raise until near throttling, then back off ~20%.
     vertex_max_rpm: int = 60
+    # Upper bounds for the adaptive pacer (services/llm/pacing.py). These are SAFETY BOUNDS, not
+    # tuning knobs: an AIMD controller finds the working rate from 429 feedback and can only ever
+    # sit at or below these. A fixed rate was measured to be unworkable - Vertex publishes no
+    # remaining-capacity header and no RetryInfo, and the serviceable rate moved more than 4x
+    # between 2026-08-03 and 2026-08-05.
+    #
+    # vertex_max_tpm is a bound, not a published figure: Google does not state a tokens-per-minute
+    # limit for dynamic shared quota, and a paired experiment could not establish whether DSQ meters
+    # requests or tokens (pool depletion dominated the result). Metering both is correct either way.
+    vertex_max_tpm: int = 4_000_000
+    # OpenAI publishes both per project and returns them on every response, so these are only the
+    # cold-start bound; observe_limits() replaces them with the real values after the first call.
+    # Measured on the account 2026-08-03: 5,000 RPM, 1M TPM flagship / 2M mini-nano tiers.
+    openai_max_rpm: int = 5_000
+    openai_max_tpm: int = 1_000_000
 
     # Independent segmentation windows run on a small thread pool (each still crosses the seam, so
     # the limiter caps the aggregate). Speed lever; keep modest so it does not dominate the quota.
