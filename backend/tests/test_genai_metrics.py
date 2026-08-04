@@ -106,7 +106,9 @@ def _rate_limited():
 @pytest.fixture
 def no_sleep_no_limiter(monkeypatch):
     monkeypatch.setattr(genai_retry, "_cancellable_sleep", lambda _s: None)
-    monkeypatch.setattr(genai_retry.rate_limit, "acquire", lambda: True)
+    monkeypatch.setattr(genai_retry.pacing, "acquire", lambda *a, **k: True)
+    monkeypatch.setattr(genai_retry.pacing, "record_rejection", lambda *a, **k: None)
+    monkeypatch.setattr(genai_retry.pacing, "record_success", lambda *a, **k: None)
 
 
 def test_retried_rate_limit_is_still_counted(redis, no_sleep_no_limiter, monkeypatch):

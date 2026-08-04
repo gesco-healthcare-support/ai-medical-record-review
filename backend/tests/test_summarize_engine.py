@@ -382,7 +382,7 @@ def test_configured_token_budget_reaches_the_model_and_max_tokens_is_reported(mo
 
     captured = {}
 
-    def fake_retry(client, *, model, contents, config):
+    def fake_retry(client, *, model, contents, config, **_kw):
         captured["config"] = config
         return SimpleNamespace(
             text="HALF A SUMMARY",

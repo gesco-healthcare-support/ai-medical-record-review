@@ -15,6 +15,7 @@ from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.llm.base import LLMResponse
 from app.services.llm.parts import DocumentPart, ImagePart, Part, TextPart
+from app.services.llm.tokens import estimate_tokens
 
 # google-genai dict schemas use UPPERCASE type names; ordinary JSON Schema is lowercase. Callers
 # write lowercase (see base.generate_structured) and this maps it, so no vendor dialect leaks into
@@ -145,6 +146,10 @@ class GeminiProvider:
             model=model,
             contents=_to_contents(parts),
             config=types.GenerateContentConfig(**config_kwargs),
+            # Charged to the pacer's token meter. A 30,000-token segmentation window and a 500-token
+            # title call cost the shared pool very differently, so counting both as "one request"
+            # would mis-pace whichever way the traffic mix leans.
+            _est_tokens=estimate_tokens(parts, system, "gemini"),
         )
         input_tokens, output_tokens = _usage(response)
         return LLMResponse(

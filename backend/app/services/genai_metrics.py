@@ -10,7 +10,7 @@ That makes the question every throughput experiment asks - "did rejections rise 
 concurrency?" - unanswerable. This module answers it.
 
 Counters live in Redis rather than in-process because the api and the two worker tiers are separate
-processes sharing one Vertex budget (the same reason ``rate_limit`` lives there), and because the
+processes sharing one Vertex budget (the same reason ``llm.pacing`` lives there), and because the
 Redis container outlives worker restarts.
 
 Counting is per ATTEMPT, not per logical call: a rejection IS an attempt, and it costs a bucket
@@ -45,7 +45,7 @@ OUTCOME_EXHAUSTED = "exhausted"  # logical call gave up after genai_max_retries
 # The four fields above that represent a real request to Vertex.
 ATTEMPT_OUTCOMES = (OUTCOME_ACCEPTED, OUTCOME_RATE_LIMITED, OUTCOME_SERVER_ERROR, OUTCOME_TRANSPORT)
 
-# Wall-clock blocked inside rate_limit.acquire(), milliseconds. This separates "Vertex is rejecting
+# Wall-clock blocked inside llm.pacing.acquire(), milliseconds. This separates "Vertex is rejecting
 # us" from "our own limiter is holding us back" - opposite problems with opposite fixes, and telling
 # them apart is the entire point of the pipeline_workers ramp.
 FIELD_WAIT_MS = "limiter_wait_ms"
