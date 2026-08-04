@@ -216,3 +216,188 @@ def test_backoff_is_bounded_by_the_configured_maximum(monkeypatch):
 
     monkeypatch.setattr("app.services.llm.openai.random.uniform", lambda a, b: b)
     assert _backoff(20, advised=None) <= get_settings().genai_retry_max_delay
+
+
+# --- retry classification and the loop ------------------------------------------------------------
+#
+# These are the paths that matter most and were the ones left uncovered: whether a failure is
+# retried at all decides between riding out a rate limit and hammering a dead endpoint.
+
+
+def _status_error(status, message=""):
+    """An exception shaped the way _retryable inspects one (status_code + message)."""
+    import openai
+
+    exc = openai.APIStatusError.__new__(openai.APIStatusError)
+    exc.status_code = status
+    exc.message = message
+    exc.response = None
+    return exc
+
+
+def _with_headers(status, headers):
+    exc = _status_error(status)
+
+    class _Response:
+        pass
+
+    response = _Response()
+    response.headers = headers
+    exc.response = response
+    return exc
+
+
+def test_rate_limit_and_server_errors_are_retryable():
+    from app.services.llm.openai import _retryable
+
+    assert _retryable(_status_error(429))[0] is True
+    assert _retryable(_status_error(500))[0] is True
+    assert _retryable(_status_error(503))[0] is True
+
+
+def test_client_errors_are_not_retryable():
+    from app.services.llm.openai import _retryable
+
+    # Backoff cannot fix a bad request, a bad key, or a missing model.
+    for status in (400, 401, 403, 404):
+        assert _retryable(_status_error(status))[0] is False
+
+
+def test_an_exhausted_quota_is_not_retryable_even_though_it_is_a_429():
+    from app.services.llm.openai import _retryable
+
+    # Mirrors the PerDay/free_tier carve-out genai_retry makes for Gemini: no amount of waiting
+    # inside one request refills a spent budget.
+    assert (
+        _retryable(_status_error(429, "insufficient_quota: you exceeded your current quota"))[0]
+        is False
+    )
+
+
+def test_timeouts_and_connection_errors_are_retryable():
+    import openai
+
+    from app.services.llm.openai import _retryable
+
+    timeout = openai.APITimeoutError.__new__(openai.APITimeoutError)
+    conn = openai.APIConnectionError.__new__(openai.APIConnectionError)
+    assert _retryable(timeout)[0] is True
+    assert _retryable(conn)[0] is True
+
+
+def test_retry_after_header_is_read_when_present():
+    from app.services.llm.openai import _retryable
+
+    retry, advised = _retryable(_with_headers(429, {"retry-after": "7"}))
+    assert (retry, advised) == (True, 7.0)
+
+
+def test_a_missing_or_unparseable_retry_after_falls_back_to_backoff():
+    from app.services.llm.openai import _retry_after
+
+    assert _retry_after(_with_headers(429, {})) is None
+    assert _retry_after(_with_headers(429, {"retry-after": "soon"})) is None
+
+
+def test_headers_feed_the_pacer(monkeypatch):
+    from app.services.llm import openai as provider
+
+    seen = {}
+    monkeypatch.setattr(
+        provider.pacing,
+        "observe_limits",
+        lambda p, m, rr, resr, rt, rest: seen.update(
+            provider=p, model=m, rem_req=rr, reset_req=resr, rem_tok=rt, reset_tok=rest
+        ),
+    )
+
+    class _Raw2:
+        headers = {
+            "x-ratelimit-remaining-requests": "4999",
+            "x-ratelimit-reset-requests": "12s",
+            "x-ratelimit-remaining-tokens": "1999990",
+            "x-ratelimit-reset-tokens": "6s",
+        }
+
+    provider._observe("gpt-4.1-mini", _Raw2())
+    # The "s" suffix must be stripped, or the rate lands as None and the controller keeps guessing.
+    assert seen["rem_req"] == 4999.0
+    assert seen["reset_req"] == 12.0
+    assert seen["rem_tok"] == 1999990.0
+
+
+def _provider_with(monkeypatch, sequence):
+    """A provider whose create() yields each item: an exception is raised, anything else returned."""
+    from app.services.llm import openai as provider
+
+    state = {"i": 0}
+
+    class _WithRaw:
+        def create(self, **_kwargs):
+            item = sequence[state["i"]]
+            state["i"] += 1
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    class _Completions:
+        with_raw_response = _WithRaw()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    monkeypatch.setattr(provider, "_client", lambda: _Client())
+    monkeypatch.setattr(provider, "_cancellable_sleep", lambda _s: None)
+    monkeypatch.setattr(provider.pacing, "acquire", lambda *a, **k: True)
+    monkeypatch.setattr(provider.pacing, "record_success", lambda *a, **k: None)
+    monkeypatch.setattr(provider.pacing, "record_rejection", lambda *a, **k: None)
+    monkeypatch.setattr(provider.pacing, "observe_limits", lambda *a, **k: None)
+    return state
+
+
+def test_a_rate_limited_call_is_retried_and_then_succeeds(monkeypatch):
+    state = _provider_with(monkeypatch, [_status_error(429), _Raw(_Completion("done"))])
+    result = OpenAIProvider().generate_text(
+        model="m", system=None, parts=[TextPart("hi")], temperature=0.0, max_output_tokens=16
+    )
+    assert result.text == "done"
+    assert state["i"] == 2
+
+
+def test_a_non_retryable_error_raises_immediately(monkeypatch):
+    import openai
+
+    state = _provider_with(monkeypatch, [_status_error(400), _Raw(_Completion("never"))])
+    with pytest.raises(openai.APIStatusError):
+        OpenAIProvider().generate_text(
+            model="m", system=None, parts=[TextPart("hi")], temperature=0.0, max_output_tokens=16
+        )
+    # Exactly one attempt: a 400 must not consume the retry budget.
+    assert state["i"] == 1
+
+
+def test_retries_are_exhausted_and_the_last_error_is_raised(monkeypatch):
+    import openai
+
+    from app.config import get_settings
+
+    attempts = get_settings().genai_max_retries
+    _provider_with(monkeypatch, [_status_error(429) for _ in range(attempts)])
+    with pytest.raises(openai.APIStatusError):
+        OpenAIProvider().generate_text(
+            model="m", system=None, parts=[TextPart("hi")], temperature=0.0, max_output_tokens=16
+        )
+
+
+def test_backoff_is_abandoned_when_the_job_is_cancelled(monkeypatch):
+    from app.services.llm import openai as provider
+    from app.worker.failures import JobCancelled
+
+    monkeypatch.setattr(provider, "current_job_cancelled", lambda: True)
+    # Without this, a job wedged in backoff cannot notice the stop button until the whole wait is
+    # served - the exact case a reviewer wants to kill.
+    with pytest.raises(JobCancelled):
+        provider._cancellable_sleep(30.0)
