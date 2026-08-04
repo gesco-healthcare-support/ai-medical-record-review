@@ -82,6 +82,7 @@ def test_compose_passes_through_the_settings_it_claims_to_control():
     for key in (
         "VERTEX_MAX_RPM",
         "SEGMENT_WINDOW_WORKERS",
+        "PAGE_TEXT_WORKERS",
         "GENAI_MAX_RETRIES",
         "GENAI_RETRY_MAX_DELAY",
         "DUPE_JACCARD_THRESHOLD",
