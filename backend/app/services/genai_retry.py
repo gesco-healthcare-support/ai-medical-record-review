@@ -13,7 +13,7 @@ import httpx
 from google.genai import errors, types
 
 from app.config import get_settings
-from app.services import rate_limit
+from app.services import genai_metrics, rate_limit
 from app.worker.cancel import current_job_cancelled
 from app.worker.failures import JobCancelled
 
@@ -116,28 +116,47 @@ def _cancellable_sleep(total: float) -> None:
 
 def generate_with_retry(client, **kwargs):
     """Call client.models.generate_content, retrying transient failures. Client passed explicitly
-    so route/worker modules keep a single patchable client seam."""
+    so route/worker modules keep a single patchable client seam.
+
+    Every attempt is counted per model via genai_metrics. A retried 429 used to leave no trace at
+    all, which made "did rejections rise?" unanswerable - see that module's docstring.
+    """
     settings = get_settings()
     _apply_thinking_default(kwargs.get("config"))
+    model = kwargs.get("model")
     last = None
-    for attempt in range(settings.genai_max_retries):
-        # Bound the GLOBAL request rate across all processes before every attempt (retries also
-        # consume quota). Fails open if Redis is down; never blocks past the job timeout.
-        rate_limit.acquire()
-        retry_after = None
-        try:
-            return client.models.generate_content(**kwargs)
-        except errors.ServerError as exc:  # 5xx incl. 503 high-demand
-            last = exc
-        except errors.ClientError as exc:  # retry only transient 429 rate limiting
-            if getattr(exc, "code", None) != 429:
-                raise
-            if "PerDay" in str(exc) or "free_tier" in str(exc):
-                raise
-            last = exc
-            retry_after = _retry_delay_seconds(exc)  # honor the server's RetryInfo when present
-        except httpx.TransportError as exc:  # disconnect without an HTTP status
-            last = exc
-        if attempt < settings.genai_max_retries - 1:
-            _cancellable_sleep(_sleep_for(attempt, retry_after))
-    raise last
+    timer = genai_metrics.WaitTimer(model)
+    try:
+        for attempt in range(settings.genai_max_retries):
+            # Bound the GLOBAL request rate across all processes before every attempt (retries also
+            # consume quota). Fails open if Redis is down; never blocks past the job timeout.
+            with timer:
+                rate_limit.acquire()
+            retry_after = None
+            try:
+                response = client.models.generate_content(**kwargs)
+            except errors.ServerError as exc:  # 5xx incl. 503 high-demand
+                last = exc
+                genai_metrics.record(model, genai_metrics.OUTCOME_SERVER_ERROR)
+            except errors.ClientError as exc:  # retry only transient 429 rate limiting
+                if getattr(exc, "code", None) != 429:
+                    raise
+                genai_metrics.record(model, genai_metrics.OUTCOME_RATE_LIMITED)
+                if "PerDay" in str(exc) or "free_tier" in str(exc):
+                    raise
+                last = exc
+                retry_after = _retry_delay_seconds(exc)  # honor the server's RetryInfo when present
+            except httpx.TransportError as exc:  # disconnect without an HTTP status
+                last = exc
+                genai_metrics.record(model, genai_metrics.OUTCOME_TRANSPORT)
+            else:
+                genai_metrics.record(model, genai_metrics.OUTCOME_ACCEPTED)
+                return response
+            if attempt < settings.genai_max_retries - 1:
+                _cancellable_sleep(_sleep_for(attempt, retry_after))
+        genai_metrics.record(model, genai_metrics.OUTCOME_EXHAUSTED)
+        raise last
+    finally:
+        # One Redis write per logical call rather than one per attempt: this is the latency path
+        # being measured, so the accounting must not inflate it.
+        timer.flush()
