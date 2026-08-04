@@ -1,6 +1,8 @@
 """Unit tests for the summary faithfulness verify pass (services.summary_verify).
 
-Pure: the genai client + generate_with_retry are monkeypatched, so no Vertex call is made.
+Pure: the Gemini provider's client + retry seam are monkeypatched, so no Vertex call is made.
+They are patched on services.llm.gemini rather than on this module, because summary_verify now
+goes through the provider abstraction - so these tests also cover that translation.
 """
 
 import json
@@ -8,6 +10,7 @@ import json
 import pytest
 
 from app.services import summary_verify as sv
+from app.services.llm import gemini as gm
 
 
 class _Resp:
@@ -23,9 +26,9 @@ def _fake_gen(payload):
 
 
 def test_flags_and_fixes_unsupported(monkeypatch):
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
     monkeypatch.setattr(
-        sv,
+        gm,
         "generate_with_retry",
         _fake_gen(
             {
@@ -41,9 +44,9 @@ def test_flags_and_fixes_unsupported(monkeypatch):
 
 
 def test_faithful_summary_unchanged(monkeypatch):
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
     monkeypatch.setattr(
-        sv, "generate_with_retry", _fake_gen({"fixed_text": "All supported.", "issues": []})
+        gm, "generate_with_retry", _fake_gen({"fixed_text": "All supported.", "issues": []})
     )
     result = sv.verify_summary("m", "src", "All supported.")
     assert result["issues"] == []
@@ -52,8 +55,8 @@ def test_faithful_summary_unchanged(monkeypatch):
 
 def test_blank_summary_short_circuits(monkeypatch):
     called = []
-    monkeypatch.setattr(sv, "get_genai_client", lambda: called.append(1))
-    monkeypatch.setattr(sv, "generate_with_retry", _fake_gen({"fixed_text": "x", "issues": []}))
+    monkeypatch.setattr(gm, "get_genai_client", lambda: called.append(1))
+    monkeypatch.setattr(gm, "generate_with_retry", _fake_gen({"fixed_text": "x", "issues": []}))
     result = sv.verify_summary("m", "src", "   ", title="A TITLE")
     assert result == {"fixed_text": "   ", "fixed_title": "A TITLE", "issues": []}
     assert called == []  # no model call for an empty summary
@@ -63,8 +66,8 @@ def test_model_failure_returns_original(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("vertex down")
 
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
-    monkeypatch.setattr(sv, "generate_with_retry", boom)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", boom)
     result = sv.verify_summary("m", "src", "Original summary.", title="ORIGINAL TITLE")
     # Fail-safe covers the title too: a broken check must never blank a good header.
     assert result == {
@@ -75,8 +78,8 @@ def test_model_failure_returns_original(monkeypatch):
 
 
 def test_blank_fixed_text_keeps_original(monkeypatch):
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
-    monkeypatch.setattr(sv, "generate_with_retry", _fake_gen({"fixed_text": "  ", "issues": []}))
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", _fake_gen({"fixed_text": "  ", "issues": []}))
     result = sv.verify_summary("m", "src", "Keep me.")
     assert result["fixed_text"] == "Keep me."
 
@@ -84,9 +87,9 @@ def test_blank_fixed_text_keeps_original(monkeypatch):
 def test_title_is_audited_and_corrected(monkeypatch):
     # WHEN the pass finds a laterality error in the title, THE SYSTEM SHALL return a corrected title
     # alongside the corrected body, and name the issue type.
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
     monkeypatch.setattr(
-        sv,
+        gm,
         "generate_with_retry",
         _fake_gen(
             {
@@ -110,11 +113,11 @@ def test_title_is_sent_to_the_model_when_given(monkeypatch):
         seen["contents"] = contents
         return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
 
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
-    monkeypatch.setattr(sv, "generate_with_retry", gen)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", gen)
     sv.verify_summary("m", "the source", "Body.", title="A TITLE")
-    assert "TITLE:\nA TITLE" in seen["contents"]
-    assert "SOURCE:\nthe source" in seen["contents"]
+    assert "TITLE:\nA TITLE" in "".join(seen["contents"])
+    assert "SOURCE:\nthe source" in "".join(seen["contents"])
 
 
 def test_the_call_sets_its_own_thinking_budget(monkeypatch):
@@ -128,8 +131,8 @@ def test_the_call_sets_its_own_thinking_budget(monkeypatch):
         seen["thinking"] = config.thinking_config
         return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
 
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
-    monkeypatch.setattr(sv, "generate_with_retry", gen)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", gen)
     sv.verify_summary("m", "src", "Body.")
     assert seen["thinking"] is not None
     assert seen["thinking"].thinking_budget != 0
@@ -196,10 +199,10 @@ def test_the_document_date_reaches_the_model_when_given(monkeypatch):
         seen["contents"] = contents
         return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
 
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
-    monkeypatch.setattr(sv, "generate_with_retry", gen)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", gen)
     sv.verify_summary("m", "the source", "Body.", document_date="03/09/2023")
-    assert "THIS DOCUMENT'S DATE:\n03/09/2023" in seen["contents"]
+    assert "THIS DOCUMENT'S DATE:\n03/09/2023" in "".join(seen["contents"])
 
 
 @pytest.mark.parametrize("date", [None, "", "   ", "-"])
@@ -212,16 +215,16 @@ def test_a_missing_document_date_is_omitted_rather_than_asserted(monkeypatch, da
         seen["contents"] = contents
         return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
 
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
-    monkeypatch.setattr(sv, "generate_with_retry", gen)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", gen)
     sv.verify_summary("m", "the source", "Body.", document_date=date)
-    assert "THIS DOCUMENT'S DATE" not in seen["contents"]
+    assert "THIS DOCUMENT'S DATE" not in "".join(seen["contents"])
 
 
 def test_blank_fixed_title_falls_back_to_the_original(monkeypatch):
-    monkeypatch.setattr(sv, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
     monkeypatch.setattr(
-        sv,
+        gm,
         "generate_with_retry",
         _fake_gen({"fixed_text": "Body.", "fixed_title": "   ", "issues": []}),
     )
