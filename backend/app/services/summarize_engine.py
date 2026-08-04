@@ -412,6 +412,20 @@ _OCR_TEXT_HEADER = "OCR TEXT:\n"
 # so it belongs with that vendor's translation, and the audit path needs the same check.
 
 
+def model_for(kind, fallback):
+    """The model that answers one summarize call: "body", "title" or "audit".
+
+    On Gemini this returns ``fallback`` - the model the JOB was created with - so selecting a
+    provider never silently changes which Gemini model runs, and a resumed job keeps using whatever
+    it started on. On OpenAI the job's Gemini model name is meaningless, so the configured
+    per-call-type model is used instead.
+    """
+    settings = get_settings()
+    if settings.summary_provider == "openai":
+        return settings.model_for(kind)
+    return fallback
+
+
 def _generate(model, system_msg, contents, temperature, max_output_tokens=None):
     """One model call -> ``(text, truncated)``.
 
@@ -544,13 +558,13 @@ def summarize_row(
                 exc,
             )
     summary, truncated = _generate(
-        model,
+        model_for("body", model),
         system_msg,
         body_contents,
         temperature=settings.summary_temperature,
         max_output_tokens=settings.summary_max_output_tokens,
     )
-    title, _ = _generate(model, TITLE_PROMPT, text, temperature=0.0)
+    title, _ = _generate(model_for("title", model), TITLE_PROMPT, text, temperature=0.0)
     # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
     # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
@@ -586,7 +600,9 @@ def summarize_row(
     verified_title = None
     verify_issues = None
     if verify:
-        result = verify_summary(model, text, summary, title=title, document_date=row.get("date"))
+        result = verify_summary(
+            model_for("audit", model), text, summary, title=title, document_date=row.get("date")
+        )
         if result["issues"]:
             issue_types = {
                 str(issue.get("type") or "")

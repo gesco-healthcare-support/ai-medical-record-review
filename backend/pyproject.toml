@@ -26,6 +26,9 @@ dependencies = [
 [project.optional-dependencies]
 docs = [
     "google-genai>=1.0",
+    # Summarization provider alternative to Gemini (services/llm/openai.py). Sits in `docs` beside
+    # google-genai because the same tiers that summarize need it, and both are model SDKs.
+    "openai>=1.60",
     "pypdf>=5.1",
     "pymupdf>=1.24",
     "pdf2image>=1.17",
