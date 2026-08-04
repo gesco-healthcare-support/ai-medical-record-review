@@ -33,6 +33,24 @@ x-backend-env: &backend-env
   # 3. Fallbacks mirror app/config.py so an unset key behaves exactly as before.
   VERTEX_MAX_RPM: ${VERTEX_MAX_RPM:-60}
   SEGMENT_WINDOW_WORKERS: ${SEGMENT_WINDOW_WORKERS:-3}
+  # Row-level concurrency inside ONE summarize job (summarize_document's ThreadPoolExecutor), and
+  # the classify/verify pool. Named here for the same reason as every block in this file: an
+  # unreferenced key never reaches a container.
+  #
+  # PIPELINE_WORKERS is the binding constraint on summarize throughput, not the Vertex quota.
+  # Measured 2026-08-03: 7.8 accepted calls/min against a VERTEX_MAX_RPM of 20, i.e. the shared
+  # bucket sitting at ~39% utilisation - two concurrent chains at ~15.4s per call is exactly
+  # 7.8/min. By Little's Law the saturation point for a 20 rpm budget is 20/60 * 15.4 = ~5
+  # concurrent rows, so 5 fills the existing budget without raising it.
+  #
+  # Do NOT push this far past the saturation point. rate_limit.acquire() abandons its wait after
+  # MAX_ACQUIRE_WAIT_S (300s) and proceeds anyway, so enough queued callers stop being rate limited
+  # at all. At 3 summarize workers x 5 chains against 20 rpm the mean wait is ~30s, well inside it.
+  #
+  # CLASSIFY_WORKERS also drives concurrent Tesseract processes in the verify pass - see the
+  # OMP_THREAD_LIMIT note above, which is what stops those deadlocking.
+  PIPELINE_WORKERS: ${PIPELINE_WORKERS:-2}
+  CLASSIFY_WORKERS: ${CLASSIFY_WORKERS:-4}
   # Retry budget. Also inert until named here, and .env.example has advertised both since 2026-07-21,
   # so anyone following it would set a value that did nothing. A setting the app reads should be
   # settable: the way to run 8 retries is to put 8 in .env, not to have the file silently ignored.
