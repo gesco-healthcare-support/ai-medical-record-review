@@ -169,18 +169,25 @@ class Settings(BaseSettings):
     # the limiter caps the aggregate). Speed lever; keep modest so it does not dominate the quota.
     segment_window_workers: int = 3
 
-    # Duplicate detection. `dupe_jaccard_threshold` is the candidate finder's word-set cut (was a
-    # hardcoded default argument). The two similarity knobs are char-level difflib scores and they
-    # gate DIFFERENT steps, which is why there are two:
-    #   `dupe_similarity_override` lets high-scoring content pass the date+title accuracy gate, for
-    #     the genuine re-scan that carries two different dates. Measured on 22 live clusters: real
-    #     duplicates scored 0.994 and above, the worst false positive 0.823. Anything in 0.85-0.95
-    #     separates that sample; 0.90 sits furthest from both edges.
-    #   `dupe_model_override` is higher and skips the confirm call entirely - at that similarity the
-    #     text has already answered the question the model would be asked, and the confirm step's
-    #     silent "these are all distinct" verdict is a known way to lose a real duplicate.
+    # Duplicate detection. `dupe_jaccard_threshold` is the candidate finder's word-set cut. The two
+    # similarity knobs are char-level difflib scores over DATE-MASKED text and they gate DIFFERENT
+    # steps, which is why there are two:
+    #   `dupe_similarity_override` is what lets two sub-documents with DIFFERENT dates be considered
+    #     copies at all - both as a cross-date admission in cluster_rows and as the escape hatch in
+    #     duplicate_gate. Raised 0.90 -> 0.99 on 2026-08-06: the date now leads the rule, so this knob
+    #     guards a date MISMATCH specifically rather than a missing title, and it should fire only for
+    #     text that is essentially identical. Adrian's instinct was 100%; that cannot fire, because two
+    #     scans of one page are OCR'd separately and never come out character-identical - measured on
+    #     22 live clusters, real duplicates bottomed out at 0.994. 0.99 keeps the reviewer-confirmed
+    #     0.998 two-date pair and clears the worst measured false positive (0.823) by a wide margin.
+    #     Masking dates out of the text before scoring is what makes 0.99 reachable for a re-scan whose
+    #     only difference is a stamped date.
+    #   `dupe_model_override` skips the confirm call entirely - at that similarity the text has already
+    #     answered the question the model would be asked, and the confirm step's silent "these are all
+    #     distinct" verdict is a known way to lose a real duplicate. Left at 0.95: it guards a
+    #     different question (spend a Vertex call or not) and the evidence for it has not changed.
     dupe_jaccard_threshold: float = 0.70
-    dupe_similarity_override: float = 0.90
+    dupe_similarity_override: float = 0.99
     dupe_model_override: float = 0.95
 
     # How long the UI waits for a COOPERATIVE stop before offering "Force stop". The cooperative path
