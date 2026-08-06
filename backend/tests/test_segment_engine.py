@@ -1,3 +1,17 @@
+"""Segmentation's injury-date stage, and the removal of the field it replaces.
+
+The date of injury used to be read twice - once as field "i" of the segmentation call, which sees a
+whole WINDOW and so propagates one document's date onto neighbours that state none, and again at
+summarize time. The two never reconciled and the summarize value won, which is how a reviewer's
+correction came to be silently discarded.
+
+These pin the replacement: one isolated read per sub-document, at the END of run_segmentation so the
+page ranges are final, storing onto the row that everything downstream reads.
+
+Pure: the model client, the window call and the categorizer are all stubbed, so nothing hits Vertex.
+"""
+
+
 def test_segmentation_reads_the_injury_date_per_sub_document(monkeypatch):
     """WHEN segmentation finishes, THE SYSTEM SHALL read each row's injury date from that row's OWN
     pages and store it on the row - one read, in one place, so the row is the source of truth.
