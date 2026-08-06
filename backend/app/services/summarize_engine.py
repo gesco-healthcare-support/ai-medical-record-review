@@ -17,6 +17,7 @@ from pdf2image import convert_from_path
 
 from app.config import get_settings
 from app.errors import EmptyExtractionError
+from app.services.deposition_pages import transcript_page_offset
 from app.services.house_style import sentence_case_caps_runs
 from app.services.llm import ImagePart, TextPart, get_provider
 from app.services.ocr import extract_text_from_selected_pages
@@ -192,14 +193,19 @@ _F_ONE_PARAGRAPH = (
     "into named points or sections, run those points together inline in one single paragraph.\n"
 )
 
-# Depositions are the one measured exception: the human convention is one line per transcript page
-# (median gap between referenced pages is 1, across 978 transitions), so a single-paragraph rule would
-# destroy the format rather than tidy it. Stands alone - it used to be phrased as an exception to the
-# paragraph rule, which is not sent to this category at all.
+# Depositions are the one exception to the single-paragraph rule: a transcript is summarized in page
+# groups, so collapsing it into one paragraph would destroy the format rather than tidy it. Stands
+# alone - it used to be phrased as an exception to the paragraph rule, which is not sent here at all.
+#
+# THE HUMAN CONVENTION IS ONE PAGE PER PARAGRAPH, NOT THREE. Measured twice: the median gap between
+# referenced pages is 1 (978 transitions), and re-measured 2026-08-06 across all 55 converted human
+# deliverables, 941 of 1,276 summary lines open with "On page N, lines A to B" while exactly ONE cites
+# a page RANGE. Three-page grouping is Adrian's instruction (2026-08-06), made with that measurement
+# in front of him. Recorded here so nobody later reads the divergence as a defect and "fixes" it back.
 _F_DEPOSITION = (
-    "- Summarize this transcript page by page, one line per page, each beginning with the page and "
-    "line reference. Do NOT merge the lines into a paragraph: the page structure is what a reader "
-    "relies on to locate testimony.\n"
+    "- Summarize this transcript in GROUPS OF THREE consecutive pages, one paragraph per group, each "
+    "beginning with the range of pages it covers. Do NOT merge the groups into one paragraph and do "
+    "NOT write one paragraph per page: the grouping is what a reader relies on to locate testimony.\n"
 )
 
 _F_BOLD = (
@@ -245,6 +251,33 @@ def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> boo
     if not issue_types or not issue_types <= _CORRECTION_ONLY_ISSUES:
         return False
     return _bold_span_count(fixed) < _bold_span_count(raw)
+
+
+# "On pages 4 to 6," / "On pages 34 and 35," - the opener every deposition paragraph carries. Matched
+# loosely (any leading whitespace, either joiner, optional comma) because the guard's job is to notice
+# that citations STOPPED EXISTING, not to police their punctuation.
+_PAGE_RANGE_OPENER = re.compile(r"^\s*On pages?\s+\d+\s*(?:to|and|-)\s*\d+", re.IGNORECASE | re.M)
+
+
+def _drops_deposition_structure(raw: str, fixed: str) -> bool:
+    """True when the audit collapsed a deposition's page grouping or dropped its page citations.
+
+    A deposition is the one category whose body is deliberately MANY paragraphs, each opening with the
+    transcript pages it covers. That structure is the entire point - it is how a reviewer finds the
+    testimony a paragraph came from - and the audit rewrites the whole body, so it is one model call
+    away from being flattened into prose.
+
+    Mirrors ``_drops_required_headings``: compare COUNTS, never text. Rewording a paragraph or
+    correcting a date inside one is exactly what the audit is for; a paragraph or a citation that
+    stopped existing is the defect. Unlike that guard this does NOT restrict itself to the
+    correction-only issue types, because no faithfulness finding justifies deleting a page reference -
+    the reference is not a claim about the medicine, it is a pointer to the source.
+    """
+    raw_paragraphs = [p for p in raw.split("\n") if p.strip()]
+    fixed_paragraphs = [p for p in fixed.split("\n") if p.strip()]
+    if len(fixed_paragraphs) < len(raw_paragraphs):
+        return True
+    return len(_PAGE_RANGE_OPENER.findall(fixed)) < len(_PAGE_RANGE_OPENER.findall(raw))
 
 
 # Forms print employer, occupation and headings in capitals, and the model was copying that through:
@@ -362,6 +395,30 @@ def standalone_studies_from_rows(rows, exclude=None) -> list[dict]:
             continue
         studies.append({"title": row.get("title"), "date": row.get("date")})
     return studies
+
+
+def _deposition_pages_block(page_offset) -> str:
+    """The system-message block telling a deposition what its ``Page N:`` markers actually mean.
+
+    The category prompt cannot know: the same markers are the transcript's OWN printed page numbers
+    when ``deposition_pages.transcript_page_offset`` established an offset, and mere positions in our
+    scanned file when it could not. Citing the second as though it were the first sends a reviewer to
+    the wrong page - so when the offset is unknown the model is told to cite nothing.
+
+    Appended to the SYSTEM message, like the other per-row blocks, so the user payload ordering
+    (images -> OCR text -> instruction) is untouched.
+    """
+    if page_offset is None:
+        return (
+            "\n\nPAGE NUMBERS: the 'Page N:' markers below are positions in our scanned file, NOT "
+            "this transcript's own printed page numbers. Do NOT write any page number in the summary "
+            "- not the marker numbers and not a number you infer. Still group the pages as instructed "
+            "and begin each paragraph with the substance instead of a page reference.\n"
+        )
+    return (
+        "\n\nPAGE NUMBERS: the 'Page N:' markers below ARE this transcript's own printed page "
+        "numbers. Cite them exactly as given - they are what a reader uses to find the testimony.\n"
+    )
 
 
 def _standalone_studies_block(studies) -> str:
@@ -517,12 +574,20 @@ def summarize_row(
     if str(row["category"]) in _CURRENT_VISIT_CATEGORIES:
         system_msg += _document_date_block(row.get("date"))
 
-    # Depositions are summarized one line per transcript page, so this category needs to SEE where
-    # each page ends. The stored text cannot be reused for them: page boundaries cannot be retrofitted
-    # onto text that was already concatenated without them, so a marked re-extraction is the only
-    # way. Confined to category 9 - markers in every category's input would push page numbers into
-    # ordinary summaries and pollute the duplicate check's similarity scoring.
+    # Depositions are summarized in groups of consecutive transcript pages, so this category needs to
+    # SEE where each page ends. The stored text cannot be reused for them: page boundaries cannot be
+    # retrofitted onto text that was already concatenated without them, so a marked re-extraction is
+    # the only way. Confined to category 9 - markers in every category's input would push page numbers
+    # into ordinary summaries and pollute the duplicate check's similarity scoring.
     deposition = str(row["category"]) == "9"
+    page_offset = None
+    if deposition:
+        # Label the markers with the TRANSCRIPT's own printed page numbers, discovered once. When the
+        # offset cannot be established the markers fall back to record pages and the prompt is told
+        # not to cite them at all: a citation that looks like a transcript page but is not one sends a
+        # reviewer to the wrong page, which is worse than giving them no page at all.
+        page_offset = transcript_page_offset(pdf_path, row["start"], row["end"])
+        system_msg += _deposition_pages_block(page_offset)
     # Reuse the duplicate check's OCR when it exists: it ran the SAME extraction over the SAME pages
     # and persisted it per row, so a second full pass is pure waste - on a 1500-page record that is
     # ~45 minutes of OCR done twice. Blank text is not reused, so a page whose OCR failed the first
@@ -530,7 +595,9 @@ def summarize_row(
     text = "" if deposition else (row.get("source_text") or "").strip()
     if not text:
         pages = list(range(int(row["start"]), int(row["end"]) + 1))
-        text = extract_text_from_selected_pages(pdf_path, pages, mark_pages=deposition)
+        text = extract_text_from_selected_pages(
+            pdf_path, pages, mark_pages=deposition, page_label_offset=page_offset or 0
+        )
     if not text.strip():
         # Fail fast with a clear reason: sending empty text to Gemini yields a cryptic
         # "Model input cannot be empty" 400. Blank/image-only pages hit this.
@@ -619,6 +686,16 @@ def summarize_row(
                     row["start"],
                     row["end"],
                     ",".join(sorted(issue_types)),
+                )
+            elif deposition and _drops_deposition_structure(summary, result["fixed_text"]):
+                # Same remedy for the deposition format: the page grouping and its citations are what a
+                # reviewer navigates by, so a rewrite that flattens them is rejected and the raw body
+                # ships. Logged at WARNING for the same reason - a silent structural correction is
+                # indistinguishable from the model never having produced the structure.
+                logger.warning(
+                    "verify pass flattened the deposition grouping on pages %s-%s; keeping raw body",
+                    row["start"],
+                    row["end"],
                 )
             else:
                 # The audit may reintroduce capitals while fixing something else, so the transform runs

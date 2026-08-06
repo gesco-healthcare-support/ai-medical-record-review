@@ -23,8 +23,17 @@ _ID_SIX = {
     "summarize_default": True,
 }
 
-# Categories unchecked for summarization by default (rarely summarized): General + Depositions.
-_SUMMARIZE_OFF_BY_DEFAULT = {"9", "100"}
+# Categories unchecked for summarization by default (rarely summarized): General.
+#
+# Depositions (9) were here until 2026-08-06. Adrian turned them on: a reviewer had to remember a
+# switch, so the deposition prompt reached almost no delivered output.
+#
+# NOTE this constant only affects a BRAND-NEW database - seed_catalog() returns early once any Category
+# row exists ("already seeded (or edited)"), so editing it alone ships NOTHING to the server or to a
+# developer's stack. Migration a9c4e13f70b2 carries the change to existing boxes. Same trap as
+# f1a83b5c60d2, which exists because a prompt edit in code changed nothing on a box that was already
+# seeded.
+_SUMMARIZE_OFF_BY_DEFAULT = {"100"}
 
 
 def _prompt_key(category_id) -> str:
