@@ -320,7 +320,7 @@ def test_summarize_document_persists_summaries(monkeypatch):
     monkeypatch.setattr(
         se,
         "summarize_row",
-        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None: {
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw: {
             "summaryTitle": "T (Pages 1-1)",
             "summaryDate": "-",
             "summaryText": "body",
@@ -365,7 +365,7 @@ def test_summarize_document_flags_a_truncated_summary_for_manual_check(monkeypat
     monkeypatch.setattr(
         se,
         "summarize_row",
-        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None: {
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw: {
             "summaryTitle": "T (Pages 1-1)",
             "summaryDate": "-",
             "summaryText": "body cut off mid-sen",
@@ -406,7 +406,7 @@ def test_summarize_document_preserves_row_order_under_parallelism(monkeypatch):
 
     import app.services.summarize_engine as se
 
-    def fake_summarize(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake_summarize(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         time.sleep(0.02 * (4 - int(row["start"])))  # higher start finishes first
         return {
             "summaryTitle": f"T{row['start']} (Pages {row['start']}-{row['end']})",
@@ -548,7 +548,7 @@ def test_the_worker_hands_each_row_the_records_other_diagnostic_studies(monkeypa
 
     seen: dict[int, list] = {}
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         seen[int(row["start"])] = standalone_studies
         return _ok_output(row)
 
@@ -589,7 +589,7 @@ def test_summarize_persists_per_row_and_reuses_done_on_rerun(monkeypatch):
 
     calls: list[int] = []
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         calls.append(int(row["start"]))
         return _ok_output(row)
 
@@ -634,7 +634,7 @@ def test_summarize_pauses_and_schedules_resume_on_transient(monkeypatch):
 
     from app.worker import tasks as tasks_mod
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
 
     monkeypatch.setattr(se, "summarize_row", fake)
@@ -677,7 +677,7 @@ def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
     while every readable row is still persisted."""
     import app.services.summarize_engine as se
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         if int(row["start"]) == 1:
             raise EmptyExtractionError("no OCR text for pages 1-1")
         return _ok_output(row)
@@ -703,7 +703,7 @@ def test_job_progress_exposes_attention_rows(monkeypatch):
     covered by test_summarize_needs_attention_on_permanent_keeps_partial.)"""
     import app.services.summarize_engine as se
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         if int(row["start"]) == 1:
             raise EmptyExtractionError("no OCR text for pages 1-1")
         return _ok_output(row)
@@ -732,7 +732,9 @@ def test_summarize_pauses_when_pool_times_out(monkeypatch):
     monkeypatch.setattr(
         se,
         "summarize_row",
-        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None: time.sleep(1.5),
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw: time.sleep(
+            1.5
+        ),
     )
 
     scheduled: dict = {}
@@ -1540,3 +1542,66 @@ def test_a_failed_dispatch_marks_the_job_interrupted_instead_of_leaving_it_queue
         assert job.state == "interrupted"
         assert job.finished_at is not None
         assert session.get(Document, doc_id).status == "interrupted"
+
+
+def test_a_summarize_job_pins_all_three_models_at_creation():
+    """WHEN a summarize job is created on the Gemini path with default settings, THE SYSTEM SHALL
+    store the body, title and audit models on the job - so a config change mid-run cannot split one
+    delivered document across two models."""
+    doc_id = _make_user_and_doc()
+    settings = get_settings()
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(
+            session,
+            doc_id,
+            "summarize",
+            model=settings.model_for("body"),
+            prompt_version="3",
+        )
+        assert job.model == "gemini-2.5-pro"
+        assert job.title_model == "gemini-2.5-flash"
+        assert job.audit_model == "gemini-2.5-flash"
+
+
+def test_a_non_summarize_job_pins_no_title_or_audit_model():
+    """WHEN a job of any other kind is created, THE SYSTEM SHALL leave title_model and audit_model
+    NULL - segmentation and dedup make no title or audit call, so a value there would be fiction."""
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(
+            session, doc_id, "segment", model="gemini-2.5-flash", prompt_version="3"
+        )
+        assert job.title_model is None
+        assert job.audit_model is None
+
+
+def test_job_creation_records_a_prompt_fingerprint():
+    """WHEN a job is created, THE SYSTEM SHALL stamp the fingerprint of the prompt set in play, so
+    provenance no longer depends on a hand-bumped constant."""
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(
+            session, doc_id, "segment", model="gemini-2.5-flash", prompt_version="3"
+        )
+        assert job.prompt_fingerprint
+        assert len(job.prompt_fingerprint) == 12
+
+
+def test_a_provenance_failure_never_blocks_a_job(monkeypatch):
+    """WHEN the prompt set cannot be resolved, THE SYSTEM SHALL still create the job and leave the
+    fingerprint NULL. Provenance is a record, not a gate - a job that refuses to start because its
+    stamp failed is strictly worse than a job carrying no stamp.
+
+    Breaks the hashing INSIDE job_prompt_fingerprint rather than replacing the whole function,
+    because the fail-safe under test is that function's own try/except; swapping the function out
+    would only prove the monkeypatch works."""
+    doc_id = _make_user_and_doc()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("prompt resolution exploded")
+
+    monkeypatch.setattr("app.services.provenance.fingerprint", boom)
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="3")
+        assert job.id is not None
+        assert job.prompt_fingerprint is None
