@@ -21,7 +21,6 @@ from app.services.house_style import sentence_case_caps_runs
 from app.services.llm import ImagePart, TextPart, get_provider
 from app.services.ocr import extract_text_from_selected_pages
 from app.services.prompts import prompts
-from app.services.summary_doi import extract_injury_date
 from app.services.summary_verify import verify_summary
 
 logger = logging.getLogger(__name__)
@@ -470,9 +469,7 @@ def _page_image_parts(pdf_path, start, end):
     return parts
 
 
-def summarize_row(
-    pdf_path, row, model=None, prompt=None, verify=None, extract_doi=None, standalone_studies=None
-):
+def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalone_studies=None):
     """Summarize one sub-document row -> the legacy output_dict shape.
 
     row: {start, end, category, date, injury_date, flag} and OPTIONALLY ``source_text`` - the OCR
@@ -485,9 +482,9 @@ def summarize_row(
     ``prompt`` is the category's summary system prompt (blueprints resolve it DB-first via
     catalog.get_prompt and inject it); when omitted it falls back to the hardcoded prompts.py dict.
     ``verify`` runs the faithfulness verify pass (defaults to settings.summary_verify); callers pass
-    False to skip it (e.g. bundle export). ``extract_doi`` (defaults to settings.summary_doi_extract)
-    reads the DOI per-document in isolation instead of trusting the propagated row value; False keeps
-    the legacy row value.
+    False to skip it (e.g. bundle export). The injury date is NOT read here - it comes from
+    ``row["injury_date"]``, which segmentation established per sub-document in isolation, so a
+    reviewer's correction survives into the delivered summary.
 
     ``standalone_studies`` is DOCUMENT-set context, not row data: ``[{title, date}]`` for the record's
     other diagnostic studies (build it with standalone_studies_from_rows). It reaches the model only
@@ -498,8 +495,6 @@ def summarize_row(
     model = model or settings.summary_model
     if verify is None:
         verify = settings.summary_verify
-    if extract_doi is None:
-        extract_doi = settings.summary_doi_extract
     if prompt is None:
         key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
         prompt = prompts.get(key, prompts["category_100"])
@@ -570,19 +565,14 @@ def summarize_row(
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
     summary = sentence_case_caps_runs(summary)
 
-    # DOI only when THIS document states it: an isolated per-document vision call (no neighbours to
-    # copy from) supersedes the segmentation-propagated injury_date. extract_doi=False keeps the
-    # legacy row value. extract_injury_date is fail-safe (returns "-" -> no prefix).
+    # The row IS the source of truth for the injury date. It was read once, per sub-document and in
+    # isolation, at the END of segmentation (see segment_engine.run_segmentation), so a reviewer who
+    # corrects it on the review page has that correction reach the delivered summary.
     #
-    # Deliberately NOT passed `model`: that handed it summary_model (2.5-pro), whose quota is the
-    # binding constraint - one evening measured 498 accepted vs 181 rejected 2.5-pro calls, enough to
-    # pause a summarize job. Reading a date off a page is extraction, not prose, so it belongs on
-    # genai_model (flash), which is what the function defaults to.
-    injury = (
-        extract_injury_date(pdf_path, row["start"], row["end"])
-        if extract_doi
-        else row["injury_date"]
-    )
+    # This used to run a SECOND isolated read here, which won over the row and therefore discarded any
+    # manual correction - the reason "zero reviewer DOI corrections across 2,247 rows" was agreement in
+    # appearance only. "-" means the document states none, and produces no prefix.
+    injury = row["injury_date"]
     # House grammar (see summary_doi): "**DOI**: <value>." - colon-space, period terminator. Stored
     # summaries written before 2026-07-29 carry the old "**DOI**:<value>," form and stay readable;
     # summary_doi.doi_prefix parses both.

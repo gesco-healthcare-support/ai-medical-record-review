@@ -54,12 +54,6 @@ class Settings(BaseSettings):
     # too. On by default; a regression reverts via env with no redeploy. Distinct from the
     # segmentation verify_* knobs below.
     summary_verify: bool = True
-    # DOI extraction: the segmentation model propagates the claim's date of injury onto documents
-    # that never state one (it sees a whole window at once). Instead, at summarize time a per-
-    # sub-document ISOLATED vision call reads the DOI from THAT document alone (no neighbours to
-    # copy from), so a summary shows a DOI only when its own document states one. On by default; a
-    # regression reverts via env with no redeploy.
-    summary_doi_extract: bool = True
     # Summarization also sends the page IMAGES alongside the OCR text (multimodal): the images
     # recover tables, checkboxes, and handwriting the OCR garbles (an eval on real sub-docs showed it
     # adds missing vitals/allergies with no loss). Env-toggle to revert to OCR-only.
@@ -98,6 +92,10 @@ class Settings(BaseSettings):
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2
     classify_workers: int = 4
+    # Injury-date reads at the END of segmentation: one isolated vision call per sub-document, so
+    # they parallelise like categorization does. Its own knob rather than borrowing another
+    # stage's, following segment_window_workers / classify_workers / page_text_workers.
+    doi_workers: int = 4
     # RQ per-job wall-clock cap (seconds). The old Flask app ran the pipeline in-process with no
     # cap; RQ's 180s default is far too short - a 200+ page record needs minutes per vision window
     # plus one Vertex call per identified document. The effective cap is SIZE-AWARE:

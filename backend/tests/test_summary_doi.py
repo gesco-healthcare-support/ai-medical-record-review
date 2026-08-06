@@ -284,23 +284,29 @@ def test_the_isolated_prompt_still_requires_a_labelled_field():
     )
 
 
-def test_the_segmentation_prompt_also_recognises_onset():
-    """Segmentation fills the row's injury_date, so a document labelled only "Date of Onset" would
-    otherwise reach the summary with nothing for the isolated pass to confirm."""
-    from app.services.gemini import SEGMENTATION_PROMPT
+def test_the_isolated_prompt_recognises_a_date_of_onset_label():
+    """A claim form labels the same field either way, and the DLSR 5021 combines them outright, so a
+    document labelled only "Date of Onset" must still yield an injury date.
 
-    assert "Date of Onset" in SEGMENTATION_PROMPT
-    assert "not from prose describing when symptoms began" in SEGMENTATION_PROMPT
+    This used to assert the same thing about SEGMENTATION_PROMPT, which read the date as field "i". That
+    field was removed on 2026-08-06 because a window spans many documents and propagated one
+    document's date onto its neighbours; the isolated read is now the only place the label matters."""
+    assert "Date of Onset" in sd._ISOLATION_PROMPT
+    assert "never from narrative prose describing when symptoms began" in sd._ISOLATION_PROMPT
 
 
 def test_the_segmentation_prompt_version_was_bumped_with_the_prompt():
     """WHEN the segmentation prompt changes, THE SYSTEM SHALL bump PROMPT_VERSION.
 
     Its own contract: the stamp is stored on every Job row so SegmentRows stay traceable to the prompt
-    that produced them, which the fine-tuning dataset depends on. Leaving it at "2" after editing the
+    that produced them, which the fine-tuning dataset depends on. Leaving it behind after editing the
     prompt would silently attribute new rows to the old text - the kind of error that is invisible until
     someone trains on the dataset.
+
+    Bumped 3 -> 4 on 2026-08-06: the injury-date field was removed from the prompt AND the response
+    schema, the largest change either has had. This test did its job - it failed the moment the prompt
+    changed while the constant had not moved.
     """
     from app.services.gemini import PROMPT_VERSION
 
-    assert PROMPT_VERSION == "3"
+    assert PROMPT_VERSION == "4"
