@@ -100,11 +100,32 @@ def test_success_increases_gradually_and_never_exceeds_the_ceiling(redis):
     pacing.record_success("gemini", "m")
     climbed = _rate(redis, "req")
     assert climbed > halved
-    # Additive-ish, not a jump back to full: measured depletion means a fast climb re-trips it.
-    assert climbed < halved * 1.1
     for _ in range(2000):
         pacing.record_success("gemini", "m")
     assert _rate(redis, "req") == pytest.approx(req_ceiling / 60.0)
+
+
+def test_increase_is_additive_so_recovery_does_not_depend_on_how_far_it_fell(redis):
+    # REGRESSION: an earlier version added a fraction of the CURRENT rate - multiplicative increase,
+    # which self-traps. Observed live on 2026-08-05: 2.5-pro sat at the 2% floor and needed ~198
+    # successes to recover, roughly eight hours at the rate the floor allowed.
+    req_ceiling, _ = pacing.ceilings("gemini")
+    per_second = req_ceiling / 60.0
+    # Drive it to the floor.
+    for _ in range(40):
+        redis.store.pop(pacing._key("gemini", "m", "any", "cooldown"), None)
+        pacing.record_rejection("gemini", "m")
+    floored = _rate(redis, "req")
+    pacing.record_success("gemini", "m")
+    step = _rate(redis, "req") - floored
+    # The step is a fraction of the CEILING, so it is the same size wherever the rate currently sits.
+    assert step == pytest.approx(per_second * pacing._INCREASE_FRACTION, rel=1e-6)
+    # Which means full recovery takes a bounded, linear number of successes rather than hundreds.
+    needed = 0
+    while _rate(redis, "req") < per_second and needed < 500:
+        pacing.record_success("gemini", "m")
+        needed += 1
+    assert needed <= 60
 
 
 def test_rate_never_falls_to_zero(redis):
