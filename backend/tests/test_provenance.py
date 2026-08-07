@@ -12,8 +12,6 @@ Pure: `_generate` and `verify_summary` are monkeypatched, so nothing hits Vertex
 tests need no database either - `summary_prompt_fingerprint` is called with explicit strings.
 """
 
-import pytest
-
 from app.services import summarize_engine as se
 from app.services.provenance import (
     fingerprint,
@@ -21,11 +19,6 @@ from app.services.provenance import (
 )
 
 _NO_ISSUES = {"fixed_text": "", "issues": []}
-
-
-@pytest.fixture(autouse=True)
-def _stub_doi(monkeypatch):
-    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
 
 
 def _row(**over):
