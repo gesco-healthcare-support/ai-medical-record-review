@@ -127,7 +127,9 @@ def _segment_window_full(pdf_path, cs, ce, cost):
     rows, malformed = [], 0
     for item in data:
         try:
-            s, e, title, d, i, m = oracles.parse_segment_item(item)
+            # Five values since the injury-date field left the segmentation schema; it is
+            # now read per sub-document in isolation (app/services/summary_doi.py).
+            s, e, title, d, m = oracles.parse_segment_item(item)
         except (KeyError, TypeError, ValueError):
             malformed += 1
             continue
@@ -178,7 +180,9 @@ def run_case(alias):
     with open(os.path.join(case_dir, "pred.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         for r in rows:
-            w.writerow([r["s"], r["e"], "-", r["d"], r["i"], r["m"]])
+            # "i" is gone from the schema; the column stays so downstream CSV readers and
+            # the recorded results in this folder keep the same shape.
+            w.writerow([r["s"], r["e"], "-", r["d"], "-", r["m"]])
     with open(os.path.join(case_dir, "pred_rows.json"), "w", encoding="utf-8") as f:
         json.dump(dict(windows=windows, cap_seams=cap_seams, malformed=malformed_total,
                        rows=rows), f, indent=1)
@@ -240,7 +244,9 @@ def run_case_sol1(alias, window=80, overlap=30, byte_budget_mb=RAW_BUDGET_MB):
     with open(os.path.join(case_dir, "pred.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         for r in rows:
-            w.writerow([r["s"], r["e"], "-", r["d"], r["i"], r["m"]])
+            # "i" is gone from the schema; the column stays so downstream CSV readers and
+            # the recorded results in this folder keep the same shape.
+            w.writerow([r["s"], r["e"], "-", r["d"], "-", r["m"]])
     with open(os.path.join(case_dir, "pred_rows.json"), "w", encoding="utf-8") as f:
         json.dump(dict(windows=seen["windows"], cap_seams=[], malformed=0, rows=rows), f, indent=1)
 
@@ -352,7 +358,9 @@ def run_case_verify(alias):
     with open(os.path.join(case_dir, "pred.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         for r in merged:
-            w.writerow([r["s"], r["e"], "-", r["d"], r["i"], r["m"]])
+            # "i" is gone from the schema; the column stays so downstream CSV readers and
+            # the recorded results in this folder keep the same shape.
+            w.writerow([r["s"], r["e"], "-", r["d"], "-", r["m"]])
 
     report = analyze(alias, c, merged, windows, cap_seams, 0)
     report += [

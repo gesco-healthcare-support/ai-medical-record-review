@@ -21,6 +21,7 @@ PDFs. Imports are lazy so the other three solutions never depend on markitdown.
 """
 
 import os
+import pathlib
 import sys
 import tempfile
 
@@ -28,7 +29,8 @@ from dotenv import load_dotenv
 from pypdf import PdfReader, PdfWriter
 
 # The app's .env holds OPENAI_API_KEY / GEMINI_API_KEY (same source the rest of the spike uses).
-load_dotenv(r"P:\MRR_AI_Source\mrr-line_source\.env")
+# Repointed 2026-08-07: this repo's config, not the legacy Flask checkout's.
+load_dotenv(pathlib.Path(__file__).resolve().parents[3] / ".env")
 
 # Gemini's OpenAI-compatible endpoint (lets the OpenAI client talk to a Gemini vision model).
 GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"

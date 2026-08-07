@@ -10,6 +10,7 @@ is cost-tracked via the shared Cost accountant.
 """
 
 import io
+import pathlib
 import sys
 
 import images
@@ -19,9 +20,15 @@ from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
 # Reuse the production segmentation prompt + schema + tolerant parser for the window oracle
-# (Solution 1), so it faithfully reproduces the current /getPages behavior within a window.
-sys.path.insert(0, r"P:\MRR_AI_Source\mrr-line_source")
-from mrr_ai.services.gemini import (  # noqa: E402
+# (Solution 1), so it faithfully reproduces current segmentation behaviour within a window.
+#
+# REPOINTED 2026-08-07 from the legacy Flask checkout (mrr_ai.services.gemini on P:) to this
+# repo's backend. That import made the harness score a prompt that is no longer the one
+# running: the app was rewritten to FastAPI under backend/app, and the segmentation prompt has
+# diverged since - the legacy copy still carries the injury-date field production removed.
+# Scoring the old text and reporting it as current is worse than not scoring at all.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / 'backend'))
+from app.services.gemini import (  # noqa: E402
     SEGMENT_RESPONSE_SCHEMA,
     SEGMENTATION_PROMPT,
     parse_segment_item,

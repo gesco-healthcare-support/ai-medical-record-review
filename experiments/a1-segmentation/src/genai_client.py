@@ -10,6 +10,7 @@ import concurrent.futures
 import contextlib
 import json
 import os
+import pathlib
 import random
 import threading
 import time
@@ -21,7 +22,8 @@ from google import genai
 from google.genai import errors, types
 
 # The app's .env holds GEMINI_API_KEY (fail-fast validated by the app at runtime).
-load_dotenv(r"P:\MRR_AI_Source\mrr-line_source\.env")
+# Repointed 2026-08-07: this repo's config, not the legacy Flask checkout's.
+load_dotenv(pathlib.Path(__file__).resolve().parents[3] / ".env")
 
 # Route to Vertex AI (BAA-covered, aiplatform.googleapis.com) when GOOGLE_GENAI_USE_VERTEXAI is
 # truthy; otherwise the AI Studio Developer API (generativelanguage.googleapis.com, which is NOT
