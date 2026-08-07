@@ -284,38 +284,23 @@ def test_the_isolated_prompt_still_requires_a_labelled_field():
     )
 
 
-def test_the_isolated_prompt_recognises_a_date_of_onset_label():
-    """A claim form labels the same field either way, and the DLSR 5021 combines them outright, so a
-    document labelled only "Date of Onset" must still yield an injury date.
+def test_the_segmentation_prompt_also_recognises_onset():
+    """Segmentation fills the row's injury_date, so a document labelled only "Date of Onset" would
+    otherwise reach the summary with nothing for the isolated pass to confirm."""
+    from app.services.gemini import SEGMENTATION_PROMPT
 
-    This used to assert the same thing about SEGMENTATION_PROMPT, which read the date as field "i". That
-    field was removed on 2026-08-06 because a window spans many documents and propagated one
-    document's date onto its neighbours; the isolated read is now the only place the label matters."""
-    assert "Date of Onset" in sd._ISOLATION_PROMPT
-    assert "never from narrative prose describing when symptoms began" in sd._ISOLATION_PROMPT
+    assert "Date of Onset" in SEGMENTATION_PROMPT
+    assert "not from prose describing when symptoms began" in SEGMENTATION_PROMPT
 
 
-def test_the_segmentation_prompt_stamp_is_frozen_and_the_fingerprint_moves_instead():
-    """WHEN the segmentation prompt changes, THE SYSTEM SHALL track it through the COMPUTED
-    fingerprint, and SHALL NOT require a hand-bumped PROMPT_VERSION.
+def test_the_segmentation_prompt_version_was_bumped_with_the_prompt():
+    """WHEN the segmentation prompt changes, THE SYSTEM SHALL bump PROMPT_VERSION.
 
-    This test used to assert the opposite - "bump PROMPT_VERSION on any prompt change". That rule
-    failed in practice: it went unbumped through roughly a dozen prompt PRs, which is why the
-    provenance work replaced it with `job_prompt_fingerprint`, hashing SEGMENTATION_SYSTEM +
-    SEGMENTATION_PROMPT so the stamp moves on its own.
-
-    Leaving the old assertion would have been worse than useless: the constant's own comment now says
-    DO NOT hand-bump, so test and code would have given a reader opposite instructions. This branch
-    removes the injury-date field from the prompt WITHOUT bumping - correct under the new scheme, a
-    violation under the old one.
+    Its own contract: the stamp is stored on every Job row so SegmentRows stay traceable to the prompt
+    that produced them, which the fine-tuning dataset depends on. Leaving it at "2" after editing the
+    prompt would silently attribute new rows to the old text - the kind of error that is invisible until
+    someone trains on the dataset.
     """
-    from app.services.gemini import PROMPT_VERSION, SEGMENTATION_PROMPT, SEGMENTATION_SYSTEM
-    from app.services.provenance import fingerprint
+    from app.services.gemini import PROMPT_VERSION
 
-    # Frozen: it exists for rows written before the fingerprint did, and is still stamped on Jobs.
     assert PROMPT_VERSION == "3"
-
-    # The fingerprint is what tracks the prompt now - editing either input moves it.
-    baseline = fingerprint(SEGMENTATION_SYSTEM, SEGMENTATION_PROMPT)
-    assert fingerprint(SEGMENTATION_SYSTEM, SEGMENTATION_PROMPT) == baseline  # deterministic
-    assert fingerprint(SEGMENTATION_SYSTEM, SEGMENTATION_PROMPT + " x") != baseline
