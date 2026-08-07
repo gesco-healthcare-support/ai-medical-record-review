@@ -17,11 +17,13 @@ from pdf2image import convert_from_path
 
 from app.config import get_settings
 from app.errors import EmptyExtractionError
+from app.services.deposition_pages import transcript_page_offset
 from app.services.house_style import sentence_case_caps_runs
 from app.services.llm import ImagePart, TextPart, get_provider
 from app.services.ocr import extract_text_from_selected_pages
 from app.services.prompts import prompts
-from app.services.summary_verify import verify_summary
+from app.services.provenance import fingerprint, summary_prompt_fingerprint
+from app.services.summary_verify import VERIFY_PROMPT, verify_summary
 
 logger = logging.getLogger(__name__)
 
@@ -191,14 +193,19 @@ _F_ONE_PARAGRAPH = (
     "into named points or sections, run those points together inline in one single paragraph.\n"
 )
 
-# Depositions are the one measured exception: the human convention is one line per transcript page
-# (median gap between referenced pages is 1, across 978 transitions), so a single-paragraph rule would
-# destroy the format rather than tidy it. Stands alone - it used to be phrased as an exception to the
-# paragraph rule, which is not sent to this category at all.
+# Depositions are the one exception to the single-paragraph rule: a transcript is summarized in page
+# groups, so collapsing it into one paragraph would destroy the format rather than tidy it. Stands
+# alone - it used to be phrased as an exception to the paragraph rule, which is not sent here at all.
+#
+# THE HUMAN CONVENTION IS ONE PAGE PER PARAGRAPH, NOT THREE. Measured twice: the median gap between
+# referenced pages is 1 (978 transitions), and re-measured 2026-08-06 across all 55 converted human
+# deliverables, 941 of 1,276 summary lines open with "On page N, lines A to B" while exactly ONE cites
+# a page RANGE. Three-page grouping is Adrian's instruction (2026-08-06), made with that measurement
+# in front of him. Recorded here so nobody later reads the divergence as a defect and "fixes" it back.
 _F_DEPOSITION = (
-    "- Summarize this transcript page by page, one line per page, each beginning with the page and "
-    "line reference. Do NOT merge the lines into a paragraph: the page structure is what a reader "
-    "relies on to locate testimony.\n"
+    "- Summarize this transcript in GROUPS OF THREE consecutive pages, one paragraph per group, each "
+    "beginning with the range of pages it covers. Do NOT merge the groups into one paragraph and do "
+    "NOT write one paragraph per page: the grouping is what a reader relies on to locate testimony.\n"
 )
 
 _F_BOLD = (
@@ -244,6 +251,33 @@ def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> boo
     if not issue_types or not issue_types <= _CORRECTION_ONLY_ISSUES:
         return False
     return _bold_span_count(fixed) < _bold_span_count(raw)
+
+
+# "On pages 4 to 6," / "On pages 34 and 35," - the opener every deposition paragraph carries. Matched
+# loosely (any leading whitespace, either joiner, optional comma) because the guard's job is to notice
+# that citations STOPPED EXISTING, not to police their punctuation.
+_PAGE_RANGE_OPENER = re.compile(r"^\s*On pages?\s+\d+\s*(?:to|and|-)\s*\d+", re.IGNORECASE | re.M)
+
+
+def _drops_deposition_structure(raw: str, fixed: str) -> bool:
+    """True when the audit collapsed a deposition's page grouping or dropped its page citations.
+
+    A deposition is the one category whose body is deliberately MANY paragraphs, each opening with the
+    transcript pages it covers. That structure is the entire point - it is how a reviewer finds the
+    testimony a paragraph came from - and the audit rewrites the whole body, so it is one model call
+    away from being flattened into prose.
+
+    Mirrors ``_drops_required_headings``: compare COUNTS, never text. Rewording a paragraph or
+    correcting a date inside one is exactly what the audit is for; a paragraph or a citation that
+    stopped existing is the defect. Unlike that guard this does NOT restrict itself to the
+    correction-only issue types, because no faithfulness finding justifies deleting a page reference -
+    the reference is not a claim about the medicine, it is a pointer to the source.
+    """
+    raw_paragraphs = [p for p in raw.split("\n") if p.strip()]
+    fixed_paragraphs = [p for p in fixed.split("\n") if p.strip()]
+    if len(fixed_paragraphs) < len(raw_paragraphs):
+        return True
+    return len(_PAGE_RANGE_OPENER.findall(fixed)) < len(_PAGE_RANGE_OPENER.findall(raw))
 
 
 # Forms print employer, occupation and headings in capitals, and the model was copying that through:
@@ -363,6 +397,30 @@ def standalone_studies_from_rows(rows, exclude=None) -> list[dict]:
     return studies
 
 
+def _deposition_pages_block(page_offset) -> str:
+    """The system-message block telling a deposition what its ``Page N:`` markers actually mean.
+
+    The category prompt cannot know: the same markers are the transcript's OWN printed page numbers
+    when ``deposition_pages.transcript_page_offset`` established an offset, and mere positions in our
+    scanned file when it could not. Citing the second as though it were the first sends a reviewer to
+    the wrong page - so when the offset is unknown the model is told to cite nothing.
+
+    Appended to the SYSTEM message, like the other per-row blocks, so the user payload ordering
+    (images -> OCR text -> instruction) is untouched.
+    """
+    if page_offset is None:
+        return (
+            "\n\nPAGE NUMBERS: the 'Page N:' markers below are positions in our scanned file, NOT "
+            "this transcript's own printed page numbers. Do NOT write any page number in the summary "
+            "- not the marker numbers and not a number you infer. Still group the pages as instructed "
+            "and begin each paragraph with the substance instead of a page reference.\n"
+        )
+    return (
+        "\n\nPAGE NUMBERS: the 'Page N:' markers below ARE this transcript's own printed page "
+        "numbers. Cite them exactly as given - they are what a reader uses to find the testimony.\n"
+    )
+
+
 def _standalone_studies_block(studies) -> str:
     """The system-message block naming the diagnostic studies that appear as their OWN sub-document
     in this record, so an embedded records review does not restate what is summarized elsewhere.
@@ -411,18 +469,12 @@ _OCR_TEXT_HEADER = "OCR TEXT:\n"
 # so it belongs with that vendor's translation, and the audit path needs the same check.
 
 
-def model_for(kind, fallback):
-    """The model that answers one summarize call: "body", "title" or "audit".
-
-    On Gemini this returns ``fallback`` - the model the JOB was created with - so selecting a
-    provider never silently changes which Gemini model runs, and a resumed job keeps using whatever
-    it started on. On OpenAI the job's Gemini model name is meaningless, so the configured
-    per-call-type model is used instead.
-    """
-    settings = get_settings()
-    if settings.summary_provider == "openai":
-        return settings.model_for(kind)
-    return fallback
+# `model_for(kind, fallback)` lived here and resolved a model PER CALL. It is gone: resolution now
+# happens ONCE, at job creation (services/jobs.create_job), and the three models are persisted on the
+# Job. That strengthens the property its docstring promised - a resumed job kept only its BODY model
+# before, because the title and audit models were re-read from live config on the OpenAI path; now all
+# three are pinned, so no config change can split one delivered document across two models.
+# summarize_row takes them as arguments instead.
 
 
 def _generate(model, system_msg, contents, temperature, max_output_tokens=None):
@@ -469,7 +521,16 @@ def _page_image_parts(pdf_path, start, end):
     return parts
 
 
-def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalone_studies=None):
+def summarize_row(
+    pdf_path,
+    row,
+    model=None,
+    prompt=None,
+    verify=None,
+    standalone_studies=None,
+    title_model=None,
+    audit_model=None,
+):
     """Summarize one sub-document row -> the legacy output_dict shape.
 
     row: {start, end, category, date, injury_date, flag} and OPTIONALLY ``source_text`` - the OCR
@@ -490,9 +551,16 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalon
     other diagnostic studies (build it with standalone_studies_from_rows). It reaches the model only
     for the categories whose rules discuss an embedded records review, so that review does not restate
     a study which is summarized in its own right elsewhere in the record.
+
+    ``model`` / ``title_model`` / ``audit_model`` are the three summarize calls. The worker passes the
+    values persisted on the Job, so a resumed job cannot switch models mid-document; a standalone
+    caller that omits them falls back to config. They are NOT re-resolved per call - see the note
+    where ``model_for`` used to live.
     """
     settings = get_settings()
-    model = model or settings.summary_model
+    model = model or settings.model_for("body")
+    title_model = title_model or settings.model_for("title")
+    audit_model = audit_model or settings.model_for("audit")
     if verify is None:
         verify = settings.summary_verify
     if prompt is None:
@@ -500,7 +568,12 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalon
         prompt = prompts.get(key, prompts["category_100"])
     # Prepend the shared rules that can bind on THIS category (applies to DB-resolved and fallback
     # prompts alike, and to any future category - build_preamble defaults an unknown id to everything).
-    system_msg = build_preamble(row["category"]) + prompt
+    preamble = build_preamble(row["category"])
+    system_msg = preamble + prompt
+    # Fingerprint the PROMPT TEXT only, and do it HERE - before the per-row blocks below are appended.
+    # Those carry row and document DATA, so hashing them would give two rows on an identical prompt
+    # different fingerprints and make the cohort query this exists to enable useless.
+    prompt_fingerprint = summary_prompt_fingerprint(preamble, prompt)
     # E-08: append the record's other diagnostic studies AFTER the category rules, so the list reads
     # as a qualification of the rule that just told the model to take studies out of the embedded
     # review. Appended to the SYSTEM message, not the user content, so the payload ordering
@@ -512,12 +585,20 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalon
     if str(row["category"]) in _CURRENT_VISIT_CATEGORIES:
         system_msg += _document_date_block(row.get("date"))
 
-    # Depositions are summarized one line per transcript page, so this category needs to SEE where
-    # each page ends. The stored text cannot be reused for them: page boundaries cannot be retrofitted
-    # onto text that was already concatenated without them, so a marked re-extraction is the only
-    # way. Confined to category 9 - markers in every category's input would push page numbers into
-    # ordinary summaries and pollute the duplicate check's similarity scoring.
+    # Depositions are summarized in groups of consecutive transcript pages, so this category needs to
+    # SEE where each page ends. The stored text cannot be reused for them: page boundaries cannot be
+    # retrofitted onto text that was already concatenated without them, so a marked re-extraction is
+    # the only way. Confined to category 9 - markers in every category's input would push page numbers
+    # into ordinary summaries and pollute the duplicate check's similarity scoring.
     deposition = str(row["category"]) == "9"
+    page_offset = None
+    if deposition:
+        # Label the markers with the TRANSCRIPT's own printed page numbers, discovered once. When the
+        # offset cannot be established the markers fall back to record pages and the prompt is told
+        # not to cite them at all: a citation that looks like a transcript page but is not one sends a
+        # reviewer to the wrong page, which is worse than giving them no page at all.
+        page_offset = transcript_page_offset(pdf_path, row["start"], row["end"])
+        system_msg += _deposition_pages_block(page_offset)
     # Reuse the duplicate check's OCR when it exists: it ran the SAME extraction over the SAME pages
     # and persisted it per row, so a second full pass is pure waste - on a 1500-page record that is
     # ~45 minutes of OCR done twice. Blank text is not reused, so a page whose OCR failed the first
@@ -525,7 +606,9 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalon
     text = "" if deposition else (row.get("source_text") or "").strip()
     if not text:
         pages = list(range(int(row["start"]), int(row["end"]) + 1))
-        text = extract_text_from_selected_pages(pdf_path, pages, mark_pages=deposition)
+        text = extract_text_from_selected_pages(
+            pdf_path, pages, mark_pages=deposition, page_label_offset=page_offset or 0
+        )
     if not text.strip():
         # Fail fast with a clear reason: sending empty text to Gemini yields a cryptic
         # "Model input cannot be empty" 400. Blank/image-only pages hit this.
@@ -553,13 +636,13 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalon
                 exc,
             )
     summary, truncated = _generate(
-        model_for("body", model),
+        model,
         system_msg,
         body_contents,
         temperature=settings.summary_temperature,
         max_output_tokens=settings.summary_max_output_tokens,
     )
-    title, _ = _generate(model_for("title", model), TITLE_PROMPT, text, temperature=0.0)
+    title, _ = _generate(title_model, TITLE_PROMPT, text, temperature=0.0)
     # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
     # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
@@ -591,7 +674,7 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalon
     verify_issues = None
     if verify:
         result = verify_summary(
-            model_for("audit", model), text, summary, title=title, document_date=row.get("date")
+            audit_model, text, summary, title=title, document_date=row.get("date")
         )
         if result["issues"]:
             issue_types = {
@@ -609,6 +692,16 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalon
                     row["start"],
                     row["end"],
                     ",".join(sorted(issue_types)),
+                )
+            elif deposition and _drops_deposition_structure(summary, result["fixed_text"]):
+                # Same remedy for the deposition format: the page grouping and its citations are what a
+                # reviewer navigates by, so a rewrite that flattens them is rejected and the raw body
+                # ships. Logged at WARNING for the same reason - a silent structural correction is
+                # indistinguishable from the model never having produced the structure.
+                logger.warning(
+                    "verify pass flattened the deposition grouping on pages %s-%s; keeping raw body",
+                    row["start"],
+                    row["end"],
                 )
             else:
                 # The audit may reintroduce capitals while fixing something else, so the transform runs
@@ -641,4 +734,13 @@ def summarize_row(pdf_path, row, model=None, prompt=None, verify=None, standalon
         "verifyIssues": verify_issues,
         # The exact model input, so callers can persist the fine-tuning pair.
         "sourceText": text,
+        # PROVENANCE. Which models wrote this row and which prompt text they were given, so
+        # "did the prompt change help" becomes a GROUP BY instead of dating rows against deploy
+        # history. auditModel/auditFingerprint are None when the verify pass did not run - a
+        # different fact from "not recorded", which `verified` distinguishes.
+        "model": model,
+        "titleModel": title_model,
+        "auditModel": audit_model if verify else None,
+        "promptFingerprint": prompt_fingerprint,
+        "auditFingerprint": fingerprint(VERIFY_PROMPT) if verify else None,
     }

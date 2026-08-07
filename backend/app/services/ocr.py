@@ -61,15 +61,23 @@ def extract_text_from_image(image) -> str:
     return _ocr_image(image)
 
 
-def extract_text_from_selected_pages(pdf_path, selected_pages, *, mark_pages: bool = False) -> str:
+def extract_text_from_selected_pages(
+    pdf_path, selected_pages, *, mark_pages: bool = False, page_label_offset: int = 0
+) -> str:
     """OCR ``selected_pages`` into one string.
 
-    ``mark_pages`` prefixes each page with ``Page <n>:`` - the ABSOLUTE record page, since
-    ``selected_pages`` already carries absolute numbers. Depositions need it: their convention is one
-    summary line per transcript page, and a model handed concatenated text cannot see where a page
-    ends. Off by default, because those markers would otherwise reach every category's model input,
-    and because the duplicate check feeds this text into similarity scoring where a shared
-    ``Page 1: Page 2: ...`` vocabulary would make unrelated documents look alike.
+    ``mark_pages`` prefixes each page with ``Page <n>:``. Depositions need it: they are summarized in
+    page groups, and a model handed concatenated text cannot see where a page ends. Off by default,
+    because those markers would otherwise reach every category's model input, and because the
+    duplicate check feeds this text into similarity scoring where a shared ``Page 1: Page 2: ...``
+    vocabulary would make unrelated documents look alike.
+
+    ``page_label_offset`` is ADDED to the record page number in the marker, so a deposition can be
+    labelled with the transcript's OWN printed page numbers instead of positions in our scanned file
+    (see services/deposition_pages). Default 0 keeps the marker at the absolute record page, which is
+    what every existing caller expects. The offset is applied ONLY to the label - `selected_pages`,
+    the rasterizing and the log lines all stay on real record pages, so a skipped page is still
+    reported by the number that identifies it in the file.
     """
     extracted_text = ""
     for page_number in sorted(set(selected_pages)):
@@ -91,7 +99,8 @@ def extract_text_from_selected_pages(pdf_path, selected_pages, *, mark_pages: bo
                 logger.warning("OCR skipped page %s: %s", page_number, exc)  # timeout/bad page
                 continue
             # Same marker shape as extract_text_from_all_pages, so both extractors read alike.
-            extracted_text += f"Page {page_number}:\n{page_text}\n" if mark_pages else page_text
+            label = page_number + page_label_offset
+            extracted_text += f"Page {label}:\n{page_text}\n" if mark_pages else page_text
     return extracted_text
 
 

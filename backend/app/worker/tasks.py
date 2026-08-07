@@ -275,6 +275,14 @@ def _build_summary(job, idx, row, output) -> Summary:
         row_start=row["start"],
         row_end=row["end"],
         row_category=row["category"],
+        # Provenance, straight from summarize_row's output: which models wrote this row and the hash
+        # of the prompt text they were given. Per-row rather than per-job because a job spans many
+        # categories, so one job-level prompt hash cannot describe any individual summary.
+        model=output.get("model"),
+        title_model=output.get("titleModel"),
+        audit_model=output.get("auditModel"),
+        prompt_fingerprint=output.get("promptFingerprint"),
+        audit_fingerprint=output.get("auditFingerprint"),
     )
 
 
@@ -326,7 +334,6 @@ def segment_document(job_id) -> None:
             logger.warning("header extraction skipped for document %s", document.id, exc_info=True)
 
     _run(job_id, work)
-    _chain_dedup(job_id)
 
 
 def classify_document(job_id) -> None:
@@ -341,7 +348,7 @@ def classify_document(job_id) -> None:
         document = session.get(Document, job.document_id)
         rows = session.scalars(
             select(ReviewRow)
-            .where(ReviewRow.document_id == job.document_id)
+            .where(ReviewRow.document_id == job.document_id, ReviewRow.include.is_(True))
             .order_by(ReviewRow.idx)
         ).all()
         for i, row in enumerate(rows):
@@ -360,34 +367,6 @@ def classify_document(job_id) -> None:
         report("categorizing", len(rows), len(rows))
 
     _run(job_id, work)
-    _chain_dedup(job_id)
-
-
-def _chain_dedup(job_id) -> None:
-    """After a successful identify (segment/classify), enqueue the background duplicate-clustering
-    job. Best-effort: a failure here must never fail the identify that just succeeded - dedup is
-    advisory and can be re-run from the Duplicates tab."""
-    from app.services import jobs
-    from app.services.gemini import PROMPT_VERSION
-
-    with get_sessionmaker()() as session:
-        job = session.get(Job, job_id)
-        if job is None or job.state != "done":
-            return  # identify did not finish cleanly; nothing to dedup
-        document_id = job.document_id
-        try:
-            jobs.enqueue(
-                session,
-                document_id,
-                "dedup",
-                model=get_settings().classify_model,
-                prompt_version=PROMPT_VERSION,
-                catalog_revision=catalog.catalog_version(session),
-            )
-        except jobs.JobConflict:
-            pass  # a job is somehow already active; skip the chain
-        except Exception:
-            logger.warning("could not enqueue dedup for document %s", document_id, exc_info=True)
 
 
 def dedup_document(job_id) -> None:
@@ -396,9 +375,19 @@ def dedup_document(job_id) -> None:
     `dupe_group` + similarity per confirmed set. Advisory/precompute: it never edits summaries - it
     only annotates rows for the Duplicates review.
 
-    Scope is EVERY row, not just the ones marked for summarization: General/Depositions are unchecked
-    by default and that is exactly where re-scanned cover letters and exhibit lists live, and a
-    keep-one resolution excludes the copies it just found.
+    Scope is the rows the reviewer CHECKED for summarization (include=True), so a document nobody will
+    summarize is never OCR'd or clustered. This runs on demand from the Duplicates tab rather than
+    automatically after identify, so by the time it runs the reviewer's selection is real.
+
+    It used to cover EVERY row, because General and Depositions are unchecked by default and that is
+    where re-scanned cover letters and exhibit lists live. Depositions became checked by default
+    (2026-08-06), leaving General as the only off-by-default category, and that residual gap was
+    ACCEPTED: a row the reviewer excluded will not be summarized, so a duplicate among excluded rows
+    cannot reach a client. Recorded rather than silently dropped, because it IS a real narrowing.
+
+    A consequence worth knowing: a keep-one resolution excludes the copies it just found, so a later
+    re-check cannot resurrect a cluster the reviewer already collapsed. That is the settled answer
+    staying settled, not a loss.
 
     Dismissed clusters ("not duplicates") are re-examined, but the dismissal is re-applied when the
     new cluster holds exactly the same copies - so a settled answer stays quiet while a cluster that
@@ -408,7 +397,7 @@ def dedup_document(job_id) -> None:
     """
     import gc
 
-    from app.services.dedup import cluster_rows, confirm_cluster, date_title_gate
+    from app.services.dedup import cluster_rows, confirm_cluster, duplicate_gate
     from app.services.ocr import extract_pages_with_report
 
     def work(session, job, report):
@@ -416,7 +405,7 @@ def dedup_document(job_id) -> None:
         document = session.get(Document, job.document_id)
         rows = session.scalars(
             select(ReviewRow)
-            .where(ReviewRow.document_id == job.document_id)
+            .where(ReviewRow.document_id == job.document_id, ReviewRow.include.is_(True))
             .order_by(ReviewRow.idx)
         ).all()
         total = len(rows)
@@ -483,7 +472,14 @@ def dedup_document(job_id) -> None:
         # Candidate clusters (content similarity) -> confirm each is truly the same document ->
         # assign a shared per-document group number to the confirmed members.
         items = [
-            {"id": row.id, "title": row.title, "date": row.date, "text": row.source_text or ""}
+            {
+                "id": row.id,
+                "title": row.title,
+                "date": row.date,
+                # Category joins the gate as an ALTERNATIVE to a shared title (see duplicate_gate).
+                "category": row.category,
+                "text": row.source_text or "",
+            }
             for row in rows
         ]
         by_id = {row.id: row for row in rows}
@@ -491,12 +487,13 @@ def dedup_document(job_id) -> None:
         for cluster in cluster_rows(items):
             members, similarity = cluster["members"], cluster["similarity"]
             pages = ", ".join(f"{by_id[m['id']].start}-{by_id[m['id']].end}" for m in members)
-            if not date_title_gate(members, similarity):
-                # Neither date nor title shared and the content is not near-identical: a recurring
-                # form series, not copies. Rejected without spending a confirm call.
+            if not duplicate_gate(members, similarity):
+                # No shared date, or a shared date with neither title nor category agreeing, and
+                # the content is not near-identical: a recurring form series, not copies.
+                # Rejected without spending a confirm call.
                 logger.info(
                     "dedup rejected a %d-member candidate on document %s (similarity %s, pages %s): "
-                    "no shared date or title",
+                    "date plus title-or-category did not agree",
                     len(members),
                     job.document_id,
                     similarity,
@@ -623,6 +620,12 @@ def summarize_document(job_id) -> None:
                 prompt_by_cat[cat] = catalog.get_prompt(session, "summary", cat)
 
         pdf_path, model = document.stored_path, job.model
+        # The three models come from the JOB, resolved once when it was created, so a config change
+        # mid-run cannot split one delivered document across two models. `or job.model` is what makes
+        # a job created before 2026-08-06 behave exactly as it did: those jobs used one model for all
+        # three calls, and their new columns are NULL rather than back-filled with a guess.
+        title_model = job.title_model or job.model
+        audit_model = job.audit_model or job.model
         attention_rows: list[dict] = []  # permanent per-row failures {idx, pages, reason}
         transient_left = False  # >=1 row failed transiently -> retry on resume
         consecutive_transient = 0
@@ -641,6 +644,8 @@ def summarize_document(job_id) -> None:
                     # `pending`: a study already summarized on an earlier attempt still stands as its
                     # own sub-document, so a resumed run must give the same context as the first.
                     standalone_studies=standalone_studies_from_rows(rows, exclude=row),
+                    title_model=title_model,
+                    audit_model=audit_model,
                 ): (i, row)
                 for i, row in pending
             }

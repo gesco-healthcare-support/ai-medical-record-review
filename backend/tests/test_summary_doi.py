@@ -295,18 +295,27 @@ def test_the_isolated_prompt_recognises_a_date_of_onset_label():
     assert "never from narrative prose describing when symptoms began" in sd._ISOLATION_PROMPT
 
 
-def test_the_segmentation_prompt_version_was_bumped_with_the_prompt():
-    """WHEN the segmentation prompt changes, THE SYSTEM SHALL bump PROMPT_VERSION.
+def test_the_segmentation_prompt_stamp_is_frozen_and_the_fingerprint_moves_instead():
+    """WHEN the segmentation prompt changes, THE SYSTEM SHALL track it through the COMPUTED
+    fingerprint, and SHALL NOT require a hand-bumped PROMPT_VERSION.
 
-    Its own contract: the stamp is stored on every Job row so SegmentRows stay traceable to the prompt
-    that produced them, which the fine-tuning dataset depends on. Leaving it behind after editing the
-    prompt would silently attribute new rows to the old text - the kind of error that is invisible until
-    someone trains on the dataset.
+    This test used to assert the opposite - "bump PROMPT_VERSION on any prompt change". That rule
+    failed in practice: it went unbumped through roughly a dozen prompt PRs, which is why the
+    provenance work replaced it with `job_prompt_fingerprint`, hashing SEGMENTATION_SYSTEM +
+    SEGMENTATION_PROMPT so the stamp moves on its own.
 
-    Bumped 3 -> 4 on 2026-08-06: the injury-date field was removed from the prompt AND the response
-    schema, the largest change either has had. This test did its job - it failed the moment the prompt
-    changed while the constant had not moved.
+    Leaving the old assertion would have been worse than useless: the constant's own comment now says
+    DO NOT hand-bump, so test and code would have given a reader opposite instructions. This branch
+    removes the injury-date field from the prompt WITHOUT bumping - correct under the new scheme, a
+    violation under the old one.
     """
-    from app.services.gemini import PROMPT_VERSION
+    from app.services.gemini import PROMPT_VERSION, SEGMENTATION_PROMPT, SEGMENTATION_SYSTEM
+    from app.services.provenance import fingerprint
 
-    assert PROMPT_VERSION == "4"
+    # Frozen: it exists for rows written before the fingerprint did, and is still stamped on Jobs.
+    assert PROMPT_VERSION == "3"
+
+    # The fingerprint is what tracks the prompt now - editing either input moves it.
+    baseline = fingerprint(SEGMENTATION_SYSTEM, SEGMENTATION_PROMPT)
+    assert fingerprint(SEGMENTATION_SYSTEM, SEGMENTATION_PROMPT) == baseline  # deterministic
+    assert fingerprint(SEGMENTATION_SYSTEM, SEGMENTATION_PROMPT + " x") != baseline

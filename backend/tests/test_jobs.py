@@ -294,7 +294,7 @@ def test_segment_document_persists_segment_and_review_rows(monkeypatch):
     monkeypatch.setattr(
         se,
         "run_segmentation",
-        lambda pdf_path, total_pages, progress=None: [_row(1, "1"), _row(2, "9")],
+        lambda pdf_path, total_pages, progress=None: [_row(1, "1"), _row(2, "100")],
     )
     doc_id = _make_user_and_doc()
     with get_sessionmaker()() as session:
@@ -307,9 +307,11 @@ def test_segment_document_persists_segment_and_review_rows(monkeypatch):
             select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
         ).all()
         segment = session.scalars(select(SegmentRow).where(SegmentRow.job_id == job_id)).all()
-        assert [r.category for r in review] == ["1", "9"]
+        assert [r.category for r in review] == ["1", "100"]
         assert len(segment) == 2
-        # include follows the category summarize_default: cat 1 on, Depositions (9) off.
+        # include follows the category summarize_default: cat 1 on, General (100) off. Uses 100
+        # rather than Depositions (9) because 9 became on-by-default on 2026-08-06 - with two
+        # on-by-default categories this would pass even if include were hardcoded True.
         assert review[0].include is True
         assert review[1].include is False
 
@@ -320,7 +322,7 @@ def test_summarize_document_persists_summaries(monkeypatch):
     monkeypatch.setattr(
         se,
         "summarize_row",
-        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None: {
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw: {
             "summaryTitle": "T (Pages 1-1)",
             "summaryDate": "-",
             "summaryText": "body",
@@ -365,7 +367,7 @@ def test_summarize_document_flags_a_truncated_summary_for_manual_check(monkeypat
     monkeypatch.setattr(
         se,
         "summarize_row",
-        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None: {
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw: {
             "summaryTitle": "T (Pages 1-1)",
             "summaryDate": "-",
             "summaryText": "body cut off mid-sen",
@@ -406,7 +408,7 @@ def test_summarize_document_preserves_row_order_under_parallelism(monkeypatch):
 
     import app.services.summarize_engine as se
 
-    def fake_summarize(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake_summarize(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         time.sleep(0.02 * (4 - int(row["start"])))  # higher start finishes first
         return {
             "summaryTitle": f"T{row['start']} (Pages {row['start']}-{row['end']})",
@@ -548,7 +550,7 @@ def test_the_worker_hands_each_row_the_records_other_diagnostic_studies(monkeypa
 
     seen: dict[int, list] = {}
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         seen[int(row["start"])] = standalone_studies
         return _ok_output(row)
 
@@ -589,7 +591,7 @@ def test_summarize_persists_per_row_and_reuses_done_on_rerun(monkeypatch):
 
     calls: list[int] = []
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         calls.append(int(row["start"]))
         return _ok_output(row)
 
@@ -634,7 +636,7 @@ def test_summarize_pauses_and_schedules_resume_on_transient(monkeypatch):
 
     from app.worker import tasks as tasks_mod
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
 
     monkeypatch.setattr(se, "summarize_row", fake)
@@ -677,7 +679,7 @@ def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
     while every readable row is still persisted."""
     import app.services.summarize_engine as se
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         if int(row["start"]) == 1:
             raise EmptyExtractionError("no OCR text for pages 1-1")
         return _ok_output(row)
@@ -703,7 +705,7 @@ def test_job_progress_exposes_attention_rows(monkeypatch):
     covered by test_summarize_needs_attention_on_permanent_keeps_partial.)"""
     import app.services.summarize_engine as se
 
-    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None):
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
         if int(row["start"]) == 1:
             raise EmptyExtractionError("no OCR text for pages 1-1")
         return _ok_output(row)
@@ -732,7 +734,9 @@ def test_summarize_pauses_when_pool_times_out(monkeypatch):
     monkeypatch.setattr(
         se,
         "summarize_row",
-        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None: time.sleep(1.5),
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw: time.sleep(
+            1.5
+        ),
     )
 
     scheduled: dict = {}
@@ -779,7 +783,7 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
     monkeypatch.setattr(
         classification,
         "classify",
-        lambda title, page_text=None: Classification("9", "high", "rules", needs_review=False),
+        lambda title, page_text=None: Classification("100", "high", "rules", needs_review=False),
     )
     doc_id = _make_user_and_doc(page_count=2)
     with get_sessionmaker()() as session:
@@ -807,8 +811,10 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
         rows = session.scalars(
             select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
         ).all()
-        assert [r.category for r in rows] == ["9", "9"]  # per-row classification applied
-        # include re-derived from the new category: Depositions (9) is off-by-default.
+        assert [r.category for r in rows] == ["100", "100"]  # per-row classification applied
+        # include RE-DERIVED from the new category, which is the point: the rows were seeded
+        # include=True and General (100) is off-by-default, so a False here can only come from
+        # re-derivation. Was Depositions (9) until it became on-by-default on 2026-08-06.
         assert all(r.include is False for r in rows)
 
 
@@ -1079,10 +1085,15 @@ def _rows_by_idx(doc_id):
         }
 
 
-def test_dedup_document_covers_excluded_rows_and_keeps_an_unchanged_dismissal(monkeypatch):
-    """Scope is EVERY row - an excluded copy is still clustered (General/Depositions rows are
-    excluded by default, and that is where re-scanned letters live) - and a dismissed cluster whose
-    copies are unchanged comes back still dismissed, so a settled "not duplicates" stays quiet."""
+def test_dedup_document_skips_excluded_rows_and_keeps_an_unchanged_dismissal(monkeypatch):
+    """Scope is the rows the reviewer CHECKED - an excluded copy is not read and not clustered - and a
+    dismissed cluster whose copies are unchanged comes back still dismissed, so a settled "not
+    duplicates" stays quiet.
+
+    Inverted on 2026-08-06. Dedup used to cover every row, on the reasoning that General and
+    Depositions are unchecked by default and that is where re-scanned letters live. Depositions became
+    checked by default (PR #82), and the residual General gap was accepted: a row the reviewer
+    excluded will not be summarized, so a duplicate among excluded rows cannot reach a client."""
     doc_id = _make_user_and_doc(page_count=5)
     same = "alpha beta gamma delta epsilon zeta eta theta"
     dismissed_text = "kappa lambda mu nu xi omicron pi rho sigma"
@@ -1103,8 +1114,13 @@ def test_dedup_document_covers_excluded_rows_and_keeps_an_unchanged_dismissal(mo
     dedup_document(job_id)
 
     rows = _rows_by_idx(doc_id)
-    assert rows[1].include is False and rows[1].dupe_group is not None
-    assert rows[0].dupe_group == rows[1].dupe_group  # the excluded copy is clustered with its twin
+    # The excluded copy is left entirely alone: not clustered, and not even OCR'd - its source_text
+    # stays None, which is what proves the row was skipped rather than read and found unique.
+    assert rows[1].include is False
+    assert rows[1].dupe_group is None
+    assert rows[1].source_text is None
+    # Its included twin therefore has nothing to pair with and is not a duplicate either.
+    assert rows[0].dupe_group is None
     assert rows[0].dupe_dismissed is False
     # The dismissed pair was re-examined and re-dismissed (same two page ranges).
     assert rows[2].dupe_group == rows[3].dupe_group is not None
@@ -1182,9 +1198,18 @@ def test_dedup_document_stores_the_cluster_similarity(monkeypatch):
     assert rows[2].dupe_similarity is None  # a singleton carries no cluster score
 
 
-def test_dedup_document_keeps_the_reviewers_kept_copy(monkeypatch):
-    """A re-check must not forget a keep-one resolution: dupe_primary survives the run (only
-    dupe_group is recomputed), so the cluster comes back resolved rather than needing review."""
+def test_a_keep_one_resolution_is_not_reopened_by_a_re_check(monkeypatch):
+    """A re-check must not reopen a keep-one resolution.
+
+    Rewritten 2026-08-06 with the scope change. keep_one sets include=False on every copy it did not
+    keep, and dedup now reads only included rows - so the collapsed cluster has exactly one member
+    left in scope, a cluster of one is not a duplicate set, and it simply does not come back. The
+    reviewer's answer stands.
+
+    This is a stronger guarantee than the old one, not a weaker one: previously the cluster re-formed
+    every run and relied on dupe_primary surviving to present as resolved. Now there is nothing to
+    re-form. Re-including the excluded copy puts it back in scope, which is the correct way to reopen
+    the question deliberately."""
     doc_id = _make_user_and_doc(page_count=2)
     with get_sessionmaker()() as session:
         for idx, (include, primary) in enumerate([(True, True), (False, False)]):
@@ -1219,9 +1244,13 @@ def test_dedup_document_keeps_the_reviewers_kept_copy(monkeypatch):
                 select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
             ).all()
         }
-    assert rows[0].dupe_group == rows[1].dupe_group is not None  # re-clustered
-    assert rows[0].dupe_primary is True  # the kept copy is still marked
-    assert rows[1].dupe_primary is False
+    # The excluded copy was out of scope, so the pair cannot re-form and the resolved cluster stays
+    # closed. Both rows end ungrouped rather than re-clustered.
+    assert rows[0].dupe_group is None
+    assert rows[1].dupe_group is None
+    # The kept copy keeps its include; the resolution is not undone.
+    assert rows[0].include is True
+    assert rows[1].include is False
 
 
 def _dedup_jobs(doc_id):
@@ -1231,51 +1260,43 @@ def _dedup_jobs(doc_id):
         ).all()
 
 
-def test_chain_dedup_skips_when_identify_not_done():
-    from app.worker.tasks import _chain_dedup
+def test_identify_does_not_start_a_duplicate_check(monkeypatch):
+    """WHEN segment or classify completes, THE SYSTEM SHALL NOT enqueue a dedup job.
 
-    doc_id = _make_user_and_doc()
+    Replaces three test_chain_dedup_* tests deleted with `_chain_dedup` on 2026-08-06. Duplicate
+    detection is now started by the reviewer from the Duplicates tab, once they have chosen which
+    sub-documents to summarize - checking documents nobody will summarize is work spent for nothing,
+    and running it automatically means running it before the choice has been made.
+    """
+    import app.services.segment_engine as se
+
+    monkeypatch.setattr(se, "get_genai_client", lambda: None)
+    monkeypatch.setattr(se, "byte_budgeted_windows", lambda *a, **k: [(1, 2)])
+    monkeypatch.setattr(
+        se,
+        "_window_rows",
+        lambda pdf_path, ws, we, client: [
+            dict(start=1, end=2, title="A", date="-", injury_date="-", flag="-")
+        ],
+    )
+
+    # The real _categorize SETS row["category"]; a pass-through stub leaves the key absent and the
+    # persistence step downstream raises KeyError, failing the job for the wrong reason.
+    def _fake_categorize(pdf_path, row):
+        row["category"] = "1"
+        return row
+
+    monkeypatch.setattr(se, "_categorize", _fake_categorize)
+    monkeypatch.setattr(se.get_settings(), "verify_merge", False, raising=False)
+
+    doc_id = _make_user_and_doc(page_count=2)
     with get_sessionmaker()() as session:
-        job_id = jobs.create_job(
-            session, doc_id, "segment", model="m", prompt_version="1"
-        ).id  # queued
-    _chain_dedup(job_id)  # identify did not finish -> no dedup enqueued
-    assert _dedup_jobs(doc_id) == []
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
 
+    segment_document(job_id)
 
-def test_chain_dedup_swallows_conflict_when_a_job_is_active():
-    from app.worker.tasks import _chain_dedup
-
-    doc_id = _make_user_and_doc()
     with get_sessionmaker()() as session:
-        seg = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
-        seg.state = "done"
-        session.add(
-            Job(
-                document_id=doc_id, kind="summarize", state="running", model="m", prompt_version="1"
-            )
-        )
-        session.commit()
-        seg_id = seg.id
-    _chain_dedup(seg_id)  # a job is already active -> JobConflict is swallowed, no raise
-    assert _dedup_jobs(doc_id) == []
-
-
-def test_chain_dedup_swallows_generic_error(monkeypatch):
-    from app.worker.tasks import _chain_dedup
-
-    doc_id = _make_user_and_doc()
-    with get_sessionmaker()() as session:
-        seg = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
-        seg.state = "done"
-        session.commit()
-        seg_id = seg.id
-
-    def _boom(*args, **kwargs):
-        raise RuntimeError("redis down")
-
-    monkeypatch.setattr("app.services.jobs.enqueue", _boom)
-    _chain_dedup(seg_id)  # a non-conflict failure is logged + swallowed (never fails identify)
+        assert session.get(Job, job_id).state == "done"  # the identify itself still succeeded
     assert _dedup_jobs(doc_id) == []
 
 
@@ -1540,3 +1561,66 @@ def test_a_failed_dispatch_marks_the_job_interrupted_instead_of_leaving_it_queue
         assert job.state == "interrupted"
         assert job.finished_at is not None
         assert session.get(Document, doc_id).status == "interrupted"
+
+
+def test_a_summarize_job_pins_all_three_models_at_creation():
+    """WHEN a summarize job is created on the Gemini path with default settings, THE SYSTEM SHALL
+    store the body, title and audit models on the job - so a config change mid-run cannot split one
+    delivered document across two models."""
+    doc_id = _make_user_and_doc()
+    settings = get_settings()
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(
+            session,
+            doc_id,
+            "summarize",
+            model=settings.model_for("body"),
+            prompt_version="3",
+        )
+        assert job.model == "gemini-2.5-pro"
+        assert job.title_model == "gemini-2.5-flash"
+        assert job.audit_model == "gemini-2.5-flash"
+
+
+def test_a_non_summarize_job_pins_no_title_or_audit_model():
+    """WHEN a job of any other kind is created, THE SYSTEM SHALL leave title_model and audit_model
+    NULL - segmentation and dedup make no title or audit call, so a value there would be fiction."""
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(
+            session, doc_id, "segment", model="gemini-2.5-flash", prompt_version="3"
+        )
+        assert job.title_model is None
+        assert job.audit_model is None
+
+
+def test_job_creation_records_a_prompt_fingerprint():
+    """WHEN a job is created, THE SYSTEM SHALL stamp the fingerprint of the prompt set in play, so
+    provenance no longer depends on a hand-bumped constant."""
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(
+            session, doc_id, "segment", model="gemini-2.5-flash", prompt_version="3"
+        )
+        assert job.prompt_fingerprint
+        assert len(job.prompt_fingerprint) == 12
+
+
+def test_a_provenance_failure_never_blocks_a_job(monkeypatch):
+    """WHEN the prompt set cannot be resolved, THE SYSTEM SHALL still create the job and leave the
+    fingerprint NULL. Provenance is a record, not a gate - a job that refuses to start because its
+    stamp failed is strictly worse than a job carrying no stamp.
+
+    Breaks the hashing INSIDE job_prompt_fingerprint rather than replacing the whole function,
+    because the fail-safe under test is that function's own try/except; swapping the function out
+    would only prove the monkeypatch works."""
+    doc_id = _make_user_and_doc()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("prompt resolution exploded")
+
+    monkeypatch.setattr("app.services.provenance.fingerprint", boom)
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="3")
+        assert job.id is not None
+        assert job.prompt_fingerprint is None
