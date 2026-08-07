@@ -15,13 +15,6 @@ from app.services.llm import gemini as gm
 _NO_ISSUES = {"fixed_text": "", "issues": []}
 
 
-@pytest.fixture(autouse=True)
-def _stub_doi(monkeypatch):
-    # Isolated DOI extraction hits a real PDF/Vertex; existing tests don't exercise it, so default
-    # it to "-" (no DOI). DOI-specific tests below re-patch it.
-    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
-
-
 def _row(**over):
     row = {
         "start": 1,
@@ -202,14 +195,14 @@ def test_the_doi_call_runs_on_the_flash_model_not_the_summary_model(monkeypatch)
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
 
-    def fake_extract(pdf_path, start, end, model=None, strict=False):
-        seen["model"] = model
-        return "-"
-
-    monkeypatch.setattr(se, "extract_injury_date", fake_extract)
-    se.summarize_row("/x.pdf", _row(), prompt="P", model="gemini-2.5-pro", extract_doi=True)
-    # None means "use the function's own default", which is genai_model (flash).
-    assert seen["model"] is None
+    # WHEN a row is summarized, THE SYSTEM SHALL make NO injury-date call. The read moved to the end
+    # of segmentation, where it happens once per sub-document and its result is stored on the row.
+    # This test used to assert the call went to flash rather than 2.5-pro; the call is gone entirely,
+    # which settles that concern more thoroughly than routing it did.
+    seen["model"] = "sentinel-never-overwritten"
+    se.summarize_row("/x.pdf", _row(), prompt="P", model="gemini-2.5-pro")
+    assert seen["model"] == "sentinel-never-overwritten"
+    assert not hasattr(se, "extract_injury_date")
 
 
 def test_stored_ocr_is_reused_instead_of_extracting_twice(monkeypatch):
@@ -306,8 +299,9 @@ def test_a_deposition_without_stored_text_still_gets_markers(monkeypatch):
     assert calls == [True]
 
 
-def test_doi_prefix_from_isolated_extraction(monkeypatch):
-    # WHEN extract_doi and the isolated extraction returns a date, THE SYSTEM SHALL prefix it.
+def test_doi_prefix_comes_from_the_row(monkeypatch):
+    # WHEN the row carries an injury date, THE SYSTEM SHALL prefix the summary with it. The row is the
+    # single source of truth: segmentation read it once, per sub-document, in isolation.
     monkeypatch.setattr(
         se,
         "extract_text_from_selected_pages",
@@ -315,8 +309,7 @@ def test_doi_prefix_from_isolated_extraction(monkeypatch):
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
-    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "09/25/23")
-    out = se.summarize_row("/x.pdf", _row(injury_date="-"), prompt="P", extract_doi=True)
+    out = se.summarize_row("/x.pdf", _row(injury_date="09/25/23"), prompt="P")
     assert out["summaryText"].startswith("**DOI**: 09/25/23.")
 
 
@@ -330,14 +323,13 @@ def test_doi_prefix_carries_a_cumulative_trauma_period(monkeypatch):
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
-    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "CT 01/02/20-03/04/21")
-    out = se.summarize_row("/x.pdf", _row(injury_date="-"), prompt="P", extract_doi=True)
+    out = se.summarize_row("/x.pdf", _row(injury_date="CT 01/02/20-03/04/21"), prompt="P")
     assert out["summaryText"].startswith("**DOI**: CT 01/02/20-03/04/21.")
 
 
-def test_doi_prefix_omitted_when_isolated_returns_dash(monkeypatch):
-    # WHEN the isolated extraction returns "-", THE SYSTEM SHALL omit the prefix even though the
-    # (propagated) row value carries a date.
+def test_doi_prefix_omitted_when_the_row_states_none(monkeypatch):
+    # WHEN the row's injury date is the "-" sentinel, THE SYSTEM SHALL omit the prefix. "-" means this
+    # document states no injury date, which is a fact worth honouring rather than a missing value.
     monkeypatch.setattr(
         se,
         "extract_text_from_selected_pages",
@@ -345,13 +337,18 @@ def test_doi_prefix_omitted_when_isolated_returns_dash(monkeypatch):
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
-    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
-    out = se.summarize_row("/x.pdf", _row(injury_date="05/08/2022"), prompt="P", extract_doi=True)
+    out = se.summarize_row("/x.pdf", _row(injury_date="-"), prompt="P")
     assert "**DOI**" not in out["summaryText"]
 
 
-def test_extract_doi_false_uses_row_value_without_calling(monkeypatch):
-    # WHEN extract_doi is False, THE SYSTEM SHALL use row["injury_date"] and NOT call extraction.
+def test_a_reviewers_corrected_injury_date_reaches_the_summary(monkeypatch):
+    """WHEN a reviewer has corrected a row's injury date, THE SYSTEM SHALL use the corrected value.
+
+    This is the defect the single-source change exists to fix. Summarize used to run its own isolated
+    read whose result WON over the row, so a manual correction was silently discarded - which is why
+    "zero reviewer DOI corrections across 2,247 rows" looked like agreement rather than the absence of
+    any feedback loop. The row now decides, unconditionally.
+    """
     monkeypatch.setattr(
         se,
         "extract_text_from_selected_pages",
@@ -359,11 +356,8 @@ def test_extract_doi_false_uses_row_value_without_calling(monkeypatch):
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
-    called = []
-    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: called.append(1) or "99/99/9999")
-    out = se.summarize_row("/x.pdf", _row(injury_date="05/07/2018"), prompt="P", extract_doi=False)
+    out = se.summarize_row("/x.pdf", _row(injury_date="05/07/2018"), prompt="P")
     assert out["summaryText"].startswith("**DOI**: 05/07/2018.")
-    assert called == []
 
 
 def test_verify_skipped_when_disabled(monkeypatch):
