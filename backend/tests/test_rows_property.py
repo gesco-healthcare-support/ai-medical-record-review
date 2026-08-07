@@ -36,17 +36,25 @@ def _stub_categories(monkeypatch):
 
 @st.composite
 def valid_rowset(draw):
-    """Ascending, non-overlapping integer page ranges in [1, total]; gaps allowed (skipped pages)."""
-    total = draw(st.integers(min_value=1, max_value=300))
+    """Ascending, non-overlapping integer page ranges in [1, total]; gaps allowed (skipped pages).
+
+    Builds `total` LAST, from the rows, so every draw is valid by construction and at least one row
+    always exists. The earlier version drew `total` first and let rows fall off the end of it, then
+    the test discarded the empties with `assume(rows)` - roughly five rejects per accept, which
+    tripped Hypothesis's "input generation is slow" health check whenever the machine was busy. A
+    filter that throws away most of what it generates is the thing to fix, not the health check.
+
+    Coverage is unchanged: the trailing draw lets `total` exceed the last row, so "rows do not fill
+    the document" is still generated - that case just is not the only way to get an empty set now.
+    """
     rows = []
     cursor = 1
-    for _ in range(draw(st.integers(min_value=0, max_value=8))):
+    for _ in range(draw(st.integers(min_value=1, max_value=8))):
         start = cursor + draw(st.integers(min_value=0, max_value=5))  # optional leading gap
-        if start > total:
-            break
-        end = start + draw(st.integers(min_value=0, max_value=min(total - start, 40)))
+        end = start + draw(st.integers(min_value=0, max_value=40))
         rows.append({"start": start, "end": end, "category": VALID_CATEGORY})
         cursor = end + 1
+    total = (cursor - 1) + draw(st.integers(min_value=0, max_value=20))  # optional trailing gap
     return rows, total
 
 
@@ -55,7 +63,9 @@ def valid_rowset(draw):
 def test_valid_rowset_returns_none(data):
     """Invariant 1: a legal set of rows (ascending, non-overlapping, in range) validates clean."""
     rows, total = data
-    assume(rows)  # the empty case is a distinct rule ("no rows to summarize")
+    # No `assume` here any more: the strategy cannot produce an empty set. The empty case is a
+    # distinct rule ("no rows to summarize") and belongs in its own test, not in a discard.
+    assert rows
     assert validate_rows(None, rows, total) is None
 
 
