@@ -12,6 +12,18 @@ all_data_temp.txt
 *.pdf
 *.TRIAL.csv
 *.TRIAL2.csv
+# Vendor ("Outside") and app ("Inhouse") summary deliverables. These arrive as Word
+# documents whose FILENAMES carry patient surnames, and neither gitleaks (secrets only)
+# nor check-added-large-files (--maxkb=1024; these run 20-140 KB) would stop a commit.
+# The working copy belongs on W:, which is PHI-bearing by design and off the network.
+Record Reviews/
+*.doc
+*.docx
+# docs/reference holds the category taxonomy and the MRR steps guide - both already tracked,
+# both PHI-free, and CLAUDE.md points at them. Exempt so a future reference doc is not
+# silently swallowed by the blanket rule above.
+!docs/reference/*.doc
+!docs/reference/*.docx
 # Experiment spikes derive OCR text/labels from real records - keep caches out.
 experiments/**/cache/
 experiments/**/outputs/
