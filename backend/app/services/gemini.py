@@ -4,10 +4,19 @@ PDF delivery is INLINE (see services/segment_engine.py): the Files API existed o
 the non-BAA Developer endpoint and was removed with the Vertex port.
 """
 
-# Provenance stamp stored on every Job row: bump on ANY change to the prompts or
-# schema below, or stored SegmentRows become untraceable to the prompt that made them
-# (the fine-tuning dataset needs this). "1" = original; "2" = 2026-07-06 recall-first rework;
-# "3" = 2026-08-03, injury date also read from a "Date of Onset" field.
+# Historical provenance stamp. DO NOT hand-bump this any more: `jobs.prompt_fingerprint` and
+# `summaries.prompt_fingerprint` are now COMPUTED from the prompt text as resolved (see
+# services/provenance.py), so provenance moves on its own.
+#
+# The old instruction here was "bump on ANY change to the prompts or schema below". That is exactly
+# what failed: it went unbumped through roughly a dozen prompt PRs, so every job from all of them
+# carries the same value and stored rows became untraceable to the prompt that made them. An
+# instruction that nothing verifies is an instruction that gets skipped, so it is removed rather
+# than restated more loudly.
+#
+# The constant stays because rows written before 2026-08-06 have nothing else, and it is still
+# written to every Job. "1" = original; "2" = 2026-07-06 recall-first rework; "3" = 2026-08-03,
+# injury date also read from a "Date of Onset" field.
 PROMPT_VERSION = "3"
 
 SEGMENTATION_SYSTEM = (

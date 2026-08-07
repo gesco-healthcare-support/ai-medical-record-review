@@ -77,10 +77,14 @@ class Settings(BaseSettings):
     # ship without changing which model runs. Switching this to "openai" additionally requires the
     # per-call model keys and, in production, the ZDR acknowledgement - see services/llm/.
     summary_provider: str = "gemini"
-    # Per-call-type models, used ONLY when summary_provider is "openai". No defaults, deliberately:
-    # OpenAI's own guidance is to fix an accuracy target on the most capable model and then step
-    # down to the cheapest that still hits it. A silent default is how an unvalidated model reaches
-    # production, so selecting the provider without setting all three is a startup error.
+    # Per-call-type models for the three summarize-stage calls. On the GEMINI path `_derive` fills
+    # these in (body = summary_model, title and audit = gemini-2.5-flash), which takes 2.5-pro from
+    # three calls per row down to one - a 3x cut in the resource that actually binds.
+    #
+    # On the OPENAI path there is NO default, deliberately: OpenAI's own guidance is to fix an
+    # accuracy target on the most capable model and then step down to the cheapest that still hits it.
+    # A silent default is how an unvalidated model reaches production, so selecting that provider
+    # without setting all three stays a startup error - see the check in `_derive`.
     #
     # They are separate keys because the three calls need different capability: the body call reads
     # page images and applies a long format spec, while the title is extraction from OCR text and the
@@ -226,6 +230,18 @@ class Settings(BaseSettings):
                 "BAA-covered Vertex endpoint, never the Developer API."
             )
         self.summary_provider = (self.summary_provider or "gemini").strip().lower()
+        if self.summary_provider != "openai":
+            # Gemini per-call-type defaults. The body call reads page images and applies a long
+            # format spec, so it keeps summary_model (2.5-pro). The title is extraction from OCR text
+            # and the audit is a check, so both step down to flash - taking 2.5-pro from 3 calls per
+            # row to 1. Justified by call reduction alone, independent of the unresolved
+            # flash-vs-pro quota-contention question.
+            #
+            # Set HERE rather than as field defaults so the openai branch below still sees "" for an
+            # unset key and can refuse to start. A field default would silently satisfy that guard.
+            self.summary_body_model = self.summary_body_model or self.summary_model
+            self.summary_title_model = self.summary_title_model or "gemini-2.5-flash"
+            self.audit_model = self.audit_model or "gemini-2.5-flash"
         if self.summary_provider == "openai":
             # Fail at startup, not on the first summary. A worker that boots and then errors per row
             # burns a job and leaves the reviewer with a half-processed document.
@@ -257,17 +273,20 @@ class Settings(BaseSettings):
     def model_for(self, kind: str) -> str:
         """The model that should answer one summarize-stage call: "body", "title" or "audit".
 
-        On Gemini this returns the existing per-stage models unchanged, so provider selection alone
-        never alters which Gemini model runs. On OpenAI it returns the configured per-call-type
-        model, which ``_derive`` has already proven to be set.
+        One resolver for BOTH providers now: ``_derive`` populates all three keys on the Gemini path
+        and refuses to start without them on the OpenAI path, so by the time this is reachable each
+        one holds a real model name. It previously ignored the keys entirely on Gemini and returned
+        summary_model for all three, which is why the per-call-type settings did nothing there.
+
+        Read ONCE, at job creation, and persisted on the Job (see services/jobs.create_job). Do not
+        call this per row: a job resumed after a config change must keep the models it started with,
+        or one delivered document ends up written by two different models with no record of which.
         """
-        if self.summary_provider == "openai":
-            return {
-                "body": self.summary_body_model,
-                "title": self.summary_title_model,
-                "audit": self.audit_model,
-            }[kind]
-        return self.summary_model
+        return {
+            "body": self.summary_body_model,
+            "title": self.summary_title_model,
+            "audit": self.audit_model,
+        }[kind]
 
 
 @lru_cache

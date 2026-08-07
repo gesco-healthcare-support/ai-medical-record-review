@@ -130,17 +130,39 @@ def create_job(
     model: str,
     prompt_version: str,
     catalog_revision: int | None = None,
+    title_model: str | None = None,
+    audit_model: str | None = None,
 ) -> Job:
     """Insert a queued Job + advance Document.status; raise JobConflict if one is already active.
 
     The DB partial-unique index is the real guard - it survives a cross-process race the old
     in-process lock could not. Commits on success.
+
+    Provenance is resolved HERE, not at the call sites, because this is the single seam every job
+    passes through - six callers each remembering to stamp it is six chances to forget:
+
+    * ``title_model`` / ``audit_model`` default from ``Settings.model_for`` for a summarize job and
+      stay NULL for every other kind, which makes no title or audit call. Resolved once so a job
+      resumed after a config change keeps the models it started with. ``model`` is left exactly as
+      the caller passed it - a per-request model choice must not be silently overridden.
+    * ``prompt_fingerprint`` hashes the prompt set in play, resolved DB-first, and is fail-safe: a
+      stamp that cannot be computed must never stop a job from starting.
     """
+    from app.config import get_settings
+    from app.services.provenance import job_prompt_fingerprint
+
+    if kind == "summarize":
+        settings = get_settings()
+        title_model = title_model or settings.model_for("title")
+        audit_model = audit_model or settings.model_for("audit")
     job = Job(
         document_id=document_id,
         kind=kind,
         model=model,
+        title_model=title_model,
+        audit_model=audit_model,
         prompt_version=prompt_version,
+        prompt_fingerprint=job_prompt_fingerprint(session, kind),
         catalog_revision=catalog_revision,
     )
     session.add(job)
@@ -162,9 +184,14 @@ def enqueue(
     model: str,
     prompt_version: str,
     catalog_revision: int | None = None,
+    title_model: str | None = None,
+    audit_model: str | None = None,
 ) -> Job:
     """create_job + dispatch to the kind's RQ queue. If the dispatch fails (e.g. Redis down), the
-    job is marked interrupted rather than left stuck queued."""
+    job is marked interrupted rather than left stuck queued.
+
+    ``title_model`` / ``audit_model`` are passed straight through; create_job resolves them.
+    """
     from rq import Callback
 
     from app.config import get_settings
@@ -178,6 +205,8 @@ def enqueue(
         model=model,
         prompt_version=prompt_version,
         catalog_revision=catalog_revision,
+        title_model=title_model,
+        audit_model=audit_model,
     )
     try:
         # RQ job id == the DB job id, so heartbeat orphan recovery can correlate the two.

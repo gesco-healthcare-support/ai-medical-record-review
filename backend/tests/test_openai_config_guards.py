@@ -116,11 +116,30 @@ def test_model_for_returns_the_configured_model_per_call_type(monkeypatch):
     assert settings.model_for("audit") == "audit-model"
 
 
-def test_model_for_on_gemini_ignores_the_openai_keys(monkeypatch):
+def test_gemini_defaults_the_cheap_calls_to_flash(monkeypatch):
+    # WHEN the provider is gemini and no per-call-type key is set, THE SYSTEM SHALL keep the body on
+    # summary_model and step the title and audit down to flash. That is the 3-calls-of-pro-per-row to
+    # 1 reduction; before 2026-08-06 model_for returned summary_model for all three and the keys were
+    # inert on this path.
+    settings = _settings(monkeypatch, SUMMARY_PROVIDER="gemini")
+    assert settings.model_for("body") == settings.summary_model == "gemini-2.5-pro"
+    assert settings.model_for("title") == "gemini-2.5-flash"
+    assert settings.model_for("audit") == "gemini-2.5-flash"
+
+
+def test_gemini_per_call_keys_are_honoured_when_set(monkeypatch):
+    # WHEN a per-call-type key IS set on the gemini path, THE SYSTEM SHALL use it rather than the
+    # default - the whole point of the change is that these knobs do something here now.
     settings = _settings(
-        monkeypatch, SUMMARY_PROVIDER="gemini", SUMMARY_BODY_MODEL="should-be-ignored"
+        monkeypatch,
+        SUMMARY_PROVIDER="gemini",
+        SUMMARY_BODY_MODEL="body-override",
+        SUMMARY_TITLE_MODEL="title-override",
+        AUDIT_MODEL="audit-override",
     )
-    assert settings.model_for("body") == settings.summary_model
+    assert settings.model_for("body") == "body-override"
+    assert settings.model_for("title") == "title-override"
+    assert settings.model_for("audit") == "audit-override"
 
 
 def test_provider_name_is_normalised(monkeypatch):

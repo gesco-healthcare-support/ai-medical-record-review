@@ -275,6 +275,14 @@ def _build_summary(job, idx, row, output) -> Summary:
         row_start=row["start"],
         row_end=row["end"],
         row_category=row["category"],
+        # Provenance, straight from summarize_row's output: which models wrote this row and the hash
+        # of the prompt text they were given. Per-row rather than per-job because a job spans many
+        # categories, so one job-level prompt hash cannot describe any individual summary.
+        model=output.get("model"),
+        title_model=output.get("titleModel"),
+        audit_model=output.get("auditModel"),
+        prompt_fingerprint=output.get("promptFingerprint"),
+        audit_fingerprint=output.get("auditFingerprint"),
     )
 
 
@@ -623,6 +631,12 @@ def summarize_document(job_id) -> None:
                 prompt_by_cat[cat] = catalog.get_prompt(session, "summary", cat)
 
         pdf_path, model = document.stored_path, job.model
+        # The three models come from the JOB, resolved once when it was created, so a config change
+        # mid-run cannot split one delivered document across two models. `or job.model` is what makes
+        # a job created before 2026-08-06 behave exactly as it did: those jobs used one model for all
+        # three calls, and their new columns are NULL rather than back-filled with a guess.
+        title_model = job.title_model or job.model
+        audit_model = job.audit_model or job.model
         attention_rows: list[dict] = []  # permanent per-row failures {idx, pages, reason}
         transient_left = False  # >=1 row failed transiently -> retry on resume
         consecutive_transient = 0
@@ -641,6 +655,8 @@ def summarize_document(job_id) -> None:
                     # `pending`: a study already summarized on an earlier attempt still stands as its
                     # own sub-document, so a resumed run must give the same context as the first.
                     standalone_studies=standalone_studies_from_rows(rows, exclude=row),
+                    title_model=title_model,
+                    audit_model=audit_model,
                 ): (i, row)
                 for i, row in pending
             }
