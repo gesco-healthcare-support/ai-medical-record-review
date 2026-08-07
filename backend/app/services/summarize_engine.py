@@ -22,8 +22,9 @@ from app.services.house_style import sentence_case_caps_runs
 from app.services.llm import ImagePart, TextPart, get_provider
 from app.services.ocr import extract_text_from_selected_pages
 from app.services.prompts import prompts
+from app.services.provenance import fingerprint, summary_prompt_fingerprint
 from app.services.summary_doi import extract_injury_date
-from app.services.summary_verify import verify_summary
+from app.services.summary_verify import VERIFY_PROMPT, verify_summary
 
 logger = logging.getLogger(__name__)
 
@@ -469,18 +470,12 @@ _OCR_TEXT_HEADER = "OCR TEXT:\n"
 # so it belongs with that vendor's translation, and the audit path needs the same check.
 
 
-def model_for(kind, fallback):
-    """The model that answers one summarize call: "body", "title" or "audit".
-
-    On Gemini this returns ``fallback`` - the model the JOB was created with - so selecting a
-    provider never silently changes which Gemini model runs, and a resumed job keeps using whatever
-    it started on. On OpenAI the job's Gemini model name is meaningless, so the configured
-    per-call-type model is used instead.
-    """
-    settings = get_settings()
-    if settings.summary_provider == "openai":
-        return settings.model_for(kind)
-    return fallback
+# `model_for(kind, fallback)` lived here and resolved a model PER CALL. It is gone: resolution now
+# happens ONCE, at job creation (services/jobs.create_job), and the three models are persisted on the
+# Job. That strengthens the property its docstring promised - a resumed job kept only its BODY model
+# before, because the title and audit models were re-read from live config on the OpenAI path; now all
+# three are pinned, so no config change can split one delivered document across two models.
+# summarize_row takes them as arguments instead.
 
 
 def _generate(model, system_msg, contents, temperature, max_output_tokens=None):
@@ -528,7 +523,15 @@ def _page_image_parts(pdf_path, start, end):
 
 
 def summarize_row(
-    pdf_path, row, model=None, prompt=None, verify=None, extract_doi=None, standalone_studies=None
+    pdf_path,
+    row,
+    model=None,
+    prompt=None,
+    verify=None,
+    extract_doi=None,
+    standalone_studies=None,
+    title_model=None,
+    audit_model=None,
 ):
     """Summarize one sub-document row -> the legacy output_dict shape.
 
@@ -550,9 +553,16 @@ def summarize_row(
     other diagnostic studies (build it with standalone_studies_from_rows). It reaches the model only
     for the categories whose rules discuss an embedded records review, so that review does not restate
     a study which is summarized in its own right elsewhere in the record.
+
+    ``model`` / ``title_model`` / ``audit_model`` are the three summarize calls. The worker passes the
+    values persisted on the Job, so a resumed job cannot switch models mid-document; a standalone
+    caller that omits them falls back to config. They are NOT re-resolved per call - see the note
+    where ``model_for`` used to live.
     """
     settings = get_settings()
-    model = model or settings.summary_model
+    model = model or settings.model_for("body")
+    title_model = title_model or settings.model_for("title")
+    audit_model = audit_model or settings.model_for("audit")
     if verify is None:
         verify = settings.summary_verify
     if extract_doi is None:
@@ -562,7 +572,12 @@ def summarize_row(
         prompt = prompts.get(key, prompts["category_100"])
     # Prepend the shared rules that can bind on THIS category (applies to DB-resolved and fallback
     # prompts alike, and to any future category - build_preamble defaults an unknown id to everything).
-    system_msg = build_preamble(row["category"]) + prompt
+    preamble = build_preamble(row["category"])
+    system_msg = preamble + prompt
+    # Fingerprint the PROMPT TEXT only, and do it HERE - before the per-row blocks below are appended.
+    # Those carry row and document DATA, so hashing them would give two rows on an identical prompt
+    # different fingerprints and make the cohort query this exists to enable useless.
+    prompt_fingerprint = summary_prompt_fingerprint(preamble, prompt)
     # E-08: append the record's other diagnostic studies AFTER the category rules, so the list reads
     # as a qualification of the rule that just told the model to take studies out of the embedded
     # review. Appended to the SYSTEM message, not the user content, so the payload ordering
@@ -625,13 +640,13 @@ def summarize_row(
                 exc,
             )
     summary, truncated = _generate(
-        model_for("body", model),
+        model,
         system_msg,
         body_contents,
         temperature=settings.summary_temperature,
         max_output_tokens=settings.summary_max_output_tokens,
     )
-    title, _ = _generate(model_for("title", model), TITLE_PROMPT, text, temperature=0.0)
+    title, _ = _generate(title_model, TITLE_PROMPT, text, temperature=0.0)
     # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
     # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
@@ -668,7 +683,7 @@ def summarize_row(
     verify_issues = None
     if verify:
         result = verify_summary(
-            model_for("audit", model), text, summary, title=title, document_date=row.get("date")
+            audit_model, text, summary, title=title, document_date=row.get("date")
         )
         if result["issues"]:
             issue_types = {
@@ -728,4 +743,13 @@ def summarize_row(
         "verifyIssues": verify_issues,
         # The exact model input, so callers can persist the fine-tuning pair.
         "sourceText": text,
+        # PROVENANCE. Which models wrote this row and which prompt text they were given, so
+        # "did the prompt change help" becomes a GROUP BY instead of dating rows against deploy
+        # history. auditModel/auditFingerprint are None when the verify pass did not run - a
+        # different fact from "not recorded", which `verified` distinguishes.
+        "model": model,
+        "titleModel": title_model,
+        "auditModel": audit_model if verify else None,
+        "promptFingerprint": prompt_fingerprint,
+        "auditFingerprint": fingerprint(VERIFY_PROMPT) if verify else None,
     }
