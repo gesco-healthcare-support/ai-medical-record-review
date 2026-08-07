@@ -26,7 +26,6 @@ from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.ocr import extract_text_from_selected_pages
 from app.services.pools import PoolTimeout, drain_pool
-from app.services.summary_doi import extract_injury_date
 from app.services.taxonomy import DEFAULT_ID
 from app.services.verify_pass import verify_and_merge
 from app.services.windows import byte_budgeted_windows
@@ -70,7 +69,7 @@ def _window_rows(pdf_path, window_start, window_end, client):
     rows = []
     for item in json.loads(clean):
         try:
-            s, e, title, date, manual = parse_segment_item(item)
+            s, e, title, date, injury, manual = parse_segment_item(item)
         except (KeyError, TypeError, ValueError):
             continue  # one malformed element must not abort the window
         rows.append(
@@ -79,9 +78,7 @@ def _window_rows(pdf_path, window_start, window_end, client):
                 end=e + window_start - 1,
                 title=title,
                 date=date,
-                # Filled by the isolated per-sub-document read at the end of run_segmentation;
-                # the segmentation call no longer reports one. "-" means "states none".
-                injury_date="-",
+                injury_date=injury,
                 flag=manual,
             )
         )
@@ -219,35 +216,4 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
     if settings.verify_merge:
         rows, stats = verify_and_merge(pdf_path, rows, progress=progress, pool_timeout=pool_timeout)
         logger.info("verify pass: %s", stats)
-
-    # Injury date, read per sub-document in ISOLATION. This runs LAST and that is load-bearing:
-    # verify_and_merge can MERGE rows, and the read is defined by a page range, so reading before the
-    # ranges are final would read the wrong pages.
-    #
-    # It used to be read twice - once as field "i" of the segmentation call, which sees a whole window
-    # and so propagates one document's DOI onto neighbours that state none, and again at summarize
-    # time. The two never reconciled and the summarize-stage value won, so the review page displayed a
-    # date the client never received and a reviewer's correction was silently discarded. One read,
-    # here, is what makes the row the single source of truth.
-    report("injury-dates", 0, len(rows))
-    with ThreadPoolExecutor(max_workers=settings.doi_workers) as pool:
-        futures = {
-            pool.submit(extract_injury_date, pdf_path, row["start"], row["end"]): row
-            for row in rows
-        }
-        done = 0
-        try:
-            for future in drain_pool(futures, pool_timeout):
-                futures[future]["injury_date"] = future.result()
-                done += 1
-                report("injury-dates", done, len(rows))
-        except PoolTimeout as pt:
-            # Recoverable, so follow the CATEGORIZATION precedent rather than the segmentation one: a
-            # row with no injury date keeps "-", which means "this document states none" and simply
-            # produces no DOI prefix. A lost segmentation window is lost coverage; a lost date is not.
-            logger.warning(
-                "injury-date reads timed out after %ss; %d row(s) left without one",
-                pool_timeout,
-                len(pt.unfinished),
-            )
     return rows

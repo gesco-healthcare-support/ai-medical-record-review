@@ -17,11 +17,6 @@ the non-BAA Developer endpoint and was removed with the Vertex port.
 # The constant stays because rows written before 2026-08-06 have nothing else, and it is still
 # written to every Job. "1" = original; "2" = 2026-07-06 recall-first rework; "3" = 2026-08-03,
 # injury date also read from a "Date of Onset" field.
-#
-# NOT bumped for the 2026-08-06 removal of the injury-date field from the prompt and schema,
-# deliberately: job_prompt_fingerprint(session, "segment") hashes SEGMENTATION_SYSTEM +
-# SEGMENTATION_PROMPT, so that edit moves the computed stamp on its own. Bumping by hand as well
-# would reintroduce the habit this comment exists to end.
 PROMPT_VERSION = "3"
 
 SEGMENTATION_SYSTEM = (
@@ -56,13 +51,14 @@ One document produced by one author or facility for one encounter, report, or fo
 
 ## Fields (use "-" whenever a value is unavailable; never null)
 - "t" title: the document's own title or header wording if visible (it may sit next to a label such as "Notes"); otherwise the document type. Replace any comma with a dash so the value stays CSV-safe. A title of the form "X vs Y" is almost always a deposition: use "Deposition".
-- "d" document date: the visit/encounter date of THIS document as MM/DD/YYYY (it may be near the signature at the end); ignore fax, print, and re-send dates, and never report the date of injury here.
+- "d" document date: the visit/encounter date of THIS document as MM/DD/YYYY (it may be near the signature at the end); ignore fax, print, and re-send dates. Distinguish it from the injury date.
+- "i" injury date: the date of injury as MM/DD/YYYY if stated. A field labelled "Date of Onset" carries the same date - for a cumulative trauma or an occupational illness the onset IS the date of injury - so read it from either label. Take it from a labelled field, not from prose describing when symptoms began.
 - "m" manual check: "x" if a human should review the document - substantial handwriting (more than a signature), checkbox-style forms, work-status reports, or QME/PQME/AME reports; otherwise "-".
 
 Example output for a 10-page file (format reference):
 [
-  {"id": "Doc1", "s": 1, "e": 5, "t": "WORK ACTIVITY STATUS", "d": "12/03/2021", "m": "x"},
-  {"id": "Doc2", "s": 6, "e": 10, "t": "ACUPUNCTURE THERAPY NOTES", "d": "11/11/2022", "m": "-"}
+  {"id": "Doc1", "s": 1, "e": 5, "t": "WORK ACTIVITY STATUS", "d": "12/03/2021", "i": "05/07/2018", "m": "x"},
+  {"id": "Doc2", "s": 6, "e": 10, "t": "ACUPUNCTURE THERAPY NOTES", "d": "11/11/2022", "i": "-", "m": "-"}
 ]
 
 Return ONLY the JSON array."""
@@ -84,14 +80,15 @@ SEGMENT_RESPONSE_SCHEMA = {
             "e": {"type": "INTEGER", "description": "Last page of the sub-document, inclusive"},
             "t": {"type": "STRING", "description": "Title or document type; no commas"},
             "d": {"type": "STRING", "description": "Visit/encounter date MM/DD/YYYY, or '-'"},
+            "i": {"type": "STRING", "description": "Injury date MM/DD/YYYY, or '-'"},
             "m": {
                 "type": "STRING",
                 "enum": ["x", "-"],
                 "description": "'x' when the document needs human review",
             },
         },
-        "required": ["s", "e", "t", "d", "m"],
-        "propertyOrdering": ["id", "s", "e", "t", "d", "m"],
+        "required": ["s", "e", "t", "d", "i", "m"],
+        "propertyOrdering": ["id", "s", "e", "t", "d", "i", "m"],
     },
 }
 # NOTE: a self-reported per-row boundary-confidence enum was trialled here (2026-07-04) and
@@ -115,5 +112,6 @@ def parse_segment_item(item):
         int(item["e"]),
         title.strip(),
         str(item.get("d", "-")).strip(),
+        str(item.get("i", "-")).strip(),
         str(item.get("m", "-")).strip(),
     )

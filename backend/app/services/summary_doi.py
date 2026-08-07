@@ -1,14 +1,10 @@
 """Per-sub-document date-of-injury extraction (isolated vision) + a summary DOI-prefix helper.
 
-A segmentation WINDOW covers many documents at once, so a date read from a window propagates onto
-neighbours that state none. This module reads ONE sub-document in ISOLATION - only its own pages - so
-there are no neighbours to copy from, and it reads the date from the PDF image via Gemini vision
-rather than lossy OCR.
-
-Called at the END of run_segmentation (once per sub-document, after row boundaries are final) so the
-stored row is the single source of truth for the injury date. It used to be called AGAIN from
-summarize_row, whose value won over the row and therefore discarded any reviewer correction. The
-backfill also uses it, with strict=True, to correct already-stored summaries.
+The segmentation model propagates the claim's DOI onto documents that never state one, because it
+reads a whole window (many documents) at once. This module reads ONE sub-document in ISOLATION -
+only its own pages - so there are no neighbours to copy a DOI from, and it reads the date from the
+PDF image via Gemini vision, not lossy OCR. summarize_row uses it to decide a summary's **DOI**
+prefix; the backfill reuses it to correct already-stored summaries.
 """
 
 import io
