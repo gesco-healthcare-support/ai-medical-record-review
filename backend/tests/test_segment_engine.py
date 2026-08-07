@@ -38,7 +38,9 @@ def test_segmentation_reads_the_injury_date_per_sub_document(monkeypatch):
             dict(start=3, end=4, title="B", date="-", injury_date="-", flag="-"),
         ],
     )
-    monkeypatch.setattr(se, "_categorize", lambda pdf_path, row: row)
+    # *_a absorbs page_text_fn, which the page-text store added to _categorize. A too-narrow stub
+    # raises TypeError inside a pool worker, where it surfaces as an opaque job failure.
+    monkeypatch.setattr(se, "_categorize", lambda pdf_path, row, *_a, **_kw: row)
     monkeypatch.setattr(se.get_settings(), "verify_merge", False, raising=False)
 
     rows = se.run_segmentation("/x.pdf", total_pages=4)
@@ -66,7 +68,9 @@ def test_a_failed_injury_date_read_leaves_the_row_at_the_sentinel(monkeypatch):
             dict(start=1, end=2, title="A", date="-", injury_date="-", flag="-")
         ],
     )
-    monkeypatch.setattr(se, "_categorize", lambda pdf_path, row: row)
+    # *_a absorbs page_text_fn, which the page-text store added to _categorize. A too-narrow stub
+    # raises TypeError inside a pool worker, where it surfaces as an opaque job failure.
+    monkeypatch.setattr(se, "_categorize", lambda pdf_path, row, *_a, **_kw: row)
     monkeypatch.setattr(se.get_settings(), "verify_merge", False, raising=False)
 
     rows = se.run_segmentation("/x.pdf", total_pages=2)
