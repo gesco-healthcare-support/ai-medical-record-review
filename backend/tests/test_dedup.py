@@ -107,38 +107,46 @@ def test_confirm_cluster_single_member_returns_empty():
     assert dedup.confirm_cluster([{"text": "x"}]) == []
 
 
-def _members(*pairs):
-    """Cluster members from (date, title) pairs; text is irrelevant to the gate."""
-    return [{"date": date, "title": title, "text": "x"} for date, title in pairs]
+def _members(*pairs, category=None):
+    """Cluster members from (date, title) pairs; text is irrelevant to the gate.
+
+    ``category`` is left UNSET by default so these fixtures exercise the date+title path exactly as
+    they did before category joined the rule - an unset category normalises to UNKNOWN and can never
+    stand in for a title.
+    """
+    return [
+        {"date": date, "title": title, "category": category, "text": "x"} for date, title in pairs
+    ]
 
 
 def test_gate_passes_a_cluster_sharing_both_date_and_title():
     members = _members(("05/08/2022", "Progress Report"), ("05/08/2022", "progress  report"))
-    assert dedup.date_title_gate(members, 0.30) is True  # normalization: case + whitespace
+    assert dedup.duplicate_gate(members, 0.30) is True  # normalization: case + whitespace
 
 
 def test_gate_rejects_a_multi_date_series_despite_shared_title():
     members = _members(("05/08/2022", "Work Status Report"), ("06/12/2022", "Work Status Report"))
-    assert dedup.date_title_gate(members, 0.51) is False
+    assert dedup.duplicate_gate(members, 0.51) is False
 
 
 def test_gate_override_keeps_a_genuine_rescan_with_two_dates():
     """The measured 0.998 pair: two transcribed dates, one document. Content overrides metadata."""
     members = _members(("05/08/2022", "Operative Report"), ("05/09/2022", "Operative Report"))
-    assert dedup.date_title_gate(members, 0.998) is True
+    assert dedup.duplicate_gate(members, 0.998) is True
 
 
 def test_gate_treats_absent_date_and_title_as_unknown_not_matching():
     # Aggregate-built records carry "-" for every row; two unknowns have told us nothing, so the
     # gate must fall through to content similarity rather than reading them as a match.
     members = _members(("-", "-"), ("-", "-"))
-    assert dedup.date_title_gate(members, 0.40) is False
-    assert dedup.date_title_gate(members, 0.95) is True
+    assert dedup.duplicate_gate(members, 0.40) is False
+    assert dedup.duplicate_gate(members, 0.98) is False  # below the raised override
+    assert dedup.duplicate_gate(members, 0.995) is True
 
 
 def test_gate_handles_similarity_none_from_pre_column_clusters():
     members = _members(("05/08/2022", "A"), ("06/08/2022", "B"))
-    assert dedup.date_title_gate(members, None) is False
+    assert dedup.duplicate_gate(members, None) is False
 
 
 def test_gate_reproduces_the_reviewer_verdicts_on_the_measured_clusters():
@@ -166,7 +174,7 @@ def test_gate_reproduces_the_reviewer_verdicts_on_the_measured_clusters():
                 for i in range(max(dates, titles))
             )
         )
-        assert dedup.date_title_gate(members, similarity) is expected, (
+        assert dedup.duplicate_gate(members, similarity) is expected, (
             f"similarity={similarity} dates={dates} titles={titles}"
         )
 
@@ -188,3 +196,100 @@ def test_cluster_rows_threshold_defaults_to_the_configured_value(monkeypatch):
     assert len(dedup.cluster_rows(items)) == 1
     assert calls == [0.8]  # the configured cut, not a hardcoded argument, decided this
     assert dedup.cluster_rows(items, jaccard_threshold=0.99) == []
+
+
+# --- the date-first rule (2026-08-06) ------------------------------------------------------------
+
+
+def test_a_shared_category_stands_in_for_a_shared_title():
+    """WHEN two same-date sub-documents share a category but not a title, THE SYSTEM SHALL admit
+    them. Category is an ALTERNATIVE, so it can only ever admit - a wrong one cannot hide a copy."""
+    members = _members(
+        ("05/08/2022", "OPERATIVE REPORT"), ("05/08/2022", "Op Report - Dr Smith"), category="5"
+    )
+    assert dedup.duplicate_gate(members, 0.30) is True
+
+
+def test_a_shared_category_cannot_rescue_a_date_mismatch():
+    """WHEN the dates differ, THE SYSTEM SHALL NOT admit on category alone - the recurring therapy
+    series shares both title and category across six visit dates, and that is the case this rule
+    exists to reject."""
+    members = _members(
+        ("05/08/2022", "Physical Therapy"), ("06/12/2022", "Physical Therapy"), category="5"
+    )
+    assert dedup.duplicate_gate(members, 0.51) is False
+
+
+def test_an_unknown_category_is_not_a_match():
+    """WHEN a category is an absent-value sentinel, THE SYSTEM SHALL treat it as UNKNOWN. Two rows
+    that both say "-" have told us nothing, and reading that as agreement would admit every pair on
+    an aggregate-built record."""
+    members = _members(("05/08/2022", "A"), ("05/08/2022", "B"), category="-")
+    assert dedup.duplicate_gate(members, 0.30) is False
+
+
+def test_masking_dates_makes_a_stamped_rescan_score_as_a_copy():
+    """WHEN two texts are identical apart from a date, THE SYSTEM SHALL score them as if the dates
+    matched - a fax re-send stamp is not a content difference."""
+    body = "PATIENT COMPLAINS OF LOW BACK PAIN RADIATING TO THE LEFT LEG. EXAM UNREMARKABLE. "
+    a = body + "Received 05/08/2022"
+    b = body + "Received 11/29/2023"
+    assert dedup._min_difflib([a, b]) == 1.0
+    assert dedup.mask_dates(a) == dedup.mask_dates(b)
+
+
+def test_masking_dates_does_not_make_different_findings_look_alike():
+    """WHEN two documents differ in their findings, THE SYSTEM SHALL still score them apart. Masking
+    must not be a blunt instrument that collapses a therapy series into one cluster."""
+    a = "Visit 05/08/2022. Lumbar flexion 40 degrees. Pain 7 of 10. Continue therapy."
+    b = "Visit 06/12/2022. Cervical rotation 70 degrees. Pain 2 of 10. Discharge to home."
+    assert dedup._min_difflib([a, b]) < 0.90
+
+
+def test_clustering_keeps_same_content_on_different_dates_apart():
+    """WHEN two sub-documents share content but carry DIFFERENT dates and are not near-identical,
+    THE SYSTEM SHALL NOT cluster them - six visits on one form are not six copies."""
+    shared = "PHYSICAL THERAPY DAILY NOTE " * 12
+    items = [
+        {
+            "id": 1,
+            "date": "05/08/2022",
+            "title": "PT",
+            "category": "5",
+            "text": shared + "flexion 40",
+        },
+        {
+            "id": 2,
+            "date": "06/12/2022",
+            "title": "PT",
+            "category": "5",
+            "text": shared + "rotation 70",
+        },
+    ]
+    assert dedup.cluster_rows(items) == []
+
+
+def test_clustering_still_finds_a_near_identical_pair_across_dates():
+    """WHEN two sub-documents are essentially identical but carry different dates, THE SYSTEM SHALL
+    still cluster them. This is the reviewer-confirmed 0.998 pair; without this pass the date is an
+    absolute veto and that pair is lost with no trace."""
+    body = "OPERATIVE REPORT. PROCEDURE: L4-L5 MICRODISCECTOMY. FINDINGS AS DICTATED. " * 6
+    items = [
+        {"id": 1, "date": "05/08/2022", "title": "Op Report", "category": "5", "text": body + "A"},
+        {"id": 2, "date": "05/09/2022", "title": "Op Report", "category": "5", "text": body + "A"},
+    ]
+    clusters = dedup.cluster_rows(items)
+    assert len(clusters) == 1
+    assert {m["id"] for m in clusters[0]["members"]} == {1, 2}
+
+
+def test_clustering_groups_same_date_copies_on_content_alone():
+    """WHEN two sub-documents share a date and near-identical content, THE SYSTEM SHALL cluster them
+    without needing the stricter cross-date bar."""
+    body = "PROGRESS REPORT. SUBJECTIVE: ONGOING SHOULDER PAIN. PLAN: CONTINUE MEDICATION. " * 6
+    items = [
+        {"id": 1, "date": "05/08/2022", "title": "Progress", "category": "1", "text": body + "x"},
+        {"id": 2, "date": "05/08/2022", "title": "Progress", "category": "1", "text": body + "y"},
+    ]
+    clusters = dedup.cluster_rows(items)
+    assert len(clusters) == 1

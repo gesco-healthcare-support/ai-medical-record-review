@@ -416,7 +416,7 @@ def dedup_document(job_id) -> None:
     """
     import gc
 
-    from app.services.dedup import cluster_rows, confirm_cluster, date_title_gate
+    from app.services.dedup import cluster_rows, confirm_cluster, duplicate_gate
     from app.services.ocr import extract_pages_with_report
 
     def work(session, job, report):
@@ -491,7 +491,14 @@ def dedup_document(job_id) -> None:
         # Candidate clusters (content similarity) -> confirm each is truly the same document ->
         # assign a shared per-document group number to the confirmed members.
         items = [
-            {"id": row.id, "title": row.title, "date": row.date, "text": row.source_text or ""}
+            {
+                "id": row.id,
+                "title": row.title,
+                "date": row.date,
+                # Category joins the gate as an ALTERNATIVE to a shared title (see duplicate_gate).
+                "category": row.category,
+                "text": row.source_text or "",
+            }
             for row in rows
         ]
         by_id = {row.id: row for row in rows}
@@ -499,12 +506,13 @@ def dedup_document(job_id) -> None:
         for cluster in cluster_rows(items):
             members, similarity = cluster["members"], cluster["similarity"]
             pages = ", ".join(f"{by_id[m['id']].start}-{by_id[m['id']].end}" for m in members)
-            if not date_title_gate(members, similarity):
-                # Neither date nor title shared and the content is not near-identical: a recurring
-                # form series, not copies. Rejected without spending a confirm call.
+            if not duplicate_gate(members, similarity):
+                # No shared date, or a shared date with neither title nor category agreeing, and
+                # the content is not near-identical: a recurring form series, not copies.
+                # Rejected without spending a confirm call.
                 logger.info(
                     "dedup rejected a %d-member candidate on document %s (similarity %s, pages %s): "
-                    "no shared date or title",
+                    "date plus title-or-category did not agree",
                     len(members),
                     job.document_id,
                     similarity,
