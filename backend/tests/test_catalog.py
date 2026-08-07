@@ -33,8 +33,10 @@ def test_constants_categories_shape():
     keys = {"id", "name", "description", "examples", "active", "auto_assign", "summarize_default"}
     assert all(keys <= c.keys() for c in cats)
     by_id = {c["id"]: c for c in cats}
-    assert by_id["9"]["summarize_default"] is False  # Depositions off by default
-    assert by_id["100"]["summarize_default"] is False  # General off by default
+    # Depositions (9) were off by default until 2026-08-06; Adrian turned them on, because a
+    # reviewer had to remember a switch and the deposition prompt reached almost no output.
+    assert by_id["9"]["summarize_default"] is True
+    assert by_id["100"]["summarize_default"] is False  # General is the only one still off
     assert by_id["1"]["summarize_default"] is True  # everything else on
 
 
@@ -105,17 +107,18 @@ def test_the_catalog_migration_carries_the_same_text_as_the_constants():
 
 
 @pytest.mark.parametrize(
-    "category_id,expected", [("9", False), ("100", False), ("1", True), ("999", True)]
+    "category_id,expected", [("100", False), ("9", True), ("1", True), ("999", True)]
 )
 def test_summarize_default_for_constants_fallback(session, category_id, expected):
-    # Unseeded -> constants fallback; 9/100 off, others (incl. unknown) on.
+    # Unseeded -> constants fallback. 100 is the only category off by default; an UNKNOWN id
+    # defaults ON, which is the safe direction - a new category is summarized until told not to.
     assert catalog.summarize_default_for(session, category_id) is expected
 
 
 def test_summarize_default_for_db_backed(session):
     seed_catalog(session)
-    assert catalog.summarize_default_for(session, "9") is False
     assert catalog.summarize_default_for(session, "100") is False
+    assert catalog.summarize_default_for(session, "9") is True
     assert catalog.summarize_default_for(session, "1") is True
 
 

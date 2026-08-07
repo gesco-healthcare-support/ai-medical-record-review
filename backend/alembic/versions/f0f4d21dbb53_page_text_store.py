@@ -1,7 +1,7 @@
 """page text store
 
 Revision ID: f0f4d21dbb53
-Revises: e7b4c1a92d58
+Revises: a9c4e13f70b2
 Create Date: 2026-08-04 13:08:02.279974
 
 """
@@ -14,7 +14,10 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "f0f4d21dbb53"
-down_revision: Union[str, Sequence[str], None] = "e7b4c1a92d58"
+# RE-POINTED 2026-08-07 from e7b4c1a92d58: this branch was cut when that was the head, and two
+# migrations (b6d19f4c30a7 provenance, a9c4e13f70b2 depositions) landed while it waited on CI.
+# Leaving the old parent would give alembic two heads and make `upgrade head` fail outright.
+down_revision: Union[str, Sequence[str], None] = "a9c4e13f70b2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

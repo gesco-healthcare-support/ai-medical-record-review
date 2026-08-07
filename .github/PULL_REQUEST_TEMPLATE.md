@@ -1,8 +1,11 @@
 <!--
 Gesco MRR AI PR template. Fill every section. See ~/.claude/rules/pr-format.md.
-Stack: Flask (Python 3.12), OpenAI + Google Gemini, PyPDF2/PyMuPDF/Pytesseract OCR.
+Stack: Next.js (frontend/) + FastAPI (backend/), Postgres, Redis/RQ workers, Vertex/Gemini,
+Tesseract + Poppler OCR.
 Title format (set above): <type>(<scope>): <subject>  -- 50 target, 72 hard cap, ASCII only, scope required.
-Typical scopes: mrr-ai, ocr, llm, openai, gemini, prompt, pipeline, auth, api, ui.
+Scopes: see .claude/rules/commit-scopes.md - that file is the source of truth, and adding a
+scope there is part of the PR that needs it. Do not restate the list here; a copy is what
+drifted last time.
 
 HEIGHTENED PHI RISK: This project sends raw medical record content to third-party LLM APIs.
 Every change must be evaluated for PHI exposure in prompts, logs, and cached responses.
@@ -31,11 +34,13 @@ Blast radius:
 Rollback:
 
 ## Screenshots
-<!-- `N/A (no UI change)` unless Flask templates or JS/CSS changed. Otherwise attach before/after. -->
+<!-- `N/A (no UI change)` unless frontend/app/ or frontend/components/ changed (including
+     app/globals.css and app/evaluators-ds.css). Otherwise attach before/after. -->
 N/A (no UI change)
 
 ## Dependencies
-<!-- Lists any Pipfile, Pipfile.lock, or requirements.txt changes. Default: None. -->
+<!-- Lists any backend/pyproject.toml, backend/uv.lock, frontend/package.json or
+     frontend/pnpm-lock.yaml changes. Default: None. -->
 None
 
 ## Breaking change

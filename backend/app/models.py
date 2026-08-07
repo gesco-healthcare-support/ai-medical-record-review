@@ -211,8 +211,20 @@ class Job(Base):
     current = Column(Integer, nullable=False, default=0)
     total = Column(Integer, nullable=False, default=0)
     error = Column(Text)
+    # `model` is the BODY model for a summarize job (and the only model for every other kind).
+    # `title_model` / `audit_model` are the other two summarize calls, resolved ONCE here at job
+    # creation via Settings.model_for, so a job resumed after a config change cannot switch models
+    # mid-document. NULL on jobs created before 2026-08-06 and on non-summarize kinds, so read them
+    # as `job.title_model or job.model` - which is exactly what those older jobs actually used. No
+    # backfill: an invented value would later be indistinguishable from a recorded one.
     model = Column(String(64), nullable=False)
+    title_model = Column(String(64))
+    audit_model = Column(String(64))
+    # `prompt_version` is a HAND-MAINTAINED constant and went unbumped through a dozen prompt PRs.
+    # `prompt_fingerprint` hashes the prompt text AS RESOLVED (DB-first, code fallback), so it moves
+    # on its own. Prefer the fingerprint; prompt_version stays readable for historical rows.
     prompt_version = Column(String(16), nullable=False)
+    prompt_fingerprint = Column(String(16))
     catalog_revision = Column(Integer)
     # Resumable summarize (item 7): the CURRENT RQ job id (differs from the db id after a delayed
     # requeue, so orphan recovery correlates by this); the pause/resume cycle count (observability
@@ -343,6 +355,22 @@ class Summary(Base):
     row_start = Column(Integer, nullable=False)
     row_end = Column(Integer, nullable=False)
     row_category = Column(String(8), nullable=False)
+    # PROVENANCE, per summary row. Job-level provenance is not enough once the three summarize calls
+    # run on different models: one column cannot describe three, and a job spans many categories so
+    # one prompt hash cannot describe every row either.
+    #
+    # `model` / `title_model` wrote this row's body and title. `audit_model` and `audit_fingerprint`
+    # are ALSO NULL when the verify pass simply did not run, which is a different fact from "not
+    # recorded" - check `verified` to tell them apart.
+    #
+    # CUTOFF: rows written before 2026-08-06 have NULL here and are unattributable. Date them against
+    # deploy history and know that is what you are doing. Deliberately not backfilled - inferring
+    # from timestamps would later be indistinguishable from recorded data.
+    model = Column(String(64))
+    title_model = Column(String(64))
+    audit_model = Column(String(64))
+    prompt_fingerprint = Column(String(16))
+    audit_fingerprint = Column(String(16))
 
     def effective_title(self):
         # Same precedence as effective_text: reviewer edit, then the AI-verified correction, then
