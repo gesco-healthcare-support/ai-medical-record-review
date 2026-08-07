@@ -41,8 +41,16 @@ _PREFIX = "llm:pace"
 # visibly degrades under sustained load: overshooting costs a retry storm, undershooting costs a
 # little latency.
 _DECREASE_FACTOR = 0.5
-# Additive increase per SUCCESS, as a fraction of the current rate. Deliberately small so recovery is
-# gradual: the measured depletion means a fast climb would simply re-trip the limit.
+# Increase per SUCCESS, as a fraction of the CEILING - not of the current rate. This is the
+# "additive" in AIMD and the distinction is not pedantic: an earlier version added 2% of the CURRENT
+# rate, which is multiplicative increase, and it self-traps. Observed 2026-08-05 during the model
+# ladder: 2.5-pro backed off to the 2% floor (0.4 rpm) and needed ~198 consecutive successes to climb
+# back - at one call per 2.5 minutes, about eight hours. The control arm crawled while every OpenAI
+# arm ran clean.
+#
+# Adding a fraction of the ceiling recovers linearly instead: floor to ceiling in ~49 successes,
+# regardless of how far it fell. Backoff stays multiplicative, which is the asymmetry that makes
+# AIMD converge - fall fast, climb steadily.
 _INCREASE_FRACTION = 0.02
 # Never converge to zero (that would stall the pipeline) and never exceed the configured ceiling.
 _MIN_RATE_FRACTION = 0.02
@@ -171,8 +179,14 @@ def record_success(provider: str, model: str) -> None:
             current = _get_rate(conn, provider, model, meter, ceiling)
             if current >= per_second:
                 continue
+            # ADDITIVE: a fixed step derived from the ceiling, so recovery is linear and does not
+            # depend on how far the rate fell. See the note on _INCREASE_FRACTION.
             _set_rate(
-                conn, provider, model, meter, min(per_second, current * (1 + _INCREASE_FRACTION))
+                conn,
+                provider,
+                model,
+                meter,
+                min(per_second, current + per_second * _INCREASE_FRACTION),
             )
     except Exception as exc:  # noqa: BLE001
         logger.debug("pacing: record_success failed: %s", exc)
