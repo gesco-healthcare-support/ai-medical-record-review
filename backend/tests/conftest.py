@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+
 # Dev-only defaults so `uv run pytest` works without an inline export; real env (CI, prod) wins via
 # setdefault. These are the published local docker credentials (docker-compose.dev.yml), never a
 # production secret. Set BEFORE importing app.* so the cached get_settings() reads them.
@@ -109,8 +110,10 @@ def _local_database_url() -> str:
 
     # Nothing listening at all: keep a concrete default so the error names a port and reason.
     fallback_port = ordered[0][0] if ordered else 5432
-    return (f"postgresql+psycopg://mrr:{env_pw or 'mrr_dev_only'}@localhost:"
-            f"{fallback_port}/mrr?connect_timeout=5")
+    return (
+        f"postgresql+psycopg://mrr:{env_pw or 'mrr_dev_only'}@localhost:"
+        f"{fallback_port}/mrr?connect_timeout=5"
+    )
 
 
 def _reject_the_app_database(url: str) -> None:
