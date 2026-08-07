@@ -1,11 +1,12 @@
 """summarize depositions by default
 
 Revision ID: a9c4e13f70b2
-Revises: e7b4c1a92d58
+Revises: b6d19f4c30a7
 Create Date: 2026-08-06 14:10:00.000000
 
-MIGRATION ORDERING. This forks from main's head, as PR #79's b6d19f4c30a7 and PR #77's f0f4d21dbb53 both
-do. Three migrations on one parent means whichever merges SECOND and THIRD must have `down_revision`
+MIGRATION ORDERING. RE-POINTED at merge time (2026-08-07) from e7b4c1a92d58 to b6d19f4c30a7: PR #79
+merged first, so its migration became the head and this one had to chain onto it.
+Originally this forked from main's head, as PR #77's f0f4d21dbb53 still does. Three migrations on one parent means whichever merges SECOND and THIRD must have `down_revision`
 re-pointed at its predecessor before merging - two alembic heads make `upgrade head` fail outright. It
 is deliberately NOT pre-chained on #79: that would make this branch impossible to test on its own and
 impossible to merge first. Chaining is a merge-time decision, and it is called out in every affected PR.
@@ -39,7 +40,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "a9c4e13f70b2"
-down_revision: Union[str, Sequence[str], None] = "e7b4c1a92d58"
+down_revision: Union[str, Sequence[str], None] = "b6d19f4c30a7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
