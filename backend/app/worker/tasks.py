@@ -292,8 +292,32 @@ def segment_document(job_id) -> None:
     from app.services.segment_engine import run_segmentation
 
     def work(session, job, report):
+        from app.services.page_text import get_page_text, populate_document
+
         document = session.get(Document, job.document_id)
-        rows = run_segmentation(document.stored_path, document.page_count, progress=report)
+        # OCR every page ONCE, before segmentation, so classify/dedup/summarize and any later re-run
+        # read stored text instead of re-extracting the same pages. Idempotent, so a re-segment pays
+        # nothing. Best-effort: a failure here must not fail the job - every reader falls back to
+        # extracting on demand.
+        report("reading", 0, document.page_count or 0)
+        try:
+            populate_document(session, document.id, document.stored_path, document.page_count or 0)
+        except Exception:
+            logger.warning("page text population failed for %s", document.id, exc_info=True)
+
+        # Read page text from the store rather than re-OCRing: population above already did it.
+        # Its own session is used because this runs on segmentation's thread pool and a Session is
+        # not thread-safe - see the same rule in the summarize pool.
+        def _stored_page_text(page):
+            with get_sessionmaker()() as reader:
+                return get_page_text(reader, document.id, page, pdf_path=document.stored_path)
+
+        rows = run_segmentation(
+            document.stored_path,
+            document.page_count,
+            progress=report,
+            page_text_fn=_stored_page_text,
+        )
         session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
         for idx, row in enumerate(rows):
             fields = dict(
@@ -342,7 +366,7 @@ def classify_document(job_id) -> None:
     does NOT re-segment. OCR is best-effort per row (a missing/unreadable page degrades to
     title-only classification rather than failing the whole case)."""
     from app.services.classification import classify
-    from app.services.ocr import extract_text_from_selected_pages
+    from app.services.page_text import get_page_text
 
     def work(session, job, report):
         document = session.get(Document, job.document_id)
@@ -354,7 +378,11 @@ def classify_document(job_id) -> None:
         for i, row in enumerate(rows):
             report("categorizing", i, len(rows))
             try:
-                page_text = extract_text_from_selected_pages(document.stored_path, [row.start])
+                # Stored text, extracted once by the segment job; OCRs on a miss so a document
+                # segmented before the store existed still classifies.
+                page_text = get_page_text(
+                    session, document.id, row.start, pdf_path=document.stored_path
+                )
             except Exception:
                 page_text = ""  # best-effort: classify on the title alone if OCR is unavailable
             result = classify(row.title, page_text=page_text or None)
@@ -398,7 +426,7 @@ def dedup_document(job_id) -> None:
     import gc
 
     from app.services.dedup import cluster_rows, confirm_cluster, duplicate_gate
-    from app.services.ocr import extract_pages_with_report
+    from app.services.page_text import get_row_text_with_report
 
     def work(session, job, report):
         settings = get_settings()
@@ -429,8 +457,14 @@ def dedup_document(job_id) -> None:
             report("deduping", i, total)
             if not (row.source_text or "").strip():
                 try:
-                    text, ocr_report = extract_pages_with_report(
-                        document.stored_path, list(range(row.start, row.end + 1))
+                    # From the page store (populated once by the segment job), which keeps the
+                    # errored-vs-blank report intact while no longer re-OCRing pages segmentation
+                    # already read. Falls back to extracting any page the store lacks.
+                    text, ocr_report = get_row_text_with_report(
+                        session,
+                        document.id,
+                        range(row.start, row.end + 1),
+                        pdf_path=document.stored_path,
                     )
                     row.source_text = text
                     # A row with no text can never cluster with anything (_jaccard returns 0.0 when

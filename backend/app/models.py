@@ -472,3 +472,40 @@ class AuditLog(Base):
     # human reading a row is the only consumer a write-only trail can have.
     detail = Column(Text)
     at = Column(DateTime, nullable=False, default=_utcnow)
+
+
+class PageText(Base):
+    """OCR text for ONE page of a document, extracted once and reused by every stage.
+
+    Keyed by (document_id, page) rather than by row, deliberately. `review_rows.source_text` is keyed
+    to a ROW, and rows change identity whenever a reviewer merges or splits - so row-keyed text cannot
+    be reused across stages, and a re-segment throws it away. A page number never changes, so this
+    survives every reviewer edit and every re-run.
+
+    Before this existed the same page was OCR'd up to four times per document: once per row during
+    segmentation's classification escalation, again per row during classify, again across every row in
+    dedup, and again in summarize whenever the row's stored text was missing.
+
+    `ocr_engine` is recorded because it is a measured variable, not a constant: published work on this
+    task found switching from Tesseract to a commercial engine cut blank pages from 2.27% to 0.38%.
+    Storing which engine produced each page is what makes an A/B on that possible without re-running
+    everything blind.
+    """
+
+    __tablename__ = "page_texts"
+    __table_args__ = (UniqueConstraint("document_id", "page", name="uq_page_texts_document_page"),)
+
+    id = Column(Integer, primary_key=True)
+    document_id = Column(String(36), ForeignKey("documents.id"), nullable=False, index=True)
+    page = Column(Integer, nullable=False)
+    # PHI-bearing, exactly like review_rows.source_text: never log, never leave the box.
+    text = Column(Text, nullable=False, default="")
+    ocr_engine = Column(String(32), nullable=False, default="tesseract")
+    # Whether extraction SUCCEEDED, as distinct from succeeding and finding nothing. Empty text has
+    # two very different causes: a page that errored (often transient, worth retrying) and a page that
+    # is genuinely blank - a film, a photo, a separator sheet - which will never yield words. The
+    # duplicate check already reports that difference to the reviewer, and blank-page RATE is the
+    # headline metric for comparing OCR engines, so collapsing both into "" would lose both.
+    extract_ok = Column(Boolean, nullable=False, default=True)
+    char_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=_utcnow)

@@ -113,13 +113,22 @@ def merge_window_rows(window_reports, windows, total_pages):
     return deduped
 
 
-def _categorize(pdf_path, row):
+def _categorize(pdf_path, row, page_text_fn=None):
     """B5 cascade on the title, escalating to first-page OCR when inconclusive; any low-confidence
-    result routes the row to human review via the flag."""
+    result routes the row to human review via the flag.
+
+    ``page_text_fn(page) -> str`` lets the caller supply already-extracted text (the worker passes a
+    reader over the `page_texts` store). Without it this OCRs the page itself, which keeps this module
+    DB-free and standalone-runnable - but means the same page is extracted twice in a full run.
+    """
     result = classify(row["title"])
     if result.needs_review:
         try:
-            page_text = extract_text_from_selected_pages(pdf_path, [row["start"]])
+            page_text = (
+                page_text_fn(row["start"])
+                if page_text_fn is not None
+                else extract_text_from_selected_pages(pdf_path, [row["start"]])
+            )
             if page_text.strip():
                 result = classify(row["title"], page_text=page_text)
         except Exception as exc:
@@ -130,10 +139,12 @@ def _categorize(pdf_path, row):
     return row
 
 
-def run_segmentation(pdf_path, total_pages, progress=None):
+def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
     """PDF -> tiled, categorized sub-document rows, reporting progress per stage.
 
     progress(stage, current, total) is called around every model interaction; it must never raise.
+    ``page_text_fn(page) -> str`` is an optional reader for already-extracted page text; see
+    ``_categorize``. Threaded through rather than imported so this module stays DB-free.
     """
     settings = get_settings()
     client = get_genai_client()
@@ -184,7 +195,7 @@ def run_segmentation(pdf_path, total_pages, progress=None):
     # mutation) and classify() opens its own short session for catalog reads (thread-safe).
     report("categorizing", 0, len(rows))
     with ThreadPoolExecutor(max_workers=settings.classify_workers) as pool:
-        futures = {pool.submit(_categorize, pdf_path, row): row for row in rows}
+        futures = {pool.submit(_categorize, pdf_path, row, page_text_fn): row for row in rows}
         done = 0
         try:
             for future in drain_pool(futures, pool_timeout):

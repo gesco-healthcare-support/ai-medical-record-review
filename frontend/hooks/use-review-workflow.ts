@@ -23,7 +23,8 @@ export type SaveState = { kind: "" | "saved" | "dirty" | "error"; message?: stri
 
 const STAGE_LABELS: Record<string, string> = {
   starting: "Starting...",
-  segmenting: "Reading the record and finding document boundaries",
+  reading: "Reading the pages",
+  segmenting: "Finding document boundaries",
   categorizing: "Categorizing each document",
   verifying: "Double-checking uncertain boundaries",
   summarizing: "Writing summaries",

@@ -147,6 +147,13 @@ class Settings(BaseSettings):
     # while every other call inherits gemini_thinking_budget. Env-overridable.
     segment_thinking_budget: int = -1
 
+    # Concurrency for the one-time per-page OCR pass (services/page_text.populate_document).
+    # Deliberately its own knob rather than reusing CLASSIFY_WORKERS: this is pure Tesseract CPU on
+    # the same box that runs the Vertex pacing work, and OMP_THREAD_LIMIT=1 in compose is what stops
+    # concurrent tesseract processes deadlocking. Conservative by default - the pass runs once per
+    # document, so throughput matters less than not starving everything else.
+    page_text_workers: int = 4
+
     # Global Vertex request ceiling (requests/minute) enforced by a Redis token bucket at the seam,
     # so the aggregate rate across every worker process never trips dynamic-shared-quota 429s. Tune
     # empirically: raise until near throttling, then back off ~20%.
