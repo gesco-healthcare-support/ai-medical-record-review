@@ -530,26 +530,30 @@ def get_duplicates(
         .order_by(Job.id.desc())
     ).first()
     # "stale" = the clusters no longer cover every row dedup would look at, so the tab can offer a
-    # MANUAL re-check (never an automatic AI run). A completed dedup stores source_text on EVERY row -
-    # dismissed ones included, since they are back in scope - and a metadata edit keeps it
-    # (_store_rows), so a missing one means a boundary changed or a row appeared since that run.
-    # While a dedup is in flight there is nothing to nudge.
+    # MANUAL re-check (never an automatic AI run). A completed dedup stores source_text on every row
+    # IN SCOPE, and a metadata edit keeps it (_store_rows), so a missing one means a boundary changed,
+    # a row appeared, or a row was newly included since that run. While a dedup is in flight there is
+    # nothing to nudge.
+    #
+    # Scope is include=True, matching dedup_document. This filter is load-bearing rather than tidy:
+    # an excluded row is never OCR'd, so without it source_text stays None forever and the tab would
+    # offer a re-check that could not possibly change anything. A DISMISSED row is not an excluded one
+    # - dismissing says "not duplicates", not "do not summarize" - so it stays in scope and still
+    # counts.
+    in_scope = [row for row in document.review_rows if row.include]
     stale = bool(
-        dedup_job
-        and dedup_job.state == "done"
-        and any(row.source_text is None for row in document.review_rows)
+        dedup_job and dedup_job.state == "done" and any(r.source_text is None for r in in_scope)
     )
     # Sub-documents a completed check could not read. Their text is empty, and empty text matches
     # nothing (the Jaccard signature is a null set), so they were not compared against anything - a
     # run that could not read a fifth of the record is not a clean bill of health and must not
     # present as one. Derived, so no column and no migration: "" means read-and-textless, None means
     # never attempted (which `stale` already covers).
+    # Same scope as `stale` above, so the two derived values cannot disagree about what dedup looked
+    # at. An excluded row has no text at all rather than empty text, so it could not be counted here
+    # anyway; filtering explicitly keeps that true if the storage rule ever changes.
     unreadable = (
-        sum(
-            1
-            for row in document.review_rows
-            if row.source_text is not None and not row.source_text.strip()
-        )
+        sum(1 for r in in_scope if r.source_text is not None and not r.source_text.strip())
         if dedup_job and dedup_job.state == "done"
         else 0
     )

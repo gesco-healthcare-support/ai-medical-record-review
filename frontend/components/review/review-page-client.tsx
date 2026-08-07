@@ -158,6 +158,12 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
     save.kind === "dirty" ||
     dedupRunning;
 
+  // Un-nested reason for the disabled "Check duplicates" button, same rule as summarizeHint below.
+  let checkDuplicatesHint: string | undefined;
+  if (save.kind === "dirty") checkDuplicatesHint = "Your latest changes aren't saved yet.";
+  else if (dedupRunning) checkDuplicatesHint = "A duplicate check is already running.";
+  else checkDuplicatesHint = undefined;
+
   // Un-nested reason for the disabled Summarize button (Sonar S3358: no nested ternary in JSX).
   let summarizeHint: string | undefined;
   if (!summarizeDisabled) summarizeHint = undefined;
@@ -191,6 +197,19 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
       wf.setBanner(
         humanizeError(err, { fallback: "Could not start the check - please try again." }),
       );
+    }
+  };
+
+  // Starting the FIRST duplicate check, from the Review step. Deliberately no confirm dialog:
+  // onRecheck warns about losing per-copy removals, and on a first run there is nothing to lose.
+  const onCheckDuplicates = async () => {
+    wf.setBanner("");
+    try {
+      await recheck.mutateAsync();
+      setTab("duplicates");
+    } catch (err) {
+      // Stay on Review so the banner is where the reviewer is already looking.
+      wf.setBanner(humanizeError(err, { fallback: "Could not start the check - please try again." }));
     }
   };
 
@@ -276,12 +295,17 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                   >
                     {wf.rows.length ? "Re-run segment" : "Segment"}
                   </button>
+                  {/* Starts the check, then shows the tab. Blocked on unsaved edits: dedup reads
+                      include=True server-side, so scanning against unsaved checkbox changes would
+                      check the wrong rows - the exact waste this gate exists to prevent. */}
                   <button
                     type="button"
                     className="ev-btn ev-btn-primary"
-                    onClick={() => setTab("duplicates")}
+                    disabled={dedupRunning || recheck.isPending || save.kind === "dirty"}
+                    title={checkDuplicatesHint}
+                    onClick={onCheckDuplicates}
                   >
-                    Check duplicates
+                    {recheck.isPending ? "Starting..." : "Check duplicates"}
                   </button>
                 </>
               ) : null}

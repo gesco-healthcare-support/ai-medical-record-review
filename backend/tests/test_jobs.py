@@ -1079,10 +1079,15 @@ def _rows_by_idx(doc_id):
         }
 
 
-def test_dedup_document_covers_excluded_rows_and_keeps_an_unchanged_dismissal(monkeypatch):
-    """Scope is EVERY row - an excluded copy is still clustered (General/Depositions rows are
-    excluded by default, and that is where re-scanned letters live) - and a dismissed cluster whose
-    copies are unchanged comes back still dismissed, so a settled "not duplicates" stays quiet."""
+def test_dedup_document_skips_excluded_rows_and_keeps_an_unchanged_dismissal(monkeypatch):
+    """Scope is the rows the reviewer CHECKED - an excluded copy is not read and not clustered - and a
+    dismissed cluster whose copies are unchanged comes back still dismissed, so a settled "not
+    duplicates" stays quiet.
+
+    Inverted on 2026-08-06. Dedup used to cover every row, on the reasoning that General and
+    Depositions are unchecked by default and that is where re-scanned letters live. Depositions became
+    checked by default (PR #82), and the residual General gap was accepted: a row the reviewer
+    excluded will not be summarized, so a duplicate among excluded rows cannot reach a client."""
     doc_id = _make_user_and_doc(page_count=5)
     same = "alpha beta gamma delta epsilon zeta eta theta"
     dismissed_text = "kappa lambda mu nu xi omicron pi rho sigma"
@@ -1103,8 +1108,13 @@ def test_dedup_document_covers_excluded_rows_and_keeps_an_unchanged_dismissal(mo
     dedup_document(job_id)
 
     rows = _rows_by_idx(doc_id)
-    assert rows[1].include is False and rows[1].dupe_group is not None
-    assert rows[0].dupe_group == rows[1].dupe_group  # the excluded copy is clustered with its twin
+    # The excluded copy is left entirely alone: not clustered, and not even OCR'd - its source_text
+    # stays None, which is what proves the row was skipped rather than read and found unique.
+    assert rows[1].include is False
+    assert rows[1].dupe_group is None
+    assert rows[1].source_text is None
+    # Its included twin therefore has nothing to pair with and is not a duplicate either.
+    assert rows[0].dupe_group is None
     assert rows[0].dupe_dismissed is False
     # The dismissed pair was re-examined and re-dismissed (same two page ranges).
     assert rows[2].dupe_group == rows[3].dupe_group is not None
@@ -1182,9 +1192,18 @@ def test_dedup_document_stores_the_cluster_similarity(monkeypatch):
     assert rows[2].dupe_similarity is None  # a singleton carries no cluster score
 
 
-def test_dedup_document_keeps_the_reviewers_kept_copy(monkeypatch):
-    """A re-check must not forget a keep-one resolution: dupe_primary survives the run (only
-    dupe_group is recomputed), so the cluster comes back resolved rather than needing review."""
+def test_a_keep_one_resolution_is_not_reopened_by_a_re_check(monkeypatch):
+    """A re-check must not reopen a keep-one resolution.
+
+    Rewritten 2026-08-06 with the scope change. keep_one sets include=False on every copy it did not
+    keep, and dedup now reads only included rows - so the collapsed cluster has exactly one member
+    left in scope, a cluster of one is not a duplicate set, and it simply does not come back. The
+    reviewer's answer stands.
+
+    This is a stronger guarantee than the old one, not a weaker one: previously the cluster re-formed
+    every run and relied on dupe_primary surviving to present as resolved. Now there is nothing to
+    re-form. Re-including the excluded copy puts it back in scope, which is the correct way to reopen
+    the question deliberately."""
     doc_id = _make_user_and_doc(page_count=2)
     with get_sessionmaker()() as session:
         for idx, (include, primary) in enumerate([(True, True), (False, False)]):
@@ -1219,9 +1238,13 @@ def test_dedup_document_keeps_the_reviewers_kept_copy(monkeypatch):
                 select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
             ).all()
         }
-    assert rows[0].dupe_group == rows[1].dupe_group is not None  # re-clustered
-    assert rows[0].dupe_primary is True  # the kept copy is still marked
-    assert rows[1].dupe_primary is False
+    # The excluded copy was out of scope, so the pair cannot re-form and the resolved cluster stays
+    # closed. Both rows end ungrouped rather than re-clustered.
+    assert rows[0].dupe_group is None
+    assert rows[1].dupe_group is None
+    # The kept copy keeps its include; the resolution is not undone.
+    assert rows[0].include is True
+    assert rows[1].include is False
 
 
 def _dedup_jobs(doc_id):
@@ -1231,51 +1254,43 @@ def _dedup_jobs(doc_id):
         ).all()
 
 
-def test_chain_dedup_skips_when_identify_not_done():
-    from app.worker.tasks import _chain_dedup
+def test_identify_does_not_start_a_duplicate_check(monkeypatch):
+    """WHEN segment or classify completes, THE SYSTEM SHALL NOT enqueue a dedup job.
 
-    doc_id = _make_user_and_doc()
+    Replaces three test_chain_dedup_* tests deleted with `_chain_dedup` on 2026-08-06. Duplicate
+    detection is now started by the reviewer from the Duplicates tab, once they have chosen which
+    sub-documents to summarize - checking documents nobody will summarize is work spent for nothing,
+    and running it automatically means running it before the choice has been made.
+    """
+    import app.services.segment_engine as se
+
+    monkeypatch.setattr(se, "get_genai_client", lambda: None)
+    monkeypatch.setattr(se, "byte_budgeted_windows", lambda *a, **k: [(1, 2)])
+    monkeypatch.setattr(
+        se,
+        "_window_rows",
+        lambda pdf_path, ws, we, client: [
+            dict(start=1, end=2, title="A", date="-", injury_date="-", flag="-")
+        ],
+    )
+
+    # The real _categorize SETS row["category"]; a pass-through stub leaves the key absent and the
+    # persistence step downstream raises KeyError, failing the job for the wrong reason.
+    def _fake_categorize(pdf_path, row):
+        row["category"] = "1"
+        return row
+
+    monkeypatch.setattr(se, "_categorize", _fake_categorize)
+    monkeypatch.setattr(se.get_settings(), "verify_merge", False, raising=False)
+
+    doc_id = _make_user_and_doc(page_count=2)
     with get_sessionmaker()() as session:
-        job_id = jobs.create_job(
-            session, doc_id, "segment", model="m", prompt_version="1"
-        ).id  # queued
-    _chain_dedup(job_id)  # identify did not finish -> no dedup enqueued
-    assert _dedup_jobs(doc_id) == []
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
 
+    segment_document(job_id)
 
-def test_chain_dedup_swallows_conflict_when_a_job_is_active():
-    from app.worker.tasks import _chain_dedup
-
-    doc_id = _make_user_and_doc()
     with get_sessionmaker()() as session:
-        seg = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
-        seg.state = "done"
-        session.add(
-            Job(
-                document_id=doc_id, kind="summarize", state="running", model="m", prompt_version="1"
-            )
-        )
-        session.commit()
-        seg_id = seg.id
-    _chain_dedup(seg_id)  # a job is already active -> JobConflict is swallowed, no raise
-    assert _dedup_jobs(doc_id) == []
-
-
-def test_chain_dedup_swallows_generic_error(monkeypatch):
-    from app.worker.tasks import _chain_dedup
-
-    doc_id = _make_user_and_doc()
-    with get_sessionmaker()() as session:
-        seg = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
-        seg.state = "done"
-        session.commit()
-        seg_id = seg.id
-
-    def _boom(*args, **kwargs):
-        raise RuntimeError("redis down")
-
-    monkeypatch.setattr("app.services.jobs.enqueue", _boom)
-    _chain_dedup(seg_id)  # a non-conflict failure is logged + swallowed (never fails identify)
+        assert session.get(Job, job_id).state == "done"  # the identify itself still succeeded
     assert _dedup_jobs(doc_id) == []
 
 

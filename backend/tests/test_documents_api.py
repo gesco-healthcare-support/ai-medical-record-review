@@ -353,9 +353,17 @@ async def test_duplicates_stale_flag_tracks_unchecked_included_rows(authed):
     assert (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["stale"] is True
 
 
-async def test_duplicates_stale_flag_covers_every_row_including_dismissed(authed):
-    """Staleness follows the dedup SCOPE, which is now EVERY row: a row dedup never saw - excluded or
-    dismissed - means the list may be incomplete and a manual re-check is worthwhile."""
+async def test_duplicates_stale_flag_ignores_rows_the_reviewer_excluded(authed):
+    """Staleness follows the dedup SCOPE, which is the rows the reviewer CHECKED.
+
+    Rewritten 2026-08-06 with the scope change; it previously asserted the opposite, because dedup
+    read every row. Without this the flag would be permanently true on any record with an exclusion:
+    an excluded row is never OCR'd, so its source_text stays None forever and the tab would offer a
+    re-check that could not change anything.
+
+    A row the reviewer LATER includes is a different matter - dedup has genuinely not seen it, so the
+    offer is real.
+    """
     client, _ = authed
     doc_id = await _upload(client, pages=4)
     rows = [
@@ -365,7 +373,9 @@ async def test_duplicates_stale_flag_covers_every_row_including_dismissed(authed
     assert (
         await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
     ).status_code == 200
-    _set_dedup_fields(doc_id, [(1, 2)])  # only the included row was checked
+    _set_dedup_fields(
+        doc_id, [(1, 2)]
+    )  # only the included row was checked, which is the whole scope
     with get_sessionmaker()() as session:
         session.add(
             Job(
@@ -382,25 +392,52 @@ async def test_duplicates_stale_flag_covers_every_row_including_dismissed(authed
     async def stale():
         return (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["stale"]
 
-    assert await stale() is True  # the excluded row has no stored text -> re-check is worthwhile
+    # Every INCLUDED row has stored text; the excluded one never will. Not stale.
+    assert await stale() is False
 
+    # Including that row puts it in scope, and dedup has not read it -> the re-check offer is real.
+    included = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY, "include": True},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": included})
+    ).status_code == 200
+    assert await stale() is True
+
+
+async def test_duplicates_stale_flag_still_counts_a_dismissed_but_included_row(authed):
+    """A DISMISSED cluster is not an EXCLUDED row - dismissing says "not duplicates", not "do not
+    summarize" - so a dismissed row that is still checked stays in dedup's scope and still counts."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_dedup_fields(doc_id, [(1, 2)])  # row 2 has no stored text
     with get_sessionmaker()() as session:
+        session.add(
+            Job(
+                document_id=doc_id,
+                kind="dedup",
+                state="done",
+                stage="deduping",
+                model="m",
+                prompt_version="1",
+            )
+        )
         row = session.scalar(
             select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.start == 3)
         )
         row.dupe_dismissed = True
         session.commit()
-    # Dismissing does NOT settle staleness any more: that row is back in dedup's scope and still has
-    # no stored text, so the re-check offer stands.
-    assert await stale() is True
 
-    with get_sessionmaker()() as session:
-        row = session.scalar(
-            select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.start == 3)
-        )
-        row.source_text = "ocr text 3-4"
-        session.commit()
-    assert await stale() is False  # every row has been looked at -> nothing missing
+    resp = await client.get(f"/api/documents/{doc_id}/duplicates")
+    assert resp.json()["stale"] is True
 
 
 async def test_summaries_empty_and_export_conflict(authed):
