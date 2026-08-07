@@ -55,7 +55,9 @@ def test_summary_call_uses_hardening_preamble_and_configured_temperature(monkeyp
         return _fake_generate(model, system_msg, user_text, temperature)
 
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -75,7 +77,7 @@ def test_summary_call_uses_hardening_preamble_and_configured_temperature(monkeyp
 
 def test_empty_ocr_fails_fast(monkeypatch):
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "   "
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False, **_kw: "   "
     )
     monkeypatch.setattr(se, "_generate", lambda *a, **k: ("unused", False))
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -85,7 +87,9 @@ def test_empty_ocr_fails_fast(monkeypatch):
 
 def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(
         se,
@@ -122,7 +126,9 @@ def test_verified_title_is_stored_decorated_when_the_pass_corrects_it(monkeypatc
     # WHEN the verify pass corrects the title, THE SYSTEM SHALL store it with the same decorations
     # as the raw title, so it is a drop-in replacement in every view.
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(
@@ -144,7 +150,9 @@ def test_verified_title_is_stored_decorated_when_the_pass_corrects_it(monkeypatc
 
 def test_verified_title_stays_none_when_the_pass_finds_nothing(monkeypatch):
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(
@@ -165,7 +173,9 @@ def test_verified_title_stays_none_when_the_pass_finds_nothing(monkeypatch):
 def test_the_title_is_handed_to_the_verify_pass(monkeypatch):
     seen = {}
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
 
@@ -185,7 +195,9 @@ def test_the_doi_call_runs_on_the_flash_model_not_the_summary_model(monkeypatch)
     # on genai_model. Passing summarize_row's own model here is the regression.
     seen = {}
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -207,7 +219,7 @@ def test_stored_ocr_is_reused_instead_of_extracting_twice(monkeypatch):
     monkeypatch.setattr(
         se,
         "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False: calls.append(pages) or "FRESH OCR",
+        lambda path, pages, mark_pages=False, **_kw: calls.append(pages) or "FRESH OCR",
     )
     seen = {}
 
@@ -231,7 +243,7 @@ def test_blank_stored_ocr_falls_back_to_extracting(monkeypatch, stored):
     monkeypatch.setattr(
         se,
         "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False: calls.append(pages) or "FRESH OCR",
+        lambda path, pages, mark_pages=False, **_kw: calls.append(pages) or "FRESH OCR",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -246,7 +258,7 @@ def test_a_deposition_re_extracts_with_page_markers(monkeypatch):
     # category-9 row IGNORES the stored dedup OCR and re-extracts with markers.
     calls = []
 
-    def fake_extract(path, pages, mark_pages=False):
+    def fake_extract(path, pages, mark_pages=False, **_kw):
         calls.append({"pages": pages, "mark_pages": mark_pages})
         return "Page 1:\nbody\n"
 
@@ -266,7 +278,7 @@ def test_other_categories_reuse_stored_ocr_and_never_get_markers(monkeypatch, ca
     # throw away the OCR saving from PR #56.
     calls = []
 
-    def fake_extract(path, pages, mark_pages=False):
+    def fake_extract(path, pages, mark_pages=False, **_kw):
         calls.append(mark_pages)
         return "FRESH"
 
@@ -282,7 +294,7 @@ def test_other_categories_reuse_stored_ocr_and_never_get_markers(monkeypatch, ca
 def test_a_deposition_without_stored_text_still_gets_markers(monkeypatch):
     calls = []
 
-    def fake_extract(path, pages, mark_pages=False):
+    def fake_extract(path, pages, mark_pages=False, **_kw):
         calls.append(mark_pages)
         return "Page 1:\nbody\n"
 
@@ -297,7 +309,9 @@ def test_a_deposition_without_stored_text_still_gets_markers(monkeypatch):
 def test_doi_prefix_from_isolated_extraction(monkeypatch):
     # WHEN extract_doi and the isolated extraction returns a date, THE SYSTEM SHALL prefix it.
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -310,7 +324,9 @@ def test_doi_prefix_carries_a_cumulative_trauma_period(monkeypatch):
     # WHEN the document states a cumulative-trauma period, THE SYSTEM SHALL carry the whole period
     # as one value rather than splitting it into two injury dates.
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -323,7 +339,9 @@ def test_doi_prefix_omitted_when_isolated_returns_dash(monkeypatch):
     # WHEN the isolated extraction returns "-", THE SYSTEM SHALL omit the prefix even though the
     # (propagated) row value carries a date.
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -335,7 +353,9 @@ def test_doi_prefix_omitted_when_isolated_returns_dash(monkeypatch):
 def test_extract_doi_false_uses_row_value_without_calling(monkeypatch):
     # WHEN extract_doi is False, THE SYSTEM SHALL use row["injury_date"] and NOT call extraction.
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -348,7 +368,9 @@ def test_extract_doi_false_uses_row_value_without_calling(monkeypatch):
 
 def test_verify_skipped_when_disabled(monkeypatch):
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(
         se,
@@ -420,7 +442,9 @@ def test_truncated_summary_is_flagged_for_manual_check(monkeypatch):
     # WHEN the body hit the token cap, THE SYSTEM SHALL flag the summary and SHALL NOT alter its
     # text (a cut-off summary must be visible to the reviewer, not stored as if it were finished).
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(
         se,
@@ -450,7 +474,9 @@ def _system_messages(monkeypatch, row, **kw):
         return _fake_generate(model, system_msg, user_text, temperature)
 
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "OCR text",
     )
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -533,7 +559,9 @@ def test_the_document_date_is_handed_to_the_verify_pass(monkeypatch):
     # the audit needs it too - the source text alone cannot say which of its dates is this one.
     seen = {}
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
 
@@ -607,9 +635,12 @@ def test_the_preamble_is_assembled_per_category():
         assert "Include a point ONLY if" in preamble
         assert "ordinary sentence case" in preamble
         assert "Bold ONLY the short point/section labels" in preamble
-    # The paragraph rule and the deposition rule are mutually exclusive, never both.
-    assert "ONE continuous paragraph" in treating and "page by page" not in treating
-    assert "page by page" in deposition and "ONE continuous paragraph" not in deposition
+    # The paragraph rule and the deposition rule are mutually exclusive, never both. The deposition
+    # wording changed on 2026-08-06 from one line per page to groups of three, so this asserts the
+    # CURRENT rule - if it ever asserted both, the two would be contradicting each other in one
+    # preamble, which is the defect the category-9 prompt already had.
+    assert "ONE continuous paragraph" in treating and "GROUPS OF THREE" not in treating
+    assert "GROUPS OF THREE" in deposition and "ONE continuous paragraph" not in deposition
     # And the point of the exercise: the laboratory prompt is materially shorter.
     assert len(lab) < len(treating) * 0.7
 
@@ -655,7 +686,9 @@ def test_the_instruction_is_the_last_thing_in_a_multimodal_payload(monkeypatch):
         return _fake_generate(model, system_msg, contents, temperature)
 
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR BODY"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "OCR BODY",
     )
     monkeypatch.setattr(se, "_page_image_parts", lambda path, start, end: ["IMG1", "IMG2"])
     monkeypatch.setattr(se, "_generate", fake_generate)
@@ -677,7 +710,7 @@ def test_the_caps_transform_runs_on_the_body_but_never_the_title(monkeypatch):
     # T6: capitalisation is mechanical, so a transform is right every time where a prompt rule is not.
     # The title is exempt - it is an ALL CAPS header by design in 812 of 813 measured human entries.
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR"
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False, **_kw: "OCR"
     )
     monkeypatch.setattr(
         se,
@@ -703,7 +736,7 @@ def test_the_caps_transform_runs_on_the_body_but_never_the_title(monkeypatch):
 def test_the_caps_transform_also_cleans_the_audits_rewrite(monkeypatch):
     # effective_text() delivers verified_text, so a capital reintroduced by the audit would ship.
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "OCR"
+        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False, **_kw: "OCR"
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(
@@ -759,7 +792,9 @@ def test_neither_review_category_still_tells_the_model_to_ignore_the_review():
 
 def test_untruncated_summary_reports_no_truncation(monkeypatch):
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -783,7 +818,9 @@ def _labelled_generate(model, system_msg, user_text, temperature, max_output_tok
 
 def _stub_verify(monkeypatch, fixed_text, issues, fixed_title=None):
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(se, "_generate", _labelled_generate)
     monkeypatch.setattr(
@@ -897,7 +934,9 @@ def test_a_rejected_body_still_stores_a_corrected_title(monkeypatch):
 def test_the_guard_never_fires_on_a_body_that_had_no_headings(monkeypatch):
     """A prose-format category has nothing to lose, so the guard must stay out of the way entirely."""
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR text"
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)  # returns "Summary body", no bold
     monkeypatch.setattr(

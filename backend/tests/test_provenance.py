@@ -55,7 +55,11 @@ def _capture_models(monkeypatch):
         return {"fixed_text": summary, "fixed_title": title, "issues": []}
 
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False: "raw OCR"
+        se,
+        "extract_text_from_selected_pages",
+        # **_kw absorbs page_label_offset, which the deposition work added to the real
+        # signature. This stub pins BEHAVIOUR, not an exact call signature.
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR",
     )
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", fake_verify)

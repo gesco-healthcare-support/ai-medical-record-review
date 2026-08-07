@@ -294,7 +294,7 @@ def test_segment_document_persists_segment_and_review_rows(monkeypatch):
     monkeypatch.setattr(
         se,
         "run_segmentation",
-        lambda pdf_path, total_pages, progress=None: [_row(1, "1"), _row(2, "9")],
+        lambda pdf_path, total_pages, progress=None: [_row(1, "1"), _row(2, "100")],
     )
     doc_id = _make_user_and_doc()
     with get_sessionmaker()() as session:
@@ -307,9 +307,11 @@ def test_segment_document_persists_segment_and_review_rows(monkeypatch):
             select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
         ).all()
         segment = session.scalars(select(SegmentRow).where(SegmentRow.job_id == job_id)).all()
-        assert [r.category for r in review] == ["1", "9"]
+        assert [r.category for r in review] == ["1", "100"]
         assert len(segment) == 2
-        # include follows the category summarize_default: cat 1 on, Depositions (9) off.
+        # include follows the category summarize_default: cat 1 on, General (100) off. Uses 100
+        # rather than Depositions (9) because 9 became on-by-default on 2026-08-06 - with two
+        # on-by-default categories this would pass even if include were hardcoded True.
         assert review[0].include is True
         assert review[1].include is False
 
@@ -781,7 +783,7 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
     monkeypatch.setattr(
         classification,
         "classify",
-        lambda title, page_text=None: Classification("9", "high", "rules", needs_review=False),
+        lambda title, page_text=None: Classification("100", "high", "rules", needs_review=False),
     )
     doc_id = _make_user_and_doc(page_count=2)
     with get_sessionmaker()() as session:
@@ -809,8 +811,10 @@ def test_classify_document_sets_each_rows_category(monkeypatch):
         rows = session.scalars(
             select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
         ).all()
-        assert [r.category for r in rows] == ["9", "9"]  # per-row classification applied
-        # include re-derived from the new category: Depositions (9) is off-by-default.
+        assert [r.category for r in rows] == ["100", "100"]  # per-row classification applied
+        # include RE-DERIVED from the new category, which is the point: the rows were seeded
+        # include=True and General (100) is off-by-default, so a False here can only come from
+        # re-derivation. Was Depositions (9) until it became on-by-default on 2026-08-06.
         assert all(r.include is False for r in rows)
 
 
