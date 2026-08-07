@@ -779,7 +779,10 @@ async def test_resummarize_drops_a_stale_verified_title(authed, monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["summaryTitle"].startswith("New Title")
     with get_sessionmaker()() as session:
-        assert session.scalar(select(Summary.verified_title)) is None
+        assert (
+            session.scalar(select(Summary.verified_title).where(Summary.document_id == doc_id))
+            is None
+        )
 
 
 async def test_resummarize_keeps_a_fresh_verified_title(authed, monkeypatch):
@@ -820,9 +823,19 @@ async def test_put_summary_category_writes_through_to_the_row(authed):
 
     assert resp.status_code == 200, resp.text
     with get_sessionmaker()() as session:
-        assert session.scalar(select(ReviewRow.category)) == _OTHER_CATEGORY
-        assert session.scalar(select(Summary.row_category)) == _VALID_CATEGORY  # snapshot untouched
-        entry = session.scalar(select(AuditLog).where(AuditLog.action == "summary.category"))
+        assert (
+            session.scalar(select(ReviewRow.category).where(ReviewRow.document_id == doc_id))
+            == _OTHER_CATEGORY
+        )
+        assert (
+            session.scalar(select(Summary.row_category).where(Summary.document_id == doc_id))
+            == _VALID_CATEGORY
+        )  # snapshot untouched
+        entry = session.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "summary.category", AuditLog.document_id == doc_id
+            )
+        )
         assert entry is not None
         assert _VALID_CATEGORY in entry.detail and _OTHER_CATEGORY in entry.detail
 
@@ -858,7 +871,10 @@ async def test_put_summary_rejects_an_unknown_category(authed):
 
     assert resp.status_code == 400
     with get_sessionmaker()() as session:
-        assert session.scalar(select(ReviewRow.category)) == _VALID_CATEGORY
+        assert (
+            session.scalar(select(ReviewRow.category).where(ReviewRow.document_id == doc_id))
+            == _VALID_CATEGORY
+        )
 
 
 async def test_put_summary_category_refuses_while_a_job_runs(authed):
@@ -890,7 +906,10 @@ async def test_put_summary_category_refuses_while_a_job_runs(authed):
 
     assert resp.status_code == 409
     with get_sessionmaker()() as session:
-        assert session.scalar(select(ReviewRow.category)) == _VALID_CATEGORY
+        assert (
+            session.scalar(select(ReviewRow.category).where(ReviewRow.document_id == doc_id))
+            == _VALID_CATEGORY
+        )
 
 
 async def test_put_summary_category_refuses_when_no_row_matches(authed):
@@ -1113,7 +1132,11 @@ async def test_force_cancel_still_succeeds_when_the_work_horse_is_gone(authed, m
         )
         assert resp.status_code == 200
         with get_sessionmaker()() as session:
-            entry = session.scalar(select(AuditLog).where(AuditLog.action == "job.cancel"))
+            entry = session.scalar(
+                select(AuditLog).where(
+                    AuditLog.action == "job.cancel", AuditLog.document_id == doc_id
+                )
+            )
             assert "force True" in entry.detail
     finally:
         cancel_mod.clear_cancel(job_id)
@@ -1163,7 +1186,10 @@ async def test_dedup_start_without_fresh_keeps_the_stored_ocr(authed):
 
     assert resp.status_code == 200
     with get_sessionmaker()() as session:
-        assert session.scalar(select(ReviewRow.source_text)) == "previous extraction"
+        assert (
+            session.scalar(select(ReviewRow.source_text).where(ReviewRow.document_id == doc_id))
+            == "previous extraction"
+        )
 
 
 async def test_segment_start_enqueues_then_conflicts(authed):
