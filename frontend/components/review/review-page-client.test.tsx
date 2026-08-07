@@ -67,13 +67,22 @@ function mockWf(over: Record<string, unknown>) {
 const button = (name: RegExp) => screen.getByRole("button", { name });
 const maybeButton = (name: RegExp) => screen.queryByRole("button", { name });
 const summarize = () => button(/^Summarize/);
-/** Summarize lives on the Duplicates step now, so gating tests go through the gate. */
-const gotoDuplicates = () => fireEvent.click(button(/Check duplicates/));
+/** Reach the Duplicates step. Uses the TAB, not the "Check duplicates" button: since 2026-08-06 that
+ *  button STARTS a dedup job, which would add a call these tests are not asking about - and it is
+ *  disabled while a check runs, so a button-based helper could not reach the tab in the state one of
+ *  these tests needs. Clicking the tab is also what a reviewer does on the way back. */
+const gotoDuplicates = () => fireEvent.click(screen.getByRole("tab", { name: /Duplicates/ }));
 
 beforeEach(() => {
   dupState.data = undefined;
   sumState.data = [];
   startDedupMock.mockClear();
+});
+
+// vi.spyOn(window, "confirm") is used by several tests below and was never restored, so a later spy
+// inherited earlier calls and confirm.mock.calls[0] could belong to a different test.
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("ReviewPageClient step-flow actions", () => {
@@ -87,14 +96,41 @@ describe("ReviewPageClient step-flow actions", () => {
     expect(maybeButton(/Re-summarize all/)).not.toBeInTheDocument();
   });
 
-  it("switches to the Duplicates step without starting a check", () => {
+  it("starts the duplicate check and then switches to the Duplicates step", async () => {
+    // Inverted 2026-08-06: this used to assert the button navigated WITHOUT starting a check, back
+    // when dedup ran automatically after identify. The reviewer now starts it here, once they have
+    // chosen which sub-documents to summarize.
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
-    gotoDuplicates();
-    expect(button(/Re-check duplicates/)).toBeInTheDocument();
+    fireEvent.click(button(/Check duplicates/));
+    await screen.findByRole("button", { name: /Re-check duplicates/ });
+    expect(startDedupMock).toHaveBeenCalledTimes(1);
     expect(summarize()).toBeInTheDocument();
     expect(maybeButton(/Re-run segment/)).not.toBeInTheDocument();
+  });
+
+  it("does not start a check while there are unsaved edits", () => {
+    // Dedup reads include=True server-side. Scanning against unsaved checkbox changes would check
+    // the wrong rows - precisely the waste this gate exists to prevent.
+    mockWf({ saveState: { kind: "dirty" } });
+    render(<ReviewPageClient documentId="d1" />);
+    const btn = button(/Check duplicates/);
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute("title", "Your latest changes aren't saved yet.");
+    fireEvent.click(btn);
     expect(startDedupMock).not.toHaveBeenCalled();
+  });
+
+  it("banners a failure to start and stays on the Review step", async () => {
+    const setBanner = vi.fn();
+    startDedupMock.mockRejectedValueOnce(new Error("redis down"));
+    mockWf({ setBanner });
+    render(<ReviewPageClient documentId="d1" />);
+    fireEvent.click(button(/Check duplicates/));
+    await waitFor(() => expect(setBanner).toHaveBeenCalledWith(expect.stringMatching(/\S/)));
+    // Still on Review: the banner belongs where the reviewer is, not on a tab they never reached.
+    expect(button(/Re-run segment/)).toBeInTheDocument();
+    expect(maybeButton(/Re-check duplicates/)).not.toBeInTheDocument();
   });
 
   it("starts a manual re-check from the Duplicates step", async () => {
