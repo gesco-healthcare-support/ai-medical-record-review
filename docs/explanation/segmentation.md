@@ -1,5 +1,10 @@
 # Segmentation (stage 1): producing the page-map CSV
 
+> **[LEGACY DOC]** The **page-map CSV this describes no longer exists.** Segmentation writes `segment_rows` (immutable model output) and `review_rows` (the reviewer's editable copy) in Postgres; nothing passes a CSV between stages.
+>
+> The chunking limitation discussed here was addressed by overlapping byte-budgeted windows with ownership-based seam handling (`backend/app/services/segment_engine.py`). For what has been tried and measured since, read [`../../experiments/a1-segmentation/EXPERIMENT-LOG.md`](../../experiments/a1-segmentation/EXPERIMENT-LOG.md) before proposing a change - several obvious approaches are already rejected there.
+
+
 > Explanation doc. For the high-level pipeline see [../architecture.md](../architecture.md);
 > for the output format see [../reference/csv-contract.md](../reference/csv-contract.md); for
 > every endpoint see [../reference/api-routes.md](../reference/api-routes.md).

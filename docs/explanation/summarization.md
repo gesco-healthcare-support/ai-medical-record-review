@@ -1,5 +1,10 @@
 # Summarization and export (stages 3-4): CSV + PDF to the MRR Word doc
 
+> **[LEGACY DOC]** **Summaries do not run on OpenAI.** They run on Vertex/Gemini, which is the BAA-covered path; OpenAI exists behind a config flag (`summary_provider`) and additionally requires Zero Data Retention acknowledged on the org before any PHI may go near it.
+>
+> Also changed since this was written: per-call model tiering (body on a pro tier, title and audit on flash), a faithfulness verify pass, house-style transforms, and per-category prompt assembly. See `backend/app/services/summarize_engine.py` and `backend/app/services/llm/`.
+
+
 > Explanation doc. Input: the [page-map CSV](../reference/csv-contract.md) from
 > [segmentation.md](segmentation.md) + [categorization.md](categorization.md). For endpoints
 > see [../reference/api-routes.md](../reference/api-routes.md).

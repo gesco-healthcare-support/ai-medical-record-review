@@ -1,5 +1,10 @@
 # The Page-Map CSV Contract
 
+> **[LEGACY DOC]** **This is no longer the interface between pipeline stages** - those pass rows in Postgres (`segment_rows`, `review_rows`). The 6-column shape is still worth knowing because export and the legacy import path speak it, but nothing internal depends on it now.
+>
+> Note in particular that the `injury_date` column no longer comes from segmentation: it is read per sub-document in isolation (`backend/app/services/summary_doi.py`).
+
+
 The 6-column CSV is the interface between segmentation/categorization and summarization.
 It can be produced automatically by `/getPages` (Gemini) or authored by hand; `/summarize`
 and the report routes consume it identically.

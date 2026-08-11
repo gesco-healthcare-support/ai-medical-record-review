@@ -1,5 +1,10 @@
 # How to add a route / blueprint
 
+> **[LEGACY DOC]** **"Blueprint" is a Flask concept and there are no blueprints any more.** To add a route, add a FastAPI router under `backend/app/api/` and include it in `backend/app/main.py`. Mirror an existing router - `backend/app/api/documents.py` is the fullest example.
+>
+> Kept only as a record of the Flask structure, which is in [`legacy/`](../legacy/README.md).
+
+
 Routes live in `mrr_ai/blueprints/`, grouped by area. To add one:
 
 1. **Pick or create a blueprint module.** Add to an existing area file if it fits;

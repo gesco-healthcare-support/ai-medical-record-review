@@ -1,5 +1,8 @@
 # Frontend / UI, and readiness for a backend/frontend split
 
+> **[LEGACY DOC]** This was written when a backend/frontend split was still a **proposal**. **It has happened.** The UI is a Next.js app in `frontend/`, and the review workbench is `frontend/components/review/` at the route `/records/[id]`. Server-rendered Jinja templates are gone, in [`legacy/`](../legacy/README.md).
+
+
 > Explanation doc. Endpoint contract: [../reference/api-routes.md](../reference/api-routes.md);
 > backend pipeline: [segmentation.md](segmentation.md), [categorization.md](categorization.md),
 > [summarization.md](summarization.md).
