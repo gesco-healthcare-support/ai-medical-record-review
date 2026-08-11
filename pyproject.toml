@@ -77,15 +77,25 @@ exclude = [
     "**/__pycache__",
 ]
 
+# NOTE: this root pyproject is now mostly LEGACY. The application that runs lives in `backend/` and
+# has its own pyproject with its own dependencies, ruff and pytest settings. This file stays at the
+# root for one live reason: its `[tool.ruff]` block is the config `experiments/` resolves to, since
+# ruff walks up from a file to the nearest pyproject. Moving it would leave that harness unlinted.
+#
+# The pytest and coverage settings below describe the pre-rewrite Flask app, which moved to `legacy/`
+# on 2026-08-11. They are repointed rather than deleted so a bare `pytest` here still names the
+# legacy suite instead of silently collecting nothing.
+
 [tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]
+pythonpath = ["legacy"]
+testpaths = ["legacy/tests"]
 
 [tool.coverage.run]
 # Measure the application package only; the smoke/baseline harness and tests are
 # excluded so coverage reflects exercised production code, not test scaffolding.
-source = ["mrr_ai"]
-omit = ["tests/*", "*/__pycache__/*"]
+# LEGACY paths; the current app's coverage is configured in backend/pyproject.toml.
+source = ["legacy/mrr_ai"]
+omit = ["legacy/tests/*", "*/__pycache__/*"]
 # Relative paths so SonarCloud can resolve files from coverage.xml in CI.
 relative_files = true
 

@@ -1,5 +1,10 @@
 # API Routes Reference
 
+> **[LEGACY DOC]** **This is the Flask route table and is not the live API.** The app serves FastAPI; its generated OpenAPI schema is the reliable, always-current reference. Route modules live in `backend/app/api/`.
+>
+> Kept as a record of the pre-rewrite surface.
+
+
 All routes are registered by `create_app()` via blueprints. Unless noted, POST routes
 accept JSON or form data and return JSON. The app relies on shared `state` set by earlier
 calls (e.g. you must `/upload` before `/summarize`).

@@ -1,5 +1,10 @@
 # Architecture
 
+> **[LEGACY DOC]** This describes the **pre-rewrite Flask app** - `app.py`, the `mrr_ai/` package, blueprints, server-rendered templates, and a shared in-process state module. That code now lives in [`legacy/`](../legacy/README.md) and does not run.
+>
+> The four-stage pipeline it describes (segment, categorize, summarize, export) is still the right shape. The code layout, request lifecycle and state model are not: the app is now a Next.js frontend (`frontend/`) against FastAPI (`backend/`), with state in Postgres and jobs on Redis/RQ instead of process globals. See [`../CLAUDE.md`](../CLAUDE.md).
+
+
 ## Purpose
 
 MRR AI turns a large, scanned **medical-record (MR) PDF** into a summarized **Medical
