@@ -127,7 +127,14 @@ def _segment_window_full(pdf_path, cs, ce, cost):
     rows, malformed = [], 0
     for item in data:
         try:
-            s, e, title, d, i, m = oracles.parse_segment_item(item)
+            # Arity-agnostic on purpose. parse_segment_item returns 6 values when the segmentation
+            # schema carries the injury-date field and 5 when it does not - and that field has now
+            # been removed and restored twice. `manual` is always LAST, so slice rather than count:
+            # the harness should not break every time the schema toggles.
+            _parsed = oracles.parse_segment_item(item)
+            s, e, title, d = _parsed[:4]
+            m = _parsed[-1]
+            i = _parsed[4] if len(_parsed) > 5 else "-"
         except (KeyError, TypeError, ValueError):
             malformed += 1
             continue
@@ -178,7 +185,9 @@ def run_case(alias):
     with open(os.path.join(case_dir, "pred.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         for r in rows:
-            w.writerow([r["s"], r["e"], "-", r["d"], r["i"], r["m"]])
+            # .get so the column survives the injury-date field being present or absent; the
+            # results already recorded in this folder keep their shape either way.
+            w.writerow([r["s"], r["e"], "-", r["d"], r.get("i", "-"), r["m"]])
     with open(os.path.join(case_dir, "pred_rows.json"), "w", encoding="utf-8") as f:
         json.dump(dict(windows=windows, cap_seams=cap_seams, malformed=malformed_total,
                        rows=rows), f, indent=1)
@@ -240,7 +249,9 @@ def run_case_sol1(alias, window=80, overlap=30, byte_budget_mb=RAW_BUDGET_MB):
     with open(os.path.join(case_dir, "pred.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         for r in rows:
-            w.writerow([r["s"], r["e"], "-", r["d"], r["i"], r["m"]])
+            # .get so the column survives the injury-date field being present or absent; the
+            # results already recorded in this folder keep their shape either way.
+            w.writerow([r["s"], r["e"], "-", r["d"], r.get("i", "-"), r["m"]])
     with open(os.path.join(case_dir, "pred_rows.json"), "w", encoding="utf-8") as f:
         json.dump(dict(windows=seen["windows"], cap_seams=[], malformed=0, rows=rows), f, indent=1)
 
@@ -352,7 +363,9 @@ def run_case_verify(alias):
     with open(os.path.join(case_dir, "pred.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         for r in merged:
-            w.writerow([r["s"], r["e"], "-", r["d"], r["i"], r["m"]])
+            # .get so the column survives the injury-date field being present or absent; the
+            # results already recorded in this folder keep their shape either way.
+            w.writerow([r["s"], r["e"], "-", r["d"], r.get("i", "-"), r["m"]])
 
     report = analyze(alias, c, merged, windows, cap_seams, 0)
     report += [
