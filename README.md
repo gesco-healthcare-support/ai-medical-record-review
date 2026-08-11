@@ -1,112 +1,104 @@
 # AI Medical Record Review (MRR AI)
 
-Flask app that segments large medical-record PDFs into sub-documents, categorizes
-them, and produces summarized Medical Record Review (MRR) reports.
+Turns a large scanned medical-record PDF (200-2600 pages) into a summarized Medical Record Review.
+A reviewer corrects the machine's work at every stage - the app is an assistant, not an autopilot.
 
-> **PHI / HIPAA:** This app processes real patient medical records and sends content
-> to OpenAI and Gemini. Never commit patient data. Sample PDFs/CSVs and uploads are
-> git-ignored. Stricter PHI review is required on every PR.
+> **PHI / HIPAA.** This app processes real patient medical records and sends content to a
+> BAA-covered Vertex endpoint. Never commit patient data: not PDFs, not OCR text, not page maps, not
+> Word deliverables - their **filenames alone carry patient surnames**. Sample and labelled data live
+> outside the repo. Stricter PHI review is required on every PR.
 
-## Pipeline (high level)
+## Pipeline
 
-1. **Segment** a medical-record PDF into sub-documents (page ranges) - Gemini.
-2. **Categorize** each sub-document into one of the report categories.
-3. **Summarize** each sub-document with a category-specific prompt - OpenAI.
-4. **Export** the assembled review to a Word document.
+1. **Segment** the PDF into sub-documents (page ranges) - Gemini vision over overlapping windows.
+2. **Categorize** each sub-document - a rules -> embeddings -> Gemini-enum cascade.
+3. **Review & correct** - the reviewer fixes boundaries, categories and metadata, and chooses which
+   sub-documents to summarize.
+4. **Duplicate check** - started by the reviewer, over the rows they selected.
+5. **Summarize** each selected sub-document with a category-specific prompt.
+6. **Export** the assembled review.
 
-The 6-column CSV (`start,end,category,date,injury_date,manual_flag`) is the contract
-between segmentation/categorization and summarization.
+Stages pass state through Postgres rows, not files. Jobs run on Redis/RQ workers.
 
-## Setup
+## Layout
 
-### 1. Secrets
+| directory      | what                                                                                          |
+| -------------- | --------------------------------------------------------------------------------------------- |
+| `backend/`     | FastAPI app, SQLAlchemy + Alembic, RQ workers, prompts, tests                                 |
+| `frontend/`    | Next.js app; the review workbench is `/records/[id]`                                          |
+| `docs/`        | documentation - start at [`docs/INDEX.md`](docs/INDEX.md)                                     |
+| `experiments/` | segmentation research; `a1-segmentation/EXPERIMENT-LOG.md` is worth reading                   |
+| `legacy/`      | **the pre-rewrite Flask app. Nothing here runs** - see [`legacy/README.md`](legacy/README.md) |
 
-Copy `.env.example` to `.env` and fill in your keys (the app fails fast at startup if
-they are missing):
+New here? Read [`CLAUDE.md`](CLAUDE.md) - it is written for AI assistants but it is the fastest
+orientation for a human too, and it lists the traps.
+
+## Run it
 
 ```bash
-cp .env.example .env
-# then edit .env
+cp .env.example .env      # then fill it in
+docker compose up -d      # http://localhost:8080
+docker compose exec api alembic upgrade head   # first run, empty database
 ```
 
-`GEMINI_API_KEY` and `OPENAI_API_KEY` are required. Rotate the keys from the original
-handoff - they were stored in plaintext and are considered compromised.
-
-`SECRET_KEY` and `SECURITY_PASSWORD_SALT` are also required (sessions + password
-hashing). Generate each once per machine and keep them stable - rotating SECRET_KEY
-logs everyone out; rotating the salt invalidates every stored password:
+Vertex is the BAA-covered AI path and is required in production. A service-account key can be
+mounted at `secrets/vertex-sa.json`. `SECRET_KEY` and `SECURITY_PASSWORD_SALT` are required
+(sessions + password hashing) - generate each once per machine and keep them stable: rotating
+`SECRET_KEY` logs everyone out, and rotating the salt invalidates every stored password.
 
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-### 2. Dependencies (uv)
-
-This project uses [uv](https://docs.astral.sh/uv/) for dependency and Python-version
-management. Python 3.12 is pinned via `.python-version`; uv installs it automatically.
+## Develop
 
 ```bash
-uv sync                 # create .venv and install locked dependencies
-uv run python app.py    # dev server on http://localhost:5010
-uv run python serve.py  # production serving (waitress)
+cd backend && uv sync
+uv run ruff check . && uv run ruff format .
+uv run pyright                      # advisory
 ```
-
-First run: register an account at `/register`, then upload from the landing page.
-Every route requires login; users see only their own documents.
-
-> **Single process only.** Background document pipelines run on an in-process worker
-> pool and the classic UI keeps module-level globals, so the app must never run under
-> a multi-process server (gunicorn workers, multiple containers on one DB). `serve.py`
-> runs waitress with one process and scales threads instead.
-
-User accounts, documents, corrected rows, and summaries live in SQLite at
-`instance/mrr.db` (auto-created; git-ignored). Uploaded PDFs live under
-`uploads/<user_id>/`. Back up both together while the app is stopped (or use
-`sqlite3 instance/mrr.db ".backup backup.db"` live). The schema is created with
-`db.create_all()`, which never ALTERs existing tables - the first post-release schema
-change must introduce Alembic migrations (or, pre-release, delete `instance/mrr.db`).
-
-> Python 3.12 is pinned because the current (deprecated) `google-generativeai` SDK has
-> no 3.13 support. The `refactor/migrate-sdks` work migrates to `google-genai` + `pypdf`
-> and bumps to 3.13.
-
-### 3. System dependencies (only for local, non-Docker runs)
-
-OCR and PDF rasterization need native binaries, installed separately when running on the
-host:
-
-- **Tesseract OCR** (`pytesseract`)
-- **Poppler** (`pdf2image`)
-
-These are baked into the Docker image, so Docker users can skip this step.
-
-## Run with Docker
-
-The image bundles Tesseract and Poppler, so no host system deps are needed.
 
 ```bash
-docker build -t ai-medical-record-review .
-docker run --env-file .env -p 5010:5010 ai-medical-record-review
+cd frontend && pnpm install
+pnpm test        # vitest
+pnpm typecheck
 ```
 
-## Development
+### Tests
 
-Quality gates run via pre-commit and CI:
+The suite runs against a **separate throwaway database**, not the app's:
 
 ```bash
-uv sync                      # installs dev tools (ruff, pyright, pre-commit)
-uv run pre-commit install    # enable git hooks
-uv run ruff check .          # lint
-uv run ruff format .         # format
-uv run pyright               # type check (advisory while code is untyped)
+docker compose -f docker-compose.dev.yml up -d postgres   # test DB, port 5432
+cd backend && uv run alembic upgrade head && uv run pytest -q
 ```
 
-Pre-commit also runs gitleaks, detect-private-key, and a large-file check to keep
-secrets and patient PDFs out of git. CI (GitHub Actions) runs the same lint / format /
-type / secret checks on every PR.
+Do **not** set `DATABASE_URL` to point at the app database (port 5433). The fixtures insert and
+delete rows; `backend/tests/conftest.py` refuses and explains why.
+
+### Things that catch people out
+
+- **The images are baked, not bind-mounted.** Editing `backend/` or `frontend/` does nothing to a
+  running container until you rebuild and recreate it.
+- **`docker compose up -d web` will report "Running" and not pick up a new image.** Use
+  `--force-recreate`, or a frontend change ships as a silent no-op.
+- **Seeding is one-shot.** `seed_catalog()` returns early once any category row exists, so editing a
+  seed constant changes nothing on an existing database - carry it in a migration instead.
+- **A 429 from Vertex is Dynamic Shared Quota**, not an exhausted allowance. Retry; there is nothing
+  to wait for.
+
+Pre-commit runs gitleaks, detect-private-key and a large-file check to keep secrets and patient PDFs
+out of git. CI runs backend tests, frontend tests, e2e, secret scanning and SonarCloud on every PR.
+
+## Deploy
+
+See [`docs/RUNBOOK.md`](docs/RUNBOOK.md). Back up the database before running migrations; the runbook
+has the exact commands.
 
 ## Status
 
-Pre-MVP, working toward MVP. Done: repo + secret externalization, uv/Docker tooling.
-Next: SDK migration (`google-genai`, `pypdf`) + Python 3.13, Gemini segmentation fixes,
-and a categorization cascade.
+Live and deployed. Recent work: per-call model tiering with prompt provenance, an additive-increase
+pacer for Vertex admission, date-first duplicate clustering, duplicate detection gated behind review
+and scoped to selected rows, deposition summaries in three-page groups with transcript page
+citations, a single injury-date read at segmentation, and a page-text store so each page is OCR'd
+once.
