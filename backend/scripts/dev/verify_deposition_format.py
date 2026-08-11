@@ -36,9 +36,7 @@ def main() -> int:
     document_id, start = sys.argv[1], int(sys.argv[2])
     with get_sessionmaker()() as session:
         row_obj = session.scalar(
-            select(ReviewRow).where(
-                ReviewRow.document_id == document_id, ReviewRow.start == start
-            )
+            select(ReviewRow).where(ReviewRow.document_id == document_id, ReviewRow.start == start)
         )
         row = row_obj.as_row()
         prompt = catalog.get_prompt(session, "summary", str(row["category"]))
