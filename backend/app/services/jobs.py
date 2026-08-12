@@ -147,12 +147,15 @@ def create_job(
       the caller passed it - a per-request model choice must not be silently overridden.
     * ``prompt_fingerprint`` hashes the prompt set in play, resolved DB-first, and is fail-safe: a
       stamp that cannot be computed must never stop a job from starting.
+    * ``build_sha`` records the code, which the fingerprint deliberately does not: prompts are
+      assembled by templates and per-row blocks that no prompt hash covers. Read from settings here
+      rather than at import time so a rebuilt image is picked up without a code change.
     """
     from app.config import get_settings
     from app.services.provenance import job_prompt_fingerprint
 
+    settings = get_settings()
     if kind == "summarize":
-        settings = get_settings()
         title_model = title_model or settings.model_for("title")
         audit_model = audit_model or settings.model_for("audit")
     job = Job(
@@ -163,6 +166,7 @@ def create_job(
         audit_model=audit_model,
         prompt_version=prompt_version,
         prompt_fingerprint=job_prompt_fingerprint(session, kind),
+        build_sha=settings.build_sha,
         catalog_revision=catalog_revision,
     )
     session.add(job)

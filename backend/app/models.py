@@ -225,6 +225,13 @@ class Job(Base):
     # on its own. Prefer the fingerprint; prompt_version stays readable for historical rows.
     prompt_version = Column(String(16), nullable=False)
     prompt_fingerprint = Column(String(16))
+    # The commit the image was built from. Completes the provenance pair: `prompt_fingerprint` says
+    # WHICH PROMPT ran, `build_sha` says WHICH CODE ran - and the code half matters because the
+    # prompt a row was generated from is assembled by templates the fingerprint does not hash, plus
+    # per-row blocks appended after it is computed. "unknown" when the image was built without the
+    # GIT_SHA arg; NULL on every job created before 2026-08-11, which is not backfilled because an
+    # inferred value would later be indistinguishable from a recorded one.
+    build_sha = Column(String(40))
     catalog_revision = Column(Integer)
     # Resumable summarize (item 7): the CURRENT RQ job id (differs from the db id after a delayed
     # requeue, so orphan recovery correlates by this); the pause/resume cycle count (observability
