@@ -132,6 +132,10 @@ services:
       context: ./backend
       args:
         UV_EXTRAS: "--extra docs"
+        # The commit this image is built from, stamped onto every job row so a stored summary can be
+        # traced to the code that produced it. Defaults to "unknown" so a local build is honestly
+        # labelled rather than mislabelled; deploy sets it (see docs/RUNBOOK.md).
+        GIT_SHA: ${GIT_SHA:-unknown}
     image: mrr-backend-web
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment: *backend-env
@@ -149,6 +153,7 @@ services:
       context: ./backend
       args:
         UV_EXTRAS: "--extra docs --extra classifier" # torch/embeddings for the classifier
+        GIT_SHA: ${GIT_SHA:-unknown}
     image: mrr-backend-classifier
     command: ["python", "-m", "app.worker", "segment"]
     # One replica serialised every tester behind whoever queued first (measured 2026-07-30: a
@@ -172,6 +177,7 @@ services:
       context: ./backend
       args:
         UV_EXTRAS: "--extra docs"
+        GIT_SHA: ${GIT_SHA:-unknown}
     image: mrr-backend-web
     command: ["python", "-m", "app.worker", "summarize"]
     # Three replicas, same reasoning as segment-worker above.

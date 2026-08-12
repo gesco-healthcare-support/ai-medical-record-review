@@ -51,5 +51,16 @@ COPY . .
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH=/app
 
+# The commit this image was built from, read by Settings.build_sha and stamped on every job row so
+# a stored summary can be traced to the code that produced it - not just to the prompt text, which
+# the fingerprints already cover. Deploy passes it:
+#   GIT_SHA=$(git rev-parse --short HEAD) docker compose build api
+#
+# Declared LAST on purpose. An ARG invalidates the build cache from the point it is USED, so putting
+# this above the dependency install would re-run `uv sync` and re-bake the embedding model on every
+# commit. Here it only rebuilds a metadata layer.
+ARG GIT_SHA=unknown
+ENV BUILD_SHA=$GIT_SHA
+
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

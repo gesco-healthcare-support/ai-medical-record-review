@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from app.auth.password import MrrPasswordHelper
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db import get_sessionmaker
 from app.errors import EmptyExtractionError, OcrUnavailableError
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary, User
@@ -230,6 +230,27 @@ def test_create_job_sets_queued_and_document_status():
         job = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
         assert job.state == "queued"
         assert session.get(Document, doc_id).status == "segmenting"
+
+
+def test_a_job_records_the_build_sha_of_the_image_that_created_it(monkeypatch):
+    # WHEN a job is created, THE SYSTEM SHALL record the commit the running image was built from.
+    # The prompt fingerprint covers prompt TEXT only; the templates that assemble a prompt and the
+    # per-row blocks appended after that fingerprint is computed are CODE, and this is what
+    # attributes them. Read from settings at call time, so a rebuilt image is picked up without a
+    # code change.
+    monkeypatch.setattr(get_settings(), "build_sha", "deadbee")
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1")
+        assert job.build_sha == "deadbee"
+
+
+def test_an_unstamped_build_is_labelled_unknown_rather_than_guessed():
+    # WHEN an image is built without the GIT_SHA arg, THE SYSTEM SHALL default to "unknown". A
+    # plausible-looking default would be a lie recorded as data, and the point of the stamp is that
+    # it never asserts a commit it cannot know. NULL is reserved for jobs created before the column
+    # existed - a different fact, and deliberately not backfilled.
+    assert Settings.model_fields["build_sha"].default == "unknown"
 
 
 def test_one_active_job_per_document_conflicts():

@@ -74,10 +74,27 @@ Then:
 
 ```bash
 git pull --ff-only
-docker compose build api                 # and `web` if frontend/ changed
+GIT_SHA=$(git rev-parse --short HEAD) docker compose build api segment-worker summarize-worker
 docker compose up -d --force-recreate api segment-worker summarize-worker
 docker compose exec -T api alembic upgrade head
-docker compose up -d --force-recreate web   # only if frontend/ changed
+GIT_SHA=$(git rev-parse --short HEAD) docker compose build web && \
+  docker compose up -d --force-recreate web   # only if frontend/ changed
+```
+
+`GIT_SHA` is what stamps `jobs.build_sha`, so every job records the commit that produced it.
+Omitting it is not fatal - the build is labelled `unknown`, which is honest - but a run you later
+want to attribute will be unattributable.
+
+**Build all three backend services, not just `api`.** `segment-worker` builds a different image
+(`mrr-backend-classifier`, the torch/embeddings tier), so `docker compose build api` alone leaves it
+running the previous commit while `--force-recreate` makes it look freshly deployed. With
+`build_sha` in play that is worse than a stale worker: the row would carry the SHA of an image that
+did not generate it.
+
+Confirm the stamp landed:
+
+```bash
+docker compose exec -T api python -c "from app.config import get_settings; print(get_settings().build_sha)"
 ```
 
 Verify:

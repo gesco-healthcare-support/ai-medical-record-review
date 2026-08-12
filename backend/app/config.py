@@ -16,6 +16,16 @@ class Settings(BaseSettings):
 
     environment: str = "dev"  # "prod" hard-requires Vertex (BAA)
 
+    # The commit this image was built from, stamped onto every job (services/jobs.create_job).
+    # Prompt fingerprints cover prompt TEXT; this covers the deterministic code that is NOT a prompt
+    # and is otherwise unattributable - house_style, and the per-row context blocks summarize_engine
+    # appends after the fingerprint is computed (_standalone_studies_block, _document_date_block,
+    # _deposition_pages_block). Set by the Dockerfile from the GIT_SHA build arg.
+    #
+    # "unknown" is deliberate: a build made without the arg is honestly labelled rather than
+    # silently mislabelled with a value that is not the code that ran.
+    build_sha: str = "unknown"
+
     # Persistence + queue (local self-hosted; no cloud).
     database_url: str  # e.g. postgresql+psycopg://mrr:...@localhost:5432/mrr  (required)
     redis_url: str = "redis://localhost:6379/0"
