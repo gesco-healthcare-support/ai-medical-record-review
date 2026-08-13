@@ -18,8 +18,13 @@ from app.config import get_settings
 def get_genai_client() -> genai.Client:
     settings = get_settings()
     # Bound every request (HttpOptions.timeout is in ms). google-genai defaults to no timeout, so a
-    # stalled Vertex call would block a worker thread forever; with a timeout it raises an httpx
-    # TimeoutException (a TransportError) that generate_with_retry already catches and retries.
+    # stalled Vertex call would block a worker thread forever.
+    #
+    # This is NOT only a client-side guard: google-genai forwards the value to Vertex as the
+    # SERVER-side deadline, so a call that needs longer comes back as a server 504 DEADLINE_EXCEEDED
+    # rather than as an httpx TimeoutException (proven 2026-08-12 - an 8000ms value produced a
+    # server 504 at 6.2s). It therefore caps how long ONE call may legitimately take, and a 504 is
+    # deliberately NOT retried because the same deadline binds every attempt (see genai_retry).
     http_options = types.HttpOptions(timeout=settings.genai_http_timeout_ms)
     if settings.use_vertex:
         if settings.google_cloud_project:

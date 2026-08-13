@@ -4,7 +4,8 @@ The genai seam (services/genai_retry.generate_with_retry) rides out transient 42
 connections within a request, then RE-RAISES the last exception. The resumable worker asks this
 module whether that raised failure is worth waiting-and-retrying (TRANSIENT: shared-quota 429,
 server overload, a dropped connection) or hopeless within a retry (PERMANENT: a blank/unreadable
-sub-document, an auth/permission rejection, the per-day quota, or anything unrecognized).
+sub-document, an auth/permission rejection, the per-day quota, a deadline 504, or anything
+unrecognized).
 
 Transient -> pause + auto-resume the remaining rows forever ("paused, will retry"). Permanent ->
 the job ends "needs attention" naming the affected sub-documents (partial results are kept). The
@@ -14,19 +15,22 @@ transient set mirrors generate_with_retry's own retryable set so the two never d
 import httpx
 from google.genai import errors
 
-from app.errors import is_daily_quota, user_facing_message
+from app.errors import is_daily_quota, is_deadline_exceeded, user_facing_message
 
 
 def classify_failure(exc: Exception) -> str:
     """Return "transient" (wait and retry) or "permanent" (needs attention).
 
-    Transient == the seam's own retryable set: a 429 that is NOT the per-day/free-tier quota, any
-    5xx ServerError, and a transport-level disconnect. Everything else -- PipelineError (empty /
-    unreadable OCR), a non-429 ClientError (auth / bad request), the per-day quota, and any
-    unrecognized exception -- is permanent, so we surface it rather than retry forever.
+    Transient == the seam's own retryable set: a 429 that is NOT the per-day/free-tier quota, a 5xx
+    ServerError that is NOT a deadline 504, and a transport-level disconnect. Everything else --
+    PipelineError (empty / unreadable OCR), a non-429 ClientError (auth / bad request), the per-day
+    quota, a deadline 504, and any unrecognized exception -- is permanent, so we surface it rather
+    than retry forever.
     """
     if isinstance(exc, errors.ServerError):
-        return "transient"
+        # Mirrors generate_with_retry's carve-out: the deadline binds every attempt identically, so
+        # pausing and auto-resuming would replay the same doomed call indefinitely.
+        return "permanent" if is_deadline_exceeded(exc) else "transient"
     if isinstance(exc, errors.ClientError):
         if getattr(exc, "code", None) == 429 and not is_daily_quota(exc):
             return "transient"

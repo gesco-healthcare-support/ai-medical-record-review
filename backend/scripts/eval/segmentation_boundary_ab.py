@@ -149,6 +149,7 @@ def _segment_once(pdf_path, total_pages, prompt, stage):
         total_pages,
         settings.window_overlap,
         int(settings.window_budget_mb * 1024 * 1024),
+        settings.window_max_pages,
     )
     original = segment_engine.SEGMENTATION_PROMPT
     segment_engine.SEGMENTATION_PROMPT = prompt

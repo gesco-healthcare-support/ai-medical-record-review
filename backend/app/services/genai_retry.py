@@ -2,8 +2,9 @@
 
 Vertex gemini runs on dynamic shared quota: under load it returns 429 RESOURCE_EXHAUSTED / 503
 UNAVAILABLE, or drops the connection without a status. Ride those out with full-jitter
-exponential backoff. Re-raise immediately on non-429 client errors and per-day/free-tier quota
-exhaustion (backoff cannot fix those inside a request). Retry knobs come from config.
+exponential backoff. Re-raise immediately on non-429 client errors, per-day/free-tier quota
+exhaustion, and a deadline 504 (backoff cannot fix any of those inside a request). Retry knobs come
+from config.
 """
 
 import random
@@ -13,6 +14,7 @@ import httpx
 from google.genai import errors, types
 
 from app.config import get_settings
+from app.errors import is_deadline_exceeded
 from app.services import genai_metrics
 from app.services.llm import pacing
 from app.worker.cancel import current_job_cancelled
@@ -139,8 +141,16 @@ def generate_with_retry(client, **kwargs):
             try:
                 response = client.models.generate_content(**kwargs)
             except errors.ServerError as exc:  # 5xx incl. 503 high-demand
-                last = exc
                 genai_metrics.record(model, genai_metrics.OUTCOME_SERVER_ERROR)
+                # A deadline 504 is OUR timeout (genai_http_timeout_ms, which google-genai forwards
+                # to Vertex as the server deadline) coming back as a server status. It binds every
+                # attempt identically, so retrying only burns the job's budget - measured on job
+                # 1000174: eight identical 504s over 17.5 minutes before the reviewer saw anything.
+                # Fail fast so the real cause surfaces in one attempt. See errors.is_deadline_exceeded;
+                # worker.failures.classify_failure mirrors this or the two disagree.
+                if is_deadline_exceeded(exc):
+                    raise
+                last = exc
             except errors.ClientError as exc:  # retry only transient 429 rate limiting
                 if getattr(exc, "code", None) != 429:
                     raise

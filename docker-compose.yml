@@ -108,6 +108,13 @@ x-backend-env: &backend-env
   # disabling thinking.
   SEGMENT_THINKING_BUDGET: ${SEGMENT_THINKING_BUDGET:--1}
   WINDOW_BUDGET_MB: ${WINDOW_BUDGET_MB:-12.5}
+  # Hard cap on pages in ONE segmentation vision call. WINDOW_BUDGET_MB bounds request SIZE; this
+  # bounds request DURATION, which bytes cannot - a byte-light record packs a huge page count into
+  # one budget-sized window, and document 68cb2500 (~52KB/page) put all 241 pages in a single window
+  # that needed 179s against a 120s deadline, failing 6/6. Measured 2026-08-12: 160 pages = 54.5s.
+  # Raise it to something enormous (e.g. 10000) to disable the cap without a deploy, which is the
+  # rollback path for this change. Fallback mirrors app/config.py.
+  WINDOW_MAX_PAGES: ${WINDOW_MAX_PAGES:-100}
   # Duplicate-detection thresholds, named here for the same reason as the two blocks above. #66 shipped
   # these three settings and its own body advertised them as the way to loosen or disable the new
   # accuracy gate without a code change - which they were not, since an unreferenced key never reaches

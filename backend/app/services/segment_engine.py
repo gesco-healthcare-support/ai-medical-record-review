@@ -160,6 +160,7 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
         total_pages,
         settings.window_overlap,
         int(settings.window_budget_mb * 1024 * 1024),
+        settings.window_max_pages,
     )
     # Windows are independent (each builds its own sub-PDF and calls the model), so run them on a
     # small pool - the seam's rate limiter caps the aggregate request rate. Results are placed by
