@@ -83,6 +83,31 @@ x-backend-env: &backend-env
   # that is a reason to choose 8, not a reason to hide the dial.
   GENAI_MAX_RETRIES: ${GENAI_MAX_RETRIES:-8}
   GENAI_RETRY_MAX_DELAY: ${GENAI_RETRY_MAX_DELAY:-30}
+  # The four keys below were inert until now, which is the FOURTH time this has happened after
+  # VERTEX_MAX_RPM, PIPELINE_WORKERS and the retry budget above. On 2026-08-12 it stopped being a
+  # tidiness problem: Vertex refused gemini-2.5-pro for this project entirely (0/8 accepted on the
+  # global endpoint, 0-3/8 across five regions, rejections in ~0.1s), every summarize job failed,
+  # and SUMMARY_MODEL - the one dial that swaps the model in seconds - did nothing from .env, so the
+  # only route out was a code change and a redeploy. Every fallback here mirrors app/config.py, so
+  # an unset key behaves EXACTLY as before this commit.
+  #
+  # SUMMARY_MODEL is the summary BODY model. Note SUMMARY_BODY_MODEL above does NOT cover it: the
+  # API resolves the body model from summary_model (api/documents.py:778) and persists it on the Job,
+  # so model_for("body") never gets a chance to fire. Empty means app/config.py decides.
+  SUMMARY_MODEL: ${SUMMARY_MODEL:-}
+  # Per-attempt deadline (ms). NOT merely a client-side stall guard: google-genai forwards it to
+  # Vertex as the SERVER-side deadline, so exceeding it returns a server 504 DEADLINE_EXCEEDED
+  # (proven 2026-08-12 - an 8000 value produced a server 504 at 6.2s). It is therefore the ceiling on
+  # how long ONE vision window may take. A 241-page record failed 5/5 that day because its dense
+  # windows need longer than 120000; the replacement value is being measured rather than guessed, so
+  # this ships at the current default and the raise lands with that measurement.
+  GENAI_HTTP_TIMEOUT_MS: ${GENAI_HTTP_TIMEOUT_MS:-120000}
+  # How much work one segmentation vision call carries, and therefore whether it fits inside
+  # GENAI_HTTP_TIMEOUT_MS. -1 is dynamic thinking, which an A/B showed is what holds strict doc-F1 up
+  # (thinking-off over-segments), so if windows run long prefer shrinking WINDOW_BUDGET_MB over
+  # disabling thinking.
+  SEGMENT_THINKING_BUDGET: ${SEGMENT_THINKING_BUDGET:--1}
+  WINDOW_BUDGET_MB: ${WINDOW_BUDGET_MB:-12.5}
   # Duplicate-detection thresholds, named here for the same reason as the two blocks above. #66 shipped
   # these three settings and its own body advertised them as the way to loosen or disable the new
   # accuracy gate without a code change - which they were not, since an unreferenced key never reaches
