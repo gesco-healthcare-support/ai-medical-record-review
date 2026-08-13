@@ -32,6 +32,9 @@ x-backend-env: &backend-env
   # added to the server .env, the containers were recreated, and both processes still reported 60 and
   # 3. Fallbacks mirror app/config.py so an unset key behaves exactly as before.
   VERTEX_MAX_RPM: ${VERTEX_MAX_RPM:-60}
+  # The pacer has TWO ceilings and only the request one was reachable, so a token-side squeeze could
+  # not be answered without a deploy. Both or neither. Fallback mirrors app/config.py.
+  VERTEX_MAX_TPM: ${VERTEX_MAX_TPM:-4000000}
   SEGMENT_WINDOW_WORKERS: ${SEGMENT_WINDOW_WORKERS:-3}
   # Row-level concurrency inside ONE summarize job (summarize_document's ThreadPoolExecutor), and
   # the classify/verify pool. Named here for the same reason as every block in this file: an
@@ -83,6 +86,9 @@ x-backend-env: &backend-env
   # that is a reason to choose 8, not a reason to hide the dial.
   GENAI_MAX_RETRIES: ${GENAI_MAX_RETRIES:-8}
   GENAI_RETRY_MAX_DELAY: ${GENAI_RETRY_MAX_DELAY:-30}
+  # The third retry dial. Its two siblings above were exposed and this one was not, which is exactly
+  # how a knob goes unnoticed until someone needs it mid-incident. Fallback mirrors app/config.py.
+  GENAI_RETRY_BASE_DELAY: ${GENAI_RETRY_BASE_DELAY:-2.0}
   # The four keys below were inert until now, which is the FOURTH time this has happened after
   # VERTEX_MAX_RPM, PIPELINE_WORKERS and the retry budget above. On 2026-08-12 it stopped being a
   # tidiness problem: Vertex refused gemini-2.5-pro for this project entirely (0/8 accepted on the
@@ -95,6 +101,23 @@ x-backend-env: &backend-env
   # API resolves the body model from summary_model (api/documents.py:778) and persists it on the Job,
   # so model_for("body") never gets a chance to fire. Empty means app/config.py decides.
   SUMMARY_MODEL: ${SUMMARY_MODEL:-}
+  # Thinking budget for the summary body. -1 is dynamic. Exposed alongside SUMMARY_MODEL because the
+  # two travel together: swapping model generations is exactly when a thinking setting needs to move,
+  # and on 2026-08-13 the body model changed with no way to adjust this. Do NOT also set a thinking
+  # LEVEL on a 3.x model - budget and level together are a 400. Fallback mirrors app/config.py.
+  SUMMARY_THINKING_BUDGET: ${SUMMARY_THINKING_BUDGET:--1}
+  # The other three models, so ANY of them can be repointed without a code change. On 2026-08-13
+  # Vertex stopped admitting gemini-2.5-pro for this project entirely (0/8 on the configured
+  # endpoint); SUMMARY_MODEL made that a one-line fix, while these three would have needed a rebuild
+  # and a deploy. GENAI_MODEL is segmentation plus the header/DOI reads, VERIFY_MODEL is the
+  # boundary verify pass, CLASSIFY_MODEL is categorization.
+  #
+  # GENAI_MODEL and VERIFY_MODEL fall back to EMPTY on purpose, NOT to a model name: app/config.py
+  # derives them (genai_model from use_vertex, verify_model from genai_model) and an empty value is
+  # falsy so that derivation still runs. Hardcoding a name here would silently break the chain.
+  GENAI_MODEL: ${GENAI_MODEL:-}
+  VERIFY_MODEL: ${VERIFY_MODEL:-}
+  CLASSIFY_MODEL: ${CLASSIFY_MODEL:-gemini-2.5-flash-lite}
   # Per-attempt deadline (ms). NOT merely a client-side stall guard: google-genai forwards it to
   # Vertex as the SERVER-side deadline, so exceeding it returns a server 504 DEADLINE_EXCEEDED
   # (proven 2026-08-12 - an 8000 value produced a server 504 at 6.2s). It is therefore the ceiling on
@@ -115,6 +138,10 @@ x-backend-env: &backend-env
   # Raise it to something enormous (e.g. 10000) to disable the cap without a deploy, which is the
   # rollback path for this change. Fallback mirrors app/config.py.
   WINDOW_MAX_PAGES: ${WINDOW_MAX_PAGES:-100}
+  # The third window dial, and the one that decides how much left-context each window carries across
+  # a seam. It matters more now that WINDOW_MAX_PAGES creates seams that did not exist before, so if
+  # over-segmentation shows up at a boundary this is the lever. Fallback mirrors app/config.py.
+  WINDOW_OVERLAP: ${WINDOW_OVERLAP:-30}
   # Duplicate-detection thresholds, named here for the same reason as the two blocks above. #66 shipped
   # these three settings and its own body advertised them as the way to loosen or disable the new
   # accuracy gate without a code change - which they were not, since an unreferenced key never reaches
@@ -130,6 +157,13 @@ x-backend-env: &backend-env
   # how long to wait, so a mismatch between processes would make the button offer Force stop at a
   # different moment than the server expects.
   JOB_CANCEL_GRACE_SECONDS: ${JOB_CANCEL_GRACE_SECONDS:-10}
+  # The RQ budget for one job: job_timeout, or job_timeout_per_page x pages when that is larger. This
+  # is the number that hid a failure for 96 minutes on 2026-08-12 - a 289-page record buys
+  # 289 x 20s = 5780s, and a fully-refused model spent all of it retrying before reporting anything.
+  # Exposed so that budget can be cut during an incident instead of waiting for a deploy.
+  # Fallbacks mirror app/config.py.
+  JOB_TIMEOUT: ${JOB_TIMEOUT:-3600}
+  JOB_TIMEOUT_PER_PAGE: ${JOB_TIMEOUT_PER_PAGE:-20.0}
   # TESSERACT_CMD is deliberately NOT passed through. It is set in .env for the Windows HOST, and
   # injecting a "C:\..." path here would point the containers' pytesseract at a binary that does not
   # exist, breaking OCR everywhere. The Linux images have tesseract on PATH already.

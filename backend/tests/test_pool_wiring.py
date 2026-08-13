@@ -71,26 +71,39 @@ def test_compose_passes_through_the_settings_it_claims_to_control():
     already sitting in the compose file. #67 added them. Twice is a pattern, so the list below is the
     check that has to grow whenever config.py gains a setting ops will tune.
 
-    Note the limit of this test: the list is HARDCODED, so it only guards keys someone remembered to
-    add. It cannot catch the next forgotten one. Deriving it from .env.example - the actual contract
-    with ops, since anything advertised there must work - would close that gap."""
+    It happened a THIRD time on 2026-08-12: SUMMARY_MODEL, GENAI_HTTP_TIMEOUT_MS,
+    SEGMENT_THINKING_BUDGET and WINDOW_BUDGET_MB were all advertised and all inert, and with Vertex
+    refusing gemini-2.5-pro outright, repointing the summary model needed a code change and a deploy
+    instead of one line. The hardcoded list below had not been extended either time, which is the
+    point: a list someone must remember to grow cannot guard the thing being forgotten.
+
+    So this is now DERIVED from .env.example rather than hardcoded. .env.example is the contract with
+    ops - anything advertised there is a promise that setting it does something - so every key in it
+    must be named in compose, and the test grows by itself."""
+    import re
     from pathlib import Path
 
-    compose = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(
-        encoding="utf-8"
-    )
-    for key in (
-        "VERTEX_MAX_RPM",
-        "SEGMENT_WINDOW_WORKERS",
-        "PAGE_TEXT_WORKERS",
-        "GENAI_MAX_RETRIES",
-        "GENAI_RETRY_MAX_DELAY",
-        "DUPE_JACCARD_THRESHOLD",
-        "DUPE_SIMILARITY_OVERRIDE",
-        "DUPE_MODEL_OVERRIDE",
-        "JOB_CANCEL_GRACE_SECONDS",
-    ):
-        assert f"{key}: ${{{key}" in compose, f"{key} is not passed through to containers"
-    # TESSERACT_CMD must stay OUT: it is a Windows host path, and injecting it would point the
-    # containers' pytesseract at a nonexistent binary and break OCR everywhere.
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    advertised = {
+        m.group(1)
+        for m in re.finditer(
+            r"^([A-Z][A-Z0-9_]*)=", (root / ".env.example").read_text(encoding="utf-8"), re.M
+        )
+    }
+
+    # TESSERACT_CMD must stay OUT: it is a Windows HOST path, and injecting it would point the
+    # containers' pytesseract at a nonexistent binary and break OCR everywhere. It is the only key
+    # advertised to ops that must NOT reach a container; anything else added here needs a reason.
+    exempt = {"TESSERACT_CMD"}
+
+    # A derived check fails OPEN if the parse breaks - an empty set would pass every assertion below
+    # and report nothing. Floor it so a regex regression is a failure, not silent green.
+    assert len(advertised) >= 20, f"only parsed {len(advertised)} keys from .env.example"
+
+    for key in sorted(advertised - exempt):
+        assert f"{key}: ${{{key}" in compose, (
+            f"{key} is advertised in .env.example but docker-compose.yml does not name it, "
+            "so setting it does nothing inside a container"
+        )
     assert "TESSERACT_CMD: ${TESSERACT_CMD" not in compose
