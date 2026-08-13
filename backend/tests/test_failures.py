@@ -11,6 +11,7 @@ from google.genai import errors
 from app.errors import (
     AI_BUSY_MESSAGE,
     AI_DAILY_QUOTA_MESSAGE,
+    AI_DEADLINE_MESSAGE,
     AI_REJECTED_MESSAGE,
     GENERIC_USER_MESSAGE,
     EmptyExtractionError,
@@ -32,6 +33,24 @@ def _server_error(code: int = 503) -> errors.ServerError:
     return errors.ServerError(code, {"error": {"code": code, "message": "model overloaded"}})
 
 
+def _deadline_error() -> errors.ServerError:
+    """The 504 Vertex returns when the per-request deadline WE set is exceeded.
+
+    google-genai forwards HttpOptions.timeout to Vertex as the SERVER deadline, so this is not a
+    transient overload - the same limit binds every attempt.
+    """
+    return errors.ServerError(
+        504,
+        {
+            "error": {
+                "code": 504,
+                "message": "Deadline expired before operation could complete.",
+                "status": "DEADLINE_EXCEEDED",
+            }
+        },
+    )
+
+
 # --- classify_failure -------------------------------------------------------------------------
 
 
@@ -41,6 +60,12 @@ def test_rate_limit_429_is_transient():
 
 def test_server_5xx_is_transient():
     assert classify_failure(_server_error(503)) == "transient"
+
+
+def test_deadline_504_is_permanent():
+    # Pausing and auto-resuming would replay the same doomed call forever: the deadline is ours and
+    # does not clear on its own. classify_failure must mirror the seam's carve-out.
+    assert classify_failure(_deadline_error()) == "permanent"
 
 
 def test_transport_disconnect_is_transient():
@@ -101,6 +126,13 @@ def test_user_facing_message_server_error_is_busy():
     assert user_facing_message(_server_error(503)) == AI_BUSY_MESSAGE
 
 
+def test_user_facing_message_deadline_504_is_not_busy():
+    # "The AI service was busy" is wrong for a deadline 504 and actively misleading: it sent a real
+    # investigation (2026-08-12) hunting Vertex capacity for a limit that was ours to raise.
+    assert user_facing_message(_deadline_error()) == AI_DEADLINE_MESSAGE
+    assert user_facing_message(_deadline_error()) != AI_BUSY_MESSAGE
+
+
 def test_user_facing_message_transient_429_is_busy():
     assert user_facing_message(_client_error(429, "Resource exhausted, retry")) == AI_BUSY_MESSAGE
 
@@ -121,6 +153,7 @@ def test_reason_for_agrees_with_user_facing_message():
     # A per-row reason and a whole-job terminal message must render identically for the same error.
     for exc in (
         _server_error(503),
+        _deadline_error(),
         _client_error(429, "PerDay quota"),
         _client_error(403, "denied"),
         EmptyExtractionError("no text"),

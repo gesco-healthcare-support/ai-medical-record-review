@@ -18,6 +18,14 @@ AI_BUSY_MESSAGE = (
 )
 AI_DAILY_QUOTA_MESSAGE = "The daily AI quota has been used up; it resets on Google's schedule."
 AI_REJECTED_MESSAGE = "The AI service rejected the request (a permission or request problem)."
+# A deadline 504 is NOT "busy": the request was refused for needing longer than the limit WE set,
+# which is a configuration fact rather than load. Calling it busy is not just imprecise, it
+# misdirects - on 2026-08-12 this wording sent a real investigation hunting Vertex capacity for a
+# document whose vision window simply needed 179s against a 120s limit.
+AI_DEADLINE_MESSAGE = (
+    "One part of this document needed longer than the current per-request time limit allows. "
+    "Please contact your administrator, who can raise the limit or split the document."
+)
 
 
 class PipelineError(Exception):
@@ -63,16 +71,35 @@ def is_daily_quota(exc: Exception) -> bool:
     return "PerDay" in text or "free_tier" in text
 
 
+def is_deadline_exceeded(exc: Exception) -> bool:
+    """A 504 DEADLINE_EXCEEDED: the per-request deadline WE set was too short for this call.
+
+    google-genai forwards HttpOptions.timeout (genai_http_timeout_ms) to Vertex as the SERVER-side
+    deadline, so a call needing longer returns a server 504 rather than stalling client-side.
+    Proven 2026-08-12: an 8000ms client timeout produced a server 504 at 6.2s.
+
+    That makes it DETERMINISTIC, not transient - the same limit binds every attempt, so a retry
+    re-runs the same doomed call. Measured on job 1000174: eight identical 504s over 17.5 minutes.
+    Single source of truth for the seam's retry set, the worker's transient set, and the
+    user-facing message, so those three cannot drift apart.
+
+    Checked on the status code alone so callers need no google.genai import - this module stays
+    light for the many callers that never touch genai.
+    """
+    return getattr(exc, "code", None) == 504
+
+
 def genai_user_message(exc: Exception) -> str | None:
     """A friendly message for a google-genai error we recognize, else None.
 
-    A ServerError (5xx) or a transient shared-quota 429 -> "busy, try again"; the per-day/free-tier
-    quota -> the daily-quota message; any other ClientError (auth / bad request) -> "rejected".
+    A deadline 504 -> the deadline message (our limit, not their load); any other ServerError (5xx)
+    or a transient shared-quota 429 -> "busy, try again"; the per-day/free-tier quota -> the
+    daily-quota message; any other ClientError (auth / bad request) -> "rejected".
     Imported lazily so this module stays light for the many callers that never touch genai."""
     from google.genai import errors as genai_errors
 
     if isinstance(exc, genai_errors.ServerError):
-        return AI_BUSY_MESSAGE
+        return AI_DEADLINE_MESSAGE if is_deadline_exceeded(exc) else AI_BUSY_MESSAGE
     if isinstance(exc, genai_errors.ClientError):
         if getattr(exc, "code", None) == 429 and not is_daily_quota(exc):
             return AI_BUSY_MESSAGE

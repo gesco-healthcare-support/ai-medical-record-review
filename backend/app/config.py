@@ -125,9 +125,20 @@ class Settings(BaseSettings):
     genai_retry_base_delay: float = 2.0
     genai_retry_max_delay: float = 30.0
 
-    # Per-attempt HTTP timeout (ms) for the Vertex/genai client. google-genai defaults to no
-    # timeout, so a stalled call blocks forever; bounding it turns a stall into an httpx timeout
-    # that generate_with_retry already catches + retries. 120s covers a large vision window.
+    # Per-attempt deadline (ms) for the Vertex/genai client. google-genai defaults to no timeout, so
+    # a stalled call blocks forever.
+    #
+    # This is NOT only a client-side guard: google-genai forwards it to Vertex as the SERVER-side
+    # deadline, so exceeding it returns a server 504 DEADLINE_EXCEEDED, not an httpx timeout (proven
+    # 2026-08-12 - an 8000ms value produced a server 504 at 6.2s). It therefore caps how long ONE
+    # call may legitimately take, and a 504 is deliberately NOT retried because the same deadline
+    # binds every attempt (see services/genai_retry).
+    #
+    # Left at 120s deliberately, and now on evidence rather than assumption. The old comment claimed
+    # "120s covers a large vision window"; that was false - an uncapped 241-page window needed 179s.
+    # What makes 120s correct is window_max_pages: with windows capped at 160 pages the slowest
+    # measured call is 54.5s. A deadline above 120s IS honoured (the 179s call completed under a
+    # 600s deadline), so raising this remains available if a capped window ever runs long.
     genai_http_timeout_ms: int = 120000
 
     # Per-call OCR (Tesseract) wall-clock cap (seconds). A hung/oversized page is killed and
@@ -219,6 +230,22 @@ class Settings(BaseSettings):
     # Segmentation + verification tuning (ported verbatim).
     window_budget_mb: float = 12.5
     window_overlap: int = 30
+    # Hard cap on pages in ONE segmentation vision call. window_budget_mb bounds request SIZE; this
+    # bounds request DURATION, which bytes cannot - a byte-light record packs a huge page count into
+    # one budget-sized window. Document 68cb2500 (~52KB/page) put all 241 of its pages in a single
+    # 12.5 MB window and failed 6/6 times, because that call needs longer than the deadline.
+    #
+    # 100 is a round number chosen to sit clearly BELOW the observed failure onset rather than at the
+    # edge of it. Measured on the box 2026-08-12 (scripts/eval/window_duration_curve.py): 80 pages
+    # took 20.2s, 120 took 39.9s, 160 took 54.5s, 200 took 106.3s, 241 took 179.0s - all against a
+    # 120s deadline. Production windows of 180 and 188 pages errored 2/3 and 1/2, so the failure zone
+    # starts near 180; 100 lands around 30s, comfortably clear even with segment_window_workers
+    # windows running at once.
+    #
+    # The cost of a lower cap is more windows per record - more calls, more spend, and more seams
+    # where over-segmentation can appear. The overlap plus the ownership merge exist to handle seams,
+    # and the recall A/B on the affected labelled cases is a follow-up, not a blocker.
+    window_max_pages: int = 100
     verify_merge: bool = True
     verify_use_text: bool = True
     verify_suspect_cap: int = 200
