@@ -1,7 +1,7 @@
 ---
 feature: Bound segmentation vision windows so byte-light documents stop failing
 date: 2026-08-13
-status: in-progress
+status: shipped
 base-branch: main
 related-issues: []
 ---
@@ -295,3 +295,37 @@ for a status code that is currently guaranteed to fail after eight attempts anyw
 **Rollback:** set `WINDOW_MAX_PAGES` high enough to never bind (for example 10000) in `.env` and
 recreate the workers - no deploy needed, which is the point of task 4. To revert the code, revert
 the commit and recreate.
+
+## Post-merge verification (2026-08-13) - task 7 discharged
+
+Merged as `93dc0b9` and deployed to the box the same day (`build_sha=93dc0b9`, alembic
+`c5d81f6a3b70`). Task 7's recall A/B was deferred past the merge to unblock the tester; it has since
+been run with `backend/scripts/eval/segmentation_cap_ab.py` against Case 3 (227 pages, 51 hand-typed
+gold sub-documents), using the real `run_segmentation` rather than a reimplementation.
+
+| metric                    | cap=100                         |
+| ------------------------- | ------------------------------- |
+| boundary_recall           | **1.000**                       |
+| mean_offset_pages         | **0.000** (51/51 exact)         |
+| gap_pages / overlap_pages | **0 / 0**                       |
+| boundary_precision        | 0.680                           |
+| over_seg_ratio            | 1.490 (76 predicted vs 51 gold) |
+| exact_doc_f1              | 0.598                           |
+| duration                  | 2,506s                          |
+
+**No regression on the properties that matter.** Every gold boundary was found at exactly the right
+page and the partition is intact, which matches the documented Case 3 baseline in
+`CASE3-BAKEOFF-RESULTS.md` ("51/51 exact on Case 3", "recall is already 1.00"). The 1.49x
+over-segmentation is the pre-existing, deliberate characteristic recorded 2026-07-09 - the
+architecture over-splits recall-first and merges in the verify pass - not something the cap
+introduced.
+
+**The uncapped control could not be produced**, and that is itself the result: the uncapped arm
+failed with a server `504 DEADLINE_EXCEEDED` after 165s. The bug reproduces on a ground-truth
+document under pre-#96 behaviour, and it failed on ONE attempt rather than eight, which confirms the
+deadline carve-out from task 5 works. So there is no "before" quality on this document to regress
+from.
+
+Precision is not compared against history: the 0.91-0.99 figures in the bake-off belong to four
+different candidate segmenters and it is not established which corresponds to today's production
+configuration. Recall and localisation are comparable, and they match.
