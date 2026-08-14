@@ -57,7 +57,13 @@ TITLE_PROMPT = (
     'write "UNKNOWN", "UNSPECIFIED", or any placeholder - an absent element is left out, the same '
     "way an absent point is left out of the summary body.\n\n"
     "Never include page numbers or page ranges, dates, or the patient's name. Return only the "
-    "line, with no commentary."
+    "line, with no commentary.\n\n"
+    # A hint, not a guarantee: the title call has no response_schema, and Gemini does not support
+    # maxLength on strings (only enum and format), so a declared bound would be silently ignored.
+    # _usable_title is what actually enforces this. Stated here because on 2026-08-14 one row got
+    # ~620 characters of prose back, which is what a limit in the prompt discourages.
+    "HARD LIMIT: at most 150 characters. One line. Never a sentence, never a paragraph, never an "
+    "explanation of what the document contains."
 )
 
 # The shared rules, as BLOCKS rather than one string, because they are not all universal. Assembled
@@ -521,6 +527,38 @@ def _page_image_parts(pdf_path, start, end):
     return parts
 
 
+# A header line is "AUTHOR, CREDENTIALS. FACILITY. DOCUMENT TYPE." The longest legitimate one across
+# 2,912 stored rows is 178 characters DECORATED (~145 raw), so 200 leaves generous headroom while
+# staying far under the 512-character column. Not set at 512: that is the storage limit, not a
+# plausible length for a header, and a value near it is a symptom rather than a title.
+MAX_GENERATED_TITLE = 200
+
+
+def _usable_title(generated, fallback):
+    """The generated header line, or ``fallback`` when the model did not return a header line.
+
+    Measured on the box 2026-08-14: for one row (pages 263-266, 6k of OCR) the title model returned
+    ~620 characters of prose. Decorated, that exceeded summaries.title (varchar 512), Postgres
+    refused the row, and the per-row commit killed a 124-row job at row 109 - surfacing as the
+    generic "something went wrong". Identical output on 2.5-pro and 3.5-flash, so this is the TITLE
+    call and not the body model, and it is deterministic at temperature 0: the same document fails
+    the same way every time.
+
+    REJECTS rather than truncates, deliberately. A 620-character value is not a long title, it is
+    the wrong KIND of answer, and its first 512 characters are not a header either - storing that
+    would put a paragraph where a reviewer expects a document header. The row's segmentation title
+    is a real header, already shown elsewhere in the UI, so falling back keeps that view coherent.
+    Mirrors summary_verify's existing rule that a blank fixed_title falls back to the original.
+    """
+    cleaned = (generated or "").strip()
+    if cleaned and len(cleaned) <= MAX_GENERATED_TITLE:
+        return cleaned
+    logger.warning(
+        "generated title unusable (%d chars); falling back to the row title", len(cleaned)
+    )
+    return (fallback or "").strip() or "-"
+
+
 def summarize_row(
     pdf_path,
     row,
@@ -643,6 +681,10 @@ def summarize_row(
         max_output_tokens=settings.summary_max_output_tokens,
     )
     title, _ = _generate(title_model, TITLE_PROMPT, text, temperature=0.0)
+    # The title call has no response_schema, and Gemini does not enforce maxLength on strings even
+    # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and
+    # written to a varchar(512).
+    title = _usable_title(title, row.get("title"))
     # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
     # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.

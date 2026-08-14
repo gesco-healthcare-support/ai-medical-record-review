@@ -165,3 +165,27 @@ def test_reason_for_agrees_with_user_facing_message():
 def test_httpx_read_timeout_is_transient():
     # A genai HTTP timeout surfaces as httpx.ReadTimeout (a TransportError) -> retryable.
     assert classify_failure(httpx.ReadTimeout("timed out")) == "transient"
+
+
+def _data_error() -> Exception:
+    """The DataError Postgres raises when a value exceeds a varchar(n) column."""
+    from sqlalchemy.exc import DataError
+
+    return DataError(
+        "INSERT INTO summaries ...",
+        {},
+        Exception("value too long for type character varying(512)"),
+    )
+
+
+def test_user_facing_message_oversized_value_is_not_generic():
+    """A 620-character generated title killed a 124-row job at row 109 on 2026-08-14 and the reviewer
+    saw only "something went wrong" - the third unclassified failure of the day. A storage-limit
+    breach is a specific, permanent, administrator-actionable condition and should say so."""
+    assert user_facing_message(_data_error()) != GENERIC_USER_MESSAGE
+
+
+def test_oversized_value_is_permanent():
+    # Retrying cannot help: the value is deterministic at temperature 0, so every attempt writes the
+    # same too-long string.
+    assert classify_failure(_data_error()) == "permanent"
