@@ -73,8 +73,12 @@ class Settings(BaseSettings):
     summary_image_max_pages: int = 15
     # DPI for the summary page images (lean JPEG); 120 was enough to read tables/handwriting in the eval.
     summary_image_dpi: int = 120
-    # 2.5-pro is a thinking model and REJECTS the seam's default thinking_budget=0; give summary
-    # calls dynamic thinking (-1). If SUMMARY_MODEL is reverted to a flash tier, set this to 0.
+    # Dynamic thinking (-1) for the summary body. Originally forced: 2.5-pro REJECTS the seam's
+    # default thinking_budget=0 with a 400. It stays at -1 under 3.5-flash for a DIFFERENT reason -
+    # the 2026-08-14 scoring arm that selected 3.5-flash ran with -1, so the quality measurement only
+    # holds at this value. 3.5-flash accepts 0 as well, which makes "the body is a flash tier now, so
+    # step this down" a tempting cleanup. Do not, without re-scoring: two silent thinking_budget=0
+    # bugs have already shipped in this codebase.
     summary_thinking_budget: int = -1
     # Which vendor answers the summarize stage's calls (body, title, audit). "gemini" is the current
     # behaviour and stays the default: the provider abstraction landed first specifically so it could
@@ -82,8 +86,10 @@ class Settings(BaseSettings):
     # per-call model keys and, in production, the ZDR acknowledgement - see services/llm/.
     summary_provider: str = "gemini"
     # Per-call-type models for the three summarize-stage calls. On the GEMINI path `_derive` fills
-    # these in (body = summary_model, title and audit = gemini-2.5-flash), which takes 2.5-pro from
-    # three calls per row down to one - a 3x cut in the resource that actually binds.
+    # these in (body = summary_model, title and audit = gemini-2.5-flash). This began as a cut from
+    # three 2.5-pro calls per row to one; the body moved to 3.5-flash on 2026-08-14, so the saving is
+    # smaller now, but the split stands on its own - a title is extraction and an audit is a check,
+    # and neither needs the body model whatever that happens to be.
     #
     # On the OPENAI path there is NO default, deliberately: OpenAI's own guidance is to fix an
     # accuracy target on the most capable model and then step down to the cheapest that still hits it.
@@ -277,10 +283,27 @@ class Settings(BaseSettings):
     def _derive(self) -> "Settings":
         default_model = "gemini-2.5-flash" if self.use_vertex else "gemini-flash-latest"
         self.genai_model = self.genai_model or default_model
-        # Summarization uses 2.5-pro: its condensing + faithfulness on long/complex records beat
-        # 2.5-flash in a real A/B. Summary-ONLY - genai_model (segmentation, header/DOI) and
-        # classify_model (categorization) are untouched, so neither can regress. SUMMARY_MODEL overrides.
-        self.summary_model = self.summary_model or "gemini-2.5-pro"
+        # Summarization uses 3.5-flash as of 2026-08-14, replacing the 2.5-pro chosen in an earlier
+        # A/B for condensing + faithfulness on long records. Two reasons, in order of weight:
+        #
+        # 1. Operational. On 2026-08-13 Vertex stopped admitting 2.5-pro for this project outright
+        #    (0/8 on the configured endpoint, rejections in ~0.1s) and every summarize job failed. It
+        #    recovered to 8/8 by 2026-08-14 with nothing changed on our side, so the condition is
+        #    external and can recur without warning. 3.5-flash was 8/8 throughout.
+        # 2. Quality is a WASH, and deliberately not claimed as an argument for flash. Scored
+        #    2026-08-14 against the frozen human baselines, both arms 39/39 on identical rows: pro sat
+        #    nearer the human length (1.41x vs 1.59x on category 1) and 2 points higher on point
+        #    precision, while flash retained normal findings far better on category 3 (56% vs 33%
+        #    against a human 49%) and its audit parsed 39/39 where pro's failed 3 times. At n=30 and
+        #    n=9 the precision gaps are inside noise; the length ratio is the one real difference.
+        #
+        # Known limit of that evidence: only categories 1 and 3 had rows. Nine scored zero, including
+        # every long-document category - which is exactly where a model difference would show. Revisit
+        # if a record set covering them becomes available.
+        #
+        # Summary-ONLY - genai_model (segmentation, header/DOI) and classify_model (categorization)
+        # are untouched, so neither can regress. SUMMARY_MODEL overrides.
+        self.summary_model = self.summary_model or "gemini-3.5-flash"
         self.verify_model = self.verify_model or self.genai_model
         if self.environment == "prod" and not self.use_vertex:
             raise RuntimeError(
@@ -290,10 +313,9 @@ class Settings(BaseSettings):
         self.summary_provider = (self.summary_provider or "gemini").strip().lower()
         if self.summary_provider != "openai":
             # Gemini per-call-type defaults. The body call reads page images and applies a long
-            # format spec, so it keeps summary_model (2.5-pro). The title is extraction from OCR text
-            # and the audit is a check, so both step down to flash - taking 2.5-pro from 3 calls per
-            # row to 1. Justified by call reduction alone, independent of the unresolved
-            # flash-vs-pro quota-contention question.
+            # format spec, so it keeps summary_model. The title is extraction from OCR text and the
+            # audit is a check, so both step down to flash. Justified by call reduction alone,
+            # independent of which model the body happens to be running.
             #
             # Set HERE rather than as field defaults so the openai branch below still sees "" for an
             # unset key and can refuse to start. A field default would silently satisfy that guard.

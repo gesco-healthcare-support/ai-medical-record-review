@@ -118,11 +118,12 @@ def test_model_for_returns_the_configured_model_per_call_type(monkeypatch):
 
 def test_gemini_defaults_the_cheap_calls_to_flash(monkeypatch):
     # WHEN the provider is gemini and no per-call-type key is set, THE SYSTEM SHALL keep the body on
-    # summary_model and step the title and audit down to flash. That is the 3-calls-of-pro-per-row to
-    # 1 reduction; before 2026-08-06 model_for returned summary_model for all three and the keys were
-    # inert on this path.
+    # summary_model and step the title and audit down to flash. That began as the 3-calls-of-pro to 1
+    # reduction; before 2026-08-06 model_for returned summary_model for all three and the keys were
+    # inert on this path. The body default became 3.5-flash on 2026-08-14 (see config._derive), so
+    # this now pins the SPLIT rather than the saving - title and audit must not follow the body model.
     settings = _settings(monkeypatch, SUMMARY_PROVIDER="gemini")
-    assert settings.model_for("body") == settings.summary_model == "gemini-2.5-pro"
+    assert settings.model_for("body") == settings.summary_model == "gemini-3.5-flash"
     assert settings.model_for("title") == "gemini-2.5-flash"
     assert settings.model_for("audit") == "gemini-2.5-flash"
 
