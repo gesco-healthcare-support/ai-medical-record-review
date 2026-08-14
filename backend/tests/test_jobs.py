@@ -1763,7 +1763,7 @@ def test_a_summarize_job_pins_all_three_models_at_creation():
             model=settings.model_for("body"),
             prompt_version="3",
         )
-        assert job.model == "gemini-2.5-pro"
+        assert job.model == "gemini-3.5-flash"
         assert job.title_model == "gemini-2.5-flash"
         assert job.audit_model == "gemini-2.5-flash"
 
