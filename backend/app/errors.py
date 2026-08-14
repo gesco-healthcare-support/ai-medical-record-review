@@ -26,6 +26,13 @@ AI_DEADLINE_MESSAGE = (
     "One part of this document needed longer than the current per-request time limit allows. "
     "Please contact your administrator, who can raise the limit or split the document."
 )
+# A generated value exceeded the width of the column it is stored in. Named because on 2026-08-14 a
+# 620-character generated title killed a 124-row job at row 109 and the reviewer saw only the generic
+# message - the third unclassified failure in three days. Administrator-actionable, never retryable.
+AI_OVERSIZED_VALUE_MESSAGE = (
+    "The AI generated a value too long to store, so this document could not be completed. "
+    "Please contact your administrator."
+)
 
 
 class PipelineError(Exception):
@@ -89,6 +96,21 @@ def is_deadline_exceeded(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 504
 
 
+def is_oversized_value(exc: Exception) -> bool:
+    """A database write refused because a value exceeded its column's declared width.
+
+    Matched on the message rather than the driver's exception class, following is_daily_quota above:
+    "value too long for type character varying(N)" is stable PostgreSQL wording, and psycopg2 and
+    psycopg3 wrap it in different orig types. DataError alone is too broad - it also covers numeric
+    overflow and invalid text representation, for which "too long to store" would be wrong.
+
+    Deterministic, so PERMANENT: model output at temperature 0 does not shorten on a retry.
+    """
+    from sqlalchemy.exc import DataError
+
+    return isinstance(exc, DataError) and "too long" in str(exc).lower()
+
+
 def genai_user_message(exc: Exception) -> str | None:
     """A friendly message for a google-genai error we recognize, else None.
 
@@ -118,4 +140,6 @@ def user_facing_message(exc: Exception) -> str:
     genai_message = genai_user_message(exc)
     if genai_message is not None:
         return genai_message
+    if is_oversized_value(exc):
+        return AI_OVERSIZED_VALUE_MESSAGE
     return GENERIC_USER_MESSAGE

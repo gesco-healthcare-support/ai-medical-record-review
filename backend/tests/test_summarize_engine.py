@@ -1004,3 +1004,36 @@ def test_an_unknown_category_receives_both_blocks_without_them_contradicting():
     # The reconciling sentence, and it must come before the verdict rule it defers to.
     assert "that rule wins" in preamble
     assert preamble.index("that rule wins") < preamble.index("the verdict IS the content")
+
+
+# --- the generated title must be a header line, not a paragraph -------------------------------
+
+
+def test_over_long_generated_title_falls_back_to_the_row_title():
+    """Measured on the box 2026-08-14: for one row the title model returned ~620 characters - a
+    paragraph, not a header line - and the decorated value overflowed summaries.title (varchar 512),
+    killing a 124-row job at row 109 with an unclassified DataError. Identical on 2.5-pro and
+    3.5-flash, so this is the title call, not the body model."""
+    assert se._usable_title("X" * 620, "PROGRESS NOTE") == "PROGRESS NOTE"
+
+
+def test_blank_generated_title_falls_back_to_the_row_title():
+    # Mirrors summary_verify's existing rule that a blank fixed_title falls back to the original.
+    assert se._usable_title("   ", "MRI OF THE LUMBAR SPINE") == "MRI OF THE LUMBAR SPINE"
+
+
+def test_a_normal_header_line_is_kept():
+    good = "JANE SMITH, M.D. VALLEY IMAGING. MRI OF THE CERVICAL SPINE WITHOUT CONTRAST."
+    assert se._usable_title(good, "-") == good
+
+
+def test_a_title_at_the_limit_is_kept_and_one_past_it_is_not():
+    at_limit = "A" * se.MAX_GENERATED_TITLE
+    assert se._usable_title(at_limit, "FALLBACK") == at_limit
+    assert se._usable_title("A" * (se.MAX_GENERATED_TITLE + 1), "FALLBACK") == "FALLBACK"
+
+
+def test_when_both_are_unusable_the_result_is_the_placeholder():
+    # summaries.title is NOT NULL, so there has to be something; "-" is the codebase's own
+    # "no value" convention (see ROW_FIELDS defaults).
+    assert se._usable_title("X" * 620, "") == "-"
