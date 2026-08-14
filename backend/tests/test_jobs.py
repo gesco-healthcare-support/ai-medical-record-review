@@ -6,6 +6,7 @@ or Vertex call is needed. Test users use the pytest-auth- prefix so conftest cle
 jobs/rows.
 """
 
+import time
 import uuid
 
 import pytest
@@ -696,6 +697,140 @@ def test_summarize_pauses_and_schedules_resume_on_transient(monkeypatch):
     # document wedged until the API restarts.
     assert scheduled["on_stopped"] is not None
     assert scheduled["on_failure"] is not None
+
+
+class _NoopQueue:
+    """A queue_for stand-in for tests where SCHEDULING a resume is the wrong outcome: a wrong
+    result then fails on the assertion below rather than on a missing Redis."""
+
+    def enqueue_in(self, td, fn, arg, job_timeout=None, on_stopped=None, on_failure=None):
+        return type("_J", (), {"id": "rq-resume-unexpected"})()
+
+
+def test_summarize_gives_up_when_no_row_ever_succeeds(monkeypatch):
+    """A model that admits nothing ends the job in ONE pass instead of pausing into an endless
+    resume cycle. Zero successes is the discriminator: it is what 0/8 admission looks like, and it
+    is what a transient blip with some rows getting through does not."""
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.errors import GENERIC_USER_MESSAGE
+    from app.worker import tasks as tasks_mod
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _NoopQueue())
+    # A high pause threshold so the GIVE-UP is what ends this job, not the pre-existing pause path.
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 99)
+    monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 3)
+
+    doc_id, job_id = _doc_with_summarize_rows(8)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "needs_attention"
+        # The reviewer must learn the AI service was unavailable, not read the generic message that
+        # made job 1000173 unreadable for 96 minutes.
+        assert "AI service" in (job.error or "")
+        assert GENERIC_USER_MESSAGE not in (job.error or "")
+        assert session.scalars(select(Summary).where(Summary.document_id == doc_id)).all() == []
+
+
+def test_summarize_does_not_give_up_once_a_row_has_succeeded(monkeypatch):
+    """WHILE at least one row has succeeded, sustained transient failures stay a PAUSE: rows are
+    getting through, so the model is not refusing everything and the rest deserve their retry."""
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        if int(row["start"]) == 1:
+            return _ok_output(row)
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    scheduled: dict = {}
+
+    class _FakeQueue:
+        def enqueue_in(self, td, fn, arg, job_timeout=None, on_stopped=None, on_failure=None):
+            scheduled["delay"] = td.total_seconds()
+            return type("_J", (), {"id": "rq-resume-1"})()
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _FakeQueue())
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 99)
+    monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 3)
+
+    doc_id, job_id = _doc_with_summarize_rows(8)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "paused"  # NOT needs_attention: one row proved the model answers
+        summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
+        assert len(summaries) == 1 and summaries[0].row_start == 1  # the good row is kept
+    assert scheduled["delay"] == get_settings().summarize_resume_delay
+
+
+def test_giving_up_stops_submitting_the_remaining_rows(monkeypatch):
+    """Giving up must stop WORK, not just relabel the outcome: the point is to spend three calls
+    finding out the model is refusing, not a whole document's worth."""
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    calls = {"n": 0}
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        calls["n"] += 1
+        # A real refusal costs a round trip (~0.1s even when Vertex refuses at admission). Raising
+        # INSTANTLY would let a one-worker pool run all twelve futures before the drain loop reads the
+        # third result, so the test would measure the scheduler's head start rather than the give-up.
+        time.sleep(0.02)
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _NoopQueue())
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 99)
+    monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 3)
+    monkeypatch.setattr(get_settings(), "pipeline_workers", 1)
+
+    _doc_id, job_id = _doc_with_summarize_rows(12)
+    summarize_document(job_id)
+
+    # Not an exact count: a row can already be in flight when the third failure is drained, so the
+    # bound is what matters - far fewer than the twelve a full pass would cost.
+    assert 3 <= calls["n"] < 12
+
+
+def test_giving_up_wins_over_pausing_at_the_default_thresholds(monkeypatch):
+    """Both dials ship at 3, so a total refusal satisfies each at the same moment. Ending the job
+    must win: pausing would auto-resume into the same wall, which IS the 96-minute failure."""
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    settings = get_settings()
+    # State the premise rather than assume it: if a later change splits these defaults apart, this
+    # test should say so instead of passing for the wrong reason.
+    assert settings.summarize_pause_after == settings.summarize_giveup_after_failures == 3
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _NoopQueue())
+
+    _doc_id, job_id = _doc_with_summarize_rows(8)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "needs_attention"
 
 
 def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
