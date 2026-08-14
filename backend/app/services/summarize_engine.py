@@ -714,10 +714,14 @@ def summarize_row(
     verified_text = None
     verified_title = None
     verify_issues = None
+    # Whether the audit actually RAN, which is not the same question as whether it was switched on.
+    # Fail closed: anything that does not explicitly report success leaves this False.
+    verify_ran = False
     if verify:
         result = verify_summary(
             audit_model, text, summary, title=title, document_date=row.get("date")
         )
+        verify_ran = bool(result.get("ok"))
         if result["issues"]:
             issue_types = {
                 str(issue.get("type") or "")
@@ -770,7 +774,10 @@ def summarize_row(
         # not carry a marker), but callers flag the row so the reviewer knows to check it.
         "truncated": truncated,
         "summaryText": f"{doi_final} {summary}",
-        "verified": bool(verify),
+        # The audit RAN, not "the audit was requested". Setting this from the `verify` setting meant a
+        # row whose check threw or truncated was still stored claiming a faithfulness check had
+        # happened - a false record on a medical summary, and one no later query could detect.
+        "verified": verify_ran,
         "verifiedText": verified_text,
         "verifiedTitle": verified_title,
         "verifyIssues": verify_issues,

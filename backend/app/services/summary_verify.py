@@ -133,12 +133,26 @@ _RESPONSE_SCHEMA = {
 }
 
 
+def _unverified(summary_text, title):
+    """The fail-safe shape: the originals, no issues, and ``ok`` False.
+
+    ``ok`` False is the load-bearing part. The caller stores it as ``Summary.verified``, and before
+    2026-08-14 that flag was set from the SETTING that requested the audit rather than from whether
+    the audit actually ran - so a row whose check threw or truncated was stored asserting it had been
+    verified. On a medical summary that is a false record, and an unrecoverable one: no later query
+    can separate "audited, nothing to fix" from "audit failed, nobody looked".
+    """
+    return {"fixed_text": summary_text, "fixed_title": title, "issues": [], "ok": False}
+
+
 def verify_summary(model, source_text, summary_text, title=None, document_date=None):
     """Audit ``summary_text`` and (when given) ``title`` against ``source_text`` and the house rules.
 
-    Returns ``{"fixed_text": str, "fixed_title": str, "issues": list[dict]}``. ``issues`` is
-    non-empty only when the model found something to fix. On empty input or ANY failure, returns the
-    originals with no issues (fail-safe).
+    Returns ``{"fixed_text": str, "fixed_title": str, "issues": list[dict], "ok": bool}``.
+    ``issues`` is non-empty only when the model found something to fix. ``ok`` says whether the audit
+    COMPLETED - it is True whenever the reply parsed, including when the model had nothing to change,
+    and False when there was nothing to audit, the reply hit the token cap, or anything raised. On
+    empty input or ANY failure, returns the originals with no issues (fail-safe).
 
     Title and body share ONE call: the model can then compare them against each other (a title
     naming a study the body never mentions is exactly the kind of drift worth catching), and a
@@ -149,7 +163,7 @@ def verify_summary(model, source_text, summary_text, title=None, document_date=N
     own document elsewhere in the record. Omit it and the rule is skipped rather than guessed at.
     """
     if not (summary_text or "").strip():
-        return {"fixed_text": summary_text, "fixed_title": title, "issues": []}
+        return _unverified(summary_text, title)
     prompt = f"SOURCE:\n{source_text}\n\n"
     date = str(document_date or "").strip()
     if date and date != "-":
@@ -171,16 +185,30 @@ def verify_summary(model, source_text, summary_text, title=None, document_date=N
             # the output is at minimum as long as the input.
             max_output_tokens=get_settings().summary_max_output_tokens,
         )
+        if response.truncated:
+            # Checked BEFORE the parse, because parsing a cut-off reply reports the symptom and hides
+            # the cause: "Unterminated string starting at: line 2 column 17" is a reply that died just
+            # after the opening quote of fixed_text, not malformed JSON. Thinking tokens are billed
+            # against this same budget (see max_output_tokens above), so a long reasoning pass on a
+            # hard row leaves nothing for the answer. The provider already computes this flag from the
+            # MAX_TOKENS finish reason - it was simply never consulted here.
+            logger.warning(
+                "summary verify reply hit the %s-token cap; keeping original (unverified)",
+                get_settings().summary_max_output_tokens,
+            )
+            return _unverified(summary_text, title)
         data = json.loads((response.text or "").strip())
         fixed = (data.get("fixed_text") or "").strip()
         issues = data.get("issues") or []
-        # A blank fixed_text means the model gave nothing usable - keep the original.
+        # A blank fixed_text means the model gave nothing usable - keep the original. ok stays True:
+        # the audit ran and answered, so the summary HAS been checked; that is a different event from
+        # the audit failing, and conflating the two is what kept this invisible.
         if not fixed:
-            return {"fixed_text": summary_text, "fixed_title": title, "issues": []}
+            return {"fixed_text": summary_text, "fixed_title": title, "issues": [], "ok": True}
         # A blank fixed_title falls back to the original: the schema does not require the field, and
         # a title is never replaced by nothing.
         fixed_title = (data.get("fixed_title") or "").strip() or title
-        return {"fixed_text": fixed, "fixed_title": fixed_title, "issues": issues}
+        return {"fixed_text": fixed, "fixed_title": fixed_title, "issues": issues, "ok": True}
     except Exception as exc:
         logger.warning("summary verify failed; keeping original: %s", exc)
-        return {"fixed_text": summary_text, "fixed_title": title, "issues": []}
+        return _unverified(summary_text, title)

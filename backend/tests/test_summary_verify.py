@@ -51,6 +51,7 @@ def test_faithful_summary_unchanged(monkeypatch):
     result = sv.verify_summary("m", "src", "All supported.")
     assert result["issues"] == []
     assert result["fixed_text"] == "All supported."
+    assert result["ok"] is True  # the audit ran and its reply parsed
 
 
 def test_blank_summary_short_circuits(monkeypatch):
@@ -58,7 +59,9 @@ def test_blank_summary_short_circuits(monkeypatch):
     monkeypatch.setattr(gm, "get_genai_client", lambda: called.append(1))
     monkeypatch.setattr(gm, "generate_with_retry", _fake_gen({"fixed_text": "x", "issues": []}))
     result = sv.verify_summary("m", "src", "   ", title="A TITLE")
-    assert result == {"fixed_text": "   ", "fixed_title": "A TITLE", "issues": []}
+    # ok is False, not True: no model was called, so nothing was verified. A degenerate row must not
+    # end up claiming a check that never happened.
+    assert result == {"fixed_text": "   ", "fixed_title": "A TITLE", "issues": [], "ok": False}
     assert called == []  # no model call for an empty summary
 
 
@@ -74,6 +77,7 @@ def test_model_failure_returns_original(monkeypatch):
         "fixed_text": "Original summary.",
         "fixed_title": "ORIGINAL TITLE",
         "issues": [],
+        "ok": False,
     }
 
 
@@ -82,6 +86,41 @@ def test_blank_fixed_text_keeps_original(monkeypatch):
     monkeypatch.setattr(gm, "generate_with_retry", _fake_gen({"fixed_text": "  ", "issues": []}))
     result = sv.verify_summary("m", "src", "Keep me.")
     assert result["fixed_text"] == "Keep me."
+    # ok stays True: the audit ran and returned valid structured output, it simply had nothing
+    # usable to offer. That is a different event from the audit failing, and conflating the two is
+    # what made this invisible in the first place.
+    assert result["ok"] is True
+
+
+class _TruncatedResp:
+    """A reply cut off at the token cap: a valid JSON prefix, no closing brace, and the MAX_TOKENS
+    finish reason the provider reads to set `truncated`."""
+
+    def __init__(self, text):
+        self.text = text
+        self.candidates = [type("_C", (), {"finish_reason": "MAX_TOKENS"})()]
+
+
+def test_a_truncated_reply_is_not_a_verification(monkeypatch):
+    """WHEN the audit reply hits the token cap, THE SYSTEM SHALL keep the original AND report that
+    no verification happened.
+
+    This is the observed production failure: dynamic thinking is billed against the same
+    max_output_tokens as the reply, so on a hard row the reasoning consumes the budget and the JSON
+    arrives cut off - `Unterminated string starting at: line 2 column 17 (char 18)` is a reply that
+    died right after the opening quote of fixed_text.
+    """
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(
+        gm,
+        "generate_with_retry",
+        lambda client, **_kw: _TruncatedResp('{\n  "fixed_text": "The claimant rep'),
+    )
+    result = sv.verify_summary("m", "src", "Original summary.", title="ORIGINAL TITLE")
+    assert result["ok"] is False
+    assert result["fixed_text"] == "Original summary."  # fail-safe still returns the original
+    assert result["fixed_title"] == "ORIGINAL TITLE"
+    assert result["issues"] == []
 
 
 def test_title_is_audited_and_corrected(monkeypatch):

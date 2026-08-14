@@ -18,7 +18,7 @@ from app.services.provenance import (
     summary_prompt_fingerprint,
 )
 
-_NO_ISSUES = {"fixed_text": "", "issues": []}
+_NO_ISSUES = {"fixed_text": "", "issues": [], "ok": True}  # the audit RAN and found nothing
 
 
 def _row(**over):

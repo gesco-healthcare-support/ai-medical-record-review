@@ -12,7 +12,7 @@ from app.errors import EmptyExtractionError
 from app.services import summarize_engine as se
 from app.services.llm import gemini as gm
 
-_NO_ISSUES = {"fixed_text": "", "issues": []}
+_NO_ISSUES = {"fixed_text": "", "issues": [], "ok": True}  # the audit RAN and found nothing
 
 
 def _row(**over):
@@ -100,6 +100,7 @@ def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
             "fixed_text": "Summary body",
             "fixed_title": title,
             "issues": [{"type": "unsupported", "detail": "a fabrication"}],
+            "ok": True,
         },
     )
 
@@ -113,6 +114,46 @@ def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
     assert "fabrication" in out["summaryText"]
     # The title came back unchanged, so nothing is stored to override it.
     assert out["verifiedTitle"] is None
+
+
+def test_a_failed_audit_is_not_recorded_as_verified(monkeypatch):
+    """WHEN the audit does not complete, THE SYSTEM SHALL NOT mark the summary verified.
+
+    `verified` used to be set from the SETTING that requested the pass, so a summary whose audit
+    threw or came back truncated was still stored claiming a faithfulness check had run. On a
+    medical summary that is a false record, and it is unrecoverable after the fact: no query can
+    separate "audited, nothing to fix" from "audit crashed, nobody looked".
+    """
+    monkeypatch.setattr(
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+    )
+    monkeypatch.setattr(
+        se,
+        "_generate",
+        lambda model, system_msg, user_text, temperature, max_output_tokens=None: (
+            ("Title - Dr", False) if system_msg == se.TITLE_PROMPT else ("Summary body", False)
+        ),
+    )
+    # The fail-safe shape verify_summary returns when the reply truncated or the parse threw: the
+    # originals, no issues, and ok False.
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": summary,
+            "fixed_title": title,
+            "issues": [],
+            "ok": False,
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verified"] is False
+    assert out["verifiedText"] is None  # nothing was verified, so nothing overrides the raw body
+    assert "Summary body" in out["summaryText"]  # the summary itself still ships
 
 
 def test_verified_title_is_stored_decorated_when_the_pass_corrects_it(monkeypatch):
