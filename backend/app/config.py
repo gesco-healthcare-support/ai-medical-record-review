@@ -105,6 +105,15 @@ class Settings(BaseSettings):
 
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
     pipeline_workers: int = 2
+    # Bound on "pause and auto-resume forever": when this many rows have failed transiently and NOT
+    # ONE has succeeded, the model is refusing everything and resuming only replays the same wall.
+    # Zero successes is the discriminator, not the failure count alone - a blip with some rows getting
+    # through must still pause and retry. 3 is deliberately small because zero-of-three is already a
+    # strong signal: on 2026-08-13 job 1000173 ground for 96 minutes against a 0/8-admitted model,
+    # then died as an unclassified rq.timeouts.JobTimeoutException, so the reviewer waited an hour and
+    # a half to be told nothing. Measured 2026-08-14: admission recovered to 8/8 on its own, so this
+    # condition is transient and external - which is exactly why a job must not wait it out.
+    summarize_giveup_after_failures: int = 3
     classify_workers: int = 4
     # Injury-date reads at the END of segmentation: one isolated vision call per sub-document, so
     # they parallelise like categorization does. Its own knob rather than borrowing another

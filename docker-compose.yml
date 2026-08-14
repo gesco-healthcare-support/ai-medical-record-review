@@ -89,6 +89,11 @@ x-backend-env: &backend-env
   # The third retry dial. Its two siblings above were exposed and this one was not, which is exactly
   # how a knob goes unnoticed until someone needs it mid-incident. Fallback mirrors app/config.py.
   GENAI_RETRY_BASE_DELAY: ${GENAI_RETRY_BASE_DELAY:-2.0}
+  # How many transient row failures with ZERO successes end a summarize job instead of pausing it into
+  # an endless resume cycle. Exposed from the start rather than added later, unlike the four keys
+  # below. Raise it only to buy more patience with a flaky endpoint; lowering it below 2 would let a
+  # single unlucky row end a job. Fallback mirrors app/config.py.
+  SUMMARIZE_GIVEUP_AFTER_FAILURES: ${SUMMARIZE_GIVEUP_AFTER_FAILURES:-3}
   # The four keys below were inert until now, which is the FOURTH time this has happened after
   # VERTEX_MAX_RPM, PIPELINE_WORKERS and the retry budget above. On 2026-08-12 it stopped being a
   # tidiness problem: Vertex refused gemini-2.5-pro for this project entirely (0/8 accepted on the

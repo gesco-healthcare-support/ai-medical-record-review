@@ -664,6 +664,13 @@ def summarize_document(job_id) -> None:
         transient_left = False  # >=1 row failed transiently -> retry on resume
         consecutive_transient = 0
         should_pause = False
+        # Give-up state. `generated` counts successes in THIS attempt, not the document's total: a
+        # resumed job carries earlier rows in `done_count`, and the question here is whether the model
+        # is answering NOW. Zero of it, with failures accumulating, is what a refused model looks like.
+        generated = 0
+        transient_failures = 0
+        giveup_exc: Exception | None = None
+        refused_rows: list[dict] = []
 
         pool_timeout = settings.pool_timeout(document.page_count)
         with ThreadPoolExecutor(max_workers=settings.pipeline_workers) as pool:
@@ -698,6 +705,25 @@ def summarize_document(job_id) -> None:
                                 job.document_id,
                                 consecutive_transient,
                             )
+                            transient_failures += 1
+                            refused_rows.append(
+                                {
+                                    "idx": i,
+                                    "pages": f"{row['start']}-{row['end']}",
+                                    "reason": reason_for(exc),
+                                }
+                            )
+                            # Checked BEFORE the pause below, and the order is the whole point: both
+                            # dials ship at 3, so whichever runs first decides between ending the job
+                            # and auto-resuming into the same refusal until RQ's cap kills it.
+                            if (
+                                generated == 0
+                                and transient_failures >= settings.summarize_giveup_after_failures
+                            ):
+                                giveup_exc = exc
+                                for pending_future in futures:
+                                    pending_future.cancel()  # skip not-yet-started rows
+                                break
                             if consecutive_transient >= settings.summarize_pause_after:
                                 should_pause = True
                                 for pending_future in futures:
@@ -722,6 +748,7 @@ def summarize_document(job_id) -> None:
                     session.add(_build_summary(job, i, row, output))
                     session.commit()
                     done_count += 1
+                    generated += 1  # one success is proof the model answers -> never give up early
                     consecutive_transient = 0
                     report("summarizing", done_count, total)
             except PoolTimeout as pt:
@@ -739,6 +766,16 @@ def summarize_document(job_id) -> None:
         # Retryable rows outstanding -> pause + auto-resume (transient wins over permanent this
         # cycle; permanents resurface once transient pressure clears). Otherwise, if only permanent
         # failures remain -> needs attention. Otherwise every row is summarized -> done.
+        # A model that admitted nothing: end the job instead of pausing, because a resume replays the
+        # same refusal. This MUST precede the pause check - `transient_left` was set by the very
+        # failures that triggered the give-up, so the pause branch would otherwise win and we would be
+        # back to job 1000173 grinding for 96 minutes.
+        if giveup_exc is not None:
+            raise JobNeedsAttention(
+                f"{user_facing_message(giveup_exc)} No sub-documents could be summarized, so the "
+                "job stopped rather than retrying.",
+                attention_rows + refused_rows,
+            )
         if should_pause or transient_left:
             raise JobPaused(delay=settings.summarize_resume_delay, done=done_count, total=total)
         if attention_rows:
