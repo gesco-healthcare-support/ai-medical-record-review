@@ -223,8 +223,17 @@ class OpenAIProvider:
         est_tokens = estimate_tokens(parts, system, _PROVIDER)
         client = _client()
         last = None
+        # One pacer budget for the whole logical call - see the note in services/genai_retry.py. The
+        # two retry loops have to agree: a per-attempt budget lets genai_max_retries multiply the
+        # wait, here just as much as on the Gemini path.
+        pacer_deadline = time.monotonic() + pacing.MAX_ACQUIRE_WAIT_S
         for attempt in range(settings.genai_max_retries):
-            pacing.acquire(_PROVIDER, model, est_tokens)
+            pacing.acquire(
+                _PROVIDER,
+                model,
+                est_tokens,
+                max_wait_s=max(0.0, pacer_deadline - time.monotonic()),
+            )
             try:
                 raw = client.chat.completions.with_raw_response.create(**kwargs)
             except Exception as exc:  # noqa: BLE001 - classified immediately below

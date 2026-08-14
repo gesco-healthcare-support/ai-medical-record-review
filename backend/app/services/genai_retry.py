@@ -130,13 +130,24 @@ def generate_with_retry(client, **kwargs):
     est_tokens = kwargs.pop("_est_tokens", 1)
     last = None
     timer = genai_metrics.WaitTimer(model)
+    # ONE pacer budget for the whole logical call, not a fresh one per attempt. acquire() defaults to
+    # MAX_ACQUIRE_WAIT_S each time it is called, so at genai_max_retries=8 a single call could sit in
+    # the pacer for 8 x 300s = 40 minutes - while the comment inside the loop promised it never blocks
+    # past the job timeout. Once this budget is gone the remaining attempts still ASK for capacity,
+    # they just stop waiting for it, which keeps the module's fail-open contract intact.
+    pacer_deadline = time.monotonic() + pacing.MAX_ACQUIRE_WAIT_S
     try:
         for attempt in range(settings.genai_max_retries):
             # Pace the request across all processes before every attempt (a retry consumes quota
             # too). The rate is self-tuning: 429s halve it, successes nudge it back up. Fails open if
-            # Redis is down; never blocks past the job timeout.
+            # Redis is down, and the shared deadline above bounds the total wait for this call.
             with timer:
-                pacing.acquire("gemini", model, est_tokens)
+                pacing.acquire(
+                    "gemini",
+                    model,
+                    est_tokens,
+                    max_wait_s=max(0.0, pacer_deadline - time.monotonic()),
+                )
             retry_after = None
             try:
                 response = client.models.generate_content(**kwargs)

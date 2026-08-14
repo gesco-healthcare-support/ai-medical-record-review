@@ -111,6 +111,57 @@ def no_sleep_no_limiter(monkeypatch):
     monkeypatch.setattr(genai_retry.pacing, "record_success", lambda *a, **k: None)
 
 
+class _FakeClock:
+    """Stands in for the `time` module inside genai_retry only, so the shared pacer budget can be
+    spent deterministically without patching time globally."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def monotonic(self):
+        return self.t
+
+    def sleep(self, _seconds):  # only reachable if _cancellable_sleep is left unpatched
+        pass
+
+
+def test_the_pacer_budget_is_shared_across_one_calls_attempts(
+    redis, no_sleep_no_limiter, monkeypatch
+):
+    """WHEN a logical call retries, THE SYSTEM SHALL bound the TOTAL time it waits for pacing.
+
+    acquire() defaults to MAX_ACQUIRE_WAIT_S per invocation, and it is called before every attempt,
+    so at genai_max_retries=8 one call could spend 8 x 300s = 40 minutes waiting for capacity - while
+    the comment above that call claimed it never blocks past the job timeout. The budget must be
+    consumed across attempts, never reset by one.
+    """
+    from app.services.llm import pacing
+
+    monkeypatch.setattr(genai_metrics, "get_redis", lambda: redis)
+    clock = _FakeClock()
+    monkeypatch.setattr(genai_retry, "time", clock)
+
+    budgets = []
+
+    def spend(provider, model, est_tokens=1, max_wait_s=None):
+        budgets.append(max_wait_s)
+        clock.t += 200.0  # this attempt burned 200s of the shared budget
+        return True
+
+    monkeypatch.setattr(genai_retry.pacing, "acquire", spend)
+    client = _client([_rate_limited(), _rate_limited(), _rate_limited(), "ok"])
+
+    genai_retry.generate_with_retry(client, model="gemini-2.5-pro")
+
+    assert budgets[0] == pytest.approx(pacing.MAX_ACQUIRE_WAIT_S)
+    # Strictly non-increasing: a fresh 300s on any attempt is the bug this pins.
+    assert budgets == sorted(budgets, reverse=True)
+    # Spent, and floored at zero rather than going negative - a negative wait would make acquire()
+    # give up before even trying, which is a different behaviour from "do not wait".
+    assert budgets[-1] == 0.0
+    assert min(budgets) >= 0.0
+
+
 def test_retried_rate_limit_is_still_counted(redis, no_sleep_no_limiter, monkeypatch):
     monkeypatch.setattr(genai_metrics, "get_redis", lambda: redis)
     client = _client([_rate_limited(), _rate_limited(), "ok"])
