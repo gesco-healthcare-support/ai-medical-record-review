@@ -69,6 +69,14 @@ Rebuild after code changes: `docker compose build <service> && docker compose up
 - `GOOGLE_CLOUD_LOCATION=us-central1` (NOT `global`): the gen-lang-client project has NO Vertex
   quota in `global` (see [[mrr-ai-vertex-auth-quota]]) - every AI call 429s otherwise.
 
+  > **SUPERSEDED (2026-08-12).** `global` is correct and current. The server runs it, the repo-root
+  > `.env.example` specifies it, and the 2026-08-03 plan chose it deliberately: the global endpoint
+  > draws on a larger capacity pool, which is a *mitigation* for the 429s this note was reacting to.
+  > A 429 from Vertex is Dynamic Shared Quota - capacity unavailable at that moment - not an
+  > exhausted per-region allowance, so retry rather than switch region. Note that
+  > `backend/.env.example`, `config.py`'s field default and `docker-compose.yml`'s fallback all
+  > still say `us-central1`, so an unset `GOOGLE_CLOUD_LOCATION` gets the old value.
+
 Without Vertex creds the app runs and every non-AI path works; AI jobs fail at runtime only.
 
 ## Migrated document files (making migrated records viewable/processable)
