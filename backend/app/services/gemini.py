@@ -38,29 +38,25 @@ Split the file into its component sub-documents and return one JSON record per s
 One document produced by one author or facility for one encounter, report, or form - the unit a records reviewer would summarize as a single item (a progress report, an imaging report, a deposition, a claim form, one therapy visit note, etc.). Most sub-documents are SHORT - one to three pages is typical; multi-page spans are the exception (long reports, depositions, medico-legal evaluations), not the norm.
 
 ## Page numbers
-"Page N" means the N-th page of THIS file, counting from 1. Count positions yourself from the first page you were given: printed page numbers identify nothing here, because scanned bundles restart and repeat their printed numbering.
+"Page N" means the N-th page of THIS file, counting from 1. Ignore page numbers printed on the pages: scanned bundles restart and repeat their printed numbering, so printed numbers do not identify positions in this file.
 
 ## Coverage - the output is used to slice the file, so it must tile it exactly
-- Records appear in page order, every page belongs to exactly one record, and consecutive records touch: each record starts on the page immediately after the previous record ends. Together they run from page 1 through the last page.
-- Each record covers ONE contiguous run of pages. When one document's pages appear in two separate places in the file, report each run as its own record, because a single record cannot express a gap.
-- When the file starts or ends mid-document, report that partial document with the page range visible here.
-- Attach each blank page to the record that PRECEDES it, and any blank page before the first document to the first document: scanners emit blank backsides and separators, so a blank page belongs to its neighbour.
-- Assign pages you cannot read to the record they physically sit within. Every page reaches some record, so an unreadable page is placed rather than skipped.
+- Every page belongs to exactly one sub-document: records must be in order, must not overlap, and must not leave gaps; together they cover page 1 through the last page.
+- If the file starts or ends mid-document, still report that partial document with the page range visible here.
+- Blank pages NEVER form their own record: scanners emit blank backsides and separators. Attach a blank page to the document BEFORE it; blank pages before the first document belong to the first document.
 
 ## Where a sub-document starts
-- At its first physical page, INCLUDING any fax cover sheet, transmittal letter, or routing slip that travels with it: a cover belongs to the document it introduces, so the record begins ON the cover page.
-- Strong start signals: a new letterhead or form header together with a new document title; the first page of a form; a new author within a run of same-type documents.
-- These pages CONTINUE the record already open: a page marked "page N of M"; lab tables, signature pages, and attachments belonging to the report they follow; a letterhead that changes INSIDE one report. Long medico-legal evaluations (QME/PQME/AME) quote many other records - keep the entire evaluation as ONE record. A distinct QME/AME supplemental report is its own record.
-- A report often EMBEDS a few pages that look like a different document type (lab tables, an imaging summary, a work-status form, a copied letter). When those pages carry the report's date or are referenced by the surrounding text, extend the report's range OVER them.
-- A document's FIRST or LAST pages often look unlike its body: certification or notary stamps, letterhead-only or branding pages, terms-and-conditions or disclaimer pages, distribution/cc lists. Include these in the range of the document they accompany.
-- Date and title together are the strongest boundary evidence these files carry. A change in EITHER one almost always opens a new document: a new encounter date, or a different title. Consecutive visits of the same type (physiotherapy, chiropractic, acupuncture) carry near-identical titles, so the DATE is what separates them - report one record per date.
-- When the date AND the title are both the same across consecutive pages, those pages usually belong to ONE document. Same-day batches are the exception, and they announce themselves: a fresh letterhead, a restarted "Page 1 of N", or a separate signature block marks each new item (one per visit, one per body part, one per form).
-- Default when a page is hard to place: it CONTINUES the record already open, unless you can name a specific start signal visible on it - one of the strong signals above, a new encounter date, or a different title. Name that signal before you split; when you cannot name one, the page continues.
-- One nameable start signal is enough to split. Weigh the two mistakes unequally: a false split costs a reviewer one merge click, while a document buried inside another record is never seen again. So do not withhold a split that has evidence behind it - the bar is visible evidence on the page, not how confident you feel.
+- At its first physical page, INCLUDING any fax cover sheet, transmittal letter, or routing slip that travels with it. A cover page is never its own record, and a document never starts on the page after its cover.
+- Strong start signals: a new letterhead or form header together with a new document title; the first page of a form; a new visit/encounter date or author within a run of same-type documents (consecutive progress notes from the same clinic are SEPARATE records, one per visit).
+- NOT starts: "page N of M" continuation pages; lab tables, signature pages, or attachments that belong to the report they follow; a letterhead change INSIDE one report. Long medico-legal evaluations (QME/PQME/AME) quote many other records - keep the entire evaluation as ONE record. A distinct QME/AME supplemental report is its own record.
+- A report often EMBEDS a few pages that look like a different document type (lab tables, an imaging summary, a work-status form, a copied letter). If those pages carry the report's date or are referenced by the surrounding text, they are part of the report - do not split them out as their own record.
+- A document's FIRST or LAST pages often look unlike its body: certification or notary stamps, letterhead-only or branding pages, terms-and-conditions or disclaimer pages, distribution/cc lists. These belong to the document they accompany - never report them as separate records.
+- Do NOT merge two records merely because they share a document type and date: these files routinely contain same-day batches of short same-type documents (one per visit, one per body part, one per form), and each is its own record.
+- Tiebreak: when you are genuinely unsure whether a page starts a new document or continues the previous one, START A NEW RECORD. A reviewer merges a false split in one click, but a document hidden inside another record is never seen again.
 
 ## Fields (use "-" whenever a value is unavailable; never null)
-- "t" title: the document's own title or header wording if visible (it may sit next to a label such as "Notes"); otherwise name the document type in plain words, for example "Progress Note", "MRI Report", or "Work Status Report". Replace any comma with a dash so the value stays CSV-safe. A title of the form "X vs Y" is almost always a deposition: use "Deposition".
-- "d" document date: the visit/encounter date of THIS document as MM/DD/YYYY (it may sit near the signature at the end). When the page carries several dates, report the date of the encounter the document DESCRIBES rather than the date it was written, signed, transcribed, faxed, printed, or re-sent. A date of injury is not a document date: leave it out of this field. When the document states no encounter date, use "-".
+- "t" title: the document's own title or header wording if visible (it may sit next to a label such as "Notes"); otherwise the document type. Replace any comma with a dash so the value stays CSV-safe. A title of the form "X vs Y" is almost always a deposition: use "Deposition".
+- "d" document date: the visit/encounter date of THIS document as MM/DD/YYYY (it may be near the signature at the end); ignore fax, print, and re-send dates, and never report the date of injury here.
 - "m" manual check: "x" if a human should review the document - substantial handwriting (more than a signature), checkbox-style forms, work-status reports, or QME/PQME/AME reports; otherwise "-".
 
 Example output for a 10-page file (format reference):
