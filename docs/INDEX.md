@@ -22,8 +22,9 @@ Docs follow the [Diataxis](https://diataxis.fr/) split: explanation, how-to, ref
   page-map CSV, which is no longer how stages talk - boundaries are rows in Postgres. The chunking
   discussion is superseded by `experiments/a1-segmentation/EXPERIMENT-LOG.md`.
 - [explanation/categorization.md](explanation/categorization.md) - stage 2: the B5 cascade
-  (rules -> embeddings -> Gemini enum) and the DB-backed, admin-editable catalog. Largely still
-  accurate - the cascade survived the rewrite.
+  (rules -> embeddings -> Gemini enum) and the DB-backed, admin-editable catalog. The cascade
+  survived the rewrite; the doc was verified against `backend/app/services/classification.py` on
+  2026-08-12 and corrected where it had drifted (rules stage, classifier model, category `6`).
 - [explanation/summarization.md](explanation/summarization.md) - **[LEGACY]** stages 3-4. Says OpenAI;
   summaries run on Vertex/Gemini by default, with OpenAI behind a config flag.
 - [explanation/frontend-ui.md](explanation/frontend-ui.md) - **[LEGACY]** written when a
@@ -35,7 +36,9 @@ Docs follow the [Diataxis](https://diataxis.fr/) split: explanation, how-to, ref
   `cd backend && uv run pytest`, against the dev-stack database on port 5432 - never the app database
   on 5433. See CLAUDE.md.
 - [how-to/add-a-category.md](how-to/add-a-category.md) - add or edit a category + summary prompt via
-  the admin console. Still accurate.
+  the admin console. Verified 2026-08-12; the admin CLI command and the prompt-resolution note were
+  corrected. Read the Developer note before assuming a `prompts.py` edit does or does not reach a
+  given box.
 - [how-to/add-a-blueprint.md](how-to/add-a-blueprint.md) - **[LEGACY]** "blueprint" is a Flask
   concept. To add a route now, add a FastAPI router under `backend/app/api/`.
 

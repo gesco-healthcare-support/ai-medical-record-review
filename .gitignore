@@ -54,6 +54,9 @@ coverage.xml
 htmlcov/
 .scannerwork/
 
+# ---- Personal Claude Code notes (per-developer; the shared context is CLAUDE.md) ----
+CLAUDE.local.md
+
 # ---- Tooling / OS ----
 .playwright-mcp/
 .DS_Store
