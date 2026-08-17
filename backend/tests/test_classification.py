@@ -174,6 +174,20 @@ def test_modality_studies_keep_category_three(title, expected):
     assert classification.match_rules(title) == expected
 
 
+# The third outcome of dropping `laborator`, and the one the two suites above do not reach: both only
+# cover titles containing "results", which the category-14 rule matches. A laboratory title WITHOUT
+# that word now matches no rule at all and falls through to the embedding + LLM cascade.
+#
+# That is the intended result rather than a gap. D-01/D-02 rewrote both taxonomy descriptions so the
+# cascade answers 14 for specimen work, and a cascade answer carries a confidence value the reviewer
+# can see - where the old rule hit returned "high" with needs_review=False and no signal at all. So
+# the fix trades a silent wrong answer for a visible judged one. Pinned because "falls through" is
+# easy to mistake for "regressed" if these ever start matching a rule again.
+@pytest.mark.parametrize("title", ["Laboratory Report", "Blood Work Panel", "CBC", "Urinalysis"])
+def test_specimen_titles_without_results_reach_the_cascade(title):
+    assert classification.match_rules(title) is None
+
+
 def test_general_corpus_names_the_administrative_documents():
     """The embedding + LLM stages read this text, so it must describe what actually lands here."""
     from app.services.taxonomy import CATEGORIES
