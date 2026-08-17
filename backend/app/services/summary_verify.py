@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 
 # The house rules the audit enforces IN ADDITION to faithfulness. Kept here rather than imported
 # from summarize_engine because that module imports this one; the generation-side wording lives in
-# HARDENING_PREAMBLE and the two must be edited together. They are deliberately phrased differently:
+# HARDENING_PREAMBLE - and, for rule 4, in _C_RANGE_OF_MOTION, which is where the pair actually
+# drifted: the generator calls joint reference ranges the ONE permitted inference, while this rule
+# listed only two sources, so the audit deleted directions the generator was required to add.
+# Naming only HARDENING_PREAMBLE here is part of why that went unnoticed for so long.
+# The two must be edited together. They are deliberately phrased differently:
 # generation says "do not write X", the audit says "find and remove X", which is what makes a second
 # pass worth paying for at all.
 #
@@ -44,7 +48,10 @@ _HOUSE_RULES = (
     "its bold, or folding its content into running prose is never a permitted repair.\n"
     "4. RANGE OF MOTION: a measurement must carry whether it is reduced, normal, or increased. Do "
     "not remove or alter the measured number; add the direction if it is missing, taking it from the "
-    "SOURCE's own wording or from the normal value the SOURCE prints beside it where either exists.\n"
+    "SOURCE's own wording, from the normal value the SOURCE prints beside it, or - when the SOURCE "
+    "gives neither - from the standard normal range for that joint and motion. A direction reached "
+    "that last way is NOT unsupported and must be KEPT: reference ranges are textbook values rather "
+    "than a claim about this patient, and the generation rule requires that comparison.\n"
     "5. DUPLICATION: if the summary reports Findings and Impression (or Conclusion) saying the same "
     "thing, keep the Impression and drop the Findings. Keep both only where Findings states "
     "something the Impression does not.\n"
