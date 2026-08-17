@@ -164,6 +164,62 @@ def _reject_the_app_database(url: str) -> None:
         )
 
 
+def redis_port_is_shared() -> bool:
+    """Whether host port 6379 is claimed by a service this repo does NOT define.
+
+    Postgres can be identified: the two compose files publish DIFFERENT host ports (5432 dev, 5433
+    app), so `_local_database_url` can tell which stack answered. Redis cannot. Only
+    docker-compose.dev.yml publishes 6379 - the application's Redis is internal to the compose
+    network (`REDIS_URL: redis://redis:6379/0`) and binds no host port - so there is no MRR
+    ambiguity to resolve. The hazard is entirely OTHER PROJECTS on the same machine binding 6379,
+    and nothing a Redis client can ask distinguishes their server from ours.
+
+    So this deliberately does not pretend to verify identity. It reports whether the dev stack
+    publishes 6379 at all, which is the one thing the compose files can answer, and
+    `pytest_sessionstart` turns that into a warning naming the risk. Same reasoning as the
+    `connect_timeout` note above: make a confusing failure legible rather than prevent it.
+
+    Real cost of not having this: on 2026-08-13 the suite failed en masse when an unrelated stack on
+    this machine went down, because pytest had silently been using ITS Redis on 6379. The job and
+    queue tests are the ones affected - they enqueue against whatever answers.
+    """
+    root = Path(__file__).resolve().parents[2]
+    dev = root / "docker-compose.dev.yml"
+    if not dev.exists():
+        return True
+    return '"6379:6379"' not in dev.read_text(encoding="utf-8", errors="replace")
+
+
+def pytest_sessionstart(session) -> None:  # noqa: ARG001 - pytest hook signature
+    """Say which Redis answered before the queue tests fail against it.
+
+    A WARNING and never an error: most of the suite does not touch Redis, and failing collection for
+    everyone because a queue dependency is missing would be a worse trade than the confusing failure
+    this replaces. The queue tests still fail on their own if Redis is absent - they just now fail
+    after a line that says why.
+    """
+    from app.config import get_settings
+
+    url = get_settings().redis_url
+    try:
+        from redis import Redis
+
+        Redis.from_url(url, socket_connect_timeout=2).ping()
+    except Exception as exc:  # noqa: BLE001 - diagnostics only, never fatal
+        print(
+            f"\n[conftest] Redis at {url} did not answer ({type(exc).__name__}). The job and queue "
+            f"tests will fail.\n"
+            f"[conftest] Start it with:  docker compose -f docker-compose.dev.yml up -d redis\n"
+        )
+        return
+    if redis_port_is_shared():
+        print(
+            f"\n[conftest] Redis answered at {url}, but docker-compose.dev.yml does not publish "
+            f"6379 - so that server belongs to something else on this machine. Queue tests will "
+            f"run against it.\n"
+        )
+
+
 os.environ.setdefault("DATABASE_URL", _local_database_url())
 _reject_the_app_database(os.environ["DATABASE_URL"])
 os.environ.setdefault("SECRET_KEY", "dev-only-secret")
