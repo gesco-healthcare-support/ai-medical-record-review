@@ -69,9 +69,32 @@ _MERGE_BIASED_TIEBREAK = (
     "one of those, the page continues the document before it."
 )
 
+# The exact wording #108 shipped and #114 reverted, so that change can be measured ALONE. #104 and
+# #108 went out together and were scored together, which is why the 2026-08-17 regression (surplus
+# rows 43 -> 63, under-splits 0 -> 6 over six documents) could not be attributed to either one.
+#
+# It differs from _MERGE_BIASED_TIEBREAK above in exactly one respect, and that is the hypothesis
+# under test: this drops "when you are genuinely unsure" entirely. That trigger asks the model to
+# report its own uncertainty, and the confidence-enum trial noted under SEGMENT_RESPONSE_SCHEMA in
+# gemini.py measured it answering "high" on 231 of 232 rows including every known near-miss. A rule
+# keyed to a state the model cannot report does not fire at borderline cases; it applies whenever
+# splitting is available at all. The merge_biased arm keeps that trigger and only inverts its
+# direction, so running both separates "the direction was wrong" from "the trigger was wrong".
+_EVIDENCE_GATED_TIEBREAK = (
+    "- Default when a page is hard to place: it CONTINUES the record already open, unless you can "
+    "name a specific start signal visible on it - one of the strong signals above, a new encounter "
+    "date, or a different title. Name that signal before you split; when you cannot name one, the "
+    "page continues.\n"
+    "- One nameable start signal is enough to split. Weigh the two mistakes unequally: a false split "
+    "costs a reviewer one merge click, while a document buried inside another record is never seen "
+    "again. So do not withhold a split that has evidence behind it - the bar is visible evidence on "
+    "the page, not how confident you feel."
+)
+
 ARMS = {
     "control": lambda p: p,
     "merge_biased": lambda p: p.replace(_CONTROL_TIEBREAK, _MERGE_BIASED_TIEBREAK),
+    "evidence_gated": lambda p: p.replace(_CONTROL_TIEBREAK, _EVIDENCE_GATED_TIEBREAK),
 }
 
 # Arms that REWRITE the prompt, and so depend on _CONTROL_TIEBREAK still being present to rewrite.
