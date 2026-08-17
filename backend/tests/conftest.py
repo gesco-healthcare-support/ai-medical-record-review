@@ -28,14 +28,23 @@ import pytest
 # (pytest buffers, so a Ctrl-C or a kill loses even the header). Two separate sessions lost hours to
 # that silence, each concluding "pytest is broken". Five seconds turns it into a legible
 # OperationalError naming the host, port and reason.
-def _compose_postgres_ports() -> list[tuple[int, str]]:
-    """(host_port, password_default) for every compose file that publishes Postgres.
+def _compose_postgres_ports() -> list[tuple[int, str, bool]]:
+    """(host_port, password_default, reads_env_password) per compose file that publishes Postgres.
 
     Module-level so BOTH the auto-discovery below and the explicit-URL check share one parse. When
     they were separate, "which port is the app stack" could be answered two different ways.
+
+    The third element is load-bearing and was missing until 2026-08-17. The regex below already
+    distinguishes the two forms in separate groups - group 1 is a `${POSTGRES_PASSWORD:-...}`
+    substitution (docker-compose.yml), group 2 is a hardcoded literal (docker-compose.dev.yml) - and
+    the caller then collapsed them with an `or`, throwing away exactly the fact it needed. So an
+    explicit POSTGRES_PASSWORD in .env was applied to whichever port won, and the winner is
+    PREFERRED to be the dev stack, which does not read that variable at all. Anyone with the variable
+    set therefore paired the dev port with the app password: 614 connection errors and not one
+    assertion executed, with no hint that the password was the problem.
     """
     root = Path(__file__).resolve().parents[2]
-    candidates: list[tuple[int, str]] = []
+    candidates: list[tuple[int, str, bool]] = []
     for name in ("docker-compose.yml", "docker-compose.dev.yml"):
         path = root / name
         if not path.exists():
@@ -49,7 +58,9 @@ def _compose_postgres_ports() -> list[tuple[int, str]]:
         # Either a literal (dev) or a ${VAR:-default} substitution (main).
         pw = re.search(r"POSTGRES_PASSWORD:\s*(?:\$\{[A-Z_]+:-([^}]+)\}|(\S+))", section)
         if port:
-            candidates.append((int(port.group(1)), (pw.group(1) or pw.group(2)) if pw else ""))
+            substituted = bool(pw and pw.group(1) is not None)
+            default_pw = (pw.group(1) or pw.group(2)) if pw else ""
+            candidates.append((int(port.group(1)), default_pw, substituted))
     return candidates
 
 
@@ -93,7 +104,7 @@ def _local_database_url() -> str:
     ordered = [dev] if dev else []
     ordered += [c for c in candidates if c is not dev]
 
-    for port, default_pw in ordered:
+    for port, default_pw, reads_env_password in ordered:
         with socket.socket() as sock:
             sock.settimeout(0.4)
             if sock.connect_ex(("127.0.0.1", port)) != 0:
@@ -105,7 +116,10 @@ def _local_database_url() -> str:
                 f"run the suite against it - the fixtures insert and delete rows.\n"
                 f"Start the test database with:  docker compose -f docker-compose.dev.yml up -d postgres"
             )
-        password = env_pw or default_pw or "mrr_dev_only"
+        # env_pw applies ONLY to a stack whose compose entry actually substitutes the variable.
+        # docker-compose.dev.yml hardcodes its password, so honouring .env there pairs the dev port
+        # with the app credential and every connection fails on authentication.
+        password = (env_pw if reads_env_password else "") or default_pw or "mrr_dev_only"
         return f"postgresql+psycopg://mrr:{password}@localhost:{port}/mrr?connect_timeout=5"
 
     # Nothing listening at all: keep a concrete default so the error names a port and reason.
@@ -138,7 +152,7 @@ def _reject_the_app_database(url: str) -> None:
     port = re.search(r":(\d+)/", url)
     if not port:
         return
-    candidates = dict(_compose_postgres_ports())
+    candidates = {entry[0] for entry in _compose_postgres_ports()}
     dev = 5432 if 5432 in candidates else None
     if dev is not None and int(port.group(1)) in candidates and int(port.group(1)) != dev:
         raise RuntimeError(
