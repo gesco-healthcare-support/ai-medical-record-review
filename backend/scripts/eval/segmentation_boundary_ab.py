@@ -74,6 +74,12 @@ ARMS = {
     "merge_biased": lambda p: p.replace(_CONTROL_TIEBREAK, _MERGE_BIASED_TIEBREAK),
 }
 
+# Arms that REWRITE the prompt, and so depend on _CONTROL_TIEBREAK still being present to rewrite.
+# `control` does not, which is why it stays runnable after the prompt moves on: scoring the prompt as
+# it currently stands against the reviewed boundaries is a valid measurement on its own, and the
+# stored segment_rows already hold what the previous prompt produced for the same documents.
+_TRANSFORMING_ARMS = frozenset(ARMS) - {"control"}
+
 
 def _ground_truth(session, document_id):
     """Reviewed (start, end) spans for a document, in page order."""
@@ -176,11 +182,16 @@ def main() -> None:
     parser.add_argument("--list", action="store_true", help="list reviewed documents and exit")
     args = parser.parse_args()
 
-    if _CONTROL_TIEBREAK not in SEGMENTATION_PROMPT:
+    requested = {a.strip() for a in args.arms.split(",") if a.strip()}
+    # Only the rewriting arms need the literal to still be there. Gating the check on them keeps the
+    # loud failure where it protects something (a rewrite that silently no-ops) without blocking a
+    # control-only run, which is a valid measurement of the prompt exactly as it stands today.
+    if requested & _TRANSFORMING_ARMS and _CONTROL_TIEBREAK not in SEGMENTATION_PROMPT:
         sys.exit(
-            "the control tiebreak sentence is no longer in SEGMENTATION_PROMPT - update "
-            "_CONTROL_TIEBREAK in this script, or the arms would be identical and the A/B "
-            "would silently measure nothing"
+            f"arms {sorted(requested & _TRANSFORMING_ARMS)} rewrite the control tiebreak, but that "
+            "sentence is no longer in SEGMENTATION_PROMPT (it changed on 2026-08-17) - so the "
+            "rewrite would no-op and the A/B would silently measure nothing. Update "
+            "_CONTROL_TIEBREAK, or run --arms control to score the current prompt as it stands."
         )
 
     with get_sessionmaker()() as session:
