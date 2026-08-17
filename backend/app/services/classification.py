@@ -81,8 +81,17 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
             "2",
         ),
         (r"\bpr-?2\b|progress report|progress note|office visit|follow ?-? ?up", "1"),
+        # MODALITY terms only. `laborator` used to be here and it defeated D-01/D-02 entirely: that
+        # register item made 3 modality-based and 14 specimen-based, and rewrote both taxonomy
+        # descriptions so the embedding and LLM stages agree - but rules run FIRST and short-circuit,
+        # so every "Laboratory Results ..." title matched here and never reached the fixed stages.
+        # Measured 2026-08-13 on a synthetic record: a comprehensive metabolic panel classified 3,
+        # unflagged (a rule hit is always high-confidence), and was summarized with the diagnostic
+        # prompt at 2.15x the category-14 human median. Deleting the token is enough - 14's own rule
+        # below then matches, and imaging keeps priority for mixed titles like "Radiology Test
+        # Results" because this rule still precedes it.
         (
-            r"\bmri\b|\bct\b|ct scan|x-? ?ray|\bemg\b|\bncs\b|diagnostic study|laborator"
+            r"\bmri\b|\bct\b|ct scan|x-? ?ray|\bemg\b|\bncs\b|diagnostic study"
             r"|mammogram|sleep study|colonoscopy|dexa|ultrasound|radiolog",
             "3",
         ),
