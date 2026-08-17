@@ -137,6 +137,43 @@ def test_unruled_report_behind_a_wrapper_reaches_the_cascade(title):
     assert classification.match_rules(title) is None
 
 
+# D-01/D-02 split 3 (studies performed ON THE BODY) from 14 (tests run on a SPECIMEN) and rewrote
+# both taxonomy descriptions accordingly. That reached the embedding + LLM stages only: `laborator`
+# stayed in the category-3 RULE, and rules short-circuit before either stage runs, so a laboratory
+# title was answered 3 at high confidence with no review flag. These pin the split at the rules stage
+# too, where the reviewer gets no signal that anything was decided.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("LABORATORY RESULTS - COMPREHENSIVE METABOLIC PANEL", "14"),
+        ("Laboratory Results", "14"),
+        ("Laboratory Test Results", "14"),
+        ("Lab Results", "14"),
+        ("Test Results", "14"),
+    ],
+)
+def test_specimen_results_are_laboratory_not_imaging(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# The other half of D-01/D-02: dropping `laborator` from rule 3 must not cost imaging its priority.
+# "Radiology Test Results" matches BOTH rules, and 3 still precedes 14, so the modality wins - which
+# is why the fix is a deleted token rather than a reordering of the two rules.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Radiology Test Results", "3"),
+        ("MRI Lumbar Spine", "3"),
+        ("Unattended Sleep Study", "3"),
+        ("Ultrasound Report", "3"),
+        ("NCS/EMG Report", "3"),
+        ("Diagnostic Study (X-Ray, MRI, CT scan)", "3"),
+    ],
+)
+def test_modality_studies_keep_category_three(title, expected):
+    assert classification.match_rules(title) == expected
+
+
 def test_general_corpus_names_the_administrative_documents():
     """The embedding + LLM stages read this text, so it must describe what actually lands here."""
     from app.services.taxonomy import CATEGORIES
