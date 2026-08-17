@@ -90,12 +90,18 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     second_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     second_title_format.font.name = "Times New Roman"
 
+    # The law firm is OPTIONAL - it is a free-text field on the review page that a reviewer often has
+    # no value for. Concatenating it unconditionally shipped "medical records from ." into the
+    # delivered document, dangling preposition and orphan full stop, every time the field was blank.
+    # Seen in a real export on 2026-08-17. So the clause is dropped rather than left empty: an absent
+    # element is left out, the same convention the title prompt already applies to a missing author.
+    #
+    # The double space in "pages  received" was in the same sentence and is a plain typo.
+    firm = (lawfirm or "").strip()
+    received_from = f" from {firm}" if firm else ""
     intro_text = (
-        "I have received "
-        + str(num_pages)
-        + " pages of medical records from "
-        + lawfirm
-        + ". I have reviewed all of the pages  received and my opinion is based upon such received records."
+        f"I have received {num_pages} pages of medical records{received_from}. "
+        "I have reviewed all of the pages received and my opinion is based upon such received records."
     )
     second_intro_text = "The following is a summary of those records:"
     this_concludes_text = "This concludes the review of submitted records."
