@@ -41,6 +41,7 @@ boundaries and keeps the run cheap; --stage full adds the verify pass.
 import argparse
 import sys
 
+import prompt_variants  # same directory; Python puts the SCRIPT's dir on sys.path
 from sqlalchemy import select
 
 from app.db import get_sessionmaker
@@ -95,13 +96,18 @@ ARMS = {
     "control": lambda p: p,
     "merge_biased": lambda p: p.replace(_CONTROL_TIEBREAK, _MERGE_BIASED_TIEBREAK),
     "evidence_gated": lambda p: p.replace(_CONTROL_TIEBREAK, _EVIDENCE_GATED_TIEBREAK),
+    # WHOLE-PROMPT arms, ignoring the live text entirely. #104 rewrote the prompt in many places at
+    # once, so no string replace reproduces it and a hand-built approximation would measure something
+    # other than what shipped. See prompt_variants.py for provenance of each.
+    "date_title": lambda _p: prompt_variants.DATE_TITLE_104,
+    "encounter_date": lambda _p: prompt_variants.ENCOUNTER_DATE,
 }
 
-# Arms that REWRITE the prompt, and so depend on _CONTROL_TIEBREAK still being present to rewrite.
-# `control` does not, which is why it stays runnable after the prompt moves on: scoring the prompt as
-# it currently stands against the reviewed boundaries is a valid measurement on its own, and the
-# stored segment_rows already hold what the previous prompt produced for the same documents.
-_TRANSFORMING_ARMS = frozenset(ARMS) - {"control"}
+# Arms that PATCH the live prompt by string replacement, and so depend on _CONTROL_TIEBREAK still
+# being present to find. Listed explicitly rather than derived as "everything but control", because
+# the whole-prompt arms below substitute the text outright and do not care what the live prompt says
+# - deriving the set would make them fail for a reason that does not apply to them.
+_TRANSFORMING_ARMS = frozenset({"merge_biased", "evidence_gated"})
 
 
 def _ground_truth(session, document_id):
