@@ -346,6 +346,19 @@ def test_the_evaluators_own_report_is_still_an_evaluation(title):
         "Admission Record",
         "Patient Referral",
         "Patient Signature Page",
+        # Added from two further records (267 and 300 pages) run the same way on 2026-08-18. These
+        # three are the ones that cost DELIVERED content rather than just a wrong category, so they
+        # matter more than the seven above:
+        #   - "Extracorporeal Shockwave Treatment Report" x4, 28 pages -> 100, unchecked, dropped.
+        #     The human wrote FOUR separate entries for them, on our four dates exactly.
+        #   - "Functional Improvement Measurements", 14 pages -> 100, dropped. The human wrote an
+        #     entry for it on our date exactly.
+        #   - "Utilization Review Letter" x4, 8 pages -> 100, dropped. The human summarized it.
+        # In the same record, "Acupuncture Report" HAS a rule (5) and was summarized correctly - so
+        # the presence of a rule, not the clinical content, is what decided whether it survived.
+        "Extracorporeal Shockwave Treatment Report",
+        "Functional Improvement Measurements",
+        "Utilization Review Letter",
     ],
 )
 def test_recurring_paperwork_is_answered_by_a_rule(title):
