@@ -52,7 +52,15 @@ page-map CSV passed between stages, it is describing the legacy app.
   and the suite against the second. `backend/tests/conftest.py` refuses to run against the app
   database and will tell you so; do not set `DATABASE_URL` to get around it.
 - **The backend image is baked, not bind-mounted.** Editing `backend/` does nothing to a running
-  container until `docker compose build api` and a recreate. The frontend is the same.
+  container until you build and recreate. The frontend is the same.
+- **There are TWO backend images, and `build api` only rebuilds one.** `api` and `summarize-worker`
+  run `mrr-backend-web` (`--extra docs`); `segment-worker` runs `mrr-backend-classifier`
+  (`--extra docs --extra classifier`, the torch one). So `docker compose build api` leaves the
+  segment worker on whatever it had, and `--force-recreate` restarts it from that stale image
+  without complaint. Anything the segment worker owns - `classification.py`, `segment_engine.py`,
+  `windows.py` - then appears not to work: measured 2026-08-17, `match_rules` returned the fixed
+  answer in `api` and the old one in `segment-worker`, same call, because the classifier image was
+  five days old. Name every service you changed.
 - **A fresh test database needs `alembic upgrade head`** before the suite will run, or every
   DB-touching test errors with `relation "user" does not exist`.
 - **Seeding is one-shot.** `seed_catalog()` returns early once any `Category` row exists, so editing
@@ -100,8 +108,15 @@ pnpm typecheck
 After changing backend code, rebuild before expecting a container to see it:
 
 ```bash
-docker compose build api && docker compose up -d --force-recreate api segment-worker summarize-worker
+# Build BOTH backend images. `build api` alone rebuilds mrr-backend-web only, so the segment
+# worker (mrr-backend-classifier) keeps running old code and the change silently does not apply.
+docker compose build api segment-worker summarize-worker
+docker compose up -d --force-recreate api segment-worker summarize-worker
 ```
+
+Only touched a service on `mrr-backend-web` (api, summarize-worker)? `docker compose build api` is
+enough. Touched anything the segment worker runs - categorization, segmentation, windowing - and you
+need `build segment-worker` too, or you are testing the previous image.
 
 ## Key references
 
