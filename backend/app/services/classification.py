@@ -70,6 +70,21 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
 # outrank an administrative match - any other rule does.
 _EVALUATOR_MENTION = "13"
 
+# Document types that OUTRANK a bare evaluator mention, even with no administrative rule in play.
+# Rule 13 sits second in _RULES and first-match-wins, so before this "AME Deposition Transcript"
+# answered 13 rather than 9 - a transcript of the AME being QUESTIONED, filed as the AME's own
+# report and summarized with the evaluation prompt, which asks for diagnoses, causation and
+# apportionment that a transcript does not carry.
+#
+# Deliberately an explicit SET rather than moving rule 13 down the list. Reordering cannot express
+# this: rules 1 and 2 sit ahead of these four, so any position that lets a deposition win also lets
+# "progress report" and "permanent and stationary" win - and those legitimately describe the
+# evaluator's OWN report ("AME Permanent and Stationary Report" is 13, not 2).
+#
+# 2026-08-18: decided in-house, NOT confirmed with eData. Reversible - drop an id to restore the
+# previous answer for that shape.
+_EVALUATOR_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, deposition, lab
+
 # Words that name a DOCUMENT rather than the paperwork wrapped around it. The segmenter is told to
 # fold a cover sheet into the document it travels with and to title the record from the visible
 # header (services/gemini.py), so "Cover Letter - AME Report" is one record containing a report.
@@ -79,6 +94,23 @@ _EVALUATOR_MENTION = "13"
 # Records" are paperwork about records, not records.
 _DOCUMENT_NOUN = re.compile(
     r"\b(report|transcript|notes?|study|scan|imaging|x-? ?ray|chart|questionnaire|results?)\b"
+)
+
+# The one shape where a document noun names what the paperwork is ABOUT rather than what the pages
+# ARE: "...Declaration of Service OF Medical - Legal Report". The noun is the object of the service,
+# so _DOCUMENT_NOUN must not stand the administrative rule down for it. This is the case pinned
+# xfail in #119 as needing a decision.
+#
+# Anchored on the trailing "of" and nothing wider, because a real evaluation genuinely DOES travel
+# with a service page - "QME Report - Proof of Service" and "Panel QME Report with Declaration of
+# Service" are category 13 and pinned as such in the suite. Word order is the whole distinction:
+# paperwork-first with the document as its grammatical object, versus document-first with the
+# paperwork attached. A broader test (treating every declaration as standalone) was written and
+# measured first; it broke both of those pinned titles, which is what narrowed it to this.
+#
+# 2026-08-18: decided in-house, NOT confirmed with eData.
+_PAPERWORK_ABOUT_A_DOCUMENT = re.compile(
+    r"\b(declaration|proof|certificate) of (service|mailing) of\b"
 )
 
 # Ordered high-precision rules; first match wins. Specific categories precede the categories they
@@ -149,8 +181,13 @@ def match_rules(title):
     """
     text = (title or "").lower()
     matches = [category for pattern, category in _RULES if pattern.search(text)]
+    if _EVALUATOR_MENTION in matches and not _EVALUATOR_YIELDS_TO.isdisjoint(matches):
+        matches = [c for c in matches if c != _EVALUATOR_MENTION]
     administrative = any(pattern.search(text) for pattern in _ADMIN_RULES)
-    if not administrative or _DOCUMENT_NOUN.search(text):
+    carries_a_document = _DOCUMENT_NOUN.search(text) and not _PAPERWORK_ABOUT_A_DOCUMENT.search(
+        text
+    )
+    if not administrative or carries_a_document:
         return matches[0] if matches else None
     return next((c for c in matches if c != _EVALUATOR_MENTION), DEFAULT_ID)
 
