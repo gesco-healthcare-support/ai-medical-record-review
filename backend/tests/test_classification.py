@@ -247,6 +247,45 @@ def test_declaration_of_service_of_a_report_is_still_misfiled():
     )
 
 
+# Recurring workers-comp paperwork that NO rule answers, so every one of these reaches the embedding
+# + LLM cascade. This is the INVERSE of the #107 and #119 defects: there a rule fired wrongly, here
+# there is no rule at all - for document types that recur constantly in these files.
+#
+# Ground truth, from a 229-page record run end to end against its human deliverable on 2026-08-18:
+#
+#   - the human's own list of pages not remarked upon names "physician's return-to-work and voucher
+#     report" and "emergency patient record" VERBATIM. We summarized both, the first into category 2
+#     (PR-4 / Permanent & Stationary), which is not a plausible reading of a return-to-work voucher
+#   - "WORK STATUS REPORT" appeared TEN times in that one record. Nine were categorized 1 and
+#     summarized; one was categorized 100 and excluded. Same type, same document, two answers -
+#     because what decides them is the cascade, and the cascade is not deterministic
+#
+# NOT fixed here, deliberately. Which category each of these belongs in is a taxonomy decision, and
+# guessing the target is how the evaluator rules came to need #107 and #119. So this asserts only the
+# incontestable part - that a type recurring ten times in one record ought to be answered by a rule
+# rather than re-decided per occurrence - and asserts nothing about WHICH category. xfail(strict=False),
+# so the day rules land these report XPASS instead of the finding living only in an email.
+@pytest.mark.xfail(
+    strict=False,
+    reason="no rule answers these recurring administrative types; the cascade decides them, and not "
+    "deterministically - the target categories are a taxonomy call",
+)
+@pytest.mark.parametrize(
+    "title",
+    [
+        "WORK STATUS REPORT",
+        "Physician's Return-to-Work & Voucher Report",
+        "Emergency Patient Record",
+        "Emergency Provider Report",
+        "Admission Record",
+        "Patient Referral",
+        "Patient Signature Page",
+    ],
+)
+def test_recurring_paperwork_is_answered_by_a_rule(title):
+    assert classification.match_rules(title) is not None
+
+
 def test_general_corpus_names_the_administrative_documents():
     """The embedding + LLM stages read this text, so it must describe what actually lands here."""
     from app.services.taxonomy import CATEGORIES

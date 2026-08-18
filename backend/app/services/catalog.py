@@ -53,8 +53,15 @@ def get_category_options(session: Session, active_only: bool = True):
 def summarize_default_for(session: Session, category_id) -> bool:
     """Whether this category is checked for summarization by default (DB-first, constants fallback).
 
-    Only explicitly-off categories (General, Depositions) return False; an unknown id defaults to
-    True (include), so a new/unseeded category is never silently excluded.
+    An unknown id defaults to True (include), so a new/unseeded category is never silently excluded.
+
+    Do NOT read this as "General and Depositions are off" - it is whatever the `categories` row says.
+    `_SUMMARIZE_OFF_BY_DEFAULT` in seed_catalog lists only General (100). Migration a7c3f2e9b1d4 also
+    set Depositions (9) off, but that was a data backfill over EXISTING rows: on a database whose
+    `categories` table was still empty when it ran, the UPDATE matched nothing and seeding then
+    inserted 9 from the constant, i.e. ON. Production is in exactly that state, with stored deposition
+    summaries to match, so the previous wording here described neither the constant nor any live box.
+    Query the table before relying on a particular category's default.
     """
     category_id = str(category_id)
     for category in get_categories(session):
