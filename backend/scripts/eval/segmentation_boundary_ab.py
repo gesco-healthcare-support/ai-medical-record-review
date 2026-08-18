@@ -172,7 +172,10 @@ def _score(predicted, truth):
     misaligned   - partial overlap, neither containment nor a match
     """
     truth_set = set(truth)
-    result = {"predicted": len(predicted), "truth": len(truth)}
+    # `spans` travels with the counts so boundaries can be scored per page downstream. The span counts
+    # below treat every near miss as equally wrong, which discards most of what a run measures; see
+    # ab_stats.boundary_score.
+    result = {"predicted": len(predicted), "truth": len(truth), "spans": list(predicted)}
     exact = over = under = mis = 0
     for start, end in predicted:
         if (start, end) in truth_set:
@@ -286,7 +289,9 @@ def main() -> None:
             sys.exit(f"unknown arm {arm}; choose from {sorted(ARMS)}")
 
     runs = _collect_runs(targets, arms, args.stage, args.repeats)
-    _report(runs, [t[0] for t in targets], arms, args.repeats)
+    _report(
+        runs, {document_id: truth for document_id, _p, _n, truth in targets}, arms, args.repeats
+    )
 
 
 def _collect_runs(targets, arms, stage, repeats):
@@ -334,8 +339,12 @@ def _run_one(document_id, pdf_path, total_pages, truth, arm, stage, rep):
     return s
 
 
-def _report(runs, document_ids, arms, repeats):
-    """Everything after the last Vertex call: per-document spreads, comparable totals, the verdict."""
+def _report(runs, truths, arms, repeats):
+    """Everything after the last Vertex call: per-document spreads, comparable totals, the verdict.
+
+    `truths` maps document_id to its reviewed spans, in the order the documents were run.
+    """
+    document_ids = list(truths)
     summaries = ab_stats.summarize(runs)
     kept, dropped = ab_stats.comparable_documents(document_ids, arms, runs, repeats)
 
@@ -344,11 +353,93 @@ def _report(runs, document_ids, arms, repeats):
     _print_totals(arms, kept, dropped, runs)
     if len(arms) == 2:
         _print_verdict(arms, kept, summaries, repeats)
+    # Last, because it is the strongest evidence in the report and should be the final word. The
+    # whole-span verdict above compares ONE number per document, so at six documents it cannot reach
+    # significance even in principle; this compares one decision per boundary from the same runs.
+    _print_boundaries(kept, arms, runs, truths, repeats)
 
     print(
-        "\nRead both directions: an arm that lowers `over` while raising `under` has traded a "
-        "reviewer click for a document hidden inside another record. That is a loss, not a win."
+        "\nRead both directions: an arm that lowers `over` (fp) while raising `under` (fn) has traded "
+        "a reviewer click for a document hidden inside another record. That is a loss, not a win."
     )
+
+
+def _print_boundaries(document_ids, arms, runs, truths, repeats):
+    """Boundary-level scoring: one observation per page decision instead of one per document.
+
+    fp is a merge click the reviewer has to make; fn is a document buried inside another record. The
+    paired test at the end pools every boundary the two arms disagree about, which is why it can reach
+    a conclusion that six whole-document comparisons cannot.
+    """
+    if not document_ids:
+        return
+    print("\nBOUNDARY LEVEL - a page the reviewer marked as a document start, or did not:")
+    header = (
+        f"{'document':<38}{'arm':<14}{'truth':>6}{'tp':>5}{'fp':>5}{'fn':>5}"
+        f"{'prec':>7}{'recall':>8}{'F1':>7}{'unstable':>10}"
+    )
+    print(header)
+    print("-" * len(header))
+    pooled = {
+        arm: {"tp": 0, "fp": 0, "fn": 0, "truth_boundaries": 0, "unstable": 0} for arm in arms
+    }
+    decided = {arm: {} for arm in arms}
+    for document_id in document_ids:
+        for arm in arms:
+            votes = ab_stats.boundary_votes(runs.get((document_id, arm), []))
+            starts = ab_stats.majority_boundaries(votes)
+            decided[arm][document_id] = starts
+            unstable = len(ab_stats.unstable_boundaries(votes))
+            b = ab_stats.boundary_score(starts, truths[document_id])
+            for key in ("tp", "fp", "fn", "truth_boundaries"):
+                pooled[arm][key] += b[key]
+            pooled[arm]["unstable"] += unstable
+            print(
+                f"{document_id:<38}{arm:<14}{b['truth_boundaries']:>6}{b['tp']:>5}{b['fp']:>5}"
+                f"{b['fn']:>5}{b['precision'] * 100:>6.1f}%{b['recall'] * 100:>7.1f}%"
+                f"{b['f1'] * 100:>6.1f}%{unstable:>10}"
+            )
+
+    print("-" * len(header))
+    for arm in arms:
+        t = pooled[arm]
+        prec = t["tp"] / (t["tp"] + t["fp"]) if (t["tp"] + t["fp"]) else 0.0
+        rec = t["tp"] / (t["tp"] + t["fn"]) if (t["tp"] + t["fn"]) else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+        print(
+            f"{'POOLED':<38}{arm:<14}{t['truth_boundaries']:>6}{t['tp']:>5}{t['fp']:>5}{t['fn']:>5}"
+            f"{prec * 100:>6.1f}%{rec * 100:>7.1f}%{f1 * 100:>6.1f}%{t['unstable']:>10}"
+        )
+    if repeats > 1:
+        total_unstable = sum(pooled[arm]["unstable"] for arm in arms)
+        print(
+            f"\n  `unstable` counts boundaries the arm did not decide the same way in all {repeats} "
+            f"runs ({total_unstable} across all arms). That is the run-to-run noise, located: those "
+            "pages are where a prompt change has something to bite on."
+        )
+    else:
+        print(
+            "\n  `unstable` is 0 by construction at --repeats 1 - with one run there is nothing to "
+            "disagree with. It is not a claim that the boundaries are stable."
+        )
+
+    if len(arms) != 2:
+        return
+    baseline, contender = arms
+    baseline_only = contender_only = 0
+    for document_id in document_ids:
+        pair = ab_stats.paired_boundary_compare(
+            decided[baseline][document_id], decided[contender][document_id], truths[document_id]
+        )
+        baseline_only += pair["baseline_only"]
+        contender_only += pair["contender_only"]
+    p = ab_stats.sign_test_p(contender_only, baseline_only)
+    print(
+        f"\n  Paired over boundaries where exactly one arm is right: {contender} correct on "
+        f"{contender_only}, {baseline} correct on {baseline_only}. McNemar exact p = {p:.4f}."
+    )
+    if baseline_only + contender_only == 0:
+        print("  The two arms made identical boundary decisions everywhere - nothing to separate.")
 
 
 def _print_per_document(document_ids, arms, summaries):

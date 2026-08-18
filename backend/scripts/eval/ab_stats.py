@@ -100,6 +100,108 @@ def totals(arms, document_ids, runs):
     return out
 
 
+def boundary_votes(scores):
+    """How often each page was called a document start across an arm's repeated runs.
+
+    Returns {page: fraction of runs that started a document there}. Page 1 is dropped: every
+    segmentation starts a document on the first page, so agreeing there is free and counting it
+    inflates every arm identically while diluting the differences we are looking for.
+
+    The fraction is the useful part. A page at 1.0 or 0.0 is a decision the model makes the same way
+    every time; anything in between is a coin flip, and on this pipeline there are many of those -
+    the same 20 pages produced 10, 11, 12 and 13 rows across seven calls.
+    """
+    if not scores:
+        return {}
+    pages = [{s for s, _e in run["spans"]} - {1} for run in scores]
+    every = set().union(*pages) if pages else set()
+    return {page: sum(page in p for p in pages) / len(pages) for page in every}
+
+
+def unstable_boundaries(votes):
+    """Pages the arm did not decide the same way every run - the noise, counted where it lives.
+
+    A run-to-run range on a total says the output moved; this says WHERE it moved, which is the part
+    a prompt change can actually be aimed at.
+    """
+    return sorted(page for page, share in votes.items() if 0.0 < share < 1.0)
+
+
+def majority_boundaries(votes):
+    """The arm's decision after repeats vote - a page counts as a start if MORE than half agree.
+
+    This is what repeats buy beyond error bars: each boundary is decided by vote instead of by
+    whichever single run happened to be sampled, so the comparison between arms runs on denoised
+    decisions. Strictly greater than half, so a 50/50 split with an even number of runs is not a
+    start - an unstable boundary should not be asserted on a tie.
+    """
+    return {page for page, share in votes.items() if share > 0.5}
+
+
+def boundary_score(predicted_starts, truth_spans):
+    """Boundary-level precision and recall, in the units the pipeline actually pays in.
+
+    A false positive is a page the model split that the reviewer did not: one merge click. A false
+    negative is a boundary the reviewer wanted and the model missed: a document buried inside another
+    record, which nobody sees again. Those are the two costs this harness has always tracked; scoring
+    them per boundary rather than per whole span is what turns six documents' worth of comparison into
+    one observation per boundary.
+
+    Not offered as a canonical metric from the segmentation literature - it is justified here because
+    fp and fn map one-to-one onto the two costs we care about, and because whole-span exact match
+    throws away every near miss as equally wrong.
+    """
+    truth_starts = {s for s, _e in truth_spans} - {1}
+    predicted = set(predicted_starts) - {1}
+    tp = len(predicted & truth_starts)
+    fp = len(predicted - truth_starts)
+    fn = len(truth_starts - predicted)
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "truth_boundaries": len(truth_starts),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
+
+
+def paired_boundary_compare(baseline_starts, contender_starts, truth_spans):
+    """McNemar counts over every boundary the two arms disagree about.
+
+    Both arms are scored on the SAME pages, so the comparison is paired at the page level. Of the
+    pages where exactly one arm is correct, `contender_only` is where the contender is right and the
+    baseline wrong, and `baseline_only` is the reverse. Pages where both agree carry no information
+    about which arm is better and are excluded - that is McNemar's test, and the exact two-sided
+    binomial over those two counts is sign_test_p.
+
+    Why this and not the per-document sign test: six documents cap the attainable p at 0.031, so a
+    real difference could not be established even in principle. Boundaries number in the thousands
+    across the same runs, at no extra cost.
+    """
+    truth_starts = {s for s, _e in truth_spans} - {1}
+    base = set(baseline_starts) - {1}
+    cont = set(contender_starts) - {1}
+    considered = base | cont | truth_starts
+    baseline_only = contender_only = 0
+    for page in considered:
+        base_right = (page in base) == (page in truth_starts)
+        cont_right = (page in cont) == (page in truth_starts)
+        if base_right and not cont_right:
+            baseline_only += 1
+        elif cont_right and not base_right:
+            contender_only += 1
+    return {
+        "baseline_only": baseline_only,
+        "contender_only": contender_only,
+        "p": sign_test_p(contender_only, baseline_only),
+    }
+
+
 def sign_test_p(wins, losses):
     """Two-sided exact binomial p for `wins` of wins+losses paired comparisons under p = 0.5.
 

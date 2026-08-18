@@ -22,7 +22,7 @@ ab_stats = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ab_stats)
 
 
-def _score(predicted, exact, truth=20, over=0, under=0, misaligned=0):
+def _score(predicted, exact, truth=20, over=0, under=0, misaligned=0, spans=None):
     """One run's score dict in the shape the harness's _score returns."""
     return {
         "predicted": predicted,
@@ -32,7 +32,13 @@ def _score(predicted, exact, truth=20, over=0, under=0, misaligned=0):
         "under_split": under,
         "misaligned": misaligned,
         "exact_pct": round(100.0 * exact / predicted, 1) if predicted else 0.0,
+        "spans": spans if spans is not None else [],
     }
+
+
+def _spans(*starts_ends):
+    """Runs of (start, end) tuples, written positionally for readability in the boundary tests."""
+    return list(starts_ends)
 
 
 def test_summarize_reports_the_observed_range_not_just_the_mean():
@@ -161,6 +167,93 @@ def test_the_sign_test_needs_a_clean_sweep_at_six_documents():
     assert ab_stats.sign_test_p(5, 1) == pytest.approx(0.21875)
     assert ab_stats.sign_test_p(3, 3) == pytest.approx(1.0)
     assert ab_stats.sign_test_p(0, 0) == 1.0
+
+
+def test_page_one_is_not_counted_as_a_boundary():
+    """Every segmentation starts a document on page 1, so scoring it is free marks for every arm."""
+    votes = ab_stats.boundary_votes([_score(2, 2, spans=_spans((1, 5), (6, 10)))])
+
+    assert set(votes) == {6}
+
+
+def test_a_boundary_predicted_in_some_runs_but_not_others_is_unstable():
+    """This is where the noise lives: the same page called a start twice out of three runs."""
+    scores = [
+        _score(3, 3, spans=_spans((1, 4), (5, 7), (8, 10))),
+        _score(2, 2, spans=_spans((1, 4), (5, 10))),
+        _score(3, 3, spans=_spans((1, 4), (5, 7), (8, 10))),
+    ]
+
+    votes = ab_stats.boundary_votes(scores)
+
+    assert votes[5] == 1.0
+    assert votes[8] == pytest.approx(2 / 3)
+    assert ab_stats.unstable_boundaries(votes) == [8]
+
+
+def test_majority_vote_needs_more_than_half_so_a_tie_is_not_a_boundary():
+    """Repeats denoise by voting, but an even split must not assert a boundary nobody agreed on."""
+    votes = {10: 0.5, 20: 0.51, 30: 1.0, 40: 0.49}
+
+    assert ab_stats.majority_boundaries(votes) == {20, 30}
+
+
+def test_boundary_score_counts_merge_clicks_and_buried_documents_separately():
+    """fp is a reviewer merge click; fn is a document hidden inside another record."""
+    truth = _spans((1, 4), (5, 9), (10, 12))  # boundaries at 5 and 10
+    predicted = {3, 5}  # 5 is right, 3 is invented, 10 is missed
+
+    b = ab_stats.boundary_score(predicted, truth)
+
+    assert (b["tp"], b["fp"], b["fn"]) == (1, 1, 1)
+    assert b["truth_boundaries"] == 2
+    assert b["precision"] == pytest.approx(0.5)
+    assert b["recall"] == pytest.approx(0.5)
+    assert b["f1"] == pytest.approx(0.5)
+
+
+def test_boundary_score_is_all_zeros_rather_than_a_crash_when_nothing_is_predicted():
+    """An arm whose every run failed must score 0, not raise on a division."""
+    b = ab_stats.boundary_score(set(), _spans((1, 4), (5, 9)))
+
+    assert (b["tp"], b["fp"], b["fn"]) == (0, 0, 1)
+    assert b["precision"] == 0.0
+    assert b["f1"] == 0.0
+
+
+def test_the_paired_boundary_test_ignores_pages_both_arms_agree_on():
+    """McNemar: only boundaries where exactly one arm is right carry information."""
+    truth = _spans((1, 4), (5, 9), (10, 14))  # boundaries at 5 and 10
+    baseline = {5, 7}  # right about 5, invents 7, misses 10
+    contender = {5, 10}  # right about both
+
+    pair = ab_stats.paired_boundary_compare(baseline, contender, truth)
+
+    # Page 5: both right, excluded. Page 7: contender right (no split), baseline wrong.
+    # Page 10: contender right, baseline missed it.
+    assert pair["contender_only"] == 2
+    assert pair["baseline_only"] == 0
+
+
+def test_two_identical_arms_produce_no_paired_evidence():
+    """If both arms decide every page the same way, the test must report nothing to separate."""
+    truth = _spans((1, 4), (5, 9))
+    same = {5, 8}
+
+    pair = ab_stats.paired_boundary_compare(same, same, truth)
+
+    assert (pair["contender_only"], pair["baseline_only"]) == (0, 0)
+    assert pair["p"] == 1.0
+
+
+def test_the_boundary_test_reaches_significance_where_six_documents_cannot():
+    """The whole point: 6 documents cap p at 0.031, boundaries are not so limited.
+
+    12 boundaries won against 1 lost is far past 0.05, on a corpus that would give the per-document
+    sign test no chance of resolving anything.
+    """
+    assert ab_stats.sign_test_p(12, 1) < 0.01
+    assert ab_stats.sign_test_p(6, 0) > 0.03  # the per-document ceiling, for contrast
 
 
 def test_ties_are_dropped_from_the_sign_test_and_counted_separately():
