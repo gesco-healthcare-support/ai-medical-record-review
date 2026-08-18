@@ -42,7 +42,13 @@ class Settings(BaseSettings):
     use_vertex: bool = Field(default=False, validation_alias="GOOGLE_GENAI_USE_VERTEXAI")
     gemini_api_key: str = ""
     google_cloud_project: str = ""
-    google_cloud_location: str = "us-central1"
+    # `global`, not a region. A Vertex 429 is Dynamic Shared Quota - capacity unavailable at that
+    # moment rather than an exhausted regional allowance - and the global endpoint draws on a larger
+    # pool, so it mitigates the 429s the original `us-central1` was chosen to avoid. That choice
+    # rested on this project having no quota in `global`; overturned 2026-08-12, and the server has
+    # run `global` since. This default only bites an environment that does not set the variable,
+    # which is the one least equipped to diagnose the 429s it would get.
+    google_cloud_location: str = "global"
     genai_model: str = ""
     summary_model: str = ""
     verify_model: str = ""
