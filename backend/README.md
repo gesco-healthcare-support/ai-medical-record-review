@@ -1,7 +1,8 @@
 # MRR AI backend (FastAPI)
 
-Part of the Next.js + FastAPI re-platform (`docs/plans/2026-07-14-nextjs-fastapi-rewrite.md`).
-The legacy Flask app in `../mrr_ai/` stays live until cutover; this is built alongside it.
+The live backend. The Next.js + FastAPI re-platform
+(`docs/plans/2026-07-14-nextjs-fastapi-rewrite.md`) shipped and is deployed; the pre-rewrite Flask
+app moved to `../legacy/` in #92 and nothing in it runs. See `../legacy/README.md`.
 
 ## Dev setup
 
@@ -11,7 +12,9 @@ docker compose -f ../docker-compose.dev.yml up -d
 
 # 2. Backend deps + env:
 cd backend
-uv sync                      # core (web/db/auth/queue); add --extra pipeline for the AI worker
+uv sync --extra docs         # web/summarize tier: OCR, docx, google-genai. Torch-FREE, and what CI
+                             # runs. Bare `uv sync` omits these and the app will not import.
+                             # Add --extra classifier ONLY for the segment worker (pulls torch).
 cp .env.example .env         # fill SECRET_KEY + SECURITY_PASSWORD_SALT (carry the salt from the Flask .env)
 
 # 3. Run the API:
