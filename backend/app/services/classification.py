@@ -41,9 +41,23 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
     re.compile(pattern)
     for pattern in (
         r"routing (sheet|slip|form)|records? routing",
-        r"\b(cover|transmittal) letter\b|\bcorrespondence\b|^\s*e-?mail\s*$",
-        r"^declaration\b|proof of service|certificate of (service|mailing)"
-        r"|declaration under penalty",
+        # `(ame|qme|pqme) letter` added 2026-08-18. A letter APPOINTING or instructing an evaluator
+        # is procedural, but only "cover"/"transmittal" were listed, so "Joint AME Letter" matched no
+        # administrative rule at all and the bare `ame` in rule 13 answered it. Safe because
+        # _EVALUATOR_MENTION withholds ONLY 13: a real document type in the same title still wins, so
+        # "Supplemental AME Letter" keeps 12.
+        r"\b(cover|transmittal) letter\b|\b(ame|qme|pqme) letter\b"
+        r"|\bcorrespondence\b|^\s*e-?mail\s*$",
+        # `declaration of service` added UNANCHORED 2026-08-18. `^declaration\b` only matches a title
+        # that STARTS with the word, so "QME Declaration of Service" was answered 13 by the evaluator
+        # mention while a bare "Declaration of Service" was answered 100 - the same document, decided
+        # by word order.
+        #
+        # Both additions are confirmed against the human deliverable for record 7fb2b543, whose own
+        # list of pages NOT remarked upon names "joint AME letter" and "AME or QME declaration of
+        # service of medical legal report". See the NOT-fixed note below for the second one.
+        r"^declaration\b|\bdeclaration of service\b|proof of service"
+        r"|certificate of (service|mailing)|declaration under penalty",
         r"schedule of records|index of records|records? (request|index)"
         r"|request for (medical )?records",
         r"\b(request|notice|scheduling) (for |of |to )?[\w\s-]{0,24}\b(evaluation|examination)\b"
