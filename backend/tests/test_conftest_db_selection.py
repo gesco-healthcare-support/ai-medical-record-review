@@ -9,7 +9,20 @@ value was applied to whichever port won and the winner is preferred to be the de
 hardcodes its own password and never reads that variable.
 """
 
-from tests.conftest import _compose_postgres_ports
+from tests.conftest import _compose_postgres_ports, redis_port_is_shared
+
+
+def test_dev_stack_publishes_the_redis_port_the_suite_uses():
+    """The suite's Redis default is redis://localhost:6379/0, so the dev stack must publish 6379.
+
+    Not a guard against the wrong Redis - nothing a client can ask distinguishes another project's
+    server from ours, and the application's Redis binds no host port so there is no MRR ambiguity to
+    resolve. This pins the one thing the compose files DO answer: that the port the suite reaches for
+    is a port this repo actually publishes. If someone renumbers it, the queue tests would otherwise
+    start silently using whatever else holds 6379 - which is how the 2026-08-13 mass failure
+    happened.
+    """
+    assert redis_port_is_shared() is False
 
 
 def test_parse_reports_whether_each_stack_reads_the_env_password():
