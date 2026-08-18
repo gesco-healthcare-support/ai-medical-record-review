@@ -188,6 +188,65 @@ def test_specimen_titles_without_results_reach_the_cascade(title):
     assert classification.match_rules(title) is None
 
 
+# An evaluator's NAME in an administrative title used to answer 13, because _ADMIN_RULES listed only
+# "cover"/"transmittal" letters and anchored declarations to `^declaration`. Both gaps let the bare
+# `ame` in rule 13 answer paperwork, at high confidence with no review flag.
+#
+# Ground truth: the human deliverable for record 7fb2b543 summarized 2 documents from 61 pages and
+# listed its own excluded pages as "email, cover letter, declaration, joint AME letter, AME or QME
+# declaration of service". The app summarized 4 - the two extras are exactly the last two of those.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Joint AME Letter",
+        "AME Letter",
+        "QME Letter",
+        "PQME Letter",
+        "QME Declaration of Service",
+        "AME Declaration of Service",
+    ],
+)
+def test_evaluator_named_paperwork_is_general_not_an_evaluation(title):
+    assert classification.match_rules(title) == "100"
+
+
+# The safety half: withholding 13 must not withhold a REAL document type that happens to share the
+# title. _EVALUATOR_MENTION excludes only 13, so rule 12 still answers a supplemental - which is what
+# makes the two additions above safe rather than a blanket "anything saying AME is paperwork".
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Supplemental AME Letter", "12"),
+        ("Supplemental QME Report - Cover Letter", "12"),
+        ("Transmittal Letter - MRI Lumbar Spine", "3"),
+        ("Cover Letter - PR-2 Progress Report", "1"),
+        ("QME Panel Report", "13"),
+    ],
+)
+def test_a_real_document_type_still_beats_the_administrative_match(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# KNOWN BROKEN, pinned deliberately rather than left to be rediscovered. The same record's other
+# excluded page is "AME or QME Declaration of Service of Medical - Legal Report", and the additions
+# above do NOT fix it: _DOCUMENT_NOUN matches "Report", which stands the administrative rules down by
+# design, so rule 13 answers it again.
+#
+# That is not a pattern gap - it is _DOCUMENT_NOUN being unable to tell "this IS a report" from "this
+# is paperwork ABOUT a report". Widening the noun test or reordering the checks affects every wrapper
+# title in the suite above, so it needs a decision rather than a patch. xfail(strict=False) so the day
+# someone fixes it this reports XPASS instead of silently passing.
+@pytest.mark.xfail(
+    strict=False,
+    reason="_DOCUMENT_NOUN matches 'Report' and stands the admin rules down; needs a design call",
+)
+def test_declaration_of_service_of_a_report_is_still_misfiled():
+    assert (
+        classification.match_rules("AME or QME Declaration of Service of Medical - Legal Report")
+        == "100"
+    )
+
+
 def test_general_corpus_names_the_administrative_documents():
     """The embedding + LLM stages read this text, so it must describe what actually lands here."""
     from app.services.taxonomy import CATEGORIES
