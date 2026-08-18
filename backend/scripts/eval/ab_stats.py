@@ -138,6 +138,25 @@ def majority_boundaries(votes):
     return {page for page, share in votes.items() if share > 0.5}
 
 
+def unscoreable_pages(truth_spans):
+    """Pages inside the truth's own range that no reviewed span covers.
+
+    Reviewer ground truth does not always tile: document 5966931a leaves pages 106-108 and 293-294
+    uncovered out of 335. On those pages the truth is SILENT, not negative - the reviewer deleted or
+    never assigned them - so a model boundary landing there is unscoreable rather than wrong. Counting
+    it as a false positive penalises whichever arm happens to split in a hole in the answer key, and
+    that document is already the most over-split of the set, so the bias is not harmless.
+    """
+    if not truth_spans:
+        return set()
+    covered = set()
+    for start, end in truth_spans:
+        covered.update(range(start, end + 1))
+    first = min(s for s, _e in truth_spans)
+    last = max(e for _s, e in truth_spans)
+    return set(range(first, last + 1)) - covered
+
+
 def boundary_score(predicted_starts, truth_spans):
     """Boundary-level precision and recall, in the units the pipeline actually pays in.
 
@@ -149,10 +168,13 @@ def boundary_score(predicted_starts, truth_spans):
 
     Not offered as a canonical metric from the segmentation literature - it is justified here because
     fp and fn map one-to-one onto the two costs we care about, and because whole-span exact match
-    throws away every near miss as equally wrong.
+    throws away every near miss as equally wrong. Note the published caution that boundary metrics
+    penalise a near miss twice, once as a false positive and once as a false negative; an off-by-one
+    page is scored as two errors here, not a partial credit.
     """
     truth_starts = {s for s, _e in truth_spans} - {1}
-    predicted = set(predicted_starts) - {1}
+    skip = unscoreable_pages(truth_spans)
+    predicted = set(predicted_starts) - {1} - skip
     tp = len(predicted & truth_starts)
     fp = len(predicted - truth_starts)
     fn = len(truth_starts - predicted)
@@ -184,9 +206,12 @@ def paired_boundary_compare(baseline_starts, contender_starts, truth_spans):
     across the same runs, at no extra cost.
     """
     truth_starts = {s for s, _e in truth_spans} - {1}
-    base = set(baseline_starts) - {1}
-    cont = set(contender_starts) - {1}
-    considered = base | cont | truth_starts
+    # Same exclusion as boundary_score: a page the answer key does not cover cannot decide which arm
+    # is right, so it must not enter a paired count either.
+    skip = unscoreable_pages(truth_spans)
+    base = set(baseline_starts) - {1} - skip
+    cont = set(contender_starts) - {1} - skip
+    considered = (base | cont | truth_starts) - skip
     baseline_only = contender_only = 0
     for page in considered:
         base_right = (page in base) == (page in truth_starts)

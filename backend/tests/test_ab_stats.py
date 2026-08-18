@@ -221,6 +221,43 @@ def test_boundary_score_is_all_zeros_rather_than_a_crash_when_nothing_is_predict
     assert b["f1"] == 0.0
 
 
+def test_pages_the_reviewer_never_covered_are_found():
+    """Real case: document 5966931a leaves pages 106-108 and 293-294 uncovered out of 335."""
+    truth = _spans((1, 5), (6, 8), (12, 20), (22, 25))
+
+    assert ab_stats.unscoreable_pages(truth) == {9, 10, 11, 21}
+
+
+def test_a_gapless_truth_has_nothing_unscoreable():
+    """The other five documents tile exactly; the guard must be inert on them."""
+    assert ab_stats.unscoreable_pages(_spans((1, 4), (5, 9), (10, 12))) == set()
+
+
+def test_a_split_inside_a_truth_gap_is_not_counted_against_the_arm():
+    """The truth is SILENT on an uncovered page, not negative, so a split there is unscoreable.
+
+    Without this, whichever arm happens to split in a hole in the answer key is penalised for it.
+    """
+    truth = _spans((1, 5), (12, 20))  # boundary at 12; pages 6-11 uncovered
+    predicted = {8, 12}  # 12 is right; 8 lands in the gap
+
+    b = ab_stats.boundary_score(predicted, truth)
+
+    assert (b["tp"], b["fp"], b["fn"]) == (1, 0, 0)
+    assert b["precision"] == 1.0
+
+
+def test_the_paired_test_also_ignores_truth_gaps():
+    """A page the answer key does not cover cannot decide which arm is better."""
+    truth = _spans((1, 5), (12, 20))  # pages 6-11 uncovered
+    baseline = {8, 12}  # splits in the gap
+    contender = {12}  # does not
+
+    pair = ab_stats.paired_boundary_compare(baseline, contender, truth)
+
+    assert (pair["contender_only"], pair["baseline_only"]) == (0, 0)
+
+
 def test_the_paired_boundary_test_ignores_pages_both_arms_agree_on():
     """McNemar: only boundaries where exactly one arm is right carry information."""
     truth = _spans((1, 4), (5, 9), (10, 14))  # boundaries at 5 and 10
