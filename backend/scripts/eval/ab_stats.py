@@ -1,0 +1,175 @@
+"""Aggregation for the segmentation boundary A/B: means, spreads, and the paired verdict.
+
+Pure functions over plain dicts. No app imports, no I/O, no Vertex - which is the point. The
+harness that produces the raw scores imports segment_engine, which pulls in the torch classifier and
+takes roughly 45 seconds to load, so arithmetic living there is arithmetic nobody unit tests. The
+numbers here decide whether a prompt change ships, so they are separated to be testable.
+
+That separation is not hypothetical caution. Two comparisons on 2026-08-17 were reported as signal
+and both reversed, each because a number was read without the context that qualified it:
+
+  - One arm's TOTAL row covered five documents while another's covered six, because a window died on
+    504 DEADLINE_EXCEEDED and the failed run was skipped while the total printed anyway. Two totals
+    over different denominators look directly comparable and are not.
+  - A 2-3 point precision gap was quoted from one run per arm, of a process later measured swinging
+    23 points against itself on the same prompt and the same document (17 rows / 100% exact, then 13
+    rows / 76.9%). Temperature 0 is not deterministic here.
+
+So the two rules this module exists to enforce: a total is only summed over documents every arm
+finished, and a gap is only called a difference when it exceeds the variation an arm shows against
+itself.
+"""
+
+import math
+import statistics
+
+# The count metrics carried through from the harness's _score. exact_pct is handled separately: it is
+# a ratio, so averaging it is not the same as recomputing it from the summed parts.
+_METRICS = ("predicted", "exact", "over_split", "under_split", "misaligned")
+
+
+def summarize(runs):
+    """Collapse repeated runs into one mean-and-range entry per (document, arm).
+
+    `runs` maps (document_id, arm) to the list of per-run score dicts the harness produced. Returns
+    the same keys mapped to {n, truth, exact_pct_mean, <metric>: {mean, lo, hi}}.
+
+    Range rather than standard deviation, deliberately: at three repeats the observed low and high
+    are what the data actually supports, while a standard deviation from n=3 presents the same three
+    numbers as a precision estimate they cannot carry.
+    """
+    out = {}
+    for key, scores in runs.items():
+        if not scores:
+            continue
+        entry = {"n": len(scores), "truth": scores[0]["truth"]}
+        for metric in _METRICS:
+            values = [s[metric] for s in scores]
+            entry[metric] = {"mean": statistics.fmean(values), "lo": min(values), "hi": max(values)}
+        entry["exact_pct_mean"] = statistics.fmean(s["exact_pct"] for s in scores)
+        out[key] = entry
+    return out
+
+
+def comparable_documents(document_ids, arms, runs, repeats):
+    """Split documents into those every arm completed in full, and those to exclude from any total.
+
+    Returns (kept, dropped), where dropped carries {arm: missing_run_count} per document so the
+    exclusion can be printed. A caller that sums over `kept` cannot produce the invalid TOTAL row
+    described in the module docstring; one that ignores `dropped` at least has to ignore it out loud.
+    """
+    kept, dropped = [], []
+    for document_id in document_ids:
+        missing = {}
+        for arm in arms:
+            completed = len(runs.get((document_id, arm), []))
+            if completed < repeats:
+                missing[arm] = repeats - completed
+        if missing:
+            dropped.append((document_id, missing))
+        else:
+            kept.append(document_id)
+    return kept, dropped
+
+
+def totals(arms, document_ids, runs):
+    """Per-arm sums of every metric over `document_ids`, averaged across each document's repeats.
+
+    Each document contributes its MEAN across repeats rather than the sum, so a document run three
+    times does not outweigh the same document run once, and the totals stay on the same scale as the
+    truth row count regardless of --repeats.
+    """
+    out = {}
+    for arm in arms:
+        summed = dict.fromkeys(_METRICS, 0.0)
+        covered = 0
+        for document_id in document_ids:
+            scores = runs.get((document_id, arm), [])
+            if not scores:
+                continue
+            covered += 1
+            for metric in _METRICS:
+                summed[metric] += statistics.fmean(s[metric] for s in scores)
+        exact_pct = (
+            round(100.0 * summed["exact"] / summed["predicted"], 1) if summed["predicted"] else 0.0
+        )
+        # Built as a new dict rather than by adding keys to the accumulator: `documents` and
+        # `exact_pct` are a count and a ratio, not metrics to be summed, and mixing them into the
+        # same mapping the metric loop writes invites a later `for metric in row` over all of it.
+        out[arm] = {**summed, "documents": covered, "exact_pct": exact_pct}
+    return out
+
+
+def sign_test_p(wins, losses):
+    """Two-sided exact binomial p for `wins` of wins+losses paired comparisons under p = 0.5.
+
+    Ties are excluded by the caller, which is what the sign test does with them. Exact rather than
+    normal-approximated because the counts here are single-digit numbers of documents, where the
+    approximation does not hold.
+
+    Worth knowing the ceiling before reading the result: with six documents the smallest attainable
+    two-sided p is 2/64 = 0.031, so only a clean sweep clears 0.05, and five of six lands at 0.22.
+    Anything short of unanimous is indicative at this sample size, not decisive.
+    """
+    n = wins + losses
+    if n == 0:
+        return 1.0
+    extreme = max(wins, losses)
+    tail = sum(math.comb(n, k) for k in range(extreme, n + 1))
+    return min(1.0, 2.0 * tail / (2**n))
+
+
+def compare(baseline, contender, document_ids, summaries):
+    """Paired per-document verdict on exact COUNT, plus a sign test across documents.
+
+    Count, not percentage: truth is identical between arms for a given document, so counts are
+    directly comparable, whereas a percentage also moves when an arm emits a different number of rows
+    and can rise on a document where the arm found fewer boundaries.
+
+    `noise` for a document is the WIDER of the two arms' observed exact ranges - the variation an arm
+    shows against itself under identical conditions. A gap inside that band is not evidence.
+
+    `clears` is None, not False, when either arm has fewer than two runs: a single run has no
+    observed spread, and no observed spread is not the same as no noise. Reporting False would say
+    "measured, did not clear"; None says "not measured". Collapsing those two is the specific mistake
+    that produced the reversed calls this module documents.
+    """
+    rows = []
+    wins = losses = ties = 0
+    for document_id in document_ids:
+        base = summaries.get((document_id, baseline))
+        cont = summaries.get((document_id, contender))
+        if base is None or cont is None:
+            continue
+        gap = cont["exact"]["mean"] - base["exact"]["mean"]
+        noise = max(
+            base["exact"]["hi"] - base["exact"]["lo"], cont["exact"]["hi"] - cont["exact"]["lo"]
+        )
+        measurable = base["n"] > 1 and cont["n"] > 1
+        rows.append(
+            {
+                "document_id": document_id,
+                "baseline_mean": base["exact"]["mean"],
+                "contender_mean": cont["exact"]["mean"],
+                "gap": gap,
+                "noise": noise,
+                "clears": (abs(gap) > noise) if measurable else None,
+            }
+        )
+        if gap > 0:
+            wins += 1
+        elif gap < 0:
+            losses += 1
+        else:
+            ties += 1
+    return {
+        "baseline": baseline,
+        "contender": contender,
+        "rows": rows,
+        "wins": wins,
+        "losses": losses,
+        "ties": ties,
+        "p": sign_test_p(wins, losses),
+        "cleared": sum(1 for r in rows if r["clears"]),
+        "unmeasured": sum(1 for r in rows if r["clears"] is None),
+    }
