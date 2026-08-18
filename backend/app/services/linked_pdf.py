@@ -22,6 +22,8 @@ from datetime import datetime
 
 import pymupdf
 
+from app.services.reporting import CONCLUSION, SUMMARY_INTRO, intro_sentence
+
 _TITLE_COLOR = "#0000EE"  # link-blue for the clickable titles (CSS)
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_", re.DOTALL)
 _LETTER = pymupdf.paper_rect("letter")  # 612 x 792 pt
@@ -73,11 +75,10 @@ def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, law
     </style></head><body>
       <p class='ttl'>{html.escape(qme_or_ame or " ")}</p>
       <p class='h2'>MEDICAL RECORD REVIEW</p>
-      <p>I have received {num_pages} pages of medical records from {html.escape(lawfirm)}. I have
-      reviewed all of the pages received and my opinion is based upon such received records.</p>
-      <p style='font-weight:bold;'>The following is a summary of those records:</p>
+      <p>{html.escape(intro_sentence(num_pages, lawfirm))}</p>
+      <p style='font-weight:bold;'>{html.escape(SUMMARY_INTRO)}</p>
       <table>{"".join(rows)}</table>
-      <p>This concludes the review of submitted records.</p>
+      <p>{html.escape(CONCLUSION)}</p>
     </body></html>"""
 
 
