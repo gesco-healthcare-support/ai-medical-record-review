@@ -15,6 +15,39 @@ from docx.shared import Inches, Pt
 
 DOCX_MIMETYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+# The three client-facing sentences of the letter live HERE ONLY, and both renderers import them:
+# this module builds the Word document, `linked_pdf` builds the same letter as HTML for the combined
+# PDF. They used to hold their own copy of each string, and the copies had already drifted - the
+# double space in "pages  received" was in the Word copy alone, so the delivered .docx and the
+# delivered .pdf disagreed on a sentence the client reads. Two copies of one sentence silently
+# diverging is the mechanism, not the typo, so there is one home for the text and a test that pins
+# both renderers to it.
+SUMMARY_INTRO = "The following is a summary of those records:"
+CONCLUSION = "This concludes the review of submitted records."
+
+
+def intro_sentence(num_pages, lawfirm) -> str:
+    """The letter's opening sentence, shared by the Word and linked-PDF renderers.
+
+    The law firm is OPTIONAL - free text on the review page that a reviewer often has no value for.
+    Concatenating it unconditionally shipped "medical records from ." into the delivered document,
+    dangling preposition and orphan full stop, every time the field was blank; seen in a real export
+    on 2026-08-17. So the clause is DROPPED rather than rendered empty - an absent element is left
+    out, the convention the title prompt already applies to a missing author. ""/whitespace/None all
+    count as absent, which is how the value actually arrives from the form.
+
+    Returns plain text. The PDF renderer escapes the ASSEMBLED sentence for HTML rather than
+    escaping `lawfirm` before it gets here, so the escape still covers any field added later.
+    """
+    firm = (lawfirm or "").strip()
+    received_from = f" from {firm}" if firm else ""
+    return (
+        f"I have received {num_pages} pages of medical records{received_from}. "
+        "I have reviewed all of the pages received and my opinion is based upon such "
+        "received records."
+    )
+
+
 # Inline emphasis the summarizer emits: **bold**, *italic*, _italic_. Rendered as real runs so no
 # raw markers leak into the Word document (mirrors the web MarkdownText renderer).
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_", re.DOTALL)
@@ -90,15 +123,9 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     second_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     second_title_format.font.name = "Times New Roman"
 
-    intro_text = (
-        "I have received "
-        + str(num_pages)
-        + " pages of medical records from "
-        + lawfirm
-        + ". I have reviewed all of the pages  received and my opinion is based upon such received records."
-    )
-    second_intro_text = "The following is a summary of those records:"
-    this_concludes_text = "This concludes the review of submitted records."
+    intro_text = intro_sentence(num_pages, lawfirm)
+    second_intro_text = SUMMARY_INTRO
+    this_concludes_text = CONCLUSION
 
     third_title = doc.add_paragraph(intro_text)
     third_title_format = third_title.runs[0]
