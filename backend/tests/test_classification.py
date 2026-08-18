@@ -227,24 +227,90 @@ def test_a_real_document_type_still_beats_the_administrative_match(title, expect
     assert classification.match_rules(title) == expected
 
 
-# KNOWN BROKEN, pinned deliberately rather than left to be rediscovered. The same record's other
-# excluded page is "AME or QME Declaration of Service of Medical - Legal Report", and the additions
-# above do NOT fix it: _DOCUMENT_NOUN matches "Report", which stands the administrative rules down by
-# design, so rule 13 answers it again.
+# Was xfail in #119: the same record's other excluded page, "AME or QME Declaration of Service of
+# Medical - Legal Report", still answered 13 because _DOCUMENT_NOUN matched "Report" and stood every
+# administrative rule down. Fixed by splitting those rules into wrapper-capable and standalone - a
+# declaration of service IS the filing, so the noun names what it is ABOUT, not what the pages are.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "AME or QME Declaration of Service of Medical - Legal Report",
+        "Declaration of Service of Medical Report",
+        "Proof of Service of QME Report",
+    ],
+)
+def test_service_paperwork_naming_its_object_is_not_rescued_by_the_noun(title):
+    assert classification.match_rules(title) == "100"
+
+
+# The boundary, pinned rather than left to be rediscovered. Suppressing the noun gets the title to
+# the final line, but that line still lets a document-type rule answer, so a service receipt naming
+# a type the RULES cover keeps that category instead of General.
 #
-# That is not a pattern gap - it is _DOCUMENT_NOUN being unable to tell "this IS a report" from "this
-# is paperwork ABOUT a report". Widening the noun test or reordering the checks affects every wrapper
-# title in the suite above, so it needs a decision rather than a patch. xfail(strict=False) so the day
-# someone fixes it this reports XPASS instead of silently passing.
+# Not fixed here because the blunt version - General whenever service paperwork fires - was written
+# and measured first, and it regressed real documents: "Request for Authorization for Evaluation"
+# matches both the evaluation-notice rule and rule 10, and dropped from 10 to 100. Needs eData's
+# answer on whether paperwork ever outranks a named document type. Constructed, not yet observed.
 @pytest.mark.xfail(
     strict=False,
-    reason="_DOCUMENT_NOUN matches 'Report' and stands the admin rules down; needs a design call",
+    reason="service paperwork still yields to a document-type rule; needs eData's answer",
 )
-def test_declaration_of_service_of_a_report_is_still_misfiled():
-    assert (
-        classification.match_rules("AME or QME Declaration of Service of Medical - Legal Report")
-        == "100"
-    )
+def test_service_receipt_naming_a_covered_document_type_is_still_misfiled():
+    assert classification.match_rules("Proof of Service of Deposition Transcript") == "100"
+
+
+# The other half of that split, pinned so a future widening cannot quietly take it: a cover letter,
+# transmittal letter or email genuinely travels ON TOP of a record, so a document noun must still
+# stand THOSE down and let the real document answer.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Cover Letter - PR-2 Progress Report", "1"),
+        ("Transmittal Letter - Operative Report", "8"),
+        ("Supplemental QME Report - Cover Letter", "12"),
+        ("Cover Letter - Psychological Evaluation Report", None),
+    ],
+)
+def test_wrapper_paperwork_still_yields_to_the_document_it_carries(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# A named document type outranks a bare evaluator mention. Rule 13 is second in _RULES and
+# first-match-wins, so "AME Deposition Transcript" answered 13 - the AME being QUESTIONED, filed as
+# the AME's own report and summarized with the evaluation prompt, which asks for diagnoses,
+# causation and apportionment a transcript does not carry.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("AME Deposition Transcript", "9"),
+        ("AME Deposition", "9"),
+        ("QME MRI Report", "3"),
+        ("AME Operative Report", "8"),
+        ("QME Laboratory Results", "14"),
+    ],
+)
+def test_a_named_document_type_outranks_a_bare_evaluator_mention(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# The limit of that, and the reason _EVALUATOR_YIELDS_TO is an explicit set rather than a reorder.
+# P&S, MMI and progress language describes what an EVALUATION concludes, so those titles are the
+# evaluator's own report and must stay 13. Moving rule 13 down the list instead would have taken
+# these with it, because rules 1 and 2 sit ahead of imaging/operative/deposition/lab.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "AME Report",
+        "AME Evaluation",
+        "QME Panel Report",
+        "QME Re-Evaluation Report",
+        "AME Permanent and Stationary Report",
+        "AME Progress Report",
+        "Agreed Medical Evaluator Report",
+    ],
+)
+def test_the_evaluators_own_report_is_still_an_evaluation(title):
+    assert classification.match_rules(title) == "13"
 
 
 # Recurring workers-comp paperwork that NO rule answers, so every one of these reaches the embedding
