@@ -64,18 +64,20 @@ Rebuild after code changes: `docker compose build <service> && docker compose up
     `GOOGLE_APPLICATION_CREDENTIALS=/secrets/vertex-sa.json` in `.env`.
   - gcloud USER ADC (fine for a local demo; token reauths over time): copy the host ADC file into
     the mounted secrets dir and point at it:
-        cp "$APPDATA/gcloud/application_default_credentials.json" secrets/adc.json
+    cp "$APPDATA/gcloud/application_default_credentials.json" secrets/adc.json
     then `GOOGLE_APPLICATION_CREDENTIALS=/secrets/adc.json` in `.env`.
 - `GOOGLE_CLOUD_LOCATION=us-central1` (NOT `global`): the gen-lang-client project has NO Vertex
   quota in `global` (see [[mrr-ai-vertex-auth-quota]]) - every AI call 429s otherwise.
 
   > **SUPERSEDED (2026-08-12).** `global` is correct and current. The server runs it, the repo-root
   > `.env.example` specifies it, and the 2026-08-03 plan chose it deliberately: the global endpoint
-  > draws on a larger capacity pool, which is a *mitigation* for the 429s this note was reacting to.
+  > draws on a larger capacity pool, which is a _mitigation_ for the 429s this note was reacting to.
   > A 429 from Vertex is Dynamic Shared Quota - capacity unavailable at that moment - not an
-  > exhausted per-region allowance, so retry rather than switch region. Note that
-  > `backend/.env.example`, `config.py`'s field default and `docker-compose.yml`'s fallback all
-  > still say `us-central1`, so an unset `GOOGLE_CLOUD_LOCATION` gets the old value.
+  > exhausted per-region allowance, so retry rather than switch region.
+  >
+  > **Defaults aligned 2026-08-18.** `backend/.env.example`, `config.py`'s field default,
+  > `docker-compose.yml`'s fallback and `deploy/env.docker.example` said `us-central1` until then,
+  > so an unset `GOOGLE_CLOUD_LOCATION` silently got the old value. All four now say `global`.
 
 Without Vertex creds the app runs and every non-AI path works; AI jobs fail at runtime only.
 

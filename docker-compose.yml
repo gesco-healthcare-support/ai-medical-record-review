@@ -17,7 +17,7 @@ x-backend-env: &backend-env
   UPLOAD_FOLDER: /app/uploads
   GOOGLE_GENAI_USE_VERTEXAI: ${GOOGLE_GENAI_USE_VERTEXAI:-true}
   GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
-  GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-us-central1}
+  GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
   GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
   # Pin Tesseract/OpenMP to a single thread. Tesseract 5.x is OpenMP-enabled, and concurrent
   # tesseract processes (the verify pass OCRs boundary pages on up to CLASSIFY_WORKERS threads)
