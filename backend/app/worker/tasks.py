@@ -332,8 +332,9 @@ def segment_document(job_id) -> None:
                 suggest_merge=bool(row.get("suggest_merge")),
             )
             session.add(SegmentRow(job_id=job.id, **fields))
-            # include follows the category's summarize_default (General/Depositions seed off); it is
-            # NOT a SegmentRow column, so it is passed only to the editable ReviewRow copy.
+            # include follows the category's summarize_default, which is a per-category DB flag -
+            # see catalog.summarize_default_for for why the set is not what it looks like. It is NOT a
+            # SegmentRow column, so it is passed only to the editable ReviewRow copy.
             session.add(
                 ReviewRow(
                     document_id=document.id,
@@ -388,7 +389,7 @@ def classify_document(job_id) -> None:
             result = classify(row.title, page_text=page_text or None)
             row.category = result.category
             # Re-derive the summarize default for the (possibly new) category, before the reviewer
-            # sees the row - so General/Depositions land unchecked.
+            # sees the row - so a category whose flag is off lands unchecked.
             row.include = catalog.summarize_default_for(session, result.category)
             if result.needs_review:
                 row.flag = "x"
