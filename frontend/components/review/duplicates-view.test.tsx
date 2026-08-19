@@ -150,16 +150,18 @@ describe("DuplicatesView", () => {
     expect(screen.getByText("Needs review")).toBeInTheDocument();
   });
 
-  it("shows the empty state when there are no clusters", () => {
+  it("shows the empty state when a completed check found no clusters", () => {
+    // `checked: true` is load-bearing. Without it this fixture describes a document nothing has looked
+    // at, and "No duplicates" would be a false statement rather than an empty result.
     dupState.error = null;
-    dupState.data = { job: null, clusters: [] };
+    dupState.data = { job: null, clusters: [], checked: true };
     render(<DuplicatesView documentId="d1" />);
     expect(screen.getByText("No duplicates")).toBeInTheDocument();
   });
 
   it("hints at a manual re-check when the clusters are stale", () => {
     dupState.error = null;
-    dupState.data = { job: null, clusters: [], stale: true };
+    dupState.data = { job: null, clusters: [], stale: true, checked: true };
     render(<DuplicatesView documentId="d1" />);
     expect(screen.getByText(/boundaries changed since the last duplicate check/i)).toBeInTheDocument();
     // The re-check button lives in the page header (one per screen), not in this view.
@@ -168,14 +170,19 @@ describe("DuplicatesView", () => {
 
   it("hides the re-check hint when not stale", () => {
     dupState.error = null;
-    dupState.data = { job: null, clusters: [], stale: false };
+    dupState.data = { job: null, clusters: [], stale: false, checked: true };
     render(<DuplicatesView documentId="d1" />);
     expect(screen.queryByText(/boundaries changed since the last duplicate check/i)).not.toBeInTheDocument();
   });
 
   it("hides the re-check hint while a dedup job is running", () => {
     dupState.error = null;
-    dupState.data = { job: { state: "running", current: 3, total: 9 }, clusters: [], stale: true };
+    dupState.data = {
+      job: { state: "running", current: 3, total: 9 },
+      clusters: [],
+      stale: true,
+      checked: true,
+    };
     render(<DuplicatesView documentId="d1" />);
     expect(screen.queryByText(/boundaries changed since the last duplicate check/i)).not.toBeInTheDocument();
   });
@@ -257,12 +264,67 @@ describe("DuplicatesView per-copy removal", () => {
   });
 });
 
+describe("DuplicatesView never checked", () => {
+  // Empty clusters mean two different things and the tab presented both as "No duplicate documents
+  // found": a completed check that found nothing, and no check at all. The second is the DEFAULT state
+  // of every record, because duplicate detection only ever runs when someone asks for it.
+  //
+  // Measured 2026-08-19 on four records taken end to end: none had a dedup job, the tab reported no
+  // duplicates on all four, and the human deliverables for two of them count 6 and 2 pages of
+  // duplicate copies. The tab was affirmatively wrong, not merely silent.
+  const neverChecked = (job: unknown = null) => ({
+    job,
+    stale: false,
+    unreadable: 0,
+    clusters: [],
+    checked: false,
+  });
+
+  it("says the record has not been checked rather than that it is clean", () => {
+    dupState.error = null;
+    dupState.data = neverChecked();
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.getByText(/no duplicate check has run on this record yet/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Not checked yet").length).toBeGreaterThan(0);
+    // The claim that must NOT appear: it is the one a reviewer would act on.
+    expect(screen.queryByText("No duplicates")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No duplicate documents found/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/has no groups of duplicate documents to review/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stays quiet while a check is running", () => {
+    // Mid-run is not "never checked" - the running counter already says what is happening.
+    dupState.error = null;
+    dupState.data = neverChecked({ state: "running", current: 2, total: 9 });
+    render(<DuplicatesView documentId="d1" />);
+    expect(
+      screen.queryByText(/no duplicate check has run on this record yet/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stays quiet before the payload has loaded", () => {
+    // `undefined` data is "not known yet", which must not be reported as "not checked".
+    dupState.error = null;
+    dupState.data = undefined;
+    render(<DuplicatesView documentId="d1" />);
+    expect(
+      screen.queryByText(/no duplicate check has run on this record yet/i),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("DuplicatesView unreadable sub-documents", () => {
   const withUnreadable = (unreadable: number, job: unknown = null) => ({
     job,
     stale: false,
     unreadable,
     clusters: [],
+    // A count of unreadable rows only exists once a check has completed, so these fixtures describe a
+    // checked document. Without this they would also trip the never-checked banner and stop describing
+    // the case they are named for.
+    checked: true,
   });
 
   it("says how many sub-documents could not be read", () => {

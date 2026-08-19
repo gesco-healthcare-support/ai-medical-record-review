@@ -153,6 +153,11 @@ export type DuplicatesResponse = {
    *  nothing, so these were never compared and any duplicate involving them was missed - the tab has
    *  to say so rather than present the run as a clean result. */
   unreadable: number;
+  /** Whether a duplicate check has ever COMPLETED on this document. Empty `clusters` alone cannot say:
+   *  a completed run that found nothing and a document never checked at all both produce `[]`, and
+   *  dedup is gated behind the review phase so "never checked" is the common case. Without this the
+   *  tab reports "No duplicate documents found" on a record nothing has looked at. */
+  checked: boolean;
 };
 
 /** GET /api/documents/{id} - the full editor payload (listing + rows + category options). */

@@ -34,6 +34,9 @@ export function DuplicatesView({
   const running = job?.state === "queued" || job?.state === "running";
   const clusters = data?.clusters ?? [];
   const unreadable = data?.unreadable ?? 0;
+  // No check has ever finished on this record. Distinct from "checked and clean" and it must not read
+  // as it: dedup only runs when someone asks, so this is the state a record sits in by default.
+  const neverChecked = data !== undefined && !data.checked && !running;
   // Boundaries changed since the last check: point at the header's "Re-check duplicates" (a re-run
   // is always manual - it costs AI calls). Hidden while a check is already in flight.
   const stale = Boolean(data?.stale) && !running;
@@ -76,7 +79,9 @@ export function DuplicatesView({
 
   const countLine = clusters.length
     ? `${clusters.length} possible duplicate ${clusters.length === 1 ? "group" : "groups"}`
-    : "No duplicate documents found";
+    : neverChecked
+      ? "Not checked yet"
+      : "No duplicate documents found";
 
   const list = (
     <div className="rce-splitcol">
@@ -100,6 +105,19 @@ export function DuplicatesView({
             <span>
               Document boundaries changed since the last duplicate check, so this list may be
               incomplete. Use &quot;Re-check duplicates&quot; above to scan again.
+            </span>
+          </div>
+        ) : null}
+
+        {/* Never checked is not a result at all. The banner above warns when a COMPLETED check may
+            be incomplete; this one covers the case that check never happened, which is the default
+            state of every record because dedup is only ever started by hand. */}
+        {neverChecked ? (
+          <div className="banner" aria-live="polite">
+            <span>
+              No duplicate check has run on this record yet, so nothing here has been compared. Use
+              &quot;Re-check duplicates&quot; above to scan for documents that were scanned more than
+              once.
             </span>
           </div>
         ) : null}
@@ -128,12 +146,16 @@ export function DuplicatesView({
             <p className="empty-title">
               {running
                 ? `Checking for duplicates${job?.total ? ` (${job.current}/${job.total})` : "..."}`
-                : "No duplicates"}
+                : neverChecked
+                  ? "Not checked yet"
+                  : "No duplicates"}
             </p>
             <p>
               {running
                 ? "Scanning the record for documents that were scanned more than once."
-                : "The record has no groups of duplicate documents to review."}
+                : neverChecked
+                  ? "This record has not been scanned for duplicates."
+                  : "The record has no groups of duplicate documents to review."}
             </p>
           </div>
         ) : (

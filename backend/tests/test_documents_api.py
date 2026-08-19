@@ -1794,6 +1794,33 @@ async def test_duplicates_report_sub_documents_that_could_not_be_read(authed):
     assert body["stale"] is True  # the untouched row is what staleness is for
 
 
+async def test_duplicates_say_whether_a_check_has_ever_completed(authed):
+    """WHEN no duplicate check has completed, THE SYSTEM SHALL NOT present the record as clean.
+
+    Empty `clusters` means two different things and the payload carried no way to tell them apart: a
+    completed run that found nothing, and no run at all. The second is the DEFAULT state of every
+    record, because dedup only runs when someone asks - so the tab was reporting "No duplicate
+    documents found" on records nothing had looked at. Measured 2026-08-19 across four records taken
+    end to end, two of whose human deliverables count 6 and 2 pages of duplicate copies.
+
+    `stale` and `unreadable` cannot stand in for this: both are themselves gated on a completed dedup
+    job, so on a never-checked document all three of clusters/stale/unreadable are empty or falsy.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, None), (3, 4, None)])
+
+    body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
+    assert body["checked"] is False, "no dedup job has ever run on this document"
+    # The three fields that previously had to carry this meaning, and could not.
+    assert body["clusters"] == [] and body["stale"] is False and body["unreadable"] == 0
+
+    _finish_dedup(doc_id)
+    body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
+    assert body["checked"] is True, "a completed run reports as checked even with no clusters"
+    assert body["clusters"] == []
+
+
 def test_dupe_date_key_parses_dates_and_defaults_unknown():
     from app.api.documents import _dupe_date_key
 
