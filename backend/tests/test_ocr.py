@@ -5,6 +5,8 @@ _ocr_image passes a wall-clock timeout to Tesseract; a timeout is a skippable pe
 The per-page extraction loops log and skip a failed page rather than aborting the document.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.errors import OcrUnavailableError
@@ -188,3 +190,119 @@ def test_report_fails_fast_when_tesseract_is_missing(monkeypatch):
 
     with pytest.raises(OcrUnavailableError):
         ocr.extract_pages_with_report("dummy.pdf", [1, 2])
+
+
+def _with_cap(monkeypatch, cap):
+    """Point ocr.get_settings() at a copy carrying `cap`, since the real default disables capping."""
+    real = ocr.get_settings()
+    stub = SimpleNamespace(
+        ocr_base_dpi=real.ocr_base_dpi,
+        ocr_max_long_edge_px=cap,
+        ocr_timeout_seconds=real.ocr_timeout_seconds,
+        tesseract_cmd=real.tesseract_cmd,
+    )
+    monkeypatch.setattr(ocr, "get_settings", lambda: stub)
+    return stub
+
+
+def test_capping_is_disabled_by_default(monkeypatch):
+    """The default must not change any rendering. Capping was MEASURED and rejected: it made an
+    oversized page 4.2x faster and cost 6.0% of its recognized characters, so it ships off until a
+    word-level quality metric exists to judge it (see the note on ocr_max_long_edge_px)."""
+    assert ocr.get_settings().ocr_max_long_edge_px == 0
+    monkeypatch.setattr(ocr, "_page_long_edges_pt", lambda path: (3455.0,))
+    assert ocr._dpi_for_page("/x.pdf", 1) == ocr.get_settings().ocr_base_dpi
+
+
+def test_dpi_is_capped_for_oversized_pages_and_left_alone_otherwise(monkeypatch):
+    """WHEN capping is enabled and a page would exceed it, THE SYSTEM SHALL lower the DPI to fit.
+
+    Cap-only is the safety property: an ordinary page must render EXACTLY as before, so its stored OCR
+    text cannot change. Only oversized pages move.
+    """
+    settings = _with_cap(monkeypatch, 3500)
+    monkeypatch.setattr(ocr, "_page_long_edges_pt", lambda path: (792.0, 3455.0))
+
+    # 792pt at 200 DPI is 2200px - already inside the cap, so untouched.
+    assert ocr._dpi_for_page("/x.pdf", 1) == settings.ocr_base_dpi
+
+    # 3455pt at 200 DPI would be 9598px - capped, and the result must actually fit.
+    capped = ocr._dpi_for_page("/x.pdf", 2)
+    assert capped < settings.ocr_base_dpi
+    assert 3455.0 * capped / 72 <= settings.ocr_max_long_edge_px
+
+
+def test_unknown_page_sizes_fall_back_to_the_base_dpi(monkeypatch):
+    """An unreadable page box must not stop OCR - it just means the cap cannot be applied."""
+    settings = _with_cap(monkeypatch, 3500)
+    monkeypatch.setattr(ocr, "_page_long_edges_pt", lambda path: ())
+    assert ocr._dpi_for_page("/x.pdf", 1) == settings.ocr_base_dpi
+    # A whole-document rasterize has no single page to size against.
+    assert ocr._dpi_for_page("/x.pdf", None) == settings.ocr_base_dpi
+
+
+def test_the_rendered_dpi_is_declared_to_tesseract(monkeypatch):
+    """Tesseract scales x-height decisions by the DPI it is told, so a reduced-DPI image that does not
+    declare itself risks WORSE recognition - which would silently undo the point of the cap."""
+    captured = {}
+
+    def fake_image_to_string(image, timeout=0, config=""):
+        captured["config"] = config
+        return "text"
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
+    ocr._configured = True
+
+    class _Rendered:
+        info = {"dpi": (80, 80)}
+
+    assert ocr._ocr_image(_Rendered()) == "text"
+    assert captured["config"] == "--dpi 80"
+
+
+def test_an_image_without_recorded_dpi_passes_no_config(monkeypatch):
+    """Stubbed rasterizers hand back objects with no `.info`; that must not become a crash or a
+    bogus `--dpi 0`."""
+    captured = {}
+
+    def fake_image_to_string(image, timeout=0):
+        captured["called"] = True
+        return "text"
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
+    ocr._configured = True
+
+    assert ocr._ocr_image(_Sentinel()) == "text"
+    assert captured["called"] is True
+
+
+def test_the_base_dpi_is_not_declared_so_ordinary_pages_are_unchanged(monkeypatch):
+    """WHEN a page renders at the base DPI, THE SYSTEM SHALL pass no --dpi flag.
+
+    Measured 2026-08-19: passing `--dpi 200` changed the recognized text of a page whose resolution had
+    not changed at all. Since ordinary pages are already inside the pixel cap, declaring the DPI there
+    would silently alter most stored OCR output for no measured gain - so the flag is reserved for the
+    pages whose DPI was actually lowered.
+    """
+    captured = {}
+
+    def fake_image_to_string(image, timeout=0, **kwargs):
+        captured.update(kwargs)
+        return "text"
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
+    ocr._configured = True
+    base = ocr.get_settings().ocr_base_dpi
+
+    class _AtBase:
+        info = {"dpi": (base, base)}
+
+    class _Capped:
+        info = {"dpi": (72, 72)}
+
+    assert ocr._ocr_image(_AtBase()) == "text"
+    assert "config" not in captured, "the base DPI must not be declared"
+
+    captured.clear()
+    assert ocr._ocr_image(_Capped()) == "text"
+    assert captured.get("config") == "--dpi 72"
