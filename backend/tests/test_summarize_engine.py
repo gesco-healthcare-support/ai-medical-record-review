@@ -1078,3 +1078,124 @@ def test_when_both_are_unusable_the_result_is_the_placeholder():
     # summaries.title is NOT NULL, so there has to be something; "-" is the codebase's own
     # "no value" convention (see ROW_FIELDS defaults).
     assert se._usable_title("X" * 620, "") == "-"
+
+
+# --------------------------------------------------------------------------------------------------
+# Body-model fallback. The body left 2.5-pro for AVAILABILITY, not quality: on 2026-08-13 Vertex
+# refused it for this project outright, 0 of 8, and every summarize job failed. `generate_with_retry`
+# already rides out transient 429s, so these cover the case where its whole budget is spent and the
+# 429 is still coming - the row is answered by a lesser model rather than lost.
+
+
+class _Rejected(Exception):
+    """A 429 as `is_rate_limited` sees it: the status code alone, no SDK type needed."""
+
+    code = 429
+
+
+class _BadRequest(Exception):
+    code = 400
+
+
+def _fallback_fixtures(monkeypatch, *, fail_for, fallback="gemini-3.5-flash"):
+    """Patch OCR + audit, and make `_generate` raise 429 for `fail_for` only. Returns the call log."""
+    calls = []
+
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        calls.append({"model": model, "is_title": system_msg == se.TITLE_PROMPT})
+        if model == fail_for and system_msg != se.TITLE_PROMPT:
+            raise _Rejected("429 RESOURCE_EXHAUSTED")
+        return _fake_generate(model, system_msg, user_text, temperature)
+
+    monkeypatch.setattr(
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+    )
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setenv("SUMMARY_BODY_FALLBACK_MODEL", fallback)
+    get_settings.cache_clear()
+    return calls
+
+
+def test_body_falls_back_when_the_configured_model_is_refused(monkeypatch):
+    """A spent retry budget on 429 answers the row with the fallback instead of failing it."""
+    calls = _fallback_fixtures(monkeypatch, fail_for="gemini-2.5-pro")
+    try:
+        out = se.summarize_row("/x.pdf", _row(), model="gemini-2.5-pro", prompt="P")
+    finally:
+        get_settings.cache_clear()
+
+    body_models = [c["model"] for c in calls if not c["is_title"]]
+    assert body_models == ["gemini-2.5-pro", "gemini-3.5-flash"], (
+        "fallback, not race, and once only"
+    )
+    # Provenance must name what ANSWERED, not what was asked for - job-level provenance cannot express
+    # this, because models.py resolves the three models once at job creation on purpose.
+    assert out["model"] == "gemini-3.5-flash"
+    assert out["bodyFallbackFrom"] == "gemini-2.5-pro"
+    assert "Summary body" in out["summaryText"]
+
+
+def test_body_does_not_fall_back_on_a_non_429(monkeypatch):
+    """Only capacity refusals fall back. A 400 is our bug and must surface, not be papered over."""
+    monkeypatch.setattr(
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+    )
+
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        if system_msg != se.TITLE_PROMPT:
+            raise _BadRequest("400 INVALID_ARGUMENT")
+        return _fake_generate(model, system_msg, user_text, temperature)
+
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setenv("SUMMARY_BODY_FALLBACK_MODEL", "gemini-3.5-flash")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(_BadRequest):
+            se.summarize_row("/x.pdf", _row(), model="gemini-2.5-pro", prompt="P")
+    finally:
+        get_settings.cache_clear()
+
+
+def test_body_does_not_fall_back_to_the_model_that_just_failed(monkeypatch):
+    """When the body already IS the fallback there is nowhere below it: raise rather than retry it."""
+    calls = _fallback_fixtures(monkeypatch, fail_for="gemini-3.5-flash")
+    try:
+        with pytest.raises(_Rejected):
+            se.summarize_row("/x.pdf", _row(), model="gemini-3.5-flash", prompt="P")
+    finally:
+        get_settings.cache_clear()
+    assert [c["model"] for c in calls if not c["is_title"]] == ["gemini-3.5-flash"], (
+        "no second call"
+    )
+
+
+def test_body_fallback_can_be_disabled(monkeypatch):
+    """ "none" means fail the row, i.e. the pre-existing behaviour.
+
+    Disabling needs an explicit token rather than an empty string: an UNSET key is also "", and that
+    has to resolve to the default, so "" cannot carry both meanings.
+    """
+    calls = _fallback_fixtures(monkeypatch, fail_for="gemini-2.5-pro", fallback="none")
+    try:
+        with pytest.raises(_Rejected):
+            se.summarize_row("/x.pdf", _row(), model="gemini-2.5-pro", prompt="P")
+    finally:
+        get_settings.cache_clear()
+    assert [c["model"] for c in calls if not c["is_title"]] == ["gemini-2.5-pro"]
+
+
+def test_a_successful_body_reports_no_fallback(monkeypatch):
+    """bodyFallbackFrom is None on the happy path, so a caller can trust it as the downgrade signal."""
+    _fallback_fixtures(monkeypatch, fail_for="nothing-fails")
+    try:
+        out = se.summarize_row("/x.pdf", _row(), model="gemini-2.5-pro", prompt="P")
+    finally:
+        get_settings.cache_clear()
+    assert out["bodyFallbackFrom"] is None
+    assert out["model"] == "gemini-2.5-pro"

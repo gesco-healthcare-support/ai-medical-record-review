@@ -1810,3 +1810,54 @@ def test_a_provenance_failure_never_blocks_a_job(monkeypatch):
         job = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="3")
         assert job.id is not None
         assert job.prompt_fingerprint is None
+
+
+def test_summarize_document_flags_a_fallback_body_for_manual_check(monkeypatch):
+    """A row answered by the fallback model was produced by a LESSER model than the job asked for, so
+    the reviewer gets the same chip as a truncated body rather than only a line in the worker log."""
+    import app.services.summarize_engine as se
+
+    monkeypatch.setattr(
+        se,
+        "summarize_row",
+        lambda pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw: {
+            "summaryTitle": "T (Pages 1-1)",
+            "summaryDate": "-",
+            "summaryText": "body written by the fallback",
+            "manualCheck": "",
+            "truncated": False,
+            "sourceText": "x",
+            "model": "gemini-3.5-flash",
+            "bodyFallbackFrom": "gemini-2.5-pro",
+        },
+    )
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        session.add(
+            ReviewRow(
+                document_id=doc_id,
+                idx=0,
+                start=1,
+                end=1,
+                category="1",
+                title="A",
+                date="-",
+                injury_date="-",
+                flag="-",
+                include=True,
+            )
+        )
+        session.commit()
+        job_id = jobs.create_job(
+            session, doc_id, "summarize", model="gemini-2.5-pro", prompt_version="1"
+        ).id
+
+    summarize_document(job_id)
+    with get_sessionmaker()() as session:
+        summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
+        assert len(summaries) == 1
+        assert summaries[0].manual_check is True
+        # The row records what ANSWERED while the job records what was asked for; the pair is the
+        # after-the-fact surface for a downgrade, with no schema change.
+        assert summaries[0].model == "gemini-3.5-flash"
+        assert session.get(Job, job_id).model == "gemini-2.5-pro"

@@ -111,6 +111,12 @@ x-backend-env: &backend-env
   # and on 2026-08-13 the body model changed with no way to adjust this. Do NOT also set a thinking
   # LEVEL on a 3.x model - budget and level together are a 400. Fallback mirrors app/config.py.
   SUMMARY_THINKING_BUDGET: ${SUMMARY_THINKING_BUDGET:--1}
+  # Where the BODY call lands when Vertex will not serve SUMMARY_MODEL at all - the 2026-08-13
+  # situation, where 2.5-pro was refused 0/8 and every summarize job failed. Reached only after the
+  # retry seam's budget is spent and the 429 is still coming. Exposed here for the same reason as
+  # SUMMARY_MODEL: the escape hatch is worthless if changing it needs a rebuild. "none" disables it
+  # and lets the row fail, which is the behaviour before this key existed. Mirrors app/config.py.
+  SUMMARY_BODY_FALLBACK_MODEL: ${SUMMARY_BODY_FALLBACK_MODEL:-}
   # The other three models, so ANY of them can be repointed without a code change. On 2026-08-13
   # Vertex stopped admitting gemini-2.5-pro for this project entirely (0/8 on the configured
   # endpoint); SUMMARY_MODEL made that a one-line fix, while these three would have needed a rebuild
