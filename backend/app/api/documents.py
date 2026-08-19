@@ -548,7 +548,9 @@ def get_duplicates(
     # nothing (the Jaccard signature is a null set), so they were not compared against anything - a
     # run that could not read a fifth of the record is not a clean bill of health and must not
     # present as one. Derived, so no column and no migration: "" means read-and-textless, None means
-    # never attempted (which `stale` already covers).
+    # never attempted - which `stale` does NOT cover, despite what this comment used to claim: `stale`
+    # is itself gated on a completed dedup_job, so on a document nothing has checked both it and this
+    # are falsy and the tab had nothing to tell "checked, clean" from "never checked". Hence `checked`.
     # Same scope as `stale` above, so the two derived values cannot disagree about what dedup looked
     # at. An excluded row has no text at all rather than empty text, so it could not be counted here
     # anyway; filtering explicitly keeps that true if the storage rule ever changes.
@@ -562,6 +564,17 @@ def get_duplicates(
         "job": dedup_job.progress() if dedup_job else None,
         "stale": stale,
         "unreadable": unreadable,
+        # Has a duplicate check ever COMPLETED on this document? Empty clusters mean two entirely
+        # different things and the tab was presenting both as the same one: a completed run that found
+        # nothing, and no run at all. The second is the common case, because dedup is gated behind the
+        # review phase - measured 2026-08-19 on four records taken end to end, none of which had a
+        # dedup job, while the tab told the reviewer "No duplicate documents found". Two of those
+        # records have a human deliverable that counts 6 and 2 pages of duplicate copies, so the tab
+        # was affirmatively wrong, not merely silent.
+        #
+        # A job that exists but errored or was cancelled is also "not checked" - hence the state test
+        # rather than a None test on the job.
+        "checked": bool(dedup_job and dedup_job.state == "done"),
     }
 
 
