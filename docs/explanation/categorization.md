@@ -35,23 +35,46 @@ for a human rather than silently dumped into the catch-all:
    **First-match-wins holds only for a non-administrative title.** A separate `_ADMIN_RULES` set
    matches the paperwork that wraps a record - routing slips, cover letters, correspondence and
    email, declarations, proofs of service, records requests and indexes, evaluation notices - and
-   resolves *document beats wrapper* in two steps:
+   resolves _document beats wrapper_ in two steps:
 
    - If the title names a document at all (`_DOCUMENT_NOUN`: report, transcript, notes, study,
-     scan, imaging, x-ray, chart, questionnaire, results), the administrative rules **stand down
-     entirely** and the normal cascade answers. "Cover Letter - Psychological Evaluation Report"
+     scan, imaging, x-ray, chart, questionnaire, results), the administrative rules **stand down**
+     and the normal cascade answers. "Cover Letter - Psychological Evaluation Report"
      is a report, and falls through to the embedding + LLM stages when no keyword rule fits,
      rather than being buried in General.
+
+     **One shape is excepted** (`_PAPERWORK_ABOUT_A_DOCUMENT`, added #122): when the title reads
+     `(declaration|proof|certificate) of (service|mailing) of ...`, the document noun names what
+     the paperwork is _about_, not what the pages _are_. "AME or QME Declaration of Service of
+     Medical - Legal Report" is a mailing receipt, so the noun does not stand the rule down.
+     Anchored on the trailing `of` and nothing wider, because a real evaluation genuinely does
+     travel with a service page - "QME Report - Proof of Service" is category `13` and stays so.
+     Word order is the whole distinction: paperwork-first with the document as its grammatical
+     object, versus document-first with the paperwork attached.
+
    - Otherwise the administrative match holds, and the result is the first document-type rule that
      also fired, else `100`. **Category `13` does not count there**
      (`_EVALUATOR_MENTION`): it fires on a mere mention of the evaluator, which correspondence
-     *about* an AME contains too. Any other rule does count - "Transmittal Letter - MRI Lumbar
+     _about_ an AME contains too. Any other rule does count - "Transmittal Letter - MRI Lumbar
      Spine" is an MRI.
+
+   **A named document type also outranks a bare evaluator mention** (`_EVALUATOR_YIELDS_TO`,
+   added #122), with no administrative rule in play. Rule `13` sits second and first-match-wins,
+   so "AME Deposition Transcript" - a transcript of the AME being _questioned_ - used to answer
+   `13` and be summarized with the evaluation prompt. Imaging (`3`), operative (`8`), deposition
+   (`9`) and laboratory (`14`) now win instead. Deliberately an explicit set rather than moving
+   rule `13` down the list: rules `1` and `2` sit ahead of those four, so any position that lets a
+   deposition win also lets "progress report" and "permanent and stationary" win, and those
+   describe what an evaluation _concludes_ - "AME Permanent and Stationary Report" is `13`, not `2`.
+
+   Both #122 additions were **decided in-house and are not confirmed with eData**; each is
+   one line to reverse.
 
    So an administrative title can return `100` even though a document-type rule matched. That is
    deliberate, and it is the one path where the cascade's default is load-bearing: `100` is
    unchecked for summarization by default, so a false administrative match silently drops a real
    document from the delivered summary.
+
 2. **Embedding** (`embed_classify`) - the local `all-MiniLM-L6-v2` sentence-transformer encodes
    the text and each category's corpus (name + description + example titles), and picks the
    nearest category by cosine similarity. Runs locally, so **no PHI leaves the host** for this
@@ -60,7 +83,7 @@ for a human rather than silently dumped into the catch-all:
 3. **LLM** (`llm_classify`) - Gemini on `settings.classify_model` (default
    **`gemini-2.5-flash-lite`**, the cheapest tier: this is a short, structured enum task) with
    **constrained-enum output** (`response_mime_type="text/x.enum"`, `response_schema` enumerating
-   the ids the live catalog marks auto-assignable), so it *cannot* emit an invalid category.
+   the ids the live catalog marks auto-assignable), so it _cannot_ emit an invalid category.
    `temperature=0`. The model is overridable per call so an A/B can compare tiers on identical
    inputs. Its prompt also states the administrative-document rule directly, so the LLM stage
    agrees with `_ADMIN_RULES` rather than fighting it.
@@ -70,15 +93,15 @@ for a human rather than silently dumped into the catch-all:
 `classify` combines the stages defensively - any model failure degrades to a flagged best
 guess, never a 500:
 
-| Situation | Result `category` | `confidence` | `needs_review` | `method` |
-|-----------|-------------------|--------------|----------------|----------|
-| A rule matches | the rule's id | high | no | `rules` |
-| Administrative title, no document-type rule | `100` | high | **no** | `rules` |
-| No rule, and no usable text | `100` | low | **yes** | `empty` |
-| Embedding and LLM **agree** | that id | high | no | `llm+embedding` |
-| They **disagree** | the LLM's id | low | **yes** | `llm-disagree` |
-| Only one stage produced an answer | that id | low | **yes** | `embedding-only` / `llm-only` |
-| Both stages failed | `100` | low | **yes** | `no-signal` |
+| Situation                                   | Result `category` | `confidence` | `needs_review` | `method`                      |
+| ------------------------------------------- | ----------------- | ------------ | -------------- | ----------------------------- |
+| A rule matches                              | the rule's id     | high         | no             | `rules`                       |
+| Administrative title, no document-type rule | `100`             | high         | **no**         | `rules`                       |
+| No rule, and no usable text                 | `100`             | low          | **yes**        | `empty`                       |
+| Embedding and LLM **agree**                 | that id           | high         | no             | `llm+embedding`               |
+| They **disagree**                           | the LLM's id      | low          | **yes**        | `llm-disagree`                |
+| Only one stage produced an answer           | that id           | low          | **yes**        | `embedding-only` / `llm-only` |
+| Both stages failed                          | `100`             | low          | **yes**        | `no-signal`                   |
 
 The result is a `Classification(category, confidence, method, needs_review)` dataclass; `method`
 records which path decided.
