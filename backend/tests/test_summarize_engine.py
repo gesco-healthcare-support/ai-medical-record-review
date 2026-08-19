@@ -8,7 +8,7 @@ tests assert what summarize_row FEEDS the model and how it threads the verify re
 import pytest
 
 from app.config import get_settings
-from app.errors import EmptyExtractionError
+from app.errors import EmptyExtractionError, is_daily_quota, is_rate_limited
 from app.services import summarize_engine as se
 from app.services.llm import gemini as gm
 
@@ -1188,6 +1188,46 @@ def test_body_fallback_can_be_disabled(monkeypatch):
     finally:
         get_settings.cache_clear()
     assert [c["model"] for c in calls if not c["is_title"]] == ["gemini-2.5-pro"]
+
+
+def test_body_falls_back_on_a_spent_daily_quota_too(monkeypatch):
+    """The second, less obvious path in - and it is deliberate.
+
+    `generate_with_retry` re-raises a PerDay / free_tier 429 IMMEDIATELY rather than retrying it,
+    because backoff cannot refill a daily allowance. But it is still a 429, so it reaches the fallback,
+    and answering the row on a model with a different allowance is the behaviour we want. Pinned
+    because it is easy to read the DSQ case as the only one and "correct" this away.
+    """
+
+    class _DailyQuota(Exception):
+        code = 429
+
+        def __str__(self):
+            return "429 RESOURCE_EXHAUSTED: quota metric PerDay exceeded"
+
+    monkeypatch.setattr(
+        se,
+        "extract_text_from_selected_pages",
+        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+    )
+
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        if model == "gemini-2.5-pro" and system_msg != se.TITLE_PROMPT:
+            raise _DailyQuota()
+        return _fake_generate(model, system_msg, user_text, temperature)
+
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setenv("SUMMARY_BODY_FALLBACK_MODEL", "gemini-3.5-flash")
+    get_settings.cache_clear()
+    try:
+        out = se.summarize_row("/x.pdf", _row(), model="gemini-2.5-pro", prompt="P")
+    finally:
+        get_settings.cache_clear()
+    assert out["model"] == "gemini-3.5-flash"
+    assert out["bodyFallbackFrom"] == "gemini-2.5-pro"
+    # Both predicates hold for this exception, which is why it reaches the handler at all.
+    assert is_rate_limited(_DailyQuota()) and is_daily_quota(_DailyQuota())
 
 
 def test_a_successful_body_reports_no_fallback(monkeypatch):

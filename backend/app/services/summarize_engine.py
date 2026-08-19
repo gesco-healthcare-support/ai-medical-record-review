@@ -686,6 +686,13 @@ def summarize_row(
     #   LOUD. Logged at WARNING with both models named. A silent downgrade would reproduce the exact
     #   problem this pipeline keeps hitting - output nobody can attribute to a model.
     #
+    #   TWO WAYS IN, not one. The obvious path is Dynamic Shared Quota: transient 429s that
+    #   generate_with_retry rides out until its budget is spent. The second is a spent per-day /
+    #   free-tier allowance, which that seam re-raises IMMEDIATELY without retrying - and it still
+    #   carries `code == 429`, so it lands here too. That is the behaviour we want (a different model
+    #   has a different allowance) but it is worth naming, because reading this without it suggests
+    #   DSQ is the only path in. `errors.is_daily_quota` distinguishes the two if that ever matters.
+    #
     #   RECORDED PER ROW. `model` is reassigned, so the returned provenance - and therefore
     #   `summaries.model` - names the model that ACTUALLY answered, not the one the job intended.
     #   Job-level provenance cannot express this: models.py resolves the three models once at job
