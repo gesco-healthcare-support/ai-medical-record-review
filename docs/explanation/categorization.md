@@ -1,11 +1,12 @@
 # Categorization (stage 2): assigning a category to each sub-document
 
-> **[PARTIALLY STALE]** **The cascade is live; this doc had drifted from it.** Checked against
-> `backend/app/services/classification.py` on 2026-08-12 and corrected: the code paths (they pointed
-> into the pre-rewrite `mrr_ai/` tree, now [`legacy/`](../../legacy/README.md)), the rules stage
-> (an administrative title no longer follows first-match-wins), the classifier model, and category
-> `6`. The three-stage shape, the vote-fusion table and the local-embedding PHI property were
-> accurate and are unchanged.
+> **Last checked against the code 2026-08-18.** Re-verified against
+> `backend/app/services/classification.py` after #119 and #122 changed the rules stage: the
+> `_PAPERWORK_ABOUT_A_DOCUMENT` exception and the `_EVALUATOR_YIELDS_TO` set are now described in
+> stage 1. An earlier pass on 2026-08-12 fixed the code paths (they pointed into the pre-rewrite
+> `mrr_ai/` tree, now [`legacy/`](../../legacy/README.md)), the classifier model, and category `6`.
+> The three-stage shape, the vote-fusion table and the local-embedding PHI property have been
+> accurate throughout.
 
 > Explanation doc. The category is a column on `segment_rows` / `review_rows` in Postgres, written
 > inline during segmentation; the [page-map CSV](../reference/csv-contract.md) it used to fill is now
