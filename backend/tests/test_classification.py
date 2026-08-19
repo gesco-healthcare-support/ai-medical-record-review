@@ -341,11 +341,7 @@ def test_the_evaluators_own_report_is_still_an_evaluation(title):
     [
         "WORK STATUS REPORT",
         "Physician's Return-to-Work & Voucher Report",
-        "Emergency Patient Record",
         "Emergency Provider Report",
-        "Admission Record",
-        "Patient Referral",
-        "Patient Signature Page",
         # Added from two further records (267 and 300 pages) run the same way on 2026-08-18. These
         # three are the ones that cost DELIVERED content rather than just a wrong category, so they
         # matter more than the seven above:
@@ -363,6 +359,85 @@ def test_the_evaluators_own_report_is_still_an_evaluation(title):
 )
 def test_recurring_paperwork_is_answered_by_a_rule(title):
     assert classification.match_rules(title) is not None
+
+
+# Hospital and registration paperwork the human deliverables name VERBATIM in their excluded-pages
+# lists, so the expected answer here is the reviewer's own, not our reading of it. Four of these were
+# xfail pins from #121/#123 ("this type ought to be answered by a rule"); they are assertions now.
+#
+# The point of the rule is DETERMINISM as much as correctness. Every one of these already reached 100
+# through the cascade most of the time - but "most of the time" is the defect: measured on one 267-page
+# record, `lab order` came out 100 on one occurrence and 3 on another, and `WORK STATUS REPORT` came out
+# 1 nine times and 100 once. A rule makes the answer the same on every occurrence.
+@pytest.mark.parametrize(
+    "title",
+    [
+        # named in the excluded-pages list of the 267-page record
+        "FACESHEET",
+        "FACESHEET - OP Visit",
+        "Data Conversion Encounter - FACESHEET",
+        "Flowsheets - ALL",
+        "After Visit Summary",
+        "Coding Summary - HIM",
+        "ER Registration",
+        "Patient Information Sheet",
+        "Hospital Consent for Treatment - Conditions of Admission",
+        "Medication Administration",
+        "ED Care Timeline",
+        # named in the excluded-pages list of the 229-page record
+        "Patient Referral",
+        "Patient Signature Page",
+        "Emergency Patient Record",
+        # same family, and the type a facesheet arrives attached to
+        "Admission Record",
+        "Inpatient Record",
+    ],
+)
+def test_hospital_and_registration_paperwork_is_general(title):
+    assert classification.match_rules(title) == "100"
+
+
+# The other half of the same split, and the reason the list above stops where it does. These three are
+# named in the SAME human exclusion lists, so the expected answer is equally clear - but a rule cannot
+# deliver it, because `_DOCUMENT_NOUN` matches "report"/"notes"/"note" and stands the administrative
+# rules down. That is the architectural question already pinned from #119, not a pattern gap, so they
+# stay xfail rather than getting a rule that cannot fire.
+@pytest.mark.xfail(
+    strict=False,
+    reason="_DOCUMENT_NOUN stands the admin rules down for report/note titles; needs the same design "
+    "call as the #119 pin",
+)
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Physician's Return-to-Work & Voucher Report",
+        "Interdisciplinary Notes",
+        "Transmittal Note",
+    ],
+)
+def test_paperwork_whose_title_carries_a_document_noun_is_general(title):
+    assert classification.match_rules(title) == "100"
+
+
+# Guards on the new patterns. Each is a title that CONTAINS one of the new phrases as a substring or
+# near-miss and must not be dragged into General by it.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        # "provider registration" contains "er registration" but not at a word boundary
+        ("Provider Registration Form", None),
+        # a real clinical document that merely mentions an admission
+        ("Discharge Summary - Hospital Admission 03/04/2026", None),
+        # the phrases are multi-word on purpose: a bare "summary" or "record" must not fire
+        ("Operative Summary", None),
+        ("Medical Record Review", None),
+        # and a real document type still beats the administrative match where one fires
+        ("Transmittal Letter - MRI Lumbar Spine", "3"),
+        ("Cover Letter - PR-2 Progress Report", "1"),
+    ],
+)
+def test_new_paperwork_patterns_do_not_overreach(title, expected):
+    assert classification.match_rules(title) == expected
 
 
 def test_general_corpus_names_the_administrative_documents():

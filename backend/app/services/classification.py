@@ -62,6 +62,36 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         r"|request for (medical )?records",
         r"\b(request|notice|scheduling) (for |of |to )?[\w\s-]{0,24}\b(evaluation|examination)\b"
         r"|\b(evaluation|examination) (request|notice|appointment)\b",
+        # HOSPITAL AND REGISTRATION PAPERWORK, added 2026-08-19. Every phrase here is named VERBATIM in
+        # the excluded-pages list of a human deliverable, so this is the reviewer's own answer rather
+        # than our reading of it. Two records, 267 and 300 pages:
+        #
+        #   "records from Providence St Joseph Medical Center: facesheet, ED care timeline, medication
+        #    administration, order list, flowsheets, after visit summary, conditions of admission,
+        #    ER registration form, Spanish documents, patient information sheet, coding summary,
+        #    interdisciplinary notes"
+        #   "...patient referral, emergency patient record, discharge report, patient signature page"
+        #
+        # These already reach 100 through the cascade MOST of the time, which is exactly the problem: no
+        # rule answers them, so each occurrence is re-decided and the answer is not stable. Measured on
+        # one 267-page record, "WORK STATUS REPORT" appeared ten times and got category 1 nine times and
+        # 100 once; "lab order" got 100 and 3 on two occurrences. A rule makes the answer the same every
+        # time, which is the point - not moving them somewhere new.
+        #
+        # Multi-word phrases deliberately, not single words. "admission" alone would catch "Conditions
+        # of Admission" (correct) but also anything mentioning an admission; "facesheet" is unambiguous
+        # but "summary" and "record" are not, so each is anchored to the phrase the human wrote.
+        #
+        # NOT included here, though the human's list names them, because _DOCUMENT_NOUN stands the
+        # administrative rules down when a title contains report/notes/note and would make the rule
+        # inert: "Physician's Return-to-Work & Voucher Report", "Interdisciplinary Notes",
+        # "Transmittal Note". Same architectural question as the #119 xfail, so they wait on that
+        # decision rather than getting a rule that cannot fire.
+        r"\bfacesheet\b|\bflowsheets?\b|\bafter visit summary\b|\bcoding summary\b"
+        r"|\bpatient (referral|signature page|information sheet)\b"
+        r"|\b(er|emergency room) registration\b|\bconditions of admission\b"
+        r"|\b(admission|inpatient|emergency patient) record\b|\bmedication administration\b"
+        r"|\bed care timeline\b",
     )
 )
 
