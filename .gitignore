@@ -64,3 +64,6 @@ Thumbs.db
 
 # SQLite database (per-machine state; never commit)
 instance/
+# Working artefacts (plans, bug/task backlog) are local-only and never committed.
+docs/plans/
+docs/backlog.md
