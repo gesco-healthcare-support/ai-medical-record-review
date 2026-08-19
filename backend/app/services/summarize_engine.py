@@ -16,7 +16,7 @@ import re
 from pdf2image import convert_from_path
 
 from app.config import get_settings
-from app.errors import EmptyExtractionError
+from app.errors import EmptyExtractionError, is_rate_limited
 from app.services.deposition_pages import transcript_page_offset
 from app.services.house_style import sentence_case_caps_runs
 from app.services.llm import ImagePart, TextPart, get_provider
@@ -673,13 +673,53 @@ def summarize_row(
                 row["end"],
                 exc,
             )
-    summary, truncated = _generate(
-        model,
-        system_msg,
-        body_contents,
-        temperature=settings.summary_temperature,
-        max_output_tokens=settings.summary_max_output_tokens,
-    )
+    # The body model can be unavailable rather than slow: on 2026-08-13 Vertex refused 2.5-pro for
+    # this project outright and every summarize job failed. `generate_with_retry` already rides out
+    # transient 429s; this catches the case where its whole budget is spent and the 429 is still
+    # coming, and answers the row with a lesser model instead of losing it.
+    #
+    # Three properties this deliberately has:
+    #
+    #   FALLBACK, NOT RACE. Only after retries are exhausted. Firing both and taking the first would
+    #   double the load on a pool that is already refusing us.
+    #
+    #   LOUD. Logged at WARNING with both models named. A silent downgrade would reproduce the exact
+    #   problem this pipeline keeps hitting - output nobody can attribute to a model.
+    #
+    #   RECORDED PER ROW. `model` is reassigned, so the returned provenance - and therefore
+    #   `summaries.model` - names the model that ACTUALLY answered, not the one the job intended.
+    #   Job-level provenance cannot express this: models.py resolves the three models once at job
+    #   creation, on purpose, so a resumed job cannot switch mid-flight. The row is the only place
+    #   this fact fits, and `_build_summary` already writes it there.
+    fallback_model = settings.summary_body_fallback_model
+    try:
+        summary, truncated = _generate(
+            model,
+            system_msg,
+            body_contents,
+            temperature=settings.summary_temperature,
+            max_output_tokens=settings.summary_max_output_tokens,
+        )
+    except Exception as exc:
+        if not (fallback_model and fallback_model != model and is_rate_limited(exc)):
+            raise
+        logger.warning(
+            "body model %s exhausted its retries on 429 for pages %s-%s; falling back to %s",
+            model,
+            row["start"],
+            row["end"],
+            fallback_model,
+        )
+        summary, truncated = _generate(
+            fallback_model,
+            system_msg,
+            body_contents,
+            temperature=settings.summary_temperature,
+            max_output_tokens=settings.summary_max_output_tokens,
+        )
+        body_fallback_from, model = model, fallback_model
+    else:
+        body_fallback_from = None
     title, _ = _generate(title_model, TITLE_PROMPT, text, temperature=0.0)
     # The title call has no response_schema, and Gemini does not enforce maxLength on strings even
     # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and
@@ -788,6 +828,10 @@ def summarize_row(
         # history. auditModel/auditFingerprint are None when the verify pass did not run - a
         # different fact from "not recorded", which `verified` distinguishes.
         "model": model,
+        # Non-None only when the body fell back, and names what was ASKED for. `model` above already
+        # names what answered, so a caller comparing the two sees the downgrade without a schema
+        # change; `job.model` vs `summaries.model` shows the same thing after the fact.
+        "bodyFallbackFrom": body_fallback_from,
         "titleModel": title_model,
         "auditModel": audit_model if verify else None,
         "promptFingerprint": prompt_fingerprint,

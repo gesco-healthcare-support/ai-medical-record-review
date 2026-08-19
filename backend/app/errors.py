@@ -78,6 +78,20 @@ def is_daily_quota(exc: Exception) -> bool:
     return "PerDay" in text or "free_tier" in text
 
 
+def is_rate_limited(exc: Exception) -> bool:
+    """A 429 RESOURCE_EXHAUSTED, i.e. Vertex had no shared-quota capacity for this call.
+
+    Distinct from `is_daily_quota`: that one is a spent per-day/free-tier allowance, which retrying
+    cannot fix. A bare 429 is Dynamic Shared Quota - capacity unavailable at that moment - and the
+    retry seam already rides those out. This helper is for callers deciding what to do once the seam's
+    budget is SPENT and the 429 is still coming back.
+
+    Checked on the status code alone so callers need no google.genai import, matching
+    `is_deadline_exceeded` below - `summarize_engine` in particular deliberately names no SDK.
+    """
+    return getattr(exc, "code", None) == 429
+
+
 def is_deadline_exceeded(exc: Exception) -> bool:
     """A 504 DEADLINE_EXCEEDED: the per-request deadline WE set was too short for this call.
 

@@ -108,6 +108,18 @@ class Settings(BaseSettings):
     summary_body_model: str = ""
     summary_title_model: str = ""
     audit_model: str = ""
+    # The model the BODY call falls back to when Vertex will not serve the configured one. Only ever
+    # reached after `genai_retry.generate_with_retry` has spent its whole budget and is still getting
+    # 429s, and only for the body - the title and audit run flash already, so there is nowhere below
+    # them to go. Set to "none" to disable and let the row fail instead - "" cannot mean disabled,
+    # because an unset key is also "" and that has to resolve to the default.
+    #
+    # This exists because the body left 2.5-pro for availability, not quality: on 2026-08-13 Vertex
+    # refused 2.5-pro for this project outright, 0 of 8 on the configured endpoint, and every
+    # summarize job failed. It recovered by itself the next day. That can recur without warning, so a
+    # hard-pinned pro needs somewhere to land. Resolved in `_derive` rather than defaulted here so the
+    # openai branch still sees "" for an unset key.
+    summary_body_fallback_model: str = ""
     openai_api_key: str = ""
     # PHI gate. A signed BAA is NOT sufficient on its own: OpenAI additionally requires Zero Data
     # Retention (or Modified Abuse Monitoring / Eyes Off) approved on the ORGANIZATION. Confirmed
@@ -328,6 +340,14 @@ class Settings(BaseSettings):
             self.summary_body_model = self.summary_body_model or self.summary_model
             self.summary_title_model = self.summary_title_model or "gemini-2.5-flash"
             self.audit_model = self.audit_model or "gemini-2.5-flash"
+            # Defaulted ON rather than opt-in: the failure it guards against is an outage of the
+            # configured body model, and someone raising SUMMARY_MODEL to a pro tier is exactly the
+            # person who will not have thought about it. Harmless when the body already IS this model
+            # - summarize_engine skips a fallback that equals the model that just failed.
+            _fb = self.summary_body_fallback_model.strip()
+            self.summary_body_fallback_model = (
+                "" if _fb.lower() in ("none", "off") else (_fb or "gemini-3.5-flash")
+            )
         if self.summary_provider == "openai":
             # Fail at startup, not on the first summary. A worker that boots and then errors per row
             # burns a job and leaves the reviewer with a half-processed document.

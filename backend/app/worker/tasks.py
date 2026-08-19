@@ -269,9 +269,14 @@ def _build_summary(job, idx, row, output) -> Summary:
         verified_text=output.get("verifiedText"),
         verified_title=output.get("verifiedTitle"),
         verify_issues=output.get("verifyIssues"),
-        # The row's own review flag OR a body the model cut off at the token cap: both mean a human
-        # has to look at this summary before it ships.
-        manual_check=bool(output.get("manualCheck")) or bool(output.get("truncated")),
+        # The row's own review flag, a body the model cut off at the token cap, OR a body answered by
+        # the fallback model after the configured one was refused: all three mean a human has to look
+        # at this summary before it ships. The fallback case belongs here because the row was produced
+        # by a LESSER model than the job asked for - which is precisely the situation a reviewer would
+        # want flagged, and it is how the downgrade surfaces in the UI rather than only in a log.
+        manual_check=bool(output.get("manualCheck"))
+        or bool(output.get("truncated"))
+        or bool(output.get("bodyFallbackFrom")),
         row_start=row["start"],
         row_end=row["end"],
         row_category=row["category"],
