@@ -9,10 +9,12 @@ Ported with main's PR #25 hardening (edd110f).
 """
 
 import logging
+from functools import lru_cache
 
 import pytesseract
 from pdf2image import convert_from_path
 from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError
+from pypdf import PdfReader
 
 from app.config import get_settings
 from app.errors import OcrUnavailableError
@@ -31,16 +33,36 @@ def _ensure_tesseract() -> None:
         _configured = True
 
 
-def _ocr_image(image) -> str:
+def _ocr_image(image, dpi=None) -> str:
     """OCR one page image within a wall-clock timeout (ocr_timeout_seconds).
 
     A missing Tesseract is a config failure -> OcrUnavailableError (fail-fast). A timeout or a
     tesseract execution error is a per-page failure -> logged and re-raised as a RuntimeError the
     per-page callers skip; pytesseract kills the tesseract subprocess, so a hung/oversized page can
-    never block a worker thread forever (the concurrent-OCR deadlock backstop)."""
+    never block a worker thread forever (the concurrent-OCR deadlock backstop).
+
+    A REDUCED ``dpi`` is declared to Tesseract via --dpi, and that is not cosmetic: Tesseract judges
+    x-height from the DPI, so an image rendered below the base must say so or recognition degrades.
+    Falls back to the value ``_rasterize`` recorded on the image, so no caller threads it through.
+
+    At the base DPI the flag is deliberately OMITTED rather than passed as `--dpi 200`. Measured
+    2026-08-19: passing it changed the text of a page whose resolution had not changed at all, which
+    would have silently altered ~90% of stored OCR output for no measured gain. Declaring the DPI is a
+    correction owed only where the resolution was actually lowered.
+    """
     _ensure_tesseract()
+    settings = get_settings()
+    if dpi is None:
+        recorded = (getattr(image, "info", None) or {}).get("dpi")
+        if isinstance(recorded, (tuple, list)):  # PIL stores (x_dpi, y_dpi)
+            recorded = recorded[0] if recorded else None
+        if isinstance(recorded, (int, float)):
+            dpi = recorded
+    kwargs = {"timeout": settings.ocr_timeout_seconds}
+    if dpi and int(round(float(dpi))) != int(settings.ocr_base_dpi):
+        kwargs["config"] = f"--dpi {int(round(float(dpi)))}"
     try:
-        return pytesseract.image_to_string(image, timeout=get_settings().ocr_timeout_seconds)
+        return pytesseract.image_to_string(image, **kwargs)
     except pytesseract.TesseractNotFoundError as exc:
         raise OcrUnavailableError(f"Tesseract not found: {exc}") from exc
     except RuntimeError as exc:
@@ -48,12 +70,57 @@ def _ocr_image(image) -> str:
         raise
 
 
-def _rasterize(pdf_path, **kwargs):
-    """Rasterize pages, mapping a missing/broken Poppler to OcrUnavailableError."""
+@lru_cache(maxsize=64)
+def _page_long_edges_pt(pdf_path) -> tuple[float, ...]:
+    """Long edge of every page in points, cached per file.
+
+    One parse per document rather than per page: an upload is immutable, and a fresh PdfReader on a
+    335-page file costs enough that doing it per page would add tens of seconds to a full population.
+    An unreadable box is not fatal - callers fall back to the base DPI.
+    """
     try:
-        return convert_from_path(pdf_path, **kwargs)
+        reader = PdfReader(pdf_path)
+        return tuple(max(float(p.mediabox.width), float(p.mediabox.height)) for p in reader.pages)
+    except Exception as exc:
+        logger.warning("could not read page sizes, falling back to the base DPI: %s", exc)
+        return ()
+
+
+def _dpi_for_page(pdf_path, page) -> int:
+    """DPI for one page: the base, optionally lowered to keep the render within ocr_max_long_edge_px.
+
+    CAP-ONLY - the DPI is never raised, so an ordinary page renders exactly as it always did.
+
+    The cap is DISABLED by default (ocr_max_long_edge_px = 0) on measurement, not on principle. Capping
+    a 2700pt page to 3500px made OCR 4.2x faster and lost 6.0% of its characters; see the note on the
+    setting for why a higher cap did not recover them, and what would have to be measured to enable it.
+    """
+    settings = get_settings()
+    base = int(settings.ocr_base_dpi)
+    cap = int(settings.ocr_max_long_edge_px)
+    if cap <= 0 or page is None:
+        return base  # capping off, or a whole-document call where one DPI serves every page
+    edges = _page_long_edges_pt(pdf_path)
+    if not edges or page < 1 or page > len(edges) or edges[page - 1] <= 0:
+        return base
+    return max(1, min(base, int(cap * 72 / edges[page - 1])))
+
+
+def _rasterize(pdf_path, **kwargs):
+    """Rasterize pages, mapping a missing/broken Poppler to OcrUnavailableError.
+
+    Picks the DPI when the caller did not (see ``_dpi_for_page``) and records it on every image, so
+    ``_ocr_image`` can declare the same value to Tesseract without any call site threading it through.
+    """
+    kwargs.setdefault("dpi", _dpi_for_page(pdf_path, kwargs.get("first_page")))
+    dpi = kwargs["dpi"]
+    try:
+        images = convert_from_path(pdf_path, **kwargs)
     except (PDFInfoNotInstalledError, PDFPageCountError) as exc:
         raise OcrUnavailableError(f"Poppler (pdf2image) unavailable: {exc}") from exc
+    for image in images:
+        image.info["dpi"] = (dpi, dpi)
+    return images
 
 
 def extract_text_from_image(image) -> str:

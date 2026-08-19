@@ -179,6 +179,26 @@ class Settings(BaseSettings):
     # OMP_THREAD_LIMIT=1 in compose is the primary fix).
     ocr_timeout_seconds: int = 120
 
+    # Rasterization DPI for OCR. 200 was never a decision - pdf2image's default applied because
+    # _rasterize was called with no dpi at all. Explicit now so it is visible and tunable.
+    ocr_base_dpi: int = 200
+
+    # Optional cap on the rendered long edge in pixels; 0 DISABLES it (the default, deliberately).
+    # When set, the DPI is lowered so an oversized page fits, and never raised.
+    #
+    # It is off because capping was measured on 2026-08-19 and DID NOT PAY. On a 2700pt page (7500px
+    # at 200 DPI) a 3500px cap cut OCR from 7.4s to 1.5s - 4.2x - but over 20 such pages it lost 6.0%
+    # of recognized characters, one page dropping 59%. Raising the cap did not recover it: at 6500px
+    # (DPI 135, only 1.7x faster) the loss was still 3.8%. The premise that upsampling an oversized
+    # page is pure waste is WRONG - at 72 DPI an 8pt glyph is 8px tall, below what Tesseract needs to
+    # resolve, so the extra pixels buy real accuracy.
+    #
+    # Turning this on needs a proper quality metric first. Character count and difflib similarity are
+    # not enough: similarity sat near 70% even at DPI 135, because it punishes line reordering and
+    # whitespace rather than measuring accuracy. Word-level recall against a reference is the missing
+    # instrument. Until then, spending 8 seconds beats losing text out of a medical record.
+    ocr_max_long_edge_px: int = 0
+
     # Safety margin (seconds) subtracted from the size-aware job_timeout to bound every
     # ThreadPoolExecutor drain (see pool_timeout). The pool wait always fires JUST before RQ's
     # SIGKILL, so no as_completed() waits unbounded, yet it scales with page count.

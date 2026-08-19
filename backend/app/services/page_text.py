@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.models import PageText
-from app.services.ocr import extract_text_from_selected_pages
+from app.services.ocr import extract_pages_with_report
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +39,20 @@ def _extract(pdf_path, page: int) -> tuple[str, bool]:
     ("", True), because that page will never yield words however often it is retried, while a failed
     read may well succeed next time. Callers that surface "unreadable" rows to a reviewer, and any
     comparison between OCR engines, both depend on telling those apart.
+
+    Reads through ``extract_pages_with_report``, NOT ``extract_text_from_selected_pages``. The latter
+    catches a per-page Tesseract timeout and continues, so it returns empty text and raises nothing -
+    which arrived here as ("", True) and stored a page nobody could read as a legitimately blank one.
+    The reporting variant names the pages that failed, and that name is the only thing that keeps the
+    errored/blank distinction alive on this path.
     """
     try:
-        return (extract_text_from_selected_pages(pdf_path, [page]) or ""), True
+        text, report = extract_pages_with_report(pdf_path, [page])
     except Exception:
         # No page content in the log line: this text is PHI-bearing.
         logger.warning("page OCR failed for page %s", page, exc_info=True)
         return "", False
+    return (text or ""), page not in report["errored"]
 
 
 def _store(session, document_id: str, page: int, text: str, ok: bool = True) -> None:
@@ -54,6 +61,10 @@ def _store(session, document_id: str, page: int, text: str, ok: bool = True) -> 
     The unique constraint on (document_id, page) is the real guard: two workers can populate the same
     document at once (a re-segment while a dedup is finishing), and losing that race is harmless -
     the other writer stored the same text.
+
+    One case is NOT harmless: the existing row may be a stored FAILURE while this call carries a
+    successful read - which is exactly what a retry of a timed-out page looks like. Discarding that
+    would make the failure permanent, so a success replaces an unsuccessful row.
     """
     session.add(
         PageText(
@@ -67,21 +78,40 @@ def _store(session, document_id: str, page: int, text: str, ok: bool = True) -> 
     )
     try:
         session.commit()
+        return
     except IntegrityError:
         session.rollback()
+    if not ok:
+        return  # a failure never overwrites whatever is already stored
+    existing = session.scalar(
+        select(PageText).where(PageText.document_id == document_id, PageText.page == page)
+    )
+    if existing is not None and not existing.extract_ok:
+        existing.text, existing.extract_ok, existing.char_count = text, True, len(text)
+        session.commit()
 
 
 def get_page_text(session, document_id: str, page: int, pdf_path=None) -> str:
-    """The text of one page, from the store; OCR'd and stored on a miss when `pdf_path` is given."""
+    """The text of one page, from the store; OCR'd and stored on a miss when `pdf_path` is given.
+
+    A page stored as ERRORED is re-attempted when a path is given, the same way
+    ``get_row_text_with_report`` does it. This path used to serve the cached empty string forever, so a
+    single transient Tesseract timeout dropped that page from every stage reading through here - with
+    no error to notice, because an unreadable page and a blank one looked identical.
+    """
     row = session.scalar(
         select(PageText).where(PageText.document_id == document_id, PageText.page == page)
     )
-    if row is not None:
+    if row is not None and (row.extract_ok or pdf_path is None):
         return row.text or ""
     if pdf_path is None:
         return ""
     text, ok = _extract(pdf_path, page)
-    _store(session, document_id, page, text, ok)
+    if row is None:
+        _store(session, document_id, page, text, ok)
+    elif ok:  # a fresh failure leaves the stored failure as it stands
+        row.text, row.extract_ok, row.char_count = text, ok, len(text)
+        session.commit()
     return text
 
 
@@ -125,7 +155,17 @@ def populate_document(session, document_id: str, pdf_path, total_pages: int, wor
     if workers is None:
         workers = get_settings().page_text_workers
     # scalars() over a single column yields the VALUES, not rows - so this is a set of page numbers.
-    have = set(session.scalars(select(PageText.page).where(PageText.document_id == document_id)))
+    #
+    # extract_ok pages ONLY. Counting a stored FAILURE as done removed that page from every future
+    # population of the document, so one transient timeout became permanent by omission - the page was
+    # never missing, so nothing ever looked at it again.
+    have = set(
+        session.scalars(
+            select(PageText.page).where(
+                PageText.document_id == document_id, PageText.extract_ok.is_(True)
+            )
+        )
+    )
     missing = [p for p in range(1, int(total_pages) + 1) if p not in have]
     if not missing:
         return 0
