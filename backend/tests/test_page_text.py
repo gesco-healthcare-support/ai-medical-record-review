@@ -15,6 +15,7 @@ from sqlalchemy import select
 from app.auth.password import MrrPasswordHelper
 from app.db import get_sessionmaker
 from app.models import Document, PageText, User
+from app.services import ocr
 from app.services import page_text as pt
 from tests.conftest import unique_test_email
 
@@ -109,6 +110,69 @@ def test_a_failed_page_is_recorded_as_failed_and_retried_on_read(monkeypatch):
         text, report = pt.get_row_text_with_report(session, doc_id, [1], pdf_path="/x.pdf")
         assert text == "recovered"
         assert report["errored"] == [] and report["blank"] == []
+
+
+def test_a_tesseract_timeout_is_recorded_as_failed_not_blank(monkeypatch):
+    """WHEN Tesseract times out on a page, THE SYSTEM SHALL record extract_ok=False.
+
+    This test deliberately does NOT stub `pt._extract`, which every other test in this file does.
+    That is exactly why the defect it pins survived: `_extract`'s own body is where the failure signal
+    was lost, so stubbing it proves the CONTRACT while leaving the IMPLEMENTATION free to report
+    ok=True for a page nobody managed to read. Stub below it - at the Tesseract call - and the real
+    extraction path runs.
+    """
+
+    def timed_out(image, timeout=0, config=""):
+        raise RuntimeError("Tesseract process timeout")
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", timed_out)
+    monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [object()])
+    ocr._configured = True  # skip _ensure_tesseract's settings read
+
+    text, ok = pt._extract("/nonexistent/synthetic.pdf", 1)
+    assert text == ""
+    assert ok is False, "a timed-out page must not be indistinguishable from a genuinely blank one"
+
+
+def test_get_page_text_retries_a_page_stored_as_failed(monkeypatch):
+    """WHEN a page stored with extract_ok=False is read with a pdf_path, THE SYSTEM SHALL re-extract.
+
+    `get_row_text_with_report` already retries; this is the plain single-page read, which served the
+    cached empty string forever instead. A cached failure must not become permanent on ANY read path.
+    """
+    monkeypatch.setattr(pt, "_extract", lambda path, page: ("", False))
+    doc_id = _doc(pages=1)
+    with get_sessionmaker()() as session:
+        pt.populate_document(session, doc_id, "/x.pdf", 1)
+
+    monkeypatch.setattr(pt, "_extract", lambda path, page: ("recovered", True))
+    with get_sessionmaker()() as session:
+        assert pt.get_page_text(session, doc_id, 1, pdf_path="/x.pdf") == "recovered"
+        row = session.scalar(select(PageText).where(PageText.document_id == doc_id))
+        assert row.extract_ok is True and row.char_count == len("recovered")
+
+
+def test_populate_reattempts_a_page_stored_as_failed(monkeypatch):
+    """WHEN population runs again over a page stored as failed, THE SYSTEM SHALL re-attempt it.
+
+    `have` counted every stored page regardless of outcome, so one transient timeout removed a page
+    from every future population of that document - the failure became permanent by omission.
+    """
+    monkeypatch.setattr(pt, "_extract", lambda path, page: ("", False))
+    doc_id = _doc(pages=2)
+    with get_sessionmaker()() as session:
+        assert pt.populate_document(session, doc_id, "/x.pdf", 2) == 2
+
+    monkeypatch.setattr(pt, "_extract", lambda path, page: (f"body{page}", True))
+    with get_sessionmaker()() as session:
+        assert pt.populate_document(session, doc_id, "/x.pdf", 2) == 2, (
+            "failed pages must be retried"
+        )
+        rows = session.scalars(
+            select(PageText).where(PageText.document_id == doc_id).order_by(PageText.page)
+        ).all()
+        assert [r.text for r in rows] == ["body1", "body2"]
+        assert all(r.extract_ok for r in rows)
 
 
 def test_the_row_report_separates_errored_from_blank(monkeypatch):
