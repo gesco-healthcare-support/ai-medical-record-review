@@ -113,22 +113,74 @@ def merge_window_rows(window_reports, windows, total_pages):
     return deduped
 
 
+# How many of a row's leading pages the low-confidence re-classify may read, and the character
+# ceiling on their combined text.
+#
+# THREE, not one, and the number is measured rather than chosen. Escalating on ONE page makes a
+# document's category rest on the single page the boundary happens to point at, and boundaries move:
+# the same 463-page PDF (sha256 c8c514fc) segmented twice on the same build, 24 seconds apart, put
+# one document's start at page 94 in one run and 93 in the other. Page 93 is the previous document's
+# last page. Replayed on the segment worker, 3/3 each:
+#
+#     title alone .......... 13
+#     title + p94 .......... 13     the real first page
+#     title + p93 ......... 100     llm+embedding AGREE, so needs_review is False
+#     title + p93+94 ...... 100     still wrong, now merely uncertain
+#     title + p93+94+95 .... 13     recovered
+#
+# So a 52-page medico-legal evaluation - the richest category in the taxonomy - was assigned 100,
+# which is unchecked for summarization, and the cascade reported high confidence while doing it.
+#
+# TWO pages is NOT enough, which is why this is a flat page count rather than a "read more when the
+# first page looks thin" test. Page 93 holds 425 characters against page 94's 1153; any threshold
+# that fires on 425 is satisfied by their 1578 combined, and 1578 characters still answered 100.
+#
+# The character ceiling bounds the prompt: llm_classify inlines this text whole and truncates
+# nothing, and three pages of a dense deposition run far longer than three pages of a form.
+_ESCALATION_PAGES = 3
+_ESCALATION_CHARS = 12_000
+
+
+def _escalation_text(pdf_path, row, page_text_fn=None):
+    """Combined text of the row's first few pages, for the low-confidence re-classify.
+
+    Never reads past the row's own end, so the evidence always belongs to the document being
+    classified. A page whose text is missing is skipped rather than ending the read - a blank
+    scanned backside between two real pages must not truncate the evidence.
+    """
+    start = int(row["start"])
+    end = int(row.get("end") or start)
+    pages = list(range(start, min(start + _ESCALATION_PAGES - 1, end) + 1))
+    if page_text_fn is None:
+        # Standalone path: one extraction call for the whole span, keeping this module DB-free.
+        return extract_text_from_selected_pages(pdf_path, pages)[:_ESCALATION_CHARS]
+    parts = []
+    total = 0
+    for page in pages:
+        text = page_text_fn(page) or ""
+        if not text.strip():
+            continue
+        parts.append(text)
+        total += len(text)
+        if total >= _ESCALATION_CHARS:
+            break
+    return "\n".join(parts)[:_ESCALATION_CHARS]
+
+
 def _categorize(pdf_path, row, page_text_fn=None):
-    """B5 cascade on the title, escalating to first-page OCR when inconclusive; any low-confidence
-    result routes the row to human review via the flag.
+    """B5 cascade on the title, escalating to the row's first pages when inconclusive; any
+    low-confidence result routes the row to human review via the flag.
 
     ``page_text_fn(page) -> str`` lets the caller supply already-extracted text (the worker passes a
-    reader over the `page_texts` store). Without it this OCRs the page itself, which keeps this module
-    DB-free and standalone-runnable - but means the same page is extracted twice in a full run.
+    reader over the `page_texts` store). Without it this OCRs the pages itself, which keeps this
+    module DB-free and standalone-runnable - but means they are extracted twice in a full run. In the
+    worker every page is already in the store, so widening the escalation from one page to
+    ``_ESCALATION_PAGES`` costs extra row reads and prompt tokens, not extra OCR.
     """
     result = classify(row["title"])
     if result.needs_review:
         try:
-            page_text = (
-                page_text_fn(row["start"])
-                if page_text_fn is not None
-                else extract_text_from_selected_pages(pdf_path, [row["start"]])
-            )
+            page_text = _escalation_text(pdf_path, row, page_text_fn)
             if page_text.strip():
                 result = classify(row["title"], page_text=page_text)
         except Exception as exc:

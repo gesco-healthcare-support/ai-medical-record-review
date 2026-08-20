@@ -93,3 +93,115 @@ def test_the_segmentation_call_no_longer_reports_an_injury_date():
     # And the parser returns five fields, not six.
     parsed = parse_segment_item({"s": 1, "e": 2, "t": "T", "d": "01/02/2020", "m": "-"})
     assert len(parsed) == 5
+
+
+class _Result:
+    """Stand-in for classification.Classification, which is a frozen dataclass in the real module."""
+
+    def __init__(self, category, needs_review):
+        self.category = category
+        self.needs_review = needs_review
+        self.confidence = "low" if needs_review else "high"
+        self.method = "stub"
+
+
+def _row(start, end, title="Report", flag="-"):
+    return {"start": start, "end": end, "title": title, "date": "-", "flag": flag}
+
+
+def _categorize_capturing(monkeypatch, answers, *, confident_on_title=False):
+    """Run _categorize with classify() stubbed; return (row, list of page_text passed to classify).
+
+    `answers` maps the escalation text it receives to the category it should return, so a test can
+    say "these pages mean 13, those mean 100" without a model.
+    """
+    from app.services import segment_engine as se
+
+    seen = []
+
+    def _classify(title, page_text=None):
+        seen.append(page_text)
+        if page_text is None:
+            return _Result("100", needs_review=not confident_on_title)
+        return _Result(answers.get(page_text, "100"), needs_review=False)
+
+    monkeypatch.setattr(se, "classify", _classify)
+    return se, seen
+
+
+def test_escalation_reads_the_rows_first_three_pages_not_just_one(monkeypatch):
+    """The bug this fixes: one page of evidence let a boundary decide a 52-page document.
+
+    Page 93 (the previous document's tail) answered 100 and page 93+94 still answered 100; only the
+    three-page read recovered 13. So the escalation must hand classify() all three, joined.
+    """
+    se, seen = _categorize_capturing(monkeypatch, {"p93\np94\np95": "13"})
+    pages = {93: "p93", 94: "p94", 95: "p95", 96: "p96"}
+    row = se._categorize("x.pdf", _row(93, 145), lambda p: pages.get(p, ""))
+
+    assert seen[1:] == ["p93\np94\np95"], "escalation must read three pages, joined in page order"
+    assert row["category"] == "13"
+
+
+def test_escalation_never_reads_past_the_rows_own_end(monkeypatch):
+    """Evidence from the NEXT document would be a new way to get the category wrong."""
+    se, seen = _categorize_capturing(monkeypatch, {})
+    pages = {5: "p5", 6: "p6", 7: "SHOULD-NOT-BE-READ"}
+    se._categorize("x.pdf", _row(5, 6), lambda p: pages.get(p, ""))
+
+    assert seen[1:] == ["p5\np6"]
+
+
+def test_a_single_page_row_still_reads_exactly_that_page(monkeypatch):
+    se, seen = _categorize_capturing(monkeypatch, {})
+    se._categorize("x.pdf", _row(9, 9), lambda p: {9: "p9", 10: "p10"}.get(p, ""))
+
+    assert seen[1:] == ["p9"]
+
+
+def test_a_blank_page_is_skipped_rather_than_truncating_the_evidence(monkeypatch):
+    """Scanners emit blank backsides; a blank page 2 must not hide page 3 from the classifier."""
+    se, seen = _categorize_capturing(monkeypatch, {})
+    pages = {20: "p20", 21: "   ", 22: "p22"}
+    se._categorize("x.pdf", _row(20, 40), lambda p: pages.get(p, ""))
+
+    assert seen[1:] == ["p20\np22"]
+
+
+def test_a_confident_title_reads_no_pages_at_all(monkeypatch):
+    """The common case must be untouched: no page reads, so no added cost."""
+    se, seen = _categorize_capturing(monkeypatch, {}, confident_on_title=True)
+    reads = []
+
+    def _page_text(page):
+        reads.append(page)
+        return "text"
+
+    row = se._categorize("x.pdf", _row(1, 50), _page_text)
+
+    assert reads == [], "a confident title must not trigger any page read"
+    assert seen == [None]
+    assert row["flag"] == "-"
+
+
+def test_the_escalation_text_is_capped(monkeypatch):
+    """llm_classify inlines this text whole and truncates nothing, so the cap has to hold here."""
+    from app.services import segment_engine as se
+
+    se_cap = se._ESCALATION_CHARS
+    text = se._escalation_text("x.pdf", _row(1, 99), lambda p: "x" * se_cap)
+
+    assert len(text) == se_cap
+
+
+def test_an_unreadable_page_leaves_the_title_only_answer(monkeypatch):
+    """A page-store failure must not fail the job: the row keeps its title-only category + flag."""
+    se, seen = _categorize_capturing(monkeypatch, {})
+
+    def _boom(page):
+        raise RuntimeError("page store down")
+
+    row = se._categorize("x.pdf", _row(3, 8), _boom)
+
+    assert row["category"] == "100"
+    assert row["flag"] == "x", "a low-confidence row still routes to human review"
