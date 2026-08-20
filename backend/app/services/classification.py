@@ -120,7 +120,35 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
     for pattern, category in (
         (r"supplement\w*.{0,40}\b(qme|ame|pqme)\b|\b(qme|ame|pqme)\b.{0,40}supplement", "12"),
         (r"\b(qme|ame|pqme)\b|qualified medical evaluator|agreed medical evaluator", "13"),
-        (r"physical therapy|chiropractic|chiropractor|acupuncture|\bpt\b initial|pt progress", "5"),
+        # `shock[- ]?wave (therapy|treatment)` and `functional improvement` added 2026-08-20, both
+        # answered by the eData reviewers who write these reports by hand - the first document-type
+        # question we have asked them and had answered, rather than decided in-house.
+        #
+        # Extracorporeal Shockwave Treatment Report (an M.D. at a pain management practice) -> 5, and
+        # Functional Improvement Measurements (an L.Ac.) -> 5. Both were answered 100 by the cascade
+        # and 100 is unchecked for summarization, so all five occurrences reached no deliverable: four
+        # 7-page shockwave reports and one 14-page measurement sheet, 42 pages in total.
+        #
+        # The shockwave half is independently confirmed: on the reviewed copy of that record the
+        # reviewer changed all four rows from 100 to 5 by hand. The measurement sheet is NOT - the
+        # reviewer put those same 14 pages in 3 (diagnostic studies and imaging) on his copy. eData's
+        # answer is taken as authoritative here because 3 requires a study "reported as an image or a
+        # tracing", which a measurement sheet is not, and because the author is an acupuncturist. The
+        # disagreement is recorded rather than hidden; it is one row, and it is the kind of thing to
+        # re-ask if it recurs.
+        #
+        # `therapy|treatment` is REQUIRED after the wave, and that is the whole precision of this
+        # rule: extracorporeal shock wave LITHOTRIPSY is a urology procedure for kidney stones and
+        # shares the first three words. A bare `extracorporeal shock ?wave` was measured first and
+        # matched a constructed lithotripsy title, so it was narrowed to this. The narrowing also
+        # leaves alone the one real row (user 4, 7 pages) that says shockwave with no therapy or
+        # treatment word and sits at category 1 - no human has ruled on that one, so nothing here
+        # moves it.
+        (
+            r"physical therapy|chiropractic|chiropractor|acupuncture|\bpt\b initial|pt progress"
+            r"|shock[- ]?wave (therapy|treatment)|functional improvement",
+            "5",
+        ),
         (
             r"\bpr-?4\b|permanent and stationary|\bp ?& ?s\b|maximum medical improvement"
             r"|\bmmi\b|doctor'?s first report|\bdfr\b|initial.{0,20}consultation",
