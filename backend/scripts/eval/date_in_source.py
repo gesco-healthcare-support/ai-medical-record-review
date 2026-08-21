@@ -28,10 +28,32 @@ defect by a factor of twenty.
 
 The day_differs bucket is reported, never discounted. An earlier version of this script called it
 `ocr_repair` and treated it as benign - and that buried a real error, a row emitting 06/08 against
-text that plainly reads 06/18. The model had a clean date and produced a different one. So the true
-defect count is a RANGE, 24 to 29, and the report prints it that way.
+text that plainly reads 06/18. The model had a clean date and produced a different one. So the defect
+count is a RANGE, and the report prints it that way.
+
+THE DENOMINATOR, corrected 2026-08-21, and it moved the answer. The 1,458-row figure above pools
+every uploaded copy of a record, and the same PDF is uploaded more than once as a matter of course:
+`documents.sha256` shows 53 documents but only 39 distinct PDFs, and every one of user 5's seven
+records is a byte-identical re-upload of user 3's. Two copies of one record are not two samples -
+they are the same pages through the same pipeline - so pooling them dilutes the rate with duplicates
+of whatever the first copy did.
+
+Deduplicating by sha256 does not leave the number alone. Re-measured the same day on a wider corpus,
+coverage having grown as dedup jobs populated more `page_texts`:
+
+    every uploaded copy ....... 25 of 1775 rows absent = 1.4%, day_differs 5   -> 25 to 30
+    one copy per distinct PDF . 19 of  954 rows absent = 2.0%, day_differs 1   -> 19 to 20
+
+So one copy per PDF is the DEFAULT here, and `--all-copies` is available for anyone who wants the
+pooled figure. Quoting 1.4% understates the rate by about a third, purely from counting seven records
+twice.
+
+Coverage is still not the population - 1,920 rows are skipped for incomplete stored page text, and
+that count falls every time a dedup pass stores more pages. Re-run after one rather than treating any
+single run as final.
 
     docker compose exec -T -e PYTHONPATH=/app api python scripts/eval/date_in_source.py [--user N]
+        [--all-copies]
 """
 
 from __future__ import annotations
@@ -156,10 +178,43 @@ def summarise(buckets) -> str:
     return "\n".join(lines)
 
 
+def one_copy_per_pdf(pairs):
+    """Keep the rows of ONE document per distinct `sha256`; -> (kept, rows dropped, docs dropped).
+
+    THE DENOMINATOR PROBLEM this exists for. `documents.sha256` is indexed and not unique, and the
+    same PDF is uploaded more than once as a matter of course - re-running a case is legitimate, and
+    the upload warning is scoped to one user (`api/documents.py`), so a second account re-uploading
+    the same record is not warned at all. Measured 2026-08-21: 53 documents, 39 distinct PDFs, and
+    every one of user 5's seven records was a byte-identical re-upload of user 3's.
+
+    Any rate pooled across accounts therefore counts those records twice, and the copies are not
+    independent samples - they are the same pages through the same pipeline. That does not
+    necessarily move a percentage much, but it makes the denominator a number nobody can interpret.
+
+    Earliest copy wins, so the figure is stable as further copies are uploaded.
+    """
+    documents = {doc.id: doc for _row, doc in pairs}
+    by_sha: dict[str, object] = {}
+    for doc in documents.values():
+        winner = by_sha.get(doc.sha256)
+        # (created_at, id): earliest copy wins, id breaks a same-timestamp tie so the choice is
+        # deterministic. `created_at` is NOT NULL on documents, so no null case to carry.
+        if winner is None or (doc.created_at, doc.id) < (winner.created_at, winner.id):
+            by_sha[doc.sha256] = doc
+    keep_ids = {doc.id for doc in by_sha.values()}
+    kept = [(row, doc) for row, doc in pairs if doc.id in keep_ids]
+    return kept, len(pairs) - len(kept), len(documents) - len(keep_ids)
+
+
 def main() -> None:  # pragma: no cover - I/O wrapper around the tested functions above
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--user", type=int, default=None, help="restrict to one owner id")
     ap.add_argument("--margin", type=int, default=2, help="pages either side counted as adjacent")
+    ap.add_argument(
+        "--all-copies",
+        action="store_true",
+        help="count every uploaded copy of a record, not one per distinct PDF (see DENOMINATOR)",
+    )
     args = ap.parse_args()
 
     from sqlalchemy import select
@@ -174,6 +229,13 @@ def main() -> None:  # pragma: no cover - I/O wrapper around the tested function
         if args.user is not None:
             q = q.where(Document.user_id == args.user)
         pairs = session.execute(q).all()
+        if not args.all_copies:
+            pairs, duplicate_rows, duplicate_docs = one_copy_per_pdf(pairs)
+            if duplicate_docs:
+                print(
+                    f"excluded {duplicate_rows} row(s) in {duplicate_docs} redundant copy/copies of "
+                    f"a record already counted (--all-copies to include them)\n"
+                )
 
         # One page-text read per document, not per row: a 2,600-page record has hundreds of rows.
         texts: dict[str, dict[int, str]] = {}
