@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.auth.password import MrrPasswordHelper
 from app.db import get_sessionmaker
+from app.errors import OcrUnavailableError
 from app.models import Document, PageText, User
 from app.services import ocr
 from app.services import page_text as pt
@@ -216,3 +217,29 @@ def test_no_pages_requested_is_not_an_error(pages):
         assert pt.get_pages_text(session, doc_id, pages or []) == ""
         text, report = pt.get_row_text_with_report(session, doc_id, pages or [])
         assert text == "" and report["pages"] == []
+
+
+def test_a_missing_tesseract_fails_fast_instead_of_marking_every_page_failed(monkeypatch):
+    """WHEN Tesseract is MISSING, THE SYSTEM SHALL raise rather than record a per-page failure.
+
+    The sibling test above pins the opposite case, and the PAIR is the point: a TIMEOUT is per-page and
+    retryable, a MISSING BINARY is config and can never succeed. `ocr` draws that line deliberately and
+    raises `OcrUnavailableError` to carry it; `_extract` caught it with everything else and flattened
+    both to ("", False).
+
+    That was survivable while a stored failure was permanent. It stopped being survivable when #131
+    made failures RETRYABLE: with no binary present, every page of every document is marked failed and
+    every later run re-attempts every page against something that cannot work. Stubbed below `_extract`
+    for the same reason as the timeout test - the flattening happens inside its body, so stubbing
+    `_extract` itself would prove nothing about it.
+    """
+
+    def not_installed(image, timeout=0, config=""):
+        raise ocr.pytesseract.TesseractNotFoundError()
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", not_installed)
+    monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [object()])
+    ocr._configured = True  # skip _ensure_tesseract's settings read
+
+    with pytest.raises(OcrUnavailableError):
+        pt._extract("/nonexistent/synthetic.pdf", 1)

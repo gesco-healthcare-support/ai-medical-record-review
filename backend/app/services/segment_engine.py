@@ -14,6 +14,7 @@ from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
+from app.errors import OcrUnavailableError
 from app.errors import PipelineTimeoutError
 from app.services.classification import classify
 from app.services.gemini import (
@@ -183,6 +184,13 @@ def _categorize(pdf_path, row, page_text_fn=None):
             page_text = _escalation_text(pdf_path, row, page_text_fn)
             if page_text.strip():
                 result = classify(row["title"], page_text=page_text)
+        except OcrUnavailableError:
+            # Narrow on purpose. The broad catch below is RIGHT for a per-page failure - one
+            # unreadable page must not stop a document being categorized on its title alone. It is
+            # wrong for a config failure, which fails identically on EVERY row: the whole document
+            # would be quietly categorized title-only, and so would every document after it, leaving
+            # one WARNING per row and nothing naming the missing binary.
+            raise
         except Exception as exc:
             logger.warning("classification escalation OCR failed: %s", exc)
     row["category"] = result.category
