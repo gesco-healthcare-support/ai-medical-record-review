@@ -318,7 +318,12 @@ _KNOWN_CATEGORIES = (
     | _VERDICT_CATEGORIES
     | _DEPOSITION_CATEGORIES
     | _EMBEDDED_REVIEW_CATEGORIES
-    | frozenset({"4", "7", "8", "10", "11", "100"})
+    # 15 (UR/IMR determinations) is listed here rather than in _VERDICT_CATEGORIES on purpose. Its
+    # content IS a verdict, so that block looks like the obvious home - but _C_VERDICT is worded for
+    # "a diagnostic study or a laboratory or test result", which a determination letter is not, and
+    # the requirement is stated directly in category 15's own prompt instead. Listing it here gives
+    # it the same minimal preamble as 10, the request this category answers.
+    | frozenset({"4", "7", "8", "10", "11", "15", "100"})
 )
 
 

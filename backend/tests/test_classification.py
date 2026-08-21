@@ -353,12 +353,12 @@ def test_the_evaluators_own_report_is_still_an_evaluation(title):
         # In the same record, "Acupuncture Report" HAS a rule (5) and was summarized correctly - so
         # the presence of a rule, not the clinical content, is what decided whether it survived.
         #
-        # 2026-08-20: the first TWO are now answered, by the eData reviewers rather than in-house, and
-        # have moved out of this list into
-        # test_edata_confirmed_types_are_physical_therapy - both category 5. They xpassed here the
-        # moment the rule landed, which is what this pin is for. The third stays: eData say the
-        # utilization review letter needs a category of its own, which does not exist yet.
-        "Utilization Review Letter",
+        # 2026-08-20 (#137): the first two moved out of this list into
+        # test_edata_confirmed_types_are_physical_therapy - both category 5.
+        # 2026-08-21 (#138): the third moved out too. "Utilization Review Letter" is answered by
+        # the new category 15 and pinned in test_utilization_review_titles_are_category_fifteen.
+        # Each xpassed here the moment its rule landed, which is what this pin is for, so all
+        # three are now gone and only the types still waiting on a decision remain above.
     ],
 )
 def test_recurring_paperwork_is_answered_by_a_rule(title):
@@ -512,3 +512,110 @@ def test_a_bare_shockwave_mention_is_left_to_the_cascade():
 )
 def test_evaluator_reports_outrank_the_new_category_five_terms(title, expected):
     assert classification.match_rules(title) == expected
+
+
+# Category 15, added 2026-08-21 and answered by Adam: a utilization review or independent medical
+# review determination is its own document type. Before the rule, that one type was answered FOUR
+# different ways across the corpus - 10 twelve times, 100 four times, 3 three times and 5 twice -
+# and on the single reviewed copy a human put four identical documents into three categories.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Utilization Review Letter",
+        "Utilization Review Determination",
+        "UTILIZATION REVIEW - NON-CERTIFICATION",
+        "Utilization Review - Modification",
+        "Independent Medical Review Determination",
+        "IMR Final Determination Letter",
+    ],
+)
+def test_utilization_review_titles_are_category_fifteen(title):
+    assert classification.match_rules(title) == "15"
+
+
+# Placement, which is the whole design of that rule. It sits BELOW the evaluator rules and ABOVE
+# every clinical modality rule, so a determination ABOUT an imaging or therapy request is a
+# determination rather than an imaging or therapy report - while an evaluator's own report that
+# happens to discuss utilization review stays an evaluation.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        # Evaluator reports keep priority.
+        ("QME Report - Utilization Review History", "13"),
+        ("Supplemental AME Report re Utilization Review", "12"),
+        # A determination about a clinical modality is still a determination.
+        ("Utilization Review - MRI Lumbar Spine", "15"),
+        ("Utilization Review Determination - Physical Therapy", "15"),
+        ("Utilization Review - Acupuncture Request", "15"),
+        ("Utilization Review Response - Progress Report", "15"),
+    ],
+)
+def test_utilization_review_rule_placement(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# The request and the answer stay apart. Category 10 is the treating physician ASKING; 15 is the
+# reviewer answering. No observed title carries both phrases - measured over every row on the box -
+# so this pins the intent rather than an observed case.
+def test_a_bare_request_for_authorization_is_still_category_ten():
+    assert classification.match_rules("Request For Authorization") == "10"
+    assert classification.match_rules("RFA (Request For Authorization)") == "10"
+
+
+# `imr` is matched as a whole word only. A three-letter token is the riskiest kind of rule, so the
+# boundary is pinned: no longer word containing those letters may claim the category.
+@pytest.mark.parametrize("title", ["Imring Report", "Simr Note", "IMRI Study"])
+def test_imr_needs_a_word_boundary(title):
+    assert classification.match_rules(title) != "15"
+
+
+def test_the_utilization_review_migration_carries_the_same_text_as_the_constants():
+    """The classifier reads the DB catalog first, so adding a category to taxonomy.py reaches a
+    seeded box only through the migration. Same guard as
+    test_the_catalog_migration_carries_the_same_text_as_the_constants, for the new row."""
+    import importlib.util
+    from pathlib import Path
+
+    from app.services.seed_catalog import constants_categories
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "b3f7c02e91a4_utilization_review_category.py"
+    )
+    spec = importlib.util.spec_from_file_location("ur_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    by_id = {c["id"]: c for c in constants_categories()}
+    assert migration.CATEGORY_ID in by_id, "category 15 missing from the constants"
+    row = by_id[migration.CATEGORY_ID]
+    assert row["name"] == migration._NAME
+    assert row["description"] == migration._DESCRIPTION
+    assert list(row["examples"]) == migration._EXAMPLES
+    # The new category must be summarized by default, or the rule would move these documents out of
+    # General and they would still reach no deliverable.
+    assert row["summarize_default"] is True
+    assert row["auto_assign"] is True
+
+
+def test_category_fifteen_has_its_own_summary_prompt():
+    """A category with no code prompt falls back to the general (100) one, which would summarize a
+    determination as generic paperwork. `prompts.py` is the source of truth - no DB row is seeded for
+    it, by design (see f1a83b5c60d2)."""
+    from app.services.seed_catalog import code_summary_prompt
+
+    prompt = code_summary_prompt("15")
+    assert prompt is not None
+    lowered = prompt.lower()
+    # The three outcomes Adam named. A prompt offering only approved/denied would misreport a
+    # partial authorization as one or the other, which misstates the treatment the patient got.
+    for word in ("certif", "modif", "deni"):
+        assert word in lowered, f"the prompt never mentions {word}"
+    # Two requirements that carry the "short summary" instruction. The determination must be
+    # reported even on an approval - this category gets no _C_VERDICT block, see summarize_engine's
+    # _KNOWN - and the quoted treating history must NOT be summarized, or every UR letter becomes a
+    # second copy of records already summarized elsewhere in the deliverable.
+    assert "even when the request was approved" in lowered
+    assert "do not summarize the medical records" in lowered
