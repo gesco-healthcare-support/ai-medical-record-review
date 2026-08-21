@@ -299,7 +299,13 @@ def test_run_marks_error_with_a_friendly_message():
 
 
 def test_segment_document_persists_segment_and_review_rows(monkeypatch):
+    import app.services.page_text as page_text_mod
     import app.services.segment_engine as se
+
+    # This document has no file on disk, and the page-text pass now PROPAGATES a config failure
+    # instead of swallowing it (Poppler cannot open a nonexistent path). Stub the pass out: this test
+    # is about row persistence, not OCR, and the OCR failure modes have their own dedicated tests.
+    monkeypatch.setattr(page_text_mod, "populate_document", lambda *a, **k: 0)
 
     def _row(start, category):
         return {
@@ -1451,7 +1457,13 @@ def test_identify_does_not_start_a_duplicate_check(monkeypatch):
     sub-documents to summarize - checking documents nobody will summarize is work spent for nothing,
     and running it automatically means running it before the choice has been made.
     """
+    import app.services.page_text as page_text_mod
     import app.services.segment_engine as se
+
+    # This document has no file on disk, and the page-text pass now PROPAGATES a config failure
+    # instead of swallowing it (Poppler cannot open a nonexistent path). Stub the pass out: this test
+    # is about which jobs get enqueued, not OCR, and the OCR failure modes have their own dedicated tests.
+    monkeypatch.setattr(page_text_mod, "populate_document", lambda *a, **k: 0)
 
     monkeypatch.setattr(se, "get_genai_client", lambda: None)
     monkeypatch.setattr(se, "byte_budgeted_windows", lambda *a, **k: [(1, 2)])
@@ -1861,3 +1873,84 @@ def test_summarize_document_flags_a_fallback_body_for_manual_check(monkeypatch):
         # after-the-fact surface for a downgrade, with no schema change.
         assert summaries[0].model == "gemini-3.5-flash"
         assert session.get(Job, job_id).model == "gemini-2.5-pro"
+
+
+def _seg_row(start, category):
+    return {
+        "start": start,
+        "end": start,
+        "category": category,
+        "title": "A",
+        "date": "-",
+        "injury_date": "-",
+        "flag": "-",
+        "suggest_merge": False,
+    }
+
+
+def test_a_missing_ocr_binary_fails_the_segment_job(monkeypatch):
+    """WHEN population fails because Tesseract is MISSING, THE SYSTEM SHALL fail the segment job.
+
+    The population call is deliberately best-effort - "a failure here must not fail the job - every
+    reader falls back to extracting on demand". That holds for a transient failure and is exactly wrong
+    for a missing binary: NO reader can fall back, because nothing can extract. Left swallowed, the
+    document segments with no text at all and the operator meets the problem downstream as a Vertex 400
+    naming nothing about OCR. `_run` already turns this exception into a friendly "OCR" job error - the
+    wrapper was the only thing standing between the two.
+    """
+    import app.services.page_text as page_text_mod
+    import app.services.segment_engine as se
+
+    def missing_binary(session, document_id, pdf_path, total_pages, workers=None):
+        raise OcrUnavailableError("no tesseract on this host")
+
+    monkeypatch.setattr(page_text_mod, "populate_document", missing_binary)
+    # Whether segmentation was REACHED is the precise signal. Asserting on the error message alone
+    # cannot discriminate: the test document's stored_path does not exist, so a later real OCR attempt
+    # raises OcrUnavailableError from Poppler too, and the job would show an "OCR" error either way.
+    ran = []
+    monkeypatch.setattr(
+        se,
+        "run_segmentation",
+        lambda pdf_path, total_pages, progress=None, page_text_fn=None: (
+            ran.append(True),
+            [_seg_row(1, "1")],
+        )[1],
+    )
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+
+    segment_document(job_id)
+    assert ran == [], "a config failure must stop the job BEFORE segmentation, not merely log"
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "error"
+        assert "OCR" in job.error  # friendly, and it names the real subsystem
+        assert session.get(Document, doc_id).status == "error"
+
+
+def test_any_other_population_failure_stays_best_effort(monkeypatch):
+    """The other half of the pair: a TRANSIENT population failure must still let the job finish, because
+    every reader really can fall back to extracting on demand. Pinned so narrowing the catch cannot
+    quietly become removing it."""
+    import app.services.page_text as page_text_mod
+    import app.services.segment_engine as se
+
+    def transient(session, document_id, pdf_path, total_pages, workers=None):
+        raise RuntimeError("one page timed out")
+
+    monkeypatch.setattr(page_text_mod, "populate_document", transient)
+    monkeypatch.setattr(
+        se,
+        "run_segmentation",
+        lambda pdf_path, total_pages, progress=None, page_text_fn=None: [_seg_row(1, "1")],
+    )
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+
+    segment_document(job_id)
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        assert session.get(Document, doc_id).status == "reviewing"

@@ -11,6 +11,8 @@ page ranges are final, storing onto the row that everything downstream reads.
 Pure: the model client, the window call and the categorizer are all stubbed, so nothing hits Vertex.
 """
 
+import pytest
+
 
 def test_segmentation_reads_the_injury_date_per_sub_document(monkeypatch):
     """WHEN segmentation finishes, THE SYSTEM SHALL read each row's injury date from that row's OWN
@@ -205,3 +207,36 @@ def test_an_unreadable_page_leaves_the_title_only_answer(monkeypatch):
 
     assert row["category"] == "100"
     assert row["flag"] == "x", "a low-confidence row still routes to human review"
+
+
+def test_a_config_failure_in_the_escalation_is_not_swallowed(monkeypatch):
+    """WHEN the escalation read fails because Tesseract is MISSING, THE SYSTEM SHALL propagate it.
+
+    The broad catch here is RIGHT for a per-page failure: one unreadable page must not stop a document
+    being categorized on its title alone. It is wrong for a config failure, which fails identically on
+    EVERY row - so the whole document is quietly categorized title-only, and so is every document after
+    it, leaving one WARNING per row and nothing that says the binary is missing.
+    """
+    from app.errors import OcrUnavailableError
+
+    se, _seen = _categorize_capturing(monkeypatch, {})
+
+    def missing_binary(page):
+        raise OcrUnavailableError("no tesseract on this host")
+
+    with pytest.raises(OcrUnavailableError):
+        se._categorize("x.pdf", _row(5, 7), missing_binary)
+
+
+def test_a_per_page_failure_in_the_escalation_still_falls_back_to_the_title(monkeypatch):
+    """The other half of the pair, and the reason the fix above must be narrow: a TIMEOUT must still
+    degrade to title-only rather than failing the document. Pinned so re-raising a config failure can
+    never be widened into re-raising everything."""
+    se, seen = _categorize_capturing(monkeypatch, {})
+
+    def timed_out(page):
+        raise RuntimeError("Tesseract process timeout")
+
+    row = se._categorize("x.pdf", _row(5, 7), timed_out)
+    assert seen == [None], "only the title-only classify should have run"
+    assert row["category"] == "100"

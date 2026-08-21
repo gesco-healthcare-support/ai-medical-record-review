@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
+from app.errors import OcrUnavailableError
 from app.models import PageText
 from app.services.ocr import extract_pages_with_report
 
@@ -48,6 +49,21 @@ def _extract(pdf_path, page: int) -> tuple[str, bool]:
     """
     try:
         text, report = extract_pages_with_report(pdf_path, [page])
+    except OcrUnavailableError:
+        # A MISSING Tesseract or Poppler is a CONFIG failure, and `ocr` raises a distinct type
+        # precisely to say so ("A missing Tesseract is a config failure -> fail-fast"). Catching it
+        # with everything else erased that distinction one layer above the place that drew it: it
+        # became ("", False), identical to a timeout.
+        #
+        # Harmless while a stored failure was permanent. NOT harmless once failures became retryable
+        # (get_page_text re-extracts an errored row, populate_document counts only extract_ok=True as
+        # done): with no binary present every page of every document is marked failed, and every later
+        # run re-attempts every page against something that cannot succeed. Wasted once became wasted
+        # every run.
+        #
+        # Not hypothetical - a missing Tesseract has produced empty OCR here before and surfaced
+        # downstream as a Vertex 400 naming nothing about OCR at all.
+        raise
     except Exception:
         # No page content in the log line: this text is PHI-bearing.
         logger.warning("page OCR failed for page %s", page, exc_info=True)

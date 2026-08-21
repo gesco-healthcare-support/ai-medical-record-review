@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select, update
 
 from app.config import get_settings
+from app.errors import OcrUnavailableError
 from app.db import get_engine, get_sessionmaker
 from app.errors import user_facing_message
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary
@@ -307,6 +308,13 @@ def segment_document(job_id) -> None:
         report("reading", 0, document.page_count or 0)
         try:
             populate_document(session, document.id, document.stored_path, document.page_count or 0)
+        except OcrUnavailableError:
+            # The ONE failure that best-effort must not cover. "Every reader falls back to extracting
+            # on demand" is true of a transient failure and false of a missing binary: there is no
+            # reader that can fall back, because nothing can extract. Swallowed, the document segments
+            # with no text at all and the operator meets the problem downstream as a Vertex 400 that
+            # names nothing about OCR. `_run` already turns this into a friendly "OCR" job error.
+            raise
         except Exception:
             logger.warning("page text population failed for %s", document.id, exc_info=True)
 
