@@ -40,7 +40,17 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from collections import Counter
+from pathlib import Path
+
+# scripts/ is not a package. Running this file by path already puts its directory on sys.path, but
+# being explicit means the import works from a test too - and at MODULE level rather than inside
+# main(), so a missing helper fails loudly on import and the suite catches it. Hidden inside main()
+# it would pass CI and raise only when someone ran the script against the box.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from date_in_source import one_copy_per_pdf  # noqa: E402
 
 # A date in the forms OCR produces. Deliberately the same tolerance as date_in_source: a
 # slashes-only reader over-reports by about 2x.
@@ -217,12 +227,6 @@ def main() -> None:  # pragma: no cover - I/O wrapper around the tested function
         help="count every uploaded copy of a record, not one per distinct PDF",
     )
     args = ap.parse_args()
-
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from date_in_source import one_copy_per_pdf
 
     from sqlalchemy import select, text as sql_text
 
