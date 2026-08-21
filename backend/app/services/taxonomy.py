@@ -257,6 +257,28 @@ CATEGORIES: dict[str, "Category"] = {
             "Culture and Sensitivity",
         ),
     ),
+    "15": Category(
+        "15",
+        "Utilization review and independent medical review (UR/IMR)",
+        # The embedding and LLM stages read this text, so the last sentence is load-bearing: this
+        # category and 10 are the two halves of one exchange, and the classifier was answering 10
+        # for these twelve times. The distinction is WHO WROTE IT and WHICH DIRECTION it runs - the
+        # treating physician asking (10) versus a reviewer for the claims administrator answering.
+        "A determination on whether requested treatment is medically necessary, written by a "
+        "reviewing physician for the claims administrator rather than by the treating physician: "
+        "utilization review (UR) decisions certifying, modifying, or denying a request, and "
+        "independent medical review (IMR) determinations deciding an appeal against a UR denial. "
+        "The treating physician's own REQUEST for that treatment is a Request For Authorization and "
+        "belongs to that category, not here - this category holds the ANSWER to it.",
+        (
+            "Utilization Review Determination",
+            "Utilization Review Letter",
+            "Utilization Review - Non-Certification",
+            "Utilization Review - Modification",
+            "Independent Medical Review Determination",
+            "IMR Final Determination Letter",
+        ),
+    ),
     "100": Category(
         "100",
         "General or uncategorized documents",

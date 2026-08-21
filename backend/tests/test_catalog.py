@@ -193,3 +193,25 @@ def test_validate_rows_ok_and_errors(session):
     assert "unknown category" in validate_rows(
         session, [{"start": 1, "end": 2, "category": "999"}], 5
     )
+
+
+def test_an_unseeded_catalog_still_offers_category_fifteen(session):
+    """The property that makes the migration's no-op on an unseeded catalog correct.
+
+    `catalog.get_categories` falls back to `taxonomy.py` only while the `categories` table is EMPTY,
+    which is the normal state for a fresh box, local dev and CI - seed_catalog() is called nowhere in
+    the app. So the migration must NOT insert a row there: one row would end the fallback and
+    collapse the catalog from fifteen categories to that one.
+
+    Measured before this guard existed: running the migration against the test database left
+    `categories` holding id 15 alone, and `llm_classify("Progress Report")` began returning None
+    because "1" was no longer an allowed id. This pins the fallback that makes doing nothing safe.
+    """
+    from app.services import catalog
+
+    ids = catalog.get_category_ids(session, active_only=True, auto_assign=True)
+    assert "15" in ids, "an unseeded catalog must still offer category 15 from the constants"
+    # The fallback has to carry the REST too - that is the half the bug destroyed.
+    for category_id in ("1", "3", "5", "10", "13", "100"):
+        assert category_id in ids
+    assert catalog.summarize_default_for(session, "15") is True

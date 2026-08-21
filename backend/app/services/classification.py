@@ -150,6 +150,20 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
     for pattern, category in (
         (r"supplement\w*.{0,40}\b(qme|ame|pqme)\b|\b(qme|ame|pqme)\b.{0,40}supplement", "12"),
         (r"\b(qme|ame|pqme)\b|qualified medical evaluator|agreed medical evaluator", "13"),
+        # Category 15 added 2026-08-21, answered by Adam. PLACEMENT IS THE DESIGN: after the
+        # evaluator rules (a QME report discussing a utilization review is still the evaluation) and
+        # before every clinical modality rule below (a determination ABOUT an MRI request is a
+        # determination, not an MRI report; the same for physical therapy and progress reports).
+        #
+        # It sits above 10 deliberately too, even though no observed title contains both - measured
+        # over every row on the box, zero utilization-review titles also say "RFA" or "request for
+        # authorization", so the order decides nothing today and states the intent for the day a
+        # title carries both. 10 is the treating physician ASKING; this is the answer coming back.
+        #
+        # Before this, these landed in 10 twelve times, 100 four times, 3 three times and 5 twice -
+        # one document type answered four different ways, and on the one reviewed copy a human put
+        # four identical documents into three different categories.
+        (r"utilization review|independent medical review|\bimr\b", "15"),
         # `shock[- ]?wave (therapy|treatment)` and `functional improvement` added 2026-08-20, both
         # answered by the eData reviewers who write these reports by hand - the first document-type
         # question we have asked them and had answered, rather than decided in-house.
