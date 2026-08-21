@@ -22,6 +22,7 @@ from date_in_source import (  # noqa: E402
     DAY_DIFFERS,
     WITHIN_MARGIN,
     classify_date,
+    one_copy_per_pdf,
     date_patterns,
     summarise,
 )
@@ -153,3 +154,56 @@ def test_the_report_headlines_the_narrowest_number():
 
 def test_the_report_survives_an_empty_run():
     assert summarise([]) == "no rows checked"
+
+
+class _Doc:
+    """Minimal stand-in for a Document row: only the three fields one_copy_per_pdf reads."""
+
+    def __init__(self, doc_id, sha256, created_at):
+        self.id = doc_id
+        self.sha256 = sha256
+        self.created_at = created_at
+
+
+def _pairs(*specs):
+    """(doc_id, sha, created_at, row_count) -> the (row, doc) pair list the script builds."""
+    out = []
+    for doc_id, sha, created, rows in specs:
+        doc = _Doc(doc_id, sha, created)
+        out.extend((object(), doc) for _ in range(rows))
+    return out
+
+
+def test_one_copy_per_pdf_drops_a_re_upload():
+    """The denominator problem: 53 documents on the box are 39 distinct PDFs, and every one of one
+    account's seven records is a byte-identical re-upload of another's. Pooling counts them twice."""
+    pairs = _pairs(("a", "sha1", 1, 3), ("b", "sha1", 2, 3), ("c", "sha2", 3, 2))
+    kept, dropped_rows, dropped_docs = one_copy_per_pdf(pairs)
+
+    assert dropped_docs == 1
+    assert dropped_rows == 3
+    assert {doc.id for _row, doc in kept} == {"a", "c"}
+
+
+def test_one_copy_per_pdf_keeps_the_earliest_copy():
+    """Earliest wins so the figure does not move as further copies are uploaded."""
+    pairs = _pairs(("late", "sha1", 9, 1), ("early", "sha1", 1, 1))
+    kept, _rows, _docs = one_copy_per_pdf(pairs)
+
+    assert {doc.id for _row, doc in kept} == {"early"}
+
+
+def test_one_copy_per_pdf_is_deterministic_on_a_timestamp_tie():
+    """Two copies uploaded in the same instant must not pick a different winner per run."""
+    first = one_copy_per_pdf(_pairs(("y", "s", 5, 1), ("x", "s", 5, 1)))[0]
+    second = one_copy_per_pdf(_pairs(("x", "s", 5, 1), ("y", "s", 5, 1)))[0]
+
+    assert {d.id for _r, d in first} == {d.id for _r, d in second} == {"x"}
+
+
+def test_one_copy_per_pdf_keeps_everything_when_nothing_repeats():
+    pairs = _pairs(("a", "sha1", 1, 2), ("b", "sha2", 2, 2), ("c", "sha3", 3, 2))
+    kept, dropped_rows, dropped_docs = one_copy_per_pdf(pairs)
+
+    assert (dropped_rows, dropped_docs) == (0, 0)
+    assert len(kept) == 6
