@@ -352,8 +352,12 @@ def test_the_evaluators_own_report_is_still_an_evaluation(title):
         #   - "Utilization Review Letter" x4, 8 pages -> 100, dropped. The human summarized it.
         # In the same record, "Acupuncture Report" HAS a rule (5) and was summarized correctly - so
         # the presence of a rule, not the clinical content, is what decided whether it survived.
-        "Extracorporeal Shockwave Treatment Report",
-        "Functional Improvement Measurements",
+        #
+        # 2026-08-20: the first TWO are now answered, by the eData reviewers rather than in-house, and
+        # have moved out of this list into
+        # test_edata_confirmed_types_are_physical_therapy - both category 5. They xpassed here the
+        # moment the rule landed, which is what this pin is for. The third stays: eData say the
+        # utilization review letter needs a category of its own, which does not exist yet.
         "Utilization Review Letter",
     ],
 )
@@ -447,3 +451,64 @@ def test_general_corpus_names_the_administrative_documents():
     described = f"{CATEGORIES['100'].description} {' '.join(CATEGORIES['100'].examples)}".lower()
     for word in ("routing", "correspondence", "declaration", "records request"):
         assert word in described
+
+
+# The first document-type question answered by the eData reviewers who write these reports by hand,
+# rather than decided in-house: an Extracorporeal Shockwave Treatment Report (an M.D. at a pain
+# management practice) and Functional Improvement Measurements (an L.Ac.) are both category 5.
+#
+# Both were answered 100 by the cascade before this, and 100 is unchecked for summarization, so all
+# five occurrences reached no deliverable - four 7-page shockwave reports and one 14-page measurement
+# sheet, 42 pages. The shockwave half is independently confirmed: on the reviewed copy of that record
+# the reviewer moved all four rows from 100 to 5 by hand.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Extracorporeal Shockwave Treatment Report", "5"),
+        ("EXTRACORPOREAL SHOCKWAVE TREATMENT REPORT", "5"),
+        ("Extracorporeal Shock Wave Therapy", "5"),
+        ("Shock-Wave Treatment Note", "5"),
+        ("Functional Improvement Measurements", "5"),
+        ("FUNCTIONAL IMPROVEMENT MEASUREMENTS", "5"),
+    ],
+)
+def test_edata_confirmed_types_are_physical_therapy(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# The precision of that rule, and the reason `therapy|treatment` is required after the wave rather
+# than matching the wave alone. Extracorporeal shock wave LITHOTRIPSY is a urology procedure for
+# kidney stones and shares the first three words with the physical-therapy modality. A bare
+# `extracorporeal shock ?wave` was written and measured first; it claimed these, which is what
+# narrowed it.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Extracorporeal Shock Wave Lithotripsy Operative Report",
+        "ESWL - Lithotripsy Procedure Note",
+        "Extracorporeal Shock Wave Lithotripsy",
+    ],
+)
+def test_lithotripsy_is_not_claimed_by_the_shockwave_rule(title):
+    assert classification.match_rules(title) != "5"
+
+
+# A shockwave title with NO therapy or treatment word is deliberately left to the cascade. One real
+# row looks like this (7 pages, sitting at category 1) and no human has ruled on it, so the rule must
+# not move it on our guess. Pinned because widening the pattern to catch it would look like an
+# obvious improvement.
+def test_a_bare_shockwave_mention_is_left_to_the_cascade():
+    assert classification.match_rules("Shockwave Procedure") is None
+
+
+# An evaluator's own report keeps priority: rules 12 and 13 both precede category 5, so a supplemental
+# QME that happens to discuss shockwave therapy is still an evaluation.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Supplemental QME Report - Shockwave Therapy Review", "12"),
+        ("AME Report - Functional Improvement Measurements", "13"),
+    ],
+)
+def test_evaluator_reports_outrank_the_new_category_five_terms(title, expected):
+    assert classification.match_rules(title) == expected
