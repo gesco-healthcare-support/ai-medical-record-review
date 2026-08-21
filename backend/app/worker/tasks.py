@@ -17,7 +17,7 @@ from app.config import get_settings
 from app.errors import OcrUnavailableError
 from app.db import get_engine, get_sessionmaker
 from app.errors import user_facing_message
-from app.models import Document, Job, ReviewRow, SegmentRow, Summary
+from app.models import Document, Job, PageText, ReviewRow, SegmentRow, Summary
 from app.services import catalog
 from app.services.jobs import STATUS_ON_CANCEL, STATUS_ON_DONE, mark_terminal
 from app.services.pools import PoolTimeout, drain_pool
@@ -256,6 +256,30 @@ def _finalize_needs_attention(session, job_id, sig: JobNeedsAttention) -> None:
     logger.info("job %s needs attention: %d row(s) could not be summarized", job_id, len(sig.rows))
 
 
+def _is_retryable_notice(summary: Summary) -> bool:
+    """A delivered "unintelligible" notice that should be RE-ATTEMPTED rather than reused.
+
+    The needs_attention banner tells the reviewer to "review, correct, or exclude them, then
+    summarize again". Without this, a notice row makes that instruction a no-op: the skip-done
+    reconciliation reuses any Summary whose row identity still matches, so the row would never be
+    re-read and a transient Tesseract timeout would become permanent by having been DELIVERED. That
+    is the failure page_text.py guards against in four separate places ("a cached failure must not
+    become permanent"); a notice is a cached failure with a friendlier face.
+
+    Only NOTICE-ONLY rows qualify (`model IS NULL`). A row summarized off its readable pages holds
+    real clinical content, and discarding that to re-OCR on every run would be a regression rather
+    than a retry. A reviewer edit also wins: having corrected the entry by hand, they do not want it
+    replaced by a fresh notice.
+    """
+    return (
+        bool(summary.unreadable)
+        and summary.model is None
+        and summary.edited_text is None
+        and summary.edited_title is None
+        and summary.edited_date is None
+    )
+
+
 def _build_summary(job, idx, row, output) -> Summary:
     """One Summary ORM row from a summarize_row output + its source row (legacy shape)."""
     return Summary(
@@ -289,6 +313,12 @@ def _build_summary(job, idx, row, output) -> Summary:
         audit_model=output.get("auditModel"),
         prompt_fingerprint=output.get("promptFingerprint"),
         audit_fingerprint=output.get("auditFingerprint"),
+        # At least one page of this row could not be READ, so its body carries a notice naming those
+        # pages. True for BOTH shapes summarize_row produces - a row where nothing could be read (the
+        # body IS the notice, `model` NULL) and a row summarized off its readable pages (notice
+        # appended, `model` set) - so "which delivered documents lost pages?" is one query. See the
+        # column comment for why this is a flag rather than a `model` sentinel.
+        unreadable=bool(output.get("unreadablePages")),
     )
 
 
@@ -613,7 +643,11 @@ def summarize_document(job_id) -> None:
     keeping every successful summary. The "Re-summarize all" path clears summaries in the route
     first, so nothing is reused here.
     """
-    from app.services.summarize_engine import standalone_studies_from_rows, summarize_row
+    from app.services.summarize_engine import (
+        page_phrase,
+        standalone_studies_from_rows,
+        summarize_row,
+    )
 
     def work(session, job, report):
         settings = get_settings()
@@ -629,6 +663,27 @@ def summarize_document(job_id) -> None:
         total = len(rows)
         wanted = {(int(r["start"]), int(r["end"]), str(r["category"])) for r in rows}
 
+        # Pages this document has already failed to EXTRACT (page_texts.extract_ok false), handed to
+        # summarize_row as row data because that module is deliberately DB-free and cannot ask. One
+        # query for the whole document, not one per row.
+        #
+        # A SEED, not the answer. A row that re-extracts in summarize_row overrides this with what
+        # that extraction actually did, which matters because an errored page is often a transient
+        # timeout a later attempt reads fine. What this seed buys is the case that cannot re-ask: a
+        # row reusing the duplicate check's stored `source_text`, where re-OCRing to find out would
+        # undo the reuse that saves ~45 minutes on a 1500-page record.
+        failed_pages = sorted(
+            session.scalars(
+                select(PageText.page).where(
+                    PageText.document_id == job.document_id, PageText.extract_ok.is_(False)
+                )
+            )
+        )
+        for row in rows:
+            row["unreadable_pages"] = [
+                page for page in failed_pages if int(row["start"]) <= page <= int(row["end"])
+            ]
+
         # Reconcile persisted summaries by row identity: keep the first for each still-wanted row,
         # drop any that are stale (row removed/edited) or duplicate. This never touches summaries
         # for rows still in the set, so reviewer edits survive a resume/re-run.
@@ -637,7 +692,9 @@ def summarize_document(job_id) -> None:
             select(Summary).where(Summary.document_id == job.document_id)
         ).all():
             key = (int(summary.row_start), int(summary.row_end), str(summary.row_category))
-            if key in wanted and key not in existing:
+            # A notice-only row is deleted rather than reused, so "summarize again" re-reads its
+            # pages instead of skipping them as done - see _is_retryable_notice.
+            if key in wanted and key not in existing and not _is_retryable_notice(summary):
                 existing[key] = summary
             else:
                 session.delete(summary)
@@ -762,9 +819,37 @@ def summarize_document(job_id) -> None:
                     session.add(_build_summary(job, i, row, output))
                     session.commit()
                     done_count += 1
-                    generated += 1  # one success is proof the model answers -> never give up early
+                    # One success is proof the model answers -> never give up early. A NOTICE row is
+                    # not that proof: no model call was made for it, so counting it would satisfy the
+                    # `generated == 0` give-up guard on a document whose every real row is being
+                    # refused, and the job would pause and auto-resume into the same refusal instead
+                    # of ending - the 96-minute grind that guard exists to prevent.
+                    if not output.get("noticeOnly"):
+                        generated += 1
                     consecutive_transient = 0
                     report("summarizing", done_count, total)
+                    if output.get("noticeOnly"):
+                        # The row IS delivered, carrying a notice - and the job still ends
+                        # needs_attention naming it. Two signals for two audiences: the banner asks
+                        # the reviewer to re-run text recognition or exclude the row before
+                        # delivering, the notice tells the reader what happened if it ships anyway.
+                        # Dropping the banner would remove their last chance to recover a transient
+                        # OCR failure, since it is the only thing today that says a page was lost.
+                        #
+                        # Recorded AFTER the summary is committed, so a notice row is both persisted
+                        # and reported; `attention_rows` carries no PHI, only idx, pages and reason.
+                        attention_rows.append(
+                            {
+                                "idx": i,
+                                "pages": f"{row['start']}-{row['end']}",
+                                "reason": (
+                                    "The text recognizer could not read "
+                                    f"{page_phrase(output['unreadablePages'])}, so this "
+                                    "sub-document was delivered with a note in place of a summary. "
+                                    "Re-run it to try again, or exclude it."
+                                ),
+                            }
+                        )
             except PoolTimeout as pt:
                 # A stalled pool near the wall-clock wall: pause and let the outstanding rows retry
                 # on the next resume (pending is recomputed by row identity), never hang.

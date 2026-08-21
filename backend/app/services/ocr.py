@@ -171,7 +171,14 @@ def extract_text_from_selected_pages(
     return extracted_text
 
 
-def extract_pages_with_report(pdf_path, selected_pages, *, retries: int = 1):
+def extract_pages_with_report(
+    pdf_path,
+    selected_pages,
+    *,
+    retries: int = 1,
+    mark_pages: bool = False,
+    page_label_offset: int = 0,
+):
     """OCR ``selected_pages``, retrying pages that ERRORED, and report what each page did.
 
     Returns ``(text, report)`` where report is ``{"pages", "errored", "blank"}``: ``errored`` lists
@@ -184,6 +191,13 @@ def extract_pages_with_report(pdf_path, selected_pages, *, retries: int = 1):
     An errored page may be a transient Tesseract timeout worth one more attempt; a film,
     photograph or separator sheet is legitimately textless and no number of retries will yield
     words, so only the errors are retried.
+
+    ``mark_pages`` / ``page_label_offset`` mean exactly what they mean on
+    ``extract_text_from_selected_pages``, and exist here so a caller that needs the report does not
+    have to give up page markers to get it - summarize reads depositions through this path, and a
+    transcript model handed concatenated text cannot see where a page ends. The ``blank`` test reads
+    the RAW page text, never the marked string: a marker is text, so testing after prefixing would
+    report every page as non-blank and quietly empty that list.
     """
     pages = sorted(set(selected_pages))
     text, errored, blank = "", [], []
@@ -207,7 +221,10 @@ def extract_pages_with_report(pdf_path, selected_pages, *, retries: int = 1):
             continue
         if not (page_text or "").strip():
             blank.append(page_number)
-        text += page_text or ""
+        if mark_pages:
+            text += f"Page {page_number + page_label_offset}:\n{page_text or ''}\n"
+        else:
+            text += page_text or ""
     return text, {"pages": len(pages), "errored": errored, "blank": blank}
 
 

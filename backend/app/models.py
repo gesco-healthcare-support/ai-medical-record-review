@@ -378,6 +378,18 @@ class Summary(Base):
     audit_model = Column(String(64))
     prompt_fingerprint = Column(String(16))
     audit_fingerprint = Column(String(16))
+    # At least one of this row's pages could not be READ - extraction FAILED, as distinct from a page
+    # that read cleanly and holds no words (see page_texts.extract_ok for why that difference is kept
+    # alive). The body then carries a deterministic notice naming those pages, so an unreadable page
+    # is STATED in the deliverable instead of silently vanishing from it.
+    #
+    # Read alongside `model`, which separates the two cases this one flag covers:
+    #   unreadable + model IS NULL     -> nothing could be summarized; the body IS the notice.
+    #   unreadable + model IS NOT NULL -> summarized off the readable pages, with a notice appended.
+    # A flag rather than a `model` sentinel: NULL there already means "unattributable, written before
+    # 2026-08-06", so it cannot also mean "no model wrote this", and `model` is what the pro-vs-flash
+    # quality work groups by.
+    unreadable = Column(Boolean, nullable=False, default=False)
 
     def effective_title(self):
         # Same precedence as effective_text: reviewer edit, then the AI-verified correction, then
