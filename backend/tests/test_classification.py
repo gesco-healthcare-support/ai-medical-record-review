@@ -322,6 +322,14 @@ def test_the_evaluators_own_report_is_still_an_evaluation(title):
 #   - the human's own list of pages not remarked upon names "physician's return-to-work and voucher
 #     report" and "emergency patient record" VERBATIM. We summarized both, the first into category 2
 #     (PR-4 / Permanent & Stationary), which is not a plausible reading of a return-to-work voucher
+#
+#     CAVEAT ADDED 2026-08-21, and it qualifies the method rather than this record. Asked directly,
+#     the reviewers said they DO summarize the return-to-work voucher, mostly as a treating report -
+#     so being named in one record's excluded-pages list does NOT establish that a type is always
+#     excluded. It establishes that it was excluded THERE. The voucher now has a rule pointing at 1,
+#     not 100. Every rule grounded in an exclusion list is sound on the same evidence this one was,
+#     which is the point: that evidence is weaker than it reads, and a type that recurs is worth
+#     asking about rather than inferring from a single list.
 #   - "WORK STATUS REPORT" appeared TEN times in that one record. Nine were categorized 1 and
 #     summarized; one was categorized 100 and excluded. Same type, same document, two answers -
 #     because what decides them is the cascade, and the cascade is not deterministic
@@ -340,7 +348,9 @@ def test_the_evaluators_own_report_is_still_an_evaluation(title):
     "title",
     [
         "WORK STATUS REPORT",
-        "Physician's Return-to-Work & Voucher Report",
+        # "Physician's Return-to-Work & Voucher Report" left this list 2026-08-21: a rule
+        # answers it now (category 1), pinned in
+        # test_the_return_to_work_voucher_is_a_treating_report.
         "Emergency Provider Report",
         # Added from two further records (267 and 300 pages) run the same way on 2026-08-18. These
         # three are the ones that cost DELIVERED content rather than just a wrong category, so they
@@ -401,20 +411,23 @@ def test_hospital_and_registration_paperwork_is_general(title):
     assert classification.match_rules(title) == "100"
 
 
-# The other half of the same split, and the reason the list above stops where it does. These three are
-# named in the SAME human exclusion lists, so the expected answer is equally clear - but a rule cannot
-# deliver it, because `_DOCUMENT_NOUN` matches "report"/"notes"/"note" and stands the administrative
-# rules down. That is the architectural question already pinned from #119, not a pattern gap, so they
-# stay xfail rather than getting a rule that cannot fire.
+# The other half of the same split. When this was written all three were blocked by `_DOCUMENT_NOUN`
+# standing the administrative rules down for a report/note title, and the expected answer was clear
+# with no way to express it.
+#
+# 2026-08-21: the voucher type is decided and has moved to its own test. These two remain xfail, but
+# for a DIFFERENT and much weaker reason - measured on the box, every observed row of both already
+# answers 100 through the cascade (three distinct titles for the first, one for the second), so
+# neither is costing content and neither has earned a rule. The pin now records "we could, and chose
+# not to" rather than "we cannot". Left xfail rather than deleted so it still fires if a rule appears.
 @pytest.mark.xfail(
     strict=False,
-    reason="_DOCUMENT_NOUN stands the admin rules down for report/note titles; needs the same design "
-    "call as the #119 pin",
+    reason="answered 100 by the cascade on every observed row, so no rule was added; a rule would "
+    "buy determinism these are not visibly missing and would skip the review flag",
 )
 @pytest.mark.parametrize(
     "title",
     [
-        "Physician's Return-to-Work & Voucher Report",
         "Interdisciplinary Notes",
         "Transmittal Note",
     ],
@@ -619,3 +632,70 @@ def test_category_fifteen_has_its_own_summary_prompt():
     # second copy of records already summarized elsewhere in the deliverable.
     assert "even when the request was approved" in lowered
     assert "do not summarize the medical records" in lowered
+
+
+# The return-to-work voucher, asked and answered 2026-08-21. It had no rule and the cascade guessed
+# each time: the same title is answered 1, 2 AND 13 across 17 rows and 25 pages, 10 of them
+# delivered. Two of those rows sit in 13, which summarizes a one-page form with the medical-legal
+# evaluation prompt and its eighteen points.
+#
+# THE DESTINATION IS 1, AND THAT REVERSED OUR READING. The 229-page record's excluded-pages list
+# names the type verbatim, and neither that report nor the 420-page one has an entry on its date, so
+# the first reading was that reviewers exclude it and it belonged in 100. Asked directly, the answer
+# was the opposite: they want it summarized, mostly as a treating report. Where it arrives as its own
+# document they summarize it separately; where it arrives behind a report they merge the two, which
+# is a boundary decision no category rule can express and which the reviewer already makes by hand.
+# 1 is therefore PROVISIONAL - feedback pending on whether it stays there.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Physician's Return-to-Work & Voucher Report",
+        "PHYSICIAN'S RETURN-TO-WORK & VOUCHER REPORT",
+        "Physician's Return to Work and Voucher Report",
+        "Return-to-Work & Voucher Report - Supplemental Job Displacement",
+        # Either order, because the pattern carries both arms.
+        "Voucher and Return to Work Report",
+    ],
+)
+def test_the_return_to_work_voucher_is_a_treating_report(title):
+    assert classification.match_rules(title) == "1"
+
+
+# BOTH tokens are required, and this is the guard that made the measurement worth doing. Two real
+# titles say return-to-work and are clinical documents in their own right - one category 1, one
+# category 5 (physical therapy), one page each, both delivered. Claiming them on the bare phrase
+# would drag the therapy note out of the category whose prompt is written for it.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Return to Work Authorization",
+        "Work Status and Return to Work",
+        "Return-to-Work Note",
+        "Physician's Return-to-Work Report",
+    ],
+)
+def test_return_to_work_without_a_voucher_is_left_to_the_cascade(title):
+    assert classification.match_rules(title) is None
+
+
+# An evaluation that DISCUSSES the voucher is still the evaluation. Rules 12 and 13 sit ahead of this
+# one, so the ordering carries it; pinned because moving the voucher rule up the list would silently
+# reclassify an evaluation as a treating report.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("AME Report - Return-to-Work & Voucher Discussion", "13"),
+        ("QME Report re Return-to-Work and Voucher Eligibility", "13"),
+        ("Supplemental QME Report - Return-to-Work & Voucher", "12"),
+    ],
+)
+def test_an_evaluation_discussing_the_voucher_stays_an_evaluation(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# A known and deliberate limitation, pinned so it is not mistaken for a bug. The pattern requires
+# BOTH tokens, so a voucher document that never says return-to-work reaches the cascade instead. That
+# is the safe direction: `voucher` alone would match an evaluation that merely discusses one, and no
+# such title has been observed to measure the cost of either choice.
+def test_a_voucher_without_return_to_work_reaches_the_cascade():
+    assert classification.match_rules("Supplemental Job Displacement Voucher") is None

@@ -82,11 +82,17 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # of Admission" (correct) but also anything mentioning an admission; "facesheet" is unambiguous
         # but "summary" and "record" are not, so each is anchored to the phrase the human wrote.
         #
-        # NOT included here, though the human's list names them, because _DOCUMENT_NOUN stands the
-        # administrative rules down when a title contains report/notes/note and would make the rule
-        # inert: "Physician's Return-to-Work & Voucher Report", "Interdisciplinary Notes",
-        # "Transmittal Note". Same architectural question as the #119 xfail, so they wait on that
-        # decision rather than getting a rule that cannot fire.
+        # Three types the human's list also names are NOT here, and none of them belongs here:
+        #
+        #   "Physician's Return-to-Work & Voucher Report"  the reviewers want it SUMMARIZED - it is a
+        #                                                  document-type rule in _RULES (-> 1), not
+        #                                                  administrative paperwork. Asked 2026-08-21.
+        #   "Interdisciplinary Notes"                      no rule: 3 titles, every row already 100
+        #   "Transmittal Note"                             no rule: 1 title, every row already 100
+        #
+        # The last two are answered correctly by the cascade and cost nothing, so a rule would buy
+        # determinism they are not visibly missing - and a rule hit skips the review flag. Both stay
+        # pinned xfail so a rule appearing later still shows up.
         r"\bfacesheet\b|\bflowsheets?\b|\bafter visit summary\b|\bcoding summary\b"
         r"|\bpatient (referral|signature page|information sheet)\b"
         r"|\b(er|emergency room) registration\b|\bconditions of admission\b"
@@ -143,6 +149,36 @@ _PAPERWORK_ABOUT_A_DOCUMENT = re.compile(
     r"\b(declaration|proof|certificate) of (service|mailing) of\b"
 )
 
+# The return-to-work voucher, as ONE pattern requiring BOTH tokens in either order with a bounded
+# gap. Used once, by the category-1 rule below.
+#
+# THE DESTINATION IS 1, NOT 100, and that was the answer coming back rather than our guess. The
+# document is a form that travels with an evaluation packet, and the first reading here was that the
+# reviewers exclude it: the 229-page record's excluded-pages list names it verbatim, and neither that
+# report nor the 420-page one has an entry on its date. Asked directly on 2026-08-21, the answer was
+# the opposite - they DO want it summarized, and mostly as a treating report. Where it arrives as its
+# own document they summarize it separately, and where it arrives behind a report they merge the two,
+# which is a boundary decision a category rule cannot express and the reviewer already makes by hand.
+# So the rule takes the common case and 1 is provisional: feedback pending on whether it stays.
+#
+# BOTH TOKENS ARE REQUIRED, and that is the whole precision of it. `return[- ]to[- ]work` alone
+# matches two real titles that are clinical documents in their own right - one category 1, one
+# category 5 (physical therapy), one page each, both delivered - and claiming them for 1 would move
+# the therapy note out of the category its own prompt is written for. `voucher` alone would match an
+# evaluation that merely discusses one. Measured over every title on the box: 4 carry both tokens, 2
+# carry only return-to-work, 0 carry only voucher, and 0 of any of them mention an evaluator.
+#
+# Either order, and the gap is BOUNDED rather than `.*`: an unbounded gap inside an alternation is
+# the shape a ReDoS check flags, and 40 characters is far more than the observed " & " needs.
+_RETURN_TO_WORK_VOUCHER = (
+    r"return[- ]to[- ]work\b.{0,40}\bvoucher\b|\bvoucher\b.{0,40}return[- ]to[- ]work"
+)
+
+# Two types the #134 note named alongside it get NO rule, and that is measured rather than an
+# omission: every observed row of both already answers 100 through the cascade - three distinct
+# titles for "Interdisciplinary Notes", one for "Transmittal Note" - so neither is costing content
+# and neither has earned a rule that would also skip the review flag.
+
 # Ordered high-precision rules; first match wins. Specific categories precede the categories they
 # could be confused with (e.g. supplemental QME/AME -> 12 before QME/AME -> 13).
 _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
@@ -164,6 +200,13 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # one document type answered four different ways, and on the one reviewed copy a human put
         # four identical documents into three different categories.
         (r"utilization review|independent medical review|\bimr\b", "15"),
+        # The return-to-work voucher -> 1, asked and answered 2026-08-21. See
+        # _RETURN_TO_WORK_VOUCHER above for why both tokens are required and why 1 is provisional.
+        #
+        # Placed AFTER the evaluator rules so "AME Report - Return-to-Work & Voucher" stays 13, and
+        # BEFORE rule 1's own pattern for no reason that matters - the observed titles match neither
+        # "progress report" nor "office visit", so this rule is what answers them either way.
+        (_RETURN_TO_WORK_VOUCHER, "1"),
         # `shock[- ]?wave (therapy|treatment)` and `functional improvement` added 2026-08-20, both
         # answered by the eData reviewers who write these reports by hand - the first document-type
         # question we have asked them and had answered, rather than decided in-house.
