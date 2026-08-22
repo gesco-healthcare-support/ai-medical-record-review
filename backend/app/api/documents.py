@@ -965,6 +965,11 @@ def resummarize(
     summary.verified_title = output.get("verifiedTitle")
     summary.verify_issues = output.get("verifyIssues")
     summary.manual_check = bool(output.get("manualCheck")) or bool(output.get("truncated"))
+    # ASSIGNED, not left alone, for the same reason verified_title above is: a re-draft that now reads
+    # cleanly must CLEAR a stale notice flag, or the row would keep claiming pages were unreadable
+    # after a retry recovered them. summarize_row returns a notice instead of raising when the pages
+    # still cannot be read, so this route stores that notice rather than showing an error.
+    summary.unreadable = bool(output.get("unreadablePages"))
     summary.row_start = int(row["start"])
     summary.row_end = int(row["end"])
     summary.row_category = str(row["category"])

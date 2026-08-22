@@ -21,6 +21,16 @@ from app.services.provenance import (
 _NO_ISSUES = {"fixed_text": "", "issues": [], "ok": True}  # the audit RAN and found nothing
 
 
+def _clean(pages):
+    """A clean report from ``ocr.extract_pages_with_report``: every page read fine.
+
+    summarize_row reads rows through the REPORTING extractor so it can name the pages OCR failed on;
+    these tests care about model tiering, so they say nothing failed.
+    """
+    listed = sorted({int(p) for p in pages})
+    return {"pages": len(listed), "errored": [], "blank": []}
+
+
 def _row(**over):
     row = {
         "start": 1,
@@ -49,10 +59,10 @@ def _capture_models(monkeypatch):
 
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
+        "extract_pages_with_report",
         # **_kw absorbs page_label_offset, which the deposition work added to the real
         # signature. This stub pins BEHAVIOUR, not an exact call signature.
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", fake_verify)

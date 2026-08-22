@@ -20,7 +20,7 @@ from app.errors import EmptyExtractionError, is_rate_limited
 from app.services.deposition_pages import transcript_page_offset
 from app.services.house_style import sentence_case_caps_runs
 from app.services.llm import ImagePart, TextPart, get_provider
-from app.services.ocr import extract_text_from_selected_pages
+from app.services.ocr import extract_pages_with_report
 from app.services.prompts import prompts
 from app.services.provenance import fingerprint, summary_prompt_fingerprint
 from app.services.summary_verify import VERIFY_PROMPT, verify_summary
@@ -564,6 +564,121 @@ def _usable_title(generated, fallback):
     return (fallback or "").strip() or "-"
 
 
+def page_phrase(pages) -> str:
+    """``page 7`` / ``pages 7 and 8`` / ``pages 7, 8 and 11`` - the page numbers, in reading order.
+
+    Public because the worker composes the reviewer-facing reason for an unreadable row from it, and
+    that sentence must name the same pages, the same way, as the notice the reader sees.
+
+    Deliberately number-agnostic in the sentences that use it: both notices below are worded so the
+    singular and plural forms read correctly without a second verb form to keep in step.
+    """
+    numbers = sorted({int(p) for p in pages})
+    if not numbers:
+        return ""
+    if len(numbers) == 1:
+        return f"page {numbers[0]}"
+    listed = ", ".join(str(n) for n in numbers[:-1])
+    return f"pages {listed} and {numbers[-1]}"
+
+
+# Built in CODE, never model-generated. A model asked to describe a page it cannot read is the exact
+# shape that invents content, and this text ships in a medical-legal deliverable. Leads with the word
+# a reader is meant to take away ("unintelligible", Adrian's own term for this), then says what
+# happened, and carries NO page content - the unreadable text itself never appears anywhere.
+#
+# Wording follows the house line already in errors.EmptyExtractionError.user_message, minus its
+# "may be blank" hedge: that message covers a case where blank and failed cannot be told apart, and
+# here they can - these pages ERRORED, so claiming they might be blank would be less accurate.
+_NOTICE_LEAD = "Unintelligible: the text recognizer could not read {phrase} of this document"
+
+
+def unreadable_notice(pages) -> str:
+    """The WHOLE body of a row where nothing could be read, in place of a summary."""
+    return _NOTICE_LEAD.format(phrase=page_phrase(pages)) + ", so there was no text to summarize."
+
+
+def partial_unreadable_notice(pages) -> str:
+    """The sentence appended to a summary built from a row's READABLE pages, naming the rest.
+
+    Separate wording from ``unreadable_notice`` because the reader's question differs: there IS a
+    summary above this sentence, and what they need to know is that it does not cover everything.
+    """
+    return (
+        _NOTICE_LEAD.format(phrase=page_phrase(pages))
+        + ", so that content is not covered by this summary."
+    )
+
+
+def _row_tags(row) -> tuple[str, str]:
+    """The two internal review markers a stored title carries: ``[ManualCheck] `` and
+    `` [Diagnostic Study]``.
+
+    Shared by the summary path and the notice path so an unreadable row's header is decorated exactly
+    like every other row's - the export strips both either way, and the app shows both.
+    """
+    diag_tag = " [Diagnostic Study]" if str(row["category"]) == "3" else ""
+    manual_tag = "[ManualCheck] " if str(row["flag"]).strip().lower() == "x" else ""
+    return manual_tag, diag_tag
+
+
+def _unreadable_output(row, unreadable_pages) -> dict:
+    """The output_dict for a row whose pages could not be READ at all.
+
+    Returned instead of raising ``EmptyExtractionError`` so the row is DELIVERED carrying a notice
+    rather than vanishing from the report with nothing said. Its caller writes a real Summary from
+    this, which is what puts the notice in the row's own entry in both export paths.
+
+    Every model-written field is None/False, and that is the point: no model saw this row, so
+    ``model=None`` beside ``unreadablePages`` is what tells a notice row apart from one that WAS
+    summarized off its readable pages. No `sourceText` either - there is none, and storing "" would
+    record an empty extraction as a successful one.
+
+    The header keeps the ROW's own title and date. Segmentation read those from a whole window of
+    pages, so they commonly survive a page the recognizer could not read; where they did not, the
+    row's "-" sentinel carries through and the entry is identified by the page range its title
+    already carries, rather than by a blank field.
+
+    No DOI prefix, unlike every summarized row: the prefix qualifies summary content, and there is
+    none here. `_export_title_and_text` re-adds a DOI only when the stored body already carries one,
+    so this stays out of the deliverable rather than appearing as a bare "**DOI**:".
+    """
+    manual_tag, diag_tag = _row_tags(row)
+    pages = sorted({int(p) for p in unreadable_pages})
+    page_label = f"Pages {row['start']}-{row['end']}"
+    title = str(row.get("title") or "").strip()
+    if not title or title == "-":
+        # Degrade to the page range rather than to the bare "-" sentinel. It has to go in the title
+        # PROPER, not the usual "(Pages X-Y)" suffix, because `_export_title_and_text` strips that
+        # suffix from every entry - so a notice row with no header would otherwise reach the
+        # deliverable identified by nothing at all.
+        decorated = f"{manual_tag}{page_label}{diag_tag}"
+    else:
+        decorated = f"{manual_tag}{title}{diag_tag} ({page_label})"
+    return {
+        "summaryDate": row["date"],
+        "summaryTitle": decorated,
+        "manualCheck": manual_tag,
+        "truncated": False,
+        "summaryText": unreadable_notice(pages),
+        "verified": False,
+        "verifiedText": None,
+        "verifiedTitle": None,
+        "verifyIssues": None,
+        "sourceText": None,
+        "model": None,
+        "bodyFallbackFrom": None,
+        "titleModel": None,
+        "auditModel": None,
+        "promptFingerprint": None,
+        "auditFingerprint": None,
+        "unreadablePages": pages,
+        # The body IS the notice. Distinct from a partial row (which also carries pages here) because
+        # the caller treats only this case as a row that could not be summarized.
+        "noticeOnly": True,
+    }
+
+
 def summarize_row(
     pdf_path,
     row,
@@ -647,12 +762,31 @@ def summarize_row(
     # ~45 minutes of OCR done twice. Blank text is not reused, so a page whose OCR failed the first
     # time is retried here rather than being permanently condemned to EmptyExtractionError.
     text = "" if deposition else (row.get("source_text") or "").strip()
+    # Which of this row's pages the recognizer FAILED on, as opposed to read cleanly and found empty.
+    # Seeded from the row when the caller knows (it can read `page_texts.extract_ok`, which this
+    # DB-free module cannot), then OVERRIDDEN by a fresh extraction below - what just happened is
+    # authoritative over what a previous stage recorded, because an errored page is often a transient
+    # timeout that a later attempt reads fine, and announcing a page as unintelligible when this run
+    # read it is worse than saying nothing.
+    unreadable_pages = sorted({int(p) for p in (row.get("unreadable_pages") or [])})
     if not text:
         pages = list(range(int(row["start"]), int(row["end"]) + 1))
-        text = extract_text_from_selected_pages(
+        # The REPORTING extractor, so a row that produced no text can say WHY. The plain variant
+        # collapses a failed page and a legitimately blank one into the same silent skip, and that is
+        # exactly the distinction the notice below turns on. It also retries an errored page once on
+        # the way through, so a transient Tesseract timeout gets another chance before it is
+        # announced to a client.
+        text, report = extract_pages_with_report(
             pdf_path, pages, mark_pages=deposition, page_label_offset=page_offset or 0
         )
+        unreadable_pages = sorted(report["errored"])
     if not text.strip():
+        if unreadable_pages:
+            # Deliver the row carrying a notice instead of losing it from the report. ONLY a genuine
+            # extraction failure is announced: a row that read cleanly and holds no words - a film, a
+            # photograph, a separator sheet - falls through to the raise below and stays silent,
+            # because there is nothing about it to explain.
+            return _unreadable_output(row, unreadable_pages)
         # Fail fast with a clear reason: sending empty text to Gemini yields a cryptic
         # "Model input cannot be empty" 400. Blank/image-only pages hit this.
         raise EmptyExtractionError(f"no OCR text for pages {row['start']}-{row['end']}")
@@ -754,8 +888,7 @@ def summarize_row(
     # summaries written before 2026-07-29 carry the old "**DOI**:<value>," form and stay readable;
     # summary_doi.doi_prefix parses both.
     doi_final = "" if injury in ("", "-") else f"**DOI**: {injury}."
-    diag_tag = " [Diagnostic Study]" if str(row["category"]) == "3" else ""
-    manual_tag = "[ManualCheck] " if str(row["flag"]).strip().lower() == "x" else ""
+    manual_tag, diag_tag = _row_tags(row)
 
     # Faithfulness verify pass (problem #3): audit the title AND the body against their source and,
     # ONLY when the pass flags issues, keep the corrected pair as verifiedTitle/verifiedText (the raw
@@ -818,6 +951,21 @@ def summarize_row(
                     f"{manual_tag}{fixed_title}{diag_tag} (Pages {row['start']}-{row['end']})"
                 )
 
+    # PARTIAL unreadable row: the body above was summarized from the pages that COULD be read, so
+    # state the ones that could not. Without this a ten-page row that lost one page delivers a
+    # summary of nine with nothing said, which is the same invisibility the whole-row notice removes.
+    #
+    # Appended AFTER the verify pass, deliberately. The audit checks the body against the SOURCE
+    # TEXT, and this sentence is by definition not in that source - letting the audit see it invites
+    # it to "correct" an unsupported claim, or to count it as a faithfulness issue and flag the row.
+    # Applied to the verified body too, so the notice survives whichever body effective_text()
+    # delivers, and after sentence_case_caps_runs so that transform never rewrites it.
+    partial_notice = ""
+    if unreadable_pages:
+        partial_notice = " " + partial_unreadable_notice(unreadable_pages)
+        if verified_text is not None:
+            verified_text += partial_notice
+
     return {
         "summaryDate": row["date"],
         "summaryTitle": f"{manual_tag}{title}{diag_tag} (Pages {row['start']}-{row['end']})",
@@ -825,7 +973,7 @@ def summarize_row(
         # The body was cut off at the token budget: nothing is appended to the text (the report must
         # not carry a marker), but callers flag the row so the reviewer knows to check it.
         "truncated": truncated,
-        "summaryText": f"{doi_final} {summary}",
+        "summaryText": f"{doi_final} {summary}{partial_notice}",
         # The audit RAN, not "the audit was requested". Setting this from the `verify` setting meant a
         # row whose check threw or truncated was still stored claiming a faithfulness check had
         # happened - a false record on a medical summary, and one no later query could detect.
@@ -848,4 +996,9 @@ def summarize_row(
         "auditModel": audit_model if verify else None,
         "promptFingerprint": prompt_fingerprint,
         "auditFingerprint": fingerprint(VERIFY_PROMPT) if verify else None,
+        # Pages the recognizer could not read. Non-empty here means this row WAS summarized, off the
+        # pages that could be read, and carries the notice appended above - `noticeOnly` False is
+        # what separates it from a row where nothing could be read at all.
+        "unreadablePages": unreadable_pages,
+        "noticeOnly": False,
     }

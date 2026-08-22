@@ -15,6 +15,21 @@ from app.services.llm import gemini as gm
 _NO_ISSUES = {"fixed_text": "", "issues": [], "ok": True}  # the audit RAN and found nothing
 
 
+def _clean(pages, errored=(), blank=()):
+    """A report from ``ocr.extract_pages_with_report``: ``{"pages", "errored", "blank"}``.
+
+    summarize_row reads ``errored`` only, but the stubs return the whole shape so one cannot keep
+    passing after the real contract changes underneath it. Defaults to "every page read fine", which
+    is what every test but the unreadable-page ones below wants.
+    """
+    listed = sorted({int(p) for p in pages})
+    return {
+        "pages": len(listed),
+        "errored": [p for p in listed if p in set(errored)],
+        "blank": [p for p in listed if p in set(blank)],
+    }
+
+
 def _row(**over):
     row = {
         "start": 1,
@@ -49,8 +64,8 @@ def test_summary_call_uses_hardening_preamble_and_configured_temperature(monkeyp
 
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -70,7 +85,9 @@ def test_summary_call_uses_hardening_preamble_and_configured_temperature(monkeyp
 
 def test_empty_ocr_fails_fast(monkeypatch):
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False, **_kw: "   "
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("   ", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", lambda *a, **k: ("unused", False))
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -81,8 +98,8 @@ def test_empty_ocr_fails_fast(monkeypatch):
 def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(
         se,
@@ -126,8 +143,8 @@ def test_a_failed_audit_is_not_recorded_as_verified(monkeypatch):
     """
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(
         se,
@@ -161,8 +178,8 @@ def test_verified_title_is_stored_decorated_when_the_pass_corrects_it(monkeypatc
     # as the raw title, so it is a drop-in replacement in every view.
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(
@@ -185,8 +202,8 @@ def test_verified_title_is_stored_decorated_when_the_pass_corrects_it(monkeypatc
 def test_verified_title_stays_none_when_the_pass_finds_nothing(monkeypatch):
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(
@@ -208,8 +225,8 @@ def test_the_title_is_handed_to_the_verify_pass(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
 
@@ -230,8 +247,8 @@ def test_the_doi_call_runs_on_the_flash_model_not_the_summary_model(monkeypatch)
     seen = {}
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -252,8 +269,11 @@ def test_stored_ocr_is_reused_instead_of_extracting_twice(monkeypatch):
     calls = []
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: calls.append(pages) or "FRESH OCR",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: (
+            calls.append(pages) or "FRESH OCR",
+            _clean(pages),
+        ),
     )
     seen = {}
 
@@ -276,8 +296,11 @@ def test_blank_stored_ocr_falls_back_to_extracting(monkeypatch, stored):
     calls = []
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: calls.append(pages) or "FRESH OCR",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: (
+            calls.append(pages) or "FRESH OCR",
+            _clean(pages),
+        ),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -294,9 +317,9 @@ def test_a_deposition_re_extracts_with_page_markers(monkeypatch):
 
     def fake_extract(path, pages, mark_pages=False, **_kw):
         calls.append({"pages": pages, "mark_pages": mark_pages})
-        return "Page 1:\nbody\n"
+        return "Page 1:\nbody\n", _clean(pages)
 
-    monkeypatch.setattr(se, "extract_text_from_selected_pages", fake_extract)
+    monkeypatch.setattr(se, "extract_pages_with_report", fake_extract)
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
 
@@ -314,9 +337,9 @@ def test_other_categories_reuse_stored_ocr_and_never_get_markers(monkeypatch, ca
 
     def fake_extract(path, pages, mark_pages=False, **_kw):
         calls.append(mark_pages)
-        return "FRESH"
+        return "FRESH", _clean(pages)
 
-    monkeypatch.setattr(se, "extract_text_from_selected_pages", fake_extract)
+    monkeypatch.setattr(se, "extract_pages_with_report", fake_extract)
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
 
@@ -330,9 +353,9 @@ def test_a_deposition_without_stored_text_still_gets_markers(monkeypatch):
 
     def fake_extract(path, pages, mark_pages=False, **_kw):
         calls.append(mark_pages)
-        return "Page 1:\nbody\n"
+        return "Page 1:\nbody\n", _clean(pages)
 
-    monkeypatch.setattr(se, "extract_text_from_selected_pages", fake_extract)
+    monkeypatch.setattr(se, "extract_pages_with_report", fake_extract)
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
 
@@ -345,8 +368,8 @@ def test_doi_prefix_comes_from_the_row(monkeypatch):
     # single source of truth: segmentation read it once, per sub-document, in isolation.
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -359,8 +382,8 @@ def test_doi_prefix_carries_a_cumulative_trauma_period(monkeypatch):
     # as one value rather than splitting it into two injury dates.
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -373,8 +396,8 @@ def test_doi_prefix_omitted_when_the_row_states_none(monkeypatch):
     # document states no injury date, which is a fact worth honouring rather than a missing value.
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -392,8 +415,8 @@ def test_a_reviewers_corrected_injury_date_reaches_the_summary(monkeypatch):
     """
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -404,8 +427,8 @@ def test_a_reviewers_corrected_injury_date_reaches_the_summary(monkeypatch):
 def test_verify_skipped_when_disabled(monkeypatch):
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(
         se,
@@ -478,8 +501,8 @@ def test_truncated_summary_is_flagged_for_manual_check(monkeypatch):
     # text (a cut-off summary must be visible to the reviewer, not stored as if it were finished).
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(
         se,
@@ -510,8 +533,8 @@ def _system_messages(monkeypatch, row, **kw):
 
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -595,8 +618,8 @@ def test_the_document_date_is_handed_to_the_verify_pass(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
 
@@ -722,8 +745,8 @@ def test_the_instruction_is_the_last_thing_in_a_multimodal_payload(monkeypatch):
 
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "OCR BODY",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR BODY", _clean(pages)),
     )
     monkeypatch.setattr(se, "_page_image_parts", lambda path, start, end: ["IMG1", "IMG2"])
     monkeypatch.setattr(se, "_generate", fake_generate)
@@ -745,7 +768,9 @@ def test_the_caps_transform_runs_on_the_body_but_never_the_title(monkeypatch):
     # T6: capitalisation is mechanical, so a transform is right every time where a prompt rule is not.
     # The title is exempt - it is an ALL CAPS header by design in 812 of 813 measured human entries.
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False, **_kw: "OCR"
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR", _clean(pages)),
     )
     monkeypatch.setattr(
         se,
@@ -771,7 +796,9 @@ def test_the_caps_transform_runs_on_the_body_but_never_the_title(monkeypatch):
 def test_the_caps_transform_also_cleans_the_audits_rewrite(monkeypatch):
     # effective_text() delivers verified_text, so a capital reintroduced by the audit would ship.
     monkeypatch.setattr(
-        se, "extract_text_from_selected_pages", lambda path, pages, mark_pages=False, **_kw: "OCR"
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(
@@ -828,8 +855,8 @@ def test_neither_review_category_still_tells_the_model_to_ignore_the_review():
 def test_untruncated_summary_reports_no_truncation(monkeypatch):
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -854,8 +881,8 @@ def _labelled_generate(model, system_msg, user_text, temperature, max_output_tok
 def _stub_verify(monkeypatch, fixed_text, issues, fixed_title=None):
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _labelled_generate)
     monkeypatch.setattr(
@@ -970,8 +997,8 @@ def test_the_guard_never_fires_on_a_body_that_had_no_headings(monkeypatch):
     """A prose-format category has nothing to lose, so the guard must stay out of the way entirely."""
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", _fake_generate)  # returns "Summary body", no bold
     monkeypatch.setattr(
@@ -1109,8 +1136,8 @@ def _fallback_fixtures(monkeypatch, *, fail_for, fallback="gemini-3.5-flash"):
 
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
@@ -1142,8 +1169,8 @@ def test_body_does_not_fall_back_on_a_non_429(monkeypatch):
     """Only capacity refusals fall back. A 400 is our bug and must surface, not be papered over."""
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
 
     def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
@@ -1207,8 +1234,8 @@ def test_body_falls_back_on_a_spent_daily_quota_too(monkeypatch):
 
     monkeypatch.setattr(
         se,
-        "extract_text_from_selected_pages",
-        lambda path, pages, mark_pages=False, **_kw: "raw OCR text",
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
     )
 
     def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
@@ -1239,3 +1266,238 @@ def test_a_successful_body_reports_no_fallback(monkeypatch):
         get_settings.cache_clear()
     assert out["bodyFallbackFrom"] is None
     assert out["model"] == "gemini-2.5-pro"
+
+
+# --- C9: an unreadable page is STATED in the deliverable rather than vanishing from it -------------
+
+
+def _boom(*_a, **_kw):
+    """Any call here is a test failure. Pins that a path is NOT taken - an unreadable row must reach
+    no model, and a row reusing stored OCR must run no extraction."""
+    raise AssertionError("this call must not happen")
+
+
+def _errored(pages, text=""):
+    """Stub ocr.extract_pages_with_report: `pages` failed to extract, and the row produced `text`."""
+    return lambda path, p, mark_pages=False, **_kw: (text, _clean(p, errored=pages))
+
+
+def _notice_fixtures(monkeypatch, errored, text=""):
+    """A row whose pages errored, with every model seam wired to fail if it is reached."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored(errored, text=text))
+    monkeypatch.setattr(se, "_generate", _boom)
+    monkeypatch.setattr(se, "verify_summary", _boom)
+
+
+def test_page_phrase_reads_naturally_for_one_page_and_for_many():
+    assert se.page_phrase([7]) == "page 7"
+    assert se.page_phrase([7, 8]) == "pages 7 and 8"
+    assert se.page_phrase([11, 7, 8]) == "pages 7, 8 and 11"  # sorted into reading order
+    assert se.page_phrase([]) == ""
+
+
+def test_a_row_whose_pages_could_not_be_read_is_delivered_with_a_notice(monkeypatch):
+    """WHEN a row's pages fail extraction, THE SYSTEM SHALL return a notice instead of raising.
+
+    That row used to raise EmptyExtractionError, get no Summary, and so vanish from the report
+    altogether - the reader was never told the pages existed.
+    """
+    _notice_fixtures(monkeypatch, errored=[1, 2])
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert out["noticeOnly"] is True
+    assert out["unreadablePages"] == [1, 2]
+    assert out["summaryText"] == se.unreadable_notice([1, 2])
+    assert "unintelligible" in out["summaryText"].lower()
+    assert "pages 1 and 2" in out["summaryText"]
+
+
+def test_the_notice_names_only_the_pages_that_actually_failed(monkeypatch):
+    """A row can lose one page of several. The notice must name that page, not the row's whole range,
+    which is all EmptyExtractionError could ever say."""
+    _notice_fixtures(monkeypatch, errored=[2])
+    out = se.summarize_row("/x.pdf", _row(start=1, end=4), prompt="P")
+    assert out["unreadablePages"] == [2]
+    assert "page 2" in out["summaryText"]
+    assert "1-4" not in out["summaryText"]
+
+
+def test_a_notice_row_keeps_the_rows_title_date_and_page_range(monkeypatch):
+    """Decision 3: the notice sits in the row's OWN entry, so it keeps the identifying metadata every
+    other entry carries."""
+    _notice_fixtures(monkeypatch, errored=[1, 2])
+    out = se.summarize_row("/x.pdf", _row(title="MRI OF THE KNEE", date="2026-03-04"), prompt="P")
+    assert out["summaryTitle"] == "MRI OF THE KNEE (Pages 1-2)"
+    assert out["summaryDate"] == "2026-03-04"
+
+
+@pytest.mark.parametrize("missing", ["", None, "-", "   "])
+def test_a_notice_row_without_a_title_degrades_to_the_page_range(monkeypatch, missing):
+    """Where segmentation could not read a header either, the entry names its PAGES rather than
+    rendering the bare "-" sentinel.
+
+    In the title proper, not the usual "(Pages X-Y)" suffix: `_export_title_and_text` strips that
+    suffix from every entry, so a notice row with no header would otherwise reach the deliverable
+    identified by nothing at all.
+    """
+    _notice_fixtures(monkeypatch, errored=[1, 2])
+    out = se.summarize_row("/x.pdf", _row(title=missing), prompt="P")
+    assert out["summaryTitle"] == "Pages 1-2"
+    assert "-" != out["summaryTitle"]
+
+
+def test_a_notice_row_keeps_the_rows_review_markers(monkeypatch):
+    """The decorations are shared with the summary path, so a flagged or diagnostic row still reads
+    the same way in the app; the export strips both either way."""
+    _notice_fixtures(monkeypatch, errored=[1, 2])
+    out = se.summarize_row("/x.pdf", _row(category="3", flag="x", title="CT"), prompt="P")
+    assert out["summaryTitle"] == "[ManualCheck] CT [Diagnostic Study] (Pages 1-2)"
+
+
+def test_a_notice_row_is_attributed_to_no_model(monkeypatch):
+    """`model` NULL is what keeps the pro-vs-flash quality cohort clean: no model wrote this body, and
+    the `unreadable` flag rather than a `model` sentinel is what records the fact."""
+    _notice_fixtures(monkeypatch, errored=[1, 2])
+    out = se.summarize_row("/x.pdf", _row(), prompt="P")
+    assert out["model"] is None
+    assert out["titleModel"] is None and out["auditModel"] is None
+    assert out["promptFingerprint"] is None and out["auditFingerprint"] is None
+    assert out["verified"] is False and out["verifiedText"] is None
+    assert out["truncated"] is False
+    # None, not "": storing "" would record an empty extraction as a successful one.
+    assert out["sourceText"] is None
+
+
+def test_a_row_that_read_cleanly_but_holds_no_words_still_says_nothing(monkeypatch):
+    """Decision 1: only genuine extraction FAILURES are announced.
+
+    A film, a photograph or a separator sheet reads fine and simply carries no text. It raises exactly
+    as it did before, so the deliverable gains no notice about a page there is nothing to explain.
+    """
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("   ", _clean(pages, blank=pages)),
+    )
+    monkeypatch.setattr(se, "_generate", _boom)
+    with pytest.raises(EmptyExtractionError):
+        se.summarize_row("/x.pdf", _row(), prompt="P")
+
+
+def test_a_partially_unreadable_row_is_summarized_and_names_the_lost_pages(monkeypatch):
+    """WHEN some pages fail but the rest produce text, THE SYSTEM SHALL summarize what it could read
+    AND state what it could not. A ten-page row that lost one page used to deliver a summary of nine
+    with nothing said."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([2], text="readable text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    out = se.summarize_row("/x.pdf", _row(start=1, end=4), prompt="P")
+
+    assert out["noticeOnly"] is False  # a real summary, not a notice
+    assert out["unreadablePages"] == [2]
+    assert out["model"] is not None  # a model DID write this body
+    assert "Summary body" in out["summaryText"]
+    assert out["summaryText"].endswith(se.partial_unreadable_notice([2]))
+
+
+def test_the_partial_notice_is_never_shown_to_the_faithfulness_audit(monkeypatch):
+    """The audit checks the body against its SOURCE TEXT, and this sentence is by definition not in
+    that source. Showing it invites the audit to "correct" an unsupported claim, or to record a
+    faithfulness issue against wording we wrote ourselves - so it is appended after the pass."""
+    audited = {}
+
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([2], text="readable text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+
+    def fake_verify(model, source, summary, title=None, document_date=None):
+        audited["body"] = summary
+        return {"fixed_text": summary, "fixed_title": title, "issues": [], "ok": True}
+
+    monkeypatch.setattr(se, "verify_summary", fake_verify)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert "unintelligible" not in audited["body"].lower()
+    assert "unintelligible" in out["summaryText"].lower()
+
+
+def test_the_partial_notice_survives_a_body_the_audit_corrected(monkeypatch):
+    """effective_text() PREFERS verified_text, so the notice has to reach that body too or a row the
+    audit rewrote would silently lose it."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([2], text="readable text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": "Corrected body",
+            "fixed_title": title,
+            "issues": [{"type": "unsupported", "detail": "x"}],
+            "ok": True,
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert "Corrected body" in out["verifiedText"]
+    assert out["verifiedText"].endswith(se.partial_unreadable_notice([2]))
+
+
+def test_a_clean_row_carries_no_notice_and_no_unreadable_pages(monkeypatch):
+    """The happy path is untouched: nothing is appended and the list stays empty, so an ordinary
+    deliverable reads exactly as it did."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([], text="readable text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert out["unreadablePages"] == [] and out["noticeOnly"] is False
+    assert "unintelligible" not in out["summaryText"].lower()
+
+
+def test_stored_ocr_reuse_takes_the_unreadable_pages_from_the_row(monkeypatch):
+    """A row reusing the duplicate check's OCR cannot re-ask what failed without undoing the reuse
+    (~45 minutes on a 1500-page record), so the caller supplies it from `page_texts.extract_ok` -
+    summarize_engine is DB-free and cannot read that itself."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _boom)  # reuse means NO extraction
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    out = se.summarize_row(
+        "/x.pdf", _row(source_text="STORED OCR", unreadable_pages=[2]), prompt="P"
+    )
+
+    assert out["unreadablePages"] == [2]
+    assert out["summaryText"].endswith(se.partial_unreadable_notice([2]))
+
+
+def test_a_fresh_extraction_overrides_the_rows_unreadable_seed(monkeypatch):
+    """The seed records what a PREVIOUS stage failed on, and an errored page is often a transient
+    timeout that reads fine on the next attempt. Announcing a page as unintelligible when THIS run
+    read it is worse than saying nothing, so what just happened wins."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([], text="read fine this time"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    out = se.summarize_row("/x.pdf", _row(unreadable_pages=[1, 2]), prompt="P")
+
+    assert out["unreadablePages"] == []
+    assert "unintelligible" not in out["summaryText"].lower()
+
+
+def test_the_notice_text_is_deterministic_and_distinct_per_case(monkeypatch):
+    """Built in code, never model-generated: a model asked to describe a page it cannot read is the
+    exact shape that invents content, and this text ships in a medical-legal deliverable."""
+    # Page 1 is inside the default row's 1-2 range: _clean reports only pages the caller asked for,
+    # exactly as the real extractor does, so an out-of-range page would report nothing failed.
+    _notice_fixtures(monkeypatch, errored=[1])
+    first = se.summarize_row("/x.pdf", _row(), prompt="P")["summaryText"]
+    second = se.summarize_row("/x.pdf", _row(), prompt="P")["summaryText"]
+    assert first == second == se.unreadable_notice([1])
+    # The two notices tell the reader to expect different things, so neither can stand in for the
+    # other: one replaces a summary, the other qualifies one.
+    assert se.unreadable_notice([3]) != se.partial_unreadable_notice([3])
+    assert "not covered by this summary" in se.partial_unreadable_notice([3])

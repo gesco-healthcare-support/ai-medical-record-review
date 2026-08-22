@@ -1954,3 +1954,251 @@ def test_any_other_population_failure_stays_best_effort(monkeypatch):
     with get_sessionmaker()() as session:
         assert session.get(Job, job_id).state == "done"
         assert session.get(Document, doc_id).status == "reviewing"
+
+
+# --- C9: an unreadable row is DELIVERED with a notice, and still asks the reviewer to look ---------
+
+
+def _notice_output(row, pages) -> dict:
+    """summarize_row's output for a row where NOTHING could be read: the body IS the notice, and no
+    model is credited with writing it."""
+    import app.services.summarize_engine as se
+
+    return {
+        "summaryTitle": f"T{row['start']} (Pages {row['start']}-{row['end']})",
+        "summaryDate": "-",
+        "summaryText": se.unreadable_notice(pages),
+        "manualCheck": "",
+        "sourceText": None,
+        "model": None,
+        "unreadablePages": list(pages),
+        "noticeOnly": True,
+    }
+
+
+def _partial_output(row, pages) -> dict:
+    """summarize_row's output for a row summarized off its READABLE pages, notice appended."""
+    import app.services.summarize_engine as se
+
+    out = _ok_output(row)
+    out.update(
+        {
+            "summaryText": f"body{row['start']} {se.partial_unreadable_notice(pages)}",
+            "model": "gemini-2.5-pro",
+            "unreadablePages": list(pages),
+            "noticeOnly": False,
+        }
+    )
+    return out
+
+
+def _stale_notice(doc_id, job_id, **over) -> Summary:
+    """A notice Summary left by a previous run, as the reconciliation would find it."""
+    fields = {
+        "document_id": doc_id,
+        "job_id": job_id,
+        "idx": 0,
+        "title": "OLD",
+        "date": "-",
+        "text": "a stale notice",
+        "unreadable": True,
+        "model": None,
+        "row_start": 1,
+        "row_end": 1,
+        "row_category": "1",
+    }
+    fields.update(over)
+    return Summary(**fields)
+
+
+def test_a_notice_row_is_delivered_and_the_job_still_needs_attention(monkeypatch):
+    """Two signals for two audiences: the notice tells the READER what happened, the banner tells the
+    REVIEWER to re-run text recognition or exclude the row before delivering. Dropping the banner
+    would remove the only thing today that says a page was lost."""
+    import app.services.summarize_engine as se
+
+    monkeypatch.setattr(
+        se,
+        "summarize_row",
+        lambda pdf_path, row, *a, **k: _notice_output(row, [int(row["start"])]),
+    )
+
+    doc_id, job_id = _doc_with_summarize_rows(2)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "needs_attention"
+        summaries = session.scalars(
+            select(Summary).where(Summary.document_id == doc_id).order_by(Summary.idx)
+        ).all()
+        assert len(summaries) == 2  # both rows DELIVERED - neither vanished from the report
+        assert all(s.unreadable is True for s in summaries)
+        assert all(s.model is None for s in summaries)  # no model wrote these bodies
+        assert "unintelligible" in summaries[0].text.lower()
+        # Pool completion order is not fixed, so compare as a set.
+        assert sorted(r["pages"] for r in job.attention["rows"]) == ["1-1", "2-2"]
+        assert "could not read page" in job.attention["rows"][0]["reason"]
+
+
+def test_a_partially_unreadable_row_is_flagged_but_the_job_completes(monkeypatch):
+    """It carries a real summary AND the appended notice, so there is nothing for the reviewer to
+    recover: the flag is for querying later, not for prompting now."""
+    import app.services.summarize_engine as se
+
+    monkeypatch.setattr(
+        se, "summarize_row", lambda pdf_path, row, *a, **k: _partial_output(row, [1])
+    )
+
+    doc_id, job_id = _doc_with_summarize_rows(1)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "done"
+        assert job.progress()["attention"] is None  # no banner: nothing to act on
+        summary = session.scalars(select(Summary).where(Summary.document_id == doc_id)).one()
+        assert summary.unreadable is True
+        assert summary.model == "gemini-2.5-pro"  # a model DID write this body
+        assert "not covered by this summary" in summary.text
+
+
+def test_summarize_again_re_reads_a_notice_row_instead_of_reusing_it(monkeypatch):
+    """The banner tells the reviewer to "summarize again". Skip-done reuse would make that a no-op,
+    and a transient Tesseract timeout would become permanent by having been DELIVERED - the failure
+    page_text.py guards against in four separate places."""
+    import app.services.summarize_engine as se
+
+    calls: list[int] = []
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        calls.append(int(row["start"]))
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+
+    doc_id, job_id = _doc_with_summarize_rows(1)
+    with get_sessionmaker()() as session:
+        session.add(_stale_notice(doc_id, job_id))
+        session.commit()
+
+    summarize_document(job_id)
+
+    assert calls == [1]  # re-read, NOT skipped as already done
+    with get_sessionmaker()() as session:
+        summary = session.scalars(select(Summary).where(Summary.document_id == doc_id)).one()
+        assert summary.unreadable is False  # the retry recovered the page
+        assert summary.text == "body1"
+
+
+def test_a_reviewer_edited_notice_row_is_left_alone(monkeypatch):
+    """Having corrected the entry by hand, the reviewer does not want it replaced by a fresh notice."""
+    import app.services.summarize_engine as se
+
+    calls: list[int] = []
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        calls.append(int(row["start"]))
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+
+    doc_id, job_id = _doc_with_summarize_rows(1)
+    with get_sessionmaker()() as session:
+        session.add(_stale_notice(doc_id, job_id, edited_text="reviewer wording"))
+        session.commit()
+
+    summarize_document(job_id)
+
+    assert calls == []  # reused, so the hand-written correction survives
+    with get_sessionmaker()() as session:
+        summary = session.scalars(select(Summary).where(Summary.document_id == doc_id)).one()
+        assert summary.edited_text == "reviewer wording"
+
+
+def test_a_partially_unreadable_summary_is_reused_like_any_other(monkeypatch):
+    """It holds real clinical content, so discarding it to re-OCR on every run would be a regression
+    rather than a retry. Only a notice-ONLY row (model NULL) is re-read."""
+    import app.services.summarize_engine as se
+
+    calls: list[int] = []
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        calls.append(int(row["start"]))
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+
+    doc_id, job_id = _doc_with_summarize_rows(1)
+    with get_sessionmaker()() as session:
+        session.add(_stale_notice(doc_id, job_id, model="gemini-2.5-pro", text="real body"))
+        session.commit()
+
+    summarize_document(job_id)
+
+    assert calls == []
+    with get_sessionmaker()() as session:
+        summary = session.scalars(select(Summary).where(Summary.document_id == doc_id)).one()
+        assert summary.text == "real body"  # the clinical content was not thrown away
+
+
+def test_a_notice_row_is_not_counted_as_proof_the_model_answers(monkeypatch):
+    """`generated` gates the give-up guard, and a notice involves no model call at all. Counting it
+    would break `generated == 0` on a document whose every real row is being refused, so the job
+    would pause and auto-resume into the same refusal - the 96-minute grind the guard prevents."""
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        if int(row["start"]) == 1:
+            return _notice_output(row, [1])  # delivered, but no model answered for it
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _NoopQueue())
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 99)
+    monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 3)
+
+    doc_id, job_id = _doc_with_summarize_rows(8)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        # needs_attention (gave up), NOT paused: the notice was not a model success.
+        assert job.state == "needs_attention"
+        assert "AI service" in (job.error or "")
+        # The notice row is still kept - giving up never discards delivered work.
+        summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
+        assert [s.row_start for s in summaries] == [1]
+
+
+def test_the_worker_seeds_each_row_with_the_pages_that_failed_extraction(monkeypatch):
+    """summarize_engine is DB-free, so the pages `page_texts` records as failed reach it as row data.
+    One query for the whole document, sliced to each row's own range."""
+    import app.services.summarize_engine as se
+
+    from app.models import PageText
+
+    seen: dict[int, list] = {}
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        seen[int(row["start"])] = row.get("unreadable_pages")
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+
+    doc_id, job_id = _doc_with_summarize_rows(3)  # rows 1-1, 2-2, 3-3
+    with get_sessionmaker()() as session:
+        session.add(PageText(document_id=doc_id, page=2, text="", extract_ok=False, char_count=0))
+        session.add(
+            PageText(document_id=doc_id, page=3, text="fine", extract_ok=True, char_count=4)
+        )
+        session.commit()
+
+    summarize_document(job_id)
+
+    assert seen[1] == []  # nothing failed inside this row's range
+    assert seen[2] == [2]  # the failed page, sliced to the row that owns it
+    assert seen[3] == []  # stored successfully, so never reported as unreadable

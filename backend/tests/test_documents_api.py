@@ -1828,3 +1828,104 @@ def test_dupe_date_key_parses_dates_and_defaults_unknown():
     assert _dupe_date_key("1/2/26") == (2026, 1, 2)  # 2-digit year -> 2000s
     assert _dupe_date_key("-") == (9999, 12, 31)  # unknown sorts last
     assert _dupe_date_key("") == (9999, 12, 31)
+
+
+# --- C9 (T4): the notice reaches BOTH deliverables through the ordinary Summary render path --------
+
+
+def _notice_summary(**over):
+    """A delivered notice row. No model, no source text and no verify pass - the three things an
+    export path could reasonably assume exist, which is why T4 asserts rather than assumes."""
+    from app.services.summarize_engine import unreadable_notice
+
+    fields = dict(
+        document_id="d",
+        job_id=1,
+        idx=0,
+        title="MRI OF THE KNEE (Pages 3-5)",
+        text=unreadable_notice([4]),
+        row_start=3,
+        row_end=5,
+        row_category="3",
+        date="2026-03-04",
+        unreadable=True,
+        model=None,
+        source_text=None,
+        verified=False,
+        verified_text=None,
+        verified_title=None,
+    )
+    fields.update(over)
+    return Summary(**fields)
+
+
+def test_both_exports_render_an_unreadable_notice_with_no_export_side_change():
+    """The notice reaches the deliverable through the SAME path as every other entry, because it is
+    stored as a real Summary rather than synthesized at export time."""
+    from app.api.documents import _export_entry, _pdf_entry
+    from app.services.summarize_engine import unreadable_notice
+
+    summary = _notice_summary()
+    word = _export_entry(summary)
+    pdf = _pdf_entry(summary)
+
+    assert word["summaryText"] == unreadable_notice([4])
+    assert pdf["summaryText"] == unreadable_notice([4])
+    assert "unintelligible" in word["summaryText"].lower()
+    assert "page 4" in word["summaryText"]
+    # The entry keeps its identity: its title, its date, and a working link target.
+    assert "MRI OF THE KNEE" in word["summaryTitle"]
+    assert "MRI OF THE KNEE" in pdf["linkTitle"]
+    assert word["summaryDate"] == "2026-03-04"
+    assert pdf["startPage"] == 3
+
+
+def test_an_untitled_notice_entry_still_names_its_pages_after_the_suffix_strip():
+    """The page range has to survive into the deliverable. Every export strips a trailing
+    "(Pages X-Y)", so an untitled notice row carries the label in its title PROPER - otherwise the
+    entry would reach the client identified by nothing at all."""
+    from app.api.documents import _export_entry, _pdf_entry
+
+    summary = _notice_summary(title="Pages 5-6", row_start=5, row_end=6)
+
+    assert _export_entry(summary)["summaryTitle"] == "Pages 5-6"
+    assert _pdf_entry(summary)["linkTitle"] == "Pages 5-6"
+    assert _pdf_entry(summary)["startPage"] == 5
+
+
+def test_a_notice_entry_gains_no_fabricated_doi_prefix():
+    """Every summarized entry opens with "**DOI**: ..." and a notice deliberately does not - the
+    prefix qualifies summary content, and there is none. _export_title_and_text re-adds a DOI only
+    when the STORED body already carries one, so this must come through clean rather than as a bare
+    "**DOI**:" with nothing after it."""
+    from app.api.documents import _export_entry
+
+    assert "**DOI**" not in _export_entry(_notice_summary())["summaryText"]
+
+
+def test_a_reviewer_edit_still_wins_over_a_notice():
+    """effective_text precedence is untouched: a reviewer who reads the page themselves and writes the
+    entry by hand is not overwritten by the notice."""
+    from app.api.documents import _export_entry
+
+    summary = _notice_summary(edited_text="Read by hand: lumbar MRI, disc protrusion at L4-L5.")
+    text = _export_entry(summary)["summaryText"]
+    assert "unintelligible" not in text.lower()
+    assert "disc protrusion" in text
+
+
+def test_a_partial_notice_survives_both_exports():
+    """The appended sentence is part of the stored body, so it needs no export-side handling either -
+    and the DOI a partial row really does carry is still restored."""
+    from app.api.documents import _export_entry, _pdf_entry
+    from app.services.summarize_engine import partial_unreadable_notice
+
+    tail = partial_unreadable_notice([4])
+    summary = _notice_summary(
+        text=f"**DOI**: 01/02/2026. Lumbar tenderness on palpation. {tail}",
+        model="gemini-2.5-pro",
+    )
+
+    assert _export_entry(summary)["summaryText"].endswith(tail)
+    assert _pdf_entry(summary)["summaryText"].endswith(tail)
+    assert "**DOI**: 01/02/2026." in _export_entry(summary)["summaryText"]
