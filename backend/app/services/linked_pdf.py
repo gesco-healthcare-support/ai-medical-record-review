@@ -22,7 +22,13 @@ from datetime import datetime
 
 import pymupdf
 
-from app.services.reporting import CONCLUSION, SUMMARY_INTRO, intro_sentence
+from app.services.reporting import (
+    CONCLUSION,
+    SUMMARY_INTRO,
+    date_label,
+    intro_sentence,
+    parsed_date,
+)
 
 _TITLE_COLOR = "#0000EE"  # link-blue for the clickable titles (CSS)
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_", re.DOTALL)
@@ -47,10 +53,10 @@ def _inline_html(text: str) -> str:
 
 
 def _sort_key(entry: dict):
-    try:
-        return datetime.strptime(entry.get("summaryDate", ""), "%m/%d/%Y")
-    except ValueError:
-        return datetime.min  # undated entries sort first, matching build_mrr_document
+    """Undated LAST, matching build_mrr_document - see the note there. Both renderers share
+    `parsed_date` so the two cannot drift: they produce the same deliverable in two formats and a
+    reviewer compares them side by side."""
+    return parsed_date(entry) or datetime.max
 
 
 def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm) -> str:
@@ -58,7 +64,7 @@ def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, law
     for i, e in enumerate(entries):
         # id='t{i}' lets Story report this title's rendered rect (see _render_summary_pdf).
         rows.append(
-            f"<tr><td class='d'>{html.escape(e.get('summaryDate') or '')}</td>"
+            f"<tr><td class='d'>{html.escape(date_label(e))}</td>"
             f"<td class='b'><a class='ln' id='t{i}'>{html.escape(e['linkTitle'])}</a>. "
             f"{_inline_html(e['summaryText'])}</td></tr>"
         )
