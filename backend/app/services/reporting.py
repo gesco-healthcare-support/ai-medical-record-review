@@ -78,16 +78,47 @@ def _add_inline_runs(paragraph, text, *, bold=False, italic=False):
         _run(paragraph, text[pos:], bold=bold, italic=italic)
 
 
+UNDATED_LABEL = "Undated"
+
+
+def parsed_date(entry):
+    """The entry's date as a datetime, or None when it states none.
+
+    ONE definition of "undated", shared by the sort key and the label. Written separately they
+    disagreed: an entry dated "n/a" sorted last (unparseable) but rendered the raw "n/a", because the
+    label only special-cased "-" and "". So an entry could sort as undated while displaying junk. Not
+    reachable from today's field spec, which only ever writes "-", but two definitions of one concept
+    drift eventually.
+    """
+    try:
+        return datetime.strptime((entry.get("summaryDate") or "").strip(), "%m/%d/%Y")
+    except ValueError:
+        return None
+
+
+def date_label(entry) -> str:
+    """The date cell text: the date exactly as written, or "Undated".
+
+    The field spec writes "-" when a document carries no date, which in a finished deliverable reads
+    as a value nobody filled in rather than a fact about the document. The reviewers call these
+    Undated and expect them at the end of the review.
+
+    A parsed date is returned VERBATIM, never reformatted: the factuality rules say copy dates
+    exactly, and a reviewer compares them against the page.
+    """
+    if parsed_date(entry) is None:
+        return UNDATED_LABEL
+    return (entry.get("summaryDate") or "").strip()
+
+
 def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm):
     """Assemble the MRR Word document from summary ``entries`` (sorted chronologically)."""
 
-    def safe_date_parse(entry):
-        try:
-            return datetime.strptime(entry.get("summaryDate", ""), "%m/%d/%Y")
-        except ValueError:
-            return datetime.min  # undated entries sort first
-
-    entries = sorted(entries, key=safe_date_parse)
+    # Undated entries sort LAST, per the reviewers 2026-08-21: "if it is something important we will
+    # still summarize it, it can go at the end of the Review as Undated". This was datetime.min -
+    # undated FIRST - so a document stating no date sorted ahead of the earliest real encounter and
+    # the deliverable could OPEN on one.
+    entries = sorted(entries, key=lambda e: parsed_date(e) or datetime.max)
 
     doc = Document()
 
@@ -154,7 +185,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
         cells[1].width = Inches(5.6)
         cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         cells[1].vertical_alignment = WD_ALIGN_VERTICAL.TOP
-        _run(cells[0].paragraphs[0], entry["summaryDate"])
+        _run(cells[0].paragraphs[0], date_label(entry))
         body = cells[1].paragraphs[0]
         # Justified: the report is read as a finished document, and a ragged right edge on every
         # record is what made the export look like a draft.
