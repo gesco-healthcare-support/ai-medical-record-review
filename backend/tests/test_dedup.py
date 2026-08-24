@@ -3,6 +3,7 @@
 cluster_rows is pure; confirm_cluster's model call is monkeypatched (no Vertex).
 """
 
+import difflib
 import json
 
 from app.services import dedup
@@ -293,3 +294,99 @@ def test_clustering_groups_same_date_copies_on_content_alone():
     ]
     clusters = dedup.cluster_rows(items)
     assert len(clusters) == 1
+
+
+# Generated once by a seeded search for a pair difflib scores asymmetrically under autojunk
+# (swing 0.067), then inlined so the test carries no randomness. PHI-free: assembled from a fixed
+# vocabulary of clinical stock phrases.
+_ASYM_A = "independently as no independently continued of ibuprofen ice weekly no acute four motion weekly 128/82 therapy strain plan needed provider plan reports 128/82 strength medications independently and no acute in no plan patient 5/5 motion weeks twice in rest ambulates weekly no pulse patient pulse lumbar four 600mg range patient strain continued continued range 600mg distress reports distress follow of distress 600mg 128/82 ambulates bilaterally as ibuprofen ice ambulates ambulates of of in full continued in continued ice full plan 74 acute of range 600mg bilaterally 74 128/82 of reports vitals medications plan continued ibuprofen up ambulates impression patient mild mild 74"
+
+_ASYM_B = "independently as no independently continued of ibuprofen ice weekly no acute four motion weekly 128/82 therapy strain plan needed provider plan reports 128/82 strength medications independently and no acute in no plan patient 5/5 motion weeks twice in rest ambulates weekly no pulse patient pulse lumbar four 600mg range patient strain continued continued range 600mg distress reports distress follow of distress 600mg 128/82 follow full patient discomfort independently as weeks cervical follow mild pulse lumbar bilaterally full 600mg range strain therapy physical ibuprofen provider ibuprofen needed continued reports weeks acute strain ambulates advised medications 5/5 needed discomfort needed rest and distress 600mg advised physical advised medications acute weekly distress motion twice 5/5 plan of bilaterally"
+
+
+# ---------------------------------------------------------------------------------------------
+# difflib's autojunk must stay OFF for these comparisons.
+#
+# autojunk refuses to match on any element occurring in more than 1% of positions. That is built for
+# LINE sequences; these are CHARACTER sequences, so on a 1,500-character excerpt it junks the spaces
+# and common letters - most of medical prose - and suppresses the score far below what the texts
+# share. Measured on the box 2026-08-24: across 25 records / 84 clusters, 75 score higher with it off
+# and 13 flip REJECT -> PASS at the gate, none the other way (0.442 -> 0.958 among them).
+#
+# It is also computed on the SECOND sequence only, so ratio(a, b) != ratio(b, a) - up to 0.249 apart
+# on real pairs, with 10 of one cluster's 78 pairs straddling the 0.90 gate purely on row order.
+# ---------------------------------------------------------------------------------------------
+
+
+def _suppressed_pair():
+    """A pair autojunk scores near zero while the texts plainly share their subject.
+
+    Same clinical content, one side numeric and one spelled out, so the shared vocabulary is real but
+    the characters recur heavily - exactly the shape autojunk mistakes for noise.
+    """
+    a = "vitals 120 80 98 6 72 16 " * 20
+    b = "vitals one twenty eighty ninety eight " * 20
+    return a, b
+
+
+def test_autojunk_is_not_applied_to_character_comparisons():
+    """WHEN two sub-documents share their text, THE SYSTEM SHALL NOT let autojunk suppress the score.
+
+    Fails on the previous behaviour: the same pair scored 0.011, which reads as "nothing in common"
+    and is how a genuine re-scan was dismissed as a form series.
+    """
+    a, b = _suppressed_pair()
+    scored = dedup._min_difflib([a, b])
+    with_autojunk = difflib.SequenceMatcher(None, a, b).ratio()
+
+    assert with_autojunk < 0.05, "fixture no longer demonstrates the suppression"
+    assert scored > 0.30, f"autojunk still suppressing the score ({scored})"
+    assert scored > with_autojunk * 5
+
+
+def test_the_score_barely_moves_when_the_pair_is_swapped():
+    """The score must be a property of the PAIR, not of which row came first.
+
+    Not asserted as exact equality: difflib's matcher is mildly order-sensitive even with autojunk
+    off. What the fix removes is the LARGE, autojunk-driven swing - 0.067 on this fixture and up to
+    0.249 on real pairs - which is what let a borderline pair land either side of the gate.
+    """
+    a, b = _ASYM_A, _ASYM_B
+    forward = difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
+    backward = difflib.SequenceMatcher(None, b, a, autojunk=False).ratio()
+    junk_forward = difflib.SequenceMatcher(None, a, b).ratio()
+    junk_backward = difflib.SequenceMatcher(None, b, a).ratio()
+
+    assert abs(junk_forward - junk_backward) > 0.05, "fixture no longer shows the asymmetry"
+    assert abs(forward - backward) < 0.01
+
+
+def test_an_identical_pair_still_scores_one():
+    """The case the whole stage exists for must be untouched."""
+    text = "DATE OF SERVICE 05/08/2022 " + ("bilateral knee radiographs unremarkable. " * 30)
+    assert dedup._min_difflib([text, text]) == 1.0
+
+
+def test_a_form_series_with_different_findings_is_still_separated():
+    """autojunk off raises scores; it must raise them for RE-SCANS, not for a recurring form whose
+    findings differ. This is the dominant false positive and it has to stay below the override."""
+    template = "PROGRESS REPORT patient redacted provider redacted plan of care. " * 12
+    a = template + " findings: cervical radiculopathy with C6 involvement, grip strength reduced"
+    b = template + " findings: no acute distress, lumbar range of motion full, discharged today"
+    assert dedup._min_difflib([a, b]) < 0.99
+
+
+def test_cluster_similarity_is_stable_under_member_reordering():
+    """A cluster's reported similarity must not change when its members arrive in another order."""
+    body = "physical therapy three times weekly for the lumbar spine. " * 30
+    items = [
+        {"id": 0, "date": "05/08/2022", "title": "PR-2", "category": "1", "text": body + " alpha"},
+        {"id": 1, "date": "06/09/2022", "title": "PR-2", "category": "1", "text": body + " beta"},
+        {"id": 2, "date": "07/10/2022", "title": "PR-2", "category": "1", "text": body + " gamma"},
+    ]
+
+    def shape(rows):
+        return sorted((len(c["members"]), c["similarity"]) for c in dedup.cluster_rows(rows))
+
+    assert shape(items) == shape(list(reversed(items)))
+    assert shape(items) == shape([items[1], items[2], items[0]])

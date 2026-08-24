@@ -269,6 +269,20 @@ class Settings(BaseSettings):
     #     answered the question the model would be asked, and the confirm step's silent "these are all
     #     distinct" verdict is a known way to lose a real duplicate. Left at 0.95: it guards a
     #     different question (spend a Vertex call or not) and the evidence for it has not changed.
+    #
+    # !! THE DEPLOYED VALUE IS NOT 0.99. `docker-compose.yml` passes
+    # `DUPE_SIMILARITY_OVERRIDE: ${DUPE_SIMILARITY_OVERRIDE:-0.90}`, so every container runs 0.90 and
+    # this default reaches only the test suite and a non-compose run. #67 added that line while 0.90
+    # was still the default here; #81 raised this one to 0.99 and did not touch compose or
+    # `.env.example`, so the measured decision above has never actually been deployed. Verified on the
+    # box 2026-08-24: the running container reports 0.9.
+    #
+    # NOT silently corrected here, because it is a real behaviour change and the evidence has moved:
+    # measured over 25 records / 84 candidate clusters, going to 0.99 takes the clusters passing the
+    # gate from 65 to 35. On top of that, the 0.994-floor / 0.823-false-positive separation quoted
+    # above was measured through difflib's autojunk suppression, which `dedup._min_difflib` no longer
+    # applies - so the numbers that justify 0.99 need re-deriving on the corrected scale before either
+    # value is chosen. Aligning the three files is a decision, not a typo fix; see issue #125.
     dupe_jaccard_threshold: float = 0.70
     dupe_similarity_override: float = 0.99
     dupe_model_override: float = 0.95
