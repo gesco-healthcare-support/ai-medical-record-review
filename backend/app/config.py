@@ -224,9 +224,30 @@ class Settings(BaseSettings):
     # Concurrency for the one-time per-page OCR pass (services/page_text.populate_document).
     # Deliberately its own knob rather than reusing CLASSIFY_WORKERS: this is pure Tesseract CPU on
     # the same box that runs the Vertex pacing work, and OMP_THREAD_LIMIT=1 in compose is what stops
-    # concurrent tesseract processes deadlocking. Conservative by default - the pass runs once per
-    # document, so throughput matters less than not starving everything else.
-    page_text_workers: int = 4
+    # concurrent tesseract processes deadlocking.
+    #
+    # 4 -> 6 on 2026-08-24, on measurement rather than on principle. This pass is roughly HALF the
+    # wall-clock of a segment job - the same 297-page record segmented three times on 2026-08-17 took
+    # 1,463s, then 810s and 715s once its page text was stored - and segmentation is the largest stage
+    # in the pipeline (15.9h across 57 jobs, against 13.7h for summarize). Measured in the api
+    # container over 32 sampled pages of a 2,673-page record, rasterizing and OCR-ing in memory:
+    #
+    #     threads   1      2      4      6      8
+    #     seconds  60.2   30.7   17.0   12.7   10.9
+    #     speedup  1.00x  1.96x  3.54x  4.75x  5.51x
+    #
+    # Character output was IDENTICAL at every setting and no page failed, so this is throughput and
+    # not corruption, and the tesseract deadlock this comment warns about did not appear even at 8.
+    # 4 -> 6 is 1.34x on the pass, so roughly 12% off the segment job.
+    #
+    # 6 rather than 8, which measured faster, because the box has 8 cores and also runs six RQ
+    # workers, postgres, redis, api and web: 6 leaves two cores for everything else. The contention
+    # risk was checked rather than assumed - up to FOUR segment jobs have run concurrently on the box
+    # (21 overlapping pairs historically), which at 6 threads each would be 24 threads on 8 cores. Per
+    # page that shows no penalty today: jobs running alone averaged 3.64 s/page, with 2-3 others 4.47,
+    # and the 4+ bucket 2.95, so there is no monotone contention effect to protect. If one appears,
+    # PAGE_TEXT_WORKERS reverts this by env with no deploy.
+    page_text_workers: int = 6
 
     # Global Vertex request ceiling (requests/minute) enforced by a Redis token bucket at the seam,
     # so the aggregate rate across every worker process never trips dynamic-shared-quota 429s. Tune
