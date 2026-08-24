@@ -6,6 +6,38 @@ surfaced downstream as a cryptic Vertex "Model input cannot be empty" error). A 
 page is still skipped so one bad page does not abort the whole document. TESSERACT_CMD (Windows
 installs are often off PATH) is applied lazily on first use so importing this module needs no env.
 Ported with main's PR #25 hardening (edd110f).
+
+WHY EVERY PAGE IS RASTERIZED AND OCR'D, EVEN WHEN THE PDF ALREADY CARRIES A TEXT LAYER
+---------------------------------------------------------------------------------------
+Most of these records are not photographs of paper - they were generated digitally, or a document
+system OCR'd them before we received them - so `pypdf`'s `extract_text()` returns something for many
+pages, and reading it costs ~0.04s against ~2.0s to rasterize and run Tesseract. Since OCR is roughly
+HALF the wall-clock of a segment job (one 297-page record segmented three times on 2026-08-17:
+1,463s, then 810s and 715s once its page text was stored), that looks like the largest speed lever in
+the pipeline. It is not usable, and it was measured rather than argued.
+
+Measured 2026-08-24 over 35 distinct records on the box, ~1,050 sampled pages, comparing the layer
+against Tesseract by WORD RECALL - the share of Tesseract's words that appear in the layer:
+
+* Of the pages carrying a layer, only ~64% match closely. **~18% are missing more than 30% of the
+  words Tesseract finds.** The worst records are a fax header stamp over a scanned page: median
+  recall 0.013 and 0.027, holding 5% and 2% of OCR's characters.
+* **No character floor separates them.** Pages with 900-2000 characters of layer agree 60% of the
+  time; pages with 2000+ agree 70%. The curve rises and plateaus well short of safe.
+* Measured in BOTH directions to test whether Tesseract is even the right yardstick - on a digital
+  PDF the layer is the original and OCR is a lossy re-read, so a disagreement could mean OCR invented
+  tokens from scan speckle. It does not: of the disagreeing pages above a 150-char floor, 25.8% are
+  the layer genuinely missing content and only 1.5% are OCR noise.
+* A per-document calibration gate strict enough to be safe trusts **2 of 35 records**; relaxed to 80%
+  agreement it trusts 4. Safe and worthless, or useful and lossy.
+
+So the cost is largely unavoidable, and it does not go away when this pipeline stops paying a vendor
+per document - OCR is CPU work that no GPU purchase makes cheaper.
+
+**If you pick this up again, measure word recall in both directions, not character volume.** Character
+volume agreed 96-101% on records whose word recall was far worse, and reading volume as agreement is
+exactly what made this look like a 50x win. See also `ocr_max_long_edge_px` in config, which records
+the other rejected OCR speed lever - capping the DPI was 4.2x faster and lost 6.0% of the characters.
 """
 
 import logging
