@@ -251,9 +251,9 @@ def test_the_ocr_pool_size_comes_from_config_and_compose_agrees():
     Two things pinned, and the second is the one that bites. `populate_document` must take the pool
     size from config rather than a literal - and `docker-compose.yml` passes PAGE_TEXT_WORKERS
     explicitly, so a container reads the COMPOSE default and never the config one. Editing config
-    alone changes nothing on a deployed box. `DUPE_SIMILARITY_OVERRIDE` is that exact bug already in
-    the tree: config says 0.99, compose says 0.90, and production has run 0.90 since #81. This keeps
-    the two in step for this setting so it cannot happen twice.
+    alone changes nothing on a deployed box. `DUPE_SIMILARITY_OVERRIDE` was that exact bug in this
+    tree - config said 0.99, compose said 0.90, and production served 0.90 from #81 - and it now has
+    a guard of its own in `test_dedup.py`. This keeps the two in step for this setting.
     """
     import re
     from pathlib import Path

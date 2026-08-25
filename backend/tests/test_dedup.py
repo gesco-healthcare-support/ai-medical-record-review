@@ -139,10 +139,17 @@ def test_gate_override_keeps_a_genuine_rescan_with_two_dates():
 def test_gate_treats_absent_date_and_title_as_unknown_not_matching():
     # Aggregate-built records carry "-" for every row; two unknowns have told us nothing, so the
     # gate must fall through to content similarity rather than reading them as a match.
+    # Expressed RELATIVE to the configured override rather than against a literal. This test is
+    # about the fall-through mechanism, not about where the threshold sits, and it previously
+    # hardcoded 0.98 as "below the raised override" - which quietly made a mechanism test fail the
+    # moment the policy value moved.
+    from app.config import get_settings
+
+    override = get_settings().dupe_similarity_override
     members = _members(("-", "-"), ("-", "-"))
-    assert dedup.duplicate_gate(members, 0.40) is False
-    assert dedup.duplicate_gate(members, 0.98) is False  # below the raised override
-    assert dedup.duplicate_gate(members, 0.995) is True
+    assert dedup.duplicate_gate(members, 0.0) is False
+    assert dedup.duplicate_gate(members, override - 0.05) is False
+    assert dedup.duplicate_gate(members, override) is True
 
 
 def test_gate_handles_similarity_none_from_pre_column_clusters():
@@ -390,3 +397,34 @@ def test_cluster_similarity_is_stable_under_member_reordering():
 
     assert shape(items) == shape(list(reversed(items)))
     assert shape(items) == shape([items[1], items[2], items[0]])
+
+
+def test_the_duplicate_thresholds_agree_between_config_and_compose():
+    """WHEN a duplicate threshold is changed, THE SYSTEM SHALL change it in both places.
+
+    `docker-compose.yml` passes all three DUPE_* keys explicitly, so a container reads the COMPOSE
+    default and never the one in `config.py`. This setting is the tree's own worked example of what
+    that costs: #67 added the compose line while 0.90 was the default here, #81 then raised this file
+    to 0.99 and did not touch compose, and every container went on serving 0.90 for three weeks while
+    the code, the docstrings and my own analysis all said 0.99. The same guard already exists for
+    PAGE_TEXT_WORKERS and PIPELINE_WORKERS; this closes it for the setting that taught us the lesson.
+    """
+    import re
+    from pathlib import Path
+
+    from app.config import get_settings
+
+    settings = get_settings()
+    text = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(encoding="utf-8")
+    for key, attr in (
+        ("DUPE_JACCARD_THRESHOLD", "dupe_jaccard_threshold"),
+        ("DUPE_SIMILARITY_OVERRIDE", "dupe_similarity_override"),
+        ("DUPE_MODEL_OVERRIDE", "dupe_model_override"),
+    ):
+        match = re.search(rf"{key}:\s*\$\{{{key}:-([0-9.]+)\}}", text)
+        assert match, f"docker-compose.yml no longer passes {key}"
+        assert float(match.group(1)) == getattr(settings, attr), (
+            f"docker-compose.yml says {key}={match.group(1)} but config.py says "
+            f"{attr}={getattr(settings, attr)}; a deployed container would use the compose value "
+            f"and ignore the code default"
+        )
