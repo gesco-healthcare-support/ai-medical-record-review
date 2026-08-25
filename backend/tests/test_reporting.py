@@ -2,9 +2,11 @@
 
 import html
 import io
+import re
 
 import pytest
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.shared import Pt
 
 from app.services.reporting import (
     CONCLUSION,
@@ -243,3 +245,104 @@ def test_both_renderers_share_the_label_and_the_ordering():
     assert linked_pdf.date_label is date_label
     assert linked_pdf._sort_key(_entry("-")) == datetime.max
     assert linked_pdf._sort_key(_entry("01/02/2020")) < datetime.max
+
+
+# The two client-facing sentences below are formatted by the LAST block of `build_mrr_document`,
+# which set every property on the WRONG paragraph's run: `nine_title_format = fourth_title.runs[0]`.
+# Two visible consequences in the delivered .docx, and ruff had flagged the cause as F841 (a local
+# assigned and never used) before it was silenced with a noqa instead of fixed.
+def _paragraph_named(doc, text):
+    return next(p for p in doc.paragraphs if p.text == text)
+
+
+def test_the_summary_intro_stays_bold_in_the_word_document():
+    """It is set bold, then the conclusion block un-bolds it by reusing the same run.
+
+    `linked_pdf` renders this sentence with `font-weight:bold`, so the delivered .docx and the
+    delivered .pdf disagreed on the formatting of a sentence the client reads - the same drift the
+    module docstring records for the sentence TEXT, one layer down in the formatting.
+    """
+    doc = build_mrr_document(
+        [],
+        num_pages=8,
+        patient_name="A B",
+        patient_dob="01/01/1980",
+        qme_or_ame="QME",
+        lawfirm="Firm",
+    )
+    runs = _paragraph_named(doc, SUMMARY_INTRO).runs
+    assert runs, "the summary-intro paragraph has no runs"
+    assert all(r.bold for r in runs), "the summary intro is not bold in the Word document"
+
+
+def test_the_conclusion_is_formatted_like_the_rest_of_the_letter():
+    """It got NO formatting, so the last sentence shipped in python-docx's default Calibri 11
+    while every other paragraph is Times New Roman."""
+    doc = build_mrr_document(
+        [],
+        num_pages=8,
+        patient_name="A B",
+        patient_dob="01/01/1980",
+        qme_or_ame="QME",
+        lawfirm="Firm",
+    )
+    runs = _paragraph_named(doc, CONCLUSION).runs
+    assert runs, "the conclusion paragraph has no runs"
+    for run in runs:
+        assert run.font.name == "Times New Roman"
+        assert run.font.size == Pt(12)
+        assert not run.bold
+        assert not run.underline
+
+
+def test_paragraph_alignment_is_set_on_paragraphs_not_runs():
+    """`alignment` is a paragraph property; assigning it to a run is silently a no-op.
+
+    Two of these blocks set it on the run, so those paragraphs never had their alignment applied.
+    Both happen to want LEFT, which python-docx also gives by default, so nothing was visible - but
+    the next paragraph that wants CENTER would fail the same way and look like a docx quirk.
+    """
+    doc = build_mrr_document(
+        [],
+        num_pages=8,
+        patient_name="A B",
+        patient_dob="01/01/1980",
+        qme_or_ame="QME",
+        lawfirm="Firm",
+    )
+    for sentence in (SUMMARY_INTRO, CONCLUSION):
+        paragraph = _paragraph_named(doc, sentence)
+        assert paragraph.alignment == WD_PARAGRAPH_ALIGNMENT.LEFT, (
+            f"alignment never reached the paragraph for: {sentence!r}"
+        )
+
+
+def test_both_renderers_agree_that_the_summary_intro_is_bold():
+    """The invariant that actually broke: not "is it bold in Word" but "do the two artifacts agree".
+
+    Each renderer was individually self-consistent - the PDF hardcodes `font-weight:bold`, the Word
+    side intended bold - and they still disagreed, because a later block in the Word assembly reused
+    the wrong run and cleared it. Asserting the two sides together is what makes that visible.
+    """
+    doc = build_mrr_document(
+        [],
+        num_pages=8,
+        patient_name="A B",
+        patient_dob="01/01/1980",
+        qme_or_ame="QME",
+        lawfirm="Firm",
+    )
+    word_is_bold = all(r.bold for r in _paragraph_named(doc, SUMMARY_INTRO).runs)
+
+    letter = _pdf_letter(8, "Firm")
+    escaped = html.escape(SUMMARY_INTRO)
+    paragraph = next(
+        block for block in re.findall(r"<p[^>]*>.*?</p>", letter, re.S) if escaped in block
+    )
+    pdf_is_bold = "font-weight:bold" in paragraph.replace(" ", "")
+
+    assert word_is_bold == pdf_is_bold, (
+        f"the delivered .docx and .pdf disagree on whether {SUMMARY_INTRO!r} is bold "
+        f"(word={word_is_bold}, pdf={pdf_is_bold})"
+    )
+    assert word_is_bold, "both renderers agree, but on NOT bold - the intended style is bold"

@@ -171,7 +171,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     fourth_title_format.bold = True
     fourth_title_format.underline = False
     fourth_title_format.font.size = Pt(12)
-    fourth_title_format.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+    fourth_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     fourth_title_format.font.name = "Times New Roman"
 
     # Two-column borderless table: date | title + body. The default "Table Normal" style has no
@@ -194,12 +194,26 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
         _run(body, ": ")
         _add_inline_runs(body, entry["summaryText"])
 
-    nine_title = doc.add_paragraph(this_concludes_text)  # noqa: F841
-    nine_title_format = fourth_title.runs[0]
+    # `nine_title_format` read `fourth_title.runs[0]` - the SUMMARY_INTRO paragraph's run, not this
+    # one. Two visible defects in the delivered .docx from one wrong name: the conclusion got no
+    # formatting at all and shipped in python-docx's default Calibri 11 while every other paragraph
+    # is Times New Roman 12, and `bold = False` here UNDID the `bold = True` set on SUMMARY_INTRO
+    # thirty lines above. `linked_pdf` renders that sentence with `font-weight:bold`, so the .docx and
+    # the .pdf disagreed on the formatting of a sentence the client reads - the same drift this
+    # module's docstring records for the sentence TEXT, one layer down.
+    #
+    # ruff had already found it: `nine_title` was assigned and never used (F841), which is exactly
+    # the bug, and the warning was silenced with a noqa rather than fixed.
+    #
+    # `alignment` is a PARAGRAPH property, so it is set on the paragraph here and on `fourth_title`
+    # above. Assigning it to a run is silently a no-op; both wanted LEFT, which is also the default,
+    # so nothing was visible - but the next paragraph wanting CENTER would fail the same way.
+    nine_title = doc.add_paragraph(this_concludes_text)
+    nine_title_format = nine_title.runs[0]
     nine_title_format.bold = False
     nine_title_format.underline = False
     nine_title_format.font.size = Pt(12)
-    nine_title_format.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+    nine_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     nine_title_format.font.name = "Times New Roman"
 
     return doc
