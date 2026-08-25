@@ -79,10 +79,38 @@ def _min_difflib(texts):
     re-scanned transcript. Measured on a real 6-member cluster (13k chars each): 0.219 truncated vs
     0.068 full, 33ms vs 1132ms - the verdict (a form series, nowhere near a true copy's 1.000) is
     unchanged at 34x less cost.
+
+    ``autojunk=False`` is REQUIRED here, not a preference. difflib's autojunk heuristic treats any
+    element occurring in more than 1% of positions as junk and refuses to match on it. That is built
+    for LINE sequences, where a line repeated throughout a file really is noise. These are CHARACTER
+    sequences, so on a 1,500-character excerpt it junks every character appearing more than ~15
+    times - the spaces and the common letters, which is most of medical prose. The result is a
+    similarity score suppressed far below what the texts actually share.
+
+    Measured on the box 2026-08-24 over every stored record. Across 25 records / 84 candidate
+    clusters, **75 clusters score higher with autojunk off and 13 flip from REJECT to PASS at the
+    gate, none the other way** - among them 0.442 -> 0.958, 0.431 -> 0.909 and 0.514 -> 0.931, which
+    are near-identical re-scans the gate was dismissing as a recurring form series. Recall is the
+    direction that costs content here: a missed duplicate ships two near-identical paragraphs to a
+    client with nothing on screen to hint at it.
+
+    A second symptom shows the score was not even a well-defined property of a PAIR: autojunk is
+    computed on the SECOND sequence only, so ``ratio(a, b) != ratio(b, a)``. On the 78 pairs of one
+    real 13-member cluster, swapping the arguments moved a score by up to **0.249** (0.894 one way,
+    0.645 the other) and 10 of those pairs straddled the 0.90 gate - so whether two sub-documents
+    counted as candidate copies turned on which of them held the lower ``idx``. Turning autojunk off
+    collapsed that swing to 0.000 on every pair measured.
+
+    NOTE for anyone re-tuning the thresholds: every similarity figure quoted in `config.py` for
+    `dupe_similarity_override` and `dupe_model_override` - the 0.994 floor for real duplicates and
+    the 0.823 worst false positive, measured on 22 live clusters - was measured through the SUPPRESSED
+    scale. Those numbers move up under this fix and the separation they describe has to be
+    re-established before either threshold is changed on their authority.
     """
     excerpts = [mask_dates(text)[:_EXCERPT_CHARS] for text in texts]
     ratios = [
-        difflib.SequenceMatcher(None, a, b).ratio() for a, b in itertools.combinations(excerpts, 2)
+        difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
+        for a, b in itertools.combinations(excerpts, 2)
     ]
     return round(min(ratios), 3) if ratios else 1.0
 
