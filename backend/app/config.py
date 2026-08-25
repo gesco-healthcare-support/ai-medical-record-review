@@ -170,6 +170,14 @@ class Settings(BaseSettings):
     # So the throughput is available and it is not takeable yet. Fix the give-up decision first so it
     # does not depend on completion order, then raise this. Reverts by env with no rebuild either way,
     # and `vertex:metrics:*` in Redis is where the pacer records admission.
+    #
+    # UPDATE: that race is fixed - `summarize_document` now records the give-up as a CANDIDATE and
+    # decides after the loop, so the end-versus-pause outcome no longer depends on completion order,
+    # pinned at 1/2/5/8 lanes. STILL AT 2 ANYWAY, deliberately. Raising it was tried again on the
+    # fixed code and one full-file run in 18 failed in a way that did not reproduce in isolation, and
+    # a concurrency default is exactly the kind of change where an unexplained intermittent failure
+    # should not be waved through. The blocker named above is cleared; what is missing is a clean
+    # reason for that one run, not more throughput evidence.
     pipeline_workers: int = 2
     # Bound on "pause and auto-resume forever": when this many rows have failed transiently and NOT
     # ONE has succeeded, the model is refusing everything and resuming only replays the same wall.

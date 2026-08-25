@@ -2228,3 +2228,137 @@ def test_pipeline_workers_agrees_between_config_and_compose():
         "docker-compose.yml and config.py disagree on PIPELINE_WORKERS, so a deployed container "
         "would use the compose value and ignore the code default"
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# The end-versus-pause decision must not depend on completion order.
+#
+# Every row is submitted up front and results arrive through `drain_pool`, which is `as_completed`.
+# The give-up guard is `generated == 0 and transient_failures >= giveup_after_failures`, so before
+# this fix, hitting the threshold cancelled the queued rows and broke immediately - throwing away the
+# results of rows that were already RUNNING, which `cancel()` cannot stop. Whether the job ENDED or
+# PAUSED therefore turned on whether the failures happened to complete before a success.
+#
+# Measured on 2026-08-25. Against `origin/main`, with the lane count varied explicitly, the
+# end-versus-pause test below fails on 8 of 8 runs at 8 lanes and 6 of 8 at 5 lanes, and passes at 1
+# and 2. Separately, raising the config default to 5 made the two pre-existing give-up tests fail on
+# 3 of 6 runs. So the bug is LATENT at the shipped concurrency of 2 - which is why nothing had caught
+# it - and becomes probable as soon as the lane count is raised, i.e. exactly when the summarize
+# throughput lever recorded in `config.py` is taken.
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("lanes", [1, 2, 5, 8])
+def test_one_success_keeps_the_job_paused_at_any_concurrency(monkeypatch, lanes):
+    """WHILE at least one row has succeeded, THE SYSTEM SHALL pause rather than end - whatever the
+    lane count, and whatever order the results land in."""
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        if int(row["start"]) == 1:
+            return _ok_output(row)
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    class _FakeQueue:
+        def enqueue_in(self, td, fn, arg, job_timeout=None, on_stopped=None, on_failure=None):
+            return type("_J", (), {"id": "rq-resume-1"})()
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _FakeQueue())
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 99)
+    monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 3)
+    monkeypatch.setattr(get_settings(), "pipeline_workers", lanes)
+
+    doc_id, job_id = _doc_with_summarize_rows(12)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "paused", (
+            f"at {lanes} lanes the job ended instead of pausing, even though a row succeeded"
+        )
+        summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
+        assert len(summaries) == 1 and summaries[0].row_start == 1
+
+
+@pytest.mark.parametrize("lanes", [1, 2, 5, 8])
+def test_a_model_refusing_everything_still_ends_the_job(monkeypatch, lanes):
+    """The other direction, so the fix does not simply make give-up unreachable: with NO row
+    succeeding, the job must still END rather than pause into a resume loop."""
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    class _FakeQueue:
+        def enqueue_in(self, td, fn, arg, job_timeout=None, on_stopped=None, on_failure=None):
+            return type("_J", (), {"id": "rq-resume-1"})()
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _FakeQueue())
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 99)
+    monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 3)
+    monkeypatch.setattr(get_settings(), "pipeline_workers", lanes)
+
+    _doc_id, job_id = _doc_with_summarize_rows(12)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "needs_attention"
+
+
+@pytest.mark.parametrize("lanes", [1, 5])
+def test_giving_up_does_not_report_the_skipped_rows_as_failures(monkeypatch, lanes):
+    """The rows we cancel are SKIPPED, not broken. `as_completed` yields cancelled futures and
+    `.result()` on one raises CancelledError, so without an explicit guard every skipped row would be
+    classified as a permanent failure and reported to the reviewer as a document that could not be
+    summarized.
+
+    Asserts the reported REASONS rather than the row COUNT. The count is not a property the executor
+    guarantees: every row is submitted up front, so how many have already run by the time the
+    threshold trips is timing. This mock refuses instantly, so at one lane the single worker can drain
+    all thirty work items before the main thread observes the third failure, and `cancel()` then
+    cancels nothing. Two earlier versions of this test asserted a count - `< 10` at any lane count
+    (failed about 1 run in 18 under load) and then an exact 3 at one lane (failed every run) - which
+    is the same class of timing-dependent assertion this whole fix exists to remove.
+
+    What IS guaranteed: a row that never ran is never reported as a failure. So every reported reason
+    must be the real refusal, never a CancelledError leaking through `.result()`.
+    """
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    class _FakeQueue:
+        def enqueue_in(self, td, fn, arg, job_timeout=None, on_stopped=None, on_failure=None):
+            return type("_J", (), {"id": "rq-resume-1"})()
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _FakeQueue())
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 99)
+    monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 3)
+    monkeypatch.setattr(get_settings(), "pipeline_workers", lanes)
+
+    _doc_id, job_id = _doc_with_summarize_rows(30)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "needs_attention"
+        rows = (job.attention or {}).get("rows") or []
+        assert rows, "no rows reported at all - real refusals must still reach the reviewer"
+        leaked = [r for r in rows if "busy" not in (r.get("reason") or "")]
+        assert not leaked, (
+            f"{len(leaked)} of {len(rows)} reported rows carry a reason that is not the model's "
+            f"refusal - a skipped row is being reported as a failure: {leaked[:2]}"
+        )
