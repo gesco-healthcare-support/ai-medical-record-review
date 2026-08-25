@@ -52,6 +52,16 @@ x-backend-env: &backend-env
   #
   # CLASSIFY_WORKERS also drives concurrent Tesseract processes in the verify pass - see the
   # OMP_THREAD_LIMIT note above, which is what stops those deadlocking.
+  #
+  # 2 -> 5 on 2026-08-25, which is the number the note above already computes and then does not use.
+  # Its arithmetic was against VERTEX_MAX_RPM=20; that ceiling is 60 now, so the value was sized for a
+  # budget that no longer applies. Re-measured over the 43 newest summarize jobs: 11.3h for 1,851
+  # summaries = 22.0s per summary at 2 lanes = ~14.7s per call, matching the 15.4s above, so one job
+  # draws ~8 calls/min against 60 rpm - about 14% utilisation. 5 stays inside the regime the note
+  # measured; its abandon-the-wait failure mode is the reason not to go further.
+  #
+  # This line is load-bearing: it passes the value explicitly, so a container reads THIS default and
+  # never config.py. A test pins the two together.
   PIPELINE_WORKERS: ${PIPELINE_WORKERS:-2}
   CLASSIFY_WORKERS: ${CLASSIFY_WORKERS:-4}
   # Concurrency of the ONE-TIME per-page OCR pass (services/page_text.populate_document). Named here

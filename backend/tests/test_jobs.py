@@ -2202,3 +2202,29 @@ def test_the_worker_seeds_each_row_with_the_pages_that_failed_extraction(monkeyp
     assert seen[1] == []  # nothing failed inside this row's range
     assert seen[2] == [2]  # the failed page, sliced to the row that owns it
     assert seen[3] == []  # stored successfully, so never reported as unreadable
+
+
+def test_pipeline_workers_agrees_between_config_and_compose():
+    """WHEN the summarize row concurrency is changed, THE SYSTEM SHALL change it in both places.
+
+    `docker-compose.yml` passes PIPELINE_WORKERS explicitly, so a container reads the COMPOSE default
+    and never the one in `config.py`. Editing config alone changes nothing on a deployed box.
+    `DUPE_SIMILARITY_OVERRIDE` is that exact bug in this tree's history - config said 0.99, compose
+    said 0.90, and production ran 0.90 from #81 until the key was finally added to the box `.env` on
+    2026-08-25. The same guard already exists for PAGE_TEXT_WORKERS; this adds it for the setting that
+    governs summarize throughput.
+    """
+    import re
+    from pathlib import Path
+
+    from app.config import get_settings
+
+    compose = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+    match = re.search(
+        r"PIPELINE_WORKERS:\s*\$\{PIPELINE_WORKERS:-(\d+)\}", compose.read_text(encoding="utf-8")
+    )
+    assert match, "docker-compose.yml no longer passes PIPELINE_WORKERS"
+    assert int(match.group(1)) == get_settings().pipeline_workers, (
+        "docker-compose.yml and config.py disagree on PIPELINE_WORKERS, so a deployed container "
+        "would use the compose value and ignore the code default"
+    )

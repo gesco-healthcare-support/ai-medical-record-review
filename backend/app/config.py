@@ -128,6 +128,48 @@ class Settings(BaseSettings):
     openai_zdr_acknowledged: bool = False
 
     # Concurrency + retry (become RQ worker knobs in P4; caps guard the shared Vertex quota).
+    #
+    # Row-level concurrency inside ONE summarize job. 2 -> 5 on 2026-08-25, and 5 is not a new number:
+    # it is the value `docker-compose.yml`'s own note computes and then does not use. That note says,
+    # measured 2026-08-03, "two concurrent chains at ~15.4s per call is exactly 7.8/min ... by Little's
+    # Law the saturation point for a 20 rpm budget is 20/60 * 15.4 = ~5 concurrent rows, so 5 fills the
+    # existing budget without raising it." The conclusion was 5; the value stayed 2.
+    #
+    # And the budget it was computed against has since TRIPLED: VERTEX_MAX_RPM was 20 then and is 60
+    # now. So the setting is sized for a ceiling that no longer applies.
+    #
+    # Measured on the box 2026-08-25 over the 43 newest summarize jobs: 11.3h producing 1,851
+    # summaries, i.e. 22.0s per summary at 2 lanes, which is ~14.7s per call and matches the 15.4s
+    # above. One job therefore draws about 8 calls/min against a 60 rpm ceiling - roughly 14%
+    # utilisation. Summarize is the second-largest stage in the pipeline (11.3h against segment's
+    # 15.9h), so this is where the remaining wall-clock is.
+    #
+    # 5 RATHER THAN MORE, and the ceiling is not the reason to stop. The compose note names the real
+    # failure mode: `rate_limit.acquire()` abandons its wait after MAX_ACQUIRE_WAIT_S (300s) and
+    # proceeds ANYWAY, so enough queued callers stop being rate limited at all. Its own arithmetic put
+    # 3 summarize workers x 5 chains against 20 rpm at a ~30s mean wait, well inside the abandon
+    # threshold - and at 60 rpm that wait is shorter still. Going past 5 leaves the regime the note
+    # measured; 5 is the value it endorsed at a stricter ceiling than we now run.
+    #
+    # LEFT AT 2, AND THE REASON IS A RACE THIS CHANGE EXPOSED rather than the ceiling.
+    #
+    # Raising it to 5 was written, tested and reverted on 2026-08-25. `summarize_document` consumes
+    # results through `drain_pool`, which is `as_completed` - COMPLETION order, not submission order -
+    # and the give-up condition is `generated == 0 and transient_failures >= giveup_after_failures`.
+    # So whether a job ENDS or PAUSES depends on whether N failures happen to complete before the
+    # first success, and with more lanes in flight that becomes likely rather than rare. Measured: at
+    # 5 lanes, `test_summarize_does_not_give_up_once_a_row_has_succeeded` and
+    # `test_a_notice_row_is_not_counted_as_proof_the_model_answers` fail on 3 of 6 runs and pass on
+    # the other 3.
+    #
+    # That is the wrong outcome by the tests' own statement of intent: a document where the model IS
+    # answering some rows should PAUSE and retry the rest, not be ended as though the model were
+    # refusing everything. The bug is latent at 2 as well - it is a race, not a threshold - but the
+    # concurrency is what makes it probable.
+    #
+    # So the throughput is available and it is not takeable yet. Fix the give-up decision first so it
+    # does not depend on completion order, then raise this. Reverts by env with no rebuild either way,
+    # and `vertex:metrics:*` in Redis is where the pacer records admission.
     pipeline_workers: int = 2
     # Bound on "pause and auto-resume forever": when this many rows have failed transiently and NOT
     # ONE has succeeded, the model is refusing everything and resuming only replays the same wall.
