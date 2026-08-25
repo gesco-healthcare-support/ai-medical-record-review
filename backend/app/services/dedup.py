@@ -101,11 +101,29 @@ def _min_difflib(texts):
     counted as candidate copies turned on which of them held the lower ``idx``. Turning autojunk off
     collapsed that swing to 0.000 on every pair measured.
 
-    NOTE for anyone re-tuning the thresholds: every similarity figure quoted in `config.py` for
-    `dupe_similarity_override` and `dupe_model_override` - the 0.994 floor for real duplicates and
-    the 0.823 worst false positive, measured on 22 live clusters - was measured through the SUPPRESSED
-    scale. Those numbers move up under this fix and the separation they describe has to be
-    re-established before either threshold is changed on their authority.
+    THE RE-DERIVATION WAS DONE, 2026-08-25, and it says the threshold cannot be derived at all. See
+    the note on `dupe_similarity_override` in `config.py`. In short: on the corrected scale, reviewer-
+    dismissed clusters run 0.509 to 1.000 and reviewer-kept clusters 0.529 to 1.000, so there is no
+    separation to cut at any value.
+
+    WIDENING THIS WINDOW WAS PROPOSED AND REJECTED, on measurement. It looked like the cause of the
+    overlap, because 34 of the 39 reviewer-labelled clusters have members longer than 1,500 characters.
+    Recomputed at 1500 / 3000 / 6000 / full text over those clusters, the false-positive ceiling only
+    falls 1.000 -> 0.995 and the duplicate floor only rises 0.529 -> 0.554: **the overlap survives
+    every window**, so the excerpt is not what stops similarity discriminating.
+
+    And the cost is real. Measured over all 82 clusters with stored text on the box:
+
+        window    total    mean/cluster    worst single cluster
+          1500     5.3s        65ms              0.8s
+          3000    18.4s       224ms              2.9s
+          6000    51.9s       633ms             10.8s
+          full   142.4s      1736ms             27.5s      <- 27x
+
+    A whole dedup job on the 229-page record runs in 10-12 seconds end to end, so one full-text
+    cluster would more than double it. The one thing widening buys is a single false positive falling
+    from 1.000 to 0.918 - and it only reaches 0.995 at 3,000 characters, which still passes the 0.99
+    gate. So the verdict change costs 27x, not 3.5x, for one cluster. 1500 stays.
     """
     excerpts = [mask_dates(text)[:_EXCERPT_CHARS] for text in texts]
     ratios = [

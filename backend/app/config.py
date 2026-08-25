@@ -291,19 +291,53 @@ class Settings(BaseSettings):
     #     distinct" verdict is a known way to lose a real duplicate. Left at 0.95: it guards a
     #     different question (spend a Vertex call or not) and the evidence for it has not changed.
     #
-    # !! THE DEPLOYED VALUE IS NOT 0.99. `docker-compose.yml` passes
-    # `DUPE_SIMILARITY_OVERRIDE: ${DUPE_SIMILARITY_OVERRIDE:-0.90}`, so every container runs 0.90 and
-    # this default reaches only the test suite and a non-compose run. #67 added that line while 0.90
-    # was still the default here; #81 raised this one to 0.99 and did not touch compose or
-    # `.env.example`, so the measured decision above has never actually been deployed. Verified on the
-    # box 2026-08-24: the running container reports 0.9.
+    # !! THE 0.994 / 0.823 SEPARATION ABOVE DOES NOT SURVIVE. Both figures were measured through
+    # difflib's autojunk suppression, which `dedup._min_difflib` stopped applying in #148. The
+    # re-derivation was done on the corrected scale on 2026-08-25 and there is no separation left to
+    # cut at any value.
     #
-    # NOT silently corrected here, because it is a real behaviour change and the evidence has moved:
-    # measured over 25 records / 84 candidate clusters, going to 0.99 takes the clusters passing the
-    # gate from 65 to 35. On top of that, the 0.994-floor / 0.823-false-positive separation quoted
-    # above was measured through difflib's autojunk suppression, which `dedup._min_difflib` no longer
-    # applies - so the numbers that justify 0.99 need re-deriving on the corrected scale before either
-    # value is chosen. Aligning the three files is a decision, not a typo fix; see issue #125.
+    # The label set: `review_rows.dupe_dismissed` records a reviewer REJECTING a duplicate group. A
+    # dismissal is a deliberate action so `true` is a reliable false positive, while `false` is this
+    # column's default and means nothing on its own. So the set is restricted to the 9 documents where
+    # a reviewer dismissed at least one group - they demonstrably worked through that document, which
+    # makes the groups they left alone real acceptances. 39 clusters, 19 dismissed and 20 kept,
+    # similarity recomputed from stored source_text so every cluster sits on one scale.
+    #
+    #     corrected scale   worst false positive 1.000   lowest real duplicate 0.529   -> TOTAL OVERLAP
+    #     old scale (#81)   worst false positive 0.823   lowest real duplicate 0.994   -> gap
+    #
+    # 18 of the 19 false positives sit at or above the duplicate floor. Widening the comparison window
+    # does not rescue it either - see `dedup._min_difflib`, where 1500/3000/6000/full text all overlap.
+    #
+    # WHY IT CANNOT WORK, and it is the reviewers' own rule rather than a defect: a duplicate whose
+    # second scan OCR'd badly scores LOW ("sometimes the scan quality is different, so we can pick
+    # which one is the best"), and a recurring form on different dates scores HIGH and is correctly not
+    # a duplicate. Measured examples: a dismissed cluster at 0.993 on full text, a kept one at 0.554.
+    # The distinction is whether two documents are the same EVENT, which text similarity does not
+    # measure. That is also why the gate leads on `same_date and (same_title or same_category)` and
+    # this knob is only the cross-date escape hatch.
+    #
+    # SO TREAT THIS AS A RECALL DIAL, NOT A DERIVABLE THRESHOLD. On the labelled set, counting only the
+    # similarity path into the gate:
+    #
+    #     threshold   false positives admitted   real duplicates lost
+    #        0.90              14                        7
+    #        0.95              12                        9
+    #        0.97               7                       13
+    #        0.99               4                       14
+    #        0.995              1                       14
+    #
+    # 0.99 spends 14 real duplicates to avoid 4 false positives. Whether that is the right trade is a
+    # judgement about which error costs more, and the reviewers have answered that in words rather than
+    # in data - "don't automatically delete anything, let the reviewer determine which one to keep" -
+    # which argues a missed duplicate is worse than a surfaced one. Open on issue #125.
+    #
+    # HISTORY, because it explains the value's provenance: #67 added
+    # `DUPE_SIMILARITY_OVERRIDE: ${DUPE_SIMILARITY_OVERRIDE:-0.90}` to `docker-compose.yml` while 0.90
+    # was still the default here, then #81 raised this one to 0.99 and did not touch compose - so every
+    # container silently ran 0.90 from #81 until 2026-08-25, when the key was added to the box `.env`
+    # at 0.99. The value now running matches this file for the first time. It is still a number derived
+    # on the old scale, so treat it as provisional.
     dupe_jaccard_threshold: float = 0.70
     dupe_similarity_override: float = 0.99
     dupe_model_override: float = 0.95
