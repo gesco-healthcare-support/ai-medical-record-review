@@ -738,3 +738,138 @@ def test_a_more_specific_document_outranks_work_status(title, expected):
 # deliberately NOT in the pattern. Pinned so adding it later is a decision rather than a drift.
 def test_work_capacity_is_not_claimed_without_evidence():
     assert classification.match_rules("Work Capacity Evaluation") is None
+
+
+# ---------------------------------------------------------------------------------------------
+# Orders and prescriptions -> 10, answered by Adam 2026-08-24: "All orders can probably go under the
+# RFA category", and for prescriptions "if they are on their own it's probably fine to put it under
+# the RFA category since it should be the same information being summarized."
+#
+# The cost of not having this: on the two most recent builds every prescription answered 100 through
+# the cascade (17 rows), and 100 is unchecked for summarization by default - so the reviewer was never
+# offered a document type they asked to have summarized.
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Prescription",
+        "Prescriptions",
+        "Prescription - Cyclobenzaprine 10mg",
+        "Lab Order",
+        "Laboratory Order",
+        "Imaging Order",
+        "MRI Order",
+        "Order for MRI Lumbar Spine",
+    ],
+)
+def test_an_order_or_prescription_is_a_request_for_authorization(title):
+    """WHEN a title names an order or a prescription, THE SYSTEM SHALL answer 10."""
+    assert classification.match_rules(title) == "10"
+
+
+def test_an_order_for_a_study_is_not_the_study():
+    """THE DEFECT THIS FIXES. "Radiology Order" matched `radiolog` in the imaging rule and answered 3
+    - an order FOR a study classified as the study itself, then summarized with the diagnostic prompt
+    against a page carrying no findings. Same request-versus-answer confusion category 15 was created
+    for: 10 is the treating physician ASKING.
+    """
+    assert classification.match_rules("Radiology Order") == "10"
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("MRI Lumbar Spine w/o Contrast", "3"),
+        ("Radiology Report", "3"),
+        ("X-Ray Report", "3"),
+        ("Radiology Test Results", "3"),
+    ],
+)
+def test_the_study_itself_is_still_a_diagnostic_study(title, expected):
+    """The order rule sits ABOVE imaging, so it must not claim the reports imaging owns."""
+    assert classification.match_rules(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Pre Op Holding Orders", "Outpatient Service Order Information", "Standing Orders"],
+)
+def test_a_bare_order_token_is_not_enough(title):
+    """No bare `order` token, deliberately. Adam's "all orders" describes TREATMENT orders, and the
+    word is far broader on real titles - the box carries "Pre Op Holding Orders" (nursing
+    instructions, answering 100 and 14) and "Outpatient Service Order Information" (100 and 4).
+    Claiming those for RFA would move ward paperwork into a clinical category on a hedge.
+    """
+    assert classification.match_rules(title) is None
+
+
+# ---------------------------------------------------------------------------------------------
+# A request FOR a supplemental report is paperwork, not the report. Adam 2026-08-24: "The letter
+# requesting a supplemental can probably be skipped, as we are more concerned about the supplemental
+# report itself." Before this it answered 100 twice and 12 twice over four occurrences.
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Request for Supplemental Report",
+        "Letter Requesting Supplemental Report",
+        "Request for Supplemental QME Report",
+        "Attorney Letter Requesting Supplemental AME Report",
+    ],
+)
+def test_a_request_for_a_supplemental_report_is_paperwork(title):
+    assert classification.match_rules(title) == "100"
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("AME Supplemental Report", "12"),
+        ("QME Supplemental Report", "12"),
+        ("Supplemental QME Report", "12"),
+    ],
+)
+def test_the_supplemental_report_itself_is_untouched(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+def test_the_request_rule_is_directional():
+    """THE EXPENSIVE DIRECTION, pinned. The request token must come BEFORE `supplement`. A real
+    medical-legal supplemental can carry both words in the other order - "Supplemental Report in
+    Response to Your Request" - and an undirected pattern would send it to 100, which is unchecked
+    for summarization, dropping a medical-legal report out of the deliverable entirely.
+    """
+    assert classification.match_rules("Supplemental Report in Response to Your Request") != "100"
+    assert (
+        classification.match_rules("Supplemental Report Responding to Your Records Request")
+        != "100"
+    )
+
+
+# The relative order of `work status` (-> 1) and the order/prescription rule (-> 10) was raised on
+# review of #151: the two have never existed in the same file when either was measured. Measured over
+# every title on the box - 1,140 distinct titles, 2,874 rows - 637 carry a category-1 token, 21 carry
+# an order token, and ZERO carry both. So the order decides nothing today, and these pin the intent.
+#
+# The asymmetry is the argument: a progress report or work status report can legitimately mention
+# ordering a study, because the order is a line inside the report. A standalone order carries no
+# progress-report language at all. So category 1 wins a title holding both, and 10 keeps the titles
+# that are only an order.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Work Status Report and MRI Order", "1"),
+        ("Progress Report - Lab Order Attached", "1"),
+        ("Office Visit with Prescription", "1"),
+        # and the reverse: an order on its own is still an order
+        ("MRI Order", "10"),
+        ("Lab Order", "10"),
+        ("Prescription", "10"),
+    ],
+)
+def test_a_report_mentioning_an_order_is_still_the_report(title, expected):
+    assert classification.match_rules(title) == expected

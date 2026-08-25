@@ -159,7 +159,12 @@ _PAPERWORK_ABOUT_A_DOCUMENT = re.compile(
 # the opposite - they DO want it summarized, and mostly as a treating report. Where it arrives as its
 # own document they summarize it separately, and where it arrives behind a report they merge the two,
 # which is a boundary decision a category rule cannot express and the reviewer already makes by hand.
-# So the rule takes the common case and 1 is provisional: feedback pending on whether it stays.
+# So the rule takes the common case.
+#
+# NO LONGER PROVISIONAL. Confirmed by Adam 2026-08-24, asked directly: "I think it's easiest just to
+# have them under the PR-2 category, unless we want to make an entirely new category. The PR-2
+# category should have the right prompts to properly summarize the Return to Work reports." So 1
+# stands, and the reason it stands is the prompt rather than the form's resemblance to a PR-2.
 #
 # BOTH TOKENS ARE REQUIRED, and that is the whole precision of it. `return[- ]to[- ]work` alone
 # matches two real titles that are clinical documents in their own right - one category 1, one
@@ -184,6 +189,20 @@ _RETURN_TO_WORK_VOUCHER = (
 _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
     (re.compile(pattern), category)
     for pattern, category in (
+        # A REQUEST for a supplemental report is paperwork, not the report. Adam 2026-08-24: "The
+        # letter requesting a supplemental can probably be skipped, as we are more concerned about the
+        # supplemental report itself." Before this it answered 100 twice and 12 twice on four
+        # occurrences - the same document type filed as the very report it is asking someone to write.
+        #
+        # DIRECTIONAL, and that is the whole safety of it: the request token must come BEFORE
+        # `supplement`, within a bounded gap. "Supplemental Report in Response to Your Request" is the
+        # actual report and carries the same two words in the other order, so an undirected pattern
+        # would send a real medical-legal supplemental to 100 and drop it from the deliverable
+        # entirely. That is the expensive direction of this mistake, so the pattern refuses it.
+        #
+        # Sits above rule 12 because 12 matches on `supplement` plus an evaluator token, which a
+        # request for a QME supplemental also carries.
+        (r"\b(?:request for|letter requesting|requesting)\b.{0,30}\bsupplement", "100"),
         (r"supplement\w*.{0,40}\b(qme|ame|pqme)\b|\b(qme|ame|pqme)\b.{0,40}supplement", "12"),
         (r"\b(qme|ame|pqme)\b|qualified medical evaluator|agreed medical evaluator", "13"),
         # Category 15 added 2026-08-21, answered by Adam. PLACEMENT IS THE DESIGN: after the
@@ -260,6 +279,44 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         (
             r"\bpr-?2\b|progress report|progress note|office visit|follow ?-? ?up|work status",
             "1",
+        ),
+        # ORDERS AND PRESCRIPTIONS -> 10, answered by Adam 2026-08-24: "All orders can probably go
+        # under the RFA category", and for prescriptions "if they are on their own it's probably fine
+        # to put it under the RFA category since it should be the same information being summarized.
+        # Often times the same info is in the PR-2 report, but we can still summarize it in case it is
+        # not included in the report."
+        #
+        # PLACEMENT ABOVE IMAGING IS THE POINT, and it is why this is a separate rule rather than
+        # tokens added to the `\brfa\b` rule further down. That rule sits BELOW imaging, so "Radiology
+        # Order" matched `radiolog` and answered 3 - an order FOR a study classified as the study
+        # itself, and then summarized with the diagnostic prompt against a page that contains no
+        # findings. Same request-versus-answer confusion that category 15 was created to fix, where 10
+        # is the treating physician ASKING and 15 is the determination coming back.
+        #
+        # PLACEMENT BELOW CATEGORY 1 is deliberate and was raised on review, because this rule and the
+        # `work status` token above have never existed in the same file when either was measured.
+        # Measured over every title on the box, 1,140 distinct titles across 2,874 rows: 637 carry a
+        # category-1 token, 21 carry an order token, and ZERO carry both. So the order decides nothing
+        # today and states the intent for the day a title carries both - a progress report, office
+        # visit or work status report that mentions ordering an MRI is still that report, because the
+        # order is a line inside it, while a standalone order carries no progress-report language at
+        # all. The asymmetry is the whole argument: 1 can contain a mention of an order, 10 cannot
+        # contain a progress report.
+        #
+        # NO BARE `order` TOKEN, deliberately. Adam's "all orders" is a statement about treatment
+        # orders, and the word is far broader than that on real titles: the box carries "Pre Op
+        # Holding Orders" (nursing instructions, answering 100 and 14) and "Outpatient Service Order
+        # Information" (100 and 4). Claiming those for RFA would move ward paperwork into a clinical
+        # category on a hedge. Named modalities only, so the rule fires on what he was describing.
+        #
+        # Prescriptions reach no deliverable today: on the two most recent builds every one answered
+        # 100 through the cascade (17 rows) and 100 is unchecked for summarization by default, so the
+        # reviewer is never offered them. Adam asked for them summarized, which is what 10 gives.
+        (
+            r"\bprescriptions?\b"
+            r"|\b(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct|ekg|ecg|emg|ncs)\s+orders?\b"
+            r"|\borders?\s+for\s+(?:an?\s+)?(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct)\b",
+            "10",
         ),
         # MODALITY terms only. `laborator` used to be here and it defeated D-01/D-02 entirely: that
         # register item made 3 modality-based and 14 specimen-based, and rewrote both taxonomy
