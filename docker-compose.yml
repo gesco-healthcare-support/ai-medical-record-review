@@ -61,7 +61,16 @@ x-backend-env: &backend-env
   # quota at all. The box has 8 cores and also runs six RQ workers, postgres, redis, api and web, so
   # the default leaves headroom rather than saturating. OMP_THREAD_LIMIT=1 above is what makes
   # several concurrent tesseract processes safe; without it they deadlock on the shared CPU.
-  PAGE_TEXT_WORKERS: ${PAGE_TEXT_WORKERS:-4}
+  #
+  # 4 -> 6 on 2026-08-24, measured: 32 sampled pages OCR'd in 17.0s at 4 threads and 12.7s at 6, with
+  # identical character output and no failures. See the note on `page_text_workers` in
+  # backend/app/config.py for the full table and why 6 rather than 8.
+  #
+  # THIS LINE IS LOAD-BEARING, not documentation. It passes the value explicitly, so a container takes
+  # this default and NOT the one in config.py - editing only config.py would change nothing on any
+  # deployed box. `DUPE_SIMILARITY_OVERRIDE` below is exactly that bug already in flight: config.py
+  # says 0.99, this file says 0.90, and production has silently run 0.90 since #81.
+  PAGE_TEXT_WORKERS: ${PAGE_TEXT_WORKERS:-6}
   # Which vendor answers the summarize stage (body, title, audit). Named here now, while the only
   # valid value is "gemini", so the key is live the day a second provider exists - rather than being
   # added later and silently doing nothing, which is what happened to VERTEX_MAX_RPM and

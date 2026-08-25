@@ -243,3 +243,48 @@ def test_a_missing_tesseract_fails_fast_instead_of_marking_every_page_failed(mon
 
     with pytest.raises(OcrUnavailableError):
         pt._extract("/nonexistent/synthetic.pdf", 1)
+
+
+def test_the_ocr_pool_size_comes_from_config_and_compose_agrees():
+    """WHEN the OCR pass runs, THE SYSTEM SHALL size its pool from `page_text_workers`.
+
+    Two things pinned, and the second is the one that bites. `populate_document` must take the pool
+    size from config rather than a literal - and `docker-compose.yml` passes PAGE_TEXT_WORKERS
+    explicitly, so a container reads the COMPOSE default and never the config one. Editing config
+    alone changes nothing on a deployed box. `DUPE_SIMILARITY_OVERRIDE` is that exact bug already in
+    the tree: config says 0.99, compose says 0.90, and production has run 0.90 since #81. This keeps
+    the two in step for this setting so it cannot happen twice.
+    """
+    import re
+    from pathlib import Path
+
+    from app.config import get_settings
+
+    compose = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+    text = compose.read_text(encoding="utf-8")
+    match = re.search(r"PAGE_TEXT_WORKERS:\s*\$\{PAGE_TEXT_WORKERS:-(\d+)\}", text)
+    assert match, "docker-compose.yml no longer passes PAGE_TEXT_WORKERS"
+    assert int(match.group(1)) == get_settings().page_text_workers, (
+        "docker-compose.yml and config.py disagree on the OCR pool size, so a deployed container "
+        "would use the compose value and ignore the code default"
+    )
+
+
+def test_population_uses_the_configured_pool_size(monkeypatch):
+    """The pool is sized from the setting, not from a literal in the function."""
+    seen = {}
+    real_pool = pt.ThreadPoolExecutor
+
+    class _Spy(real_pool):
+        def __init__(self, max_workers=None, **kw):
+            seen["max_workers"] = max_workers
+            super().__init__(max_workers=max_workers, **kw)
+
+    monkeypatch.setattr(pt, "ThreadPoolExecutor", _Spy)
+    monkeypatch.setattr(pt, "_extract", lambda path, page: ("body", True))
+    monkeypatch.setattr(pt.get_settings(), "page_text_workers", 5, raising=False)
+
+    doc_id = _doc(pages=3)
+    with get_sessionmaker()() as session:
+        pt.populate_document(session, doc_id, "/x.pdf", 3)
+    assert seen["max_workers"] == 5
