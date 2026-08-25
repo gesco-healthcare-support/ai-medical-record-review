@@ -11,7 +11,9 @@ from docx.shared import Pt
 from app.services.reporting import (
     CONCLUSION,
     DOCX_MIMETYPE,
+    REVIEW_HEADING,
     SUMMARY_INTRO,
+    TITLE_SEPARATOR,
     UNDATED_LABEL,
     build_mrr_document,
     date_label,
@@ -346,3 +348,57 @@ def test_both_renderers_agree_that_the_summary_intro_is_bold():
         f"(word={word_is_bold}, pdf={pdf_is_bold})"
     )
     assert word_is_bold, "both renderers agree, but on NOT bold - the intended style is bold"
+
+
+# The heading and the title separator were the two strings each renderer still held its own copy of,
+# and the copies had already diverged. Both are checked against the eight human deliverables on disk:
+# "MEDICAL RECORD REVIEW" in 8 of 8 files, and a PERIOD after the title in 329 of 329 date-anchored
+# entries with not one colon. The Word renderer was wrong on both, the PDF renderer right on both.
+def test_the_review_heading_is_the_form_the_human_deliverables_use():
+    """8 of 8 human deliverables write it in caps. The Word renderer said "Medical Record Review"."""
+    assert REVIEW_HEADING == "MEDICAL RECORD REVIEW"
+    doc = build_mrr_document(
+        [],
+        num_pages=8,
+        patient_name="A B",
+        patient_dob="01/01/1980",
+        qme_or_ame="QME",
+        lawfirm="Firm",
+    )
+    paragraphs = [p.text for p in doc.paragraphs]
+    assert REVIEW_HEADING in paragraphs
+    assert "Medical Record Review" not in paragraphs, "the title-case heading is back"
+
+
+def test_both_renderers_use_the_same_review_heading():
+    doc = build_mrr_document(
+        [],
+        num_pages=8,
+        patient_name="A B",
+        patient_dob="01/01/1980",
+        qme_or_ame="QME",
+        lawfirm="Firm",
+    )
+    assert REVIEW_HEADING in [p.text for p in doc.paragraphs]
+    assert html.escape(REVIEW_HEADING) in _pdf_letter(8, "Firm")
+
+
+def test_the_title_is_separated_from_the_body_by_a_period_not_a_colon():
+    """329 of 329 date-anchored human entries use a period. The Word renderer emitted ": "."""
+    assert TITLE_SEPARATOR == ". "
+    doc = build_mrr_document(
+        [_entry("01/02/2020", "A REPORT", "body text")], 10, "A B", "01/01/1980", "QME", "Firm"
+    )
+    cell = doc.tables[0].rows[0].cells[1].text
+    assert cell.startswith(f"A REPORT{TITLE_SEPARATOR}"), cell
+    assert "A REPORT:" not in cell, "the colon separator is back"
+
+
+def test_both_renderers_use_the_same_title_separator():
+    entries = [_entry("01/02/2020", "A REPORT", "body text")]
+    doc = build_mrr_document(entries, 10, "A B", "01/01/1980", "QME", "Firm")
+    word_cell = doc.tables[0].rows[0].cells[1].text
+    linked_pdf = pytest.importorskip("app.services.linked_pdf")
+    letter = linked_pdf._summary_html(entries, 10, "A B", "01/01/1980", "QME", "Firm")
+    assert word_cell.startswith(f"A REPORT{TITLE_SEPARATOR}")
+    assert f"</a>{html.escape(TITLE_SEPARATOR)}" in letter

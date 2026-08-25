@@ -25,6 +25,20 @@ DOCX_MIMETYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.
 SUMMARY_INTRO = "The following is a summary of those records:"
 CONCLUSION = "This concludes the review of submitted records."
 
+# Same reason as the three sentences above: both renderers held their own copy and the copies had
+# ALREADY diverged. Checked against the eight human deliverables on disk, which are the standard these
+# artifacts are supposed to match:
+#
+#   heading    "MEDICAL RECORD REVIEW" in 8 of 8 files. The Word renderer said "Medical Record
+#              Review"; the PDF renderer already had it in caps.
+#   separator  329 date-anchored entries across those 8 files, every one a PERIOD after the title
+#              and not one colon. The Word renderer emitted ": "; the PDF renderer already used ". ".
+#
+# So on both counts the .docx disagreed with the .pdf AND with the human standard, and the .docx is
+# the primary deliverable. Centralised here so the next change moves both renderers at once.
+REVIEW_HEADING = "MEDICAL RECORD REVIEW"
+TITLE_SEPARATOR = ". "
+
 
 def intro_sentence(num_pages, lawfirm) -> str:
     """The letter's opening sentence, shared by the Word and linked-PDF renderers.
@@ -146,7 +160,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
 
     doc.add_paragraph("")
 
-    second_title = doc.add_paragraph("Medical Record Review")
+    second_title = doc.add_paragraph(REVIEW_HEADING)
     second_title_format = second_title.runs[0]
     second_title_format.bold = True
     second_title_format.underline = True
@@ -191,7 +205,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
         # record is what made the export look like a draft.
         body.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
         _add_inline_runs(body, entry["summaryTitle"], bold=True)
-        _run(body, ": ")
+        _run(body, TITLE_SEPARATOR)
         _add_inline_runs(body, entry["summaryText"])
 
     # `nine_title_format` read `fourth_title.runs[0]` - the SUMMARY_INTRO paragraph's run, not this

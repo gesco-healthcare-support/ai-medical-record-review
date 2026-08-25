@@ -24,7 +24,9 @@ import pymupdf
 
 from app.services.reporting import (
     CONCLUSION,
+    REVIEW_HEADING,
     SUMMARY_INTRO,
+    TITLE_SEPARATOR,
     date_label,
     intro_sentence,
     parsed_date,
@@ -65,7 +67,8 @@ def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, law
         # id='t{i}' lets Story report this title's rendered rect (see _render_summary_pdf).
         rows.append(
             f"<tr><td class='d'>{html.escape(date_label(e))}</td>"
-            f"<td class='b'><a class='ln' id='t{i}'>{html.escape(e['linkTitle'])}</a>. "
+            f"<td class='b'><a class='ln' id='t{i}'>{html.escape(e['linkTitle'])}</a>"
+            f"{html.escape(TITLE_SEPARATOR)}"
             f"{_inline_html(e['summaryText'])}</td></tr>"
         )
     return f"""<html><head><style>
@@ -80,7 +83,7 @@ def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, law
       a.ln {{ color: {_TITLE_COLOR}; text-decoration: underline; font-weight: bold; }}
     </style></head><body>
       <p class='ttl'>{html.escape(qme_or_ame or " ")}</p>
-      <p class='h2'>MEDICAL RECORD REVIEW</p>
+      <p class='h2'>{html.escape(REVIEW_HEADING)}</p>
       <p>{html.escape(intro_sentence(num_pages, lawfirm))}</p>
       <p style='font-weight:bold;'>{html.escape(SUMMARY_INTRO)}</p>
       <table>{"".join(rows)}</table>
