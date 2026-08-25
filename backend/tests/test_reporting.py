@@ -10,7 +10,9 @@ from app.services.reporting import (
     CONCLUSION,
     DOCX_MIMETYPE,
     SUMMARY_INTRO,
+    UNDATED_LABEL,
     build_mrr_document,
+    date_label,
     intro_sentence,
 )
 
@@ -192,3 +194,52 @@ def test_both_renderers_share_the_other_two_sentences():
     for sentence in (SUMMARY_INTRO, CONCLUSION):
         assert sentence in paragraphs
         assert html.escape(sentence) in letter
+
+
+# Undated entries, per the reviewers 2026-08-21: "if it is something important we will still
+# summarize it, it can go at the end of the Review as Undated". Both renderers had it backwards - the
+# sort key was datetime.min, so a document stating NO date sorted ahead of the earliest real
+# encounter and the deliverable could OPEN on one - and the date cell showed the raw "-" the field
+# spec writes, which reads as a value nobody filled in rather than a fact about the document.
+def _entry(date, title="A REPORT", text="body text"):
+    return {"summaryDate": date, "summaryTitle": title, "summaryText": text, "linkTitle": title}
+
+
+@pytest.mark.parametrize("undated", ["-", "", "n/a", "   "])
+def test_undated_entries_sort_last_in_the_word_document(undated):
+    entries = [_entry(undated, "UNDATED"), _entry("01/02/2020", "EARLIEST"), _entry("03/04/2021")]
+    doc = build_mrr_document(entries, 10, "A B", "01/01/1980", "QME", "Firm")
+    # One borderless table, one row per entry, NO header row - see
+    # test_build_mrr_document_renders_two_column_table. Indexing from row 1 silently skips the
+    # first entry, which is how the first version of this test passed for the wrong reason.
+    dates = [row.cells[0].text for row in doc.tables[0].rows]
+
+    assert dates == ["01/02/2020", "03/04/2021", UNDATED_LABEL]
+
+
+@pytest.mark.parametrize("undated", ["-", "", "   ", "n/a", "unknown"])
+def test_the_date_cell_says_undated_rather_than_a_dash(undated):
+    """One definition of undated, shared by the sort and the label. Written separately they
+    disagreed: "n/a" sorted last but rendered as "n/a"."""
+    assert date_label({"summaryDate": undated}) == UNDATED_LABEL
+
+
+def test_a_missing_key_is_undated_rather_than_a_crash():
+    assert date_label({}) == UNDATED_LABEL
+
+
+def test_a_real_date_is_left_exactly_as_written():
+    """Copy dates EXACTLY - the factuality rules say so, and a reviewer compares them to the page."""
+    assert date_label({"summaryDate": "01/02/2020"}) == "01/02/2020"
+
+
+def test_both_renderers_share_the_label_and_the_ordering():
+    """They produce the same deliverable in two formats and a reviewer compares them side by side, so
+    the wording and the ordering must not drift. Same function object, not merely equal behaviour."""
+    from datetime import datetime
+
+    from app.services import linked_pdf
+
+    assert linked_pdf.date_label is date_label
+    assert linked_pdf._sort_key(_entry("-")) == datetime.max
+    assert linked_pdf._sort_key(_entry("01/02/2020")) < datetime.max
