@@ -345,6 +345,19 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         (r"comprehensive interval history|medical decision making", "11"),
         (r"gi outpatient|outpatient procedure h ?& ?p", "4"),
         (r"lab(oratory)? results|test results", "14"),
+        # LAST in the table on purpose. An emergency-department visit is a treating encounter, and
+        # the senior reviewer's rule (2026-08-25) is that "emergency department records in general
+        # should be summarized just like a visit would be". But a title can name the department AND
+        # a more specific document type - "Emergency Department Radiology Report", "ED Lab Results" -
+        # and there the document type is the better answer. Every rule above therefore wins first,
+        # and this fires only when a title names an ED visit and nothing more specific.
+        #
+        # Scoped to a VISIT-shaped noun, because the same reply carves out the intake case: "if it's
+        # like a patient demographics emergency intake type record then we don't need to summarize
+        # that." So `sign in`, `triage` and `registration` deliberately do not match, and neither
+        # does "Emergency Department Encounter Note", which already reaches a shipping category with
+        # its content delivered - moving that would be a change with no measured benefit.
+        (r"emergency department\s+(?:record|report|visit)|\bed visit record\b", "1"),
     )
 )
 
