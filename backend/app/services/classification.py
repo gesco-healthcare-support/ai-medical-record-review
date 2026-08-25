@@ -241,7 +241,26 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
             r"|\bmmi\b|doctor'?s first report|\bdfr\b|initial.{0,20}consultation",
             "2",
         ),
-        (r"\bpr-?2\b|progress report|progress note|office visit|follow ?-? ?up", "1"),
+        # `work status` added 2026-08-21, answered by the reviewers directly: "In the case of Work
+        # Status, we will count that as Category 1." It had NO rule, so the cascade re-decided every
+        # occurrence and gave four different answers across 89 rows:
+        #
+        #     category 1 ..... 66 rows, 109 pages   right by luck
+        #     category 100 ... 14 rows,  17 pages   dropped - 100 is unchecked for summarization
+        #     category 2 ......  8 rows,  15 pages
+        #     category 5 ......   1 row,   1 page
+        #
+        # So this recovers 17 pages and makes the other 72 rows deterministic, which is the point -
+        # the same form was being answered four ways.
+        #
+        # `work status` only. "work capacity" is a plausible sibling and appears on ZERO titles on the
+        # box, so it is left out rather than guessed at. No observed work-status title mentions an
+        # evaluator or a PR-4 either, and rules 12, 13 and 2 all precede this one, so an evaluator's
+        # own report or a Permanent and Stationary still wins if a title ever carries both.
+        (
+            r"\bpr-?2\b|progress report|progress note|office visit|follow ?-? ?up|work status",
+            "1",
+        ),
         # MODALITY terms only. `laborator` used to be here and it defeated D-01/D-02 entirely: that
         # register item made 3 modality-based and 14 specimen-based, and rewrote both taxonomy
         # descriptions so the embedding and LLM stages agree - but rules run FIRST and short-circuit,

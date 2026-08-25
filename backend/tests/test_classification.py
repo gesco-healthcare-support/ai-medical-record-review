@@ -128,7 +128,6 @@ def test_evaluation_reports_survive_their_cover_page(title, expected):
     "title",
     [
         "Cover Letter - Psychological Evaluation Report",
-        "Correspondence - Work Status Report",
         "Transmittal Letter - Nerve Conduction Study Report",
         "Cover Letter - Narrative Medical Report",
     ],
@@ -347,7 +346,8 @@ def test_the_evaluators_own_report_is_still_an_evaluation(title):
 @pytest.mark.parametrize(
     "title",
     [
-        "WORK STATUS REPORT",
+        # "WORK STATUS REPORT" left this list 2026-08-21: the reviewers answered it directly
+        # (category 1) and it is pinned in test_work_status_is_a_treating_report.
         # "Physician's Return-to-Work & Voucher Report" left this list 2026-08-21: a rule
         # answers it now (category 1), pinned in
         # test_the_return_to_work_voucher_is_a_treating_report.
@@ -669,7 +669,6 @@ def test_the_return_to_work_voucher_is_a_treating_report(title):
     "title",
     [
         "Return to Work Authorization",
-        "Work Status and Return to Work",
         "Return-to-Work Note",
         "Physician's Return-to-Work Report",
     ],
@@ -699,3 +698,43 @@ def test_an_evaluation_discussing_the_voucher_stays_an_evaluation(title, expecte
 # such title has been observed to measure the cost of either choice.
 def test_a_voucher_without_return_to_work_reaches_the_cascade():
     assert classification.match_rules("Supplemental Job Displacement Voucher") is None
+
+
+# Work status reports, answered by the reviewers 2026-08-21: "In the case of Work Status, we will
+# count that as Category 1." Before this they had NO rule and the cascade gave four different answers
+# across 89 rows - 66 as category 1, 14 as 100 (dropped, 17 pages), 8 as category 2 and 1 as
+# category 5. The same form, four answers.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "WORK STATUS REPORT",
+        "Work Status Report",
+        "Work Status",
+        "Primary Treating Physician's Work Status Report",
+        "Work Status Update",
+    ],
+)
+def test_work_status_is_a_treating_report(title):
+    assert classification.match_rules(title) == "1"
+
+
+# The rules that precede category 1 still win, so a title carrying both keeps the more specific
+# document. Pinned because "work status" is a common phrase and could easily be read as claiming
+# every title it appears in.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("QME Report - Work Status", "13"),
+        ("AME Work Status Report", "13"),
+        ("Supplemental QME Report - Work Status", "12"),
+        ("Permanent and Stationary Report with Work Status", "2"),
+    ],
+)
+def test_a_more_specific_document_outranks_work_status(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# "work capacity" is a plausible sibling phrase that appears on ZERO titles on the box, so it is
+# deliberately NOT in the pattern. Pinned so adding it later is a decision rather than a drift.
+def test_work_capacity_is_not_claimed_without_evidence():
+    assert classification.match_rules("Work Capacity Evaluation") is None
