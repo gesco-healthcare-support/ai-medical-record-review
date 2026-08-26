@@ -1,8 +1,13 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// The hook calls the review-api module directly (no react-query), so mock that module. The stub
-// factory references nothing external, so vitest's hoisting of vi.mock above the imports is safe.
+// The hook calls the review-api module directly, so mock that module. The stub factory references
+// nothing external, so vitest's hoisting of vi.mock above the imports is safe.
+//
+// It ALSO holds a react-query client now, to drop the cached summaries when a summarize run settles
+// (nothing else refreshed that query, so "Re-summarize all" left the old text on screen). So every
+// render goes through `renderWorkflow`, which supplies a provider and hands the client back.
 vi.mock("@/lib/review-api", () => ({
   cancelJob: vi.fn(),
   getDocument: vi.fn(),
@@ -22,7 +27,7 @@ import {
   startSegment,
   startSummarize,
 } from "@/lib/review-api";
-import type { DocumentDetail } from "@/lib/types";
+import type { DocumentDetail, DocumentStatus, JobState } from "@/lib/types";
 
 const mockDoc = vi.mocked(getDocument);
 const mockStatus = vi.mocked(getStatus);
@@ -30,6 +35,14 @@ const mockSave = vi.mocked(saveRows);
 const mockCancel = vi.mocked(cancelJob);
 const mockStartSegment = vi.mocked(startSegment);
 const mockStartSummarize = vi.mocked(startSummarize);
+
+function renderWorkflow(...args: Parameters<typeof useReviewWorkflow>) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  return { ...renderHook(() => useReviewWorkflow(...args), { wrapper }), client };
+}
 
 const detail = (over: Partial<DocumentDetail> = {}): DocumentDetail => ({
   id: "d1",
@@ -67,32 +80,32 @@ beforeEach(() => {
 
 describe("useReviewWorkflow boot routing", () => {
   it("stays idle (loading) when the documentId is null", () => {
-    const { result } = renderHook(() => useReviewWorkflow(null));
+    const { result } = renderWorkflow(null);
     expect(result.current.section).toBe("loading");
     expect(mockDoc).not.toHaveBeenCalled();
   });
 
   it("routes a finished document to the summaries step", async () => {
     mockDoc.mockResolvedValue(detail({ status: "done" }));
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("summaries"));
   });
 
   it("routes a finished document to the editor when summaries are disabled (bundle mode)", async () => {
     mockDoc.mockResolvedValue(detail({ status: "done" }));
-    const { result } = renderHook(() => useReviewWorkflow("d1", { enableSummaries: false }));
+    const { result } = renderWorkflow("d1", { enableSummaries: false });
     await waitFor(() => expect(result.current.section).toBe("editor"));
   });
 
   it("opens the editor for a reviewing document that has rows", async () => {
     mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
   });
 
   it("shows the start panel for an uploaded document with no rows", async () => {
     mockDoc.mockResolvedValue(detail({ status: "uploaded", rows: [] }));
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("start"));
   });
 
@@ -113,7 +126,7 @@ describe("useReviewWorkflow boot routing", () => {
       )
       .mockResolvedValueOnce(detail({ status: "reviewing" }));
     mockStatus.mockResolvedValue({ status: "reviewing", job: null });
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
   });
 });
@@ -134,7 +147,7 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
         error: "Two documents need attention.",
       },
     });
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
     expect(result.current.attention?.message).toBe("Two documents need attention.");
   });
@@ -154,7 +167,7 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
         error: "One document could not be summarized.",
       },
     });
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
     await act(async () => {
@@ -163,6 +176,48 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
     expect(result.current.attention?.message).toBe("One document could not be summarized.");
     expect(result.current.section).toBe("editor");
     expect(result.current.banner).toBe(""); // calm terminal state, not the scary error path
+  });
+
+  // (job state, resulting document status). A cancelled job leaves the document "reviewing" - there
+  // is no "cancelled" document status, which is itself the point: the run still committed rows.
+  it.each<[JobState, DocumentStatus]>([
+    ["done", "done"],
+    ["needs_attention", "needs_attention"],
+    ["cancelled", "reviewing"],
+  ])("drops the cached summaries when a summarize run settles as %s", async (state, status) => {
+    // The run REPLACED the stored summaries, so the cached copy has to go. All three outcomes leave
+    // new rows behind: "done" rewrote every included row, "needs_attention" keeps the partial
+    // results, and "cancelled" commits whatever finished before the stop.
+    //
+    // Nothing else refreshed this query - a bare useQuery with staleTime 30s, no refetchInterval, and
+    // a per-edit setQueryData as its only other writer - so its sole refresh trigger was a NEW
+    // observer mounting. "Re-summarize all from scratch" is the one path that cannot get that: the
+    // button only renders on the Summaries tab, the view stays mounted for the whole run, and the
+    // tab is then set to the value it already holds. So the tab kept rendering the pre-run text with
+    // nothing to say it was stale, and editing a card from that view wrote the OLD body over the
+    // freshly generated one, because Summary.idx is positional over included rows.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
+    mockStatus.mockResolvedValue({
+      status,
+      job: {
+        id: 1,
+        kind: "summarize",
+        state,
+        stage: "summarizing",
+        current: 1,
+        total: 1,
+        error: state === "needs_attention" ? "One document could not be summarized." : "",
+      },
+    });
+    const { result, client } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    await act(async () => {
+      await result.current.onSummarize();
+    });
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["summaries", "d1"] });
   });
 
   it("keeps showing progress while a job is paused (auto-resuming, not terminal)", async () => {
@@ -183,7 +238,7 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
       status: "summarizing",
       job: { id: 1, kind: "summarize", state: "paused", stage: "paused", current: 0, total: 5, error: null },
     });
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("progress"));
     expect(result.current.banner).toBe(""); // paused must not resolve to an error
   });
@@ -215,14 +270,14 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
         error: "One document needs attention.",
       },
     });
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
     expect(result.current.attention?.message).toBe("One document needs attention.");
   });
 
   it("shows a failure banner for an errored document", async () => {
     mockDoc.mockResolvedValue(detail({ status: "error", rows: [] }));
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("start"));
     expect(result.current.banner).toBe("The last run failed - you can start again.");
   });
@@ -248,7 +303,7 @@ describe("useReviewWorkflow autosave gating", () => {
   it("autosaves valid rows without the client _key after the debounce", async () => {
     mockDoc.mockResolvedValue(detail({ status: "reviewing" })); // page_count 10
     mockSave.mockResolvedValue({ ok: true, count: 1 });
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
     act(() => result.current.onRowsChange([editorRow({ start: 2, end: 5 })]));
@@ -260,7 +315,7 @@ describe("useReviewWorkflow autosave gating", () => {
   it("does NOT autosave an invalid (overlapping) row set", async () => {
     mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
     mockSave.mockResolvedValue({ ok: true, count: 0 });
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
     act(() =>
@@ -309,7 +364,7 @@ describe("useReviewWorkflow stop and restart", () => {
       },
     });
 
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
 
     await waitFor(() => expect(result.current.cancelledJob).toEqual({ kind: "segment" }));
     // Settled: the bar is gone rather than left spinning on a terminal job.
@@ -356,7 +411,7 @@ describe("useReviewWorkflow stop and restart", () => {
       graceSeconds: 10,
     });
 
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.watching).toBe(true));
 
     let grace = 0;
@@ -400,7 +455,7 @@ describe("useReviewWorkflow stop and restart", () => {
     });
     mockCancel.mockRejectedValue(new Error("network"));
 
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.watching).toBe(true));
     await act(async () => {
       await result.current.cancelActiveJob(false);
@@ -454,7 +509,7 @@ describe("useReviewWorkflow stop and restart", () => {
       });
     mockStartSegment.mockResolvedValue({ ok: true });
 
-    const { result } = renderHook(() => useReviewWorkflow("d1"));
+    const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.cancelledJob).not.toBeNull());
 
     await act(async () => {
