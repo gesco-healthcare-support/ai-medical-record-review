@@ -658,9 +658,15 @@ def _row_tags(row) -> tuple[str, str]:
     return manual_tag, diag_tag
 
 
-# Possessive quantifiers are backtrack-free and there is no leading \s*, so re.search runs in linear
-# time (ReDoS-safe, Sonar S5852).
-_PAGES_SUFFIX = re.compile(r"\(pages\s++\d++\s*+[-–]\s*+\d++\)\s*+$", re.IGNORECASE)
+# A trailing engine-style page suffix. Possessive quantifiers are backtrack-free and there is no
+# leading \s*, so re.search runs in linear time (ReDoS-safe, Sonar S5852).
+#
+# The en dash is written as an escape rather than as itself. The web view renders ranges with one, so the
+# character has to be matched - but as a literal it is an ambiguous-Unicode finding (ruff RUF001, and
+# Sonar's equivalent), and moving this line into a new file re-raised that as an issue on NEW code,
+# which took the maintainability rating to B and failed the quality gate. The escape matches exactly
+# the same two characters with nothing confusable in the source.
+_PAGES_SUFFIX = re.compile(r"\(pages\s++\d++\s*+[-\u2013]\s*+\d++\)\s*+$", re.IGNORECASE)
 
 
 def presentable_title(title: str) -> str:
