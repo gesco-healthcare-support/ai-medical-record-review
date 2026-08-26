@@ -414,9 +414,24 @@ def classify_document(job_id) -> None:
 
     def work(session, job, report):
         document = session.get(Document, job.document_id)
+        # EVERY row, not only the included ones. #84 scoped the DUPLICATE check to the rows a reviewer
+        # chose for summary - which is right, and its commit message is entirely about dedup - but the
+        # same `include.is_(True)` predicate landed on this query in the same diff, where it selects
+        # nothing at all.
+        #
+        # The only producer of rows for a classify job is `aggregate_documents`, and it seeds every
+        # row at category 100 with `include=summarize_default_for(session, "100")`. 100 is the one
+        # category that is off by default, so every seeded row arrives `include=False` and the filter
+        # returned an empty list: a combined upload was never categorized, every sub-record stayed in
+        # General unchecked, and the job still reported done because `total` was 0.
+        #
+        # The contract is stated on the seeding line itself - "category 100 (General) seeds to
+        # unchecked; classify_document re-derives per row" - and the loop below does exactly that,
+        # reassigning `row.include` from the category it just decided. Filtering on the value this
+        # function exists to REPLACE was the defect.
         rows = session.scalars(
             select(ReviewRow)
-            .where(ReviewRow.document_id == job.document_id, ReviewRow.include.is_(True))
+            .where(ReviewRow.document_id == job.document_id)
             .order_by(ReviewRow.idx)
         ).all()
         for i, row in enumerate(rows):
