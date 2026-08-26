@@ -934,3 +934,74 @@ def test_a_named_document_type_beats_the_emergency_department(title, expected):
 )
 def test_emergency_intake_paperwork_is_not_ruled_a_treating_report(title):
     assert classification.match_rules(title) != "1"
+
+
+# History & Physical -> a treating report (#161). Adrian measured that no rule matched it, so the
+# cascade re-decided every occurrence and answered it five ways.
+#
+# The destination is reviewer-CONFIRMED rather than inferred from where rows happen to sit. Matching
+# the model's own output against the reviewer's copy on identical page spans, over every H&P row on the
+# box: 31 rows the model put at 1 and the reviewer agreed, and **13 rows the model put at 6 (Daily /
+# SOAP notes) that a reviewer hand-corrected to 1**, 37 pages. An active correction is much stronger
+# evidence than a row merely landing somewhere.
+#
+# It also contradicts 6 rows a reviewer LEFT at another category (3 at 4, 2 at 11, 1 at 6). Leaving a
+# value alone is weaker than correcting it, and determinism is the point of the rule - but it is a real
+# cost and should not be hidden.
+#
+# Blast radius over all 1,363 distinct titles on the box: 49 titles / 50 rows / 148 pages (1.07% of
+# titled pages), every one of which previously matched NO rule, so nothing deterministic is overridden.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "History & Physical",
+        "History and Physical",
+        "HISTORY & PHYSICAL",
+        "H&P",
+        "H & P",
+        "Pre-Operative History & Physical",
+        "History & Physical Report - Encounter 5",
+        "Encounter - Office Visit - H&P",
+    ],
+)
+def test_history_and_physical_is_a_treating_report(title):
+    assert classification.match_rules(title) == "1"
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        # THE ordering constraint. A category-4 rule already matches `outpatient procedure h ?& ?p`,
+        # and `h ?& ?p` matches the same substring - so placing the H&P rule any earlier would
+        # capture these and silently break a rule that already exists.
+        ("Outpatient Procedure H&P", "4"),
+        ("Outpatient Procedure H & P", "4"),
+        ("GI Outpatient H&P", "4"),
+        # An evaluator's own report, or a Permanent & Stationary report, still wins.
+        ("QME History & Physical", "13"),
+        ("AME History and Physical", "13"),
+        ("PR-4 History & Physical", "2"),
+        ("Permanent and Stationary History & Physical", "2"),
+    ],
+)
+def test_a_more_specific_document_type_beats_history_and_physical(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        # `history` alone is never enough - these are not this document. Exact answers rather than a
+        # "not 1" assertion, which would pass for the wrong reason as soon as one of them started
+        # matching something else.
+        ("History of Injury", None),
+        ("Past Medical History", None),
+        ("Interval History", None),
+        # already owned by the category-11 rule, and unaffected
+        ("Comprehensive Interval History", "11"),
+        # `physical` alone must not reach here either: the therapy rule precedes this one
+        ("Physical Therapy Progress Note", "5"),
+    ],
+)
+def test_a_bare_history_or_physical_token_is_not_an_h_and_p(title, expected):
+    assert classification.match_rules(title) == expected
