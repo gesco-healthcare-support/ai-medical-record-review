@@ -1,6 +1,8 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { summariesKey } from "@/hooks/use-summaries";
 import { humanizeError } from "@/lib/errors";
 import {
   cancelJob,
@@ -60,6 +62,7 @@ export function useReviewWorkflow(
   options: { enableSummaries?: boolean } = {},
 ) {
   const enableSummaries = options.enableSummaries !== false;
+  const queryClient = useQueryClient();
 
   const [section, setSection] = useState<Section>("loading");
   const [activeStep, setActiveStep] = useState<StepId>("identify");
@@ -238,6 +241,27 @@ export function useReviewWorkflow(
     try {
       const result = await pollJob("Summarizing documents", "summaries");
       setWatching(false);
+      // The run REPLACED the stored summaries, so drop the cached copy before any branch below
+      // decides which screen to show. Here rather than in a branch because all three outcomes leave
+      // new rows behind: "done" rewrote every included row, "needs_attention" keeps the partial
+      // results, and even "cancelled" commits whatever finished before the stop - as the comment on
+      // that branch says.
+      //
+      // Nothing else refreshes this query. It is a bare useQuery with the app-wide
+      // `staleTime: 30_000` and `refetchOnWindowFocus: false`, no `refetchInterval`, and the only
+      // other writer is the per-edit `setQueryData` patch - so its sole refresh trigger was a NEW
+      // observer mounting while the data was stale. Every summarize path except one got that by
+      // accident, by starting on a different tab and having the Summaries tab mount when the run
+      // finished. "Re-summarize all from scratch" is the exception: the button only renders on the
+      // Summaries tab, the tab body is not gated on `watching` so the view stays mounted for the
+      // whole run, and `showSummaries()` then sets the tab to the value it already holds - so React
+      // bails out, no observer mounts, and staleness alone never refetches in react-query.
+      //
+      // The consequence was worse than a stale read: `Summary.idx` is positional over included rows,
+      // so editing a card from the stale view wrote the OLD body over the freshly generated one.
+      if (documentId) {
+        void queryClient.invalidateQueries({ queryKey: summariesKey(documentId) });
+      }
       if (result.outcome === "cancelled") {
         setCancelledJob({ kind: "summarize" });
         // Summaries finished before the stop are already committed and stay visible.
