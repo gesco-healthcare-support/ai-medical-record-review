@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { newKey, rowErrors, sortRows, stripKeys, withKeys } from "@/lib/review-rows";
+import {
+  applyServerRowChanges,
+  mergeRows,
+  newKey,
+  rowErrors,
+  sortRows,
+  stripKeys,
+  withKeys,
+} from "@/lib/review-rows";
 import type { Row } from "@/lib/types";
 
 // Expected values are derived from the DOCUMENTED rule (mirrored server-side in
@@ -100,5 +108,94 @@ describe("withKeys / newKey / stripKeys", () => {
   it("stripKeys removes the client-only _key", () => {
     const stripped = stripKeys(withKeys([row(1, 2)]));
     expect(stripped.every((r) => !("_key" in r))).toBe(true);
+  });
+});
+
+describe("mergeRows", () => {
+  const r = (over: Partial<Row>): Row => ({ ...row(1, 3), ...over });
+
+  it("takes the span of both halves and the upper row's identity", () => {
+    const merged = mergeRows(
+      r({ start: 1, end: 3, category: "13", title: "Upper", date: "01/02/2026" }),
+      r({ start: 4, end: 9, category: "1", title: "Lower", date: "05/06/2026" }),
+    );
+    expect([merged.start, merged.end]).toEqual([1, 9]);
+    // Identity comes from the upper row on purpose - "this continues the document above".
+    expect([merged.category, merged.title, merged.date]).toEqual(["13", "Upper", "01/02/2026"]);
+  });
+
+  it("keeps the merged document in the deliverable when EITHER half was in it", () => {
+    // The reported failure: a 2-page cover sheet in category 100 (include:false by default) sitting
+    // above a 52-page evaluation. Merging used to hand the merged row the cover sheet's `include`,
+    // so the evaluation stopped being summarized and nothing on screen said which document went.
+    const merged = mergeRows(
+      r({ start: 92, end: 93, category: "100", include: false }),
+      r({ start: 94, end: 145, category: "13", include: true }),
+    );
+    expect(merged.include).toBe(true);
+    // ...and the other way round, since a bulk apply merges in page order either way.
+    expect(mergeRows(r({ include: true }), r({ include: false })).include).toBe(true);
+  });
+
+  it("only excludes the merged document when NEITHER half was included", () => {
+    expect(mergeRows(r({ include: false }), r({ include: false })).include).toBe(false);
+  });
+
+  it("carries the manual-check flag across, as before", () => {
+    expect(mergeRows(r({ flag: "-" }), r({ flag: "x" })).flag).toBe("x");
+    expect(mergeRows(r({ flag: "x" }), r({ flag: "-" })).flag).toBe("x");
+    expect(mergeRows(r({ flag: "-" }), r({ flag: "-" })).flag).toBe("-");
+  });
+
+  it("does not shrink the merged row when the lower half ends earlier", () => {
+    expect(mergeRows(r({ start: 1, end: 9 }), r({ start: 4, end: 6 })).end).toBe(9);
+  });
+});
+
+describe("applyServerRowChanges", () => {
+  const local = (over: Partial<Row & { _key: string }> = {}): Row & { _key: string } => ({
+    ...row(1, 3),
+    _key: "k1",
+    ...over,
+  });
+
+  it("takes include and category from the server for a row with the same span", () => {
+    const result = applyServerRowChanges(
+      [local({ start: 1, end: 3, include: true, category: "1" })],
+      [{ ...row(1, 3), include: false, category: "5" }],
+    );
+    expect(result[0].include).toBe(false);
+    expect(result[0].category).toBe("5");
+  });
+
+  it("keeps every local edit the reviewer has not saved yet", () => {
+    // This is the whole point: the Duplicates tab wrote `include`, and the reviewer's retitle and
+    // re-date are only in this buffer. Replacing it wholesale is what discarded them.
+    const result = applyServerRowChanges(
+      [local({ title: "Reviewer's title", date: "09/09/2026", injury_date: "01/01/2020" })],
+      [{ ...row(1, 3), title: "", date: "", injury_date: "", include: false }],
+    );
+    expect(result[0].title).toBe("Reviewer's title");
+    expect(result[0].date).toBe("09/09/2026");
+    expect(result[0].injury_date).toBe("01/01/2020");
+    expect(result[0]._key).toBe("k1"); // the client key survives, so React keeps input focus
+  });
+
+  it("leaves a row the reviewer has re-spanned entirely alone", () => {
+    // No server twin: the reviewer has redefined this document, so their split is the newer fact.
+    const result = applyServerRowChanges(
+      [local({ start: 1, end: 2, include: true })],
+      [{ ...row(1, 3), include: false }],
+    );
+    expect(result[0].include).toBe(true);
+    expect([result[0].start, result[0].end]).toEqual([1, 2]);
+  });
+
+  it("keeps the local row set - it never adds or drops rows", () => {
+    const result = applyServerRowChanges(
+      [local({ _key: "a", start: 1, end: 2 }), local({ _key: "b", start: 3, end: 4 })],
+      [{ ...row(1, 9) }],
+    );
+    expect(result.map((r) => r._key)).toEqual(["a", "b"]);
   });
 });
