@@ -658,15 +658,29 @@ def _row_tags(row) -> tuple[str, str]:
     return manual_tag, diag_tag
 
 
-# A trailing engine-style page suffix. Possessive quantifiers are backtrack-free and there is no
-# leading \s*, so re.search runs in linear time (ReDoS-safe, Sonar S5852).
+# The three internal markers `_row_tags` applies, as patterns compiled once.
 #
-# The en dash is written as an escape rather than as itself. The web view renders ranges with one, so the
-# character has to be matched - but as a literal it is an ambiguous-Unicode finding (ruff RUF001, and
-# Sonar's equivalent), and moving this line into a new file re-raised that as an issue on NEW code,
-# which took the maintainability rating to B and failed the quality gate. The escape matches exactly
-# the same two characters with nothing confusable in the source.
-_PAGES_SUFFIX = re.compile(r"\(pages\s++\d++\s*+[-\u2013]\s*+\d++\)\s*+$", re.IGNORECASE)
+# Every whitespace run is BOUNDED, and that is load-bearing rather than tidiness. A leading `\s*` in a
+# SUBSTITUTION pattern is super-linear: the engine may start a match at each of n positions and scan a
+# whitespace run of length n from each. Sonar reports exactly that ("Simplify this regular expression
+# to reduce its runtime, as it has super-linear performance due to backtracking"). `_PAGES_SUFFIX`
+# already avoided it by having no leading `\s*` - its previous comment said so - but the
+# diagnostic-tag pattern carried one at BOTH ends, and lifting that line into this module turned a
+# finding accepted on its old line into a new-code issue that failed the quality gate.
+#
+# A bounded run is linear by construction: at most 8 repetitions from any starting position. 8 is far
+# past anything real, since `_row_tags` emits exactly one space on either side, so nothing these have
+# ever matched stops matching. Possessive quantifiers are NOT what makes this safe and have been
+# dropped: Sonar's Python analyzer does not appear to model them - they only reached `re` in 3.11 - so
+# a pattern whose safety argument rests on `++` reads to it as nested repetition.
+#
+# The en dash is an escape rather than the character itself: the web view renders ranges with one, so
+# it has to be matched, but as a literal it is an ambiguous-Unicode finding (ruff RUF001).
+_PAGES_SUFFIX = re.compile(
+    r"\(pages\s{1,8}\d{1,9}\s{0,8}[-\u2013]\s{0,8}\d{1,9}\)\s{0,8}$", re.IGNORECASE
+)
+_MANUAL_CHECK_PREFIX = re.compile(r"^\[ManualCheck\]\s{0,8}")
+_DIAGNOSTIC_TAG = re.compile(r"\s{0,8}\[Diagnostic Study\]\s{0,8}")
 
 
 def presentable_title(title: str) -> str:
@@ -690,9 +704,9 @@ def presentable_title(title: str) -> str:
     # derived from `summary.effective_title()`, so lifting it into a function turned those writes into
     # parameter reassignment - a code smell in its own right, and one that reads as if the caller's
     # value were being mutated.
-    presentable = re.sub(r"^\[ManualCheck\]\s*", "", (title or "").strip())
+    presentable = _MANUAL_CHECK_PREFIX.sub("", (title or "").strip())
     presentable = _PAGES_SUFFIX.sub("", presentable).rstrip()
-    return re.sub(r"\s*\[Diagnostic Study\]\s*", " ", presentable).strip()
+    return _DIAGNOSTIC_TAG.sub(" ", presentable).strip()
 
 
 def _unreadable_output(row, unreadable_pages) -> dict:
