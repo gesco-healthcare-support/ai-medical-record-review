@@ -43,7 +43,13 @@ def build_bundle_pdf(pdf_path, rows):
 
 def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
     """Summarize each row with its category prompt -> Word-export entry dicts. ``prompt_for`` is
-    an optional row -> prompt resolver injected by the caller (DB-first via catalog.get_prompt)."""
+    an optional row -> prompt resolver injected by the caller (DB-first via catalog.get_prompt).
+
+    Titles go through ``presentable_title`` because ``summarize_row`` returns them decorated with the
+    three internal review markers the app displays, and this is a delivered Word document. Taking the
+    raw value shipped those markers to the client while the review export stripped them; the manual
+    check marker reaches most rows, because of the row flag it keys on.
+    """
     entries = []
     for row in rows:
         prompt = prompt_for(row) if prompt_for is not None else None
@@ -52,11 +58,6 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
         entries.append(
             {
                 "summaryDate": output.get("summaryDate") or "-",
-                # `summarize_row` returns the DECORATED title - `[ManualCheck] `,
-                # ` [Diagnostic Study]` and ` (Pages X-Y)` - because the app displays all three.
-                # This is a delivered Word document, so they have to come off, exactly as the review
-                # export does it. Taking the raw value here shipped internal review markers to the
-                # client, and `[ManualCheck]` reaches most rows because of the flag it keys on.
                 "summaryTitle": summarize_engine.presentable_title(output["summaryTitle"]),
                 "summaryText": output["summaryText"],
             }
