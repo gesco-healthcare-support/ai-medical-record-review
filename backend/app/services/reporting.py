@@ -25,6 +25,20 @@ DOCX_MIMETYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.
 SUMMARY_INTRO = "The following is a summary of those records:"
 CONCLUSION = "This concludes the review of submitted records."
 
+# Same reason as the three sentences above: both renderers held their own copy and the copies had
+# ALREADY diverged. Checked against the eight human deliverables on disk, which are the standard these
+# artifacts are supposed to match:
+#
+#   heading    "MEDICAL RECORD REVIEW" in 8 of 8 files. The Word renderer said "Medical Record
+#              Review"; the PDF renderer already had it in caps.
+#   separator  329 date-anchored entries across those 8 files, every one a PERIOD after the title
+#              and not one colon. The Word renderer emitted ": "; the PDF renderer already used ". ".
+#
+# So on both counts the .docx disagreed with the .pdf AND with the human standard, and the .docx is
+# the primary deliverable. Centralised here so the next change moves both renderers at once.
+REVIEW_HEADING = "MEDICAL RECORD REVIEW"
+TITLE_SEPARATOR = ". "
+
 
 def intro_sentence(num_pages, lawfirm) -> str:
     """The letter's opening sentence, shared by the Word and linked-PDF renderers.
@@ -146,7 +160,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
 
     doc.add_paragraph("")
 
-    second_title = doc.add_paragraph("Medical Record Review")
+    second_title = doc.add_paragraph(REVIEW_HEADING)
     second_title_format = second_title.runs[0]
     second_title_format.bold = True
     second_title_format.underline = True
@@ -171,7 +185,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     fourth_title_format.bold = True
     fourth_title_format.underline = False
     fourth_title_format.font.size = Pt(12)
-    fourth_title_format.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+    fourth_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     fourth_title_format.font.name = "Times New Roman"
 
     # Two-column borderless table: date | title + body. The default "Table Normal" style has no
@@ -191,15 +205,29 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
         # record is what made the export look like a draft.
         body.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
         _add_inline_runs(body, entry["summaryTitle"], bold=True)
-        _run(body, ": ")
+        _run(body, TITLE_SEPARATOR)
         _add_inline_runs(body, entry["summaryText"])
 
-    nine_title = doc.add_paragraph(this_concludes_text)  # noqa: F841
-    nine_title_format = fourth_title.runs[0]
+    # `nine_title_format` read `fourth_title.runs[0]` - the SUMMARY_INTRO paragraph's run, not this
+    # one. Two visible defects in the delivered .docx from one wrong name: the conclusion got no
+    # formatting at all and shipped in python-docx's default Calibri 11 while every other paragraph
+    # is Times New Roman 12, and `bold = False` here UNDID the `bold = True` set on SUMMARY_INTRO
+    # thirty lines above. `linked_pdf` renders that sentence with `font-weight:bold`, so the .docx and
+    # the .pdf disagreed on the formatting of a sentence the client reads - the same drift this
+    # module's docstring records for the sentence TEXT, one layer down.
+    #
+    # ruff had already found it: `nine_title` was assigned and never used (F841), which is exactly
+    # the bug, and the warning was silenced with a noqa rather than fixed.
+    #
+    # `alignment` is a PARAGRAPH property, so it is set on the paragraph here and on `fourth_title`
+    # above. Assigning it to a run is silently a no-op; both wanted LEFT, which is also the default,
+    # so nothing was visible - but the next paragraph wanting CENTER would fail the same way.
+    nine_title = doc.add_paragraph(this_concludes_text)
+    nine_title_format = nine_title.runs[0]
     nine_title_format.bold = False
     nine_title_format.underline = False
     nine_title_format.font.size = Pt(12)
-    nine_title_format.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+    nine_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     nine_title_format.font.name = "Times New Roman"
 
     return doc
