@@ -328,14 +328,14 @@ class Settings(BaseSettings):
     # steps, which is why there are two:
     #   `dupe_similarity_override` is what lets two sub-documents with DIFFERENT dates be considered
     #     copies at all - both as a cross-date admission in cluster_rows and as the escape hatch in
-    #     duplicate_gate. Raised 0.90 -> 0.99 on 2026-08-06: the date now leads the rule, so this knob
-    #     guards a date MISMATCH specifically rather than a missing title, and it should fire only for
-    #     text that is essentially identical. Adrian's instinct was 100%; that cannot fire, because two
-    #     scans of one page are OCR'd separately and never come out character-identical - measured on
-    #     22 live clusters, real duplicates bottomed out at 0.994. 0.99 keeps the reviewer-confirmed
-    #     0.998 two-date pair and clears the worst measured false positive (0.823) by a wide margin.
-    #     Masking dates out of the text before scoring is what makes 0.99 reachable for a re-scan whose
-    #     only difference is a stamped date.
+    #     duplicate_gate. #81 raised this default 0.90 -> 0.99 on 2026-08-06, reasoning that the date
+    #     now leads the rule so this knob guards a date MISMATCH specifically rather than a missing
+    #     title, and should fire only for text that is essentially identical. Adrian's instinct was
+    #     100%; that cannot fire, because two scans of one page are OCR'd separately and never come
+    #     out character-identical - measured on 22 live clusters, real duplicates bottomed out at
+    #     0.994, the worst false positive at 0.823. Masking dates out before scoring is what makes a
+    #     high value reachable at all for a re-scan whose only difference is a stamped date.
+    #     THAT RAISE NEVER REACHED A CONTAINER - see HISTORY below - and its evidence no longer holds.
     #   `dupe_model_override` skips the confirm call entirely - at that similarity the text has already
     #     answered the question the model would be asked, and the confirm step's silent "these are all
     #     distinct" verdict is a known way to lose a real duplicate. Left at 0.95: it guards a
@@ -382,14 +382,27 @@ class Settings(BaseSettings):
     # in data - "don't automatically delete anything, let the reviewer determine which one to keep" -
     # which argues a missed duplicate is worse than a surfaced one. Open on issue #125.
     #
-    # HISTORY, because it explains the value's provenance: #67 added
+    # HISTORY, and it is why this default is 0.90 rather than 0.99. #67 added
     # `DUPE_SIMILARITY_OVERRIDE: ${DUPE_SIMILARITY_OVERRIDE:-0.90}` to `docker-compose.yml` while 0.90
-    # was still the default here, then #81 raised this one to 0.99 and did not touch compose - so every
-    # container silently ran 0.90 from #81 until 2026-08-25, when the key was added to the box `.env`
-    # at 0.99. The value now running matches this file for the first time. It is still a number derived
-    # on the old scale, so treat it as provisional.
+    # was still the default here, then #81 raised this one to 0.99 and did not touch compose. Because
+    # compose passes the key EXPLICITLY, a container reads the compose default and never this file, so
+    # 0.99 has never run anywhere: every container has served 0.90 continuously since #67.
+    #
+    # I previously recorded here that the box `.env` pinned 0.99 on 2026-08-25 and that "the value now
+    # running matches this file for the first time". BOTH HALVES WERE WRONG, and the correction is the
+    # reason this line changed. Read off the box on 2026-08-25: `.env` line 18 is
+    # `DUPE_SIMILARITY_OVERRIDE=0.90`, and the running api resolves `dupe_similarity_override` to 0.9.
+    # So production is now EXPLICITLY pinned to the value it had always served, and 0.99 remained a
+    # code default that had never been deployed.
+    #
+    # 0.90 is also the direction the evidence points rather than merely the status quo. The trade table
+    # above shows 0.99 spending 14 real duplicates to avoid 4 false positives, and the reviewers' rule
+    # is that nothing is deleted automatically - "let the reviewer determine which one to keep" - which
+    # makes a missed duplicate the more expensive error. Aligning here changes NO deployed behaviour:
+    # compose and the box `.env` both already say 0.90. It only stops the code contradicting them, and
+    # it does not preempt the threshold decision still open on #125.
     dupe_jaccard_threshold: float = 0.70
-    dupe_similarity_override: float = 0.99
+    dupe_similarity_override: float = 0.90
     dupe_model_override: float = 0.95
 
     # How long the UI waits for a COOPERATIVE stop before offering "Force stop". The cooperative path
