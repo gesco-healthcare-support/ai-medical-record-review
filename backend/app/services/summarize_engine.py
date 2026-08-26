@@ -686,9 +686,13 @@ def presentable_title(title: str) -> str:
     The page suffix is stripped rather than kept because a reviewer editing a row's boundary leaves
     the stored one stale. A caller that wants it re-applies it from the row's CURRENT range.
     """
-    title = re.sub(r"^\[ManualCheck\]\s*", "", (title or "").strip())
-    title = _PAGES_SUFFIX.sub("", title).rstrip()
-    return re.sub(r"\s*\[Diagnostic Study\]\s*", " ", title).strip()
+    # A local rather than reassigning the parameter: the version this replaced worked on a local
+    # derived from `summary.effective_title()`, so lifting it into a function turned those writes into
+    # parameter reassignment - a code smell in its own right, and one that reads as if the caller's
+    # value were being mutated.
+    presentable = re.sub(r"^\[ManualCheck\]\s*", "", (title or "").strip())
+    presentable = _PAGES_SUFFIX.sub("", presentable).rstrip()
+    return re.sub(r"\s*\[Diagnostic Study\]\s*", " ", presentable).strip()
 
 
 def _unreadable_output(row, unreadable_pages) -> dict:
