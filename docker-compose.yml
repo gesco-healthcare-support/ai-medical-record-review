@@ -148,6 +148,16 @@ x-backend-env: &backend-env
   GENAI_MODEL: ${GENAI_MODEL:-}
   VERIFY_MODEL: ${VERIFY_MODEL:-}
   CLASSIFY_MODEL: ${CLASSIFY_MODEL:-gemini-2.5-flash-lite}
+  # Narrow the boundary verify pass to the rows its trigger heuristic selects, instead of every
+  # adjacent boundary. Named here BECAUSE it is meant to be flipped on a live box and measured:
+  # a setting absent from this block reaches the container only through a rebuild, which is the
+  # trap VERIFY_SUSPECT_CAP, VERIFY_USE_TEXT and VERIFY_MERGE are still sitting in.
+  #
+  # Measured on 28 reviewer-corrected records: every boundary = 57.4% precision / 49.0% recall;
+  # triggered only = 60.2% / 45.6% from 31% fewer calls. Precision rises because the dropped
+  # boundaries are the ones the oracle was worst on. It costs 8 correct merge suggestions in 117.
+  # Ships FALSE - today's behaviour - because it changes what a reviewer is shown.
+  VERIFY_TRIGGERED_ONLY: ${VERIFY_TRIGGERED_ONLY:-false}
   # Per-attempt deadline (ms). NOT merely a client-side stall guard: google-genai forwards it to
   # Vertex as the SERVER-side deadline, so exceeding it returns a server 504 DEADLINE_EXCEEDED
   # (proven 2026-08-12 - an 8000 value produced a server 504 at 6.2s). It is therefore the ceiling on

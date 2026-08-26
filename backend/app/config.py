@@ -434,6 +434,21 @@ class Settings(BaseSettings):
     verify_merge: bool = True
     verify_use_text: bool = True
     verify_suspect_cap: int = 200
+    # Run the boundary check ONLY on rows the trigger heuristic selects (same category and date as
+    # the previous row, or a row of at most SHORT_ROW_PAGES pages), instead of on every boundary.
+    #
+    # The cap above was meant to bound this and does not: 200 against roughly 88 boundaries per
+    # record means it never binds, so the whole `rest` set is checked as well. A boolean expresses
+    # the intent that a number cannot - "the triggered set, whatever size it is".
+    #
+    # MEASURED on 28 reviewer-corrected records (2,456 boundaries, 239 reviewer merges): every
+    # boundary gives 57.4% precision at 49.0% recall; the triggered set alone gives 60.2% at 45.6%
+    # from 31% fewer calls. So it trades 8 of 117 correct suggestions for 759 fewer model calls, and
+    # precision goes UP because the boundaries it drops are the ones the oracle was worst on.
+    #
+    # Defaults FALSE, which is today's behaviour. It is a live change to what a reviewer is shown,
+    # so it ships as a capability and gets turned on deliberately rather than by upgrading.
+    verify_triggered_only: bool = False
     bundle_summarize_cap: int = 40
 
     def effective_job_timeout(self, pages: int) -> int:
