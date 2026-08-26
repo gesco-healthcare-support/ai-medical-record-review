@@ -126,11 +126,22 @@ def _same_document(pdf_path, prev_row, row):
     return (response.text or "").strip() == "YES"
 
 
-def suspect_indices(rows, cap=None):
-    """Row indices worth one verification call, ascending, at most ``cap`` of them (wide net:
-    every adjacent boundary is a candidate; measured triggers keep priority at the cap)."""
+def suspect_indices(rows, cap=None, triggered_only=None):
+    """Row indices worth one verification call, ascending, at most ``cap`` of them.
+
+    Two nets. The WIDE one (default) makes every adjacent boundary a candidate and lets the measured
+    triggers keep priority when the cap bites. The NARROW one checks only the triggered rows.
+
+    The cap was meant to bound the wide net and does not - 200 against roughly 88 boundaries per
+    record never binds - so ``triggered_only`` is what actually expresses "the triggered set,
+    whatever size it is". Measured on 28 reviewer-corrected records: the wide net scores 57.4%
+    precision at 49.0% recall, the narrow one 60.2% at 45.6% from 31% fewer calls.
+    """
+    settings = get_settings()
     if cap is None:
-        cap = get_settings().verify_suspect_cap
+        cap = settings.verify_suspect_cap
+    if triggered_only is None:
+        triggered_only = settings.verify_triggered_only
     triggered, rest = [], []
     for i in range(1, len(rows)):
         row, prev = rows[i], rows[i - 1]
@@ -141,7 +152,8 @@ def suspect_indices(rows, cap=None):
         )
         short = (row["end"] - row["start"] + 1) <= SHORT_ROW_PAGES
         (triggered if same_cat_date or short else rest).append(i)
-    return sorted((triggered + rest)[: max(cap, 0)])
+    candidates = triggered if triggered_only else triggered + rest
+    return sorted(candidates[: max(cap, 0)])
 
 
 def verify_and_merge(pdf_path, rows, progress=None, workers=None, auto=False, pool_timeout=None):
