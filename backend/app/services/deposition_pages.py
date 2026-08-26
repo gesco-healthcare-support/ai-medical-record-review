@@ -129,6 +129,22 @@ def _offset_from(data, start, last) -> int | None:
     """The single offset that ``_MIN_AGREEING`` or more pages agree on, or None.
 
     Split out from the model call so the agreement rule is testable without a network round trip.
+
+    "Single" is load-bearing. When two different offsets are each supported by the same number of
+    pages there is no majority, and picking one was BOTH arbitrary and order-dependent: `max` returns
+    the first maximal element, and the order is whatever sequence the model happened to list the pages
+    in. The same evidence therefore produced different citations on different calls.
+
+    That is reachable on a real transcript. A deposition often opens with an appearance or cover block
+    carrying its own numbering, and if two such pages and two body pages land in the six-page sample
+    the counts tie 2-2 - both clearing `_MIN_AGREEING`. Measured on that exact payload: offset -99
+    when the cover pages were listed first, -101 when the body pages were, from identical readings.
+    Every citation in that deposition's summary would then be wrong by the difference, and this module
+    exists because "a WRONG citation is worse than none - a reviewer trusts it and then cannot find
+    the testimony".
+
+    `test_disagreeing_offsets_are_refused_rather_than_guessed` already pinned the 1-vs-1 case, where
+    neither candidate reaches the threshold. This is the case where both do.
     """
     counts: dict[int, int] = {}
     for entry in (data or {}).get("pages") or []:
@@ -152,6 +168,14 @@ def _offset_from(data, start, last) -> int | None:
             "transcript page numbers did not agree on one offset (best %s seen %d time(s)); "
             "no page citations",
             offset,
+            agreeing,
+        )
+        return None
+    if sum(1 for seen in counts.values() if seen == agreeing) > 1:
+        logger.info(
+            "transcript page numbers support %d different offsets equally (%d page(s) each); "
+            "no page citations",
+            sum(1 for seen in counts.values() if seen == agreeing),
             agreeing,
         )
         return None
