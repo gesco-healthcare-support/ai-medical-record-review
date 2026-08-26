@@ -839,6 +839,79 @@ def test_giving_up_wins_over_pausing_at_the_default_thresholds(monkeypatch):
         assert session.get(Job, job_id).state == "needs_attention"
 
 
+def test_a_success_still_running_when_the_pause_trips_is_not_thrown_away(monkeypatch):
+    """The sibling of the give-up race, reachable IMMEDIATELY AFTER it.
+
+    Once `giveup_candidate` is set the give-up guard can never fire again, and it continues without
+    resetting `consecutive_transient` - which is already at the threshold, because both dials ship at
+    3. So the very next transient failure lands in the pause branch, and that branch used to `break`,
+    abandoning every row still RUNNING. A success among them was never read, `generated` stayed 0, the
+    post-loop promotion fired, and `giveup_exc` is checked BEFORE `should_pause` - so a document where
+    a row DID summarize ended as needs_attention instead of pausing and retrying the skipped rows.
+
+    DETERMINISTIC BY CONSTRUCTION. Two earlier attempts were not, and each failed for its own reason
+    worth recording:
+
+    * a 0.4s sleep on the success passed on the unfixed code about half the time - the timing
+      dependence this whole area exists to remove;
+    * gating the success on the main thread's progress alone DEADLOCKED, because the give-up branch
+      cancels every not-yet-STARTED row, so the second failing row was cancelled before it could run
+      and the second failure never arrived.
+
+    Hence the barrier: every row is held until all four are in flight, so `cancel()` can reach none of
+    them. The failures then raise immediately, and the success is released only once the main thread
+    has processed two of them - it calls `reason_for` once per failure, before either the give-up or
+    the pause check. So the success is in flight at exactly the decision point and never read before
+    it. Whether it is read AT ALL is precisely what `break` versus `continue` decides.
+    """
+    import threading
+
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 1)
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 1)
+    monkeypatch.setattr(get_settings(), "pipeline_workers", 4)
+
+    all_in_flight = threading.Barrier(4, timeout=10)
+    decision_reached = threading.Event()  # the main thread has processed two failures
+    real_reason_for = tasks_mod.reason_for
+    seen = []
+
+    def gated_reason_for(exc):
+        seen.append(1)
+        if len(seen) >= 2:
+            decision_reached.set()
+        return real_reason_for(exc)
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        all_in_flight.wait()  # nothing is cancellable once every row holds a lane
+        if row["start"] == 1:  # the one row that answers
+            assert decision_reached.wait(timeout=10), "the two failures were never processed"
+            return _ok_output(row)
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    monkeypatch.setattr(tasks_mod, "reason_for", gated_reason_for)
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _NoopQueue())
+
+    _doc_id, job_id = _doc_with_summarize_rows(4)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "paused", (
+            "a row summarized, so the job must pause and retry the rest rather than end - "
+            f"got {job.state!r}"
+        )
+        stored = session.query(Summary).filter(Summary.document_id == _doc_id).all()
+        assert len(stored) == 1, (
+            f"the successful row must be committed, not discarded; stored {len(stored)}"
+        )
+
+
 def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
     """A permanent per-row failure (empty OCR) ends the job 'needs_attention' naming the row,
     while every readable row is still persisted."""

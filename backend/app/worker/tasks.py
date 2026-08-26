@@ -827,10 +827,48 @@ def summarize_document(job_id) -> None:
                                 # shape and is not this fix.
                                 continue
                             if consecutive_transient >= settings.summarize_pause_after:
+                                # NOT `break`, for the same reason as the give-up branch above, and
+                                # this one is reachable IMMEDIATELY AFTER it. Once `giveup_candidate`
+                                # is set the guard above can never fire again, and it `continue`s
+                                # without resetting `consecutive_transient` - which is already at the
+                                # threshold, because both dials ship at 3. So the very next transient
+                                # failure lands here.
+                                #
+                                # Breaking then abandoned every row still RUNNING. A success among
+                                # them was never read, so `generated` stayed 0, the post-loop
+                                # promotion fired, and `giveup_exc` is checked BEFORE `should_pause` -
+                                # so a document where a row did summarize ended as needs_attention
+                                # instead of pausing. That is the exact completion-order dependence
+                                # the comment above was written to remove, arriving by the sibling
+                                # path.
+                                #
+                                # Latent at the shipped `pipeline_workers=2`: after the give-up only
+                                # one other row is in flight, so the failure that trips this branch is
+                                # itself that row and there is nothing left to discard. It becomes
+                                # reachable as soon as the lane count is raised, which is what
+                                # `config.py`'s throughput note proposes.
+                                #
+                                # `should_pause` was ALREADY a post-loop decision, so draining first
+                                # only adds information: successes get committed and counted, and the
+                                # pause still happens.
+                                #
+                                # SCOPED to the case where a candidate is pending, and deliberately
+                                # so. With no candidate the outcome is a pause either way, and a
+                                # discarded success only costs a re-summarize on resume - waste, not a
+                                # wrong answer. Draining unconditionally also CHANGED behaviour where
+                                # `summarize_pause_after` is set below `summarize_giveup_after_failures`:
+                                # reading the extra failures can then reach the give-up threshold and
+                                # end a job that used to pause, which
+                                # `test_summarize_pauses_and_schedules_resume_on_transient` caught. Both
+                                # dials ship at 3 so that ordering does not arise in production, but
+                                # this fix has no business changing it.
+                                if not should_pause:
+                                    for pending_future in futures:
+                                        pending_future.cancel()  # skip not-yet-started rows
                                 should_pause = True
-                                for pending_future in futures:
-                                    pending_future.cancel()  # skip not-yet-started rows
-                                break
+                                if giveup_candidate is None:
+                                    break
+                                continue
                         else:
                             attention_rows.append(
                                 {
