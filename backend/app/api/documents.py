@@ -609,6 +609,31 @@ def dedup_start(
     return {"ok": True}
 
 
+def _leave_cluster(session: Session, row: ReviewRow) -> None:
+    """Take ``row`` out of its duplicate cluster and put it back in the report on its own terms.
+
+    Restoring `include` is the load-bearing part. `keep_one` sets `include = is_primary and wanted`,
+    so every non-primary copy is left unchecked - correct while they ARE copies. "Not a duplicate"
+    then cleared the group and never touched `include`, and because a row with no `dupe_group` is
+    invisible to `_dupe_groups`, the copy disappeared from the Duplicates tab while staying excluded
+    from the report. So a reviewer who kept one copy, read further, and then declared a third copy a
+    distinct document silently dropped those pages: the cluster reads "Resolved", nothing on the
+    duplicates surface mentions the row, and the only trace is an unchecked box on an unrelated-looking
+    row in the editor. The test asserting the opposite passed because its fixture seeds `include=True`
+    and never runs keep_one first.
+
+    The category default rather than a flat True, for the reason `keep_one` gives two branches up:
+    three copies of a routing slip are category 100, which is unchecked by default, and forcing one on
+    would push paperwork nobody asked for into the report. A row leaving a cluster is a standalone
+    document again, so it gets exactly what a freshly classified standalone row of its category gets -
+    which is what `classify_document` assigns too.
+    """
+    row.dupe_group = None
+    row.dupe_primary = False
+    row.dupe_dismissed = False
+    row.include = catalog.summarize_default_for(session, row.category)
+
+
 @router.post("/{document_id}/duplicates/{group}/resolve")
 def resolve_duplicate(
     group: int,
@@ -649,17 +674,13 @@ def resolve_duplicate(
             raise HTTPException(status_code=400, detail="idx is not in this cluster")
         # Leaving the group outright, rather than a per-row dismissed flag: `dismissed` is derived
         # cluster-wide with any(...), so a per-row flag would make it ambiguous everywhere it is read.
-        target.dupe_group = None
-        target.dupe_primary = False
-        target.dupe_dismissed = False
+        _leave_cluster(session, target)
         remaining = [m for m in members if m is not target]
         if len(remaining) < 2:
             # A cluster of one is not a duplicate set. _dupe_groups already hides it on read; clear it
             # here too so the stored state matches what every surface shows.
             for member in remaining:
-                member.dupe_group = None
-                member.dupe_primary = False
-                member.dupe_dismissed = False
+                _leave_cluster(session, member)
     else:
         raise HTTPException(
             status_code=400,
