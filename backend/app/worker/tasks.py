@@ -7,6 +7,7 @@ server-side, ids only). The worker is the single writer of Document.status after
 """
 
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -280,6 +281,53 @@ def _is_retryable_notice(summary: Summary) -> bool:
     )
 
 
+# Titles of a records-review block embedded in an evaluation. Matched ONLY against rows the reviewer
+# left EXCLUDED, which is what keeps this away from the documents that share the wording and are
+# genuinely delivered - "Medical Record Excerpt - MRI of Right Knee" reaches category 3 and IS
+# summarized, and a title pattern alone cannot tell it from the block we want to announce.
+_EMBEDDED_REVIEW_TITLE = re.compile(
+    r"review of medical record|medical record.{0,3} excerpt|excerpted medical record"
+    r"|medical records review",
+    re.I,
+)
+
+# The evaluation categories an embedded review belongs to. A records review is a section INSIDE a
+# medical-legal evaluation, so this is what distinguishes the case the reviewer described from a
+# standalone subpoenaed excerpt sitting in a block of legal paperwork - measured on the box, the
+# latter's nearest delivered neighbour is an unrelated office visit three rows back, and hanging a
+# note about 30 pages off that summary would tell the reader something untrue about the visit.
+_EMBEDDED_REVIEW_HOSTS = frozenset({"12", "13"})
+
+
+def _seed_embedded_review_pages(session, document_id, rows) -> None:
+    """Attach each excluded records-review block to the evaluation it sits inside, as row data.
+
+    `summarize_engine` is deliberately DB-free and sees one row at a time, so it cannot look at a
+    row's neighbours. This is the only layer that can, and it hands the answer down the same way
+    `unreadable_pages` is handed down.
+
+    Walks BACK from the excluded block past any other excluded rows - a review is routinely preceded
+    by its own cover letter, also excluded - to the nearest row that is actually being summarized.
+    Only an evaluation hosts a tag; anything else means this is not an embedded review and gets none.
+    """
+    ordered = session.scalars(
+        select(ReviewRow).where(ReviewRow.document_id == document_id).order_by(ReviewRow.idx)
+    ).all()
+    by_span: dict[tuple[int, int], list[int]] = {}
+    for position, review_row in enumerate(ordered):
+        if review_row.include or not _EMBEDDED_REVIEW_TITLE.search(review_row.title or ""):
+            continue
+        host = next(
+            (candidate for candidate in reversed(ordered[:position]) if candidate.include), None
+        )
+        if host is None or str(host.category) not in _EMBEDDED_REVIEW_HOSTS:
+            continue
+        key = (int(host.start), int(host.end))
+        by_span.setdefault(key, []).extend(range(int(review_row.start), int(review_row.end) + 1))
+    for row in rows:
+        row["embedded_review_pages"] = by_span.get((int(row["start"]), int(row["end"])), [])
+
+
 def _build_summary(job, idx, row, output) -> Summary:
     """One Summary ORM row from a summarize_row output + its source row (legacy shape)."""
     return Summary(
@@ -319,6 +367,10 @@ def _build_summary(job, idx, row, output) -> Summary:
         # appended, `model` set) - so "which delivered documents lost pages?" is one query. See the
         # column comment for why this is a flag rather than a `model` sentinel.
         unreadable=bool(output.get("unreadablePages")),
+        # An excluded records-review block sits after this row and its pages are named in the
+        # body. Set from the same value that composed the sentence rather than by matching the
+        # text, so the flag and the body can never disagree about whether a tag is there.
+        embedded_review=bool(output.get("embeddedReviewPages")),
     )
 
 
@@ -698,6 +750,7 @@ def summarize_document(job_id) -> None:
             row["unreadable_pages"] = [
                 page for page in failed_pages if int(row["start"]) <= page <= int(row["end"])
             ]
+        _seed_embedded_review_pages(session, job.document_id, rows)
 
         # Reconcile persisted summaries by row identity: keep the first for each still-wanted row,
         # drop any that are stale (row removed/edited) or duplicate. This never touches summaries

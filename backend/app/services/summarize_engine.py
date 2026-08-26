@@ -610,6 +610,42 @@ def partial_unreadable_notice(pages) -> str:
     )
 
 
+# Built in CODE for the same reason as _NOTICE_LEAD: it ships in a medical-legal deliverable, and a
+# model asked to describe pages that were deliberately withheld from it has nothing to describe.
+#
+# WHY THIS EXISTS. An embedded records review is split off as its own row and EXCLUDED, which is what
+# the senior reviewer wants - the evaluation is summarized, the review inside it is not, because it
+# recites documents that appear in their own right elsewhere in the deliverable. But an excluded row
+# produces no Summary at all, so those pages vanished from the report with nothing said. Asked what
+# he wanted, his answer was a tag rather than inclusion (2026-08-26):
+#
+#     "A potentially easier solution would be to just put in a tag in the summary that there is an
+#      embedded medical record review."
+#
+# Says "which is not summarized here" rather than "was excluded": the reader is being told where the
+# content is not, and "excluded" invites the question of who excluded it and why.
+_EMBEDDED_REVIEW_LEAD = "{phrase} an embedded review of medical records"
+
+
+def embedded_review_notice(pages) -> str:
+    """The sentence appended to the evaluation that an excluded records-review block belongs to.
+
+    Singular and plural are both written out rather than shared behind a number-agnostic phrasing.
+    ``page_phrase`` above takes the other approach - wording its callers so one form fits both - but
+    that works because those sentences never need the VERB to agree. Here it does, and "Pages 45
+    contain" in a medical-legal deliverable reads as carelessness.
+    """
+    numbers = sorted({int(p) for p in pages})
+    if not numbers:
+        return ""
+    span = (
+        f"Pages {numbers[0]}-{numbers[-1]} contain"
+        if len(numbers) > 1
+        else f"Page {numbers[0]} contains"
+    )
+    return _EMBEDDED_REVIEW_LEAD.format(phrase=span) + ", which is not summarized here."
+
+
 def _row_tags(row) -> tuple[str, str]:
     """The two internal review markers a stored title carries: ``[ManualCheck] `` and
     `` [Diagnostic Study]``.
@@ -673,6 +709,10 @@ def _unreadable_output(row, unreadable_pages) -> dict:
         "promptFingerprint": None,
         "auditFingerprint": None,
         "unreadablePages": pages,
+        # Always empty on a notice-only row. Nothing was summarized, so there is no body for an
+        # embedded-review tag to qualify - appending "not summarized here" beneath "there was no text
+        # to summarize" would say the same thing twice about different pages.
+        "embeddedReviewPages": [],
         # The body IS the notice. Distinct from a partial row (which also carries pages here) because
         # the caller treats only this case as a row that could not be summarized.
         "noticeOnly": True,
@@ -769,6 +809,10 @@ def summarize_row(
     # timeout that a later attempt reads fine, and announcing a page as unintelligible when this run
     # read it is worse than saying nothing.
     unreadable_pages = sorted({int(p) for p in (row.get("unreadable_pages") or [])})
+    # Pages of an excluded records-review block that belongs to THIS row. Seeded by the worker, which
+    # is the only layer that can see the neighbouring rows - this module is deliberately DB-free, the
+    # same reason `unreadable_pages` arrives as row data rather than being looked up here.
+    embedded_review_pages = sorted({int(p) for p in (row.get("embedded_review_pages") or [])})
     if not text:
         pages = list(range(int(row["start"]), int(row["end"]) + 1))
         # The REPORTING extractor, so a row that produced no text can say WHY. The plain variant
@@ -1009,6 +1053,20 @@ def summarize_row(
         if verified_text is not None:
             verified_text += partial_notice
 
+    # The embedded-review tag, appended here for all three of the reasons above: the audit would see
+    # a claim absent from the source text and try to "correct" it, the verified body has to carry it
+    # too or effective_text() can deliver a body without it, and sentence_case_caps_runs has already
+    # run so nothing rewrites it.
+    #
+    # AFTER the unreadable notice deliberately. A row can be both partly unreadable and followed by
+    # an excluded review; when it is, the reader is told what this summary does not cover before
+    # being told what sits next to it, which is the order of decreasing relevance to the body above.
+    if embedded_review_pages:
+        embedded_notice = " " + embedded_review_notice(embedded_review_pages)
+        partial_notice += embedded_notice
+        if verified_text is not None:
+            verified_text += embedded_notice
+
     return {
         "summaryDate": row["date"],
         "summaryTitle": f"{manual_tag}{title}{diag_tag} (Pages {row['start']}-{row['end']})",
@@ -1043,5 +1101,8 @@ def summarize_row(
         # pages that could be read, and carries the notice appended above - `noticeOnly` False is
         # what separates it from a row where nothing could be read at all.
         "unreadablePages": unreadable_pages,
+        # Echoed back so the caller can set `summaries.embedded_review` from the same value that
+        # produced the sentence, rather than re-deriving it or matching on the text.
+        "embeddedReviewPages": embedded_review_pages,
         "noticeOnly": False,
     }

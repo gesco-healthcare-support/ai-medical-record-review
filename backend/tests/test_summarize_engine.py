@@ -1611,3 +1611,99 @@ def test_the_notice_text_is_deterministic_and_distinct_per_case(monkeypatch):
     # other: one replaces a summary, the other qualifies one.
     assert se.unreadable_notice([3]) != se.partial_unreadable_notice([3])
     assert "not covered by this summary" in se.partial_unreadable_notice([3])
+
+
+# --- the embedded records-review tag (#159) -------------------------------------------------------
+#
+# An embedded review is split off as its own row and EXCLUDED, which is what the senior reviewer
+# wants. But an excluded row produces no Summary, so those pages vanished from the deliverable with
+# nothing said. His answer was a tag rather than inclusion, and these pin the three ways it could go
+# wrong: the audit rewriting it, the verified body losing it, and it firing on an ordinary row.
+
+
+def test_an_embedded_review_is_named_in_the_hosting_evaluations_summary(monkeypatch):
+    """WHEN a row is seeded with embedded-review pages, THE SYSTEM SHALL name them in its body.
+
+    The page range is the whole point: the reader is told those pages exist and where, which is what
+    "vanished with nothing said" cost them.
+    """
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([], text="evaluation text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    out = se.summarize_row("/x.pdf", _row(embedded_review_pages=[46, 47, 48, 65]), prompt="P")
+
+    assert "Pages 46-65 contain an embedded review of medical records" in out["summaryText"]
+    assert "not summarized here" in out["summaryText"]
+    assert out["embeddedReviewPages"] == [46, 47, 48, 65]
+
+
+def test_the_embedded_review_tag_is_never_shown_to_the_faithfulness_audit(monkeypatch):
+    """The audit checks the body against the SOURCE TEXT, and this sentence is by definition absent
+    from it - so an audit that saw it could "correct" an unsupported claim or flag the row. Same
+    reason the partial-unreadable notice is appended after the verify pass."""
+    seen = {}
+
+    def capture(model, source, summary, **kwargs):
+        seen["summary"] = summary
+        return _NO_ISSUES
+
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([], text="evaluation text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", capture)
+
+    se.summarize_row("/x.pdf", _row(embedded_review_pages=[46, 65]), prompt="P")
+
+    assert "embedded review" not in seen["summary"].lower()
+
+
+def test_the_embedded_review_tag_survives_a_body_the_audit_corrected(monkeypatch):
+    """`effective_text()` prefers the verified body, so a tag applied only to the raw one disappears
+    the moment the audit changes anything. Applied to both, or it is lost exactly when the row was
+    interesting enough to rewrite."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([], text="evaluation text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda *a, **k: {"fixed_text": "A corrected body.", "issues": ["date"], "ok": False},
+    )
+
+    out = se.summarize_row("/x.pdf", _row(embedded_review_pages=[46, 65]), prompt="P")
+
+    assert "embedded review of medical records" in out["verifiedText"]
+    assert "embedded review of medical records" in out["summaryText"]
+
+
+def test_an_ordinary_row_carries_no_embedded_review_tag(monkeypatch):
+    """The happy path is untouched. Most rows have no excluded review beside them and must read
+    exactly as they did."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([], text="ordinary text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert out["embeddedReviewPages"] == []
+    assert "embedded review" not in out["summaryText"].lower()
+
+
+def test_a_notice_only_row_never_carries_an_embedded_review_tag(monkeypatch):
+    """Nothing was summarized, so there is no body for the tag to qualify - and "not summarized
+    here" beneath "there was no text to summarize" would say the same thing twice about different
+    pages."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([1, 2]))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+
+    out = se.summarize_row("/x.pdf", _row(embedded_review_pages=[46, 65]), prompt="P")
+
+    assert out["noticeOnly"] is True
+    assert out["embeddedReviewPages"] == []
+    assert "embedded review" not in out["summaryText"].lower()
+
+
+def test_page_range_reads_as_a_single_page_when_only_one_is_involved():
+    """A one-page review must not render as "Pages 45-45"."""
+    assert se.embedded_review_notice([45]).startswith("Page 45 contains")
+    assert se.embedded_review_notice([46, 65]).startswith("Pages 46-65 contain")
+    assert se.embedded_review_notice([]) == ""

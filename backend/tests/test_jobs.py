@@ -2499,3 +2499,113 @@ def test_giving_up_does_not_report_the_skipped_rows_as_failures(monkeypatch, lan
             f"{len(leaked)} of {len(rows)} reported rows carry a reason that is not the model's "
             f"refusal - a skipped row is being reported as a failure: {leaked[:2]}"
         )
+
+
+# --- the embedded records-review tag: which evaluation hosts it (#159) --------------------------
+#
+# The seeding is where this feature is decided. `summarize_engine` only renders what it is handed,
+# so if the wrong row is chosen the sentence is still well-formed and still wrong - it would tell a
+# reader that pages belong to a document they do not. These pin the discriminator.
+
+
+def _rows_for_embedded_review(spec) -> str:
+    """A document whose rows are `spec` = [(idx, start, end, category, title, include), ...]."""
+    doc_id = _make_user_and_doc(page_count=max(r[2] for r in spec))
+    with get_sessionmaker()() as session:
+        for idx, start, end, category, title, include in spec:
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=start,
+                    end=end,
+                    category=category,
+                    title=title,
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=include,
+                )
+            )
+        session.commit()
+    return doc_id
+
+
+def _seed(doc_id, rows):
+    from app.worker.tasks import _seed_embedded_review_pages
+
+    with get_sessionmaker()() as session:
+        _seed_embedded_review_pages(session, doc_id, rows)
+    return rows
+
+
+def test_an_excluded_review_is_attached_to_the_evaluation_it_follows():
+    """WHEN an excluded records-review row follows a delivered evaluation, THE SYSTEM SHALL seed its
+    pages onto that evaluation. This is the shape the senior reviewer described - a review embedded
+    in a medico-legal evaluation."""
+    doc_id = _rows_for_embedded_review(
+        [
+            (0, 10, 15, "12", "Supplemental Internal Medicine Panel QME", True),
+            (1, 16, 28, "100", "Review of Medical Records", False),
+        ]
+    )
+    rows = _seed(doc_id, [{"start": 10, "end": 15}])
+    assert rows[0]["embedded_review_pages"] == list(range(16, 29))
+
+
+def test_the_walk_back_skips_the_reviews_own_excluded_cover_letter():
+    """A records review routinely arrives behind its own cover letter, also excluded. Stopping at the
+    first PRECEDING row rather than the first preceding DELIVERED one would find that cover letter,
+    which has no summary to carry a tag, and the review would go unannounced."""
+    doc_id = _rows_for_embedded_review(
+        [
+            (0, 37, 44, "13", "Gastroenterology Consultation - Panel QME", True),
+            (1, 45, 45, "100", "Review of Medical Records Cover Letter", False),
+            (2, 46, 65, "100", "Review of Medical Records", False),
+        ]
+    )
+    rows = _seed(doc_id, [{"start": 37, "end": 44}])
+    # Both excluded rows match the title pattern, so the evaluation is told about the whole block.
+    assert rows[0]["embedded_review_pages"] == list(range(45, 66))
+
+
+def test_a_standalone_excerpt_after_a_non_evaluation_is_not_attached():
+    """Measured on the box: a 30-page subpoenaed records excerpt sits in a block of legal paperwork
+    whose nearest delivered neighbour is an unrelated office visit. Hanging a note about those pages
+    off that visit's summary would tell the reader something untrue about the visit."""
+    doc_id = _rows_for_embedded_review(
+        [
+            (0, 100, 100, "1", "Office Visit", True),
+            (1, 101, 101, "100", "Medical Records Invoice", False),
+            (2, 102, 132, "100", "Medical Records Excerpt", False),
+        ]
+    )
+    rows = _seed(doc_id, [{"start": 100, "end": 100}])
+    assert rows[0]["embedded_review_pages"] == []
+
+
+def test_a_delivered_records_excerpt_is_never_treated_as_an_embedded_review():
+    """ "Medical Record Excerpt - MRI of Right Knee" reaches category 3 and IS summarized. Only
+    EXCLUDED rows are candidates, which is what keeps a title pattern away from the documents that
+    share its wording and are genuinely delivered."""
+    doc_id = _rows_for_embedded_review(
+        [
+            (0, 10, 15, "13", "Panel QME Report", True),
+            (1, 16, 16, "3", "Medical Record Excerpt - MRI of Right Knee", True),
+        ]
+    )
+    rows = _seed(doc_id, [{"start": 10, "end": 15}, {"start": 16, "end": 16}])
+    assert rows[0]["embedded_review_pages"] == []
+    assert rows[1]["embedded_review_pages"] == []
+
+
+def test_a_document_with_no_embedded_review_seeds_every_row_empty():
+    """The common case. Every row must get the key so summarize_engine never sees a missing one."""
+    doc_id = _rows_for_embedded_review(
+        [
+            (0, 1, 2, "1", "Progress Report", True),
+            (1, 3, 4, "100", "Routing Slip", False),
+        ]
+    )
+    rows = _seed(doc_id, [{"start": 1, "end": 2}])
+    assert rows[0]["embedded_review_pages"] == []
