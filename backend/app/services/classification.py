@@ -358,6 +358,23 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # does "Emergency Department Encounter Note", which already reaches a shipping category with
         # its content delivered - moving that would be a change with no measured benefit.
         (r"emergency department\s+(?:record|report|visit)|\bed visit record\b", "1"),
+        # History & Physical -> a treating report (#161). A pre-operative H&P is the treating
+        # physician's own document, `summarize_default` is true for category 1, and 46 of the 53 rows
+        # on the box already land there - so the destination is where this form mostly goes already
+        # rather than a guess. What made it a defect is that no rule matched it, so the cascade
+        # re-decided every occurrence and answered FIVE ways (1, 4, 11, 6, 100), and the one that
+        # landed in 100 was dropped. A form answered five ways is wrong whichever answer happens to be
+        # right.
+        #
+        # AFTER the category-4 rule, and that ordering is load-bearing rather than tidiness. That rule
+        # matches `outpatient procedure h ?& ?p`, and `\bh ?& ?p\b` here matches the same substring -
+        # so placing this any earlier would capture "Outpatient Procedure H&P" and silently break a
+        # rule that already exists. Every rule above wins first, which also leaves an evaluator's own
+        # report carrying the phrase with 12/13, and a Permanent & Stationary report with 2.
+        #
+        # `history` is not matched on its own: it appears in "History of Injury", "Past Medical
+        # History" and similar, none of which are this document.
+        (r"\bhistory (?:and|&) physical\b|\bh ?& ?p\b", "1"),
     )
 )
 
