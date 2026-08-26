@@ -1483,6 +1483,91 @@ def _seed_rows(doc_id, specs):
         session.commit()
 
 
+async def test_a_copy_declared_distinct_after_keep_one_returns_to_the_report(authed):
+    """WHEN a reviewer keeps one copy and THEN declares another a distinct document, THE SYSTEM SHALL
+    put that row back in the report.
+
+    `keep_one` sets `include = is_primary and wanted`, so every non-primary copy is left unchecked -
+    correct while they ARE copies. "Not a duplicate" then cleared the group and never touched
+    `include`, and a row with no `dupe_group` is invisible to `_dupe_groups`. So the copy vanished from
+    the Duplicates tab while staying excluded from the report: the cluster reads "Resolved", nothing on
+    that surface mentions the row, and the only trace is an unchecked box on an unrelated-looking row
+    in the editor.
+
+    `test_duplicates_remove_member_leaves_the_rest_grouped` asserts the removed copy stays included,
+    but its fixture seeds `include=True` and never runs keep_one first, so the ORDERING that breaks it
+    was untested. Both buttons are live on the same card at once - "Not a duplicate" is gated only on
+    the cluster not being dismissed and on `busy`, so it stays enabled on a card already showing
+    "Resolved".
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=8)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+
+    kept = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve",
+        json={"action": "keep_one", "primary_idx": 0},
+    )
+    assert kept.status_code == 200
+    with get_sessionmaker()() as session:
+        rows = {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+        assert rows[2].include is False, "premise: keep_one leaves the non-primary copies excluded"
+
+    removed = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve",
+        json={"action": "remove_member", "idx": 2},
+    )
+    assert removed.status_code == 200
+
+    with get_sessionmaker()() as session:
+        rows = {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+    assert rows[2].dupe_group is None
+    assert rows[2].include is True, (
+        "a row declared a distinct document is invisible in the Duplicates tab, so leaving it "
+        "excluded drops its pages from the report with nothing on screen to say so"
+    )
+    # The surviving pair is untouched: still one cluster, still resolved to the kept copy.
+    assert rows[0].dupe_group == 1 and rows[1].dupe_group == 1
+    assert rows[0].include is True and rows[1].include is False
+
+
+async def test_the_last_copy_of_a_collapsed_cluster_also_returns_to_the_report(authed):
+    """Removing a member from a PAIR collapses the cluster, and the row left behind has its group
+    cleared too - so it needs the same restoration. If it was the non-primary of an earlier keep_one
+    it would otherwise be both groupless and excluded."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+
+    await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve",
+        json={"action": "keep_one", "primary_idx": 0},
+    )
+    removed = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve",
+        json={"action": "remove_member", "idx": 0},
+    )
+    assert removed.status_code == 200
+
+    with get_sessionmaker()() as session:
+        rows = {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+    assert all(r.dupe_group is None for r in rows.values()), (
+        "a cluster of one is not a duplicate set"
+    )
+    assert rows[1].include is True, (
+        "the row left behind must not stay excluded once it has no cluster"
+    )
+
+
 async def test_duplicates_list_status_and_keep_one(authed):
     client, _ = authed
     doc_id = await _upload(client, pages=6)
