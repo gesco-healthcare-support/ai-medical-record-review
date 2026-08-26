@@ -873,3 +873,64 @@ def test_the_request_rule_is_directional():
 )
 def test_a_report_mentioning_an_order_is_still_the_report(title, expected):
     assert classification.match_rules(title) == expected
+
+
+# Emergency-department visits. The senior reviewer, 2026-08-25: "emergency department records in
+# general should be summarized just like a visit would be. But if it's like a patient demographics
+# emergency intake type record then we don't need to summarize that."
+#
+# Ground truth behind this, independent of that opinion. In a 267-page record the ED visit of
+# 02/25/2019 occupies pages 32-64 and reached NO deliverable - one General row, never summarized -
+# while the human-written report for that same record carries an entry on 02/25/2019, the only 2019
+# date in it. In an earlier segmentation of the SAME PDF the ED visit record sat at General too and a
+# reviewer TICKED IT BY HAND to get it into the report. So the rule makes deterministic what a
+# reviewer already did manually.
+#
+# Blast radius measured over all 1,370 distinct titles on the box: 3 titles / 3 rows / 39 pages
+# (0.28% of titled pages) change answer, and every one of them previously matched NO rule, so nothing
+# deterministic is overridden.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Emergency Department Record",
+        "Emergency Department Report",
+        "Emergency Department Visit",
+        "ED Visit Record - Community Medical Center",
+        "EMERGENCY DEPARTMENT RECORD",
+    ],
+)
+def test_an_emergency_department_visit_is_a_treating_report(title):
+    assert classification.match_rules(title) == "1"
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        # The rule sits LAST in the table, so a title naming a specific document type keeps it.
+        ("Emergency Department Radiology Report", "3"),
+        ("Emergency Department Lab Results", "14"),
+        ("ED Lab Results", "14"),
+        ("Emergency Department Operative Report", "8"),
+    ],
+)
+def test_a_named_document_type_beats_the_emergency_department(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # The intake carve-out the same reply asks for: these are not visit records.
+        "Emergency Department Sign In",
+        "ED Nsg Rapid Triage",
+        "Emergency Department Registration",
+        # Already reaches a shipping category through the cascade with its content delivered, so it
+        # is deliberately left where it was rather than moved on a rule.
+        "Emergency Department Encounter Note",
+        # The word boundary is load-bearing: without it the "ed visit record" alternative matches
+        # inside an ordinary past-tense sentence.
+        "Reviewed visit record from prior treater",
+    ],
+)
+def test_emergency_intake_paperwork_is_not_ruled_a_treating_report(title):
+    assert classification.match_rules(title) != "1"
