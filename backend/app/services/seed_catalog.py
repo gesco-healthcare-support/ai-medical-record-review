@@ -75,8 +75,38 @@ def constants_summary_prompt(category_id) -> str:
     return prompt_texts.get(_prompt_key(category_id), prompt_texts["category_100"])
 
 
+def seed_categories(session: Session) -> None:
+    """Materialize the CATEGORY constants as rows if the table is empty (idempotent).
+
+    Deliberately NOT seed_catalog(): this writes categories and nothing else. `catalog.get_prompt`
+    resolves DB-first, so the summary-prompt rows seed_catalog() also writes would shadow prompts.py
+    forever on whatever box ran it - a deployed prompt change would silently stop arriving. That is
+    the exact defect migration f1a83b5c60d2 exists to undo ("drop seeded summary-prompt rows that
+    merely shadow the code"), and it is only harmless today because nothing in app/ calls
+    seed_catalog(). Measured, not reasoned about: seed_catalog() on an empty catalog writes 15
+    summary-prompt rows and category 1 stops resolving through prompts.py.
+
+    Why materialize at all, when migration b3f7c02e91a4 solved the same collapse by doing nothing?
+    Because that migration was adding a category the constants ALREADY carry, so an unseeded catalog
+    needed no row. An admin creating a genuinely new category has no such fallback - the row has to
+    exist - and the moment it does, `catalog.get_categories` stops falling back and every other
+    category disappears. Writing the constants first is what keeps that insert from being a deletion.
+    """
+    from app.models import Category
+
+    if session.scalar(select(Category)) is not None:
+        return  # already seeded (or edited) - never clobber
+    for category in constants_categories():
+        session.add(Category(**category))
+    session.commit()
+
+
 def seed_catalog(session: Session) -> None:
-    """Populate the catalog tables from the constants if empty (idempotent; never clobbers)."""
+    """Populate the catalog tables from the constants if empty (idempotent; never clobbers).
+
+    Writes summary-prompt rows too, which is why nothing in app/ may call this - see
+    seed_categories() above, and migration f1a83b5c60d2. Referenced only by tests and migrations.
+    """
     from app.models import CatalogMeta, Category, Prompt
 
     if session.scalar(select(Category)) is not None:

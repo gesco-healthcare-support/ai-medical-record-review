@@ -22,6 +22,7 @@ from app.services import catalog
 from app.services.audit import audit
 from app.services.gemini import PROMPT_VERSION
 from app.services.jobs import JobConflict, enqueue
+from app.services.seed_catalog import seed_categories
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(current_superuser)])
 
@@ -60,10 +61,21 @@ def create_category(
     name = payload.name.strip()
     if not _ID_RE.match(category_id):
         raise HTTPException(status_code=400, detail="category id must be a positive number")
-    if session.get(Category, category_id) is not None:
-        raise HTTPException(status_code=400, detail=f"category {category_id} already exists")
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
+
+    # Write the constants out FIRST, or this insert is a deletion. `catalog.get_categories` falls
+    # back to taxonomy.py only while `categories` is EMPTY, and empty is the normal state for a
+    # fresh box, local dev and CI (nothing in app/ seeds). One unguarded row ends that fallback for
+    # every reader at once - get_category_ids, classification._allowed_ids, rows.validate_rows - so
+    # the catalog collapses to the row just created and every reviewer gets 400 "unknown category"
+    # on autosave. Migration b3f7c02e91a4 guards precisely this; this endpoint did not.
+    #
+    # Ordering: before the duplicate check, so creating an id the constants already carry reports
+    # "already exists" instead of inserting a shadow row beside the built-in one.
+    seed_categories(session)
+    if session.get(Category, category_id) is not None:
+        raise HTTPException(status_code=400, detail=f"category {category_id} already exists")
 
     category = Category(
         id=category_id,
