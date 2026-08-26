@@ -17,7 +17,7 @@ from app.config import Settings, get_settings
 from app.db import get_sessionmaker
 from app.errors import EmptyExtractionError, OcrUnavailableError
 from app.models import Document, Job, ReviewRow, SegmentRow, Summary, User
-from app.services import jobs
+from app.services import catalog, jobs
 from app.worker.queues import queue_for, worker_fn
 from app.worker.tasks import _run, dedup_document, segment_document, summarize_document
 from tests.conftest import lanes, unique_test_email
@@ -936,6 +936,70 @@ def test_second_job_conflicts_while_paused(monkeypatch):
         session.commit()
     with get_sessionmaker()() as session, pytest.raises(jobs.JobConflict):
         jobs.create_job(session, doc_id, "summarize", model="m", prompt_version="1")
+
+
+def test_classify_document_classifies_the_rows_aggregate_actually_seeds(monkeypatch):
+    """WHEN a combined upload is classified, THE SYSTEM SHALL classify rows that arrive UNCHECKED.
+
+    `aggregate_documents` - the only producer of rows for a classify job - seeds every row at category
+    100 with `include=summarize_default_for(session, "100")`, and 100 is the one category that is off
+    by default. So every row arrives `include=False`.
+
+    #84 scoped the duplicate check to the rows chosen for summary and the same `include.is_(True)`
+    predicate landed on this query, which then selected NOTHING: a combined upload was never
+    categorized, every sub-record stayed in General unchecked, and the job still reported done because
+    its total was 0. The contract is stated on the seeding line itself - "category 100 (General) seeds
+    to unchecked; classify_document re-derives per row" - and the loop reassigns `row.include` from the
+    category it decides, so filtering on the value this function exists to REPLACE was the defect.
+
+    `test_classify_document_sets_each_rows_category` hand-seeds `include=True`, which is why the suite
+    never exercised the real input.
+    """
+    import app.services.classification as classification
+    from app.services.classification import Classification
+    from app.worker.tasks import classify_document
+
+    # Classify to Treating reports (1), which IS on by default, so a correctly-processed row flips
+    # include False -> True. That makes the assertion unambiguous: neither value can survive by luck.
+    monkeypatch.setattr(
+        classification,
+        "classify",
+        lambda title, page_text=None: Classification("1", "high", "rules", needs_review=False),
+    )
+    doc_id = _make_user_and_doc(page_count=2)
+    with get_sessionmaker()() as session:
+        seeded_include = catalog.summarize_default_for(session, "100")
+        assert seeded_include is False, "premise: General is the off-by-default category"
+        for idx in range(2):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=idx + 1,
+                    end=idx + 1,
+                    category="100",
+                    title="-",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=seeded_include,  # exactly what aggregate_documents writes
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "classify", model="m", prompt_version="1").id
+
+    classify_document(job_id)
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+        ).all()
+        assert [r.category for r in rows] == ["1", "1"], (
+            "rows seeded unchecked were never classified, so a combined upload stays in General"
+        )
+        assert all(r.include is True for r in rows), (
+            "include must be re-derived from the new category"
+        )
 
 
 def test_classify_document_sets_each_rows_category(monkeypatch):
