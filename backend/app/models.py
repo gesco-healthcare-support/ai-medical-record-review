@@ -390,6 +390,15 @@ class Summary(Base):
     # 2026-08-06", so it cannot also mean "no model wrote this", and `model` is what the pro-vs-flash
     # quality work groups by.
     unreadable = Column(Boolean, nullable=False, default=False)
+    # An excluded "review of medical records" block sits immediately after this row, and this row is
+    # the evaluation it belongs to - so the body carries a deterministic sentence naming those pages.
+    # The senior reviewer asked for the exclusion to STAY and for a tag to say it happened, rather
+    # than for the review to be summarized (2026-08-26).
+    #
+    # Only ever set on a row that was really summarized, so unlike `unreadable` this never pairs with
+    # `model IS NULL`; a tagged row with no model would mean the tag reached a notice-only row, which
+    # is a defect rather than a state worth reading.
+    embedded_review = Column(Boolean, nullable=False, default=False)
 
     def effective_title(self):
         # Same precedence as effective_text: reviewer edit, then the AI-verified correction, then

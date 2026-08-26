@@ -970,6 +970,12 @@ def resummarize(
     # after a retry recovered them. summarize_row returns a notice instead of raising when the pages
     # still cannot be read, so this route stores that notice rather than showing an error.
     summary.unreadable = bool(output.get("unreadablePages"))
+    # Assigned for the same reason, and it will normally clear here: this route summarizes ONE row and
+    # does not seed `embedded_review_pages`, which needs the neighbouring rows. A re-draft of a tagged
+    # evaluation therefore drops its tag until the next full summarize run restores it. Recorded
+    # rather than worked around - re-deriving the neighbours on a single-row path would duplicate the
+    # worker's rule in a second place, which is how two copies of one decision start to drift.
+    summary.embedded_review = bool(output.get("embeddedReviewPages"))
     summary.row_start = int(row["start"])
     summary.row_end = int(row["end"])
     summary.row_category = str(row["category"])
