@@ -277,11 +277,11 @@ def test_seed_categories_never_clobbers_an_edited_catalog(session):
 def test_creating_a_category_does_not_collapse_an_unseeded_catalog(session):
     """DEMONSTRATES the bug: this fails on origin/main, where the catalog collapses to the new row.
 
-    The route function is called directly so the catalog is genuinely unseeded - the normal state for
-    a fresh box, local dev and CI. Before the fix, POST /api/admin/categories wrote one row, which
-    ended `catalog.get_categories`' all-or-nothing fallback and took every other category with it:
-    `validate_rows` began rejecting category "1", so every reviewer got 400 "unknown category" on
-    autosave, and General (100) flipped to summarize-by-default.
+    The route function is called directly so the catalog is genuinely unseeded - the normal state
+    for a fresh box, local dev and CI. Before the fix, POST /api/admin/categories wrote one row,
+    which ended `catalog.get_categories`' all-or-nothing fallback and took every other category
+    with it: `validate_rows` began rejecting category "1", so every reviewer got 400 "unknown
+    category" on autosave, and General (100) flipped to summarize-by-default.
     """
     from app.api.admin import create_category
     from app.models import User

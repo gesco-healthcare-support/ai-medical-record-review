@@ -27,10 +27,10 @@ def _clean_test_categories():
 
     Deleting the 900x ids is no longer enough. Creating a category now materializes the taxonomy
     constants first (otherwise that one insert collapses the catalog - see
-    test_creating_a_category_leaves_every_other_category_valid), so a create leaves ~16 built-in rows
-    behind as well. Left in place they would flip this shared database from unseeded to seeded for
-    every later test AND make the collapse test non-demonstrating on its second run, so the snapshot
-    is taken after the pre-clean and anything new is removed.
+    test_creating_a_category_leaves_every_other_category_valid), so a create leaves ~16 built-in
+    rows behind as well. Left in place they would flip this shared database from unseeded to seeded
+    for every later test AND make the collapse test non-demonstrating on its second run, so the
+    snapshot is taken after the pre-clean and anything new is removed.
     """
 
     def category_ids(session):

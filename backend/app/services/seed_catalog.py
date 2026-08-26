@@ -90,7 +90,7 @@ def seed_categories(session: Session) -> None:
     Because that migration was adding a category the constants ALREADY carry, so an unseeded catalog
     needed no row. An admin creating a genuinely new category has no such fallback - the row has to
     exist - and the moment it does, `catalog.get_categories` stops falling back and every other
-    category disappears. Writing the constants first is what keeps that insert from being a deletion.
+    category disappears. Writing the constants out first is what stops that insert being a deletion.
     """
     from app.models import Category
 
