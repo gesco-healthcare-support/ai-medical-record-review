@@ -83,11 +83,18 @@ def _pipeline_error_response(document_id: str, exc: PipelineError) -> JSONRespon
     return JSONResponse(status_code=code, content={"error": exc.user_message})
 
 
-def _store_rows(session: Session, document: Document, rows) -> str | None:
-    """Replace the document's ReviewRows with ``rows``; returns a 400 error string or None."""
+def _store_rows(session: Session, document: Document, rows) -> tuple[str | None, dict]:
+    """Replace the document's ReviewRows with ``rows``; returns ``(error, stats)``.
+
+    ``stats`` counts the reviewer's boundary work - rows before and after, and boundaries removed
+    (merges) or added (splits). It exists because this function DELETES the row set rather than
+    updating it, so nothing survives afterwards from which the edit could be reconstructed; the
+    caller audits it. The previous boundary set is already materialised below to preserve the dedup
+    fields, so the counts are free. Empty dict when validation failed and nothing was written.
+    """
     error = validate_rows(session, rows, document.page_count)
     if error:
-        return error
+        return error, {}
     # The editor payload carries no dedup fields, so a plain delete+recreate would wipe the
     # duplicate clustering on every autosave. Carry them across by page range: the same (start, end)
     # is the same pages, hence the same OCR text the grouping was computed from. A row whose range
@@ -110,6 +117,17 @@ def _store_rows(session: Session, document: Document, rows) -> str | None:
         group
         for (start, end), (_text, group, _primary, _dismissed, _sim) in preserved.items()
         if group is not None and (start, end) not in incoming_ranges
+    }
+    # Count the boundary work before the rows are gone. A boundary is a row's last page, so a
+    # boundary the reviewer dropped is a merge and one they introduced is a split. Computed on
+    # sets rather than by pairing rows, because a merge renumbers every row after it.
+    before_ends = {row.end for row in document.review_rows}
+    after_ends = {end for _start, end in incoming_ranges}
+    stats = {
+        "before": len(document.review_rows),
+        "after": len(rows),
+        "merges": len(before_ends - after_ends),
+        "splits": len(after_ends - before_ends),
     }
     session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
     for idx, row in enumerate(rows):
@@ -144,7 +162,15 @@ def _store_rows(session: Session, document: Document, rows) -> str | None:
     # (its rows were deleted and replaced). Expire it so callers that read it next - e.g.
     # summarize_start's "at least one row is included" check - see the rows just written.
     session.expire(document, ["review_rows"])
-    return None
+    return None, stats
+
+
+def _rows_edit_detail(stats: dict) -> str:
+    """Non-PHI audit detail for a row-set save: counts only, never a title or a date."""
+    return (
+        f"rows {stats['before']}->{stats['after']} "
+        f"(merges {stats['merges']}, splits {stats['splits']})"
+    )
 
 
 def _apply_row_category(
@@ -695,6 +721,7 @@ def put_rows(
     payload: RowsPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     if document.active_job is not None:
         # A finishing segment job would overwrite these rows; a summarize job is reading them.
@@ -702,9 +729,13 @@ def put_rows(
             status_code=409, detail="a job is running for this document; wait for it"
         )
     rows = (payload.rows if payload else None) or []
-    error = _store_rows(session, document, rows)
+    error, stats = _store_rows(session, document, rows)
     if error:
         raise HTTPException(status_code=400, detail=error)
+    # Audited even when nothing changed: "the reviewer opened this and confirmed it" is a different
+    # fact from "nobody has looked at it", and only the event can tell them apart - the rows carry
+    # no timestamp of their own because _store_rows recreates them.
+    audit(session, "rows.edit", user.id, document.id, detail=_rows_edit_detail(stats))
     return {"ok": True, "count": len(rows)}
 
 
@@ -789,6 +820,7 @@ def summarize_start(
     payload: SummarizeStartPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Enqueue a summarization job on the `summarize` queue. Optionally flush the editor's final
     rows first; at least one row must be marked for inclusion."""
@@ -798,9 +830,12 @@ def summarize_start(
             raise HTTPException(
                 status_code=409, detail="a job is already running for this document"
             )
-        error = _store_rows(session, document, payload.rows)
+        error, stats = _store_rows(session, document, payload.rows)
         if error:
             raise HTTPException(status_code=400, detail=error)
+        # The same reviewer edit surface as put_rows - the editor flushes its final row set through
+        # here on "Summarize". Auditing only put_rows would undercount the boundary work.
+        audit(session, "rows.edit", user.id, document.id, detail=_rows_edit_detail(stats))
     if not any(row.include for row in document.review_rows):
         raise HTTPException(status_code=400, detail="no rows are marked for summarization")
     if payload.fresh:
@@ -882,6 +917,7 @@ def put_summary(
             status_code=409, detail="summarization is rewriting these summaries; wait"
         )
 
+    changed = []
     for field, column, cap in (
         ("summaryTitle", "edited_title", 512),
         ("summaryDate", "edited_date", 16),
@@ -890,9 +926,24 @@ def put_summary(
         if field in body:
             value = str(body[field])
             setattr(summary, column, value[:cap] if cap else value)
+            changed.append(column)
     if "excluded" in body:
         summary.excluded = bool(body["excluded"])
+        changed.append("excluded")
     session.commit()
+    if changed:
+        # A LENGTH delta, never the text: this column is read by humans and must stay free of PHI,
+        # and the delta is what makes the edit an effort measurement rather than a bare event.
+        delta = len(summary.edited_text or "") - len(summary.text or "")
+        audit(
+            session,
+            "summary.edit",
+            user.id,
+            document.id,
+            detail=f"idx {summary.idx} pages {summary.row_start}-{summary.row_end}: "
+            f"{'+'.join(changed)}"
+            + (f", body chars {delta:+d}" if "edited_text" in changed else ""),
+        )
     # _summary_response, not listing(): a category write changed a ReviewRow, so review_rows is stale
     # on this identity-mapped document. Expire it or the response echoes the PRE-change category and
     # the client patches its cache with a value that is already wrong.
