@@ -399,6 +399,19 @@ class Summary(Base):
     # `model IS NULL`; a tagged row with no model would mean the tag reached a notice-only row, which
     # is a defect rather than a state worth reading.
     embedded_review = Column(Boolean, nullable=False, default=False)
+    # When this row was last written. Reviewer edits land in edited_* in place, so unlike a ReviewRow
+    # (which _store_rows deletes and recreates wholesale, making a timestamp meaningless there) a
+    # Summary survives its own edits and can carry one.
+    #
+    # It is a SECONDARY instrument: the verify pass also writes this row, so a fresh timestamp does
+    # not by itself mean a human touched it. The audit_log `summary.edit` event is what identifies
+    # reviewer work; this column is what makes "when was this row last written at all" answerable
+    # without scanning the trail.
+    #
+    # NULL on every row written before 2026-08-26, and deliberately NOT backfilled - an inferred
+    # timestamp would later be indistinguishable from a recorded one, which is the same reason
+    # `model`, `title_model` and `build_sha` were left alone above.
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     def effective_title(self):
         # Same precedence as effective_text: reviewer edit, then the AI-verified correction, then

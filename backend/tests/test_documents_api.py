@@ -1063,6 +1063,126 @@ async def test_put_summary_category_writes_through_to_the_row(authed):
         assert _VALID_CATEGORY in entry.detail and _OTHER_CATEGORY in entry.detail
 
 
+async def test_a_row_save_records_the_boundary_work(authed):
+    """WHEN a reviewer saves a changed row set, THE SYSTEM SHALL record rows before and after and
+    the boundaries removed and added.
+
+    Counted on boundary SETS rather than by pairing rows, because a merge renumbers every row after
+    it - pairing by index would report the whole tail as changed.
+    """
+    from app.models import AuditLog
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, None), (3, 4, None), (5, 6, None)])
+
+    merged = [
+        {"start": 1, "end": 4, "category": _VALID_CATEGORY},
+        {"start": 5, "end": 6, "category": _VALID_CATEGORY},
+    ]
+    resp = await client.put(f"/api/documents/{doc_id}/rows", json={"rows": merged})
+
+    assert resp.status_code == 200, resp.text
+    with get_sessionmaker()() as session:
+        entry = session.scalar(
+            select(AuditLog).where(AuditLog.action == "rows.edit", AuditLog.document_id == doc_id)
+        )
+        assert entry is not None
+        assert entry.detail == "rows 3->2 (merges 1, splits 0)"
+
+
+async def test_a_row_save_that_changes_nothing_is_still_recorded(authed):
+    """WHEN a reviewer saves a row set identical to the stored one, THE SYSTEM SHALL still record
+    the event with zero counts.
+
+    "Opened it and confirmed it" is a different fact from "nobody has looked at it", and the rows
+    carry no timestamp of their own - _store_rows recreates them - so only the event separates the
+    two.
+    """
+    from app.models import AuditLog
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, None), (3, 4, None)])
+
+    same = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY},
+    ]
+    resp = await client.put(f"/api/documents/{doc_id}/rows", json={"rows": same})
+
+    assert resp.status_code == 200, resp.text
+    with get_sessionmaker()() as session:
+        entry = session.scalar(
+            select(AuditLog).where(AuditLog.action == "rows.edit", AuditLog.document_id == doc_id)
+        )
+        assert entry is not None
+        assert entry.detail == "rows 2->2 (merges 0, splits 0)"
+
+
+async def test_a_summary_edit_is_recorded_and_stamps_the_row(authed):
+    """WHEN a reviewer edits a summary field, THE SYSTEM SHALL record which fields changed and set
+    updated_at."""
+    from app.models import AuditLog
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, pages=(1, 2))  # text is "old text", 8 characters
+
+    resp = await client.put(
+        f"/api/documents/{doc_id}/summaries/0", json={"summaryText": "a corrected body"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    with get_sessionmaker()() as session:
+        entry = session.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "summary.edit", AuditLog.document_id == doc_id
+            )
+        )
+        assert entry is not None
+        assert "edited_text" in entry.detail
+        assert "body chars +8" in entry.detail  # 16 - 8
+        assert session.scalar(select(Summary.updated_at).where(Summary.document_id == doc_id))
+
+
+async def test_no_edit_audit_detail_carries_document_text(authed):
+    """THE SYSTEM SHALL NOT write a title, body, date or filename into audit_log.detail.
+
+    The column is read by humans and is not covered by the upload-and-delete lifecycle, so anything
+    landing in it is PHI that persists indefinitely. A character COUNT is a length, not content,
+    which is why the summary event carries a delta rather than the text.
+    """
+    from app.models import AuditLog
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])  # seeds title "Doc 0", date "01/01/2026"
+    _seed_summary(doc_id, pages=(1, 2))
+
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "title": "Doc 0"}]},
+    )
+    await client.put(
+        f"/api/documents/{doc_id}/summaries/0",
+        json={"summaryTitle": "a patient name", "summaryText": "a clinical finding"},
+    )
+
+    with get_sessionmaker()() as session:
+        details = session.scalars(
+            select(AuditLog.detail).where(
+                AuditLog.document_id == doc_id,
+                AuditLog.action.in_(("rows.edit", "summary.edit")),
+            )
+        ).all()
+        assert details, "expected both edit events"
+        for detail in details:
+            for leak in ("Doc 0", "01/01/2026", "a patient name", "a clinical finding", "scan.pdf"):
+                assert leak not in detail, f"{leak!r} reached audit_log.detail"
+
+
 async def test_audit_detail_defaults_to_null_for_existing_callers(authed):
     """WHEN audit() is called without detail, THE SYSTEM SHALL write NULL there.
 
