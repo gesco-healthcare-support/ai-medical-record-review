@@ -531,34 +531,48 @@ def test_manualcheck_flag_is_stripped_from_both_exports():
     assert "MRI Report" in word["summaryTitle"] and "MRI Report" in pdf["linkTitle"]
 
 
+# One decorated title, one date, one body, shared by the three tests below. `summarize_row` returns
+# titles in this shape because the app displays all three markers; every path that produces a
+# DELIVERED document has to take them off again.
+_DECORATED_TITLE = "[ManualCheck] MRI OF THE CERVICAL SPINE [Diagnostic Study] (Pages 12-19)"
+_PRESENTABLE_TITLE = "MRI OF THE CERVICAL SPINE"
+_ENTRY_DATE = "01/02/2020"
+_ENTRY_BODY = "body text"
+_BUNDLE_ROW = {"start": 12, "end": 19, "category": "3", "flag": "x"}
+
+
+def _stub_decorated_summarize_row(monkeypatch):
+    """Make `bundles`' summarize_row return the decorated shape, and hand back the bundle entry."""
+    from app.services import bundles
+
+    monkeypatch.setattr(
+        bundles.summarize_engine,
+        "summarize_row",
+        lambda *a, **k: {
+            "summaryDate": _ENTRY_DATE,
+            "summaryTitle": _DECORATED_TITLE,
+            "summaryText": _ENTRY_BODY,
+        },
+    )
+    return bundles.bundle_summary_entries("/x.pdf", [_BUNDLE_ROW])
+
+
 def test_the_bundle_export_strips_the_same_markers_as_the_review_export(monkeypatch):
     """The THIRD path into a delivered Word document, and it was the one that did not strip.
 
     `bundles.bundle_summary_entries` built its entries straight from `summarize_row`'s decorated
     `summaryTitle`, so a bundle-summarize download shipped `[ManualCheck] `, ` [Diagnostic Study]`
     and ` (Pages X-Y)` to the client while the review export stripped all three. The test above
-    pinned the invariant for two of the three paths, which is how the asymmetry survived.
+    pinned the invariant for the Word and linked-PDF paths - two of the three - which is how the
+    asymmetry survived.
     """
-    from app.services import bundles
+    entries = _stub_decorated_summarize_row(monkeypatch)
 
-    decorated = "[ManualCheck] MRI OF THE CERVICAL SPINE [Diagnostic Study] (Pages 12-19)"
-    monkeypatch.setattr(
-        bundles.summarize_engine,
-        "summarize_row",
-        lambda *a, **k: {
-            "summaryDate": "01/02/2020",
-            "summaryTitle": decorated,
-            "summaryText": "body text",
-        },
-    )
-    entries = bundles.bundle_summary_entries(
-        "/x.pdf", [{"start": 12, "end": 19, "category": "3", "flag": "x"}]
-    )
     assert len(entries) == 1
     title = entries[0]["summaryTitle"]
     for marker in ("[ManualCheck]", "[Diagnostic Study]", "(Pages"):
         assert marker not in title, f"the bundle export still ships {marker}: {title!r}"
-    assert title == "MRI OF THE CERVICAL SPINE"
+    assert title == _PRESENTABLE_TITLE
 
 
 def test_all_three_export_paths_agree_on_the_same_decorated_title(monkeypatch):
@@ -568,33 +582,20 @@ def test_all_three_export_paths_agree_on_the_same_decorated_title(monkeypatch):
     formatting split. A one-sided test catches none of this.
     """
     from app.api.documents import _export_entry, _pdf_entry
-    from app.services import bundles
 
-    decorated = "[ManualCheck] MRI OF THE CERVICAL SPINE [Diagnostic Study] (Pages 12-19)"
     summary = Summary(
         document_id="d",
         job_id=1,
         idx=0,
-        title=decorated,
-        text="body text",
-        row_start=12,
-        row_end=19,
-        row_category="3",
+        title=_DECORATED_TITLE,
+        text=_ENTRY_BODY,
+        row_start=_BUNDLE_ROW["start"],
+        row_end=_BUNDLE_ROW["end"],
+        row_category=_BUNDLE_ROW["category"],
         manual_check=True,
-        date="01/02/2020",
+        date=_ENTRY_DATE,
     )
-    monkeypatch.setattr(
-        bundles.summarize_engine,
-        "summarize_row",
-        lambda *a, **k: {
-            "summaryDate": "01/02/2020",
-            "summaryTitle": decorated,
-            "summaryText": "body text",
-        },
-    )
-    bundle_title = bundles.bundle_summary_entries(
-        "/x.pdf", [{"start": 12, "end": 19, "category": "3", "flag": "x"}]
-    )[0]["summaryTitle"]
+    bundle_title = _stub_decorated_summarize_row(monkeypatch)[0]["summaryTitle"]
 
     assert _export_entry(summary)["summaryTitle"] == bundle_title
     assert _pdf_entry(summary)["linkTitle"] == bundle_title
