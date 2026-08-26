@@ -741,6 +741,10 @@ def summarize_document(job_id) -> None:
         generated = 0
         transient_failures = 0
         giveup_exc: Exception | None = None
+        # Set when the give-up threshold is reached, PROMOTED to `giveup_exc` after the loop only if
+        # nothing succeeded in the meantime. Two variables rather than one because the rows already
+        # running still get to answer.
+        giveup_candidate: Exception | None = None
         refused_rows: list[dict] = []
 
         pool_timeout = settings.pool_timeout(document.page_count)
@@ -763,6 +767,12 @@ def summarize_document(job_id) -> None:
             }
             try:
                 for future in drain_pool(futures, pool_timeout):
+                    if future.cancelled():
+                        # A row we skipped after deciding to stop submitting. `as_completed` yields
+                        # cancelled futures too, and `.result()` on one raises CancelledError, which
+                        # would otherwise be classified as a permanent per-row failure and reported
+                        # to the reviewer as a document that could not be summarized.
+                        continue
                     i, row = futures[future]
                     try:
                         output = future.result()
@@ -790,11 +800,32 @@ def summarize_document(job_id) -> None:
                             if (
                                 generated == 0
                                 and transient_failures >= settings.summarize_giveup_after_failures
+                                and giveup_candidate is None
                             ):
-                                giveup_exc = exc
+                                giveup_candidate = exc
                                 for pending_future in futures:
                                     pending_future.cancel()  # skip not-yet-started rows
-                                break
+                                # DELIBERATELY NOT `break`. Every row is submitted up front, so rows
+                                # are already RUNNING here and `cancel()` cannot stop them. Ending on
+                                # the spot threw their results away unread, which made the choice
+                                # between ENDING the job and PAUSING it depend on whether the
+                                # failures happened to complete before a success. Measured at 5
+                                # lanes: the same test passed on 3 of 6 runs and failed on the other
+                                # 3. So stop submitting, keep draining what already started, and
+                                # decide after the loop - deterministic at any lane count.
+                                #
+                                # This does NOT bound the number of model calls a refusing document
+                                # costs, and neither did the `break` it replaced. Because every row
+                                # is submitted up front, `break` only stopped READING results; the
+                                # calls were already in the pool's queue either way. `cancel()` skips
+                                # a row only if it has not STARTED, so how much is saved depends
+                                # entirely on how slowly the model fails. When it refuses fast - a
+                                # bare 429 with no retry budget left - the pool can drain every row
+                                # before the threshold is even observed, and nothing here can stop
+                                # it. Bounding the spend needs bounded SUBMISSION (waves, or a stop
+                                # flag checked inside the work item), which changes the worker's
+                                # shape and is not this fix.
+                                continue
                             if consecutive_transient >= settings.summarize_pause_after:
                                 should_pause = True
                                 for pending_future in futures:
@@ -869,6 +900,12 @@ def summarize_document(job_id) -> None:
         # same refusal. This MUST precede the pause check - `transient_left` was set by the very
         # failures that triggered the give-up, so the pause branch would otherwise win and we would be
         # back to job 1000173 grinding for 96 minutes.
+        # Promote the candidate now that every row which actually STARTED has reported. A success
+        # arriving after the threshold is proof the model answers, so the job pauses and retries the
+        # rows we skipped instead of ending - which is what the give-up guard was always for.
+        if giveup_candidate is not None and generated == 0:
+            giveup_exc = giveup_candidate
+
         if giveup_exc is not None:
             raise JobNeedsAttention(
                 f"{user_facing_message(giveup_exc)} No sub-documents could be summarized, so the "
