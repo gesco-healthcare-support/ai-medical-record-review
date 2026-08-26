@@ -45,6 +45,52 @@ def test_disagreeing_offsets_are_refused_rather_than_guessed():
     assert dp._offset_from(data, start=418, last=423) is None
 
 
+def test_two_offsets_supported_equally_are_refused_rather_than_guessed():
+    """A 2-2 tie is not a majority, and picking one was ORDER-DEPENDENT.
+
+    `max` returns the first maximal element, and the order is whatever sequence the model listed the
+    pages in - so identical readings produced different citations on different calls. Reachable on a
+    real transcript: an appearance/cover block carrying its own numbering, two of its pages and two
+    body pages inside the six-page sample.
+
+    The existing `test_disagreeing_offsets_are_refused_rather_than_guessed` covers 1-vs-1, where
+    neither candidate reaches `_MIN_AGREEING`. This is the case where BOTH do.
+    """
+    cover_first = {
+        "pages": [
+            {"i": 1, "printed": 1},  # cover block  -> offset -99
+            {"i": 2, "printed": 2},
+            {"i": 3, "printed": 1},  # body         -> offset -101
+            {"i": 4, "printed": 2},
+        ]
+    }
+    body_first = {
+        "pages": [
+            {"i": 3, "printed": 1},
+            {"i": 4, "printed": 2},
+            {"i": 1, "printed": 1},
+            {"i": 2, "printed": 2},
+        ]
+    }
+    assert dp._offset_from(cover_first, start=100, last=105) is None
+    assert dp._offset_from(body_first, start=100, last=105) is None
+
+
+def test_a_clear_majority_still_wins_over_a_tied_pair():
+    """The tie guard must not swallow a genuine majority: 3 agreeing beats 2 that agree with each
+    other, and that offset is still returned."""
+    data = {
+        "pages": [
+            {"i": 1, "printed": 1},  # -99, seen twice
+            {"i": 2, "printed": 2},
+            {"i": 3, "printed": 3},  # -99 again -> three
+            {"i": 4, "printed": 1},  # -102, seen twice
+            {"i": 5, "printed": 2},
+        ]
+    }
+    assert dp._offset_from(data, start=100, last=105) == -99
+
+
 def test_the_majority_offset_wins_when_a_reading_is_stray():
     # WHEN most pages agree and one is misread, THE SYSTEM SHALL take the agreeing offset.
     data = _payload((1, 1), (2, 2), (3, 900))
