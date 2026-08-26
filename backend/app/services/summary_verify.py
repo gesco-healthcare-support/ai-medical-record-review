@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 # drifted: the generator calls joint reference ranges the ONE permitted inference, while this rule
 # listed only two sources, so the audit deleted directions the generator was required to add.
 # Naming only HARDENING_PREAMBLE here is part of why that went unnoticed for so long.
+#
+# Rule 6's counterpart is `_document_date_block`, and it drifted the same way for the same reason -
+# it was not named here either. Generation gives that block to `_CURRENT_VISIT_CATEGORIES` only,
+# because a medico-legal evaluation is REQUIRED to carry the injury history, while `summarize_row`
+# passed `document_date` to this module for EVERY category. Rule 6 self-switches on exactly that
+# value, so the audit was enforcing on 3/5/9/12/13/100 the rule the generator was forbidden to state.
+# The caller now applies the same gate; if that gate ever moves, it has to move in both places.
 # The two must be edited together. They are deliberately phrased differently:
 # generation says "do not write X", the audit says "find and remove X", which is what makes a second
 # pass worth paying for at all.

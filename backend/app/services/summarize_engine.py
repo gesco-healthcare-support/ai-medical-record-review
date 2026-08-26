@@ -903,8 +903,39 @@ def summarize_row(
     # Fail closed: anything that does not explicitly report success leaves this False.
     verify_ran = False
     if verify:
+        # The SAME gate generation uses, and it has to be. The document date is the sole switch for
+        # audit house rule 6 ("content the SOURCE attributes to an EARLIER date than this document's
+        # own date is a recap of a prior encounter and does not belong in this summary. ... This rule
+        # applies ONLY when a document date is given below"), and `verify_summary` emits the date
+        # block whenever the value is non-empty.
+        #
+        # Passing it unconditionally armed that rule on every category, including the ones generation
+        # deliberately withholds it from. `_CURRENT_VISIT_CATEGORIES` exists because "a medico-legal
+        # evaluation (12, 13) is REQUIRED to carry the injury history", and
+        # `test_other_categories_are_not_given_a_document_date` states the consequence outright: the
+        # rule "would only cost tokens and risk dropping wanted content".
+        #
+        # So the audit was enforcing on 3/5/9/12/13/100 exactly the rule the generator was forbidden
+        # to state, and the rewrite is ACCEPTED - `prior_visit` is not in `_CORRECTION_ONLY_ISSUES`,
+        # so `_drops_required_headings` returns False, `verified_text` is stored, and
+        # `effective_text()` prefers it over the raw body. A category-13 evaluation's History of
+        # Injury, Previous Injury and Treatment points are all attributed to earlier dates by their
+        # source. Category 9 is worse still: a deposition's whole substance is testimony about earlier
+        # events, and `_drops_deposition_structure` only compares paragraph and citation COUNTS, so a
+        # rewrite that keeps every "On pages N to M" opener and empties its substance passes the guard.
+        #
+        # This is the generation-versus-audit drift the summary_verify docstring already records for
+        # house rule 4 (#109, where the audit deleted directions the generator was required to add).
+        # Rule 6's generation-side counterpart was the one omission from that module's
+        # "must be edited together" list.
         result = verify_summary(
-            audit_model, text, summary, title=title, document_date=row.get("date")
+            audit_model,
+            text,
+            summary,
+            title=title,
+            document_date=(
+                row.get("date") if str(row["category"]) in _CURRENT_VISIT_CATEGORIES else None
+            ),
         )
         verify_ran = bool(result.get("ok"))
         if result["issues"]:

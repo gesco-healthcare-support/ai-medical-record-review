@@ -596,6 +596,57 @@ def test_a_treating_report_is_told_which_encounter_it_is(monkeypatch, category):
     assert "has its own document in this record" in system_msg
 
 
+def _audit_document_date(monkeypatch, row):
+    """The `document_date` the AUDIT call receives for ``row`` (None when it is withheld)."""
+    seen = {}
+
+    def fake_verify(model, source, summary, title=None, document_date=None):
+        seen["document_date"] = document_date
+        return _NO_ISSUES
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", fake_verify)
+    se.summarize_row("/x.pdf", row, prompt="P", verify=True)
+    return seen["document_date"]
+
+
+@pytest.mark.parametrize("category", ["3", "5", "9", "12", "13", "100"])
+def test_the_audit_is_not_given_a_document_date_outside_the_current_visit_categories(
+    monkeypatch, category
+):
+    """The audit must be gated exactly like generation, because the date is the SWITCH for house
+    rule 6.
+
+    Rule 6 tells the audit that content the source attributes to an earlier date "does not belong in
+    this summary", and it "applies ONLY when a document date is given". `summarize_row` passed the date
+    to the audit for every category while giving the generation block only to categories 1 and 2 - so
+    the audit enforced on medico-legal evaluations and depositions the rule the generator was
+    deliberately forbidden to state, for the reason the sibling test states: it would "risk dropping
+    wanted content".
+
+    The rewrite was then accepted: `prior_visit` is not in `_CORRECTION_ONLY_ISSUES`, so
+    `_drops_required_headings` returns False, `verified_text` is stored, and `effective_text()` prefers
+    it over the raw body.
+    """
+    assert _audit_document_date(monkeypatch, _row(category=category, date="03/09/2023")) is None, (
+        "arming house rule 6 here can delete the injury history the category prompt requires"
+    )
+
+
+@pytest.mark.parametrize("category", ["1", "2"])
+def test_the_audit_still_gets_the_document_date_for_a_treating_report(monkeypatch, category):
+    """The gate must not withhold it where rule 6 is wanted - categories 1 and 2 are the two that
+    recap an earlier visit before reporting the current one, and that recap is what rule 6 removes."""
+    assert _audit_document_date(monkeypatch, _row(category=category, date="03/09/2023")) == (
+        "03/09/2023"
+    )
+
+
 @pytest.mark.parametrize("category", ["3", "5", "9", "12", "13", "100"])
 def test_other_categories_are_not_given_a_document_date(monkeypatch, category):
     # A medico-legal evaluation is REQUIRED to carry the injury history, and a diagnostic study has
