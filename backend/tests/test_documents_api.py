@@ -822,6 +822,122 @@ async def test_resummarize_drops_a_stale_verified_title(authed, monkeypatch):
         )
 
 
+# The five provenance columns `_build_summary` sets and resummarize did not. The docstring above
+# claims verified_title was "the only one of the fifteen fields _build_summary sets that resummarize
+# missed" - that claim was itself wrong, and `model` is the one that costs content rather than
+# attribution.
+_FALLBACK_MODEL = "gemini-3.5-flash"
+_CONFIGURED_MODEL = "gemini-2.5-pro"
+
+
+async def test_a_re_draft_that_can_read_nothing_stays_retryable(authed, monkeypatch):
+    """WHEN a re-draft comes back as a notice-only row, THE SYSTEM SHALL leave `model` NULL.
+
+    `_unreadable_output` returns `model=None` deliberately - it is what distinguishes a notice-only
+    row from one summarized off its readable pages - and `_is_retryable_notice` requires
+    `summary.model is None` before it will re-attempt the row. Leaving the PREVIOUS draft's model in
+    place produced the one combination the retry logic cannot recognise, so a row that OCR'd cleanly
+    first time and hit a transient extraction failure on re-draft became permanently un-retryable:
+    the next Summarize reuses it and the pages are never re-read.
+    """
+    from app.worker.tasks import _is_retryable_notice
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    _seed_summary(doc_id)
+    with get_sessionmaker()() as session:  # the first draft was answered by a real model
+        summary = session.scalar(select(Summary).where(Summary.document_id == doc_id))
+        summary.model = _CONFIGURED_MODEL
+        session.commit()
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "summarize_row",
+        _fake_summarize(model=None, unreadablePages=[1], sourceText=None),
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 200
+    with get_sessionmaker()() as session:
+        summary = session.scalar(select(Summary).where(Summary.document_id == doc_id))
+        assert summary.unreadable is True
+        assert summary.model is None, (
+            "a notice-only re-draft must clear `model`, or the row can never be retried"
+        )
+        assert _is_retryable_notice(summary), "the next Summarize would skip this row forever"
+
+
+async def test_a_re_draft_answered_by_the_fallback_model_is_flagged_and_attributed(
+    authed, monkeypatch
+):
+    """WHEN the body was answered by the fallback after the configured model refused, THE SYSTEM
+    SHALL flag the row and record which model actually answered.
+
+    Both are how the downgrade surfaces at all: the worker path does exactly this, and the measured
+    gap between the two models on a long row is 6 of 18 required points versus 16.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    _seed_summary(doc_id)
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "summarize_row",
+        _fake_summarize(model=_FALLBACK_MODEL, bodyFallbackFrom=_CONFIGURED_MODEL),
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 200
+    with get_sessionmaker()() as session:
+        summary = session.scalar(select(Summary).where(Summary.document_id == doc_id))
+        assert summary.manual_check is True, "a fallback-answered re-draft must be flagged"
+        assert summary.model == _FALLBACK_MODEL, "the model that ANSWERED must be recorded"
+
+
+async def test_a_re_draft_rewrites_every_provenance_column(authed, monkeypatch):
+    """None of the five may survive from the previous draft - they would describe a body that no
+    longer exists."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    _seed_summary(doc_id)
+    with get_sessionmaker()() as session:
+        summary = session.scalar(select(Summary).where(Summary.document_id == doc_id))
+        summary.model = "stale-body"
+        summary.title_model = "stale-title"
+        summary.audit_model = "stale-audit"
+        summary.prompt_fingerprint = "stalefp1"
+        summary.audit_fingerprint = "stalefp2"
+        session.commit()
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "summarize_row",
+        _fake_summarize(
+            model="fresh-body",
+            titleModel="fresh-title",
+            auditModel="fresh-audit",
+            promptFingerprint="freshfp1",
+            auditFingerprint="freshfp2",
+        ),
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 200
+    with get_sessionmaker()() as session:
+        summary = session.scalar(select(Summary).where(Summary.document_id == doc_id))
+        assert summary.model == "fresh-body"
+        assert summary.title_model == "fresh-title"
+        assert summary.audit_model == "fresh-audit"
+        assert summary.prompt_fingerprint == "freshfp1"
+        assert summary.audit_fingerprint == "freshfp2"
+
+
 async def test_resummarize_keeps_a_fresh_verified_title(authed, monkeypatch):
     """WHEN a re-draft's output carries a verifiedTitle, THE SYSTEM SHALL store and return it - the
     same assignment must not throw the corrected header away."""

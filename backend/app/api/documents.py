@@ -964,7 +964,16 @@ def resummarize(
     # fresh correction and clears an absent one.
     summary.verified_title = output.get("verifiedTitle")
     summary.verify_issues = output.get("verifyIssues")
-    summary.manual_check = bool(output.get("manualCheck")) or bool(output.get("truncated"))
+    # `bodyFallbackFrom` belongs here for the same reason it does in `_build_summary`: the row was
+    # answered by a LESSER model than the job asked for, and flagging it is how that downgrade
+    # surfaces in the UI rather than only in a log. This route predates the fallback (#126) and was
+    # never updated, so a single-row re-draft that silently downgraded reached the deliverable
+    # unflagged - the opposite of what the same downgrade does on the worker path.
+    summary.manual_check = (
+        bool(output.get("manualCheck"))
+        or bool(output.get("truncated"))
+        or bool(output.get("bodyFallbackFrom"))
+    )
     # ASSIGNED, not left alone, for the same reason verified_title above is: a re-draft that now reads
     # cleanly must CLEAR a stale notice flag, or the row would keep claiming pages were unreadable
     # after a retry recovered them. summarize_row returns a notice instead of raising when the pages
@@ -973,6 +982,29 @@ def resummarize(
     summary.row_start = int(row["start"])
     summary.row_end = int(row["end"])
     summary.row_category = str(row["category"])
+    # Provenance, rewritten rather than left alone - and `model` is load-bearing, not bookkeeping.
+    #
+    # `_unreadable_output` returns `model=None` on purpose: "no model saw this row, so `model=None`
+    # beside `unreadablePages` is what tells a notice row apart from one that WAS summarized off its
+    # readable pages". `_is_retryable_notice` keys on exactly that, requiring `summary.model is None`
+    # before it will re-attempt a delivered notice.
+    #
+    # Leaving `model` at the PREVIOUS draft's value therefore produced the one state the retry logic
+    # cannot recognise: `unreadable=True` with a non-NULL model. A row that OCR'd cleanly first time
+    # and hit a transient extraction failure on re-draft became permanently un-retryable - the next
+    # Summarize reuses it, the pages are never re-read, and the reviewer's only escape is
+    # "Re-summarize all", which discards every hand edit in the record. It is also a FALSE RECORD by
+    # the column's own definition, where that combination means "summarized off the readable pages,
+    # with a notice appended".
+    #
+    # The other four are attribution: `summaries.model` is the column the pro-versus-flash quality
+    # work groups by, and the fingerprints are how a summary is traced to the prompt text that wrote
+    # it. A re-draft left all five describing a body that no longer exists.
+    summary.model = output.get("model")
+    summary.title_model = output.get("titleModel")
+    summary.audit_model = output.get("auditModel")
+    summary.prompt_fingerprint = output.get("promptFingerprint")
+    summary.audit_fingerprint = output.get("auditFingerprint")
     # Fresh model output supersedes the prior hand-edits for this row.
     summary.edited_title = None
     summary.edited_date = None
