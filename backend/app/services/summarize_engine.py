@@ -658,6 +658,57 @@ def _row_tags(row) -> tuple[str, str]:
     return manual_tag, diag_tag
 
 
+# The three internal markers `_row_tags` applies, as patterns compiled once.
+#
+# Every whitespace run is BOUNDED, and that is load-bearing rather than tidiness. A leading `\s*` in a
+# SUBSTITUTION pattern is super-linear: the engine may start a match at each of n positions and scan a
+# whitespace run of length n from each. Sonar reports exactly that ("Simplify this regular expression
+# to reduce its runtime, as it has super-linear performance due to backtracking"). `_PAGES_SUFFIX`
+# already avoided it by having no leading `\s*` - its previous comment said so - but the
+# diagnostic-tag pattern carried one at BOTH ends, and lifting that line into this module turned a
+# finding accepted on its old line into a new-code issue that failed the quality gate.
+#
+# A bounded run is linear by construction: at most 8 repetitions from any starting position. 8 is far
+# past anything real, since `_row_tags` emits exactly one space on either side, so nothing these have
+# ever matched stops matching. Possessive quantifiers are NOT what makes this safe and have been
+# dropped: Sonar's Python analyzer does not appear to model them - they only reached `re` in 3.11 - so
+# a pattern whose safety argument rests on `++` reads to it as nested repetition.
+#
+# The en dash is an escape rather than the character itself: the web view renders ranges with one, so
+# it has to be matched, but as a literal it is an ambiguous-Unicode finding (ruff RUF001).
+_PAGES_SUFFIX = re.compile(
+    r"\(pages\s{1,8}\d{1,9}\s{0,8}[-\u2013]\s{0,8}\d{1,9}\)\s{0,8}$", re.IGNORECASE
+)
+_MANUAL_CHECK_PREFIX = re.compile(r"^\[ManualCheck\]\s{0,8}")
+_DIAGNOSTIC_TAG = re.compile(r"\s{0,8}\[Diagnostic Study\]\s{0,8}")
+
+
+def presentable_title(title: str) -> str:
+    """``title`` with every internal review marker removed, ready for a delivered document.
+
+    Lives next to `_row_tags`, which APPLIES those markers, because the two have to agree and they
+    did not: `_row_tags`' own docstring says "the export strips both either way", and that was true
+    of the review export and false of the bundle export. `services/bundles.py` built its entries
+    straight from `summarize_row`'s decorated `summaryTitle`, so a bundle-summarize download shipped
+    `[ManualCheck] `, ` [Diagnostic Study]` and ` (Pages X-Y)` into the Word document a client reads.
+    `[ManualCheck]` carries the furthest: the flag it keys on is set on most rows.
+
+    None of the three appears in any of the eight human-written deliverables this output is measured
+    against - and note the tag is BRACKETED for a reason, since the bare words "Diagnostic Study"
+    do occur in their prose.
+
+    The page suffix is stripped rather than kept because a reviewer editing a row's boundary leaves
+    the stored one stale. A caller that wants it re-applies it from the row's CURRENT range.
+    """
+    # A local rather than reassigning the parameter: the version this replaced worked on a local
+    # derived from `summary.effective_title()`, so lifting it into a function turned those writes into
+    # parameter reassignment - a code smell in its own right, and one that reads as if the caller's
+    # value were being mutated.
+    presentable = _MANUAL_CHECK_PREFIX.sub("", (title or "").strip())
+    presentable = _PAGES_SUFFIX.sub("", presentable).rstrip()
+    return _DIAGNOSTIC_TAG.sub(" ", presentable).strip()
+
+
 def _unreadable_output(row, unreadable_pages) -> dict:
     """The output_dict for a row whose pages could not be READ at all.
 

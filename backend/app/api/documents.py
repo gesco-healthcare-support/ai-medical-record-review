@@ -51,7 +51,11 @@ from app.services.linked_pdf import build_linked_pdf
 from app.services.pdf import get_pdf_page_count
 from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
 from app.services.rows import validate_rows
-from app.services.summarize_engine import standalone_studies_from_rows, summarize_row
+from app.services.summarize_engine import (
+    presentable_title,
+    standalone_studies_from_rows,
+    summarize_row,
+)
 from app.services.summary_doi import doi_prefix
 from app.worker.cancel import request_cancel
 from app.worker.queues import get_redis
@@ -1043,10 +1047,6 @@ def resummarize(
     return _summary_response(document, summary)
 
 
-# A trailing engine-style page suffix; en dash included because the web view displays ranges with
-# one. Possessive quantifiers are backtrack-free and there is no leading \s*, so re.search runs in
-# linear time (ReDoS-safe, Sonar S5852).
-_PAGES_SUFFIX = re.compile(r"\(pages\s++\d++\s*+[-–]\s*+\d++\)\s*+$", re.IGNORECASE)
 _BUNDLE_NAME_CHARS = re.compile(r"[^a-z0-9]+")
 
 
@@ -1062,10 +1062,12 @@ def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tup
     ``with_pages`` re-applies the ``(Pages X-Y)`` suffix from the row's CURRENT range. It is off by
     default because the presentable report carries no internal page ranges; the stored suffix is
     stripped either way, since a row edit leaves it stale.
+
+    The stripping itself now lives in `summarize_engine.presentable_title`, beside the `_row_tags`
+    that apply the markers, because the bundle export path needed the same logic and could not import
+    it from here.
     """
-    title = re.sub(r"^\[ManualCheck\]\s*", "", summary.effective_title().strip())
-    title = _PAGES_SUFFIX.sub("", title).rstrip()
-    title = re.sub(r"\s*\[Diagnostic Study\]\s*", " ", title).strip()
+    title = presentable_title(summary.effective_title())
     if with_pages:
         title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
     text = summary.effective_text()
