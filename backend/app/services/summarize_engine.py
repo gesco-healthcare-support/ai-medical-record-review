@@ -888,6 +888,18 @@ def summarize_row(
     # summaries written before 2026-07-29 carry the old "**DOI**:<value>," form and stay readable;
     # summary_doi.doi_prefix parses both.
     doi_final = "" if injury in ("", "-") else f"**DOI**: {injury}."
+    # The separator belongs to the PREFIX, not to the interpolation. Both bodies used to be built as
+    # f"{doi_final} {body}", so a row whose document states no injury date - where doi_final is "" -
+    # stored a body beginning with a space. Nothing downstream strips it: effective_text() returns it
+    # verbatim, _export_title_and_text only prepends, and the Word renderer writes the title, then
+    # ". ", then the body unmodified. So those entries shipped with TWO spaces after the title while
+    # their DOI-carrying and reviewer-edited neighbours shipped with one - and the linked PDF showed
+    # one either way, because HTML collapses whitespace. That is #115 (a double space in the letter)
+    # and #158 (the two renderers disagreeing) arriving together, one row at a time.
+    #
+    # `scripts/backfill_doi.py` bakes it in permanently: apply_doi_prefix(" Body.", "09/25/23")
+    # returns "**DOI**: 09/25/23.  Body."
+    doi_lead = f"{doi_final} " if doi_final else ""
     manual_tag, diag_tag = _row_tags(row)
 
     # Faithfulness verify pass (problem #3): audit the title AND the body against their source and,
@@ -937,7 +949,7 @@ def summarize_row(
             else:
                 # The audit may reintroduce capitals while fixing something else, so the transform runs
                 # over its output too - the verified text is what effective_text() delivers.
-                verified_text = f"{doi_final} {sentence_case_caps_runs(result['fixed_text'])}"
+                verified_text = f"{doi_lead}{sentence_case_caps_runs(result['fixed_text'])}"
             verify_issues = result["issues"]
             # The title is corrected INDEPENDENTLY of the body, including when the body rewrite was
             # rejected above: effective_title() and effective_text() fall back separately, and a wrong
@@ -973,7 +985,7 @@ def summarize_row(
         # The body was cut off at the token budget: nothing is appended to the text (the report must
         # not carry a marker), but callers flag the row so the reviewer knows to check it.
         "truncated": truncated,
-        "summaryText": f"{doi_final} {summary}{partial_notice}",
+        "summaryText": f"{doi_lead}{summary}{partial_notice}",
         # The audit RAN, not "the audit was requested". Setting this from the `verify` setting meant a
         # row whose check threw or truncated was still stored claiming a faithfulness check had
         # happened - a false record on a medical summary, and one no later query could detect.

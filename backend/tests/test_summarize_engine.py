@@ -405,6 +405,65 @@ def test_doi_prefix_omitted_when_the_row_states_none(monkeypatch):
     assert "**DOI**" not in out["summaryText"]
 
 
+# The DOI prefix's separator. Both bodies were built as f"{doi_final} {body}" with an unconditional
+# literal space, so a row whose document states no injury date - where the prefix is "" - stored a body
+# beginning with a space. Nothing downstream strips it, and the Word renderer writes the title, then
+# ". ", then the body unmodified, so those entries shipped with TWO spaces after the title while their
+# DOI-carrying and reviewer-edited neighbours shipped with one. The linked PDF showed one either way,
+# because HTML collapses whitespace - so the .docx and the .pdf of one record disagreed.
+#
+# The test above asserts only that "**DOI**" is absent, which is why nothing pinned this.
+def _stub_extract(path, pages, mark_pages=False, **_kw):
+    """`ocr.extract_pages_with_report` stand-in: fixed text and a clean per-page report."""
+    return "OCR text", _clean(pages)
+
+
+def _stub_a_clean_summarize(monkeypatch, audit=None):
+    """OCR + generation stubbed; ``audit`` replaces the verify result when a rewrite is wanted."""
+    monkeypatch.setattr(se, "extract_pages_with_report", _stub_extract)
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", audit or (lambda *a, **k: _NO_ISSUES))
+
+
+@pytest.mark.parametrize("injury", ["-", ""])
+def test_a_row_with_no_injury_date_does_not_start_its_body_with_a_space(monkeypatch, injury):
+    _stub_a_clean_summarize(monkeypatch)
+    body = se.summarize_row("/x.pdf", _row(injury_date=injury), prompt="P")["summaryText"]
+    assert "**DOI**" not in body
+    assert body == body.lstrip(), f"body starts with whitespace: {body[:24]!r}"
+
+
+def test_a_row_with_an_injury_date_keeps_exactly_one_space_after_the_prefix(monkeypatch):
+    """The separator moved onto the prefix, so the DOI case must be unchanged - one space, not zero."""
+    _stub_a_clean_summarize(monkeypatch)
+    body = se.summarize_row("/x.pdf", _row(injury_date="09/25/23"), prompt="P")["summaryText"]
+    assert body.startswith("**DOI**: 09/25/23. ")
+    assert not body.startswith("**DOI**: 09/25/23.  "), "two spaces after the prefix"
+
+
+def test_an_audited_body_also_starts_with_content(monkeypatch):
+    """`verified_text` is built the same way and is what `effective_text()` PREFERS, so the audited
+    body carried the leading space too - and that is the one the export actually delivers.
+
+    An issue is required for the rewrite to be kept at all: with none, the raw body stands and
+    verifiedText is None.
+    """
+    _stub_a_clean_summarize(
+        monkeypatch,
+        audit=lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": "Audited body text.",
+            "fixed_title": title,
+            "issues": [{"type": "unsupported", "detail": "a fabrication"}],
+            "ok": True,
+        },
+    )
+    verified = se.summarize_row("/x.pdf", _row(injury_date="-"), prompt="P", verify=True)[
+        "verifiedText"
+    ]
+    assert verified is not None, "the audit returned a rewrite, so verifiedText must be set"
+    assert verified == verified.lstrip(), f"audited body starts with whitespace: {verified[:24]!r}"
+
+
 def test_a_reviewers_corrected_injury_date_reaches_the_summary(monkeypatch):
     """WHEN a reviewer has corrected a row's injury date, THE SYSTEM SHALL use the corrected value.
 
