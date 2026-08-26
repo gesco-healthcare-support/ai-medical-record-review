@@ -1707,3 +1707,35 @@ def test_page_range_reads_as_a_single_page_when_only_one_is_involved():
     assert se.embedded_review_notice([45]).startswith("Page 45 contains")
     assert se.embedded_review_notice([46, 65]).startswith("Pages 46-65 contain")
     assert se.embedded_review_notice([]) == ""
+
+
+# `presentable_title` is the shared strip used by every path that produces a delivered document. It
+# lives beside `_row_tags`, which applies the markers, because the two must agree - and they did not:
+# the bundle export took the decorated title raw. None of the three markers appears in any of the
+# eight human-written deliverables this output is measured against.
+@pytest.mark.parametrize(
+    ("decorated", "expected"),
+    [
+        (
+            "[ManualCheck] MRI OF THE CERVICAL SPINE [Diagnostic Study] (Pages 12-19)",
+            "MRI OF THE CERVICAL SPINE",
+        ),
+        ("WORK STATUS REPORT (Pages 3-3)", "WORK STATUS REPORT"),
+        ("[ManualCheck] OFFICE VISIT", "OFFICE VISIT"),
+        ("MRI LUMBAR SPINE [Diagnostic Study]", "MRI LUMBAR SPINE"),
+        # the web view renders ranges with an en dash, so the suffix pattern accepts both
+        ("CT CHEST (Pages 4–6)", "CT CHEST"),
+        ("A TITLE CARRYING NO MARKERS", "A TITLE CARRYING NO MARKERS"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_presentable_title_removes_every_internal_marker(decorated, expected):
+    assert se.presentable_title(decorated) == expected
+
+
+def test_presentable_title_keeps_a_page_reference_that_is_not_the_suffix():
+    """The pattern is anchored at the END, so a page reference inside the title survives."""
+    assert se.presentable_title("REVIEW OF RECORDS (Pages 1-9) ADDENDUM") == (
+        "REVIEW OF RECORDS (Pages 1-9) ADDENDUM"
+    )

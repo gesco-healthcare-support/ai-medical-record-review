@@ -658,6 +658,33 @@ def _row_tags(row) -> tuple[str, str]:
     return manual_tag, diag_tag
 
 
+# Possessive quantifiers are backtrack-free and there is no leading \s*, so re.search runs in linear
+# time (ReDoS-safe, Sonar S5852).
+_PAGES_SUFFIX = re.compile(r"\(pages\s++\d++\s*+[-–]\s*+\d++\)\s*+$", re.IGNORECASE)
+
+
+def presentable_title(title: str) -> str:
+    """``title`` with every internal review marker removed, ready for a delivered document.
+
+    Lives next to `_row_tags`, which APPLIES those markers, because the two have to agree and they
+    did not: `_row_tags`' own docstring says "the export strips both either way", and that was true
+    of the review export and false of the bundle export. `services/bundles.py` built its entries
+    straight from `summarize_row`'s decorated `summaryTitle`, so a bundle-summarize download shipped
+    `[ManualCheck] `, ` [Diagnostic Study]` and ` (Pages X-Y)` into the Word document a client reads.
+    `[ManualCheck]` carries the furthest: the flag it keys on is set on most rows.
+
+    None of the three appears in any of the eight human-written deliverables this output is measured
+    against - and note the tag is BRACKETED for a reason, since the bare words "Diagnostic Study"
+    do occur in their prose.
+
+    The page suffix is stripped rather than kept because a reviewer editing a row's boundary leaves
+    the stored one stale. A caller that wants it re-applies it from the row's CURRENT range.
+    """
+    title = re.sub(r"^\[ManualCheck\]\s*", "", (title or "").strip())
+    title = _PAGES_SUFFIX.sub("", title).rstrip()
+    return re.sub(r"\s*\[Diagnostic Study\]\s*", " ", title).strip()
+
+
 def _unreadable_output(row, unreadable_pages) -> dict:
     """The output_dict for a row whose pages could not be READ at all.
 

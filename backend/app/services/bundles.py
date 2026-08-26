@@ -52,7 +52,12 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
         entries.append(
             {
                 "summaryDate": output.get("summaryDate") or "-",
-                "summaryTitle": output["summaryTitle"],
+                # `summarize_row` returns the DECORATED title - `[ManualCheck] `,
+                # ` [Diagnostic Study]` and ` (Pages X-Y)` - because the app displays all three.
+                # This is a delivered Word document, so they have to come off, exactly as the review
+                # export does it. Taking the raw value here shipped internal review markers to the
+                # client, and `[ManualCheck]` reaches most rows because of the flag it keys on.
+                "summaryTitle": summarize_engine.presentable_title(output["summaryTitle"]),
                 "summaryText": output["summaryText"],
             }
         )

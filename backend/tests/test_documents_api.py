@@ -531,6 +531,75 @@ def test_manualcheck_flag_is_stripped_from_both_exports():
     assert "MRI Report" in word["summaryTitle"] and "MRI Report" in pdf["linkTitle"]
 
 
+def test_the_bundle_export_strips_the_same_markers_as_the_review_export(monkeypatch):
+    """The THIRD path into a delivered Word document, and it was the one that did not strip.
+
+    `bundles.bundle_summary_entries` built its entries straight from `summarize_row`'s decorated
+    `summaryTitle`, so a bundle-summarize download shipped `[ManualCheck] `, ` [Diagnostic Study]`
+    and ` (Pages X-Y)` to the client while the review export stripped all three. The test above
+    pinned the invariant for two of the three paths, which is how the asymmetry survived.
+    """
+    from app.services import bundles
+
+    decorated = "[ManualCheck] MRI OF THE CERVICAL SPINE [Diagnostic Study] (Pages 12-19)"
+    monkeypatch.setattr(
+        bundles.summarize_engine,
+        "summarize_row",
+        lambda *a, **k: {
+            "summaryDate": "01/02/2020",
+            "summaryTitle": decorated,
+            "summaryText": "body text",
+        },
+    )
+    entries = bundles.bundle_summary_entries(
+        "/x.pdf", [{"start": 12, "end": 19, "category": "3", "flag": "x"}]
+    )
+    assert len(entries) == 1
+    title = entries[0]["summaryTitle"]
+    for marker in ("[ManualCheck]", "[Diagnostic Study]", "(Pages"):
+        assert marker not in title, f"the bundle export still ships {marker}: {title!r}"
+    assert title == "MRI OF THE CERVICAL SPINE"
+
+
+def test_all_three_export_paths_agree_on_the_same_decorated_title(monkeypatch):
+    """Asserts the paths AGREE rather than checking each alone.
+
+    Each was internally consistent and they still disagreed - the same shape as the Word/PDF
+    formatting split. A one-sided test catches none of this.
+    """
+    from app.api.documents import _export_entry, _pdf_entry
+    from app.services import bundles
+
+    decorated = "[ManualCheck] MRI OF THE CERVICAL SPINE [Diagnostic Study] (Pages 12-19)"
+    summary = Summary(
+        document_id="d",
+        job_id=1,
+        idx=0,
+        title=decorated,
+        text="body text",
+        row_start=12,
+        row_end=19,
+        row_category="3",
+        manual_check=True,
+        date="01/02/2020",
+    )
+    monkeypatch.setattr(
+        bundles.summarize_engine,
+        "summarize_row",
+        lambda *a, **k: {
+            "summaryDate": "01/02/2020",
+            "summaryTitle": decorated,
+            "summaryText": "body text",
+        },
+    )
+    bundle_title = bundles.bundle_summary_entries(
+        "/x.pdf", [{"start": 12, "end": 19, "category": "3", "flag": "x"}]
+    )[0]["summaryTitle"]
+
+    assert _export_entry(summary)["summaryTitle"] == bundle_title
+    assert _pdf_entry(summary)["linkTitle"] == bundle_title
+
+
 def _diagnostic_summary(**over):
     """A stored diagnostic summary whose title already carries an engine page suffix."""
     fields = dict(
