@@ -539,7 +539,15 @@ def _page_image_parts(pdf_path, start, end):
 MAX_GENERATED_TITLE = 200
 
 
-def _usable_title(generated, fallback):
+# What is left of summaries.title / summaries.verified_title (both varchar 512) once the decoration
+# every stored title carries is subtracted: the ManualCheck tag, the diagnostic tag, and the page
+# suffix. Computed from the strings rather than guessed, so it moves if the decoration does.
+MAX_STORED_TITLE = (
+    512 - len("[ManualCheck] ") - len(" [Diagnostic Study]") - len(" (Pages 9999-9999)")
+)
+
+
+def _usable_title(generated, fallback, source="generated"):
     """The generated header line, or ``fallback`` when the model did not return a header line.
 
     Measured on the box 2026-08-14: for one row (pages 263-266, 6k of OCR) the title model returned
@@ -559,9 +567,24 @@ def _usable_title(generated, fallback):
     if cleaned and len(cleaned) <= MAX_GENERATED_TITLE:
         return cleaned
     logger.warning(
-        "generated title unusable (%d chars); falling back to the row title", len(cleaned)
+        "%s title unusable (%d chars); falling back to the row title", source, len(cleaned)
     )
-    return (fallback or "").strip() or "-"
+    # The FALLBACK needs bounding too, and it did not have it. `row["title"]` is a
+    # review_rows.title varchar(512) written verbatim - parse_segment_item only strips, and
+    # _store_rows stores `str(row.get("title") or "-")` unmodified - so a 500-character segmentation
+    # title plus the decoration above is ~553 characters into a varchar(512). The worker's persist is
+    # OUTSIDE the per-row try/except, so that DataError does not fail one row: it kills the whole
+    # job, which is the exact incident this function was written to prevent, reached through the one
+    # branch the guard skipped.
+    #
+    # Truncated rather than rejected, unlike the generated case. A 620-character title-model answer
+    # is the wrong KIND of answer and its first 512 characters are not a header either; a long
+    # SEGMENTATION title is a real header that is merely long, and its front carries the author and
+    # facility a reviewer identifies it by. There is also nothing further to fall back to.
+    kept = ((fallback or "").strip() or "-")[:MAX_STORED_TITLE]
+    if len((fallback or "").strip()) > MAX_STORED_TITLE:
+        logger.warning("row title truncated to %d chars to fit the column", MAX_STORED_TITLE)
+    return kept
 
 
 def page_phrase(pages) -> str:
@@ -1083,7 +1106,15 @@ def summarize_row(
             #
             # Decorated exactly like the stored title, so a verified title is a drop-in replacement
             # in every view; the export path strips the tags either way.
-            fixed_title = (result.get("fixed_title") or "").strip()
+            # Bounded by the same guard as the generated title, which it did NOT have. The audit's
+            # schema declares a plain {"type": "string"} with no maxLength - and Gemini ignores
+            # maxLength anyway, as the note above says - so nothing upstream bounds this either, and
+            # it is written to verified_title, the sibling varchar(512) the original guard never
+            # covered. An over-long correction is REJECTED here rather than truncated, which falls
+            # out of _usable_title returning `title`: an unusable rewrite then equals the current
+            # title and no verified_title is stored, exactly as a rejected BODY rewrite keeps the raw
+            # body.
+            fixed_title = _usable_title(result.get("fixed_title"), title, source="audited")
             if fixed_title and fixed_title != title:
                 verified_title = (
                     f"{manual_tag}{fixed_title}{diag_tag} (Pages {row['start']}-{row['end']})"

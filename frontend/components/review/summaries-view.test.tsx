@@ -300,6 +300,35 @@ describe("SummariesView date of injury", () => {
     expect(screen.getByText("Lumbar strain noted.")).toBeInTheDocument();
   });
 
+  it("shows both dates of a comma-joined value, and leaves neither in the body", () => {
+    // DEMONSTRATES the bug. The multi-DOI shape both injury_date columns document is
+    // "MM/DD/YYYY, MM/DD/YYYY", and the review page's injury-date cell is free text stored
+    // verbatim - but items could only be joined by "&", so this failed the house pattern and fell
+    // through to the legacy one, which requires a trailing comma and backtracks to the FIRST.
+    // The chip showed 05/08/2022 alone and "06/01/2023." became the opening words of the body.
+    summariesState.error = null;
+    summariesState.data = withText("**DOI**: 05/08/2022, 06/01/2023. Lumbar strain noted.");
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+    expect(screen.getByText(/DOI 05\/08\/2022, 06\/01\/2023/)).toBeInTheDocument();
+    expect(screen.getByText("Lumbar strain noted.")).toBeInTheDocument();
+    expect(screen.queryByText(/06\/01\/2023\. Lumbar/)).not.toBeInTheDocument();
+  });
+
+  it("reads a cumulative-trauma period written with a colon", () => {
+    // "CT:" matched neither pattern - the house one could not consume the colon, the legacy one
+    // needs a digit straight after "**DOI**:" - so the whole prefix stayed in the body.
+    summariesState.error = null;
+    summariesState.data = withText("**DOI**: CT: 01/02/20-03/04/21. Lumbar strain noted.");
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+    expect(screen.getByText(/DOI CT: 01\/02\/20-03\/04\/21/)).toBeInTheDocument();
+    expect(screen.getByText("Lumbar strain noted.")).toBeInTheDocument();
+    expect(screen.queryByText(/\*\*DOI\*\*/)).not.toBeInTheDocument();
+  });
+
   it("shows no date when the summary states none", () => {
     summariesState.error = null;
     summariesState.data = withText("Lumbar strain noted.");
