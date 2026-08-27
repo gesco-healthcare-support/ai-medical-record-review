@@ -322,3 +322,45 @@ def test_creating_a_category_that_is_already_a_constant_is_a_conflict(session):
         create_category(CategoryCreate(id="13", name="Shadow"), session, user)
     assert exc.value.status_code == 400 and "already exists" in exc.value.detail
     assert len([c for c in catalog.get_categories(session) if c["id"] == "13"]) == 1
+
+
+def test_the_category_four_migration_carries_the_same_text_as_the_constants():
+    """The classifier reads the DB catalog first, so a taxonomy edit only reaches a seeded box
+    through its migration. If the two texts drift, the box keeps a description that no longer matches
+    the code and nothing says so - this fails the suite instead.
+
+    Same guard `test_the_catalog_migration_carries_the_same_text_as_the_constants` gives
+    c8b1d4e70f92, for the widening in #175.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "e4c8a1f70b93_widen_category_four.py"
+    )
+    spec = importlib.util.spec_from_file_location("widen_four", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    four = {c["id"]: c for c in constants_categories()}[migration.CATEGORY_ID]
+    assert four["name"] == migration._NEW_NAME
+    assert four["description"] == migration._NEW_DESCRIPTION
+    assert migration._ADDED_EXAMPLE in four["examples"]
+    # The OLD text must NOT still be what the constants say, or the migration guards on a value that
+    # can never match and the widening silently never lands.
+    assert four["name"] != migration._OLD_NAME
+    assert four["description"] != migration._OLD_DESCRIPTION
+
+
+def test_category_four_is_no_longer_gastroenterology_only():
+    """The reviewer's answer, stated as a property rather than as a string match: the bucket is
+    defined by being NON-ORTHOPEDIC, and GI is one example of that rather than the boundary."""
+    four = {c["id"]: c for c in constants_categories()}["4"]
+    assert "non-orthopedic" in four["description"].lower()
+    assert "non-orthopedic" in four["name"].lower()
+    # GI keeps a worked example - it is the shape this bucket was built for and the only one
+    # observed on the box - but no longer defines the category.
+    assert any("GI" in title for title in four["examples"])
