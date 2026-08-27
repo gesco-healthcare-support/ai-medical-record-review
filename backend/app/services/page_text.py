@@ -18,7 +18,7 @@ a shared CPU, and the box also runs the Vertex pacing work.
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -162,11 +162,28 @@ def get_pages_text(
     return "".join(out)
 
 
-def populate_document(session, document_id: str, pdf_path, total_pages: int, workers=None) -> int:
+def populate_document(
+    session, document_id: str, pdf_path, total_pages: int, workers=None, progress=None
+) -> int:
     """OCR every page of a document that is not already stored. Returns how many pages were added.
 
     Called once at the start of the segment job, before segmentation, so every later stage finds the
     text already there. Idempotent: a second call stores nothing.
+
+    ``progress`` is the job's ``report(stage, current, total)``, and it is what makes this pass
+    interruptible. Without it the whole pass was ONE blocking ``pool.map`` with no progress write and
+    no cancel poll: cooperative cancellation is observed only inside ``report``, and there are no
+    model calls during OCR, so nothing read the stop flag for the duration. On the repo's own
+    measurement that is ~700s for a 297-page record and tens of minutes for a 2,673-page one, during
+    which the bar read "reading 0 / N" and Stop did nothing - pushing the reviewer to Force stop,
+    which SIGKILLs the work-horse for what should have been a cooperative stop. Every other long
+    stage already threads ``report`` through; this one did not.
+
+    Results are consumed as they COMPLETE rather than via ``pool.map``, which yields in submission
+    order and so would stall reporting behind one slow page. Raising out of the callback (which is
+    how a cancel travels) leaves the pool to shut down on the way out of the ``with`` block; pages
+    already stored stay stored, and the pass is idempotent, so a later run resumes rather than
+    restarting.
     """
     if workers is None:
         workers = get_settings().page_text_workers
@@ -188,12 +205,21 @@ def populate_document(session, document_id: str, pdf_path, total_pages: int, wor
 
     # OCR off-session in the pool, then store on the caller's session: a Session is not thread-safe,
     # so the threads must not touch it. This is the same rule the summarize pool follows.
+    stored = 0
+    total = len(missing)
     with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
-        texts = list(pool.map(lambda page: (page, *_extract(pdf_path, page)), missing))
-    for page, text, ok in texts:
-        _store(session, document_id, page, text, ok)
-    logger.info("stored OCR text for %d page(s) of document %s", len(texts), document_id)
-    return len(texts)
+        futures = [
+            pool.submit(lambda page: (page, *_extract(pdf_path, page)), page) for page in missing
+        ]
+        for future in as_completed(futures):
+            page, text, ok = future.result()
+            _store(session, document_id, page, text, ok)
+            stored += 1
+            if progress is not None:
+                # Raises JobCancelled on a stop, and is itself rate-limited by the caller.
+                progress("reading", stored, total)
+    logger.info("stored OCR text for %d page(s) of document %s", stored, document_id)
+    return stored
 
 
 def get_row_text_with_report(session, document_id: str, pages, pdf_path=None):

@@ -402,13 +402,25 @@ def segment_document(job_id) -> None:
         # extracting on demand.
         report("reading", 0, document.page_count or 0)
         try:
-            populate_document(session, document.id, document.stored_path, document.page_count or 0)
+            populate_document(
+                session,
+                document.id,
+                document.stored_path,
+                document.page_count or 0,
+                progress=report,  # so the bar moves and Stop is heard during the OCR pass
+            )
         except OcrUnavailableError:
             # The ONE failure that best-effort must not cover. "Every reader falls back to extracting
             # on demand" is true of a transient failure and false of a missing binary: there is no
             # reader that can fall back, because nothing can extract. Swallowed, the document segments
             # with no text at all and the operator meets the problem downstream as a Vertex 400 that
             # names nothing about OCR. `_run` already turns this into a friendly "OCR" job error.
+            raise
+        except JobCancelled:
+            # The reviewer pressed Stop, which now reaches here because `report` is threaded into the
+            # pass above. It is a control-flow signal, not a failure: swallowed by the best-effort
+            # handler below it would leave the stop unheard AND let segmentation run on, which is
+            # the opposite of what making this pass interruptible was for.
             raise
         except Exception:
             logger.warning("page text population failed for %s", document.id, exc_info=True)
@@ -752,17 +764,47 @@ def summarize_document(job_id) -> None:
         # timeout a later attempt reads fine. What this seed buys is the case that cannot re-ask: a
         # row reusing the duplicate check's stored `source_text`, where re-OCRing to find out would
         # undo the reuse that saves ~45 minutes on a 1500-page record.
-        failed_pages = sorted(
-            session.scalars(
-                select(PageText.page).where(
-                    PageText.document_id == job.document_id, PageText.extract_ok.is_(False)
-                )
+        stored_pages = {
+            page_text.page: page_text
+            for page_text in session.scalars(
+                select(PageText).where(PageText.document_id == job.document_id)
             )
-        )
+        }
+        failed_pages = sorted(p for p, pt in stored_pages.items() if not pt.extract_ok)
         for row in rows:
             row["unreadable_pages"] = [
                 page for page in failed_pages if int(row["start"]) <= page <= int(row["end"])
             ]
+
+        # Serve the row's text from the page-text store when the duplicate check has not. Without
+        # this, summarize was the ONE stage of the four that store exists for that still re-OCR'd
+        # from the PDF - segmentation, classify and dedup all read it - so a record summarized
+        # without a duplicate check first paid a SECOND full OCR pass over pages already extracted
+        # and stored. That is the normal path, not an edge case: issue #125, and the four records in
+        # CLAUDE.md with zero dedup jobs and source_text NULL throughout. The module's own estimate
+        # of the duplication is ~45 minutes on a 1500-page record.
+        #
+        # Reuse ONLY when the store covers every page of the row and read all of them cleanly.
+        # Partial cover must fall through to the full extraction below, or a row would be summarized
+        # from some of its pages with nothing saying so - the failure this pipeline treats as
+        # unrecoverable. A row with one errored page therefore re-extracts, which also preserves the
+        # retry that turns a transient Tesseract timeout into a readable page.
+        #
+        # Depositions are skipped deliberately: summarize_row re-reads them through the marking
+        # extractor because a transcript model handed concatenated text cannot see where a page ends,
+        # and the store holds unmarked text. It ignores `source_text` for category 9 anyway; not
+        # seeding it just avoids carrying a large string that would be dropped.
+        #
+        # Byte-identical to what the fallback would produce: page_text._extract reads through the
+        # same ocr.extract_pages_with_report, one page at a time, and both paths concatenate with no
+        # separator. So this changes when the OCR happens, never what the model is given.
+        for row in rows:
+            if row.get("source_text") or str(row["category"]) == "9":
+                continue
+            pages = range(int(row["start"]), int(row["end"]) + 1)
+            covered = [stored_pages.get(page) for page in pages]
+            if covered and all(pt is not None and pt.extract_ok for pt in covered):
+                row["source_text"] = "".join(pt.text or "" for pt in covered)
         _seed_embedded_review_pages(session, job.document_id, rows)
 
         # Reconcile persisted summaries by row identity: keep the first for each still-wanted row,

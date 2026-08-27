@@ -288,3 +288,59 @@ def test_population_uses_the_configured_pool_size(monkeypatch):
     with get_sessionmaker()() as session:
         pt.populate_document(session, doc_id, "/x.pdf", 3)
     assert seen["max_workers"] == 5
+
+
+def test_population_reports_progress_as_pages_land(monkeypatch):
+    """DEMONSTRATES the bug: on origin/main `progress` does not exist and nothing is reported.
+
+    Cooperative cancellation is observed only inside the job's `report`, and there are no model calls
+    during OCR - so with the whole pass inside one blocking `pool.map`, nothing wrote progress and
+    nothing polled the stop flag for its entire duration. On this repo's own measurement that is
+    ~700s for a 297-page record: the bar read "reading 0 / N" and Stop did nothing, pushing the
+    reviewer to Force stop, which SIGKILLs the work-horse for what should have been a cooperative
+    stop.
+    """
+    monkeypatch.setattr(pt, "_extract", lambda path, page: (f"page {page}", True))
+    doc_id = _doc(pages=5)
+    seen = []
+
+    with get_sessionmaker()() as session:
+        added = pt.populate_document(
+            session, doc_id, "/x.pdf", 5, workers=2, progress=lambda *a: seen.append(a)
+        )
+
+    assert added == 5
+    assert len(seen) == 5, "one report per page, so the bar moves during the pass"
+    assert {stage for stage, _, _ in seen} == {"reading"}
+    # Monotonic and complete, whatever order the pool finishes in.
+    assert [current for _, current, _ in seen] == [1, 2, 3, 4, 5]
+    assert {total for _, _, total in seen} == {5}
+
+
+def test_a_stop_during_the_ocr_pass_is_heard(monkeypatch):
+    """DEMONSTRATES the other half. `report` raises JobCancelled on a stop; the pass must let it out
+    rather than finishing every remaining page first."""
+    from app.worker.failures import JobCancelled
+
+    monkeypatch.setattr(pt, "_extract", lambda path, page: (f"page {page}", True))
+    doc_id = _doc(pages=40)
+
+    def stop_after_two(stage, current, total):
+        if current >= 2:
+            raise JobCancelled(current, total)
+
+    with get_sessionmaker()() as session, pytest.raises(JobCancelled):
+        pt.populate_document(session, doc_id, "/x.pdf", 40, workers=1, progress=stop_after_two)
+
+    # Pages already read stay stored - the pass is idempotent, so a later run resumes.
+    with get_sessionmaker()() as session:
+        stored = session.scalars(select(PageText.page).where(PageText.document_id == doc_id)).all()
+    assert 0 < len(stored) < 40, "a stop must not store the whole document, nor throw away the work"
+
+
+def test_population_without_progress_still_works(monkeypatch):
+    """GUARDS the default: `progress` is optional, so every other caller is unaffected."""
+    monkeypatch.setattr(pt, "_extract", lambda path, page: (f"page {page}", True))
+    doc_id = _doc(pages=3)
+    with get_sessionmaker()() as session:
+        assert pt.populate_document(session, doc_id, "/x.pdf", 3) == 3
