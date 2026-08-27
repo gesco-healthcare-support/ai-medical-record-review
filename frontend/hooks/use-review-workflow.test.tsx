@@ -607,3 +607,105 @@ describe("useReviewWorkflow reloadRows", () => {
     expect(mockSave).not.toHaveBeenCalled();
   });
 });
+
+// The residual Adrian measured on #176: `include` and `category` are BOTH server-written and
+// locally editable, so taking them from the server unconditionally still reverted an unsaved edit
+// to either. These reproduce his two cases end to end.
+//
+// They edit the rows the hook actually holds rather than inventing a row, because the protection is
+// keyed on the client `_key`: a row whose key the buffer has never seen reads as newly inserted,
+// not as an edit, and nothing would be tracked. That is also why the earlier reload tests pass with
+// a made-up key - title and date need no protection, so they never exercised this path.
+describe("useReviewWorkflow reloadRows protects unsaved edits to the server-written fields", () => {
+  const serverRow = (over: Record<string, unknown> = {}) => ({
+    start: 1,
+    end: 3,
+    category: "1",
+    title: "",
+    date: "",
+    injury_date: "",
+    flag: "-",
+    suggest_merge: false,
+    include: true,
+    ...over,
+  });
+
+  /** Boot the editor, apply `edit` to the loaded row, and leave the save failing so nothing retries
+   *  - the state in which the buffer holds the only copy of that edit. */
+  async function withFailedSave(edit: Record<string, unknown>) {
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
+    mockSave.mockRejectedValue(new Error("boom"));
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+    act(() =>
+      result.current.onRowsChange(result.current.rows.map((row) => ({ ...row, ...edit }))),
+    );
+    await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
+    return result;
+  }
+
+  it("keeps an unsaved re-classify when another tab re-classifies a different summary", async () => {
+    const result = await withFailedSave({ category: "13" });
+
+    // The Summaries tab wrote a DIFFERENT row's category, so this row is unchanged server-side.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing", rows: [serverRow({ category: "1" })] }));
+    await act(async () => {
+      await result.current.reloadRows();
+    });
+
+    expect(result.current.rows[0].category).toBe("13");
+  });
+
+  it("keeps an unsaved untick when 'Keep this one' fires on the Duplicates tab", async () => {
+    const result = await withFailedSave({ include: false });
+
+    mockDoc.mockResolvedValue(detail({ status: "reviewing", rows: [serverRow({ include: true })] }));
+    await act(async () => {
+      await result.current.reloadRows();
+    });
+
+    expect(result.current.rows[0].include).toBe(false);
+  });
+
+  it("still adopts the server's value for a field the reviewer has NOT touched", async () => {
+    // The reload has to keep working, or protecting the edits would recreate the stale-buffer bug
+    // this function exists to prevent.
+    const result = await withFailedSave({ title: "Reviewer's title" });
+
+    mockDoc.mockResolvedValue(
+      detail({ status: "reviewing", rows: [serverRow({ include: false, category: "5" })] }),
+    );
+    await act(async () => {
+      await result.current.reloadRows();
+    });
+
+    expect(result.current.rows[0].title).toBe("Reviewer's title");
+    expect(result.current.rows[0].include).toBe(false);
+    expect(result.current.rows[0].category).toBe("5");
+  });
+
+  it("stops protecting a field once the save that carried it has landed", async () => {
+    // After a successful save the server holds the reviewer's value itself, so the row must track
+    // the server again - otherwise one edit pins that field for the rest of the session.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
+    mockSave.mockResolvedValue({ ok: true, count: 1 });
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() => result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, category: "13" }))));
+    await waitFor(() => expect(result.current.saveState.kind).toBe("saved"));
+
+    // Back into an unsaved state, but via a DIFFERENT field.
+    mockSave.mockRejectedValue(new Error("boom"));
+    act(() => result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, title: "t" }))));
+    await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
+
+    mockDoc.mockResolvedValue(detail({ status: "reviewing", rows: [serverRow({ category: "5" })] }));
+    await act(async () => {
+      await result.current.reloadRows();
+    });
+
+    expect(result.current.rows[0].category).toBe("5"); // the save released the claim on it
+    expect(result.current.rows[0].title).toBe("t"); // the still-unsaved title survives
+  });
+});

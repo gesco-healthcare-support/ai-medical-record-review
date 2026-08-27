@@ -20,6 +20,7 @@ import {
   rowErrors,
   sortRows,
   stripKeys,
+  touchedFields,
   withKeys,
   type EditorRow,
 } from "@/lib/review-rows";
@@ -98,6 +99,11 @@ export function useReviewWorkflow(
     saveStateRef.current = next;
     setSaveState(next);
   };
+  // `_key:field` for every server-writable field the reviewer has changed since the last successful
+  // save. reloadRows takes the server's `include`/`category` for everything EXCEPT these, so an
+  // unsaved untick or re-classify is not reverted by an action on another tab. Cleared the moment a
+  // save lands, because the server then holds those values itself and there is nothing to protect.
+  const touchedRef = useRef<Set<string>>(new Set());
   const [header, setHeader] = useState<HeaderFields | null>(null);
   // A calm, non-error notice when a summarize run ended "needs attention" (item 7): the message
   // plus the sub-documents that failed, so the UI can list + highlight exactly which ones.
@@ -443,11 +449,14 @@ export function useReviewWorkflow(
       const detail = await getDocument(documentId);
       const server = detail.rows || [];
       const unsaved = saveStateRef.current.kind === "dirty" || saveStateRef.current.kind === "error";
-      applyRows(
-        unsaved && rowsRef.current.length
-          ? sortRows(applyServerRowChanges(rowsRef.current, server))
-          : sortRows(withKeys(server)),
-      );
+      if (unsaved && rowsRef.current.length) {
+        applyRows(sortRows(applyServerRowChanges(rowsRef.current, server, touchedRef.current)));
+      } else {
+        // Nothing local to protect, so the server is authoritative and the set is meaningless -
+        // its keys refer to rows that no longer exist.
+        touchedRef.current = new Set();
+        applyRows(sortRows(withKeys(server)));
+      }
     } catch {
       /* keep the current rows if the refresh fails */
     }
@@ -456,6 +465,7 @@ export function useReviewWorkflow(
   function onRowsChange(next: EditorRow[]) {
     if (!documentId) return;
     const sorted = sortRows(next);
+    for (const key of touchedFields(rowsRef.current, sorted)) touchedRef.current.add(key);
     applyRows(sorted);
     applySaveState({ kind: "dirty", message: "Unsaved changes..." });
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -467,7 +477,10 @@ export function useReviewWorkflow(
         return;
       }
       saveRows(documentId, stripKeys(sorted))
-        .then(() => applySaveState({ kind: "saved" }))
+        .then(() => {
+          touchedRef.current = new Set();
+          applySaveState({ kind: "saved" });
+        })
         .catch((err) =>
           applySaveState({
             kind: "error",
