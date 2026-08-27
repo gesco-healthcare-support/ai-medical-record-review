@@ -6,6 +6,7 @@ code when nothing has been edited. seed_catalog() populates a fresh DB idempoten
 """
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.services.prompts import prompts as prompt_texts
@@ -98,7 +99,16 @@ def seed_categories(session: Session) -> None:
         return  # already seeded (or edited) - never clobber
     for category in constants_categories():
         session.add(Category(**category))
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # The emptiness check and the insert are not one atomic step, so two admins creating a
+        # category at the same moment on an unseeded box both pass the check and the slower one
+        # collides on the primary key. Losing that race is harmless and needs no retry: the winner
+        # wrote the same constants, so rolling back leaves the catalog in exactly the state this
+        # function exists to produce. Caught rather than pre-empted with an ON CONFLICT insert
+        # because that is dialect-specific and the tests run on SQLite.
+        session.rollback()
 
 
 def seed_catalog(session: Session) -> None:
