@@ -2045,7 +2045,7 @@ def test_a_missing_ocr_binary_fails_the_segment_job(monkeypatch):
     import app.services.page_text as page_text_mod
     import app.services.segment_engine as se
 
-    def missing_binary(session, document_id, pdf_path, total_pages, workers=None):
+    def missing_binary(session, document_id, pdf_path, total_pages, workers=None, progress=None):
         raise OcrUnavailableError("no tesseract on this host")
 
     monkeypatch.setattr(page_text_mod, "populate_document", missing_binary)
@@ -2081,7 +2081,7 @@ def test_any_other_population_failure_stays_best_effort(monkeypatch):
     import app.services.page_text as page_text_mod
     import app.services.segment_engine as se
 
-    def transient(session, document_id, pdf_path, total_pages, workers=None):
+    def transient(session, document_id, pdf_path, total_pages, workers=None, progress=None):
         raise RuntimeError("one page timed out")
 
     monkeypatch.setattr(page_text_mod, "populate_document", transient)
