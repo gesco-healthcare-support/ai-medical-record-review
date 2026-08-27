@@ -15,6 +15,7 @@ from sqlalchemy import delete, select
 from app.auth.password import MrrPasswordHelper
 from app.db import get_sessionmaker
 from app.models import Category, Document, Prompt, ReviewRow, User
+from app.services.rows import validate_rows
 from tests.conftest import unique_test_email
 
 _TEST_CAT_PREFIX = "900"  # test category ids: 9001, 9002, ...
@@ -22,19 +23,33 @@ _TEST_CAT_PREFIX = "900"  # test category ids: 9001, 9002, ...
 
 @pytest.fixture(autouse=True)
 def _clean_test_categories():
-    def clean():
-        with get_sessionmaker()() as session:
-            ids = session.scalars(
-                select(Category.id).where(Category.id.like(_TEST_CAT_PREFIX + "%"))
-            ).all()
-            if ids:
-                session.execute(delete(Prompt).where(Prompt.category_id.in_(ids)))
-                session.execute(delete(Category).where(Category.id.in_(ids)))
-                session.commit()
+    """Restore the catalog to exactly the rows that existed before the test.
 
-    clean()
+    Deleting the 900x ids is no longer enough. Creating a category now materializes the taxonomy
+    constants first (otherwise that one insert collapses the catalog - see
+    test_creating_a_category_leaves_every_other_category_valid), so a create leaves ~16 built-in
+    rows behind as well. Left in place they would flip this shared database from unseeded to seeded
+    for every later test AND make the collapse test non-demonstrating on its second run, so the
+    snapshot is taken after the pre-clean and anything new is removed.
+    """
+
+    def category_ids(session):
+        return set(session.scalars(select(Category.id)).all())
+
+    def drop(session, ids):
+        if ids:
+            session.execute(delete(Prompt).where(Prompt.category_id.in_(ids)))
+            session.execute(delete(Category).where(Category.id.in_(ids)))
+            session.commit()
+
+    with get_sessionmaker()() as session:
+        drop(session, [i for i in category_ids(session) if i.startswith(_TEST_CAT_PREFIX)])
+        before = category_ids(session)
+
     yield
-    clean()
+
+    with get_sessionmaker()() as session:
+        drop(session, list(category_ids(session) - before))
 
 
 async def _login(client, *, is_admin: bool):
@@ -111,6 +126,40 @@ async def test_create_category_and_validation(admin_client):
     assert (
         await admin_client.post("/api/admin/categories", json={"id": "9002", "name": "   "})
     ).status_code == 400
+
+
+async def test_creating_a_category_leaves_every_other_category_valid(admin_client):
+    """DEMONSTRATES the bug end to end: on origin/main this leaves the catalog holding 9006 alone.
+
+    `catalog.get_categories` falls back to the taxonomy constants only while `categories` is EMPTY,
+    which is the normal state for a fresh box, local dev and CI - nothing in app/ seeds it. So the
+    first category an admin created ended that fallback and took every other category with it. What
+    the reviewer saw was every document failing to autosave with 400 "unknown category".
+
+    Whether this test demonstrates or merely guards depends on the database starting unseeded, which
+    `_clean_test_categories` restores after each test precisely so it keeps demonstrating.
+    """
+    from app.services import catalog
+
+    created = await admin_client.post(
+        "/api/admin/categories", json={"id": "9006", "name": "Brand New"}
+    )
+    assert created.status_code == 201
+
+    with get_sessionmaker()() as session:
+        ids = catalog.get_category_ids(session, active_only=True)
+        assert "9006" in ids
+        for category_id in ("1", "3", "5", "10", "13", "15", "100"):
+            assert category_id in ids, f"category {category_id} was destroyed by creating 9006"
+        # The half a reviewer feels: rows carrying a built-in category still save.
+        assert validate_rows(session, [{"start": 1, "end": 2, "category": "1"}], 5) is None
+        # ...and the reason the fix seeds categories only: prompts still resolve through prompts.py,
+        # so a deployed prompt change still reaches this box (migration f1a83b5c60d2).
+        assert session.scalar(select(Prompt).where(Prompt.role == "summary")) is None
+
+    # An id the constants already carry is now a conflict, not a shadow row beside the built-in.
+    dup = await admin_client.post("/api/admin/categories", json={"id": "13", "name": "Shadow"})
+    assert dup.status_code == 400 and "already exists" in dup.json()["detail"]
 
 
 async def test_update_category_soft_delete(admin_client):

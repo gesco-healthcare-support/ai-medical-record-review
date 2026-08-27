@@ -6,7 +6,7 @@ the constants fallback (unseeded DB) matches the Flask behavior.
 """
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app import models  # noqa: F401 - registers all tables on Base.metadata
@@ -215,3 +215,110 @@ def test_an_unseeded_catalog_still_offers_category_fifteen(session):
     for category_id in ("1", "3", "5", "10", "13", "100"):
         assert category_id in ids
     assert catalog.summarize_default_for(session, "15") is True
+
+
+def test_seed_categories_materializes_every_constant(session):
+    """GUARDS the new code. Nothing may survive that keeps the catalog collapsible."""
+    from app.services.seed_catalog import seed_categories
+
+    seed_categories(session)
+    ids = {c["id"] for c in catalog.get_categories(session)}
+    assert ids == {c["id"] for c in constants_categories()}
+    # Materializing must not change what any reader sees - that is what makes it safe to do
+    # inside a write path. Same active set, same auto-assign set, same defaults.
+    assert catalog.summarize_default_for(session, "100") is False
+    assert catalog.summarize_default_for(session, "9") is True
+    assert "6" not in catalog.get_category_ids(session, auto_assign=True)  # never auto-assigned
+    assert "6" in catalog.get_category_ids(session, active_only=True)  # but manually selectable
+
+
+def test_seed_categories_writes_no_prompt_rows(session):
+    """GUARDS against re-introducing the shadow rows migration f1a83b5c60d2 exists to delete.
+
+    Prompts resolve DB-first, so a seeded summary-prompt row pins that category to the text as it
+    was on the day it was written: `prompts.py` edits are deployed and silently do not arrive. That
+    is why seed_catalog() - which DOES write those rows - must not be called from app/, and why
+    seed_categories() writes categories only. seed_catalog() is asserted alongside so the two do not
+    quietly converge.
+    """
+    from app.services.seed_catalog import seed_categories
+
+    seed_categories(session)
+    assert session.scalars(select(Prompt).where(Prompt.role == "summary")).all() == []
+    # Category 1 still resolves through prompts.py, so a deployed prompt change reaches this box.
+    assert catalog.get_prompt(session, "summary", "1") == prompts["category_01"]
+
+    seed_catalog(session)  # the full seeder on the SAME session is a no-op: categories exist
+    assert session.scalars(select(Prompt).where(Prompt.role == "summary")).all() == []
+
+
+def test_seed_categories_never_clobbers_an_edited_catalog(session):
+    """An admin-edited row must survive; seeding is a back-fill, never a reset."""
+    from app.models import Category
+    from app.services.seed_catalog import seed_categories
+
+    session.add(
+        Category(
+            id="1",
+            name="Renamed By An Admin",
+            description="",
+            examples=[],
+            active=True,
+            auto_assign=True,
+            summarize_default=True,
+        )
+    )
+    session.commit()
+
+    seed_categories(session)
+    assert [c["name"] for c in catalog.get_categories(session)] == ["Renamed By An Admin"]
+
+
+def test_creating_a_category_does_not_collapse_an_unseeded_catalog(session):
+    """DEMONSTRATES the bug: this fails on origin/main, where the catalog collapses to the new row.
+
+    The route function is called directly so the catalog is genuinely unseeded - the normal state
+    for a fresh box, local dev and CI. Before the fix, POST /api/admin/categories wrote one row,
+    which ended `catalog.get_categories`' all-or-nothing fallback and took every other category
+    with it: `validate_rows` began rejecting category "1", so every reviewer got 400 "unknown
+    category" on autosave, and General (100) flipped to summarize-by-default.
+    """
+    from app.api.admin import create_category
+    from app.models import User
+    from app.schemas.admin import CategoryCreate
+
+    user = User(id=1, email="admin@example.com", name="A", password="x", active=True, is_admin=True)
+    session.add(user)
+    session.commit()
+
+    created = create_category(CategoryCreate(id="16", name="A New Category"), session, user)
+    assert created["id"] == "16"
+
+    ids = catalog.get_category_ids(session, active_only=True)
+    assert "16" in ids, "the category the admin created must exist"
+    for category_id in ("1", "3", "5", "10", "13", "15", "100"):
+        assert category_id in ids, f"category {category_id} was destroyed by creating '16'"
+    assert validate_rows(session, [{"start": 1, "end": 2, "category": "1"}], 5) is None
+    assert catalog.summarize_default_for(session, "100") is False  # General still off by default
+
+
+def test_creating_a_category_that_is_already_a_constant_is_a_conflict(session):
+    """DEMONSTRATES the second half: on origin/main this inserted a shadow row beside the built-in.
+
+    Seeding BEFORE the duplicate check is what turns it into the 400 the admin needs to see - the id
+    is taken, by a category the constants already carry.
+    """
+    from fastapi import HTTPException
+
+    from app.api.admin import create_category
+    from app.models import User
+    from app.schemas.admin import CategoryCreate
+
+    user = User(id=1, email="admin@example.com", name="A", password="x", active=True, is_admin=True)
+    session.add(user)
+    session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        create_category(CategoryCreate(id="13", name="Shadow"), session, user)
+    assert exc.value.status_code == 400 and "already exists" in exc.value.detail
+    assert len([c for c in catalog.get_categories(session) if c["id"] == "13"]) == 1
