@@ -392,4 +392,66 @@ describe("DuplicatesView similarity", () => {
     render(<DuplicatesView documentId="d1" />);
     expect(screen.queryByText(/of the text matches/i)).not.toBeInTheDocument();
   });
+
+  // A dedup job that errored or was interrupted used to fall into `neverChecked`, because the API
+  // reports `checked: false` for it. So the counter reverted to "Not checked yet" mid-run with no
+  // error text, `job.error` was fetched and read by nothing, and a failure was indistinguishable
+  // from a check nobody had started. There is no other error path for dedup: the workflow hook does
+  // not watch dedup jobs at all.
+  it("says a duplicate check failed instead of pretending none ever ran", () => {
+    dupState.error = null;
+    dupState.data = {
+      job: { state: "error", error: "OCR is unavailable on this host", current: 37, total: 84 },
+      clusters: [],
+      checked: false,
+      stale: false,
+      unreadable: 0,
+    };
+    render(<DuplicatesView documentId="d1" />);
+
+    // Two places say so on purpose: the banner, and the empty state where the counter used to sit.
+    expect(screen.getAllByText(/did not finish/i)).toHaveLength(2);
+    expect(screen.getByText(/OCR is unavailable on this host/i)).toBeInTheDocument();
+    // ...and must NOT claim the record has never been checked, or offer a clean bill of health.
+    expect(screen.queryByText(/No duplicate check has run on this record yet/i)).toBeNull();
+    expect(screen.queryByText(/No duplicates/i)).toBeNull();
+  });
+
+  it("keeps showing the last completed check's groups when a re-check fails", () => {
+    dupState.error = null;
+    dupState.data = {
+      job: { state: "error", error: "boom", current: 0, total: 0 },
+      checked: true,
+      stale: false,
+      unreadable: 0,
+      clusters: [
+        {
+          group: 1,
+          dismissed: false,
+          rows: [
+            { idx: 0, title: "Progress Note", date: "01/02/2026", pages: { start: 1, end: 2 }, include: true, primary: false },
+            { idx: 3, title: "Progress Note", date: "02/02/2026", pages: { start: 10, end: 11 }, include: true, primary: false },
+          ],
+        },
+      ],
+    };
+    render(<DuplicatesView documentId="d1" />);
+
+    expect(screen.getByRole("heading", { name: /Possible duplicate/i })).toBeInTheDocument();
+    expect(screen.getByText(/from the last check that completed/i)).toBeInTheDocument();
+  });
+
+  it("still says nothing has been compared when the only check that ran failed", () => {
+    dupState.error = null;
+    dupState.data = {
+      job: { state: "interrupted", error: null, current: 0, total: 0 },
+      clusters: [],
+      checked: false,
+      stale: false,
+      unreadable: 0,
+    };
+    render(<DuplicatesView documentId="d1" />);
+
+    expect(screen.getByText(/Nothing in this record has been compared yet/i)).toBeInTheDocument();
+  });
 });
