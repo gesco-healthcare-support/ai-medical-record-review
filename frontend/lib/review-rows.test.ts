@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyServerRowChanges,
+  couldNotIdentify,
   mergeRows,
   newKey,
   rowErrors,
@@ -94,6 +95,38 @@ describe("sortRows", () => {
       [5, 6],
     ]);
     expect(input.map((r) => r.start)).toEqual([5, 1, 1]); // original array untouched
+  });
+});
+
+describe("couldNotIdentify", () => {
+  // The rule is stated in issue #144: a document nothing identified is one that landed in General
+  // (100) without a rule putting it there. Expected values come from that rule, not from the code.
+  const general = (over: Partial<Row>): Row => ({ ...row(1, 2), category: "100", ...over });
+
+  it("is true for a General row no rule claimed", () => {
+    expect(couldNotIdentify(general({ ruled_paperwork: false }))).toBe(true);
+  });
+
+  it("is false when a rule named the title as paperwork", () => {
+    expect(couldNotIdentify(general({ ruled_paperwork: true }))).toBe(false);
+  });
+
+  it("is true when a rule now sends the title elsewhere", () => {
+    // ruled_paperwork is false for a rule answering any category other than 100. Such a row sits
+    // in General only because it was segmented before that rule shipped, so it needs a look.
+    const stale = general({ ruled_paperwork: false, title: "History and Physical" });
+    expect(couldNotIdentify(stale)).toBe(true);
+  });
+
+  it("is false outside General, whatever the rule said", () => {
+    expect(couldNotIdentify({ ...row(1, 2), category: "5", ruled_paperwork: false })).toBe(false);
+    expect(couldNotIdentify({ ...row(1, 2), category: "5", ruled_paperwork: true })).toBe(false);
+  });
+
+  it("is true for a General row the server sent no verdict for", () => {
+    // Rows the editor creates itself (insert, split) carry no verdict, and none of them is
+    // paperwork a rule named - so the absent field must read as "not ruled", never as unknown.
+    expect(couldNotIdentify(general({}))).toBe(true);
   });
 });
 
