@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Document, Job
-from app.services.jobs import ACTIVE_STATES, _utcnow
+from app.services.jobs import ACTIVE_STATES, INTERRUPTIBLE_DOCUMENT_STATUSES, _utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def recover_orphans(session: Session) -> int:
         job.state = "interrupted"
         job.finished_at = _utcnow()
         document = session.get(Document, job.document_id)
-        if document is not None and document.status in ("segmenting", "summarizing"):
+        if document is not None and document.status in INTERRUPTIBLE_DOCUMENT_STATUSES:
             document.status = "interrupted"
         reaped += 1
     session.commit()

@@ -2322,6 +2322,89 @@ def test_a_partial_notice_survives_both_exports():
     assert "**DOI**: 01/02/2026." in _export_entry(summary)["summaryText"]
 
 
+def _dedup_job(doc_id, state: str, error: str | None = None) -> None:
+    """A dedup job in a terminal state, appended after any existing ones."""
+    with get_sessionmaker()() as session:
+        session.add(
+            Job(
+                document_id=doc_id,
+                kind="dedup",
+                state=state,
+                stage="deduping",
+                model="m",
+                prompt_version="1",
+                error=error,
+            )
+        )
+        session.commit()
+
+
+async def test_a_cancelled_recheck_does_not_erase_the_completed_check_before_it(authed):
+    """DEMONSTRATES the bug. The derived flags read the newest dedup job of ANY state, but
+    `dedup_document` rewrites the grouping in one transaction at the very end - deliberately, so a
+    run that dies leaves the previous clusters intact. So after a cancelled re-check the stored
+    clusters still came from the last COMPLETED run while `checked`, `stale` and `unreadable` all
+    reported as though nothing had ever run.
+
+    What the reviewer saw: "No duplicate check has run on this record yet" printed directly above
+    the groups it was asking them to resolve.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=8)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+    _finish_dedup(doc_id)
+
+    before = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
+    assert before["checked"] is True and len(before["clusters"]) == 1
+
+    # The reviewer starts a re-check on a large record and presses Stop.
+    _dedup_job(doc_id, "cancelled")
+
+    after = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
+    assert after["clusters"] == before["clusters"], "premise: the stored clusters survive"
+    assert after["checked"] is True, "a completed run happened, whatever the newest job did"
+    # `job` still reports the NEWEST job, so the tab can say what just happened.
+    assert after["job"]["state"] == "cancelled"
+
+
+async def test_a_failed_recheck_still_reports_what_the_completed_run_found(authed):
+    """The same for an errored re-check, and it carries the warning too: `unreadable` was zeroed, so
+    the "N sub-documents could not be read and were not compared" notice disappeared - which is the
+    exact wrong conclusion that count exists to prevent."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=8)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+    with get_sessionmaker()() as session:
+        row = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.idx == 1)
+        ).first()
+        row.source_text = "   "  # read, but no text recognized
+        session.commit()
+    _finish_dedup(doc_id)
+    assert (await client.get(f"/api/documents/{doc_id}/duplicates")).json()["unreadable"] == 1
+
+    _dedup_job(doc_id, "error", error="Vertex quota exhausted")
+
+    body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
+    assert body["checked"] is True
+    assert body["unreadable"] == 1, "the completed run's warning must survive a failed re-check"
+    assert body["job"]["state"] == "error" and body["job"]["error"]
+
+
+async def test_a_record_whose_only_dedup_failed_still_reports_as_unchecked(authed):
+    """The guard must not turn every failure into "checked". With no completed run behind it, a
+    failed job means nothing has been compared - and the tab has a separate banner for that."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=8)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+    _dedup_job(doc_id, "error", error="boom")
+
+    body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
+    assert body["checked"] is False
+    assert body["stale"] is False and body["unreadable"] == 0
+    assert body["job"]["state"] == "error"
+
+
 async def test_the_listing_timestamps_carry_their_utc_offset(authed):
     """DEMONSTRATES the bug: on origin/main these come back with no Z and no offset.
 
