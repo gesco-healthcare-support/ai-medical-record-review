@@ -522,3 +522,88 @@ describe("useReviewWorkflow stop and restart", () => {
     expect(mockStartSummarize).not.toHaveBeenCalled();
   });
 });
+
+// reloadRows is how a Duplicates/Summaries action reaches the editor's in-memory buffer. It used to
+// REPLACE that buffer, which discarded anything the reviewer had typed but not saved - and because
+// both callers live on other tabs, the editor is unmounted and nothing on screen showed what went.
+describe("useReviewWorkflow reloadRows", () => {
+  const serverRow = (over: Record<string, unknown> = {}) => ({
+    start: 1,
+    end: 3,
+    category: "1",
+    title: "",
+    date: "",
+    injury_date: "",
+    flag: "-",
+    suggest_merge: false,
+    include: true,
+    ...over,
+  });
+
+  it("replaces the buffer wholesale when there is nothing unsaved to lose", async () => {
+    // Unchanged behaviour, pinned: with a clean buffer the server is authoritative, so a re-segment
+    // or a boundary change on another tab still lands in full.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    mockDoc.mockResolvedValue(
+      detail({ status: "reviewing", rows: [serverRow({ start: 4, end: 8, title: "From server" })] }),
+    );
+    await act(async () => {
+      await result.current.reloadRows();
+    });
+
+    expect(result.current.rows).toHaveLength(1);
+    expect(result.current.rows[0].title).toBe("From server");
+    expect([result.current.rows[0].start, result.current.rows[0].end]).toEqual([4, 8]);
+  });
+
+  it("keeps unsaved edits and still picks up the include the Duplicates tab wrote", async () => {
+    // DEMONSTRATES the bug: on origin/main the reviewer's title is gone after this.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
+    mockSave.mockRejectedValue(new Error("boom")); // the autosave fails -> saveState "error"
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() =>
+      result.current.onRowsChange([
+        { ...serverRow({ title: "Reviewer's title", date: "09/09/2026" }), _key: "k1" },
+      ]),
+    );
+    await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
+
+    // Meanwhile "Keep this one" on the Duplicates tab excluded that row server-side.
+    mockDoc.mockResolvedValue(
+      detail({ status: "reviewing", rows: [serverRow({ include: false, title: "" })] }),
+    );
+    await act(async () => {
+      await result.current.reloadRows();
+    });
+
+    expect(result.current.rows).toHaveLength(1);
+    expect(result.current.rows[0].title).toBe("Reviewer's title"); // NOT discarded
+    expect(result.current.rows[0].date).toBe("09/09/2026");
+    expect(result.current.rows[0].include).toBe(false); // ...and the server's write still landed
+  });
+
+  it("does not send the stale local rows back to the server", async () => {
+    // Flushing first would look like a fix and would overwrite the very write that triggered this
+    // callback, which is the bug reloadRows exists to prevent.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
+    mockSave.mockRejectedValue(new Error("boom"));
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() => result.current.onRowsChange([{ ...serverRow({ title: "Local" }), _key: "k1" }]));
+    await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
+    mockSave.mockClear();
+
+    mockDoc.mockResolvedValue(detail({ status: "reviewing", rows: [serverRow({ include: false })] }));
+    await act(async () => {
+      await result.current.reloadRows();
+    });
+
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+});

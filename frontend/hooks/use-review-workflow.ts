@@ -15,7 +15,14 @@ import {
   type HeaderFields,
 } from "@/lib/review-api";
 import type { CategoryOption, DocumentStatus, FailedRow, JobKind } from "@/lib/types";
-import { rowErrors, sortRows, stripKeys, withKeys, type EditorRow } from "@/lib/review-rows";
+import {
+  applyServerRowChanges,
+  rowErrors,
+  sortRows,
+  stripKeys,
+  withKeys,
+  type EditorRow,
+} from "@/lib/review-rows";
 import type { StepId } from "@/components/review/stepper";
 
 export type Section = "loading" | "start" | "progress" | "editor" | "summaries";
@@ -83,6 +90,14 @@ export function useReviewWorkflow(
   const [startHint, setStartHint] = useState("");
   const [progress, setProgress] = useState({ title: "Working...", pct: 4, detail: "Starting..." });
   const [saveState, setSaveState] = useState<SaveState>({ kind: "" });
+  // Mirrored into a ref for the same reason as `rows`: reloadRows is handed to another tab as a
+  // callback and fires long after the render that created it, and it has to know whether this
+  // buffer is holding unsaved work before it decides to replace it.
+  const saveStateRef = useRef<SaveState>({ kind: "" });
+  const applySaveState = (next: SaveState) => {
+    saveStateRef.current = next;
+    setSaveState(next);
+  };
   const [header, setHeader] = useState<HeaderFields | null>(null);
   // A calm, non-error notice when a summarize run ended "needs attention" (item 7): the message
   // plus the sub-documents that failed, so the UI can list + highlight exactly which ones.
@@ -407,14 +422,32 @@ export function useReviewWorkflow(
     }
   }
 
-  // Re-pull the persisted rows into the editor's local state. Called after a Duplicates-tab action
-  // changes `include` server-side, so a subsequent Summarize (which flushes these local rows) does
-  // not resurrect the copies the reviewer just excluded.
+  // Pull the row changes another tab made server-side into the editor's local state - `include`
+  // from Duplicates ("keep this one"), `category` from Summaries (re-classify) - so a subsequent
+  // Summarize, which flushes these local rows, does not send the old values straight back.
+  //
+  // It used to do that by REPLACING the buffer, which discarded whatever the reviewer had typed but
+  // not saved. Both callers live on other tabs, where the editor is unmounted, so nothing on screen
+  // showed what was being thrown away; the header went on displaying "Not saved: ..." for a change
+  // set that no longer existed. The exposure is not a race window either - the autosave sets
+  // `error` and nothing retries until the next keystroke, so a failed save leaves the only copy of
+  // those edits in this buffer indefinitely.
+  //
+  // So: replace wholesale only when there is nothing to lose. With unsaved edits present, apply the
+  // two server-written fields onto the local rows instead and keep everything else. Flushing the
+  // local rows first would be worse than either - the write that triggered this callback would be
+  // overwritten by the stale copy, which is the bug this function exists to prevent.
   async function reloadRows() {
     if (!documentId) return;
     try {
       const detail = await getDocument(documentId);
-      applyRows(sortRows(withKeys(detail.rows || [])));
+      const server = detail.rows || [];
+      const unsaved = saveStateRef.current.kind === "dirty" || saveStateRef.current.kind === "error";
+      applyRows(
+        unsaved && rowsRef.current.length
+          ? sortRows(applyServerRowChanges(rowsRef.current, server))
+          : sortRows(withKeys(server)),
+      );
     } catch {
       /* keep the current rows if the refresh fails */
     }
@@ -424,19 +457,19 @@ export function useReviewWorkflow(
     if (!documentId) return;
     const sorted = sortRows(next);
     applyRows(sorted);
-    setSaveState({ kind: "dirty", message: "Unsaved changes..." });
+    applySaveState({ kind: "dirty", message: "Unsaved changes..." });
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       if (!sorted.length) return; // nothing to save yet (transient mid-edit)
       if (rowErrors(sorted, totalPages).size) {
         // Don't silently leave changes unsaved: tell the user why (and Summarize stays blocked).
-        setSaveState({ kind: "error", message: "Not saved - fix the highlighted page ranges first." });
+        applySaveState({ kind: "error", message: "Not saved - fix the highlighted page ranges first." });
         return;
       }
       saveRows(documentId, stripKeys(sorted))
-        .then(() => setSaveState({ kind: "saved" }))
+        .then(() => applySaveState({ kind: "saved" }))
         .catch((err) =>
-          setSaveState({
+          applySaveState({
             kind: "error",
             message: `Not saved: ${humanizeError(err, { fallback: "please try again" })}`,
           }),

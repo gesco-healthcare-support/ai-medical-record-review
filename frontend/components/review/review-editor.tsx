@@ -2,14 +2,10 @@
 
 import { useRef, useState } from "react";
 import type { CategoryOption, Row } from "@/lib/types";
-import { newKey, rowErrors, type EditorRow } from "@/lib/review-rows";
+import { mergeRows, newKey, rowErrors, type EditorRow } from "@/lib/review-rows";
 import { RowsTable } from "./rows-table";
 import { PdfViewer, type PdfViewerHandle } from "./pdf-viewer";
 import { SplitPane } from "./split-pane";
-
-function mergedFlag(a: string, b: string) {
-  return [a, b].includes("x") ? "x" : "-";
-}
 
 /**
  * The "Review & correct" workbench body (DS §3): a slim toolbar (Insert document, apply suggested
@@ -62,11 +58,7 @@ export function ReviewEditor({
   function mergeUp(i: number) {
     if (i <= 0) return;
     const next = [...rows];
-    next[i - 1] = {
-      ...next[i - 1],
-      end: Math.max(next[i - 1].end, next[i].end),
-      flag: mergedFlag(next[i - 1].flag, next[i].flag),
-    };
+    next[i - 1] = mergeRows(next[i - 1], next[i]);
     setSelectedKey(next[i - 1]._key);
     next.splice(i, 1);
     setSplittingKey(null);
@@ -108,11 +100,7 @@ export function ReviewEditor({
     const next = [...rows];
     for (let i = 1; i < next.length; ) {
       if (next[i].suggest_merge) {
-        next[i - 1] = {
-          ...next[i - 1],
-          end: Math.max(next[i - 1].end, next[i].end),
-          flag: mergedFlag(next[i - 1].flag, next[i].flag),
-        };
+        next[i - 1] = mergeRows(next[i - 1], next[i]);
         next.splice(i, 1);
       } else {
         i += 1;
