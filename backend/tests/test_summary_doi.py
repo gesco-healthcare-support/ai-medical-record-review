@@ -319,3 +319,69 @@ def test_the_segmentation_prompt_stamp_is_frozen_and_the_fingerprint_moves_inste
     baseline = fingerprint(SEGMENTATION_SYSTEM, SEGMENTATION_PROMPT)
     assert fingerprint(SEGMENTATION_SYSTEM, SEGMENTATION_PROMPT) == baseline  # deterministic
     assert fingerprint(SEGMENTATION_SYSTEM, SEGMENTATION_PROMPT + " x") != baseline
+
+
+# --- multi-DOI values, and the CT marker the prefix patterns could not read -------------------
+
+
+def test_a_comma_joined_value_keeps_both_dates():
+    """DEMONSTRATES the bug. `_VALUE_G` joined items only with " & ", but the multi-DOI shape both
+    injury_date columns DOCUMENT is "MM/DD/YYYY, MM/DD/YYYY", and the review page's injury-date cell
+    is free text that `_store_rows` writes verbatim.
+
+    So a comma-joined prefix failed the NEW pattern, fell through to LEGACY - which requires a
+    TRAILING comma and therefore backtracks to the FIRST one - and captured a single date. Before
+    this, doi_prefix returned '**DOI**: 09/25/2023,' and stripping it left '10/01/2023. Body text.':
+    the chip showed one date and the second became the opening words of the body. `backfill_doi.py`
+    would then bake that in permanently.
+
+    Exactly what doi_prefix's docstring promises cannot happen: "callers cannot re-derive it with a
+    pattern that stops at the first separator and silently drops a second stated date."
+    """
+    body = "**DOI**: 09/25/2023, 10/01/2023. Body text."
+    assert sd.doi_prefix(body) == "**DOI**: 09/25/2023, 10/01/2023."
+    assert sd.apply_doi_prefix(body, "-") == "Body text."
+    assert sd.apply_doi_prefix(body, "05/05/25") == "**DOI**: 05/05/25. Body text."
+
+
+def test_a_ct_marker_with_a_colon_is_read_as_a_prefix():
+    r"""DEMONSTRATES the other half: "CT:" matched NEITHER pattern - this one because the CT group was
+    a bare `CT\s*` that could not consume the colon, LEGACY because it requires a digit straight
+    after "**DOI**:".
+
+    So apply_doi_prefix found no prefix to replace and PREPENDED a second one, leaving two DOI
+    prefixes in the body - and passing "-" failed to delete the prefix at all, so a stale injury date
+    stayed in a medical-legal field.
+    """
+    body = "**DOI**: CT: 01/02/20-03/04/21. Body."
+    assert sd.doi_prefix(body) == "**DOI**: CT: 01/02/20-03/04/21."
+    assert sd.apply_doi_prefix(body, "-") == "Body."
+    # One prefix, not two.
+    assert sd.apply_doi_prefix(body, "05/05/25") == "**DOI**: 05/05/25. Body."
+
+
+def test_the_forms_that_already_worked_are_unchanged():
+    """GUARDS the rest of the grammar - all of these pass on origin/main too, and must keep passing:
+    widening the separator must not change how anything else parses."""
+    for body, expected in [
+        ("**DOI**: 09/25/23. Body text.", "**DOI**: 09/25/23."),
+        ("**DOI**: 05/08/22 & 06/01/23. Body text.", "**DOI**: 05/08/22 & 06/01/23."),
+        ("**DOI**: CT 01/02/20-03/04/21. Body.", "**DOI**: CT 01/02/20-03/04/21."),
+        # The pre-2026-07-29 legacy form: trailing comma, still read by LEGACY, both dates kept.
+        ("**DOI**: 01/02/20, 03/04/21, Legacy body.", "**DOI**: 01/02/20, 03/04/21,"),
+        ("No prefix at all.", ""),
+    ]:
+        assert sd.doi_prefix(body) == expected, body
+
+
+def test_the_two_prefix_patterns_stay_disjoint():
+    """The NEW pattern admitting commas must not start claiming LEGACY strings: it requires a PERIOD
+    terminator and a legacy prefix ends with a comma. If that ever stopped holding, a legacy body
+    would lose its trailing separator and the chip would render the comma."""
+    assert sd._DOI_PREFIX_NEW.match("**DOI**: 01/02/20, 03/04/21, Legacy body.") is None
+    assert sd._DOI_PREFIX_LEGACY.match("**DOI**: 09/25/2023, 10/01/2023. Body text.") is not None
+    # ...and when both could fire, NEW is tried first, so the period form wins.
+    assert (
+        sd.doi_prefix("**DOI**: 09/25/2023, 10/01/2023. Body.")
+        == "**DOI**: 09/25/2023, 10/01/2023."
+    )

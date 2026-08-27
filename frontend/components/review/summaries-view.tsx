@@ -23,10 +23,16 @@ const PAGE_SIZE = 20;
 //   legacy "**DOI**:05/08/2022, 06/01/2023,"
 // Every date must be matched in both - stopping at the first separator would hide a second injury
 // date the document actually stated.
+// Two additions, mirroring services/summary_doi.py, and both are about not dropping a stated date.
+// `CT\s*` could not consume the colon in "CT:", and items could only be joined by "&" - but the
+// multi-DOI shape both injury_date columns document is "MM/DD/YYYY, MM/DD/YYYY", and the review
+// page's injury-date cell is free text stored verbatim. A comma-joined prefix therefore failed NEW,
+// fell through to LEGACY, which requires a trailing comma and so backtracks to the FIRST one: the
+// chip showed one date and the second was left as the opening words of the body.
 const DOI_DATE = String.raw`\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}`;
-const DOI_ITEM = String.raw`(?:CT\s*)?${DOI_DATE}(?:\s*-\s*${DOI_DATE})?`;
+const DOI_ITEM = String.raw`(?:\bC\.?T\.?\s*:?\s*)?${DOI_DATE}(?:\s*-\s*${DOI_DATE})?`;
 const DOI_PREFIX_NEW = new RegExp(
-  String.raw`^\s*\*\*DOI\*\*:\s*(${DOI_ITEM}(?:\s*&\s*${DOI_ITEM})*)\s*\.\s*`,
+  String.raw`^\s*\*\*DOI\*\*:\s*(${DOI_ITEM}(?:\s*[&,]\s*${DOI_ITEM})*)\s*\.\s*`,
   "i",
 );
 const DOI_PREFIX_LEGACY = /^\s*\*\*DOI\*\*:\s*([\d/.-]{4,}(?:\s*,\s*[\d/.-]{4,})*)\s*,\s*/;

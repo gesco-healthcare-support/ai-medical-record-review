@@ -79,8 +79,31 @@ _ITEM = re.compile(
 # The same grammar as a stored-prefix pattern: "**DOI**: <value>." where <value> is one item or
 # several joined by " & ". Mirrored in the frontend's parseDisplay
 # (frontend/components/review/summaries-view.tsx).
-_ITEM_G = rf"(?:CT\s*)?{_DS}\s*-\s*{_DS}|{_D}"
-_VALUE_G = rf"(?:{_ITEM_G})(?:\s*&\s*(?:{_ITEM_G}))*"
+# The CT group mirrors `_ITEM` above - optional colon and dots - rather than the bare `CT\s*` it
+# used to be. Without the colon, "**DOI**: CT: 01/02/20-03/04/21. Body." matched NEITHER pattern:
+# this one because the CT branch could not consume the colon, and LEGACY because it requires a digit
+# straight after "**DOI**:". `apply_doi_prefix` then found no prefix to replace and PREPENDED a
+# second one, so the body carried two DOI prefixes - and passing "-" failed to delete the prefix at
+# all, leaving a stale injury date in a medical-legal field.
+_ITEM_G = rf"(?:\bC\.?T\.?\s*:?\s*)?{_DS}\s*-\s*{_DS}|{_D}"
+# Items are joined by " & " OR by a comma. The comma is the load-bearing addition: both
+# `review_rows.injury_date` and `segment_rows.injury_date` document the multi-DOI shape as
+# "MM/DD/YYYY, MM/DD/YYYY" in their column comments, and the review page's injury-date cell is a
+# bare free-text input that `_store_rows` writes verbatim - so a reviewer typing two dates for a
+# document that states two produces exactly that value.
+#
+# Admitting only "&" made such a prefix fail this pattern and fall through to LEGACY, which requires
+# a TRAILING comma and therefore backtracks to the FIRST one - capturing a single date. Measured:
+# doi_prefix("**DOI**: 09/25/2023, 10/01/2023. Body text.") returned '**DOI**: 09/25/2023,' and
+# stripping it left '10/01/2023. Body text.'. So the chip showed one date, the second was orphaned
+# into the body as its opening words, and `scripts/backfill_doi.py` would bake that in permanently.
+# That is precisely what doi_prefix's own docstring promises cannot happen: "callers cannot
+# re-derive it with a pattern that stops at the first separator and silently drops a second stated
+# date."
+#
+# LEGACY still owns the pre-2026-07-29 form and the two stay disjoint: this pattern requires a
+# PERIOD terminator, and a legacy prefix ends with a comma.
+_VALUE_G = rf"(?:{_ITEM_G})(?:\s*[&,]\s*(?:{_ITEM_G}))*"
 _DOI_PREFIX_NEW = re.compile(rf"^\s*\*\*DOI\*\*:\s*({_VALUE_G})\s*\.\s*", re.IGNORECASE)
 # The pre-2026-07-29 grammar: a comma-joined date list terminated by a comma. 709 stored summaries
 # carry it, so it stays READABLE (parsed here, and by the frontend) even though nothing emits it any
