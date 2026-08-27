@@ -1005,3 +1005,93 @@ def test_a_more_specific_document_type_beats_history_and_physical(title, expecte
 )
 def test_a_bare_history_or_physical_token_is_not_an_h_and_p(title, expected):
     assert classification.match_rules(title) == expected
+
+
+# --- a bare follow-up token does not outrank a document type ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Follow-Up MRI of the Lumbar Spine", "3"),
+        ("X-Ray Follow-Up Right Knee", "3"),
+        ("Follow Up Ultrasound", "3"),
+        ("Colonoscopy Follow Up", "3"),
+        ("Sleep Study Follow-Up", "3"),
+        ("EMG/NCS Follow Up Study", "3"),
+        ("Laboratory Results Follow Up", "14"),
+        ("Operative Report Follow-Up", "8"),
+        ("Deposition Follow-Up", "9"),
+    ],
+)
+def test_a_follow_up_study_is_the_study_not_a_treating_report(title, expected):
+    """DEMONSTRATES the bug: every one of these answered "1" before.
+
+    "follow-up" says WHEN a visit sits in a course of care, not what the pages ARE - a study, an
+    operative report and a lab panel can each be a follow-up. The token sat unqualified in the
+    category-1 rule at index 7, ahead of imaging (9), operative (10), deposition (11) and laboratory
+    (16), and first match wins. So the rule fired, short-circuited before the embedding and LLM
+    stages, and returned confidence='high' with needs_review False - the row summarized with the
+    PR-2 treating prompt instead of the diagnostic one, with nothing for a reviewer to catch.
+
+    Same shape as the two defects already fixed here: `laborator` living in rule 3, and "Radiology
+    Order" matching `radiolog`.
+    """
+    assert classification.match_rules(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Follow-Up Visit",
+        "Follow Up Office Visit",
+        "Follow-Up Evaluation",
+        "Follow Up",
+        "Progress Report",
+        # The precision that makes the guard safe: these name a treating visit OUTRIGHT, so the
+        # follow-up token is not the only reason category 1 matched and the modality does not win.
+        "Office Visit Follow-Up MRI",
+        "Progress Note - MRI Lumbar Spine",
+        "PR-2 Follow-Up MRI",
+    ],
+)
+def test_a_follow_up_visit_is_still_a_treating_report(title):
+    """GUARDS against over-correcting. Measured on all 1,478 distinct titles on the box: ZERO change
+    their answer, and zero carry a follow-up token beside a modality token at all - so this is a
+    statement of intent for the day a title carries both, not a fix for observed loss.
+
+    The alternative was measured and rejected: qualifying the token so it only matched "follow-up
+    visit" and friends moved 4 real titles from 1 to no-rule-at-all.
+    """
+    assert classification.match_rules(title) == "1"
+
+
+def test_stopping_a_run_is_not_reported_as_an_llm_failure(monkeypatch):
+    """DEMONSTRATES the bug. `generate_with_retry` raises JobCancelled out of its backoff sleep as a
+    cooperative control-flow signal, meant to unwind through the categorize pool to _run. The bare
+    `except Exception` caught it, logged "LLM classification failed", and returned None - so
+    classify() answered from the embedding alone, and the job log blamed the model for a deliberate
+    user action."""
+    from app.worker.failures import JobCancelled
+
+    def cancelled(*a, **k):
+        raise JobCancelled(3, 170)
+
+    monkeypatch.setattr(classification, "generate_with_retry", cancelled)
+    monkeypatch.setattr(classification, "get_genai_client", lambda: object())
+
+    with pytest.raises(JobCancelled):
+        classification.llm_classify("Progress Report")
+
+
+def test_a_real_llm_failure_is_still_swallowed(monkeypatch):
+    """GUARDS the other direction: an unavailable LLM must stay non-fatal, so the cascade falls back
+    to the embedding with needs_review set. Only the cancel signal escapes."""
+
+    def boom(*a, **k):
+        raise RuntimeError("vertex is unhappy")
+
+    monkeypatch.setattr(classification, "generate_with_retry", boom)
+    monkeypatch.setattr(classification, "get_genai_client", lambda: object())
+
+    assert classification.llm_classify("Progress Report") is None
