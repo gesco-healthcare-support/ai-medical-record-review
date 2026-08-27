@@ -64,13 +64,56 @@ export function mergeRows<T extends Row>(upper: T, lower: T): T {
  * Matching is by page span: rows carry no stable id, and neither of those two writes moves a
  * boundary. A local row whose span has no server twin keeps its own values - the reviewer has
  * redefined that document, so their split/merge is the newer fact.
+ *
+ * `touched` closes the remaining hole: both of those fields are editable in the workbench too, so
+ * taking the server's value unconditionally still reverted an unsaved re-classify or untick. Any
+ * `_key:field` in the set is one the reviewer has changed since the last successful save, and their
+ * value wins. Everything untouched still tracks the server, which is the whole point of the reload.
  */
-export function applyServerRowChanges<T extends Row>(local: T[], server: Row[]): T[] {
+export function applyServerRowChanges<T extends EditorRow>(
+  local: T[],
+  server: Row[],
+  touched: ReadonlySet<string> = new Set(),
+): T[] {
   const bySpan = new Map(server.map((row) => [`${row.start}-${row.end}`, row]));
   return local.map((row) => {
     const match = bySpan.get(`${row.start}-${row.end}`);
-    return match ? { ...row, include: match.include, category: match.category } : row;
+    if (!match) return row;
+    return {
+      ...row,
+      include: touched.has(touchKey(row, "include")) ? row.include : match.include,
+      category: touched.has(touchKey(row, "category")) ? row.category : match.category,
+    };
   });
+}
+
+/** The two fields another tab can write, and so the only two that can collide with a local edit. */
+export const SERVER_WRITABLE_FIELDS = ["include", "category"] as const;
+
+/** Identity for one field of one row in the touched set: the client key, which survives an edit to
+ *  any of the row's values (only a split or an insert mints a new one). */
+export function touchKey(row: { _key: string }, field: string): string {
+  return `${row._key}:${field}`;
+}
+
+/**
+ * The `_key:field` entries to add to the touched set for an edit that turns `previous` into `next`.
+ *
+ * Only the server-writable fields are tracked, because they are the only ones
+ * `applyServerRowChanges` would otherwise overwrite. Tracking every field would grow a set nothing
+ * reads.
+ */
+export function touchedFields(previous: EditorRow[], next: EditorRow[]): string[] {
+  const before = new Map(previous.map((row) => [row._key, row]));
+  const keys: string[] = [];
+  for (const row of next) {
+    const was = before.get(row._key);
+    if (!was) continue; // a brand-new row carries the reviewer's values in full already
+    for (const field of SERVER_WRITABLE_FIELDS) {
+      if (was[field] !== row[field]) keys.push(touchKey(row, field));
+    }
+  }
+  return keys;
 }
 
 /**

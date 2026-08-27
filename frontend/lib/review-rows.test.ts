@@ -7,6 +7,8 @@ import {
   rowErrors,
   sortRows,
   stripKeys,
+  touchedFields,
+  touchKey,
   withKeys,
 } from "@/lib/review-rows";
 import type { Row } from "@/lib/types";
@@ -197,5 +199,90 @@ describe("applyServerRowChanges", () => {
       [{ ...row(1, 9) }],
     );
     expect(result.map((r) => r._key)).toEqual(["a", "b"]);
+  });
+});
+
+describe("applyServerRowChanges with a touched set", () => {
+  const local = (over: Partial<Row & { _key: string }> = {}): Row & { _key: string } => ({
+    ...row(1, 3),
+    _key: "k1",
+    ...over,
+  });
+
+  it("keeps an unsaved re-classify instead of reverting it to the server's category", () => {
+    // Measured on the previous fix: re-classifying a DIFFERENT summary on the Summaries tab fired
+    // reloadRows and reverted this row's unsaved category, because the server value was taken
+    // unconditionally for every span-matched row.
+    const rows = [local({ category: "13" })]; // reviewer typed 13, not saved yet
+    const server = [{ ...row(1, 3), category: "1" }];
+    const touched = new Set([touchKey(rows[0], "category")]);
+    expect(applyServerRowChanges(rows, server, touched)[0].category).toBe("13");
+    // Without the touched entry the server still wins - that is the reload doing its job.
+    expect(applyServerRowChanges(rows, server)[0].category).toBe("1");
+  });
+
+  it("keeps an unsaved untick instead of re-including the row", () => {
+    const rows = [local({ include: false })]; // reviewer unticked "summarize", not saved yet
+    const server = [{ ...row(1, 3), include: true }];
+    const touched = new Set([touchKey(rows[0], "include")]);
+    expect(applyServerRowChanges(rows, server, touched)[0].include).toBe(false);
+  });
+
+  it("protects only the touched field, so the other still tracks the server", () => {
+    const rows = [local({ category: "13", include: true })];
+    const server = [{ ...row(1, 3), category: "1", include: false }];
+    const result = applyServerRowChanges(rows, server, new Set([touchKey(rows[0], "category")]));
+    expect(result[0].category).toBe("13"); // the reviewer's
+    expect(result[0].include).toBe(false); // the Duplicates tab's
+  });
+
+  it("protects one row without protecting its neighbour", () => {
+    const rows = [
+      local({ _key: "a", start: 1, end: 3, category: "13" }),
+      local({ _key: "b", start: 4, end: 6, category: "13" }),
+    ];
+    const server = [
+      { ...row(1, 3), category: "1" },
+      { ...row(4, 6), category: "1" },
+    ];
+    const result = applyServerRowChanges(rows, server, new Set(["a:category"]));
+    expect(result.map((r) => r.category)).toEqual(["13", "1"]);
+  });
+});
+
+describe("touchedFields", () => {
+  const r = (over: Partial<Row & { _key: string }> = {}): Row & { _key: string } => ({
+    ...row(1, 3),
+    _key: "k1",
+    ...over,
+  });
+
+  it("reports the server-writable fields an edit changed", () => {
+    expect(touchedFields([r()], [r({ category: "13" })])).toEqual(["k1:category"]);
+    expect(touchedFields([r()], [r({ include: false })])).toEqual(["k1:include"]);
+    expect(touchedFields([r()], [r({ category: "13", include: false })])).toEqual([
+      "k1:include",
+      "k1:category",
+    ]);
+  });
+
+  it("reports nothing for an edit to a field the server never writes", () => {
+    // Title/date collisions cannot happen, so tracking them would grow a set nothing reads.
+    expect(touchedFields([r()], [r({ title: "New title", date: "01/01/2026" })])).toEqual([]);
+  });
+
+  it("reports nothing when an edit changes no value", () => {
+    expect(touchedFields([r()], [r()])).toEqual([]);
+  });
+
+  it("ignores a row that did not exist before the edit", () => {
+    // A split or insert mints a new _key; the row already carries the reviewer's values in full.
+    expect(touchedFields([r({ _key: "a" })], [r({ _key: "a" }), r({ _key: "b" })])).toEqual([]);
+  });
+
+  it("follows the row's key, not its position", () => {
+    const before = [r({ _key: "a", start: 4, end: 6 }), r({ _key: "b", start: 1, end: 3 })];
+    const after = [r({ _key: "b", start: 1, end: 3 }), r({ _key: "a", start: 4, end: 6, include: false })];
+    expect(touchedFields(before, after)).toEqual(["a:include"]);
   });
 });
