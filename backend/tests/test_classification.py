@@ -23,7 +23,7 @@ def _stub_generate(captured):
 
 def test_llm_classify_defaults_to_classify_model(monkeypatch):
     captured = {}
-    monkeypatch.setattr(classification, "get_genai_client", lambda: object())
+    monkeypatch.setattr(classification, "get_genai_client", object)
     monkeypatch.setattr(classification, "generate_with_retry", _stub_generate(captured))
     assert classification.llm_classify("Progress Report") == "1"
     assert captured["model"] == get_settings().classify_model
@@ -31,7 +31,7 @@ def test_llm_classify_defaults_to_classify_model(monkeypatch):
 
 def test_llm_classify_honors_model_override(monkeypatch):
     captured = {}
-    monkeypatch.setattr(classification, "get_genai_client", lambda: object())
+    monkeypatch.setattr(classification, "get_genai_client", object)
     monkeypatch.setattr(classification, "generate_with_retry", _stub_generate(captured))
     classification.llm_classify("anything", model="gemini-2.5-flash")
     assert captured["model"] == "gemini-2.5-flash"
@@ -1078,7 +1078,7 @@ def test_stopping_a_run_is_not_reported_as_an_llm_failure(monkeypatch):
         raise JobCancelled(3, 170)
 
     monkeypatch.setattr(classification, "generate_with_retry", cancelled)
-    monkeypatch.setattr(classification, "get_genai_client", lambda: object())
+    monkeypatch.setattr(classification, "get_genai_client", object)
 
     with pytest.raises(JobCancelled):
         classification.llm_classify("Progress Report")
@@ -1092,6 +1092,6 @@ def test_a_real_llm_failure_is_still_swallowed(monkeypatch):
         raise RuntimeError("vertex is unhappy")
 
     monkeypatch.setattr(classification, "generate_with_retry", boom)
-    monkeypatch.setattr(classification, "get_genai_client", lambda: object())
+    monkeypatch.setattr(classification, "get_genai_client", object)
 
     assert classification.llm_classify("Progress Report") is None
