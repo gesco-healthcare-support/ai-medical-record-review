@@ -53,6 +53,27 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _utc_iso(value: datetime | None) -> str | None:
+    """Serialize a stored timestamp as UTC, with the offset the browser needs to read it as UTC.
+
+    Every domain timestamp column is a bare `DateTime` (TIMESTAMP WITHOUT TIME ZONE), so a value
+    read back can never carry tzinfo even though `_utcnow` wrote an aware UTC one - and a bare
+    `isoformat()` therefore produced "2026-08-27T01:00:00" with no Z and no offset. The ECMAScript
+    date-time grammar reads that form as LOCAL time, so `new Date(doc.created_at)` in the browser
+    shifted every timestamp by the viewer's offset.
+
+    Two visible consequences on the landing table, both measured in Pacific (UTC-7): the Uploaded
+    date was a day late for anything uploaded after 17:00 local, and Last activity read "Just now"
+    for a record whose last job finished up to seven hours ago - so the column could not distinguish
+    a stalled record from a fresh one, which is the only thing it is for.
+
+    Fixed at the serializer rather than by migrating the columns: the stored values ARE UTC and are
+    correct, only the wire format was ambiguous, so this needs no migration and cannot reinterpret
+    any existing row.
+    """
+    return value.replace(tzinfo=UTC).isoformat() if value is not None else None
+
+
 # --- auth (Flask-Security fsqla_v3 schema, mirrored exactly) --------------------------------
 
 roles_users = Table(
@@ -176,8 +197,8 @@ class Document(Base):
             "original_filename": self.original_filename,
             "page_count": self.page_count,
             "status": self.status,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
+            "created_at": _utc_iso(self.created_at),
+            "updated_at": _utc_iso(self.updated_at),
             "active_job": job.progress() if job else None,
             "patient_first_name": first,
             "patient_last_name": last,

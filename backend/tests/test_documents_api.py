@@ -2403,3 +2403,34 @@ async def test_a_record_whose_only_dedup_failed_still_reports_as_unchecked(authe
     assert body["checked"] is False
     assert body["stale"] is False and body["unreadable"] == 0
     assert body["job"]["state"] == "error"
+
+
+async def test_the_listing_timestamps_carry_their_utc_offset(authed):
+    """DEMONSTRATES the bug: on origin/main these come back with no Z and no offset.
+
+    Every domain timestamp column is a bare `DateTime` (TIMESTAMP WITHOUT TIME ZONE), so a value
+    read back can never carry tzinfo even though `_utcnow` wrote an aware UTC one. A bare
+    `isoformat()` therefore produced "2026-08-27T01:00:00", and the ECMAScript date-time grammar
+    reads that form as LOCAL time - so `new Date(doc.created_at)` shifted every timestamp by the
+    viewer's offset.
+
+    Measured in Pacific (UTC-7): the Uploaded column was a day late for anything uploaded after
+    17:00 local, and Last activity read "Just now" for a record whose last job finished up to seven
+    hours ago - so it could not distinguish a stalled record from a fresh one, which is what it is
+    for.
+    """
+    from datetime import UTC, datetime
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+
+    body = (await client.get("/api/documents")).json()
+    row = next(d for d in body if d["id"] == doc_id)
+
+    for field in ("created_at", "updated_at"):
+        value = row[field]
+        parsed = datetime.fromisoformat(value)
+        assert parsed.tzinfo is not None, f"{field} has no offset, so a browser reads it as local"
+        assert parsed.utcoffset().total_seconds() == 0, f"{field} is not UTC"
+        # Within a few minutes of now, i.e. the instant is right as well as the marker.
+        assert abs((datetime.now(UTC) - parsed).total_seconds()) < 300

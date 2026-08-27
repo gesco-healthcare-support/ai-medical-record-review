@@ -351,3 +351,93 @@ async def test_a_built_in_category_can_take_a_custom_prompt_on_a_fresh_box(admin
     assert (
         await admin_client.put("/api/admin/prompts/9998", json={"text": "x"})
     ).status_code == 404
+
+
+def _row_in_category(category: str) -> str:
+    """A document with one review row carrying `category`; returns the document id."""
+    with get_sessionmaker()() as session:
+        owner = User(
+            email=unique_test_email(),
+            name="Owner",
+            password=MrrPasswordHelper().hash("Str0ng#pw1"),
+            active=True,
+        )
+        session.add(owner)
+        session.flush()
+        document = Document(
+            id=str(uuid.uuid4()),
+            user_id=owner.id,
+            original_filename="synthetic.pdf",
+            stored_path="/nonexistent/synthetic.pdf",
+            sha256="0" * 64,
+            page_count=1,
+        )
+        session.add(document)
+        session.flush()
+        session.add(
+            ReviewRow(
+                document_id=document.id,
+                idx=0,
+                start=1,
+                end=1,
+                category=category,
+                title="A",
+                date="-",
+                injury_date="-",
+                flag="-",
+                include=True,
+            )
+        )
+        session.commit()
+        return document.id
+
+
+async def test_a_category_in_use_cannot_be_deactivated(admin_client):
+    """DEMONSTRATES the bug: on origin/main this 200s and every document holding the category
+    becomes unsaveable.
+
+    `validate_rows` accepts only ACTIVE categories and `_store_rows` runs it on every save, so
+    deactivating a category in use makes the app reject rows the app itself wrote - autosave and
+    Summarize both 400 with "unknown category", for every owner, with nothing naming the cause. The
+    only way out is hand-editing every affected row, or re-activating.
+
+    Already known here: catalog.get_prompt's docstring records that category 11 "is not deactivated
+    either" for exactly this reason, and migration b3f7c02e91a4 refuses to delete category 15 while
+    any review row references it. Only this endpoint had no such check.
+    """
+    from app.services import catalog
+    from app.services.rows import validate_rows
+
+    # A 900x category rather than a built-in, so this does not depend on the catalog having been
+    # materialized: PATCH needs a ROW to edit, and on an unseeded box the built-ins have none.
+    await admin_client.post("/api/admin/categories", json={"id": "9009", "name": "In use"})
+    _row_in_category("9009")
+
+    resp = await admin_client.patch("/api/admin/categories/9009", json={"active": False})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "9009" in detail and "cannot be deactivated" in detail
+
+    # The half a reviewer feels: a row carrying that category still saves.
+    with get_sessionmaker()() as session:
+        assert validate_rows(session, [{"start": 1, "end": 2, "category": "9009"}], 5) is None
+        assert "9009" in catalog.get_category_ids(session, active_only=True)
+
+
+async def test_an_unused_category_can_still_be_deactivated(admin_client):
+    """GUARDS against over-correcting: the soft-delete has to keep working, or a mistyped category
+    could never be retired."""
+    await admin_client.post("/api/admin/categories", json={"id": "9007", "name": "Unused"})
+    resp = await admin_client.patch("/api/admin/categories/9007", json={"active": False})
+    assert resp.status_code == 200 and resp.json()["active"] is False
+
+
+async def test_reactivating_a_category_in_use_is_not_blocked(admin_client):
+    """The guard is on the DEACTIVATE transition only. Re-activating is the recovery path for a
+    category deactivated before this guard existed, so it must never be refused."""
+    await admin_client.post("/api/admin/categories", json={"id": "9008", "name": "Off"})
+    await admin_client.patch("/api/admin/categories/9008", json={"active": False})
+    _row_in_category("9008")
+
+    resp = await admin_client.patch("/api/admin/categories/9008", json={"active": True})
+    assert resp.status_code == 200 and resp.json()["active"] is True
