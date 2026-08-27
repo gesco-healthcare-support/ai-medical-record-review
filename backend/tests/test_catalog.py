@@ -322,3 +322,29 @@ def test_creating_a_category_that_is_already_a_constant_is_a_conflict(session):
         create_category(CategoryCreate(id="13", name="Shadow"), session, user)
     assert exc.value.status_code == 400 and "already exists" in exc.value.detail
     assert len([c for c in catalog.get_categories(session) if c["id"] == "13"]) == 1
+
+
+def test_seed_categories_survives_losing_the_insert_race(session):
+    """GUARDS the new code. Two admins creating at the same moment on an unseeded box both pass the
+    emptiness check; the slower one collides on the primary key. It must not surface as a 500, and
+    the catalog must be seeded either way - the winner wrote the same constants."""
+    from app.models import Category
+    from app.services.seed_catalog import seed_categories
+
+    # Stand in for the other request having committed between our check and our insert.
+    original = session.scalar
+
+    def racing_scalar(statement, *args, **kwargs):
+        session.scalar = original  # only intercept the emptiness check itself
+        result = original(statement, *args, **kwargs)
+        for category in constants_categories():
+            session.add(Category(**category))
+        session.commit()
+        return result  # None: we still believe the table is empty
+
+    session.scalar = racing_scalar
+    seed_categories(session)  # must not raise
+
+    ids = {c["id"] for c in catalog.get_categories(session)}
+    assert ids == {c["id"] for c in constants_categories()}
+    assert validate_rows(session, [{"start": 1, "end": 2, "category": "1"}], 5) is None

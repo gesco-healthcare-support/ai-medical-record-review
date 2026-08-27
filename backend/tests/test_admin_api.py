@@ -300,3 +300,54 @@ async def test_reprocess_unknown_and_no_rows(admin_client):
         doc_id = document.id
 
     assert (await admin_client.post(f"/api/admin/reprocess/{doc_id}")).status_code == 400
+
+
+async def test_the_admin_page_shows_the_built_ins_without_writing_them(admin_client):
+    """DEMONSTRATES the bug: on origin/main this returns [] on an unseeded catalog.
+
+    The catalog serves sixteen categories from the constants while `categories` is empty - the
+    normal state for a fresh box, local dev and CI - but this route read the raw table, so the admin
+    page claimed the app had no categories at all. That emptiness is also what steered an admin into
+    creating one, which used to collapse the catalog.
+    """
+    listing = (await admin_client.get("/api/admin/categories")).json()
+    ids = {c["id"] for c in listing}
+    for category_id in ("1", "3", "5", "6", "10", "13", "15", "100"):
+        assert category_id in ids
+    # Same shape as a row-backed category, or the admin UI cannot render it.
+    general = next(c for c in listing if c["id"] == "100")
+    assert general["summarize_default"] is False and general["active"] is True
+    assert "has_summary_prompt" in general and "examples" in general
+
+    # A GET must not write - it is cached, prefetched and repeated. The edit routes seed instead.
+    with get_sessionmaker()() as session:
+        assert session.scalars(select(Category.id)).all() == []
+
+
+async def test_a_built_in_category_can_be_edited_on_a_fresh_box(admin_client):
+    """DEMONSTRATES the bug: on origin/main both of these are 404 until somebody creates a category.
+
+    The catalog serves the built-ins from the constants, but there is no ROW to edit, so the whole
+    catalog was read-only on a fresh box - and once the create path was guarded, creating a category
+    was the only way out of that state.
+    """
+    patched = await admin_client.patch(
+        "/api/admin/categories/13", json={"summarize_default": False}
+    )
+    assert patched.status_code == 200
+    assert patched.json()["summarize_default"] is False
+    assert patched.json()["id"] == "13"
+
+    # Seeding materialized the whole catalog, not just the row being edited.
+    with get_sessionmaker()() as session:
+        assert len(session.scalars(select(Category.id)).all()) > 1
+        assert validate_rows(session, [{"start": 1, "end": 2, "category": "1"}], 5) is None
+
+
+async def test_a_built_in_category_can_take_a_custom_prompt_on_a_fresh_box(admin_client):
+    put = await admin_client.put("/api/admin/prompts/13", json={"text": "Summarize this."})
+    assert put.status_code == 200 and put.json()["custom"] is True
+    # An id that is not a category at all is still a 404 - seeding must not invent one.
+    assert (
+        await admin_client.put("/api/admin/prompts/9998", json={"text": "x"})
+    ).status_code == 404
