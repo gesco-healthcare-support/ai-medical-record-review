@@ -25,6 +25,7 @@ from app.services import catalog
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.taxonomy import CATEGORIES, DEFAULT_ID
+from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,36 @@ _EVALUATOR_MENTION = "13"
 # 2026-08-18: decided in-house, NOT confirmed with eData. Reversible - drop an id to restore the
 # previous answer for that shape.
 _EVALUATOR_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, deposition, lab
+
+# The same shape one rule lower down, and the same remedy. "follow-up" describes a VISIT'S PLACE IN A
+# COURSE OF CARE, not a document type - a study, an operative report or a lab panel can each be a
+# follow-up - but the token sits unqualified in the category-1 rule at index 7, ahead of imaging (9),
+# operative (10), deposition (11) and laboratory (16). First match wins, so "Follow-Up MRI of the
+# Lumbar Spine" answered 1, short-circuited before the embedding and LLM stages, and came back
+# confidence='high' with needs_review False. The row is then summarized with the PR-2 treating prompt
+# instead of the diagnostic one, and nothing flags it.
+#
+# Identical to the two defects this file has already fixed: `laborator` living in rule 3, which
+# summarized a metabolic panel with the diagnostic prompt, and "Radiology Order" matching `radiolog`,
+# an order FOR a study classified as the study itself.
+#
+# Withheld ONLY when follow-up is the sole reason category 1 matched. "Office Visit Follow-Up MRI"
+# and "Progress Note - MRI Lumbar Spine" still answer 1, because those titles name a treating visit
+# outright - the guard reads the REASON the rule fired, not merely that it did.
+#
+# MEASURED before shipping, on all 1,478 distinct titles on the box: ZERO change their answer, and
+# zero titles carry a follow-up token beside a modality token at all. So this is a statement of
+# intent for the day a title carries both, not a fix for observed loss - the same footing as the
+# order-versus-imaging precedence in #151. The alternative, qualifying the token so it only matches
+# "follow-up visit"/"follow-up appointment", was measured too and REJECTED: it moved 4 real titles
+# from 1 to no-rule-at-all, spending live content to fix nothing.
+_FOLLOWUP_MENTION = "1"
+_FOLLOWUP_TOKEN = re.compile(r"follow ?-? ?up")
+# The category-1 rule minus that token: did anything else in it match?
+_TREATING_VISIT_WITHOUT_FOLLOWUP = re.compile(
+    r"\bpr-?2\b|progress report|progress note|office visit|work status"
+)
+_FOLLOWUP_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, deposition, lab
 
 # Words that name a DOCUMENT rather than the paperwork wrapped around it. The segmenter is told to
 # fold a cover sheet into the document it travels with and to title the record from the visible
@@ -392,6 +423,10 @@ class Classification:
 def match_rules(title):
     """Return a category id if a high-precision rule matches the title, else None.
 
+    A bare position-in-care token yields to a document type: "follow-up" says WHEN a visit happened,
+    not what the pages are, so "Follow-Up MRI" is an MRI. Withheld only when that token is the sole
+    reason category 1 matched, so "Office Visit Follow-Up MRI" is still a visit.
+
     Document beats wrapper, in two steps. If the title names a document at all (_DOCUMENT_NOUN, e.g.
     "Cover Letter - Psychological Evaluation Report"), the administrative rules stand down entirely
     and the normal cascade answers - falling through to the embedding + LLM stages when no keyword
@@ -404,6 +439,13 @@ def match_rules(title):
     matches = [category for pattern, category in _RULES if pattern.search(text)]
     if _EVALUATOR_MENTION in matches and not _EVALUATOR_YIELDS_TO.isdisjoint(matches):
         matches = [c for c in matches if c != _EVALUATOR_MENTION]
+    if (
+        _FOLLOWUP_MENTION in matches
+        and _FOLLOWUP_TOKEN.search(text)
+        and not _TREATING_VISIT_WITHOUT_FOLLOWUP.search(text)
+        and not _FOLLOWUP_YIELDS_TO.isdisjoint(matches)
+    ):
+        matches = [c for c in matches if c != _FOLLOWUP_MENTION]
     administrative = any(pattern.search(text) for pattern in _ADMIN_RULES)
     carries_a_document = _DOCUMENT_NOUN.search(text) and not _PAPERWORK_ABOUT_A_DOCUMENT.search(
         text
@@ -565,6 +607,15 @@ def llm_classify(text, model=None):
             contents=prompt,
             config=config,
         )
+    except JobCancelled:
+        # NOT a model failure - the reviewer pressed Stop. `generate_with_retry` raises this out of
+        # its backoff sleep as a cooperative control-flow signal, meant to unwind through the pool to
+        # _run's handler. Catching it here logged a deliberate user action as an LLM error, which is
+        # misleading in exactly the place an operator looks to ask whether Vertex was rejecting
+        # calls, and returned None - so classify() took the llm_category-is-None branch and answered
+        # from the embedding alone. Bounded (report() catches the cancel a row later) but wrong on
+        # both counts: up to CLASSIFY_WORKERS rows decided by a single weak vote.
+        raise
     except Exception as exc:
         logger.warning("LLM classification failed: %s", exc)
         return None
