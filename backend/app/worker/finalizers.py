@@ -28,13 +28,9 @@ path - do not make them closures or move them without updating both call sites.
 import logging
 
 from app.db import get_sessionmaker
-from app.services.jobs import STATUS_ON_CANCEL, mark_terminal
+from app.services.jobs import INTERRUPTIBLE_DOCUMENT_STATUSES, STATUS_ON_CANCEL, mark_terminal
 
 logger = logging.getLogger(__name__)
-
-# Where orphan recovery is willing to overwrite the document's status. A dedup job leaves it
-# "reviewing", and reporting that as interrupted would show a failed stage the reviewer never ran.
-_INTERRUPTIBLE_DOCUMENT_STATUSES = ("segmenting", "summarizing")
 
 
 def _db_job_id(rq_job) -> int | None:
@@ -98,7 +94,7 @@ def on_job_failed(rq_job, connection, *exc_info) -> None:
                 job_id,
                 "interrupted",
                 document_status="interrupted",
-                document_status_only_when=_INTERRUPTIBLE_DOCUMENT_STATUSES,
+                document_status_only_when=INTERRUPTIBLE_DOCUMENT_STATUSES,
             ):
                 logger.info("job %s finalized as interrupted by the failure callback", job_id)
     except Exception:

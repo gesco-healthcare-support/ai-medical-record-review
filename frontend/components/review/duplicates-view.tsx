@@ -34,9 +34,15 @@ export function DuplicatesView({
   const running = job?.state === "queued" || job?.state === "running";
   const clusters = data?.clusters ?? [];
   const unreadable = data?.unreadable ?? 0;
+  // The last check ran and did not finish. Nothing said so: `checked` is false for a failed job, so
+  // this fell into `neverChecked` and the counter silently reverted to "Not checked yet" mid-run -
+  // a failed check was indistinguishable from one nobody had started, and `job.error` was fetched
+  // and never read by anything. Cancelled is deliberately not an error: the reviewer did that.
+  const failed = job?.state === "error" || job?.state === "interrupted";
   // No check has ever finished on this record. Distinct from "checked and clean" and it must not read
   // as it: dedup only runs when someone asks, so this is the state a record sits in by default.
-  const neverChecked = data !== undefined && !data.checked && !running;
+  // Also distinct from a check that FAILED, which has its own banner and its own next step.
+  const neverChecked = data !== undefined && !data.checked && !running && !failed;
   // Boundaries changed since the last check: point at the header's "Re-check duplicates" (a re-run
   // is always manual - it costs AI calls). Hidden while a check is already in flight.
   const stale = Boolean(data?.stale) && !running;
@@ -122,6 +128,23 @@ export function DuplicatesView({
           </div>
         ) : null}
 
+        {/* A check that ran and failed. Without this the tab reverted to "Not checked yet" with no
+            error text, so the reviewer could not tell a failure from a mis-click, and re-clicking
+            produced the same silent outcome. When an earlier run DID complete, its clusters are
+            still stored and still listed, so the wording has to hold for both. */}
+        {failed ? (
+          <div className="banner" aria-live="polite">
+            <span>
+              The last duplicate check did not finish
+              {job?.error ? `: ${job.error}` : "."} Use &quot;Re-check duplicates&quot; above to try
+              again.
+              {data?.checked
+                ? " The groups below are from the last check that completed."
+                : " Nothing in this record has been compared yet."}
+            </span>
+          </div>
+        ) : null}
+
         {/* A run that could not read part of the record is not a clean result: text-free
             sub-documents match nothing, so any duplicate involving them was never even considered.
             Silence here reads as "no duplicates", which is the wrong conclusion to hand a reviewer. */}
@@ -143,19 +166,26 @@ export function DuplicatesView({
                 of minutes (1498 pages measured at ~47), and a static "Checking for duplicates..."
                 in the middle of an empty tab is indistinguishable from a hung job - which is exactly
                 how it was reported. */}
+            {/* `failed` has to come before the clean result: with no stored clusters a check that
+                died would otherwise read as "No duplicates", which is the one conclusion a failed
+                run cannot support. */}
             <p className="empty-title">
               {running
                 ? `Checking for duplicates${job?.total ? ` (${job.current}/${job.total})` : "..."}`
-                : neverChecked
-                  ? "Not checked yet"
-                  : "No duplicates"}
+                : failed
+                  ? "Check did not finish"
+                  : neverChecked
+                    ? "Not checked yet"
+                    : "No duplicates"}
             </p>
             <p>
               {running
                 ? "Scanning the record for documents that were scanned more than once."
-                : neverChecked
-                  ? "This record has not been scanned for duplicates."
-                  : "The record has no groups of duplicate documents to review."}
+                : failed
+                  ? "The last duplicate check stopped before it could compare this record."
+                  : neverChecked
+                    ? "This record has not been scanned for duplicates."
+                    : "The record has no groups of duplicate documents to review."}
             </p>
           </div>
         ) : (
