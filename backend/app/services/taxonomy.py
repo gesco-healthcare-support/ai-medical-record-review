@@ -137,11 +137,27 @@ CATEGORIES: dict[str, "Category"] = {
             "CT Scan Report",
         ),
     ),
+    # Widened from gastroenterology-only on the reviewer's own answer (#175, Adam 2026-08-26): "no it
+    # should be more general, you should make that a bucket for any non-orthopedic outpatient similar
+    # type procedure, but really that is not something worth worrying about to a significant degree
+    # because it's non-orthopedic and for the most part non-orthopedic records are of little to no
+    # concern."
+    #
+    # The NAME moves with the description because the two are read by different consumers and a
+    # disagreement between them is its own trap: the description is what the embedding and LLM stages
+    # see, the name is what a reviewer picks from the editor dropdown. Leaving "GI" in the name would
+    # have told a reviewer the bucket is narrower than the classifier now treats it.
+    #
+    # GI stays as an EXAMPLE rather than in the definition - it is the one type this bucket was
+    # built for and still the only shape observed on the box, so it earns a title, not the boundary.
     "4": Category(
         "4",
-        "GI outpatient procedure H&P",
-        "Gastrointestinal outpatient procedure history and physical.",
-        ("GI Outpatient Procedure H&P",),
+        "Non-orthopedic outpatient procedure H&P",
+        "History and physical for a NON-ORTHOPEDIC outpatient procedure - gastrointestinal "
+        "endoscopy and colonoscopy, and similar same-day procedures in other non-orthopedic "
+        "specialties. An orthopedic or spinal procedure's history and physical is a treating or "
+        "medico-legal report and belongs to its own category, not here.",
+        ("GI Outpatient Procedure H&P", "Outpatient Procedure History and Physical"),
     ),
     "5": Category(
         "5",
