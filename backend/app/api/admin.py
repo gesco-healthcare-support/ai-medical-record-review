@@ -10,13 +10,13 @@ soft-deletes. `reprocess` is admin-scoped: it acts on ANY owner's document (no o
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth.deps import current_superuser
 from app.config import get_settings
 from app.db import get_db
-from app.models import Category, Document, Prompt, User
+from app.models import Category, Document, Prompt, ReviewRow, User
 from app.schemas.admin import CategoryCreate, CategoryUpdate, PromptPut
 from app.services import catalog
 from app.services.audit import audit
@@ -118,7 +118,32 @@ def update_category(
     if "summarize_default" in body:
         category.summarize_default = bool(body["summarize_default"])
     if "active" in body:
-        category.active = bool(body["active"])  # active=False is the soft-delete
+        active = bool(body["active"])
+        # Deactivating a category IN USE makes every document holding it unsaveable, for every
+        # owner. `rows.validate_rows` accepts only ids in get_category_ids(active_only=True) and
+        # `_store_rows` runs it on every save, so removing an id from that set makes the app reject
+        # rows the app itself wrote: autosave and Summarize both 400 with "unknown category", and
+        # nothing in the API or the UI names the deactivated category as the cause. The only way out
+        # is hand-editing every affected row, or re-activating.
+        #
+        # The codebase already knew: catalog.get_prompt's docstring records that category 11 "is not
+        # deactivated either" for exactly this reason, and migration b3f7c02e91a4 refuses to delete
+        # category 15 while any review row references it. This endpoint offered the same state
+        # change with no such check - and it is not owner-scoped, so one toggle reaches everyone.
+        if not active and category.active:
+            in_use = session.scalar(
+                select(func.count()).select_from(ReviewRow).where(ReviewRow.category == category_id)
+            )
+            if in_use:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"category {category_id} is used by {in_use} sub-document"
+                        f"{'' if in_use == 1 else 's'} and cannot be deactivated. Move those rows "
+                        "to another category first."
+                    ),
+                )
+        category.active = active  # active=False is the soft-delete
     session.commit()
     catalog.bump_revision(session)
     audit(session, "category.update", user.id)
