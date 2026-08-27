@@ -1744,52 +1744,95 @@ def test_presentable_title_keeps_a_page_reference_that_is_not_the_suffix():
 # --- the two title paths that could still overflow varchar(512) -------------------------------
 
 
-def test_an_over_long_row_title_is_bounded_before_it_is_decorated():
-    """DEMONSTRATES the bug. `_usable_title` bounds the value from the TITLE CALL, and its whole
-    reason for existing is that an over-long title "exceeded summaries.title (varchar 512), Postgres
-    refused the row, and the per-row commit killed a 124-row job at row 109".
+def _decorated_len(title: str) -> int:
+    """Widest decoration the engine adds to a stored title."""
+    return len(f"[ManualCheck] {title} [Diagnostic Study] (Pages 9999-9999)")
 
-    The FALLBACK branch had no length test at all. `row["title"]` is a review_rows.title varchar(512)
-    stored verbatim - parse_segment_item only strips, and `_store_rows` writes it unmodified - so a
-    500-character segmentation title plus ~51 characters of decoration is over the limit again.
-    Worse than one row: the worker's persist is OUTSIDE the per-row try/except, so the DataError
-    kills the whole job.
+
+def test_an_over_long_row_title_cannot_overflow_the_column(monkeypatch):
+    """DEMONSTRATES the bug, and asserts the PROPERTY rather than the new constant, so it fails on
+    origin/main for the real reason: the decorated title is longer than the column.
+
+    `_usable_title` bounds the value from the TITLE call - that is its whole reason for existing,
+    after an over-long title "exceeded summaries.title (varchar 512), Postgres refused the row, and
+    the per-row commit killed a 124-row job at row 109". Its FALLBACK branch had no length test.
+    `row["title"]` is a review_rows.title varchar(512) stored verbatim, so a 500-character
+    segmentation title plus the decoration is over the limit again - and the worker's persist sits
+    OUTSIDE the per-row try/except, so that DataError kills the whole job rather than one row.
     """
-    long_row_title = "A" * 500
-    kept = se._usable_title("unusable prose " * 40, long_row_title)
-    assert len(kept) == se.MAX_STORED_TITLE
-    # Room for every decoration the engine adds, with the widest page suffix.
-    decorated = f"[ManualCheck] {kept} [Diagnostic Study] (Pages 9999-9999)"
-    assert len(decorated) <= 512
+    kept = se._usable_title("unusable prose " * 40, "A" * 500)
+    assert _decorated_len(kept) <= 512
 
 
-def test_a_row_title_that_fits_is_not_touched():
-    """GUARDS against truncating a normal header: only an over-long one is cut."""
+def test_a_row_title_that_fits_is_not_truncated():
+    """GUARDS against cutting a normal header: only an over-long one is bounded."""
     normal = "SAMPLE, M.D. ACME CLINIC. PROGRESS REPORT."
     assert se._usable_title("   ", normal) == normal
-    at_limit = "B" * se.MAX_STORED_TITLE
-    assert se._usable_title("", at_limit) == at_limit
 
 
-def test_the_decoration_budget_leaves_room_for_the_generated_title_too():
-    """The generated bound and the column bound have to be consistent, or one of them is decoration.
-    MAX_GENERATED_TITLE is the tighter of the two by design."""
-    assert se.MAX_GENERATED_TITLE < se.MAX_STORED_TITLE
-    widest = f"[ManualCheck] {'A' * se.MAX_GENERATED_TITLE} [Diagnostic Study] (Pages 9999-9999)"
-    assert len(widest) <= 512
+def test_a_generated_title_at_its_limit_still_fits_the_column():
+    """The two bounds have to be consistent, or one of them is decoration."""
+    widest = "A" * se.MAX_GENERATED_TITLE
+    assert se._usable_title(widest, "FALLBACK") == widest
+    assert _decorated_len(widest) <= 512
 
 
-def test_an_over_long_audited_title_is_rejected_rather_than_stored():
-    """DEMONSTRATES the second hole. The audit's schema declares a plain {"type": "string"} with no
-    maxLength - and Gemini ignores maxLength anyway - and its result went into verified_title, the
-    sibling varchar(512) the original guard never covered.
+def test_an_over_long_audited_title_is_not_stored(monkeypatch):
+    """DEMONSTRATES the second hole, through summarize_row - which is the only place it shows.
 
-    Rejected rather than truncated: an unusable correction resolves to the current title, so
-    `fixed_title != title` is False and no verified_title is stored - the same remedy a rejected BODY
-    rewrite gets, which keeps the raw body.
+    `_usable_title` was never APPLIED to the audit's title, so a unit test on it cannot show this.
+    `verify_summary`'s schema declares a plain {"type": "string"} with no maxLength - and Gemini
+    ignores maxLength anyway - and the result is written to verified_title, the sibling varchar(512)
+    the original guard never covered. On origin/main this stores a ~600-character title.
+
+    Rejected rather than truncated: an unusable correction resolves to the current title, so no
+    verifiedTitle is stored - the same remedy a rejected BODY rewrite gets.
     """
-    title = "SAMPLE, M.D. ACME CLINIC. PROGRESS REPORT."
-    assert se._usable_title("X" * 600, title, source="audited") == title
-    # A usable correction still comes through.
-    corrected = "SAMPLE, M.D. ACME CLINIC. PROGRESS REPORT. 09/25/2023."
-    assert se._usable_title(corrected, title, source="audited") == corrected
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("Source text", _clean(pages)),
+    )
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": "Summary body",
+            "fixed_title": "X" * 600,
+            "issues": [{"type": "unsupported", "detail": "d"}],
+            "ok": True,
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedTitle"] is None or _decorated_len(out["verifiedTitle"]) <= 512
+    # The issues are still reported, so the reviewer sees the audit ran.
+    assert out["verifyIssues"]
+
+
+def test_a_usable_audited_title_still_comes_through(monkeypatch):
+    """GUARDS the other direction: bounding the audit must not discard a real correction."""
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("Source text", _clean(pages)),
+    )
+    corrected = "PROGRESS NOTE - DR SMITH. 09/25/2023."
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": "Summary body",
+            "fixed_title": corrected,
+            "issues": [{"type": "wrong_date", "detail": "d"}],
+            "ok": True,
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedTitle"] is not None
+    assert corrected in out["verifiedTitle"]
