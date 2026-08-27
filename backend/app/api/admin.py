@@ -29,15 +29,28 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(cu
 _ID_RE = re.compile(r"^\d+$")
 
 
-def _category_payload(session: Session, category: Category) -> dict:
-    data = category.listing()
-    data["has_summary_prompt"] = (
+def _has_summary_prompt(session: Session, category_id: str) -> bool:
+    return (
         session.scalar(
-            select(Prompt).where(Prompt.role == "summary", Prompt.category_id == category.id)
+            select(Prompt).where(Prompt.role == "summary", Prompt.category_id == category_id)
         )
         is not None
     )
+
+
+def _category_payload(session: Session, category: Category) -> dict:
+    data = category.listing()
+    data["has_summary_prompt"] = _has_summary_prompt(session, category.id)
     return data
+
+
+def _builtin_payload(session: Session, listing: dict) -> dict:
+    """The same shape for a category that exists only as a constant, so the admin page can show it.
+
+    `listing()` and `constants_categories()` already agree field for field - that is stated where the
+    constants are defined - so nothing needs mapping here.
+    """
+    return {**listing, "has_summary_prompt": _has_summary_prompt(session, listing["id"])}
 
 
 @router.get("/whoami")
@@ -47,8 +60,26 @@ def whoami(user: User = Depends(current_superuser)):
 
 @router.get("/categories")
 def list_categories(session: Session = Depends(get_db)):
-    categories = sorted(session.scalars(select(Category)).all(), key=lambda c: int(c.id))
-    return [_category_payload(session, c) for c in categories]
+    """Every category the app actually uses, whether or not it has a row yet.
+
+    This reads the CATALOG, not the raw table, and the difference only shows on a catalog that has
+    never been written to - which is the normal state for a fresh box, local dev and CI, because
+    nothing in `app/` seeds. Reading the table there returned an empty list, so the admin page said
+    the app had no categories at all while every reviewer was happily using sixteen of them.
+
+    That emptiness was also what steered an admin into creating one, which used to collapse the
+    catalog. Showing the built-ins removes the reason to click Add at all.
+
+    Deliberately does NOT seed. A GET must not write - it is cached, prefetched and repeated - so
+    the two edit routes materialize on demand instead, and this one stays a pure read.
+    """
+    rows = {row.id: row for row in session.scalars(select(Category)).all()}
+    return [
+        _category_payload(session, rows[c["id"]])
+        if c["id"] in rows
+        else _builtin_payload(session, c)
+        for c in catalog.get_categories(session)
+    ]
 
 
 @router.post("/categories", status_code=status.HTTP_201_CREATED)
@@ -100,6 +131,11 @@ def update_category(
     session: Session = Depends(get_db),
     user: User = Depends(current_superuser),
 ):
+    # Materialize first, or every built-in is a 404 here: the catalog serves them from the
+    # constants, but there is no ROW to edit until something writes one. On a fresh box that made
+    # the whole catalog read-only, and after the create path was guarded it left creating a category
+    # as the only way out of that state. A PATCH is a write, so seeding inside it costs nothing.
+    seed_categories(session)
     category = session.get(Category, category_id)
     if category is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -149,6 +185,7 @@ def put_summary_prompt(
     session: Session = Depends(get_db),
     user: User = Depends(current_superuser),
 ):
+    seed_categories(session)  # same reason as update_category: a built-in has no row to attach to
     if session.get(Category, category_id) is None:
         raise HTTPException(status_code=404, detail="unknown category")
     text = (payload.text or "").strip()

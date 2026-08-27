@@ -17,20 +17,28 @@ from sqlalchemy.orm import Session
 from app.models import Document, Job
 
 # `classify` (P6 individual-record auto-categorization) shares segment's status transitions:
-# it prepares rows for review, so done -> reviewing. `dedup` (duplicate clustering) runs in the
-# background AFTER identify while the reviewer works, so it keeps document.status "reviewing" on both
-# enqueue and done - it never changes the pipeline stage the UI shows.
-STATUS_ON_ENQUEUE = {
+# it prepares rows for review, so done -> reviewing.
+#
+# `dedup` is None everywhere, which is the literal statement of what these comments always claimed:
+# duplicate clustering is ADVISORY and runs beside the reviewer's work, so it never changes the
+# pipeline stage the UI shows. Writing "reviewing" only expressed that while the document already
+# WAS "reviewing" - and the Duplicates tab lives in step 2, which the stepper lets a reviewer return
+# to at any time. So "Re-check duplicates" on a finished record rewrote "done" or "needs_attention"
+# to "reviewing": the badge changed, the record moved between filter tabs on the landing page, the
+# workbench stopped opening on Summaries, and the list of sub-documents a needs_attention run had
+# named became unreachable, since GET /status returns only the newest job and the dedup job carries
+# no `attention`. None means "leave the stage alone", which is what advisory has to mean.
+STATUS_ON_ENQUEUE: dict[str, str | None] = {
     "segment": "segmenting",
     "classify": "segmenting",
     "summarize": "summarizing",
-    "dedup": "reviewing",
+    "dedup": None,
 }
-STATUS_ON_DONE = {
+STATUS_ON_DONE: dict[str, str | None] = {
     "segment": "reviewing",
     "classify": "reviewing",
     "summarize": "done",
-    "dedup": "reviewing",
+    "dedup": None,
 }
 # Where a CANCELLED job leaves the document. Not the same as STATUS_ON_DONE, and segment is the reason
 # why: a cancelled first segment run has no rows, and "reviewing" would open an empty editor as though
@@ -38,12 +46,21 @@ STATUS_ON_DONE = {
 # been done - and it is also what the Start / Re-run controls key off, so the reviewer gets an obvious
 # way forward. The other three ran against rows that already exist, so "reviewing" renders whatever
 # partial output was committed, which the reviewer is entitled to see.
-STATUS_ON_CANCEL = {
+STATUS_ON_CANCEL: dict[str, str | None] = {
     "segment": "uploaded",
     "classify": "reviewing",
     "summarize": "reviewing",
-    "dedup": "reviewing",
+    "dedup": None,
 }
+# Where a FAILED or INTERRUPTED job may overwrite the document's status. A job only owns the stage
+# it put the document into, so it may only move it out of that stage - anything else reports a
+# failure over work the reviewer already completed. An advisory dedup sets no stage at all, which is
+# why neither of these is "reviewing": a dedup that dies must leave a summarized record summarized.
+#
+# One constant, because this was three: a named tuple in worker/finalizers, an inline copy in
+# worker/recovery, and NOTHING in worker/tasks - so which failure mode killed a job decided whether
+# the document's status survived it.
+INTERRUPTIBLE_DOCUMENT_STATUSES = ("segmenting", "summarizing")
 # `paused` is a resumable summarize run awaiting its delayed resume (item 7): still in-flight, so
 # it blocks a second job for the same document and is inspected by orphan recovery.
 ACTIVE_STATES = ("queued", "running", "paused")
@@ -81,9 +98,11 @@ def mark_terminal(
     by the database, so the first writer wins and later ones become no-ops instead of overwriting
     an outcome the reviewer has already been shown.
 
-    ``document_status_only_when`` narrows the document write to those statuses, mirroring orphan
-    recovery: a background dedup leaves the document "reviewing", and marking that "interrupted"
-    would report a failed review over a job the reviewer never watched.
+    ``document_status_only_when`` narrows the document write to those statuses - pass
+    INTERRUPTIBLE_DOCUMENT_STATUSES for a failure or an interruption. A job may only move the
+    document out of the stage it put it into; anything wider reports a failed stage over work the
+    reviewer already finished, which is what an advisory dedup dying used to do to a summarized
+    record.
     """
     job = session.get(Job, int(job_id))
     if job is None:
@@ -171,7 +190,9 @@ def create_job(
     )
     session.add(job)
     document = session.get(Document, document_id)
-    document.status = STATUS_ON_ENQUEUE[kind]
+    enqueue_status = STATUS_ON_ENQUEUE[kind]
+    if enqueue_status is not None:  # None = advisory (dedup): never moves the stage the UI shows
+        document.status = enqueue_status
     try:
         session.commit()
     except IntegrityError as exc:

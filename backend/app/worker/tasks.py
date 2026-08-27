@@ -20,7 +20,12 @@ from app.db import get_engine, get_sessionmaker
 from app.errors import user_facing_message
 from app.models import Document, Job, PageText, ReviewRow, SegmentRow, Summary
 from app.services import catalog
-from app.services.jobs import STATUS_ON_CANCEL, STATUS_ON_DONE, mark_terminal
+from app.services.jobs import (
+    INTERRUPTIBLE_DOCUMENT_STATUSES,
+    STATUS_ON_CANCEL,
+    STATUS_ON_DONE,
+    mark_terminal,
+)
 from app.services.pools import PoolTimeout, drain_pool
 from app.worker.cancel import (
     clear_cancel,
@@ -118,7 +123,14 @@ def _run(job_id, work) -> None:
                 job.error = user_facing_message(exc)  # friendly; never the raw vendor error
                 job.finished_at = _utcnow()
                 document = session.get(Document, job.document_id)
-                if document is not None:
+                # Only move the document out of the stage THIS job put it in. Every other terminal
+                # writer already refuses to do more than that - mark_terminal's
+                # document_status_only_when, the failure callback, orphan recovery - and this path
+                # was the one that did not, so which failure mode killed a job decided whether the
+                # record survived it. An advisory dedup raising mid-run used to flip a fully
+                # summarized record to "Failed" on the landing page and offer to "start again",
+                # which points at re-running identification and deletes review_rows.
+                if document is not None and document.status in INTERRUPTIBLE_DOCUMENT_STATUSES:
                     document.status = "error"
                 session.commit()
                 logger.exception(
@@ -129,8 +141,9 @@ def _run(job_id, work) -> None:
             job.state = "done"
             job.finished_at = _utcnow()
             document = session.get(Document, job.document_id)
-            if document is not None:
-                document.status = STATUS_ON_DONE[job.kind]
+            done_status = STATUS_ON_DONE[job.kind]
+            if document is not None and done_status is not None:
+                document.status = done_status
             session.commit()
             logger.info("job %s (%s) done on document %s", job_id, job.kind, job.document_id)
         finally:

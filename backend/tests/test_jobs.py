@@ -1703,10 +1703,17 @@ def test_failure_callback_interrupts_an_abandoned_job():
 
 def test_failure_callback_leaves_a_background_dedup_document_alone():
     """Mirrors orphan recovery: dedup runs while the reviewer works, so the document stays
-    'reviewing'. Marking it interrupted would report a failed stage nobody was watching."""
+    'reviewing'. Marking it interrupted would report a failed stage nobody was watching.
+
+    The premise is set explicitly rather than borrowed from the enqueue. Enqueuing a dedup used to
+    write "reviewing" itself, so this test happened to be handed its own starting condition - and
+    that write is exactly the bug that let "Re-check duplicates" knock a summarized record back to
+    "reviewing". Dedup now sets no stage at all, so the test has to say what it is testing.
+    """
     from app.worker.finalizers import on_job_failed
 
     doc_id, job_id = _running_job("dedup")
+    _set_document_status(doc_id, "reviewing")
     on_job_failed(_FakeRQJob(job_id), None, RuntimeError, RuntimeError("x"), None)
 
     with get_sessionmaker()() as session:
@@ -2609,3 +2616,93 @@ def test_a_document_with_no_embedded_review_seeds_every_row_empty():
     )
     rows = _seed(doc_id, [{"start": 1, "end": 2}])
     assert rows[0]["embedded_review_pages"] == []
+
+
+def _set_document_status(doc_id, status: str) -> None:
+    with get_sessionmaker()() as session:
+        session.get(Document, doc_id).status = status
+        session.commit()
+
+
+def _document_status(doc_id) -> str:
+    with get_sessionmaker()() as session:
+        return session.get(Document, doc_id).status
+
+
+def test_enqueuing_a_dedup_does_not_move_a_finished_record_back_to_reviewing():
+    """DEMONSTRATES the bug. The Duplicates tab lives in step 2 and the stepper lets a reviewer
+    return there from step 3, so "Re-check duplicates" on a summarized record used to rewrite
+    document.status to "reviewing" - the badge changed, the record moved between filter tabs on the
+    landing page, and the workbench stopped opening on Summaries."""
+    doc_id = _make_user_and_doc(page_count=2)
+    _set_document_status(doc_id, "done")
+
+    with get_sessionmaker()() as session:
+        jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1")
+
+    assert _document_status(doc_id) == "done"
+
+
+def test_enqueuing_a_dedup_does_not_bury_a_needs_attention_result():
+    """The costlier half of the same bug: `needs_attention` names the sub-documents that could not
+    be summarized, and GET /status returns only the NEWEST job - which after a dedup carries no
+    `attention`. Losing the status made that list unreachable rather than merely mislabelled."""
+    doc_id = _make_user_and_doc(page_count=2)
+    _set_document_status(doc_id, "needs_attention")
+
+    with get_sessionmaker()() as session:
+        jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1")
+
+    assert _document_status(doc_id) == "needs_attention"
+
+
+def test_a_completed_dedup_leaves_the_document_status_alone(monkeypatch):
+    """The enqueue guard is only half of it: STATUS_ON_DONE["dedup"] used to be "reviewing" too, so
+    a run that STARTED correctly still knocked the record back when it finished."""
+    doc_id = _make_user_and_doc(page_count=2)
+    same = "alpha beta gamma delta epsilon zeta eta theta"
+    job_id = _dedup_rows(
+        doc_id,
+        [(1, 1, True, False, 3, same), (2, 2, True, False, 3, same)],
+    )
+    _set_document_status(doc_id, "done")
+
+    dedup_document(job_id)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+    assert _document_status(doc_id) == "done"
+
+
+def test_a_failed_dedup_leaves_a_summarized_record_summarized(monkeypatch):
+    """DEMONSTRATES the bug. `_run`'s generic handler wrote document.status = "error" for every job
+    kind, so an advisory duplicate check dying reported the whole record as Failed - while
+    segmentation, the reviewer's corrections and every stored summary were intact and exportable.
+    The banner it produced invites the reviewer to "start again", which re-runs identification and
+    deletes review_rows."""
+    doc_id = _make_user_and_doc(page_count=2)
+    same = "alpha beta gamma delta epsilon zeta eta theta"
+    job_id = _dedup_rows(
+        doc_id,
+        [(1, 1, True, False, 3, same), (2, 2, True, False, 3, same)],
+    )
+    _set_document_status(doc_id, "done")
+
+    def boom(*a, **k):
+        raise RuntimeError("clustering blew up")
+
+    monkeypatch.setattr("app.services.dedup.cluster_rows", boom)
+
+    dedup_document(job_id)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "error"  # the JOB still records the failure...
+        assert job.error
+    assert _document_status(doc_id) == "done"  # ...but the RECORD is untouched
+
+
+# The counterpart - a failed SUMMARIZE must still mark the document "error" - is already pinned by
+# test_run_marks_error_with_a_friendly_message above, which creates a summarize job (so the document
+# is "summarizing") and asserts the error status. That test is what stops this guard being widened
+# into "a failed job never touches the document".

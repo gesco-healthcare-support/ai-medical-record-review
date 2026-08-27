@@ -559,6 +559,23 @@ def get_duplicates(
         .where(Job.document_id == document.id, Job.kind == "dedup")
         .order_by(Job.id.desc())
     ).first()
+    # The newest job drives PROGRESS - "checking (37/84)", and the error when a run failed. It must
+    # not drive what has been CHECKED, because the two answer different questions once a re-check
+    # ends badly. `dedup_document` rewrites the grouping in a single transaction at the very end,
+    # precisely so a run that dies leaves the previous clusters intact rather than emptying the tab -
+    # so after a cancelled or errored re-check the stored clusters still come from the last COMPLETED
+    # run, and the flags have to describe that run.
+    #
+    # Reading them off the newest job instead reported a record with four stored clusters as never
+    # checked: the tab rendered "No duplicate check has run on this record yet" directly above four
+    # groups it was asking the reviewer to resolve, dropped the "N sub-documents could not be read"
+    # warning that the earlier run had earned, and dropped the "boundaries changed" nudge while the
+    # edits that made it true were still in place.
+    last_completed = session.scalars(
+        select(Job)
+        .where(Job.document_id == document.id, Job.kind == "dedup", Job.state == "done")
+        .order_by(Job.id.desc())
+    ).first()
     # "stale" = the clusters no longer cover every row dedup would look at, so the tab can offer a
     # MANUAL re-check (never an automatic AI run). A completed dedup stores source_text on every row
     # IN SCOPE, and a metadata edit keeps it (_store_rows), so a missing one means a boundary changed,
@@ -571,9 +588,7 @@ def get_duplicates(
     # - dismissing says "not duplicates", not "do not summarize" - so it stays in scope and still
     # counts.
     in_scope = [row for row in document.review_rows if row.include]
-    stale = bool(
-        dedup_job and dedup_job.state == "done" and any(r.source_text is None for r in in_scope)
-    )
+    stale = bool(last_completed and any(r.source_text is None for r in in_scope))
     # Sub-documents a completed check could not read. Their text is empty, and empty text matches
     # nothing (the Jaccard signature is a null set), so they were not compared against anything - a
     # run that could not read a fifth of the record is not a clean bill of health and must not
@@ -586,7 +601,7 @@ def get_duplicates(
     # anyway; filtering explicitly keeps that true if the storage rule ever changes.
     unreadable = (
         sum(1 for r in in_scope if r.source_text is not None and not r.source_text.strip())
-        if dedup_job and dedup_job.state == "done"
+        if last_completed
         else 0
     )
     return {
@@ -602,9 +617,10 @@ def get_duplicates(
         # records have a human deliverable that counts 6 and 2 pages of duplicate copies, so the tab
         # was affirmatively wrong, not merely silent.
         #
-        # A job that exists but errored or was cancelled is also "not checked" - hence the state test
-        # rather than a None test on the job.
-        "checked": bool(dedup_job and dedup_job.state == "done"),
+        # A job that exists but errored or was cancelled is not itself a check - but a COMPLETED run
+        # before it still is, and its clusters are still stored, so this asks whether any dedup has
+        # ever finished rather than how the newest one ended.
+        "checked": last_completed is not None,
     }
 
 
