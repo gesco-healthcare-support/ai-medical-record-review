@@ -107,8 +107,9 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
     }
   }
 
-  // Reset on the JOB boundary, not only when watching ends. Segmentation chains straight into the
-  // duplicate check, so the active job changes while `watching` stays true throughout - and keying
+  // Reset on the JOB boundary, not only when watching ends. One reviewer action can run into a
+  // second job - Summarize flushes rows and enqueues, and a chained or immediately-started job
+  // changes the active id while `watching` stays true throughout - and keying
   // only on `watching` left a grace period that expired on the finished job showing "Force stop" as
   // the NEXT job's first state. Reproduced live: Stop at 0.2s, escalation at 10s, then the chained
   // job appeared at 15.6s already offering a hard kill nobody had asked for.
@@ -156,14 +157,22 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
     }
     void wf.restartCancelled(fresh);
   }
-  // Block Summarize while any row is invalid, nothing is selected, a save failed/is pending, or a
-  // duplicate check is running - so a user never summarizes stale or invalid rows.
+  // No CURRENT duplicate check covers these rows: either none has ever completed, or the documents
+  // have moved since the last one. The server refuses summarize in that state (#125) and the button
+  // has to say so rather than let the reviewer meet a 409. Undefined while the payload is still
+  // loading, and an unloaded payload must not disable the button - `?? false` keeps it enabled.
+  const needsDuplicateCheck = dupData ? !dupData.checked || dupData.stale : false;
+
+  // Block Summarize while any row is invalid, nothing is selected, a save failed/is pending, a
+  // duplicate check is running, or none has covered these rows - so a user never summarizes stale
+  // or invalid rows, and never ships duplicates nobody has looked at.
   const summarizeDisabled =
     errors.size > 0 ||
     included === 0 ||
     save.kind === "error" ||
     save.kind === "dirty" ||
-    dedupRunning;
+    dedupRunning ||
+    needsDuplicateCheck;
 
   // Un-nested reason for the disabled "Check duplicates" button, same rule as summarizeHint below.
   let checkDuplicatesHint: string | undefined;
@@ -177,7 +186,26 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
   else if (errors.size > 0) summarizeHint = "Fix the highlighted page ranges before summarizing.";
   else if (included === 0) summarizeHint = "Select at least one document to summarize.";
   else if (dedupRunning) summarizeHint = "Wait for the duplicate check to finish.";
+  else if (needsDuplicateCheck && dupData?.checked)
+    summarizeHint = "The documents changed since the last duplicate check.";
+  else if (needsDuplicateCheck)
+    summarizeHint = "This record has not been checked for duplicates yet.";
   else summarizeHint = "Your latest changes aren't saved yet.";
+
+  // The gate is SOFT: a reviewer may have a good reason to skip on a short record. Skipping is a
+  // decision, so it is a separate control behind a confirm, and the server audits it - an omission
+  // that leaves no trace is the defect #125 exists to close.
+  const onSummarizeWithoutChecking = () => {
+    if (
+      window.confirm(
+        "Summarize without checking for duplicates? Duplicate copies of the same document " +
+          "would be summarized and delivered without anyone seeing them. This choice is " +
+          "recorded.",
+      )
+    ) {
+      void wf.onSummarize(false, true);
+    }
+  };
 
   // Summarize lives on the Duplicates step, so the reasons it is blocked have to be readable THERE
   // too - otherwise the reviewer faces a disabled button whose only explanation is a hover tooltip.
@@ -337,6 +365,24 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
                       ? `Summarize ${included} document${included === 1 ? "" : "s"}`
                       : "Summarize"}
                   </button>
+                  {/* Only when the duplicate gate is the ONLY thing in the way - offering it while
+                      rows are invalid or unsaved would let a reviewer skip past a different
+                      problem entirely. */}
+                  {needsDuplicateCheck &&
+                  errors.size === 0 &&
+                  included > 0 &&
+                  !dedupRunning &&
+                  save.kind !== "dirty" &&
+                  save.kind !== "error" ? (
+                    <button
+                      type="button"
+                      className="ev-btn ev-btn-ghost"
+                      title="Proceed without checking this record for duplicates"
+                      onClick={onSummarizeWithoutChecking}
+                    >
+                      Summarize without checking
+                    </button>
+                  ) : null}
                 </>
               ) : null}
               {tab === "summaries" && summaries.length > 0 ? (

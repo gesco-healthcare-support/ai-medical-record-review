@@ -15,7 +15,7 @@ from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.errors import OcrUnavailableError
-from app.models import Job, ReviewRow, Summary, User
+from app.models import AuditLog, Job, ReviewRow, Summary, User
 from app.services.seed_catalog import constants_categories
 from tests.conftest import unique_test_email
 
@@ -311,6 +311,126 @@ async def test_rows_carry_the_stored_method_in_the_payload(authed):
     # NULL for the untouched row: every row segmented before this column existed reads the same way,
     # and the filter shows those unchanged.
     assert [row["method"] for row in payload] == ["llm+embedding", None]
+
+
+async def _rows_ready(client, doc_id, pages=4):
+    """Two included rows, so summarize is not blocked by the "nothing selected" check."""
+    rows = [
+        {"start": 1, "end": 2, "category": _VALID_CATEGORY, "title": "A"},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY, "title": "B"},
+    ]
+    resp = await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    assert resp.status_code == 200, resp.text
+    return rows
+
+
+def _completed_dedup(doc_id, with_text=True):
+    """A finished dedup job, plus the source_text such a run always leaves on every in-scope row."""
+    with get_sessionmaker()() as session:
+        session.add(
+            Job(
+                document_id=doc_id,
+                kind="dedup",
+                state="done",
+                stage="deduping",
+                current=1,
+                total=1,
+                model="m",
+                title_model="m",
+                audit_model="m",
+                prompt_version="1",
+                prompt_fingerprint="1",
+                build_sha="test",
+                catalog_revision=0,
+            )
+        )
+        if with_text:
+            for row in session.scalars(
+                select(ReviewRow).where(ReviewRow.document_id == doc_id)
+            ).all():
+                row.source_text = "text"
+        session.commit()
+
+
+async def test_summarize_is_refused_when_no_duplicate_check_has_run(authed):
+    """WHEN no dedup has ever completed, THE SYSTEM SHALL refuse to summarize.
+
+    The defect this closes (#125): a record could go upload -> segment -> summarize with the
+    duplicate check never running, and nothing said so - measured at 14 of 44 summarized documents
+    on the box. The pipeline reported done, so duplicate copies reached a deliverable unseen.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _rows_ready(client, doc_id)
+
+    resp = await client.post(f"/api/documents/{doc_id}/summarize/start", json={})
+    assert resp.status_code == 409
+    assert "not been checked for duplicates" in resp.json()["detail"]
+    with get_sessionmaker()() as session:
+        assert not session.scalars(
+            select(Job).where(Job.document_id == doc_id, Job.kind == "summarize")
+        ).all(), "nothing may be enqueued when the gate refuses"
+
+
+async def test_summarize_is_refused_when_the_check_no_longer_covers_the_rows(authed):
+    """A completed check whose coverage has moved is not a check of THESE rows.
+
+    A completed dedup leaves source_text on every in-scope row, so a row without it means a
+    boundary changed, a row appeared, or a row was newly included since. The message says which of
+    the two refusals this is, because the reviewer's next action differs.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _rows_ready(client, doc_id)
+    _completed_dedup(doc_id, with_text=False)  # ran, but covers none of the current rows
+
+    resp = await client.post(f"/api/documents/{doc_id}/summarize/start", json={})
+    assert resp.status_code == 409
+    assert "changed since the last duplicate check" in resp.json()["detail"]
+
+
+async def test_summarize_proceeds_once_a_current_check_exists(authed):
+    """The ordinary path: check first, then summarize, with no flag and no audit needed."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _rows_ready(client, doc_id)
+    _completed_dedup(doc_id)
+
+    resp = await client.post(f"/api/documents/{doc_id}/summarize/start", json={})
+    assert resp.status_code == 200, resp.text
+
+
+async def test_a_reviewer_can_skip_the_check_and_the_choice_is_recorded(authed):
+    """The gate is SOFT by design: skipping is allowed, but it must be a decision with a trace.
+
+    Without the audit row this is indistinguishable from the omission the gate exists to stop.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _rows_ready(client, doc_id)
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/summarize/start", json={"skip_duplicate_check": True}
+    )
+    assert resp.status_code == 200, resp.text
+    with get_sessionmaker()() as session:
+        actions = [
+            a.action
+            for a in session.scalars(select(AuditLog).where(AuditLog.document_id == doc_id)).all()
+        ]
+    assert "summarize.skip_duplicate_check" in actions
+
+
+async def test_an_invalid_row_is_reported_before_the_duplicate_gate(authed):
+    """Order matters: a reviewer cannot act on the duplicate gate while their rows are invalid."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    resp = await client.post(
+        f"/api/documents/{doc_id}/summarize/start",
+        json={"rows": [{"start": 9, "end": 2, "category": _VALID_CATEGORY}]},
+    )
+    assert resp.status_code == 400
+    assert "duplicate" not in resp.json()["detail"].lower()
 
 
 def _set_dedup_fields(doc_id, ranges, group=1):
@@ -1742,10 +1862,16 @@ async def test_summarize_start_enqueues_with_rows(authed):
     doc_id = await _upload(client, pages=2)
     queue = lanes("summarize")
     queue.empty()
+    # skip_duplicate_check because these rows are CREATED by this very call, so no earlier
+    # duplicate check could cover them and the #125 gate would refuse. The gate's own behaviour
+    # is covered by the four tests above; this one is about the row flush.
     try:
         resp = await client.post(
             f"/api/documents/{doc_id}/summarize/start",
-            json={"rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}]},
+            json={
+                "rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}],
+                "skip_duplicate_check": True,
+            },
         )
         assert resp.status_code == 200
         assert queue.count == 1
@@ -1789,7 +1915,13 @@ async def test_summarize_start_fresh_clears_existing_summaries(authed):
     try:
         resp = await client.post(
             f"/api/documents/{doc_id}/summarize/start",
-            json={"rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}], "fresh": True},
+            json={
+                "rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}],
+                "fresh": True,
+                # See the note above: these rows are created by this call, so the #125 duplicate
+                # gate has nothing that could cover them. This test is about `fresh`.
+                "skip_duplicate_check": True,
+            },
         )
         assert resp.status_code == 200
     finally:

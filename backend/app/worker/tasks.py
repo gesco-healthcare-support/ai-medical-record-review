@@ -665,7 +665,7 @@ def dedup_document(job_id) -> None:
         for cluster in cluster_rows(items):
             members, similarity = cluster["members"], cluster["similarity"]
             pages = ", ".join(f"{by_id[m['id']].start}-{by_id[m['id']].end}" for m in members)
-            if not duplicate_gate(members, similarity):
+            if not duplicate_gate(members, similarity, content_joined=cluster["content_joined"]):
                 # No shared date, or a shared date with neither title nor category agreeing, and
                 # the content is not near-identical: a recurring form series, not copies.
                 # Rejected without spending a confirm call.
@@ -681,6 +681,11 @@ def dedup_document(job_id) -> None:
             # Above dupe_model_override the text has already settled it. Skipping the call both saves
             # quota and removes the confirm step's silent-discard failure mode, which is the one way a
             # real duplicate can vanish with no trace anywhere.
+            #
+            # This reads `similarity` - the closure MINIMUM - and must keep doing so. The gate above
+            # now also admits a cluster whose every EDGE cleared the override, which is a weaker
+            # statement: a chain A~B~C says nothing about A against C. Letting that provenance skip
+            # the confirm call would accept a whole chain wholesale with nothing adjudicating it.
             if similarity is not None and similarity >= settings.dupe_model_override:
                 logger.info(
                     "dedup accepted a %d-member candidate on document %s by similarity %s "
