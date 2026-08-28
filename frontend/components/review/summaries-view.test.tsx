@@ -140,6 +140,31 @@ describe("SummariesView category", () => {
     expect(screen.queryByText(/Category changed/i)).not.toBeInTheDocument();
   });
 
+  it("flags a summary whose sub-document no longer exists", () => {
+    // The reviewer merged or re-spanned the row AFTER this text was written, so it describes pages
+    // nothing claims - and it still exports, because the export filters on `excluded` alone.
+    summariesState.error = null;
+    summariesState.data = [{ ...card("1", null)[0], rowMissing: true }];
+    renderCard();
+    expect(screen.getByText(/Pages changed - re-summarize/i)).toBeInTheDocument();
+  });
+
+  it("stays quiet for a summary whose sub-document is still there", () => {
+    summariesState.error = null;
+    summariesState.data = [{ ...card("1", "1")[0], rowMissing: false }];
+    renderCard();
+    expect(screen.queryByText(/Pages changed/i)).not.toBeInTheDocument();
+  });
+
+  it("stays quiet when the backend sends no rowMissing at all", () => {
+    // The same rolling-deploy trap the rowCategoryLive coalescing exists for: an older backend
+    // omits the field, and a badge on every card would be worse than no badge.
+    summariesState.error = null;
+    summariesState.data = card("1", null);
+    renderCard();
+    expect(screen.queryByText(/Pages changed/i)).not.toBeInTheDocument();
+  });
+
   it("shows the live category in the select, not the generating snapshot", () => {
     summariesState.error = null;
     summariesState.data = card("1", "3");

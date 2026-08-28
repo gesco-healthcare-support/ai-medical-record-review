@@ -47,7 +47,12 @@ from app.services.classification import DEFAULT_ID, match_rules
 from app.services.extraction import extract_header
 from app.services.files import safe_name
 from app.services.gemini import PROMPT_VERSION
-from app.services.jobs import ACTIVE_STATES, JobConflict, enqueue
+from app.services.jobs import (
+    ACTIVE_STATES,
+    SUMMARIZED_DOCUMENT_STATUSES,
+    JobConflict,
+    enqueue,
+)
 from app.services.linked_pdf import build_linked_pdf
 from app.services.pdf import get_pdf_page_count
 from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
@@ -183,6 +188,60 @@ def _rows_edit_detail(stats: dict) -> str:
         f"rows {stats['before']}->{stats['after']} "
         f"(merges {stats['merges']}, splits {stats['splits']})"
     )
+
+
+def stranded_summaries(document: Document) -> tuple[int, int]:
+    """``(summaries whose pages match no row, included rows with no summary)``.
+
+    A summary is bound to its row by the page range stored on it, and that binding is a SNAPSHOT: a
+    reviewer who merges or re-spans a row after summarizing leaves the stored text describing pages
+    that no sub-document claims any more, and the row they created with no text at all.
+
+    Both halves are counted because they are different losses. An orphaned summary still SHIPS -
+    the export takes `document.summaries` filtered only by `summary.excluded`, and never consults
+    the row set - so the client receives the pre-edit split while the reviewer's merge is nowhere in
+    it. An unsummarized row ships nothing, so its pages reach no deliverable at all.
+
+    Measured on the box 2026-08-28 over 49 documents holding summaries: 7 carried an orphan and 7
+    carried an unsummarized included row. Most were mid-review, which is fine - but two were
+    `done`, one of them a 498-page record with 26 orphans and 4 unsummarized rows, and nothing in
+    the app said so.
+
+    Compared on the exact ``(start, end)`` pair rather than by overlap, matching how
+    `worker.tasks.summarize_document` reconciles reused summaries and how `_apply_row_category`
+    finds a summary's row: a re-spanned row is a different sub-document, not a moved one.
+    """
+    spans = {(row.start, row.end) for row in document.review_rows}
+    stored = {(summary.row_start, summary.row_end) for summary in document.summaries}
+    included = {(row.start, row.end) for row in document.review_rows if row.include}
+    orphaned = sum(
+        1 for summary in document.summaries if (summary.row_start, summary.row_end) not in spans
+    )
+    return orphaned, len(included - stored)
+
+
+def _reopen_if_summaries_stranded(session: Session, document: Document) -> bool:
+    """Move a summarized document back to ``reviewing`` when a row edit strands its summaries.
+
+    ``done`` and ``needs_attention`` both assert that the deliverable is built, and that is a claim
+    about the CURRENT row set. Nothing used to revisit it: `put_rows` never touched `status`, so a
+    reviewer could merge two sub-documents on a finished record and the record went on reporting
+    Done, opening on Summaries, and exporting the pre-edit entries. The next summarize run does
+    reconcile (`summarize_document` deletes stale summaries and generates the new row), but nothing
+    asked for one.
+
+    Demoting is honest rather than cosmetic: the summarize stage has not run against these rows, so
+    the stepper, the landing-page filter and the export warning all key off a true statement again.
+    Only ever a demotion out of a finished stage - it cannot promote, and it cannot touch a document
+    mid-job because `put_rows` already refuses while one is active.
+    """
+    if document.status not in SUMMARIZED_DOCUMENT_STATUSES:
+        return False
+    if not any(stranded_summaries(document)):
+        return False
+    document.status = "reviewing"
+    session.commit()
+    return True
 
 
 def _apply_row_category(
@@ -810,7 +869,8 @@ def put_rows(
     # fact from "nobody has looked at it", and only the event can tell them apart - the rows carry
     # no timestamp of their own because _store_rows recreates them.
     audit(session, "rows.edit", user.id, document.id, detail=_rows_edit_detail(stats))
-    return {"ok": True, "count": len(rows)}
+    reopened = _reopen_if_summaries_stranded(session, document)
+    return {"ok": True, "count": len(rows), "reopened": reopened}
 
 
 @router.post("/{document_id}/jobs/{job_id}/cancel")
@@ -987,6 +1047,13 @@ def _summary_response(document: Document, summary: Summary) -> dict:
     ``None`` when no row covers the summary's stored page range (boundaries were re-segmented): there
     is no live category to compare, so the UI must not claim a mismatch.
 
+    ``rowMissing`` is that same absence stated positively, and it exists because coalescing it away
+    was hiding a real failure. `categoryIsStale` deliberately reads ``None`` and ``undefined`` alike
+    so an older backend cannot flag every card during a rolling deploy - correct for the category
+    badge, but it left the reviewer no signal at all for the case where their merge or re-span
+    stranded the text (see `stranded_summaries`). A separate boolean gets both: absent from an older
+    backend is falsy, so the badge stays silent there, and ``True`` says the row is genuinely gone.
+
     EVERY route that returns a summary must go through this, not bare ``listing()``. The client patches
     its cache with whatever a mutation returns (``useSummaryPatch`` replaces the item wholesale), so a
     single endpoint answering with the un-enriched shape silently deletes this field from the cache -
@@ -997,6 +1064,7 @@ def _summary_response(document: Document, summary: Summary) -> dict:
     return {
         **summary.listing(),
         "rowCategoryLive": live.get((summary.row_start, summary.row_end)),
+        "rowMissing": (summary.row_start, summary.row_end) not in live,
     }
 
 

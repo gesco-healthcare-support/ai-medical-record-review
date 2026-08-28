@@ -327,6 +327,15 @@ export function SummariesView({
                         AI-fixed
                       </span>
                     ) : null}
+                    {item.rowMissing ? (
+                      <span
+                        className="ev-chip ev-chip-review"
+                        title="No sub-document covers these pages any more - they were merged or re-spanned after this summary was written. It still exports as-is. Re-run Summarize to rebuild it from the current sub-documents."
+                      >
+                        <Flag width={12} height={12} aria-hidden />
+                        Pages changed - re-summarize
+                      </span>
+                    ) : null}
                     {categoryIsStale(item) ? (
                       <span
                         className="ev-chip ev-chip-review"

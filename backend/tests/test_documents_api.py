@@ -15,7 +15,7 @@ from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.errors import OcrUnavailableError
-from app.models import AuditLog, Job, ReviewRow, Summary, User
+from app.models import AuditLog, Document, Job, ReviewRow, Summary, User
 from app.services.seed_catalog import constants_categories
 from tests.conftest import unique_test_email
 
@@ -2737,3 +2737,200 @@ async def test_the_listing_timestamps_carry_their_utc_offset(authed):
         assert parsed.utcoffset().total_seconds() == 0, f"{field} is not UTC"
         # Within a few minutes of now, i.e. the instant is right as well as the marker.
         assert abs((datetime.now(UTC) - parsed).total_seconds()) < 300
+
+
+def _set_document_status(doc_id, status):
+    with get_sessionmaker()() as session:
+        session.get(Document, doc_id).status = status
+        session.commit()
+
+
+def _document_status(doc_id):
+    with get_sessionmaker()() as session:
+        return session.get(Document, doc_id).status
+
+
+async def test_a_row_edit_that_strands_a_summary_reopens_a_finished_record(authed):
+    """WHEN a reviewer merges sub-documents on a finished record, THE SYSTEM SHALL move it back to
+    `reviewing`.
+
+    A summary is bound to its row by the page range stored on it, and that binding is a snapshot.
+    `put_rows` never touched `status`, so merging two sub-documents on a `done` record left the
+    record reporting Done while its stored text described pages nothing claimed any more - and the
+    export takes `document.summaries` filtered on `excluded` alone, so the client received the
+    PRE-edit split with the reviewer's merge nowhere in it.
+
+    Observed on the box 2026-08-28: a 247-page record marked `done` whose reviewer merged pages
+    223-226 and 227-227 at 19:56, 49 minutes after the summarize run finished - leaving two
+    summaries for rows that no longer exist and one row with no summary at all.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, None), (3, 4, None)])
+    _seed_summary(doc_id, idx=0, pages=(1, 2))
+    _seed_summary(doc_id, idx=1, pages=(3, 4))
+    _set_document_status(doc_id, "done")
+
+    merged = await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 4, "category": _VALID_CATEGORY}]},
+    )
+
+    assert merged.status_code == 200
+    assert merged.json()["reopened"] is True
+    assert _document_status(doc_id) == "reviewing"
+
+
+async def test_needs_attention_reopens_the_same_way(authed):
+    """`needs_attention` makes the same claim `done` does - the deliverable is built - so a row edit
+    that strands a summary has to move it too, or the record keeps offering the old entry list."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, None), (3, 4, None)])
+    _seed_summary(doc_id, idx=0, pages=(1, 2))
+    _set_document_status(doc_id, "needs_attention")
+
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 4, "category": _VALID_CATEGORY}]},
+    )
+
+    assert _document_status(doc_id) == "reviewing"
+
+
+async def test_an_edit_that_leaves_every_summary_bound_keeps_the_record_finished(authed):
+    """IF the saved rows still match every stored summary, THEN the record SHALL stay `done`.
+
+    The demotion has to be driven by the summaries actually being stranded, not by the reviewer
+    having saved at all - retitling or re-dating a finished record must not reopen it, and the
+    editor autosaves the whole row set on every such edit.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, None), (3, 4, None)])
+    _seed_summary(doc_id, idx=0, pages=(1, 2))
+    _seed_summary(doc_id, idx=1, pages=(3, 4))
+    _set_document_status(doc_id, "done")
+
+    resaved = await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 2, "category": _VALID_CATEGORY, "title": "renamed"},
+                {"start": 3, "end": 4, "category": _VALID_CATEGORY},
+            ]
+        },
+    )
+
+    assert resaved.json()["reopened"] is False
+    assert _document_status(doc_id) == "done"
+
+
+async def test_an_included_row_with_no_summary_also_reopens_the_record(authed):
+    """A SPLIT strands nothing but leaves a new sub-document with no text, whose pages then reach no
+    deliverable at all. Both halves of `stranded_summaries` have to demote, not just the orphan half
+    - otherwise splitting a summarized row on a finished record silently drops content."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, idx=0, pages=(1, 2))
+    _set_document_status(doc_id, "done")
+
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+                {"start": 3, "end": 4, "category": _VALID_CATEGORY},
+            ]
+        },
+    )
+
+    assert _document_status(doc_id) == "reviewing"
+
+
+async def test_the_reopen_never_promotes_an_unfinished_record(authed):
+    """IT SHALL only ever demote OUT of a finished stage. A mid-review record has stranded summaries
+    constantly - that is what reviewing IS - and writing `reviewing` over `uploaded` would claim
+    segmentation had produced rows it has not."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, idx=0, pages=(1, 2))
+    _set_document_status(doc_id, "uploaded")
+
+    resp = await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 4, "category": _VALID_CATEGORY}]},
+    )
+
+    assert resp.json()["reopened"] is False
+    assert _document_status(doc_id) == "uploaded"
+
+
+async def test_get_summaries_reports_a_summary_whose_row_is_gone(authed):
+    """WHEN no sub-document covers a summary's stored pages, THE SYSTEM SHALL say so positively.
+
+    `rowCategoryLive` already goes null here, but the client deliberately coalesces null with
+    undefined so an older backend cannot flag every card during a rolling deploy - which left this
+    failure with no signal at all. A separate boolean gets both: absent reads falsy, True is real.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    _seed_rows(doc_id, [(1, 1, None)])
+    _seed_summary(doc_id, pages=(2, 3))
+
+    body = (await client.get(f"/api/documents/{doc_id}/summaries")).json()
+
+    assert body[0]["rowMissing"] is True
+    assert body[0]["rowCategoryLive"] is None
+
+
+async def test_get_summaries_reports_a_bound_summary_as_present(authed):
+    """The other half of the pin: a summary whose row still exists must NOT be flagged, or every
+    card on a healthy record carries the badge."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, pages=(1, 2))
+
+    body = (await client.get(f"/api/documents/{doc_id}/summaries")).json()
+
+    assert body[0]["rowMissing"] is False
+
+
+async def test_stranded_summaries_counts_both_losses_separately(authed):
+    """The two halves are different losses and are reported apart: an orphan still EXPORTS (the
+    pre-edit split reaches the client), an unsummarized row exports nothing."""
+    from app.api.documents import stranded_summaries
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, None), (5, 6, None)])
+    _seed_summary(doc_id, idx=0, pages=(1, 2))
+    _seed_summary(doc_id, idx=1, pages=(3, 4))
+
+    with get_sessionmaker()() as session:
+        orphaned, unsummarized = stranded_summaries(session.get(Document, doc_id))
+
+    assert (orphaned, unsummarized) == (1, 1)
+
+
+async def test_stranded_summaries_ignores_a_row_the_reviewer_excluded(authed):
+    """An EXCLUDED row with no summary is not a loss - the reviewer said not to summarize it, and
+    counting it would reopen every record that has one. Only included rows are owed text."""
+    from app.api.documents import stranded_summaries
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, None), (3, 4, None)])
+    _seed_summary(doc_id, idx=0, pages=(1, 2))
+    with get_sessionmaker()() as session:
+        excluded = session.scalar(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.start == 3)
+        )
+        excluded.include = False
+        session.commit()
+
+    with get_sessionmaker()() as session:
+        assert stranded_summaries(session.get(Document, doc_id)) == (0, 0)
