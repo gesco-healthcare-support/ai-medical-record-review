@@ -1609,6 +1609,10 @@ async def test_every_summary_response_carries_the_live_category(authed, monkeypa
 
     for name, body in (("get", listing), ("put", put), ("resummarize", redraft)):
         assert "rowCategoryLive" in body, f"{name} dropped rowCategoryLive"
+        # Same invariant, same reason: the client replaces the cached item wholesale, so a route
+        # answering with the bare listing() would delete the stranded-summary badge from the cache
+        # after a save - the exact failure this test was written for, on the newer field.
+        assert "rowMissing" in body, f"{name} dropped rowMissing"
     # The PUT must report the category it just wrote, not the pre-change value it was holding.
     assert put["rowCategoryLive"] == _OTHER_CATEGORY
     # A re-draft re-snapshots row_category from the row, so the two agree again -> badge clears.
