@@ -450,6 +450,11 @@ def segment_document(job_id) -> None:
                 injury_date=str(row.get("injury_date") or "-"),
                 flag=str(row.get("flag") or "-"),
                 suggest_merge=bool(row.get("suggest_merge")),
+                # Which cascade path decided the category (#188). `.get`, not `[...]`: a row the
+                # categorization pool never finished has no key, and NULL is the honest value for
+                # it. Carried on the SHARED dict deliberately, so the immutable SegmentRow copy and
+                # the editable ReviewRow copy cannot drift apart.
+                method=row.get("method"),
             )
             session.add(SegmentRow(job_id=job.id, **fields))
             # include follows the category's summarize_default, which is a per-category DB flag -
@@ -523,6 +528,9 @@ def classify_document(job_id) -> None:
                 page_text = ""  # best-effort: classify on the title alone if OCR is unavailable
             result = classify(row.title, page_text=page_text or None)
             row.category = result.category
+            # Same provenance the segment path records, so a combined upload's rows are not the one
+            # population the review filter cannot reason about (#188).
+            row.method = result.method
             # Re-derive the summarize default for the (possibly new) category, before the reviewer
             # sees the row - so a category whose flag is off lands unchecked.
             row.include = catalog.summarize_default_for(session, result.category)

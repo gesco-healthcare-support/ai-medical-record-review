@@ -104,6 +104,11 @@ def _store_rows(session: Session, document: Document, rows) -> tuple[str | None,
     # duplicate clustering on every autosave. Carry them across by page range: the same (start, end)
     # is the same pages, hence the same OCR text the grouping was computed from. A row whose range
     # changed (merge/split/boundary edit) is genuinely different content and correctly starts fresh.
+    #
+    # `method` rides along for the same reason and by the same rule: the classifier decided it from
+    # THESE pages, so it travels with them, and a re-spanned row correctly starts from nothing. It
+    # is also why the payload's own `method` is ignored below - the field is server-owned, and a
+    # client that could set it could remove any row from the "could not identify" list.
     preserved = {
         (row.start, row.end): (
             row.source_text,
@@ -111,6 +116,7 @@ def _store_rows(session: Session, document: Document, rows) -> tuple[str | None,
             row.dupe_primary,
             row.dupe_dismissed,
             row.dupe_similarity,
+            row.method,
         )
         for row in document.review_rows
     }
@@ -120,7 +126,7 @@ def _store_rows(session: Session, document: Document, rows) -> tuple[str | None,
     incoming_ranges = {(int(row["start"]), int(row["end"])) for row in rows}
     reopened_groups = {
         group
-        for (start, end), (_text, group, _primary, _dismissed, _sim) in preserved.items()
+        for (start, end), (_text, group, _primary, _dismissed, _sim, _method) in preserved.items()
         if group is not None and (start, end) not in incoming_ranges
     }
     # Count the boundary work before the rows are gone. A boundary is a row's last page, so a
@@ -137,8 +143,8 @@ def _store_rows(session: Session, document: Document, rows) -> tuple[str | None,
     session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
     for idx, row in enumerate(rows):
         start, end = int(row["start"]), int(row["end"])
-        source_text, dupe_group, dupe_primary, dupe_dismissed, dupe_similarity = preserved.get(
-            (start, end), (None, None, False, False, None)
+        source_text, dupe_group, dupe_primary, dupe_dismissed, dupe_similarity, method = (
+            preserved.get((start, end), (None, None, False, False, None, None))
         )
         if dupe_group in reopened_groups:
             dupe_dismissed = False
@@ -160,6 +166,7 @@ def _store_rows(session: Session, document: Document, rows) -> tuple[str | None,
                 dupe_primary=dupe_primary,
                 dupe_dismissed=dupe_dismissed,
                 dupe_similarity=dupe_similarity,
+                method=method,
             )
         )
     session.commit()
@@ -389,7 +396,15 @@ def _editor_row(row: ReviewRow) -> dict:
     some OTHER category reports False, not True: it sits at 100 only because it was segmented
     before that rule shipped, which is a row to look at rather than settled paperwork.
     """
-    return row.as_row() | {"ruled_paperwork": match_rules(row.title or "") == DEFAULT_ID}
+    return row.as_row() | {
+        "ruled_paperwork": match_rules(row.title or "") == DEFAULT_ID,
+        # Which cascade path decided the category, frozen at segment time (#188). This and
+        # `ruled_paperwork` answer DIFFERENT questions and the filter needs both: `ruled_paperwork`
+        # is a live replay, so it catches a row a rule shipped SINCE now disputes, while `method`
+        # is the only record of how confident the cascade was when it actually ran. NULL means the
+        # row predates the column, and the filter shows those unchanged.
+        "method": row.method,
+    }
 
 
 @router.get("/{document_id}")

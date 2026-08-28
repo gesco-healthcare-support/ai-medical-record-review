@@ -194,6 +194,11 @@ def _categorize(pdf_path, row, page_text_fn=None):
         except Exception as exc:
             logger.warning("classification escalation OCR failed: %s", exc)
     row["category"] = result.category
+    # Which cascade path decided it, persisted from here on (#188). `result` is the ESCALATED call
+    # where one happened, so this is the verdict that stood rather than the title-only one it
+    # overruled. It is what separates "both signals agreed this is paperwork" from "a low-confidence
+    # guess" inside category 100 - a distinction the category alone cannot carry.
+    row["method"] = result.method
     if result.needs_review or row["flag"].strip().lower() == "x":
         row["flag"] = "x"
     return row
@@ -271,6 +276,11 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
                 row = futures[future]
                 row["category"] = DEFAULT_ID
                 row["flag"] = "x"
+                # No classify() answer exists for this row, so there is no method to copy. Record
+                # the reason explicitly rather than leaving it unset: unset is NULL, which means
+                # "segmented before the column existed" and is shown unchanged by the review
+                # filter. A row nothing could classify is a different thing and has to look like it.
+                row["method"] = "timeout"
             logger.warning(
                 "categorization timed out after %ss; %d row(s) defaulted to review",
                 pool_timeout,

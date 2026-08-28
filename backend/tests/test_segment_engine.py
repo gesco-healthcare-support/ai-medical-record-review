@@ -100,11 +100,11 @@ def test_the_segmentation_call_no_longer_reports_an_injury_date():
 class _Result:
     """Stand-in for classification.Classification, which is a frozen dataclass in the real module."""
 
-    def __init__(self, category, needs_review):
+    def __init__(self, category, needs_review, method="stub"):
         self.category = category
         self.needs_review = needs_review
         self.confidence = "low" if needs_review else "high"
-        self.method = "stub"
+        self.method = method
 
 
 def _row(start, end, title="Report", flag="-"):
@@ -129,6 +129,86 @@ def _categorize_capturing(monkeypatch, answers, *, confident_on_title=False):
 
     monkeypatch.setattr(se, "classify", _classify)
     return se, seen
+
+
+def test_categorize_records_which_path_decided_the_category(monkeypatch):
+    """WHEN the cascade escalates to page text, THE SYSTEM SHALL store the ESCALATED call's method.
+
+    `classify()` computes a `method` naming the path that decided - and every caller used to throw
+    it away, which is why nothing could separate "both signals agreed this is paperwork" from "this
+    is a low-confidence guess" inside category 100 (issue #188). The escalated call is the decision
+    that stood, so recording the title-only method would describe a verdict that was overruled.
+    """
+    from app.services import segment_engine as se
+
+    def _classify(title, page_text=None):
+        if page_text is None:
+            return _Result("100", needs_review=True, method="llm-disagree")
+        return _Result("13", needs_review=False, method="llm+embedding")
+
+    monkeypatch.setattr(se, "classify", _classify)
+    pages = {4: "a", 5: "b", 6: "c"}
+    row = se._categorize("x.pdf", _row(4, 6), lambda p: pages.get(p, ""))
+
+    assert row["category"] == "13"
+    assert row["method"] == "llm+embedding"
+
+
+def test_categorize_records_the_title_only_method_when_it_never_escalates(monkeypatch):
+    """A confident title answer is the whole decision, so its method is what is stored."""
+    from app.services import segment_engine as se
+
+    monkeypatch.setattr(
+        se, "classify", lambda title, page_text=None: _Result("5", False, method="rules")
+    )
+    row = se._categorize("x.pdf", _row(1, 2), lambda p: "never read")
+
+    assert row["method"] == "rules"
+
+
+def test_a_categorization_timeout_records_the_reason_rather_than_leaving_it_blank(monkeypatch):
+    """WHEN the categorization pool does not finish a row, THE SYSTEM SHALL record method "timeout".
+
+    That row reaches General without `classify()` ever answering for it, so there is no method to
+    copy. Leaving it unset would make the one row we genuinely know nothing about indistinguishable
+    from every row segmented before the column existed, which is NULL - and those are the rows the
+    filter deliberately shows unchanged. An explicit value keeps the two apart.
+    """
+    import app.services.segment_engine as se
+    from app.services.pools import PoolTimeout
+
+    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
+    monkeypatch.setattr(se, "get_genai_client", lambda: None)
+    monkeypatch.setattr(se, "byte_budgeted_windows", lambda *a, **k: [(1, 2)])
+    monkeypatch.setattr(
+        se,
+        "_window_rows",
+        lambda pdf_path, ws, we, client: [
+            dict(start=1, end=2, title="A", date="-", injury_date="-", flag="-")
+        ],
+    )
+    # *_a absorbs page_text_fn, as the other run_segmentation stubs here do.
+    monkeypatch.setattr(se, "_categorize", lambda pdf_path, row, *_a, **_kw: row)
+    monkeypatch.setattr(se.get_settings(), "verify_merge", False, raising=False)
+
+    # run_segmentation drains three pools in order: windows, categorization, injury dates. Time out
+    # the second one only, so the timeout handler under test is the one that runs.
+    real_drain = se.drain_pool
+    drains = {"n": 0}
+
+    def _drain(futures, timeout):
+        drains["n"] += 1
+        if drains["n"] == 2:
+            raise PoolTimeout(list(futures))
+        yield from real_drain(futures, timeout)
+
+    monkeypatch.setattr(se, "drain_pool", _drain)
+
+    rows = se.run_segmentation("/x.pdf", total_pages=2)
+
+    assert rows[0]["category"] == "100"
+    assert rows[0]["flag"] == "x"
+    assert rows[0]["method"] == "timeout"
 
 
 def test_escalation_reads_the_rows_first_three_pages_not_just_one(monkeypatch):

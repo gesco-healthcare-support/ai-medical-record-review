@@ -97,6 +97,11 @@ export type Row = {
    *  updates the filter without waiting for a save. Optional because rows the editor creates
    *  itself (insert, split, merge) never carry it, and none of them is ruled paperwork. */
   ruled_paperwork?: boolean;
+  /** Server-computed, read-only: which cascade path decided this row's category, frozen at segment
+   *  time - `rules`, `llm+embedding`, `llm-disagree`, `embedding-only`, `llm-only`, `no-signal`,
+   *  `empty`, or `timeout`. Absent or null means UNKNOWN (the row predates the column, or the
+   *  editor created it) and must never be read as "confidently classified". */
+  method?: string | null;
 };
 
 /** A selectable category ({id, name}) from catalog.get_category_options. */
