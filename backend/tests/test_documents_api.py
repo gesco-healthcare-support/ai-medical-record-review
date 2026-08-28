@@ -191,10 +191,12 @@ async def test_rows_round_trip_with_the_rule_verdict_attached(authed):
             ]
         },
     )
-    assert saved.status_code == 200 and saved.json()["count"] == 1
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["count"] == 1
 
     rows = (await client.get(f"/api/documents/{doc_id}")).json()["rows"]
-    assert len(rows) == 1 and rows[0]["title"] == "Placeholder Report"
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Placeholder Report"
 
 
 def _set_dedup_fields(doc_id, ranges, group=1):
