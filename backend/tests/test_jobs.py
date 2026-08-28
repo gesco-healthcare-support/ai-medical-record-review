@@ -16,7 +16,7 @@ from app.auth.password import MrrPasswordHelper
 from app.config import Settings, get_settings
 from app.db import get_sessionmaker
 from app.errors import EmptyExtractionError, OcrUnavailableError
-from app.models import Document, Job, ReviewRow, SegmentRow, Summary, User
+from app.models import Document, Job, PageText, ReviewRow, SegmentRow, Summary, User
 from app.services import catalog, jobs
 from app.worker.queues import queue_for, worker_fn
 from app.worker.tasks import _run, dedup_document, segment_document, summarize_document
@@ -2045,7 +2045,7 @@ def test_a_missing_ocr_binary_fails_the_segment_job(monkeypatch):
     import app.services.page_text as page_text_mod
     import app.services.segment_engine as se
 
-    def missing_binary(session, document_id, pdf_path, total_pages, workers=None):
+    def missing_binary(session, document_id, pdf_path, total_pages, workers=None, progress=None):
         raise OcrUnavailableError("no tesseract on this host")
 
     monkeypatch.setattr(page_text_mod, "populate_document", missing_binary)
@@ -2081,7 +2081,7 @@ def test_any_other_population_failure_stays_best_effort(monkeypatch):
     import app.services.page_text as page_text_mod
     import app.services.segment_engine as se
 
-    def transient(session, document_id, pdf_path, total_pages, workers=None):
+    def transient(session, document_id, pdf_path, total_pages, workers=None, progress=None):
         raise RuntimeError("one page timed out")
 
     monkeypatch.setattr(page_text_mod, "populate_document", transient)
@@ -2706,3 +2706,102 @@ def test_a_failed_dedup_leaves_a_summarized_record_summarized(monkeypatch):
 # test_run_marks_error_with_a_friendly_message above, which creates a summarize job (so the document
 # is "summarizing") and asserts the error status. That test is what stops this guard being widened
 # into "a failed job never touches the document".
+def _store_page_text(doc_id, page: int, text: str, ok: bool = True) -> None:
+    with get_sessionmaker()() as session:
+        session.add(
+            PageText(document_id=doc_id, page=page, text=text, extract_ok=ok, char_count=len(text))
+        )
+        session.commit()
+
+
+def test_summarize_serves_a_row_from_the_page_text_store(monkeypatch):
+    """DEMONSTRATES the bug: on origin/main `source_text` is empty here and summarize_row re-OCRs.
+
+    Summarize was the one stage of the four the page-text store exists for that still re-extracted
+    from the PDF - segmentation, classify and dedup all read it. `source_text` is written only by the
+    DUPLICATE CHECK, so a record summarized without running one first paid a SECOND full OCR pass
+    over pages already stored. That is the normal path, not an edge case (issue #125).
+    """
+    import app.services.summarize_engine as se
+
+    seen = {}
+
+    def fake(pdf_path, row, *a, **k):
+        seen[int(row["start"])] = row.get("source_text")
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    doc_id, job_id = _doc_with_summarize_rows(2)
+    _store_page_text(doc_id, 1, "stored page one")
+    _store_page_text(doc_id, 2, "stored page two")
+
+    summarize_document(job_id)
+
+    assert seen[1] == "stored page one"
+    assert seen[2] == "stored page two"
+
+
+def test_a_row_the_store_only_partly_covers_still_re_extracts(monkeypatch):
+    """GUARDS the conservative half, and it is the one that matters: partial cover must NOT be
+    served, or a row would be summarized from SOME of its pages with nothing saying so. A row with
+    an errored page re-extracts too, which preserves the retry that turns a transient Tesseract
+    timeout into a readable page."""
+    import app.services.summarize_engine as se
+
+    seen = {}
+
+    def fake(pdf_path, row, *a, **k):
+        seen[int(row["start"])] = row.get("source_text")
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    doc_id = _make_user_and_doc(page_count=4)
+    with get_sessionmaker()() as session:
+        for idx, (start, end) in enumerate([(1, 2), (3, 4)]):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=start,
+                    end=end,
+                    category="1",
+                    title="A",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "summarize", model="m", prompt_version="1").id
+
+    _store_page_text(doc_id, 1, "one")  # row 1-2: page 2 missing entirely
+    _store_page_text(doc_id, 3, "three")
+    _store_page_text(doc_id, 4, "", ok=False)  # row 3-4: page 4 errored
+
+    summarize_document(job_id)
+
+    assert not seen[1], "partial cover must fall through to a full extraction"
+    assert not seen[3], "an errored page must fall through, so the retry still happens"
+
+
+def test_a_deposition_row_is_not_served_from_the_store(monkeypatch):
+    """GUARDS the carve-out. summarize_row re-reads category 9 through the MARKING extractor, because
+    a transcript model handed concatenated text cannot see where a page ends - and the store holds
+    unmarked text. It ignores `source_text` for 9 anyway; not seeding it avoids carrying a large
+    string that would be dropped."""
+    import app.services.summarize_engine as se
+
+    seen = {}
+
+    def fake(pdf_path, row, *a, **k):
+        seen[int(row["start"])] = row.get("source_text")
+        return _ok_output(row)
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    doc_id, job_id = _doc_with_summarize_rows(1, category="9")
+    _store_page_text(doc_id, 1, "stored page one")
+
+    summarize_document(job_id)
+
+    assert not seen[1]

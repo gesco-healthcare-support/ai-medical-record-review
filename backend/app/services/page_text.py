@@ -27,6 +27,7 @@ from app.config import get_settings
 from app.errors import OcrUnavailableError
 from app.models import PageText
 from app.services.ocr import extract_pages_with_report
+from app.services.pools import drain_pool
 
 logger = logging.getLogger(__name__)
 
@@ -162,11 +163,38 @@ def get_pages_text(
     return "".join(out)
 
 
-def populate_document(session, document_id: str, pdf_path, total_pages: int, workers=None) -> int:
+def populate_document(
+    session, document_id: str, pdf_path, total_pages: int, workers=None, progress=None
+) -> int:
     """OCR every page of a document that is not already stored. Returns how many pages were added.
 
     Called once at the start of the segment job, before segmentation, so every later stage finds the
     text already there. Idempotent: a second call stores nothing.
+
+    ``progress`` is the job's ``report(stage, current, total)``, and it is what makes this pass
+    interruptible. Without it the whole pass was ONE blocking ``pool.map`` with no progress write and
+    no cancel poll: cooperative cancellation is observed only inside ``report``, and there are no
+    model calls during OCR, so nothing read the stop flag for the duration. On the repo's own
+    measurement that is ~700s for a 297-page record and tens of minutes for a 2,673-page one, during
+    which the bar read "reading 0 / N" and Stop did nothing - pushing the reviewer to Force stop,
+    which SIGKILLs the work-horse for what should have been a cooperative stop. Every other long
+    stage already threads ``report`` through; this one did not.
+
+    Results are consumed as they COMPLETE rather than via ``pool.map``, which yields in submission
+    order and so would stall reporting behind one slow page.
+
+    A cancel travels by raising out of ``progress``, and the loop CANCELS THE QUEUED PAGES on the way
+    out. That is not a tidiness detail: every page is submitted up front, so leaving the ``with``
+    block calls ``shutdown(wait=True)`` and would run the entire remaining pass before the stop
+    propagated - measured at 12.6s to return from a 200-page pass stopped after 2 pages, versus 0.5s
+    once the queued futures are cancelled. Pages already stored stay stored and the pass is
+    idempotent, so a later run resumes rather than restarting.
+
+    Drained through ``pools.drain_pool``, which is the house helper for this shape, so the deadline
+    the bare ``as_completed`` lacked comes with it - ``settings.pool_timeout`` is sized to fire just
+    before RQ's SIGKILL, so it cannot cut short a record that succeeds today. On that deadline it
+    raises ``PoolTimeout``, which the caller's best-effort handler treats like any other failure
+    here: the pages already stored are kept and every reader falls back to extracting on demand.
     """
     if workers is None:
         workers = get_settings().page_text_workers
@@ -188,12 +216,36 @@ def populate_document(session, document_id: str, pdf_path, total_pages: int, wor
 
     # OCR off-session in the pool, then store on the caller's session: a Session is not thread-safe,
     # so the threads must not touch it. This is the same rule the summarize pool follows.
+    stored = 0
+    total = len(missing)
     with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
-        texts = list(pool.map(lambda page: (page, *_extract(pdf_path, page)), missing))
-    for page, text, ok in texts:
-        _store(session, document_id, page, text, ok)
-    logger.info("stored OCR text for %d page(s) of document %s", len(texts), document_id)
-    return len(texts)
+        futures = [
+            pool.submit(lambda page: (page, *_extract(pdf_path, page)), page) for page in missing
+        ]
+        try:
+            for future in drain_pool(futures, get_settings().pool_timeout(int(total_pages))):
+                page, text, ok = future.result()
+                _store(session, document_id, page, text, ok)
+                stored += 1
+                if progress is not None:
+                    # Raises JobCancelled on a stop, and is itself rate-limited by the caller.
+                    progress("reading", stored, total)
+        except BaseException:
+            # WITHOUT THIS THE STOP DOES NOT STOP. Every page is submitted up front, and leaving the
+            # `with` block calls shutdown(wait=True) - cancel_futures defaults to False - so the
+            # exception is raised promptly and then blocks until the ENTIRE remaining pass has OCR'd
+            # anyway. Measured on 200 pages at 0.25s each over 4 workers: a full pass took 12.6s, and
+            # a stop after 2 pages also returned in 12.6s having stored 2. Scaled to a real record
+            # that is the whole ~700s pass, which is exactly what making this interruptible was for.
+            #
+            # Cancelling drops only the QUEUED pages. The few already running on the workers still
+            # finish, which is right - their work is real and the pass is idempotent, so a later run
+            # picks up whatever was not reached.
+            for pending in futures:
+                pending.cancel()
+            raise
+    logger.info("stored OCR text for %d page(s) of document %s", stored, document_id)
+    return stored
 
 
 def get_row_text_with_report(session, document_id: str, pages, pdf_path=None):

@@ -288,3 +288,92 @@ def test_population_uses_the_configured_pool_size(monkeypatch):
     with get_sessionmaker()() as session:
         pt.populate_document(session, doc_id, "/x.pdf", 3)
     assert seen["max_workers"] == 5
+
+
+def test_population_reports_progress_as_pages_land(monkeypatch):
+    """DEMONSTRATES the bug: on origin/main `progress` does not exist and nothing is reported.
+
+    Cooperative cancellation is observed only inside the job's `report`, and there are no model calls
+    during OCR - so with the whole pass inside one blocking `pool.map`, nothing wrote progress and
+    nothing polled the stop flag for its entire duration. On this repo's own measurement that is
+    ~700s for a 297-page record: the bar read "reading 0 / N" and Stop did nothing, pushing the
+    reviewer to Force stop, which SIGKILLs the work-horse for what should have been a cooperative
+    stop.
+    """
+    monkeypatch.setattr(pt, "_extract", lambda path, page: (f"page {page}", True))
+    doc_id = _doc(pages=5)
+    seen = []
+
+    with get_sessionmaker()() as session:
+        added = pt.populate_document(
+            session, doc_id, "/x.pdf", 5, workers=2, progress=lambda *a: seen.append(a)
+        )
+
+    assert added == 5
+    assert len(seen) == 5, "one report per page, so the bar moves during the pass"
+    assert {stage for stage, _, _ in seen} == {"reading"}
+    # Monotonic and complete, whatever order the pool finishes in.
+    assert [current for _, current, _ in seen] == [1, 2, 3, 4, 5]
+    assert {total for _, _, total in seen} == {5}
+
+
+def test_a_stop_during_the_ocr_pass_returns_without_draining_the_queue(monkeypatch):
+    """DEMONSTRATES the other half, and it has to be TIMED to demonstrate anything.
+
+    `report` raises JobCancelled on a stop, but every page is submitted to the pool up front and
+    leaving the `with` block calls shutdown(wait=True) - cancel_futures defaults to False. So a
+    version that merely lets the exception out still runs the ENTIRE remaining pass first: the stop
+    is heard promptly and the job returns minutes later, which is the thing being fixed.
+
+    An earlier version of this test asserted only `pytest.raises(JobCancelled)` and a stored count.
+    Both hold whether or not the pool drains, because it stubbed `_extract` with an instant lambda
+    and the drain is free when every page takes no time. The sleep is what gives the test teeth.
+
+    Self-calibrating rather than absolute: it measures a FULL pass on this machine and requires the
+    stopped one to be a fraction of it. A wall-clock threshold would be a flake on a loaded box.
+    """
+    import time
+
+    from app.worker.failures import JobCancelled
+
+    pages, per_page, workers = 60, 0.03, 4
+    monkeypatch.setattr(
+        pt, "_extract", lambda path, page: (time.sleep(per_page), (f"p{page}", True))[1]
+    )
+
+    # The reference: how long the whole pass takes here.
+    baseline_doc = _doc(pages=pages)
+    started = time.monotonic()
+    with get_sessionmaker()() as session:
+        pt.populate_document(session, baseline_doc, "/x.pdf", pages, workers=workers)
+    full_pass = time.monotonic() - started
+
+    def stop_after_four(stage, current, total):
+        if current >= 4:
+            raise JobCancelled(current, total)
+
+    doc_id = _doc(pages=pages)
+    started = time.monotonic()
+    with get_sessionmaker()() as session, pytest.raises(JobCancelled):
+        pt.populate_document(
+            session, doc_id, "/x.pdf", pages, workers=workers, progress=stop_after_four
+        )
+    stopped = time.monotonic() - started
+
+    assert stopped < full_pass / 3, (
+        f"the stop returned in {stopped:.2f}s against a {full_pass:.2f}s full pass - the queued "
+        "pages were still drained on the way out of the pool"
+    )
+    # Pages already read stay stored - the pass is idempotent, so a later run resumes. The few in
+    # flight on the workers finish, so this is a range, not an exact count.
+    with get_sessionmaker()() as session:
+        stored = session.scalars(select(PageText.page).where(PageText.document_id == doc_id)).all()
+    assert 0 < len(stored) < pages, "a stop must not store the whole document, nor discard the work"
+
+
+def test_population_without_progress_still_works(monkeypatch):
+    """GUARDS the default: `progress` is optional, so every other caller is unaffected."""
+    monkeypatch.setattr(pt, "_extract", lambda path, page: (f"page {page}", True))
+    doc_id = _doc(pages=3)
+    with get_sessionmaker()() as session:
+        assert pt.populate_document(session, doc_id, "/x.pdf", 3) == 3
