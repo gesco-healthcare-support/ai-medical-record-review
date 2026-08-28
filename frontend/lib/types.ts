@@ -129,6 +129,12 @@ export type SummaryItem = {
   // page range any more (boundaries were re-segmented) - absence of a live value, not a mismatch.
   row: { start: number; end: number; category: string };
   rowCategoryLive: string | null;
+  // True when NO sub-document covers `row.start`-`row.end` any more: the reviewer merged or
+  // re-spanned it after this text was written, so the summary describes pages nothing claims - and
+  // it still exports, because the export filters on `excluded` alone. Optional so an older backend
+  // (field absent -> falsy) stays silent rather than flagging every card during a rolling deploy,
+  // which is the same trap `rowCategoryLive`'s null/undefined coalescing exists for.
+  rowMissing?: boolean;
 };
 
 /** One copy within a duplicate cluster (Duplicates tab). */

@@ -61,6 +61,10 @@ STATUS_ON_CANCEL: dict[str, str | None] = {
 # worker/recovery, and NOTHING in worker/tasks - so which failure mode killed a job decided whether
 # the document's status survived it.
 INTERRUPTIBLE_DOCUMENT_STATUSES = ("segmenting", "summarizing")
+# Where a document sits once a summarize run has finished with it. Both mean "the deliverable is
+# built", which is a claim about the CURRENT row set - so a reviewer row edit that strands the
+# stored summaries has to move the document back out of these. See `_reopen_if_summaries_stranded`.
+SUMMARIZED_DOCUMENT_STATUSES = ("done", "needs_attention")
 # `paused` is a resumable summarize run awaiting its delayed resume (item 7): still in-flight, so
 # it blocks a second job for the same document and is inspected by orphan recovery.
 ACTIVE_STATES = ("queued", "running", "paused")
