@@ -1,6 +1,8 @@
 # Categorization (stage 2): assigning a category to each sub-document
 
-> **Last checked against the code 2026-08-18.** Re-verified against
+> **Last checked against the code 2026-08-28.** `method` is now a stored column on both row
+> tables (#188) and the workbench filters on it; the eighth row of the vote-fusion table below
+> (`timeout`) is written by the pool-timeout handler rather than by `classify()`. Earlier: verified against
 > `backend/app/services/classification.py` after #119 and #122 changed the rules stage: the
 > `_PAPERWORK_ABOUT_A_DOCUMENT` exception and the `_EVALUATOR_YIELDS_TO` set are now described in
 > stage 1. An earlier pass on 2026-08-12 fixed the code paths (they pointed into the pre-rewrite
@@ -103,9 +105,33 @@ guess, never a 500:
 | They **disagree**                           | the LLM's id      | low          | **yes**        | `llm-disagree`                |
 | Only one stage produced an answer           | that id           | low          | **yes**        | `embedding-only` / `llm-only` |
 | Both stages failed                          | `100`             | low          | **yes**        | `no-signal`                   |
+| The categorization pool never finished      | `100`             | (not set)    | flag `x`       | `timeout`                     |
 
-The result is a `Classification(category, confidence, method, needs_review)` dataclass; `method`
-records which path decided.
+The result is a `Classification(category, confidence, method, needs_review)` dataclass. The last
+row of that table is not one `classify()` can return: it is written by the categorization pool's
+timeout handler in `segment_engine.run_segmentation`, for a row that reached General without the
+cascade ever answering for it.
+
+**`method` is persisted** (#188), as a nullable column on BOTH `segment_rows` and `review_rows`. It
+is the only thing that separates the two populations inside category `100` - a row two independent
+signals agreed was paperwork (`llm+embedding`) from a low-confidence guess - and the review
+workbench's "Could not identify" filter narrows on exactly that, excluding `llm+embedding` and
+nothing else.
+
+Three properties worth knowing before relying on it:
+
+- **NULL means unknown, not "we could not tell".** `no-signal` means the cascade ran and both stages
+  failed; NULL means the row was segmented before the column existed, or the editor created it. It
+  cannot be backfilled - recovering it would mean re-running the cascade over every stored row at
+  model cost - so the filter deliberately treats NULL as "show" and those rows behave exactly as
+  they did before.
+- **It is frozen at segment time**, unlike the `ruled_paperwork` hint the same payload carries,
+  which replays `match_rules` live. The two answer different questions and the filter uses both: a
+  row can be `method: "rules"` yet not ruled paperwork today, because the rule that placed it has
+  since been narrowed.
+- **It is server-owned.** The editor payload round-trips it, but `_store_rows` ignores an incoming
+  value and carries the stored one across by page range, alongside the dedup fields. A re-spanned
+  row resets to NULL: the verdict described those pages.
 
 Note row 2. It is the only branch that assigns the catch-all at **high confidence without flagging
 for review**, because it is a rule hit like any other - and `100` is unchecked for summarization by

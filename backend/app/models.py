@@ -306,6 +306,13 @@ class SegmentRow(Base):
     injury_date = Column(Text, nullable=False, default="-")  # multi-DOI: "MM/DD/YYYY, MM/DD/YYYY"
     flag = Column(String(4), nullable=False, default="-")
     suggest_merge = Column(Boolean, nullable=False, default=False)
+    # Which cascade path decided this row's category (classification.Classification.method):
+    # rules | empty | no-signal | embedding-only | llm-only | llm+embedding | llm-disagree,
+    # plus "timeout" for a row the categorization pool never finished. NULL means the row
+    # predates this column or the editor created it - never "we checked and could not tell",
+    # which is what `no-signal` means. The review filter treats NULL as "show", so a row that
+    # was never backfilled behaves exactly as it did before.
+    method = Column(String(32))
 
     def as_row(self):
         row = {field: getattr(self, field) for field in ROW_FIELDS}
@@ -328,6 +335,13 @@ class ReviewRow(Base):
     flag = Column(String(4), nullable=False, default="-")
     suggest_merge = Column(Boolean, nullable=False, default=False)
     include = Column(Boolean, nullable=False, default=True)
+    # Which cascade path decided this row's category (classification.Classification.method):
+    # rules | empty | no-signal | embedding-only | llm-only | llm+embedding | llm-disagree,
+    # plus "timeout" for a row the categorization pool never finished. NULL means the row
+    # predates this column or the editor created it - never "we checked and could not tell",
+    # which is what `no-signal` means. The review filter treats NULL as "show", so a row that
+    # was never backfilled behaves exactly as it did before.
+    method = Column(String(32))
     # Duplicate clustering (pre-summarize): the dedup job stores each row's full OCR text once
     # (reused by the Duplicates view + the AI-confirm call), and groups confirmed re-scans of the
     # same document under a per-document `dupe_group` int (null = singleton). The reviewer marks one

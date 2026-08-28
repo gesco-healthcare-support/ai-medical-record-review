@@ -347,6 +347,108 @@ def test_segment_document_persists_segment_and_review_rows(monkeypatch):
         assert review[1].include is False
 
 
+def test_segment_document_stores_the_method_on_both_row_tables(monkeypatch):
+    """WHEN segmentation classifies a row, THE SYSTEM SHALL persist its method to BOTH tables.
+
+    `segment_rows` is the immutable model output and is what every measurement behind #144/#188 was
+    taken against, precisely because a reviewer cannot have edited it; `review_rows` is what the
+    editor reads. One `fields` dict feeds both, so they must not be allowed to diverge.
+
+    A row with no method (the pool never finished it, so `_categorize` never ran) stores NULL rather
+    than failing the job - the row still exists and is still General, which is the whole point of
+    that degradation path.
+    """
+    import app.services.page_text as page_text_mod
+    import app.services.segment_engine as se
+
+    monkeypatch.setattr(page_text_mod, "populate_document", lambda *a, **k: 0)
+
+    def _row(start, category, method):
+        row = {
+            "start": start,
+            "end": start,
+            "category": category,
+            "title": "A",
+            "date": "-",
+            "injury_date": "-",
+            "flag": "-",
+            "suggest_merge": False,
+        }
+        if method is not None:
+            row["method"] = method
+        return row
+
+    monkeypatch.setattr(
+        se,
+        "run_segmentation",
+        lambda pdf_path, total_pages, progress=None, page_text_fn=None: [
+            _row(1, "1", "rules"),
+            _row(2, "100", "llm+embedding"),
+            _row(3, "100", None),
+        ],
+    )
+    doc_id = _make_user_and_doc(page_count=3)
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+
+    segment_document(job_id)
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        review = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+        ).all()
+        segment = session.scalars(
+            select(SegmentRow).where(SegmentRow.job_id == job_id).order_by(SegmentRow.idx)
+        ).all()
+        assert [r.method for r in review] == ["rules", "llm+embedding", None]
+        assert [r.method for r in segment] == ["rules", "llm+embedding", None]
+
+
+def test_classify_document_stores_the_method_it_just_derived(monkeypatch):
+    """The combined-upload path re-derives the category per row, so it must record the path too.
+
+    Without this, a record assembled from several uploads would carry categories with no provenance
+    while a segmented one carried both - and the review filter would behave differently on the two.
+    """
+    import app.services.classification as classification
+    from app.services.classification import Classification
+    from app.worker.tasks import classify_document
+
+    monkeypatch.setattr(
+        classification,
+        "classify",
+        lambda title, page_text=None: Classification(
+            "100", "low", "llm-disagree", needs_review=True
+        ),
+    )
+    doc_id = _make_user_and_doc(page_count=2)
+    with get_sessionmaker()() as session:
+        for idx in range(2):
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=idx,
+                    start=idx + 1,
+                    end=idx + 1,
+                    category="100",
+                    title="-",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    include=True,
+                )
+            )
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "classify", model="m", prompt_version="1").id
+
+    classify_document(job_id)
+    with get_sessionmaker()() as session:
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+        ).all()
+        assert [r.method for r in rows] == ["llm-disagree", "llm-disagree"]
+
+
 def test_summarize_document_persists_summaries(monkeypatch):
     import app.services.summarize_engine as se
 

@@ -199,6 +199,120 @@ async def test_rows_round_trip_with_the_rule_verdict_attached(authed):
     assert rows[0]["title"] == "Placeholder Report"
 
 
+def _set_method(doc_id, value, start=1, end=2):
+    """Stamp a stored method onto one row, as the classifier would have."""
+    with get_sessionmaker()() as session:
+        row = session.scalar(
+            select(ReviewRow).where(
+                ReviewRow.document_id == doc_id, ReviewRow.start == start, ReviewRow.end == end
+            )
+        )
+        row.method = value
+        session.commit()
+
+
+def _methods(doc_id):
+    with get_sessionmaker()() as session:
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+        ).all()
+        return [row.method for row in rows]
+
+
+async def test_an_autosave_preserves_the_stored_classification_method(authed):
+    """WHEN rows are saved with their ranges unchanged, THE SYSTEM SHALL keep each row's method.
+
+    `_store_rows` DELETES every row and rebuilds it from the client payload, so anything the server
+    owns is destroyed by an ordinary autosave unless it is carried across explicitly - which is why
+    the dedup fields have been preserved by page range since they were added. `method` is written by
+    the classifier and cannot be recovered without re-running it at model cost, so losing it on the
+    reviewer's first keystroke would quietly empty the column the #188 filter reads.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [
+        {"start": 1, "end": 2, "category": "100", "title": "Placeholder Report"},
+        {"start": 3, "end": 4, "category": _VALID_CATEGORY, "title": "Office Visit Note"},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_method(doc_id, "llm-disagree", 1, 2)
+    _set_method(doc_id, "rules", 3, 4)
+
+    # An ordinary autosave: same ranges, one edited title.
+    rows[0]["title"] = "Placeholder Report (edited)"
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+
+    assert _methods(doc_id) == ["llm-disagree", "rules"]
+
+
+async def test_changing_a_rows_page_range_clears_its_method(authed):
+    """A row whose range moved is different content, so the old verdict no longer describes it.
+
+    Same rule the dedup fields follow, and for the same reason: the method was decided from THESE
+    pages. Carrying it onto a re-spanned row would attach a classification to text that was never
+    classified.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [{"start": 1, "end": 2, "category": "100", "title": "Placeholder Report"}]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_method(doc_id, "llm-disagree", 1, 2)
+
+    rows[0]["end"] = 3  # the reviewer widened the document
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+
+    assert _methods(doc_id) == [None]
+
+
+async def test_a_client_cannot_write_the_classification_method(authed):
+    """`method` is server-owned. The payload round-trips it, so it must be IGNORED on the way in.
+
+    Otherwise a client could mark any row as confidently-classified and remove it from the very list
+    the reviewers asked for.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    rows = [{"start": 1, "end": 2, "category": "100", "title": "Placeholder Report"}]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_method(doc_id, "llm-disagree", 1, 2)
+
+    rows[0]["method"] = "llm+embedding"  # a client claiming the row is settled paperwork
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+
+    assert _methods(doc_id) == ["llm-disagree"]
+
+
+async def test_rows_carry_the_stored_method_in_the_payload(authed):
+    """The editor needs the stored verdict to narrow its filter, so the GET must return it."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [
+        {"start": 1, "end": 2, "category": "100", "title": "Placeholder Report"},
+        {"start": 3, "end": 4, "category": "100", "title": "Sample Report"},
+    ]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_method(doc_id, "llm+embedding", 1, 2)
+
+    payload = (await client.get(f"/api/documents/{doc_id}")).json()["rows"]
+    # NULL for the untouched row: every row segmented before this column existed reads the same way,
+    # and the filter shows those unchanged.
+    assert [row["method"] for row in payload] == ["llm+embedding", None]
+
+
 def _set_dedup_fields(doc_id, ranges, group=1):
     """Mark the given (start, end) rows as a confirmed duplicate cluster with stored OCR text."""
     with get_sessionmaker()() as session:

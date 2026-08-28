@@ -119,6 +119,11 @@ export function touchedFields(previous: EditorRow[], next: EditorRow[]): string[
 /** The General category, which is also where the cascade parks anything it could not answer. */
 const GENERAL = "100";
 
+/** The one `method` that means General was a CONFIDENT answer: the embedding stage and the LLM
+ *  independently both said paperwork. Every other value is a guess, a single-signal answer, or a
+ *  failure - all of which the reviewer asked to see. */
+const CONFIDENT_PAPERWORK = "llm+embedding";
+
 /**
  * A sub-document nothing identified: it sits in General and no rule put it there.
  *
@@ -130,9 +135,18 @@ const GENERAL = "100";
  * A row whose title a rule sends somewhere OTHER than General counts as one of these. It is
  * stored at 100 only because it was segmented before that rule shipped, so it needs a look rather
  * than being settled paperwork - which is why this tests `ruled_paperwork` and not "no rule".
+ *
+ * `ruled_paperwork` and `method` answer DIFFERENT questions and both are needed. The first is a
+ * live replay of today's rules; the second is frozen at segment time and is the only record of how
+ * confident the cascade was when it ran. So a row can be `method: "rules"` yet not ruled paperwork
+ * today - the rule was since narrowed, nobody currently calls it paperwork, and it belongs in the
+ * list. Only `llm+embedding` is excluded on the method, because only there did two independent
+ * signals agree. A missing method means UNKNOWN, never confident: every row segmented before the
+ * column existed reads that way, and they stay in the list exactly as they were.
  */
 export function couldNotIdentify(row: Row): boolean {
-  return String(row.category) === GENERAL && !row.ruled_paperwork;
+  if (String(row.category) !== GENERAL) return false;
+  return !row.ruled_paperwork && row.method !== CONFIDENT_PAPERWORK;
 }
 
 /**

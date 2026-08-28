@@ -128,6 +128,40 @@ describe("couldNotIdentify", () => {
     // paperwork a rule named - so the absent field must read as "not ruled", never as unknown.
     expect(couldNotIdentify(general({}))).toBe(true);
   });
+
+  it("is false when both signals independently agreed it is paperwork", () => {
+    // The only method that means General was a CONFIDENT answer rather than a guess (#188).
+    expect(couldNotIdentify(general({ method: "llm+embedding" }))).toBe(false);
+  });
+
+  it("is true for every other method, including the ones that mean failure", () => {
+    // llm-disagree is the population the reviewers actually asked to look through; timeout is a
+    // row the categorization pool never finished, so nothing classified it at all.
+    for (const method of [
+      "llm-disagree",
+      "llm-only",
+      "embedding-only",
+      "no-signal",
+      "empty",
+      "timeout",
+    ]) {
+      expect(couldNotIdentify(general({ method }))).toBe(true);
+    }
+  });
+
+  it("is true when a rule decided at segment time but no longer claims the title", () => {
+    // method "rules" is NOT excluded. It records that a rule fired when the row was segmented; if
+    // that rule has since been narrowed, ruled_paperwork is false and nobody calls it paperwork
+    // today - so it belongs in the list. Excluding on method here would hide it forever.
+    expect(couldNotIdentify(general({ method: "rules", ruled_paperwork: false }))).toBe(true);
+  });
+
+  it("treats an absent or null method as unknown, never as confident", () => {
+    // The regression guard for every row segmented before the column existed: they read null and
+    // must keep behaving exactly as they did before #188 shipped.
+    expect(couldNotIdentify(general({ method: null }))).toBe(true);
+    expect(couldNotIdentify(general({ method: undefined }))).toBe(true);
+  });
 });
 
 describe("withKeys / newKey / stripKeys", () => {
