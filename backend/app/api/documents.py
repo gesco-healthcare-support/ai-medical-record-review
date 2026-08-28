@@ -93,6 +93,19 @@ def _pipeline_error_response(document_id: str, exc: PipelineError) -> JSONRespon
     return JSONResponse(status_code=code, content={"error": exc.user_message})
 
 
+def _covered_page_count(ranges) -> int:
+    """How many pages of the document some sub-document covers, over ``(start, end)`` pairs.
+
+    A set of page numbers rather than a sum of span lengths: the incoming rows are validated
+    non-overlapping so the two agree today, but a sum would quietly double-count if that ever
+    changed, and this number's whole job is to be trustworthy in an audit trail.
+    """
+    pages: set[int] = set()
+    for start, end in ranges:
+        pages.update(range(int(start), int(end) + 1))
+    return len(pages)
+
+
 def _store_rows(session: Session, document: Document, rows) -> tuple[str | None, dict]:
     """Replace the document's ReviewRows with ``rows``; returns ``(error, stats)``.
 
@@ -137,6 +150,17 @@ def _store_rows(session: Session, document: Document, rows) -> tuple[str | None,
     # Count the boundary work before the rows are gone. A boundary is a row's last page, so a
     # boundary the reviewer dropped is a merge and one they introduced is a split. Computed on
     # sets rather than by pairing rows, because a merge renumbers every row after it.
+    #
+    # `pages` is the count of pages some sub-document covers, and it is what separates a MERGE from
+    # a DELETE. On the end-set arithmetic alone the two are identical - deleting [20-20] from
+    # 13-19 / 20-20 / 21-21 drops end 20 and one row, and merging 20-20 into 21-21 drops end 20 and
+    # one row - so both audit as "merges 1" and nothing distinguishes them afterwards, because this
+    # function DELETES the row set rather than updating it. They are not the same act: a merge keeps
+    # every page in the deliverable, a delete removes those pages from it entirely, and the deleted
+    # pages are then covered by nothing and reach no output. Gaps are legal on purpose (reviewers
+    # skip junk pages), so this is not a validation error - it is the one thing the trail has to be
+    # able to say. Found while reconciling a 247-page record whose audit read as ten merges and
+    # whose rows had a one-page hole nothing accounted for.
     before_ends = {row.end for row in document.review_rows}
     after_ends = {end for _start, end in incoming_ranges}
     stats = {
@@ -144,6 +168,8 @@ def _store_rows(session: Session, document: Document, rows) -> tuple[str | None,
         "after": len(rows),
         "merges": len(before_ends - after_ends),
         "splits": len(after_ends - before_ends),
+        "pages_before": _covered_page_count((row.start, row.end) for row in document.review_rows),
+        "pages_after": _covered_page_count(incoming_ranges),
     }
     session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
     for idx, row in enumerate(rows):
@@ -183,10 +209,17 @@ def _store_rows(session: Session, document: Document, rows) -> tuple[str | None,
 
 
 def _rows_edit_detail(stats: dict) -> str:
-    """Non-PHI audit detail for a row-set save: counts only, never a title or a date."""
+    """Non-PHI audit detail for a row-set save: counts only, never a title or a date.
+
+    The page counts are what make a DELETE readable. `merges` cannot say it - dropping a row and
+    merging it into its neighbour produce identical row and boundary arithmetic (see `_store_rows`)
+    - and a delete takes those pages out of the deliverable, so it is the edit most worth being able
+    to find later. `pages A->B` is unchanged by a merge and falls by exactly the pages dropped.
+    """
     return (
         f"rows {stats['before']}->{stats['after']} "
-        f"(merges {stats['merges']}, splits {stats['splits']})"
+        f"(merges {stats['merges']}, splits {stats['splits']}, "
+        f"pages {stats['pages_before']}->{stats['pages_after']})"
     )
 
 
