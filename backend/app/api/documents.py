@@ -1291,9 +1291,16 @@ def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tup
     PDF cannot be edited to remove them, and the human-written deliverables this output is measured
     against carry neither. [Diagnostic Study] used to be RE-APPLIED here; it is now removed.
 
-    ``with_pages`` re-applies the ``(Pages X-Y)`` suffix from the row's CURRENT range. It is off by
-    default because the presentable report carries no internal page ranges; the stored suffix is
-    stripped either way, since a row edit leaves it stale.
+    ``with_pages`` re-applies the ``(Pages X-Y)`` suffix from the SUMMARY's stored range - which is
+    not the same claim as "the row's current range", as this said until now. `row_start`/`row_end`
+    are a snapshot, written once at generation and re-written only by a re-draft; nothing updates
+    them when the reviewer re-spans a row. Re-applying from them is still the right thing, because
+    the two can only agree or have no row at all: a summary is bound to its row by an EXACT
+    ``(start, end)`` match, so a re-spanned row leaves the summary orphaned rather than moved, and
+    there is then no current range to read (see `stranded_summaries`, which is what now reports
+    that state instead of leaving it silent). The suffix carried in the stored title is a different
+    thing - it came from the model and may never have matched - which is why it is stripped either
+    way. Off by default: the presentable report carries no internal page ranges.
 
     The stripping itself now lives in `summarize_engine.presentable_title`, beside the `_row_tags`
     that apply the markers, because the bundle export path needed the same logic and could not import
