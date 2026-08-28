@@ -1379,7 +1379,7 @@ async def test_a_row_save_records_the_boundary_work(authed):
             select(AuditLog).where(AuditLog.action == "rows.edit", AuditLog.document_id == doc_id)
         )
         assert entry is not None
-        assert entry.detail == "rows 3->2 (merges 1, splits 0)"
+        assert entry.detail == "rows 3->2 (merges 1, splits 0, pages 6->6)"
 
 
 async def test_a_row_save_that_changes_nothing_is_still_recorded(authed):
@@ -1408,7 +1408,7 @@ async def test_a_row_save_that_changes_nothing_is_still_recorded(authed):
             select(AuditLog).where(AuditLog.action == "rows.edit", AuditLog.document_id == doc_id)
         )
         assert entry is not None
-        assert entry.detail == "rows 2->2 (merges 0, splits 0)"
+        assert entry.detail == "rows 2->2 (merges 0, splits 0, pages 4->4)"
 
 
 async def test_a_summary_edit_is_recorded_and_stamps_the_row(authed):
@@ -2737,3 +2737,103 @@ async def test_the_listing_timestamps_carry_their_utc_offset(authed):
         assert parsed.utcoffset().total_seconds() == 0, f"{field} is not UTC"
         # Within a few minutes of now, i.e. the instant is right as well as the marker.
         assert abs((datetime.now(UTC) - parsed).total_seconds()) < 300
+
+
+async def test_the_audit_separates_a_deleted_sub_document_from_a_merge(authed):
+    """WHEN a reviewer deletes a sub-document, THE SYSTEM SHALL record that its pages left the
+    deliverable, rather than logging it identically to a merge.
+
+    On row and boundary arithmetic alone the two acts are indistinguishable. Deleting [3-3] from
+    1-2 / 3-3 / 4-5 drops end 3 and one row; merging [3-3] into [4-5] drops end 3 and one row. Both
+    audited as `rows 3->2 (merges 1, splits 0)` - and `_store_rows` DELETES the row set rather than
+    updating it, so nothing afterwards can tell them apart either.
+
+    They are not the same act. A merge keeps every page in the deliverable; a delete takes those
+    pages out of it, and nothing then covers them. Gaps are legal on purpose - reviewers skip junk
+    pages - so this is not something to reject, it is something the trail has to be able to say.
+
+    Found reconciling a 247-page record whose audit read as ten merges and whose saved rows had a
+    one-page hole nothing accounted for.
+    """
+    from app.models import AuditLog
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=5)
+    _seed_rows(doc_id, [(1, 2, None), (3, 3, None), (4, 5, None)])
+
+    # The reviewer deletes the middle sub-document: page 3 is now covered by nothing.
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+                {"start": 4, "end": 5, "category": _VALID_CATEGORY},
+            ]
+        },
+    )
+
+    with get_sessionmaker()() as session:
+        entry = session.scalar(
+            select(AuditLog).where(AuditLog.action == "rows.edit", AuditLog.document_id == doc_id)
+        )
+    assert entry.detail == "rows 3->2 (merges 1, splits 0, pages 5->4)"
+
+
+async def test_a_merge_of_the_same_shape_keeps_every_page(authed):
+    """The other half of the pin, and the reason the page count is the right discriminator: a merge
+    with IDENTICAL row and boundary arithmetic to the delete above leaves the coverage untouched."""
+    from app.models import AuditLog
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=5)
+    _seed_rows(doc_id, [(1, 2, None), (3, 3, None), (4, 5, None)])
+
+    # Same row count change, same dropped boundary - but [3-3] is merged into its neighbour.
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 2, "category": _VALID_CATEGORY},
+                {"start": 3, "end": 5, "category": _VALID_CATEGORY},
+            ]
+        },
+    )
+
+    with get_sessionmaker()() as session:
+        entry = session.scalar(
+            select(AuditLog).where(AuditLog.action == "rows.edit", AuditLog.document_id == doc_id)
+        )
+    assert entry.detail == "rows 3->2 (merges 1, splits 0, pages 5->5)"
+
+
+async def test_shrinking_a_sub_document_is_recorded_even_though_no_row_is_lost(authed):
+    """A reviewer who pulls a boundary in loses pages without losing a row, so `rows N->N` says
+    nothing happened. The page count is the only field that reports it."""
+    from app.models import AuditLog
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=5)
+    _seed_rows(doc_id, [(1, 5, None)])
+
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 3, "category": _VALID_CATEGORY}]},
+    )
+
+    with get_sessionmaker()() as session:
+        entry = session.scalar(
+            select(AuditLog).where(AuditLog.action == "rows.edit", AuditLog.document_id == doc_id)
+        )
+    assert entry.detail == "rows 1->1 (merges 1, splits 1, pages 5->3)"
+
+
+def test_covered_page_count_counts_pages_not_span_lengths():
+    """Deliberately a set of page numbers rather than a sum of span lengths. The saved rows are
+    validated non-overlapping so the two agree today; a sum would double-count if that ever
+    changed, and this number's whole job is to be trustworthy in an audit trail."""
+    from app.api.documents import _covered_page_count
+
+    assert _covered_page_count([]) == 0
+    assert _covered_page_count([(1, 1)]) == 1
+    assert _covered_page_count([(1, 2), (4, 5)]) == 4  # the gap at 3 is not counted
+    assert _covered_page_count([(1, 3), (2, 5)]) == 5  # overlap counted once, not 3 + 4
