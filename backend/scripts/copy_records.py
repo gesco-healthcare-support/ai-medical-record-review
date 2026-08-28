@@ -40,6 +40,12 @@ and two of one account's own documents share another.
 
 Summaries are NOT copied - they are model output, reproducible, large, and no measurement needs
 them. The audit trail is not copied either: it is the history of the original.
+
+One thing a copy does NOT inherit: a dedup job. `summarize_start` returns 409 unless a completed
+duplicate check covers the current rows (#190), and that check is keyed to a JOB, which is not among
+what travels here. So summarizing a copy needs the duplicate check run on it first - or
+`skip_duplicate_check`, which is audited. Nothing in this script's own purpose needs summarize, so
+this is a note for whoever tries it rather than something to work around.
 """
 
 import argparse
@@ -65,7 +71,6 @@ from app.models import (  # noqa: E402
     SegmentRow,
     User,
 )
-from app.services.audit import audit  # noqa: E402
 
 COPY_ACTION = "copy"
 # `Document.active_job`'s own definition. A job in any other state - including `interrupted` and
@@ -202,6 +207,19 @@ def copy_document(session, source: Document, target: User, dry_run: bool) -> dic
             session.add(_clone(row, exclude={"id", "document_id"}, document_id=new_id))
         for row in page_texts:
             session.add(_clone(row, exclude={"id", "document_id"}, document_id=new_id))
+        # The marker lands in the SAME transaction as the rows it marks. `services.audit.audit`
+        # commits a transaction of its own, which would leave a window where the copy is fully
+        # present and nothing records that this source has been copied - so a re-run would duplicate
+        # it. Silently, and into a corpus whose whole value is labels that cannot be regenerated: the
+        # second copy would look exactly as legitimate as the first.
+        session.add(
+            AuditLog(
+                user_id=target.id,
+                action=COPY_ACTION,
+                document_id=new_id,
+                detail=f"source={source.id} source_user={source.user_id} pages={source.page_count}",
+            )
+        )
         session.commit()
     except BaseException:
         session.rollback()
@@ -210,13 +228,6 @@ def copy_document(session, source: Document, target: User, dry_run: bool) -> dic
         if os.path.exists(stored_path):
             os.remove(stored_path)
         raise
-    audit(
-        session,
-        COPY_ACTION,
-        target.id,
-        new_id,
-        detail=f"source={source.id} source_user={source.user_id} pages={source.page_count}",
-    )
     return counts
 
 
