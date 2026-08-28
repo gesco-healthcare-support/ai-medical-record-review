@@ -93,7 +93,21 @@ def _run(job_id, work) -> None:
             now = time.monotonic()
             # Stage changes always write (the UI keys its label off them); same-stage ticks
             # are rate-limited so per-row progress does not contend with the job's own inserts.
-            if stage == job.stage and now - last_write < _PROGRESS_MIN_INTERVAL:
+            #
+            # `current < total` exempts the write that COMPLETES a stage, and it is not cosmetic.
+            # Every stage ends `report(stage, i, total)` for the last item and then
+            # `report(stage, total, total)`, back to back - so the completion write always lands
+            # inside the interval and was always dropped. Nothing writes it afterwards either: the
+            # success path in `_run` sets `state = "done"` without touching `current`, unlike
+            # `mark_terminal`, which takes an explicit `done=` for cancel and needs_attention.
+            #
+            # The finished job then keeps a permanent record of having processed fewer items than it
+            # had. Measured on the box 2026-08-28 over every completed job: dedup 30 of 57 (52.6%),
+            # segment 7 of 68, gaps of 1 to 14. Summarize never shows it only because its rows are
+            # slow enough that a second always passes. That number is read by the Duplicates tab
+            # while a check runs, and by anyone reading job history afterwards - where "83/89 done"
+            # says six sub-documents were skipped, which is a defect that did not happen.
+            if stage == job.stage and current < total and now - last_write < _PROGRESS_MIN_INTERVAL:
                 return
             if stage != job.stage:
                 logger.info("job %s stage %r on document %s", job_id, stage, job.document_id)

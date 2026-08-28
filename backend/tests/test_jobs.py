@@ -2907,3 +2907,84 @@ def test_a_deposition_row_is_not_served_from_the_store(monkeypatch):
     summarize_document(job_id)
 
     assert not seen[1]
+
+
+def test_a_finished_job_records_the_progress_it_actually_made():
+    """WHEN a stage reports its last item and then its completion back to back, THE SYSTEM SHALL
+    persist the completion.
+
+    Every stage ends `report(stage, i, total)` for the last item followed immediately by
+    `report(stage, total, total)`. Both are the same stage and they are microseconds apart, so the
+    same-stage rate limit dropped the second one every time, and nothing wrote it afterwards: the
+    success path sets `state = "done"` without touching `current`, unlike `mark_terminal`, which
+    takes an explicit `done=`.
+
+    The finished job then keeps a permanent record of having processed fewer items than it had.
+    Measured on the box 2026-08-28 across every completed job: dedup 30 of 57 (52.6%), segment 7 of
+    68, gaps of 1 to 14 - and "83/89 done" reads as six sub-documents skipped, which never happened.
+
+    No sleep and no clock control: the point is precisely that these two calls are adjacent, so the
+    test reproduces the bug by BEING fast rather than by simulating it.
+    """
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(session, doc_id, "dedup", model="m", prompt_version="1").id
+
+    def work(session, job, report):
+        for i in range(4):
+            report("deduping", i, 4)
+        report("deduping", 4, 4)
+
+    _run(job_id, work)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "done"
+        assert (job.current, job.total) == (4, 4)
+
+
+def test_intermediate_ticks_are_still_rate_limited():
+    """The exemption is for the COMPLETING write only. Per-row ticks still coalesce, or a long
+    record's progress writes contend with the job's own inserts - which is what the throttle is
+    for. Asserted on the stored value rather than on a write count, because the number of writes is
+    a timing property the test cannot promise.
+    """
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+
+    def work(session, job, report):
+        report("segmenting", 0, 100)  # stage change -> always written
+        for i in range(1, 40):
+            report("segmenting", i, 100)  # same stage, sub-second -> coalesced away
+
+    _run(job_id, work)
+
+    with get_sessionmaker()() as session:
+        # Still the stage-change write: none of the 39 same-stage ticks reached the total, so none
+        # of them was exempt and the throttle held.
+        assert session.get(Job, job_id).current == 0
+
+
+def test_the_completing_write_lands_for_a_stage_that_is_not_the_last():
+    """A job with several stages completes each of them, and each completion is the number the UI
+    shows while the NEXT stage has not started yet. Pinned on the middle stage so the fix cannot be
+    narrowed to "whatever the job finished on"."""
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+
+    seen = []
+
+    def work(session, job, report):
+        report("ocr", 0, 3)
+        report("ocr", 2, 3)
+        report("ocr", 3, 3)
+        with get_sessionmaker()() as probe:  # what a poller would read between the two stages
+            row = probe.get(Job, job_id)
+            seen.append((row.stage, row.current, row.total))
+        report("injury-dates", 0, 3)
+
+    _run(job_id, work)
+
+    assert seen == [("ocr", 3, 3)]
