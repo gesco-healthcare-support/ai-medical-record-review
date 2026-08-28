@@ -170,6 +170,9 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
             x = parent[x]
         return x
 
+    # Each union that actually merges two components, and whether the CONTENT branch admitted it.
+    # Resolved to final roots after the loop, so the attribution does not depend on edge order.
+    merges: list[tuple[int, bool]] = []
     for i in range(n):
         for j in range(i + 1, n):
             # Jaccard first for every pair, same date or not: it is a set intersection, and it is the
@@ -177,23 +180,38 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
             if _jaccard(sigs[i], sigs[j]) < jaccard_threshold:
                 continue
             if dates[i] == dates[j]:
+                if find(i) != find(j):
+                    merges.append((i, False))
                 parent[find(i)] = find(j)
             elif _min_difflib([items[i].get("text") or "", items[j].get("text") or ""]) >= (
                 cross_date_override
             ):
+                if find(i) != find(j):
+                    merges.append((i, True))
                 parent[find(i)] = find(j)
 
     groups: dict[int, list[int]] = {}
     for k in range(n):
         groups.setdefault(find(k), []).append(k)
 
+    # A cluster is content-joined when EVERY union that built it cleared the override. That is the
+    # provenance `duplicate_gate` needs: for such a cluster the override has already been satisfied
+    # edge by edge, so re-asking it of the transitive closure - whose minimum no chain longer than
+    # one hop can reach - rejects genuine re-scans for a test they cannot pass. A single same-date
+    # union makes it False, because that branch joins without scoring content at all.
+    weak_roots = {find(i) for i, strong in merges if not strong}
+
     clusters = []
-    for members_idx in groups.values():
+    for root, members_idx in groups.items():
         if len(members_idx) < 2:
             continue
         members = [items[k] for k in members_idx]
         clusters.append(
-            {"members": members, "similarity": _min_difflib([m.get("text") or "" for m in members])}
+            {
+                "members": members,
+                "similarity": _min_difflib([m.get("text") or "" for m in members]),
+                "content_joined": root not in weak_roots,
+            }
         )
     return clusters
 
@@ -207,7 +225,7 @@ def _norm(value) -> str:
     return "" if text in _UNKNOWN else text
 
 
-def duplicate_gate(members, similarity, override=None) -> bool:
+def duplicate_gate(members, similarity, override=None, content_joined=False) -> bool:
     """Whether a candidate cluster is plausible enough to spend a confirm call on.
 
     Renamed from ``date_title_gate`` because it no longer looks only at date and title: a shared
@@ -244,6 +262,19 @@ def duplicate_gate(members, similarity, override=None) -> bool:
     same_title = len(titles) == 1 and "" not in titles
     same_category = len(categories) == 1 and "" not in categories
     if same_date and (same_title or same_category):
+        return True
+    # `content_joined` says every union that built this cluster already cleared `override` on its
+    # own content. Testing the CLOSURE minimum as well applies the same threshold twice at two
+    # different scopes, and the second is unsatisfiable: in a chain A~B~C the A-C pair was never
+    # required to be similar and generally is not. Measured on the box at the running 0.90, that
+    # rejected 21 candidates - 20 of them chains of strong edges, none sharing a date - whose
+    # STRONGEST pair had a median of 1.000, byte-identical after date masking.
+    #
+    # Deliberately a separate branch rather than folding into the line below: the caller in
+    # tasks.py still tests `similarity` against `dupe_model_override` to decide whether to SKIP the
+    # confirm call, and that one must keep reading the minimum. A chain admitted here has to be
+    # adjudicated by the model, never accepted wholesale.
+    if content_joined:
         return True
     return similarity is not None and similarity >= override
 

@@ -91,10 +91,12 @@ export function startSegment(id: string, fresh = false) {
 
 /** POST /api/documents/{id}/summarize/start - flush rows + enqueue summarization. `fresh` clears
  *  prior summaries first ("Re-summarize all"); otherwise the resumable worker reuses done rows. */
-export function startSummarize(id: string, rows: Row[], fresh = false) {
+export function startSummarize(id: string, rows: Row[], fresh = false, skipDuplicateCheck = false) {
   return apiFetch<{ ok: boolean }>(`/documents/${id}/summarize/start`, {
     method: "POST",
-    body: JSON.stringify({ rows, fresh }),
+    // skip_duplicate_check is the reviewer deliberately proceeding past the #125 gate. The server
+    // refuses with 409 without it and audits the skip with it, so it must never be sent by default.
+    body: JSON.stringify({ rows, fresh, skip_duplicate_check: skipDuplicateCheck }),
   });
 }
 

@@ -414,13 +414,13 @@ export function useReviewWorkflow(
 
   // fresh=true is "Re-summarize all": clear prior summaries + regenerate every row. Default false
   // reuses done rows by identity (a re-click only fills the gaps / retries the failed ones).
-  async function onSummarize(fresh = false) {
+  async function onSummarize(fresh = false, skipDuplicateCheck = false) {
     if (!documentId) return;
     setBanner("");
     setAttention(null);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     try {
-      await startSummarize(documentId, stripKeys(sortRows(rows)), fresh);
+      await startSummarize(documentId, stripKeys(sortRows(rows)), fresh, skipDuplicateCheck);
       await watchSummarize();
     } catch (err) {
       setBanner(message(err, "Could not start summarization."));

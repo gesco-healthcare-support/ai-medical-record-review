@@ -20,6 +20,10 @@ class SummarizeStartPayload(BaseModel):
     # "Re-summarize all": clear existing summaries first so every row is regenerated (discards
     # reviewer edits). Default false -> the resumable worker reuses done rows by identity (item 7).
     fresh: bool = False
+    # Proceed even though no CURRENT duplicate check covers these rows (#125). The gate is soft on
+    # purpose: a reviewer may reasonably skip the check on a short record, but skipping has to be a
+    # decision rather than an omission, so this is explicit and the server audits it.
+    skip_duplicate_check: bool = False
 
 
 class SummaryEditPayload(BaseModel):

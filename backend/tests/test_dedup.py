@@ -187,6 +187,79 @@ def test_gate_reproduces_the_reviewer_verdicts_on_the_measured_clusters():
         )
 
 
+# --- the closure-minimum defect (#125) ---------------------------------------------------------
+#
+# `cluster_rows` admits a cross-date pair only when its content score clears the override - per
+# EDGE. `duplicate_gate` then asked the same question of the transitive CLOSURE, whose minimum no
+# chain longer than one hop can satisfy. Measured on the box at the running 0.90: 21 candidates
+# rejected, 20 of them chains where every edge already cleared it, 0 sharing a date - rejected on a
+# weakest pair of 0.76-0.90 while containing a strongest pair whose median was 1.000.
+
+
+def _chain_texts():
+    """A~B~C: each adjacent pair near-identical, the ends further apart. The shape of a re-scanned
+    document series where each copy differs slightly from the last."""
+    a = "operative report knee arthroscopy anesthesia general surgeon signature findings alpha"
+    b = "operative report knee arthroscopy anesthesia general surgeon signature findings beta"
+    c = "operative report knee arthroscopy anesthesia general surgeon signature results gamma delta"
+    return a, b, c
+
+
+def test_a_chain_of_strong_edges_reports_itself_as_content_joined():
+    """Every union that built this cluster cleared the override, so the cluster says so."""
+    a, b, c = _chain_texts()
+    items = [
+        {"idx": 0, "text": a, "date": "01/02/2022"},
+        {"idx": 1, "text": b, "date": "03/04/2022"},
+        {"idx": 2, "text": c, "date": "05/06/2022"},
+    ]
+    clusters = dedup.cluster_rows(items, jaccard_threshold=0.4, cross_date_override=0.80)
+    assert len(clusters) == 1
+    assert clusters[0]["content_joined"] is True
+
+
+def test_a_same_date_union_is_not_content_joined():
+    """The same-date branch joins WITHOUT scoring content, so it cannot claim the override was met.
+
+    Such a cluster falls through to the gate's first branch, which is the one built for it.
+    """
+    items = [
+        {"idx": 0, "text": "work status report restrictions no lifting today alpha"},
+        {"idx": 1, "text": "work status report restrictions full duty today beta"},
+    ]
+    for item in items:
+        item["date"] = "05/08/2022"
+    clusters = dedup.cluster_rows(items, jaccard_threshold=0.4, cross_date_override=0.99)
+    assert len(clusters) == 1
+    assert clusters[0]["content_joined"] is False
+
+
+def test_gate_admits_a_content_joined_chain_its_closure_minimum_would_reject():
+    """THE DEFECT. Every edge cleared the override; the closure minimum cannot, by construction.
+
+    Without the third branch this returns False - no shared date, and a closure minimum below the
+    override - and a chain of genuine re-scans is discarded with every strong pair inside it.
+    """
+    members = _members(("01/02/2022", "Operative Report"), ("05/06/2022", "Operative Report"))
+    assert dedup.duplicate_gate(members, 0.62, content_joined=True) is True
+    # and the same cluster WITHOUT that provenance is still rejected, as before
+    assert dedup.duplicate_gate(members, 0.62, content_joined=False) is False
+
+
+def test_content_joined_does_not_rescue_a_cluster_the_dates_and_content_both_reject():
+    """The flag is the ONLY thing that changes. A cluster nothing joined on content is untouched."""
+    members = _members(("05/08/2022", "Work Status Report"), ("06/12/2022", "Work Status Report"))
+    assert dedup.duplicate_gate(members, 0.51) is False
+
+
+def test_content_joined_defaults_off_so_existing_callers_are_unchanged():
+    """Every verdict measured before this change must be reproducible without passing the flag."""
+    members = _members(("05/08/2022", "Progress Report"), ("05/08/2022", "progress  report"))
+    assert dedup.duplicate_gate(members, 0.30) is True
+    multi = _members(("05/08/2022", "Work Status"), ("06/12/2022", "Work Status"))
+    assert dedup.duplicate_gate(multi, 0.51) is False
+
+
 def test_cluster_rows_threshold_defaults_to_the_configured_value(monkeypatch):
     calls = []
 

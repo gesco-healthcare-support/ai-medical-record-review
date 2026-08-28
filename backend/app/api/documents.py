@@ -605,24 +605,12 @@ def get_duplicates(
     # groups it was asking the reviewer to resolve, dropped the "N sub-documents could not be read"
     # warning that the earlier run had earned, and dropped the "boundaries changed" nudge while the
     # edits that made it true were still in place.
-    last_completed = session.scalars(
-        select(Job)
-        .where(Job.document_id == document.id, Job.kind == "dedup", Job.state == "done")
-        .order_by(Job.id.desc())
-    ).first()
-    # "stale" = the clusters no longer cover every row dedup would look at, so the tab can offer a
-    # MANUAL re-check (never an automatic AI run). A completed dedup stores source_text on every row
-    # IN SCOPE, and a metadata edit keeps it (_store_rows), so a missing one means a boundary changed,
-    # a row appeared, or a row was newly included since that run. While a dedup is in flight there is
-    # nothing to nudge.
-    #
-    # Scope is include=True, matching dedup_document. This filter is load-bearing rather than tidy:
-    # an excluded row is never OCR'd, so without it source_text stays None forever and the tab would
-    # offer a re-check that could not possibly change anything. A DISMISSED row is not an excluded one
-    # - dismissing says "not duplicates", not "do not summarize" - so it stays in scope and still
-    # counts.
+    # Both derived by `duplicate_check_state`, which the summarize gate also calls - one definition,
+    # so the tab and the gate cannot disagree about what the check covered. A DISMISSED row is not an
+    # excluded one - dismissing says "not duplicates", not "do not summarize" - so it stays in scope
+    # and still counts. While a dedup is in flight there is nothing to nudge.
+    checked, stale = duplicate_check_state(session, document)
     in_scope = [row for row in document.review_rows if row.include]
-    stale = bool(last_completed and any(r.source_text is None for r in in_scope))
     # Sub-documents a completed check could not read. Their text is empty, and empty text matches
     # nothing (the Jaccard signature is a null set), so they were not compared against anything - a
     # run that could not read a fifth of the record is not a clean bill of health and must not
@@ -635,7 +623,7 @@ def get_duplicates(
     # anyway; filtering explicitly keeps that true if the storage rule ever changes.
     unreadable = (
         sum(1 for r in in_scope if r.source_text is not None and not r.source_text.strip())
-        if last_completed
+        if checked
         else 0
     )
     return {
@@ -654,7 +642,7 @@ def get_duplicates(
         # A job that exists but errored or was cancelled is not itself a check - but a COMPLETED run
         # before it still is, and its clusters are still stored, so this asks whether any dedup has
         # ever finished rather than how the newest one ended.
-        "checked": last_completed is not None,
+        "checked": checked,
     }
 
 
@@ -664,8 +652,12 @@ def dedup_start(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
 ):
-    """Manually (re)run duplicate clustering (it also runs automatically after identify). 409 if a
-    job is already active for this document.
+    """Manually (re)run duplicate clustering. 409 if a job is already active for this document.
+
+    ON DEMAND ONLY - nothing enqueues this for you. An earlier version of this docstring claimed the
+    check "also runs automatically after identify"; it never has, and that claim is part of what let
+    14 of 44 summarized documents reach a deliverable unchecked (#125). What DOES exist now is a
+    gate: summarize/start refuses with 409 unless a completed check still covers the current rows.
 
     ``fresh`` clears every row's stored ``source_text`` first, so the run re-OCRs instead of reusing
     the previous extraction. That is the meaningful difference between Start over and Continue here:
@@ -687,6 +679,34 @@ def dedup_start(
     except JobConflict:
         raise HTTPException(status_code=409, detail="a job is already running for this document")
     return {"ok": True}
+
+
+def duplicate_check_state(session: Session, document: Document) -> tuple[bool, bool]:
+    """``(checked, stale)`` for ``document``: has a dedup run ever COMPLETED, and do its stored
+    clusters still cover every row dedup would look at?
+
+    ONE definition with two callers - the Duplicates payload and the summarize gate - because a
+    second copy is a second chance for them to disagree about what the check covered. That is the
+    same reason `checked` and `stale` already share a scope inside the payload.
+
+    `checked` asks whether any dedup has ever FINISHED, not how the newest one ended: a job that
+    errored or was cancelled is not itself a check, but a completed run before it still is, and its
+    clusters are still stored.
+
+    `stale` means a boundary changed, a row appeared, or a row was newly included since that run - a
+    completed dedup stores `source_text` on every row in scope and a metadata edit keeps it
+    (`_store_rows`), so a missing one can only mean the covered set moved. Scope is `include=True`,
+    matching `dedup_document`: an excluded row is never OCR'd, so counting it would report every
+    document as permanently stale.
+    """
+    last_completed = session.scalars(
+        select(Job)
+        .where(Job.document_id == document.id, Job.kind == "dedup", Job.state == "done")
+        .order_by(Job.id.desc())
+    ).first()
+    in_scope = [row for row in document.review_rows if row.include]
+    stale = bool(last_completed and any(r.source_text is None for r in in_scope))
+    return last_completed is not None, stale
 
 
 def _leave_cluster(session: Session, row: ReviewRow) -> None:
@@ -877,7 +897,18 @@ def summarize_start(
     user: User = Depends(current_active_user),
 ):
     """Enqueue a summarization job on the `summarize` queue. Optionally flush the editor's final
-    rows first; at least one row must be marked for inclusion."""
+    rows first; at least one row must be marked for inclusion.
+
+    GATED ON THE DUPLICATE CHECK (#125). Returns 409 unless a completed dedup run still covers the
+    current rows, or the caller sets `skip_duplicate_check`. The gate is soft: skipping is allowed
+    and audited, because a reviewer may reasonably skip on a short record - but an omission that
+    leaves no trace is how 14 of 44 summarized documents reached a deliverable unchecked.
+
+    This is the right place for it rather than after segmentation: `dedup_document` only looks at
+    rows with `include=True`, and immediately after segmentation those are still the category
+    defaults nobody has curated. Here the selection is final, and the cost falls only on records
+    that are actually being summarized.
+    """
     payload = payload or SummarizeStartPayload()
     if payload.rows is not None:
         if document.active_job is not None:
@@ -892,6 +923,38 @@ def summarize_start(
         audit(session, "rows.edit", user.id, document.id, detail=_rows_edit_detail(stats))
     if not any(row.include for row in document.review_rows):
         raise HTTPException(status_code=400, detail="no rows are marked for summarization")
+    # A record can otherwise complete upload -> segment -> summarize with the duplicate check never
+    # having run, and nothing says so: measured 2026-08-28, 14 of 44 summarized documents on the box
+    # (984 rows / 3,356 pages) had no dedup job at all, while the pipeline reported done (#125).
+    #
+    # Gated HERE rather than after segmentation, deliberately. `dedup_document` scopes to
+    # `include=True`, and immediately after segmentation `include` is still the category default the
+    # reviewer has not curated - so a post-segment run would check the wrong set AND spend requests
+    # on records nobody summarizes. This is the moment the row selection is final.
+    #
+    # 409 rather than 400: it is a state conflict, matching the "a job is already running" answer
+    # this same route gives. Checked AFTER the row validation above, because a reviewer cannot act
+    # on this while their rows are invalid.
+    checked, stale = duplicate_check_state(session, document)
+    if not payload.skip_duplicate_check and (not checked or stale):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "the documents changed since the last duplicate check"
+                if checked
+                else "this record has not been checked for duplicates"
+            ),
+        )
+    if payload.skip_duplicate_check and (not checked or stale):
+        # Soft gate: skipping is allowed and must leave a trace, or it is indistinguishable from the
+        # omission this gate exists to stop.
+        audit(
+            session,
+            "summarize.skip_duplicate_check",
+            user.id,
+            document.id,
+            detail="stale check" if checked else "never checked",
+        )
     if payload.fresh:
         # "Re-summarize all": wipe prior summaries so the run regenerates every row (the resumable
         # worker otherwise reuses done rows by identity). Committed before enqueue so the worker

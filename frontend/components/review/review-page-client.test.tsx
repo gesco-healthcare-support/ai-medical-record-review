@@ -107,6 +107,66 @@ describe("ReviewPageClient unidentified count", () => {
   });
 });
 
+
+describe("ReviewPageClient duplicate-check gate", () => {
+  // #125: a record could complete upload -> segment -> summarize with the duplicate check never
+  // running and nothing saying so - 14 of 44 summarized documents on the box. The server now
+  // refuses, so the button has to explain rather than let the reviewer meet a 409.
+  const onDuplicatesTab = () => fireEvent.click(screen.getByRole("tab", { name: /Duplicates/ }));
+
+  it("disables Summarize and says why when no check has ever run", () => {
+    dupState.data = { clusters: [], job: null, stale: false, unreadable: 0, checked: false };
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    onDuplicatesTab();
+    const button = screen.getByRole("button", { name: /^Summarize \d+ document/ });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", expect.stringContaining("not been checked"));
+  });
+
+  it("distinguishes a STALE check from one that never ran", () => {
+    dupState.data = { clusters: [], job: null, stale: true, unreadable: 0, checked: true };
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    onDuplicatesTab();
+    expect(screen.getByRole("button", { name: /^Summarize \d+ document/ })).toHaveAttribute(
+      "title",
+      expect.stringContaining("changed since the last duplicate check"),
+    );
+  });
+
+  it("enables Summarize once a current check covers the rows", () => {
+    dupState.data = { clusters: [], job: null, stale: false, unreadable: 0, checked: true };
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    onDuplicatesTab();
+    expect(screen.getByRole("button", { name: /^Summarize \d+ document/ })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /without checking/ })).toBeNull();
+  });
+
+  it("lets the reviewer proceed deliberately, behind a confirm", () => {
+    // The gate is soft. Skipping must be possible, explicit, and recorded - which is why it is a
+    // separate control rather than the disabled button quietly becoming enabled.
+    const onSummarize = vi.fn();
+    dupState.data = { clusters: [], job: null, stale: false, unreadable: 0, checked: false };
+    mockWf({ onSummarize });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<ReviewPageClient documentId="d1" />);
+    onDuplicatesTab();
+    fireEvent.click(screen.getByRole("button", { name: /without checking/ }));
+    expect(onSummarize).toHaveBeenCalledWith(false, true);
+  });
+
+  it("does not offer the skip while something ELSE is blocking summarize", () => {
+    // Offering it with invalid rows would let a reviewer skip past a different problem entirely.
+    dupState.data = { clusters: [], job: null, stale: false, unreadable: 0, checked: false };
+    mockWf({ rows: [row({ start: 9, end: 2 })], totalPages: 10 });
+    render(<ReviewPageClient documentId="d1" />);
+    onDuplicatesTab();
+    expect(screen.queryByRole("button", { name: /without checking/ })).toBeNull();
+  });
+});
+
 describe("ReviewPageClient step-flow actions", () => {
   it("offers only the review step's actions on Review & correct", () => {
     sumState.data = [{ idx: 0 }];
