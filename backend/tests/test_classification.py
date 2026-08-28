@@ -740,6 +740,60 @@ def test_work_capacity_is_not_claimed_without_evidence():
     assert classification.match_rules("Work Capacity Evaluation") is None
 
 
+# Concentra titles its form "Work Activity Status Report", and the word between defeats the literal
+# `work status` token added above - so the whole family had NO rule and the cascade re-decided every
+# occurrence: 3 distinct titles, 70 rows, 71 pages, answered 67 x category 1, 2 x category 2 and
+# 1 x category 100. Reported by Adam 2026-08-28 after testing a 207-page record, where the stray 100
+# was left unchecked for summarization and its page reached no deliverable.
+#
+# `method` (#189) names the mechanism on that record: the dropped row is `llm-disagree` while the
+# other TWELVE occurrences in the SAME document on the SAME build are `llm+embedding` -> 1.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Work Activity Status Report",
+        "WORK ACTIVITY STATUS REPORT",
+        "Concentra Work Activity Status Report",
+        # What the source document calls itself in its own Document Type field, and therefore a
+        # title segmentation can legitimately produce.
+        "Activity Status and Restrictions Report",
+        "Activity Status Report",
+    ],
+)
+def test_work_activity_status_is_a_treating_report(title):
+    assert classification.match_rules(title) == "1"
+
+
+# The same precedence the plain `work status` token has: a title carrying a more specific document
+# keeps it. Pinned separately because `activity status` is the broader of the two phrases and so is
+# the one more likely to be read as claiming every title it appears in.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("QME Report - Work Activity Status", "13"),
+        ("Permanent and Stationary Report with Work Activity Status", "2"),
+        # The document the reporter wants this merged INTO still wins on its own title, so ruling
+        # the attachment cannot re-file the report it travels with.
+        ("Doctor's First Report of Occupational Injury or Illness", "2"),
+        ("California - Doctor's First Report of Injury/Illness (5021)", "2"),
+        ("Physical Therapy Activity Status", "5"),
+    ],
+)
+def test_a_more_specific_document_outranks_activity_status(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# "work ability" and "work capacity" are plausible siblings that appear on ZERO titles on the box,
+# so they stay out. Same reasoning as test_work_capacity_is_not_claimed_without_evidence, restated
+# here so widening the phrase later is a decision rather than drift from this change.
+@pytest.mark.parametrize(
+    "title",
+    ["Work Ability Form", "Work Capacity Evaluation", "Activity Log", "Status Report"],
+)
+def test_no_rule_is_claimed_for_the_unobserved_siblings(title):
+    assert classification.match_rules(title) is None
+
+
 # ---------------------------------------------------------------------------------------------
 # Orders and prescriptions -> 10, answered by Adam 2026-08-24: "All orders can probably go under the
 # RFA category", and for prescriptions "if they are on their own it's probably fine to put it under
