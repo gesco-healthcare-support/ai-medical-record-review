@@ -1,8 +1,15 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { cn } from "@/lib/utils";
 import type { CategoryOption, Row } from "@/lib/types";
-import { mergeRows, newKey, rowErrors, type EditorRow } from "@/lib/review-rows";
+import {
+  couldNotIdentify,
+  mergeRows,
+  newKey,
+  rowErrors,
+  type EditorRow,
+} from "@/lib/review-rows";
 import { RowsTable } from "./rows-table";
 import { PdfViewer, type PdfViewerHandle } from "./pdf-viewer";
 import { SplitPane } from "./split-pane";
@@ -35,6 +42,7 @@ export function ReviewEditor({
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [splittingKey, setSplittingKey] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [onlyUnidentified, setOnlyUnidentified] = useState(false);
   const [addStart, setAddStart] = useState("");
   const [addEnd, setAddEnd] = useState("");
 
@@ -42,6 +50,14 @@ export function ReviewEditor({
   const selected = rows.findIndex((r) => r._key === selectedKey);
   const splitting = rows.findIndex((r) => r._key === splittingKey);
   const suggested = rows.filter((r, i) => r.suggest_merge && i > 0).length;
+  // Derived from the LIVE rows rather than from anything saved: re-categorizing a document has
+  // to drop it out of the filter at once, or the reviewer cannot tell which ones they have
+  // already dealt with. The chips stay on whether the filter is on or off, so a row is still
+  // recognisable in the full list.
+  const unidentifiedKeys = new Set(rows.filter(couldNotIdentify).map((r) => r._key));
+  const hiddenKeys = onlyUnidentified
+    ? new Set(rows.filter((r) => !unidentifiedKeys.has(r._key)).map((r) => r._key))
+    : undefined;
   const firstError = errors.size
     ? `row ${[...errors.keys()][0] + 1}: ${[...errors.values()][0]}`
     : "";
@@ -187,6 +203,22 @@ export function ReviewEditor({
             Apply {suggested} suggested merge{suggested === 1 ? "" : "s"}
           </button>
         ) : null}
+        {/* Stays rendered at zero while the filter is ON: clearing the last one must not remove the
+            only control that turns the filter back off. */}
+        {unidentifiedKeys.size > 0 || onlyUnidentified ? (
+          <button
+            type="button"
+            className={cn(
+              "ev-btn ev-btn-sm",
+              onlyUnidentified ? "ev-btn-primary" : "ev-btn-outline",
+            )}
+            aria-pressed={onlyUnidentified}
+            title="Show only the documents nothing identified, so they can be checked before summarizing"
+            onClick={() => setOnlyUnidentified((on) => !on)}
+          >
+            Could not identify ({unidentifiedKeys.size})
+          </button>
+        ) : null}
         {firstError ? <span className="error-text">{firstError}</span> : null}
       </div>
 
@@ -209,7 +241,12 @@ export function ReviewEditor({
               onSplitCancel={() => setSplittingKey(null)}
               onDelete={remove}
               attentionPages={attentionPages}
+              unidentifiedKeys={unidentifiedKeys}
+              hiddenKeys={hiddenKeys}
             />
+            {onlyUnidentified && unidentifiedKeys.size === 0 ? (
+              <p className="rc-empty-filter">No documents match this filter.</p>
+            ) : null}
           </div>
         }
         right={

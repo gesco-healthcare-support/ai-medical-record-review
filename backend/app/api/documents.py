@@ -43,6 +43,7 @@ from app.schemas.documents import (
 from app.services import bundles, catalog
 from app.services.aggregate import merge_pdfs
 from app.services.audit import audit
+from app.services.classification import DEFAULT_ID, match_rules
 from app.services.extraction import extract_header
 from app.services.files import safe_name
 from app.services.gemini import PROMPT_VERSION
@@ -373,13 +374,31 @@ def list_documents(
     return [doc.listing() | {"rows_count": counts.get(doc.id, 0)} for doc in documents]
 
 
+def _editor_row(row: ReviewRow) -> dict:
+    """``as_row()`` plus ``ruled_paperwork``: did a high-precision rule name this TITLE as
+    administrative paperwork?
+
+    Category 100 answers two unrelated questions - "this is paperwork" and "nothing identified
+    this" - and a reviewer cannot tell them apart on screen, so the second cannot be checked by
+    hand (issue #144). Replaying ``match_rules`` here separates them for free: it is pure, reads
+    no DB and no catalog, and it is the same function the pipeline itself consulted.
+
+    Deliberately title-derived ONLY, rather than answering "could this be identified?" outright.
+    The reviewer edits ``category`` live in the editor, so the client combines the two and the
+    filter follows a re-classification without waiting for a save. A row whose rule verdict is
+    some OTHER category reports False, not True: it sits at 100 only because it was segmented
+    before that rule shipped, which is a row to look at rather than settled paperwork.
+    """
+    return row.as_row() | {"ruled_paperwork": match_rules(row.title or "") == DEFAULT_ID}
+
+
 @router.get("/{document_id}")
 def get_document(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
 ):
     payload = document.listing()
-    payload["rows"] = [row.as_row() for row in document.review_rows]
+    payload["rows"] = [_editor_row(row) for row in document.review_rows]
     payload["categories"] = catalog.get_category_options(session)
     return payload
 

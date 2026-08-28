@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { rowErrors } from "@/lib/review-rows";
+import { couldNotIdentify, rowErrors } from "@/lib/review-rows";
 import { humanizeError } from "@/lib/errors";
 import { useReviewWorkflow } from "@/hooks/use-review-workflow";
 import { useSummaries } from "@/hooks/use-summaries";
@@ -68,8 +68,15 @@ export function ReviewPageClient({ documentId }: { documentId: string }) {
     wf.rows.map((r) => [`${r.start}-${r.end}`, r.title && r.title !== "-" ? r.title : ""]),
   );
 
+  // Surfaced on the tab so the size of the manual check the reviewers asked for is visible from
+  // Duplicates and Summaries too, not only from the tab that carries the filter (issue #144).
+  const unidentified = wf.rows.filter(couldNotIdentify).length;
+
   const tabs = [
-    { value: "review" as const, label: "Review & correct" },
+    {
+      value: "review" as const,
+      label: unidentified ? `Review & correct · ${unidentified}` : "Review & correct",
+    },
     {
       value: "duplicates" as const,
       label: unresolvedDupes ? `Duplicates · ${unresolvedDupes}` : "Duplicates",

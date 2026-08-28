@@ -116,6 +116,25 @@ export function touchedFields(previous: EditorRow[], next: EditorRow[]): string[
   return keys;
 }
 
+/** The General category, which is also where the cascade parks anything it could not answer. */
+const GENERAL = "100";
+
+/**
+ * A sub-document nothing identified: it sits in General and no rule put it there.
+ *
+ * The reviewers asked to keep these out of the summary but still look through them in case
+ * something important is in there (issue #144), and today they cannot be listed - General holds
+ * both "this is paperwork" and "we could not tell", and `flag` does not separate them either
+ * (74% of rows carry it, and on a rule-matched row that can only be the segmenter).
+ *
+ * A row whose title a rule sends somewhere OTHER than General counts as one of these. It is
+ * stored at 100 only because it was segmented before that rule shipped, so it needs a look rather
+ * than being settled paperwork - which is why this tests `ruled_paperwork` and not "no rule".
+ */
+export function couldNotIdentify(row: Row): boolean {
+  return String(row.category) === GENERAL && !row.ruled_paperwork;
+}
+
 /**
  * Client-side row validation, mirroring the server rules (app/services/rows.py). Gaps between
  * documents are allowed on purpose (users skip junk pages); overlaps are not. Returns a map of

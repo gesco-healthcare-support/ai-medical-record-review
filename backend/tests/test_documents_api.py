@@ -142,6 +142,63 @@ async def test_rows_put_validation_and_persistence(authed):
     assert len(got.json()["rows"]) == 1  # the valid PUT persisted; the bad one did not replace it
 
 
+async def test_rows_carry_the_rule_verdict_on_the_title(authed):
+    """Each row reports whether a high-precision rule named its TITLE as administrative paperwork.
+
+    This is what lets the review editor separate "a rule said this is paperwork" from "nothing
+    identified this document" inside category 100 - the same value on screen today (issue #144).
+    Title-derived only; the editor combines it with the live `category`.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    saved = await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                # A rule answers 100: genuinely administrative, not part of the set to check by hand.
+                {"start": 1, "end": 1, "category": "100", "title": "Proof of Service"},
+                # No rule answers at all: the cascade guessed, which is the set #144 is about.
+                {"start": 2, "end": 2, "category": "100", "title": "Placeholder Report"},
+                # A rule answers something OTHER than 100. The row sits at 100 only because it was
+                # segmented before that rule shipped (#161 sent History & Physical to 1), so it is
+                # not settled paperwork and has to stay in the reviewer's list.
+                {"start": 3, "end": 3, "category": "100", "title": "History and Physical"},
+            ]
+        },
+    )
+    assert saved.status_code == 200, saved.text
+
+    rows = (await client.get(f"/api/documents/{doc_id}")).json()["rows"]
+    assert [row["ruled_paperwork"] for row in rows] == [True, False, False]
+
+
+async def test_rows_round_trip_with_the_rule_verdict_attached(authed):
+    """The read-only field must survive a save: the client's stripKeys removes only `_key`, so
+    every autosave echoes `ruled_paperwork` back to the server."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    saved = await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {
+                    "start": 1,
+                    "end": 2,
+                    "category": _VALID_CATEGORY,
+                    "title": "Placeholder Report",
+                    "ruled_paperwork": False,
+                }
+            ]
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["count"] == 1
+
+    rows = (await client.get(f"/api/documents/{doc_id}")).json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Placeholder Report"
+
+
 def _set_dedup_fields(doc_id, ranges, group=1):
     """Mark the given (start, end) rows as a confirmed duplicate cluster with stored OCR text."""
     with get_sessionmaker()() as session:

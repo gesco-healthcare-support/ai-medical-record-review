@@ -85,6 +85,28 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("ReviewPageClient unidentified count", () => {
+  // The tab carries the count so the size of the manual check the reviewers asked for is visible
+  // from Duplicates and Summaries too, not only from the tab that holds the filter (issue #144).
+  it("shows the count on the Review tab when documents could not be identified", () => {
+    mockWf({
+      rows: [
+        row({ category: "100", ruled_paperwork: false }),
+        row({ category: "100", ruled_paperwork: true }), // a rule named it: not part of the check
+        row({ category: "5" }),
+      ],
+    });
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.getByRole("tab", { name: /Review & correct . 1/ })).toBeInTheDocument();
+  });
+
+  it("shows the bare label when every document was identified", () => {
+    mockWf({ rows: [row({ category: "100", ruled_paperwork: true }), row({ category: "5" })] });
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.getByRole("tab", { name: "Review & correct" })).toBeInTheDocument();
+  });
+});
+
 describe("ReviewPageClient step-flow actions", () => {
   it("offers only the review step's actions on Review & correct", () => {
     sumState.data = [{ idx: 0 }];

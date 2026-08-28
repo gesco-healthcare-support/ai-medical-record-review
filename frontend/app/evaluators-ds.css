@@ -635,6 +635,20 @@ td.rc-titletd.col-num { color: var(--gray-400); font: 13px/1.8 var(--font-body),
     font: 600 11px/1.5 var(--font-body), sans-serif;
     color: var(--warning-500); background: #fff; border: 1px solid var(--warning-500);
 }
+/* "Could not identify": General with no rule behind it. Deliberately NOT amber and with no row
+   background - .attention already owns amber, a row can be both, and two amber signals on one
+   line are indistinguishable. */
+.rc-unid-chip {
+    flex: none; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    font: 600 11px/1.5 var(--font-body), sans-serif;
+    color: var(--navy-600); background: #fff; border: 1px solid var(--navy-300);
+}
+/* Shown in place of the table body when the "could not identify" filter matches nothing left. */
+.rc-empty-filter {
+    padding: 16px 10px; text-align: center;
+    font: 13px/1.5 var(--font-body), sans-serif; color: var(--navy-400);
+}
+
 #rowsTable tbody tr.gap-row td {
     padding: 4px 10px; font: 12px/1.4 var(--font-body), sans-serif;
     color: var(--warning-500); background: var(--warning-100);

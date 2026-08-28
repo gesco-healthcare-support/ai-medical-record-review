@@ -92,6 +92,11 @@ export type Row = {
   flag: string;
   suggest_merge: boolean;
   include: boolean;
+  /** Server-computed, read-only: a high-precision rule named this TITLE as administrative
+   *  paperwork. Combined with the LIVE `category` by `couldNotIdentify`, so re-classifying a row
+   *  updates the filter without waiting for a save. Optional because rows the editor creates
+   *  itself (insert, split, merge) never carry it, and none of them is ruled paperwork. */
+  ruled_paperwork?: boolean;
 };
 
 /** A selectable category ({id, name}) from catalog.get_category_options. */

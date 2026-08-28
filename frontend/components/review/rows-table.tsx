@@ -42,6 +42,8 @@ export function RowsTable({
   onSplitCancel,
   onDelete,
   attentionPages,
+  unidentifiedKeys,
+  hiddenKeys,
 }: {
   rows: EditorRow[];
   categories: CategoryOption[];
@@ -57,9 +59,18 @@ export function RowsTable({
   onSplitCancel: () => void;
   onDelete: (i: number) => void;
   attentionPages?: Set<string>;
+  /** _keys of the rows nothing identified (issue #144). Chipped, never removed. */
+  unidentifiedKeys?: Set<string>;
+  /** _keys the "could not identify" filter is hiding. Rows are dropped INSIDE the map below,
+   *  never by narrowing this array: `#` is `i + 1` and the gap strips come from `previousEnd`,
+   *  so a filtered array would renumber every document and invent gaps that are not real. */
+  hiddenKeys?: Set<string>;
 }) {
   const splitRef = useRef<HTMLInputElement>(null);
   let previousEnd = 0;
+  // Between two rows the filter has separated, a gap strip would fire on every one of them and
+  // none would mean what it says, so the strips stand down while anything is hidden.
+  const filtering = (hiddenKeys?.size ?? 0) > 0;
 
   return (
     <table id="rowsTable">
@@ -87,13 +98,19 @@ export function RowsTable({
           const gapFrom = previousEnd + 1;
           const gapTo = Number(row.start) - 1;
           previousEnd = Math.max(previousEnd, Number(row.end) || previousEnd);
+          // Hidden only AFTER previousEnd has advanced: the gap arithmetic has to see every
+          // row, and the number below is `i + 1` over the full set, so a hidden document keeps
+          // its place in the numbering rather than shifting the ones under it.
+          if (hiddenKeys?.has(row._key)) return null;
           const titleValue = row.title && row.title !== "-" ? row.title : "";
           // A sub-document a needs_attention summarize run could not process (matched by page range).
           const failed = attentionPages?.has(`${row.start}-${row.end}`) ?? false;
+          // A sub-document that landed in General with no rule putting it there.
+          const unidentified = unidentifiedKeys?.has(row._key) ?? false;
 
           return (
             <Fragment key={row._key}>
-              {showGap ? (
+              {showGap && !filtering ? (
                 <tr className="gap-row">
                   <td colSpan={9}>
                     pages {gapFrom}-{gapTo} not included (skipped at summarization)
@@ -128,6 +145,16 @@ export function RowsTable({
                         title="This document could not be summarized - exclude it or fix its pages, then summarize again"
                       >
                         Could not summarize
+                      </span>
+                    ) : null}
+                    {/* Deliberately not amber and with no row background: a row can carry both
+                        chips, and two amber signals on one line cannot be told apart. */}
+                    {unidentified ? (
+                      <span
+                        className="rc-unid-chip"
+                        title="Nothing identified this document - it is in General because no rule or model could name it"
+                      >
+                        Could not identify
                       </span>
                     ) : null}
                     <span className="rc-rowactions">
