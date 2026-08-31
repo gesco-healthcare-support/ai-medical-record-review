@@ -90,7 +90,41 @@ CREDENTIAL_INSTRUCTIONS = (
     "from the credential of anyone else named on the page."
 )
 
-ARMS = ("A", "A-prime", "B")
+# The NULL arm. Same volume and register as CREDENTIAL_INSTRUCTIONS - 3 sentences, ~110 words -
+# and it names no category id, no document type and no clinical signal. It is deliberately the kind
+# of generic care-and-diligence text a prompt author writes without thinking, because that is the
+# thing being controlled for.
+#
+# WHY IT EXISTS. Arm B's damage on untouched rows is concentrated somewhere its own content cannot
+# explain: 11 of its 24 changes move AWAY from 100, and its commonest single moves are `100 -> 7`
+# and `100 -> 10` - two categories arm B says nothing whatever about. Neither of its additions,
+# credentials or the Initial-Evaluation clause, reaches 7 or 10. So the erosion may not be a
+# property of THIS text at all but of adding descriptive instruction text to a constrained-enum
+# prompt: more instruction, more willingness to commit, and the catch-all is where committing costs
+# something.
+#
+# The arm splits that cleanly and it is the only arm that can:
+#   * if B-null erodes 100 as well, the erosion is structural, narrowing arm B cannot fix it, and
+#     every future addition to this prompt pays the same tax - which is a constraint worth knowing
+#     whatever happens to #153.
+#   * if B-null does NOT, the erosion is content-specific, and suppressing arm B's 100-ward moves
+#     is well founded rather than a guess.
+#
+# It does not test the credential hypothesis and is not meant to; that one is gated on Adam and is
+# rescored by his answer. This one is not.
+NULL_INSTRUCTIONS = (
+    "Read the document text carefully and in full before you decide, rather than stopping at the "
+    "first phrase that looks decisive, and weigh the passages against one another before settling "
+    "on an answer.\n"
+    "Where the text is garbled or partly illegible, work from the passages that are legible and do "
+    "not let a scanning artefact stand in for evidence; a word you cannot read is not evidence of "
+    "anything, in either direction.\n"
+    "Take whatever time you need on this classification. There is no benefit to answering quickly, "
+    "a considered answer is worth more than a fast one, and it is better to weigh the document "
+    "properly than to reach for the first answer that seems to fit."
+)
+
+ARMS = ("A", "A-prime", "B", "B-null")
 # #153's own scope: the two headings measured to draw five different categories across one corpus.
 AMBIGUOUS = ("encounter note", "re-evaluation", "reevaluation", "re evaluation", "progress note")
 
@@ -279,6 +313,8 @@ def run_arm(arm: str, text: str, model: str) -> str | None:
         return llm_classify(text, model=model)
     if arm == "A-prime":
         return call(text, PRODUCTION_INSTRUCTIONS, model)
+    if arm == "B-null":
+        return call(text, f"{PRODUCTION_INSTRUCTIONS}\n{NULL_INSTRUCTIONS}", model)
     return call(text, f"{PRODUCTION_INSTRUCTIONS}\n{CREDENTIAL_INSTRUCTIONS}", model)
 
 
@@ -299,6 +335,10 @@ def score(results: list[dict], subset=None) -> dict:
             # coin-flip is not right, and this is the only thing that separates the two.
             "unstable": sum(len(set(r["answers"][arm])) > 1 for r in rows),
             "matched_model": sum(v == r["model_said"] for v, r in zip(verdicts, rows)),
+            # The catch-all rate. @adrian-g, on arm B's damage: "Any future A/B on this call should
+            # measure the 100 rate." It is the axis B-null exists to compare - the arm's whole
+            # question is whether ANY added text erodes 100 - so a score without it cannot answer it.
+            "chose_100": sum(v == "100" for v in verdicts),
         }
     return out
 
