@@ -147,8 +147,21 @@ _EVALUATOR_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, d
 _FOLLOWUP_MENTION = "1"
 _FOLLOWUP_TOKEN = re.compile(r"follow ?-? ?up")
 # The category-1 rule minus that token: did anything else in it match?
+#
+# THIS LIST AND RULE 1 ARE A PAIR AND MOVE TOGETHER. Nothing but this comment enforces it, and it
+# has now been missed twice - `work status` arrived in rule 1 in #146 and `activity status` in this
+# change, and neither came here on its own. The cost is silent and only shows on titles carrying
+# BOTH a follow-up token and a modality, which is why no existing test caught it:
+#
+#     Work Status Report Follow-Up MRI          -> 1
+#     Activity Status Report Follow-Up MRI      -> 3      the same document, two answers
+#
+# A token in rule 1 but not here means that synonym surrenders category 1 to imaging, operative,
+# deposition or laboratory where its twin keeps it. Caught by @adrian-g on review, who replayed it:
+# 4 of 4 such pairs diverged before, 0 of 4 after, and 72 titles move x -> 1, every one carrying
+# both tokens.
 _TREATING_VISIT_WITHOUT_FOLLOWUP = re.compile(
-    r"\bpr-?2\b|progress report|progress note|office visit|work status"
+    r"\bpr-?2\b|progress report|progress note|office visit|work status|\bactivity status\b"
 )
 _FOLLOWUP_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, deposition, lab
 
@@ -303,12 +316,34 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # So this recovers 17 pages and makes the other 72 rows deterministic, which is the point -
         # the same form was being answered four ways.
         #
-        # `work status` only. "work capacity" is a plausible sibling and appears on ZERO titles on the
-        # box, so it is left out rather than guessed at. No observed work-status title mentions an
-        # evaluator or a PR-4 either, and rules 12, 13 and 2 all precede this one, so an evaluator's
-        # own report or a Permanent and Stationary still wins if a title ever carries both.
+        # `activity status` added 2026-08-28, reported by Adam after testing a 207-page record.
+        # `work status` is a literal token, and Concentra's form is titled "Work Activity Status
+        # Report" - the word between defeats it, so the whole family fell through to the cascade:
+        #
+        #     3 distinct titles, 70 rows, 71 pages, NOT ONE answered by a rule
+        #     the cascade's answers: 67 x category 1, 2 x category 2, 1 x category 100
+        #
+        # The stray 100 is the row Adam reported, and `method` (#189) names the mechanism: that row
+        # is `llm-disagree` while the OTHER TWELVE occurrences in the SAME document, on the SAME
+        # build, are `llm+embedding` -> 1. One form, two answers, one record, one run - which is
+        # what having no rule means, and a 100 is unchecked for summarization so its page reached no
+        # deliverable at all.
+        #
+        # `activity status` rather than `work activity status`: it matches exactly the same 3 titles
+        # and 70 rows on the box, so it costs nothing measured, and it also covers "Activity Status
+        # and Restrictions Report" - what the source document calls itself in its own Document Type
+        # field, and therefore a title segmentation can legitimately produce. "work capacity" and
+        # "work ability" are still left out: both appear on ZERO titles, so they stay guesses.
+        #
+        # Category 1 on the reviewers' own instruction - "In the case of Work Status, we will count
+        # that as Category 1" (Adam, 2026-08-24) - and it is where 67 of the 70 already land, so this
+        # makes the majority answer deterministic rather than imposing a new one.
+        #
+        # Rules 12, 13 and 2 all precede this one, so an evaluator's own report, a Permanent and
+        # Stationary or a Doctor's First Report still wins if a title ever carries both.
         (
-            r"\bpr-?2\b|progress report|progress note|office visit|follow ?-? ?up|work status",
+            r"\bpr-?2\b|progress report|progress note|office visit|follow ?-? ?up"
+            r"|work status|\bactivity status\b",
             "1",
         ),
         # ORDERS AND PRESCRIPTIONS -> 10, answered by Adam 2026-08-24: "All orders can probably go

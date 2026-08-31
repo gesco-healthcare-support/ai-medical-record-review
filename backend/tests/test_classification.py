@@ -740,6 +740,118 @@ def test_work_capacity_is_not_claimed_without_evidence():
     assert classification.match_rules("Work Capacity Evaluation") is None
 
 
+# Concentra titles its form "Work Activity Status Report", and the word between defeats the literal
+# `work status` token added above - so the whole family had NO rule and the cascade re-decided every
+# occurrence: 3 distinct titles, 70 rows, 71 pages, answered 67 x category 1, 2 x category 2 and
+# 1 x category 100. Reported by Adam 2026-08-28 after testing a 207-page record, where the stray 100
+# was left unchecked for summarization and its page reached no deliverable.
+#
+# `method` (#189) names the mechanism on that record: the dropped row is `llm-disagree` while the
+# other TWELVE occurrences in the SAME document on the SAME build are `llm+embedding` -> 1.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Work Activity Status Report",
+        "WORK ACTIVITY STATUS REPORT",
+        "Concentra Work Activity Status Report",
+        # What the source document calls itself in its own Document Type field, and therefore a
+        # title segmentation can legitimately produce.
+        "Activity Status and Restrictions Report",
+        "Activity Status Report",
+    ],
+)
+def test_work_activity_status_is_a_treating_report(title):
+    assert classification.match_rules(title) == "1"
+
+
+# The same precedence the plain `work status` token has: a title carrying a more specific document
+# keeps it. Pinned separately because `activity status` is the broader of the two phrases and so is
+# the one more likely to be read as claiming every title it appears in.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("QME Report - Work Activity Status", "13"),
+        ("Permanent and Stationary Report with Work Activity Status", "2"),
+        # The document the reporter wants this merged INTO still wins on its own title, so ruling
+        # the attachment cannot re-file the report it travels with.
+        ("Doctor's First Report of Occupational Injury or Illness", "2"),
+        ("California - Doctor's First Report of Injury/Illness (5021)", "2"),
+        ("Physical Therapy Activity Status", "5"),
+    ],
+)
+def test_a_more_specific_document_outranks_activity_status(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# "work ability" and "work capacity" are plausible siblings that appear on ZERO titles on the box,
+# so they stay out. Same reasoning as test_work_capacity_is_not_claimed_without_evidence, restated
+# here so widening the phrase later is a decision rather than drift from this change.
+@pytest.mark.parametrize(
+    "title",
+    ["Work Ability Form", "Work Capacity Evaluation", "Activity Log", "Status Report"],
+)
+def test_no_rule_is_claimed_for_the_unobserved_siblings(title):
+    assert classification.match_rules(title) is None
+
+
+# The two lists are a PAIR. `_TREATING_VISIT_WITHOUT_FOLLOWUP` is #181's mirror of rule 1: it decides
+# whether a follow-up token surrenders category 1 to a modality. A token added to rule 1 and not to
+# the mirror makes that synonym behave differently from its twin, and the divergence only shows on a
+# title carrying BOTH a follow-up token AND a modality - which is why the tests for either change
+# alone missed it. Caught by @adrian-g on review of this change; it had already happened once, when
+# #146 added `work status`.
+#
+# Asserted as PAIRS rather than as expected values, deliberately. Pinning "-> 1" would pass if a
+# later change moved both synonyms somewhere else together, which is fine, and would fail for a
+# reason unrelated to the invariant. What must never happen is the two answering differently.
+@pytest.mark.parametrize(
+    "modality",
+    ["MRI of the Lumbar Spine", "Operative Report", "Deposition", "Laboratory Results", "X-Ray"],
+)
+def test_work_status_and_activity_status_answer_alike_with_a_followup_token(modality):
+    work = classification.match_rules(f"Work Status Report Follow-Up {modality}")
+    activity = classification.match_rules(f"Activity Status Report Follow-Up {modality}")
+    assert work == activity, f"the two synonyms diverge on {modality!r}: {work} vs {activity}"
+
+
+def test_the_mirror_names_every_token_rule_one_names():
+    """The invariant behind the test above, asserted on the patterns themselves.
+
+    The pair test catches a divergence only for the shapes it enumerates. This one fails the moment
+    rule 1 gains ANY token the mirror lacks, which is the actual mistake - twice now.
+
+    Rule 1's own `follow ?-? ?up` alternative is excluded on both sides: the mirror is defined as
+    "rule 1 MINUS that token", so its absence there is the point rather than a gap.
+    """
+    # The rule that CONTAINS the follow-up token, not merely the first one answering 1: four rules
+    # map to category 1 and the mirror is defined against this one alone.
+    rule_one = next(
+        pattern.pattern
+        for pattern, category in classification._RULES
+        if category == "1" and classification._FOLLOWUP_TOKEN.pattern in pattern.pattern
+    )
+    mirror = classification._TREATING_VISIT_WITHOUT_FOLLOWUP.pattern
+    followup = classification._FOLLOWUP_TOKEN.pattern
+    missing = [
+        alt for alt in rule_one.split("|") if alt != followup and alt not in mirror.split("|")
+    ]
+    assert not missing, (
+        f"rule 1 names {missing} which _TREATING_VISIT_WITHOUT_FOLLOWUP does not - the two lists "
+        "are a pair and move together, see the comment above the mirror"
+    )
+
+
+def test_the_followup_guard_still_yields_where_181_said_it_should():
+    """#181 must not be widened by the addition. A follow-up token with NO treating-visit token
+    still surrenders to the modality, which is the whole of that change."""
+    assert classification.match_rules("Follow-Up MRI") == "3"
+    assert classification.match_rules("Deposition Follow-Up") == "9"
+    assert classification.match_rules("Follow-Up Operative Report") == "8"
+    assert classification.match_rules("Follow-Up Laboratory Results") == "14"
+    # ...and one WITH a treating-visit token still keeps 1, which is the other half.
+    assert classification.match_rules("Office Visit Follow-Up MRI") == "1"
+
+
 # ---------------------------------------------------------------------------------------------
 # Orders and prescriptions -> 10, answered by Adam 2026-08-24: "All orders can probably go under the
 # RFA category", and for prescriptions "if they are on their own it's probably fine to put it under
