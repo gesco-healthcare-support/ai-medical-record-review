@@ -794,6 +794,64 @@ def test_no_rule_is_claimed_for_the_unobserved_siblings(title):
     assert classification.match_rules(title) is None
 
 
+# The two lists are a PAIR. `_TREATING_VISIT_WITHOUT_FOLLOWUP` is #181's mirror of rule 1: it decides
+# whether a follow-up token surrenders category 1 to a modality. A token added to rule 1 and not to
+# the mirror makes that synonym behave differently from its twin, and the divergence only shows on a
+# title carrying BOTH a follow-up token AND a modality - which is why the tests for either change
+# alone missed it. Caught by @adrian-g on review of this change; it had already happened once, when
+# #146 added `work status`.
+#
+# Asserted as PAIRS rather than as expected values, deliberately. Pinning "-> 1" would pass if a
+# later change moved both synonyms somewhere else together, which is fine, and would fail for a
+# reason unrelated to the invariant. What must never happen is the two answering differently.
+@pytest.mark.parametrize(
+    "modality",
+    ["MRI of the Lumbar Spine", "Operative Report", "Deposition", "Laboratory Results", "X-Ray"],
+)
+def test_work_status_and_activity_status_answer_alike_with_a_followup_token(modality):
+    work = classification.match_rules(f"Work Status Report Follow-Up {modality}")
+    activity = classification.match_rules(f"Activity Status Report Follow-Up {modality}")
+    assert work == activity, f"the two synonyms diverge on {modality!r}: {work} vs {activity}"
+
+
+def test_the_mirror_names_every_token_rule_one_names():
+    """The invariant behind the test above, asserted on the patterns themselves.
+
+    The pair test catches a divergence only for the shapes it enumerates. This one fails the moment
+    rule 1 gains ANY token the mirror lacks, which is the actual mistake - twice now.
+
+    Rule 1's own `follow ?-? ?up` alternative is excluded on both sides: the mirror is defined as
+    "rule 1 MINUS that token", so its absence there is the point rather than a gap.
+    """
+    # The rule that CONTAINS the follow-up token, not merely the first one answering 1: four rules
+    # map to category 1 and the mirror is defined against this one alone.
+    rule_one = next(
+        pattern.pattern
+        for pattern, category in classification._RULES
+        if category == "1" and classification._FOLLOWUP_TOKEN.pattern in pattern.pattern
+    )
+    mirror = classification._TREATING_VISIT_WITHOUT_FOLLOWUP.pattern
+    followup = classification._FOLLOWUP_TOKEN.pattern
+    missing = [
+        alt for alt in rule_one.split("|") if alt != followup and alt not in mirror.split("|")
+    ]
+    assert not missing, (
+        f"rule 1 names {missing} which _TREATING_VISIT_WITHOUT_FOLLOWUP does not - the two lists "
+        "are a pair and move together, see the comment above the mirror"
+    )
+
+
+def test_the_followup_guard_still_yields_where_181_said_it_should():
+    """#181 must not be widened by the addition. A follow-up token with NO treating-visit token
+    still surrenders to the modality, which is the whole of that change."""
+    assert classification.match_rules("Follow-Up MRI") == "3"
+    assert classification.match_rules("Deposition Follow-Up") == "9"
+    assert classification.match_rules("Follow-Up Operative Report") == "8"
+    assert classification.match_rules("Follow-Up Laboratory Results") == "14"
+    # ...and one WITH a treating-visit token still keeps 1, which is the other half.
+    assert classification.match_rules("Office Visit Follow-Up MRI") == "1"
+
+
 # ---------------------------------------------------------------------------------------------
 # Orders and prescriptions -> 10, answered by Adam 2026-08-24: "All orders can probably go under the
 # RFA category", and for prescriptions "if they are on their own it's probably fine to put it under

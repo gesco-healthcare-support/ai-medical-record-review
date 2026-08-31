@@ -147,8 +147,21 @@ _EVALUATOR_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, d
 _FOLLOWUP_MENTION = "1"
 _FOLLOWUP_TOKEN = re.compile(r"follow ?-? ?up")
 # The category-1 rule minus that token: did anything else in it match?
+#
+# THIS LIST AND RULE 1 ARE A PAIR AND MOVE TOGETHER. Nothing but this comment enforces it, and it
+# has now been missed twice - `work status` arrived in rule 1 in #146 and `activity status` in this
+# change, and neither came here on its own. The cost is silent and only shows on titles carrying
+# BOTH a follow-up token and a modality, which is why no existing test caught it:
+#
+#     Work Status Report Follow-Up MRI          -> 1
+#     Activity Status Report Follow-Up MRI      -> 3      the same document, two answers
+#
+# A token in rule 1 but not here means that synonym surrenders category 1 to imaging, operative,
+# deposition or laboratory where its twin keeps it. Caught by @adrian-g on review, who replayed it:
+# 4 of 4 such pairs diverged before, 0 of 4 after, and 72 titles move x -> 1, every one carrying
+# both tokens.
 _TREATING_VISIT_WITHOUT_FOLLOWUP = re.compile(
-    r"\bpr-?2\b|progress report|progress note|office visit|work status"
+    r"\bpr-?2\b|progress report|progress note|office visit|work status|\bactivity status\b"
 )
 _FOLLOWUP_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, deposition, lab
 
