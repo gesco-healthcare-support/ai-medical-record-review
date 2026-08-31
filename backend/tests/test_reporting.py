@@ -402,3 +402,124 @@ def test_both_renderers_use_the_same_title_separator():
     letter = linked_pdf._summary_html(entries, 10, "A B", "01/01/1980", "QME", "Firm")
     assert word_cell.startswith(f"A REPORT{TITLE_SEPARATOR}")
     assert f"</a>{html.escape(TITLE_SEPARATOR)}" in letter
+
+
+# One entry and one call, so the header tests below read as assertions about the header rather than
+# as six copies of the same six-argument call.
+_ENTRY = [{"summaryDate": "01/02/2026", "summaryTitle": "Report A", "summaryText": "text A"}]
+
+
+def _build(entries):
+    return build_mrr_document(
+        entries,
+        num_pages=42,
+        patient_name="Doe, Jane",
+        patient_dob="01/10/1961",
+        qme_or_ame="QME",
+        lawfirm="Example Law Firm",
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# The running header. Three defects, all in the .docx - which is the PRIMARY deliverable - and all
+# found by rendering both artifacts and diffing them, the same way the letter sentences were.
+
+
+def _headers(doc):
+    """(first-page header, later-page header) for the document's only section."""
+    section = doc.sections[0]
+    return section.first_page_header, section.header
+
+
+def test_the_word_header_labels_the_date_of_birth():
+    """WHEN the header names the patient, THE SYSTEM SHALL label the date of birth.
+
+    The Word renderer wrote it as a bare value while the linked PDF wrote `DOB:`, so the two
+    deliverables identified the patient differently on every page. `RE:` was labelled in both, which
+    is what makes the unlabelled one an omission rather than a house style.
+    """
+    doc = _build(_ENTRY)
+    first, later = _headers(doc)
+    for header in (first, later):
+        assert "DOB: 01/10/1961" in header.paragraphs[0].text
+
+
+def test_the_word_header_carries_a_real_page_number_field():
+    """IT SHALL number the pages, rather than writing the label and no number.
+
+    The header ended with the literal string "Page " and nothing after it: python-docx writes text,
+    not fields, so every page of the delivered .docx showed a dangling label while the linked PDF
+    numbered its pages. A field is the only mechanism available - a Word header is ONE object
+    repeated on every page, so there is no per-page text to write.
+    """
+    from docx.oxml.ns import qn
+
+    doc = _build(_ENTRY)
+    _first, later = _headers(doc)
+    fields = later.paragraphs[0]._p.findall(qn("w:fldSimple"))
+    assert [f.get(qn("w:instr")) for f in fields] == [" PAGE "]
+
+
+def test_page_one_carries_the_patient_lines_and_no_number():
+    """The first page SHALL show the identifying lines WITHOUT a page number, matching the linked
+    PDF, which writes the number only from page 2 (`"" if i == 0`). A Word header applies to every
+    page, so this needs a separate first-page header - which is also what stops "Page 1" appearing
+    on a letter that opens with the patient's name."""
+    from docx.oxml.ns import qn
+
+    doc = _build(_ENTRY)
+    assert doc.sections[0].different_first_page_header_footer is True
+    first, _later = _headers(doc)
+    assert "RE: Doe, Jane" in first.paragraphs[0].text
+    assert "Page" not in first.paragraphs[0].text
+    assert first.paragraphs[0]._p.findall(qn("w:fldSimple")) == []
+
+
+def test_the_header_adds_no_blank_line_above_the_patient():
+    """IT SHALL write into the header's existing paragraph rather than adding one.
+
+    A new Word header already carries an empty paragraph, so `header.add_paragraph` left a blank
+    line above the patient's name on every page of the deliverable. Asserted on the paragraph COUNT
+    because that is the defect; the text assertions above pass either way.
+    """
+    doc = _build(_ENTRY)
+    first, later = _headers(doc)
+    assert len(first.paragraphs) == 1
+    assert len(later.paragraphs) == 1
+    assert first.paragraphs[0].text.startswith("RE:")
+    assert later.paragraphs[0].text.startswith("RE:")
+
+
+def test_both_renderers_take_the_header_lines_from_one_place():
+    """WHEN either renderer names the patient, THE SYSTEM SHALL use the same two lines.
+
+    The pin that matters: this module's docstring records that the letter's sentences drifted
+    because each renderer held its own copy, and the header had drifted the same way for the same
+    reason. Asserting each side separately would let them diverge again, so this asserts they AGREE.
+    """
+    from app.services.reporting import header_lines
+
+    re_line, dob_line = header_lines("Doe, Jane", "01/10/1961")
+    doc = _build(_ENTRY)
+    _first, later = _headers(doc)
+    assert re_line in later.paragraphs[0].text
+    assert dob_line in later.paragraphs[0].text
+    # and the linked PDF builds its running header from the same call
+    import inspect
+
+    from app.services import linked_pdf
+
+    assert "header_lines(" in inspect.getsource(linked_pdf._draw_running_header)
+
+
+def test_the_header_stays_times_new_roman_at_ten_point():
+    """Unchanged by the rewrite: the header is 10pt Times New Roman, smaller than the 11pt body, and
+    the linked PDF draws its own at fontsize=10. Pinned because the rewrite moved the run creation
+    into a helper whose default size is the BODY's 11pt."""
+    from docx.shared import Pt
+
+    doc = _build(_ENTRY)
+    _first, later = _headers(doc)
+    run = later.paragraphs[0].runs[0]
+    assert run.font.size == Pt(10)
+    assert run.font.name == "Times New Roman"
