@@ -178,13 +178,17 @@ const DECIDED = new Set(["rules", CONFIDENT_PAPERWORK]);
  * would check it, fix it, and watch it stay. Provenance and a to-do list are different things.
  * Whether the list should grow to cover these is on issue #197.
  *
+ * Takes only the two fields it reads, so the Summaries tab can pass a summary's LIVE row values
+ * (`rowCategoryLive` / `rowMethodLive`) through the same function. One definition of "guessed"
+ * for both surfaces - a server-side boolean would have been a second one, free to drift.
+ *
  * A MISSING method reads as false here, which is the opposite of `couldNotIdentify`'s treatment,
  * and the asymmetry is deliberate. There, unknown must not be read as confident, so it stays in a
  * list the reviewer is already looking through. Here, unknown would flag every row segmented before
  * the column existed - thousands of them, none of them evidence of anything - and a filter that
  * matches everything surfaces nothing.
  */
-export function categoryWasGuessed(row: Row): boolean {
+export function categoryWasGuessed(row: Pick<Row, "category" | "method">): boolean {
   if (String(row.category) === GENERAL) return false; // couldNotIdentify owns that half
   return Boolean(row.method) && !DECIDED.has(String(row.method));
 }

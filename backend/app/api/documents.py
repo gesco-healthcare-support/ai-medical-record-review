@@ -1080,6 +1080,14 @@ def _summary_response(document: Document, summary: Summary) -> dict:
     ``None`` when no row covers the summary's stored page range (boundaries were re-segmented): there
     is no live category to compare, so the UI must not claim a mismatch.
 
+    ``rowMethodLive`` is which cascade path decided the row's CURRENT category, so this tab can say
+    the same thing Review & correct says: the category was a guess. Adam asked for exactly that on
+    2026-08-31 - "an extra tag to show that it wasn't confident would be useful" - and this is the
+    surface that needed it most: the defect he reported was an EMG report written up with the
+    evaluation checklist, and reading a summary against its source pages is done from HERE. Sent as
+    the raw method rather than a boolean so the client keeps ONE definition of "guessed"
+    (`review-rows.categoryWasGuessed`) instead of a server copy that can drift from it.
+
     ``rowMissing`` is that same absence stated positively, and it exists because coalescing it away
     was hiding a real failure. `categoryIsStale` deliberately reads ``None`` and ``undefined`` alike
     so an older backend cannot flag every card during a rolling deploy - correct for the category
@@ -1093,11 +1101,13 @@ def _summary_response(document: Document, summary: Summary) -> dict:
     which is exactly how the badge failed to appear after a successful save. Built here rather than in
     ``listing()`` because that is a pure model method with no session.
     """
-    live = {(row.start, row.end): row.category for row in document.review_rows}
+    live = {(row.start, row.end): row for row in document.review_rows}
+    row = live.get((summary.row_start, summary.row_end))
     return {
         **summary.listing(),
-        "rowCategoryLive": live.get((summary.row_start, summary.row_end)),
-        "rowMissing": (summary.row_start, summary.row_end) not in live,
+        "rowCategoryLive": row.category if row is not None else None,
+        "rowMissing": row is None,
+        "rowMethodLive": row.method if row is not None else None,
     }
 
 

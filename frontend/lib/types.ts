@@ -135,6 +135,11 @@ export type SummaryItem = {
   // (field absent -> falsy) stays silent rather than flagging every card during a rolling deploy,
   // which is the same trap `rowCategoryLive`'s null/undefined coalescing exists for.
   rowMissing?: boolean;
+  // Which cascade path decided the row's CURRENT category - the same `method` the review table
+  // reads. Here so this tab can flag a guessed category too: reading a summary against its
+  // source pages happens from the Summaries tab, and that is how the EMG report reported on
+  // 2026-08-31 was caught. Optional for the same rolling-deploy reason as `rowMissing`.
+  rowMethodLive?: string | null;
 };
 
 /** One copy within a duplicate cluster (Duplicates tab). */

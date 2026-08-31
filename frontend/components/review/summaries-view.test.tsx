@@ -165,6 +165,49 @@ describe("SummariesView category", () => {
     expect(screen.queryByText(/Pages changed/i)).not.toBeInTheDocument();
   });
 
+  it("flags a summary written under a category the cascade guessed", () => {
+    // Adam, 2026-08-31: "an extra tag to show that it wasn't confident would be useful". This tab
+    // is where it matters most - reading a summary against its source pages happens from here, and
+    // that is how the EMG report written up with the evaluation checklist was caught.
+    summariesState.error = null;
+    summariesState.data = [{ ...card("13", "13")[0], rowMethodLive: "llm-disagree" }];
+    renderCard();
+    expect(screen.getByText(/Category guessed/i)).toBeInTheDocument();
+  });
+
+  it("stays quiet when a rule decided the row's category", () => {
+    summariesState.error = null;
+    summariesState.data = [{ ...card("1", "1")[0], rowMethodLive: "rules" }];
+    renderCard();
+    expect(screen.queryByText(/Category guessed/i)).not.toBeInTheDocument();
+  });
+
+  it("stays quiet when both classifiers agreed", () => {
+    summariesState.error = null;
+    summariesState.data = [{ ...card("1", "1")[0], rowMethodLive: "llm+embedding" }];
+    renderCard();
+    expect(screen.queryByText(/Category guessed/i)).not.toBeInTheDocument();
+  });
+
+  it("stays quiet when the backend sends no rowMethodLive", () => {
+    // Same rolling-deploy trap as rowMissing: an older backend omits the field, and a tag on every
+    // card would be worse than no tag.
+    summariesState.error = null;
+    summariesState.data = card("1", "1");
+    renderCard();
+    expect(screen.queryByText(/Category guessed/i)).not.toBeInTheDocument();
+  });
+
+  it("reads the LIVE category, so a re-classify out of General is respected", () => {
+    // categoryWasGuessed leaves General to couldNotIdentify. The summary was generated at 100 and
+    // the row now says 5, so the tag has to key on the live value or it stays silent on exactly the
+    // row a reviewer just moved into the deliverable.
+    summariesState.error = null;
+    summariesState.data = [{ ...card("100", "5")[0], rowMethodLive: "llm-disagree" }];
+    renderCard();
+    expect(screen.getByText(/Category guessed/i)).toBeInTheDocument();
+  });
+
   it("shows the live category in the select, not the generating snapshot", () => {
     summariesState.error = null;
     summariesState.data = card("1", "3");
