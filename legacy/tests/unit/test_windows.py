@@ -1,7 +1,6 @@
 """Unit tests for byte-budgeted overlapping window packing (synthetic PDFs only)."""
 
 import pytest
-
 from mrr_ai.services.windows import byte_budgeted_windows, next_window_start, page_raw_sizes
 
 

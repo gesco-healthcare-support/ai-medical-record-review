@@ -13,10 +13,9 @@ Usage: uv run python serve.py  (host/port via HOST/PORT env)
 
 import os
 
-from waitress import serve
-
 from mrr_ai import create_app
 from mrr_ai.config import PIPELINE_WORKERS
+from waitress import serve
 
 app = create_app()
 

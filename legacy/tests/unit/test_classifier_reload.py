@@ -53,7 +53,6 @@ def test_deactivating_a_category_drops_it_from_the_classifier(app):
 
 def test_embedding_matrix_rebuilds_only_on_revision_change(app, monkeypatch):
     import numpy as np
-
     from mrr_ai.extensions import db
 
     calls = {"n": 0}

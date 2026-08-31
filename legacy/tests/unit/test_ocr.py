@@ -1,11 +1,10 @@
 """Unit tests for OCR extraction, with Tesseract/Poppler fully mocked."""
 
 import pytest
-from pdf2image.exceptions import PDFInfoNotInstalledError
-
 from mrr_ai.errors import OcrUnavailableError
 from mrr_ai.services import ocr as ocr_service
 from mrr_ai.services.ocr import extract_text_from_all_pages, extract_text_from_selected_pages
+from pdf2image.exceptions import PDFInfoNotInstalledError
 
 
 def _stub_ocr(monkeypatch, images_per_call, text="TEXT"):
