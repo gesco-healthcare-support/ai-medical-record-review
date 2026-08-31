@@ -149,6 +149,46 @@ export function couldNotIdentify(row: Row): boolean {
   return !row.ruled_paperwork && row.method !== CONFIDENT_PAPERWORK;
 }
 
+/** The two `method` values that mean the category was DECIDED rather than guessed: a rule fired, or
+ *  the embedding stage and the LLM independently agreed. Everything else is one signal, a
+ *  disagreement, or a failure. */
+const DECIDED = new Set(["rules", CONFIDENT_PAPERWORK]);
+
+/**
+ * The cascade was unsure and it landed on a real category anyway.
+ *
+ * `couldNotIdentify` above is scoped to General, which is where uncertainty is VISIBLE: the row is
+ * excluded, nothing is written, and the reviewer is told to look. The same uncertainty landing on
+ * 13 or 5 is the harder case - the row is summarized under that category's point list, ships, and
+ * nothing on screen says the category was a coin-flip. An EMG report written up with the evaluation
+ * checklist reads perfectly plausibly and is wrong.
+ *
+ * Measured 2026-08-31 over every row carrying a method: 82 were low-confidence, 31 of them in
+ * General and already listed, and **51 on a shipping category with 40 included for summary** -
+ * invisible. `flag` does not help; 79% of all rows carry it.
+ *
+ * DISJOINT from `couldNotIdentify` on purpose, rather than a superset. The two chips say different
+ * things ("nothing named this" vs "we guessed"), and rows-table deliberately avoids putting two
+ * signals on one line because they cannot be told apart.
+ *
+ * NOT wired into the `Could not identify` FILTER, and that is a decision rather than an
+ * oversight. That filter is a to-do list and clears the moment a reviewer re-categorizes a row,
+ * because `couldNotIdentify` reads the LIVE category. `method` is frozen at segment time and
+ * survives a row save, so a guessed row added to that list could never be cleared - the reviewer
+ * would check it, fix it, and watch it stay. Provenance and a to-do list are different things.
+ * Whether the list should grow to cover these is on issue #197.
+ *
+ * A MISSING method reads as false here, which is the opposite of `couldNotIdentify`'s treatment,
+ * and the asymmetry is deliberate. There, unknown must not be read as confident, so it stays in a
+ * list the reviewer is already looking through. Here, unknown would flag every row segmented before
+ * the column existed - thousands of them, none of them evidence of anything - and a filter that
+ * matches everything surfaces nothing.
+ */
+export function categoryWasGuessed(row: Row): boolean {
+  if (String(row.category) === GENERAL) return false; // couldNotIdentify owns that half
+  return Boolean(row.method) && !DECIDED.has(String(row.method));
+}
+
 /**
  * Client-side row validation, mirroring the server rules (app/services/rows.py). Gaps between
  * documents are allowed on purpose (users skip junk pages); overlaps are not. Returns a map of

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyServerRowChanges,
+  categoryWasGuessed,
   couldNotIdentify,
   mergeRows,
   newKey,
@@ -351,5 +352,65 @@ describe("touchedFields", () => {
     const before = [r({ _key: "a", start: 4, end: 6 }), r({ _key: "b", start: 1, end: 3 })];
     const after = [r({ _key: "b", start: 1, end: 3 }), r({ _key: "a", start: 4, end: 6, include: false })];
     expect(touchedFields(before, after)).toEqual(["a:include"]);
+  });
+});
+
+describe("categoryWasGuessed", () => {
+  const shipping = (over: Partial<Row>): Row => ({ ...row(1, 2), category: "13", ...over });
+
+  it("flags a row the cascade guessed onto a real category", () => {
+    // Adam's EMG report, 2026-08-31: method=llm-disagree, category 13, included, summarized under
+    // the evaluation point list. Nothing on screen said the category was a coin-flip.
+    expect(categoryWasGuessed(shipping({ method: "llm-disagree" }))).toBe(true);
+  });
+
+  it("stays quiet when a rule decided the category", () => {
+    expect(categoryWasGuessed(shipping({ method: "rules" }))).toBe(false);
+  });
+
+  it("stays quiet when both classifiers independently agreed", () => {
+    expect(categoryWasGuessed(shipping({ method: "llm+embedding" }))).toBe(false);
+  });
+
+  it("flags every other method value", () => {
+    for (const method of ["llm-disagree", "llm-only", "embedding-only", "no-signal", "empty", "timeout"]) {
+      expect(categoryWasGuessed(shipping({ method }))).toBe(true);
+    }
+  });
+
+  it("reads a MISSING method as not guessed - the opposite of couldNotIdentify, on purpose", () => {
+    // Unknown must not be read as confident inside General, where the reviewer is already looking.
+    // Here it would flag every row segmented before the column existed - thousands, none of them
+    // evidence - and a filter matching everything surfaces nothing.
+    expect(categoryWasGuessed(shipping({}))).toBe(false);
+    expect(categoryWasGuessed(shipping({ method: null }))).toBe(false);
+  });
+
+  it("leaves General to couldNotIdentify, so a row never carries both chips", () => {
+    const general = { ...row(1, 2), category: "100", method: "llm-disagree", ruled_paperwork: false };
+    expect(categoryWasGuessed(general)).toBe(false);
+    expect(couldNotIdentify(general)).toBe(true);
+  });
+});
+
+describe("the two predicates are disjoint and neither drives the other", () => {
+  it("a guessed shipping row is invisible to couldNotIdentify - which is why the chip exists", () => {
+    // The regression this exists for: 51 of 82 low-confidence rows on the box landed on a shipping
+    // category, 40 of them included for summary, and couldNotIdentify listed none of them.
+    const guessed = { ...row(1, 2), category: "5", method: "llm-disagree" };
+    expect(couldNotIdentify(guessed)).toBe(false);
+    expect(categoryWasGuessed(guessed)).toBe(true);
+  });
+
+  it("a settled row is flagged by neither", () => {
+    expect(couldNotIdentify({ ...row(1, 2), category: "13", method: "rules" })).toBe(false);
+    expect(categoryWasGuessed({ ...row(1, 2), category: "13", method: "rules" })).toBe(false);
+  });
+
+  it("no row can carry both, because General belongs to couldNotIdentify alone", () => {
+    for (const method of ["llm-disagree", "llm-only", "no-signal", "empty", "rules"]) {
+      const general = { ...row(1, 2), category: "100", method, ruled_paperwork: false };
+      expect(categoryWasGuessed(general)).toBe(false);
+    }
   });
 });

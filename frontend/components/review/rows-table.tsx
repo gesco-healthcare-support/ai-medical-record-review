@@ -43,6 +43,7 @@ export function RowsTable({
   onDelete,
   attentionPages,
   unidentifiedKeys,
+  guessedKeys,
   hiddenKeys,
 }: {
   rows: EditorRow[];
@@ -61,6 +62,9 @@ export function RowsTable({
   attentionPages?: Set<string>;
   /** _keys of the rows nothing identified (issue #144). Chipped, never removed. */
   unidentifiedKeys?: Set<string>;
+  /** Rows whose category the cascade GUESSED - a real category, but not a settled one.
+   *  Separate from `unidentifiedKeys` because the two chips say different things. */
+  guessedKeys?: Set<string>;
   /** _keys the "could not identify" filter is hiding. Rows are dropped INSIDE the map below,
    *  never by narrowing this array: `#` is `i + 1` and the gap strips come from `previousEnd`,
    *  so a filtered array would renumber every document and invent gaps that are not real. */
@@ -107,6 +111,7 @@ export function RowsTable({
           const failed = attentionPages?.has(`${row.start}-${row.end}`) ?? false;
           // A sub-document that landed in General with no rule putting it there.
           const unidentified = unidentifiedKeys?.has(row._key) ?? false;
+          const guessed = guessedKeys?.has(row._key) ?? false;
 
           return (
             <Fragment key={row._key}>
@@ -155,6 +160,17 @@ export function RowsTable({
                         title="Nothing identified this document - it is in General because no rule or model could name it"
                       >
                         Could not identify
+                      </span>
+                    ) : null}
+                    {/* Mutually exclusive with the chip above by construction - categoryWasGuessed
+                        skips General - so a row never carries both, which is the same reason the
+                        comment above keeps this column to one signal. */}
+                    {guessed ? (
+                      <span
+                        className="rc-unid-chip"
+                        title="The category was a guess: no rule matched and the two classifiers did not agree. This document IS being summarized under it."
+                      >
+                        Category guessed
                       </span>
                     ) : null}
                     <span className="rc-rowactions">
