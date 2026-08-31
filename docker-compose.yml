@@ -53,16 +53,22 @@ x-backend-env: &backend-env
   # CLASSIFY_WORKERS also drives concurrent Tesseract processes in the verify pass - see the
   # OMP_THREAD_LIMIT note above, which is what stops those deadlocking.
   #
-  # 2 -> 5 on 2026-08-25, which is the number the note above already computes and then does not use.
-  # Its arithmetic was against VERTEX_MAX_RPM=20; that ceiling is 60 now, so the value was sized for a
-  # budget that no longer applies. Re-measured over the 43 newest summarize jobs: 11.3h for 1,851
-  # summaries = 22.0s per summary at 2 lanes = ~14.7s per call, matching the 15.4s above, so one job
-  # draws ~8 calls/min against 60 rpm - about 14% utilisation. 5 stays inside the regime the note
-  # measured; its abandon-the-wait failure mode is the reason not to go further.
+  # 2 -> 5, TAKEN on 2026-08-31. This block computed 5 on 2026-08-03 and the value stayed at 2 for
+  # four weeks, because raising it exposed the give-up race in `summarize_document` (#154 wrote the
+  # change and reverted it). That race was fixed in #155 and the value still did not move, because
+  # one full-file run in 18 had failed unexplained. Both are now settled - see app/config.py, which
+  # carries the mechanism argument and the 39-run evidence.
+  #
+  # Its original arithmetic was against VERTEX_MAX_RPM=20; that ceiling is 60 now. Re-measured over
+  # the 43 newest summarize jobs: 11.3h for 1,851 summaries = 22.0s per summary at 2 lanes = ~14.7s
+  # per call, matching the 15.4s above, so one job draws ~8 calls/min against 60 rpm - about 14%
+  # utilisation. Confirmed again on 2026-08-31 against a single fresh 56-row run: 12.7s per call and
+  # 16%. 5 stays inside the regime the note measured; its abandon-the-wait failure mode is the reason
+  # not to go further.
   #
   # This line is load-bearing: it passes the value explicitly, so a container reads THIS default and
   # never config.py. A test pins the two together.
-  PIPELINE_WORKERS: ${PIPELINE_WORKERS:-2}
+  PIPELINE_WORKERS: ${PIPELINE_WORKERS:-5}
   CLASSIFY_WORKERS: ${CLASSIFY_WORKERS:-4}
   # Concurrency of the ONE-TIME per-page OCR pass (services/page_text.populate_document). Named here
   # for the same reason as everything above: an unreferenced key never reaches a container.
@@ -78,8 +84,11 @@ x-backend-env: &backend-env
   #
   # THIS LINE IS LOAD-BEARING, not documentation. It passes the value explicitly, so a container takes
   # this default and NOT the one in config.py - editing only config.py would change nothing on any
-  # deployed box. `DUPE_SIMILARITY_OVERRIDE` below is exactly that bug already in flight: config.py
-  # says 0.99, this file says 0.90, and production has silently run 0.90 since #81.
+  # deployed box. `DUPE_SIMILARITY_OVERRIDE` below WAS exactly that bug: config.py said 0.99
+  # while this file said 0.90, so production silently ran 0.90 from #81. CLOSED 2026-08-25 -
+  # config.py now says 0.90 as well and records the correction beside the value. Kept as the
+  # example because the drift is the point, and because this comment outlived the bug it
+  # described and has since been read as live by two people writing PRs against this file.
   PAGE_TEXT_WORKERS: ${PAGE_TEXT_WORKERS:-6}
   # Which vendor answers the summarize stage (body, title, audit). Named here now, while the only
   # valid value is "gemini", so the key is live the day a second provider exists - rather than being

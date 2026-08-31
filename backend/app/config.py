@@ -173,12 +173,32 @@ class Settings(BaseSettings):
     #
     # UPDATE: that race is fixed - `summarize_document` now records the give-up as a CANDIDATE and
     # decides after the loop, so the end-versus-pause outcome no longer depends on completion order,
-    # pinned at 1/2/5/8 lanes. STILL AT 2 ANYWAY, deliberately. Raising it was tried again on the
-    # fixed code and one full-file run in 18 failed in a way that did not reproduce in isolation, and
-    # a concurrency default is exactly the kind of change where an unexplained intermittent failure
-    # should not be waved through. The blocker named above is cleared; what is missing is a clean
-    # reason for that one run, not more throughput evidence.
-    pipeline_workers: int = 2
+    # pinned at 1/2/5/8 lanes (#155).
+    #
+    # 2 -> 5 on 2026-08-31, which is the number the note above computes and then does not use. Held
+    # back once more after the fix because one full-file run in 18 had failed in a way that would not
+    # reproduce, and the bar set here was "a clean reason for that one run, not more throughput
+    # evidence". Both halves are now answered.
+    #
+    # The reason: the pool cannot be lane-sensitive. It submits `summarize_row` and NOTHING else -
+    # every DB write happens in the main thread as `drain_pool` yields, and the summarize path holds
+    # no mutable module-level state at all (prompts and schemas are constants; pacer state lives in
+    # Redis, where it is atomic). So a row's work is a pure function of its arguments plus the
+    # network, and the failure was in the harness rather than in the product.
+    #
+    # The evidence, so the absence means something against a 1-in-18 event: 39 runs of
+    # `tests/test_jobs.py` at 5 lanes and 3 full suites, zero failures.
+    #
+    # The throughput, re-derived on fresh data because the original arithmetic was against
+    # VERTEX_MAX_RPM=20 and the ceiling is 60 now. One 229-page record, 56 rows, 2026-08-31:
+    # 1,065s / 28 rows per lane = 38.0s per row = 12.7s per call, against #154's 14.7s over 43 jobs.
+    # 168 calls in 1,065s is 9.5/min, 16% of the ceiling. At 5 lanes: ~426s (2.50x) and 39% of the
+    # ceiling - inside the regime the note above measured, and well short of the abandon-the-wait
+    # failure mode that is the reason not to go further.
+    #
+    # Reverts by env with no rebuild, and `vertex:metrics:*` in Redis is where the pacer records
+    # admission if this ever needs re-checking under real load.
+    pipeline_workers: int = 5
     # Bound on "pause and auto-resume forever": when this many rows have failed transiently and NOT
     # ONE has succeeded, the model is refusing everything and resuming only replays the same wall.
     # Zero successes is the discriminator, not the failure count alone - a blip with some rows getting
