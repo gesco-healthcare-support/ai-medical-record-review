@@ -84,8 +84,11 @@ x-backend-env: &backend-env
   #
   # THIS LINE IS LOAD-BEARING, not documentation. It passes the value explicitly, so a container takes
   # this default and NOT the one in config.py - editing only config.py would change nothing on any
-  # deployed box. `DUPE_SIMILARITY_OVERRIDE` below is exactly that bug already in flight: config.py
-  # says 0.99, this file says 0.90, and production has silently run 0.90 since #81.
+  # deployed box. `DUPE_SIMILARITY_OVERRIDE` below WAS exactly that bug: config.py said 0.99
+  # while this file said 0.90, so production silently ran 0.90 from #81. CLOSED 2026-08-25 -
+  # config.py now says 0.90 as well and records the correction beside the value. Kept as the
+  # example because the drift is the point, and because this comment outlived the bug it
+  # described and has since been read as live by two people writing PRs against this file.
   PAGE_TEXT_WORKERS: ${PAGE_TEXT_WORKERS:-6}
   # Which vendor answers the summarize stage (body, title, audit). Named here now, while the only
   # valid value is "gemini", so the key is live the day a second provider exists - rather than being
