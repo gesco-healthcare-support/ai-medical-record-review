@@ -57,6 +57,27 @@ describe("RowsTable unidentified rows", () => {
     expect(screen.queryByText("Could not identify")).toBeNull();
   });
 
+  it("chips a row whose category the cascade guessed", () => {
+    // Reported by Adam 2026-08-31: an EMG report summarized as a QME evaluation, method
+    // llm-disagree, category 13, included. Nothing on screen said the category was a guess, and he
+    // found it by reading the PDF.
+    renderTable({ guessedKeys: new Set(["b"]) });
+    expect(screen.getAllByText("Category guessed")).toHaveLength(1);
+  });
+
+  it("chips nothing when every category was settled", () => {
+    renderTable({ guessedKeys: new Set<string>() });
+    expect(screen.queryByText("Category guessed")).toBeNull();
+  });
+
+  it("keeps the two chips distinguishable on one table", () => {
+    // They are disjoint by construction (categoryWasGuessed skips General), so a row never carries
+    // both - but the table must still render each on its own row rather than merging them.
+    renderTable({ unidentifiedKeys: new Set(["b"]), guessedKeys: new Set(["c"]) });
+    expect(screen.getAllByText("Could not identify")).toHaveLength(1);
+    expect(screen.getAllByText("Category guessed")).toHaveLength(1);
+  });
+
   it("does not render a hidden row", () => {
     const { container } = renderTable({ hiddenKeys: new Set(["a", "c"]) });
     expect(container.querySelectorAll("tr.doc-row.title-row")).toHaveLength(1);

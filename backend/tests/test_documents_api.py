@@ -1613,6 +1613,7 @@ async def test_every_summary_response_carries_the_live_category(authed, monkeypa
         # answering with the bare listing() would delete the stranded-summary badge from the cache
         # after a save - the exact failure this test was written for, on the newer field.
         assert "rowMissing" in body, f"{name} dropped rowMissing"
+        assert "rowMethodLive" in body, f"{name} dropped rowMethodLive"
     # The PUT must report the category it just wrote, not the pre-change value it was holding.
     assert put["rowCategoryLive"] == _OTHER_CATEGORY
     # A re-draft re-snapshots row_category from the row, so the two agree again -> badge clears.
@@ -3038,3 +3039,44 @@ async def test_stranded_summaries_ignores_a_row_the_reviewer_excluded(authed):
 
     with get_sessionmaker()() as session:
         assert stranded_summaries(session.get(Document, doc_id)) == (0, 0)
+
+
+async def test_get_summaries_reports_how_the_rows_category_was_decided(authed):
+    """WHEN a summary is listed, THE SYSTEM SHALL report which cascade path decided its row's
+    CURRENT category, so the Summaries tab can flag a guessed one.
+
+    Adam, 2026-08-31: "an extra tag to show that it wasn't confident would be useful". This is the
+    surface that needed it - the defect he reported was an EMG report written up with the evaluation
+    checklist, and reading a summary against its source pages is done from here, not from the row
+    table.
+
+    The raw method rather than a boolean, so the client keeps ONE definition of "guessed"
+    (`review-rows.categoryWasGuessed`) instead of a server copy free to drift from it.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    _seed_rows(doc_id, [(1, 2, None)])
+    _seed_summary(doc_id, pages=(1, 2))
+    with get_sessionmaker()() as session:
+        row = session.scalar(select(ReviewRow).where(ReviewRow.document_id == doc_id))
+        row.method = "llm-disagree"
+        session.commit()
+
+    body = (await client.get(f"/api/documents/{doc_id}/summaries")).json()
+
+    assert body[0]["rowMethodLive"] == "llm-disagree"
+
+
+async def test_a_summary_with_no_live_row_reports_no_method(authed):
+    """IF no row covers the summary's pages, THEN the method SHALL be null - there is no live row to
+    read one from, and the same absence is already reported by `rowMissing`."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    _seed_rows(doc_id, [(1, 1, None)])
+    _seed_summary(doc_id, pages=(2, 3))
+
+    body = (await client.get(f"/api/documents/{doc_id}/summaries")).json()
+
+    assert body[0]["rowMissing"] is True
+    assert body[0]["rowMethodLive"] is None
+    assert body[0]["rowCategoryLive"] is None

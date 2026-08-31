@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
 import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summaries";
 import { categoryOptions } from "@/components/review/rows-table";
+import { categoryWasGuessed } from "@/lib/review-rows";
 import type { CategoryOption, SummaryItem } from "@/lib/types";
 import type { HeaderFields } from "@/lib/review-api";
 import { ExportDialog } from "./export-dialog";
@@ -325,6 +326,18 @@ export function SummariesView({
                       <span className="ev-chip ev-chip-review" title="AI verify pass corrected this summary - please confirm">
                         <ShieldCheck width={12} height={12} aria-hidden />
                         AI-fixed
+                      </span>
+                    ) : null}
+                    {categoryWasGuessed({
+                      category: item.rowCategoryLive ?? item.row.category,
+                      method: item.rowMethodLive,
+                    }) ? (
+                      <span
+                        className="ev-chip ev-chip-review"
+                        title="The category was a guess: no rule matched and the two classifiers did not agree. This summary was written under it, so check it against the pages before exporting."
+                      >
+                        <Flag width={12} height={12} aria-hidden />
+                        Category guessed
                       </span>
                     ) : null}
                     {item.rowMissing ? (

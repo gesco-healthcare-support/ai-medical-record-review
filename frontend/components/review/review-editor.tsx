@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { CategoryOption, Row } from "@/lib/types";
 import {
+  categoryWasGuessed,
   couldNotIdentify,
   mergeRows,
   newKey,
@@ -55,6 +56,11 @@ export function ReviewEditor({
   // already dealt with. The chips stay on whether the filter is on or off, so a row is still
   // recognisable in the full list.
   const unidentifiedKeys = new Set(rows.filter(couldNotIdentify).map((r) => r._key));
+  // The other half of the same question, and the half that SHIPS: the cascade was unsure and
+  // picked a real category anyway, so the row is summarized under that category's point list
+  // with nothing saying the choice was a guess. A chip only, deliberately - see
+  // categoryWasGuessed on why this must not join the filter.
+  const guessedKeys = new Set(rows.filter(categoryWasGuessed).map((r) => r._key));
   const hiddenKeys = onlyUnidentified
     ? new Set(rows.filter((r) => !unidentifiedKeys.has(r._key)).map((r) => r._key))
     : undefined;
@@ -242,6 +248,7 @@ export function ReviewEditor({
               onDelete={remove}
               attentionPages={attentionPages}
               unidentifiedKeys={unidentifiedKeys}
+              guessedKeys={guessedKeys}
               hiddenKeys={hiddenKeys}
             />
             {onlyUnidentified && unidentifiedKeys.size === 0 ? (
