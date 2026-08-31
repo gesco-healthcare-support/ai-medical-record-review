@@ -518,6 +518,21 @@ def _page_image_parts(pdf_path, start, end):
 
     Capped at settings.summary_image_max_pages so a long sub-document cannot blow the payload; the
     full OCR text still covers every page. Rasterized one page at a time to cap peak memory.
+
+    The one-page loop looks like an obvious optimisation - `convert_from_path` spawns a Poppler
+    subprocess and re-parses the PDF on every call, so a 15-page row pays that 15 times instead of
+    once. MEASURED 2026-08-31 on a 13.7 MB 229-page record, 15 pages at 120 dpi, best of 3:
+
+        per page (this)      2.32s     peak RSS  +12 MB
+        one batched call     1.06s     peak RSS +155 MB
+
+    Identical JPEG bytes either way. So batching is 2.2x faster and costs 143 MB more per CONCURRENT
+    ROW - and that is the number that decides it, because `pipeline_workers` is 5: 5 x 155 MB against
+    5 x 12 MB, on a box that also runs Postgres, Redis, six RQ workers and two web tiers. The saving
+    is 1.26s against a row costing ~38s in model time, so about 3%, for ~700 MB of peak.
+
+    Not worth it, and the memory argument gets SHARPER with every lane rather than weaker. Recorded
+    with numbers so the next person tempted by the loop does not have to re-measure it.
     """
     settings = get_settings()
     last = min(int(end), int(start) + settings.summary_image_max_pages - 1)
