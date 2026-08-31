@@ -28,6 +28,7 @@ from app.services.reporting import (
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
     date_label,
+    header_lines,
     intro_sentence,
     parsed_date,
 )
@@ -133,8 +134,16 @@ def _render_summary_pdf(html_doc: str) -> tuple[pymupdf.Document, dict[int, list
 
 
 def _draw_running_header(summary_doc, patient_name, patient_dob):
+    """The same two identifying lines the Word header carries, plus a page number from page 2.
+
+    The lines come from `reporting.header_lines` rather than being written here, because they had
+    already drifted: this renderer labelled the date of birth and the Word one did not, so the two
+    deliverables named the patient differently on every page. Word gets the same shape through a
+    separate first-page header and a PAGE field.
+    """
+    re_line, dob_line = header_lines(patient_name, patient_dob)
     for i in range(summary_doc.page_count):
-        text = f"RE: {patient_name}\nDOB: {patient_dob}" + ("" if i == 0 else f"\nPage {i + 1}")
+        text = f"{re_line}\n{dob_line}" + ("" if i == 0 else f"\nPage {i + 1}")
         summary_doc[i].insert_textbox(
             pymupdf.Rect(72, 30, 400, 88), text, fontsize=10, fontname="tiro"
         )

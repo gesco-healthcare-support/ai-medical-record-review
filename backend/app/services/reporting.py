@@ -11,6 +11,8 @@ from datetime import datetime
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 DOCX_MIMETYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -40,6 +42,17 @@ REVIEW_HEADING = "MEDICAL RECORD REVIEW"
 TITLE_SEPARATOR = ". "
 
 
+def header_lines(patient_name, patient_dob) -> tuple[str, str]:
+    """The two identifying lines both renderers put at the top of every page.
+
+    Here for the same reason as the sentences above, and it had already gone the same way: the Word
+    header wrote the date of birth as a bare value while the linked PDF labelled it ``DOB:``, so the
+    two deliverables named the patient differently on every page. `RE:` was labelled in both, which
+    is what makes the unlabelled one read as an omission rather than a house style.
+    """
+    return f"RE: {patient_name}", f"DOB: {patient_dob}"
+
+
 def intro_sentence(num_pages, lawfirm) -> str:
     """The letter's opening sentence, shared by the Word and linked-PDF renderers.
 
@@ -67,12 +80,12 @@ def intro_sentence(num_pages, lawfirm) -> str:
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_", re.DOTALL)
 
 
-def _run(paragraph, s, *, bold=False, italic=False):
+def _run(paragraph, s, *, bold=False, italic=False, size=None):
     run = paragraph.add_run(s)
     run.bold = bold
     run.italic = italic
     run.font.name = "Times New Roman"
-    run.font.size = Pt(11)
+    run.font.size = size or Pt(11)
     return run
 
 
@@ -90,6 +103,45 @@ def _add_inline_runs(paragraph, text, *, bold=False, italic=False):
         pos = m.end()
     if pos < len(text):
         _run(paragraph, text[pos:], bold=bold, italic=italic)
+
+
+def _page_number_field(paragraph) -> None:
+    """Append a real Word PAGE field, so the header numbers the pages.
+
+    The header used to end with the literal string ``"Page "`` and nothing after it: python-docx
+    writes text, not fields, so every page of the delivered .docx carried a dangling label with no
+    number while the linked PDF numbered its pages properly. A field rather than a computed integer
+    because a Word header is one object repeated on every page - there is no per-page text to write,
+    which is presumably how the bare label got there.
+
+    ``w:fldSimple`` with a cached ``1`` inside: Word and LibreOffice both recalculate the field on
+    open, and the cached run is what a reader that does not evaluate fields shows instead of nothing.
+    """
+    field = OxmlElement("w:fldSimple")
+    field.set(qn("w:instr"), " PAGE ")
+    run = OxmlElement("w:r")
+    text = OxmlElement("w:t")
+    text.text = "1"
+    run.append(text)
+    field.append(run)
+    paragraph._p.append(field)
+
+
+def _fill_header(header, re_line, dob_line, *, numbered: bool) -> None:
+    """Write the identifying lines into ``header``, optionally followed by ``Page <n>``.
+
+    Writes into the header's EXISTING first paragraph rather than adding one. A new Word header
+    already carries an empty paragraph, so `add_paragraph` left a blank line above the patient's
+    name on every page of the deliverable.
+    """
+    paragraph = header.paragraphs[0]
+    # Removing the run ELEMENTS, not `paragraph.text = ""` - that assignment leaves one empty run
+    # behind, so the first run of the header carried no font at all and `runs[0]` was not the text.
+    for run in list(paragraph.runs):
+        run._element.getparent().remove(run._element)
+    _run(paragraph, f"{re_line}\n{dob_line}" + ("\nPage " if numbered else ""), size=Pt(10))
+    if numbered:
+        _page_number_field(paragraph)
 
 
 UNDATED_LABEL = "Undated"
@@ -138,13 +190,14 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
 
     # HEADER
     section = doc.sections[0]
-    header = section.header
-    header_paragraph = header.add_paragraph(
-        "RE: " + patient_name + "\n" + patient_dob + "\n" + "Page "
-    )
-    for run in header_paragraph.runs:
-        run.font.name = "Times New Roman"
-        run.font.size = Pt(10)
+    # A separate first-page header, so page 1 carries the patient lines WITHOUT a page number and
+    # every later page carries all three. That is what `linked_pdf._draw_running_header` already
+    # does (`"" if i == 0 else f"\nPage {i + 1}"`), and matching it is the point: the two are the
+    # same deliverable in two formats and a reviewer reads them side by side.
+    section.different_first_page_header_footer = True
+    re_line, dob_line = header_lines(patient_name, patient_dob)
+    _fill_header(section.first_page_header, re_line, dob_line, numbered=False)
+    _fill_header(section.header, re_line, dob_line, numbered=True)
 
     doc.add_paragraph("")
 
