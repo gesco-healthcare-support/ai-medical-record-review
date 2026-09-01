@@ -47,8 +47,11 @@ def _db_job_id(rq_job) -> int | None:
         return None
 
 
-def on_job_stopped(rq_job, connection) -> None:
+def on_job_stopped(rq_job, _connection) -> None:
     """A deliberate stop: the reviewer pressed Force stop and the work-horse was killed.
+
+    ``_connection`` is unused but not removable: RQ calls a stopped-callback positionally with the
+    job and its Redis connection, so the arity is the framework's, not ours.
 
     Terminal state matches the cooperative stop exactly - same writer, same STATUS_ON_CANCEL - so
     which of the two paths ended the run is invisible downstream, as it should be.
@@ -77,8 +80,12 @@ def on_job_stopped(rq_job, connection) -> None:
         logger.exception("stopped callback could not finalize job %s", job_id)
 
 
-def on_job_failed(rq_job, connection, *exc_info) -> None:
+def on_job_failed(rq_job, _connection, *_exc_info) -> None:
     """The work-horse failed or was abandoned.
+
+    ``_connection`` and ``_exc_info`` are unused but not removable, for the same reason as the
+    stopped callback: RQ supplies both positionally. The exception is not read here because `_run`
+    has already recorded it; this callback exists for the case where the horse never got that far.
 
     Mirrors `recover_orphans`: "interrupted", and the document only when it is mid-pipeline. An
     ordinary in-horse exception has already been finalized as "error" by `_run`, so this is a
