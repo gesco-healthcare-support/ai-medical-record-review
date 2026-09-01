@@ -548,22 +548,22 @@ def segment_document(job_id) -> None:
         )
         session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
         for idx, row in enumerate(rows):
-            fields = dict(
-                idx=idx,
-                start=int(row["start"]),
-                end=int(row["end"]),
-                category=str(row["category"]),
-                title=str(row.get("title") or "-"),
-                date=str(row.get("date") or "-"),
-                injury_date=str(row.get("injury_date") or "-"),
-                flag=str(row.get("flag") or "-"),
-                suggest_merge=bool(row.get("suggest_merge")),
+            fields = {
+                "idx": idx,
+                "start": int(row["start"]),
+                "end": int(row["end"]),
+                "category": str(row["category"]),
+                "title": str(row.get("title") or "-"),
+                "date": str(row.get("date") or "-"),
+                "injury_date": str(row.get("injury_date") or "-"),
+                "flag": str(row.get("flag") or "-"),
+                "suggest_merge": bool(row.get("suggest_merge")),
                 # Which cascade path decided the category (#188). `.get`, not `[...]`: a row the
                 # categorization pool never finished has no key, and NULL is the honest value for
                 # it. Carried on the SHARED dict deliberately, so the immutable SegmentRow copy and
                 # the editable ReviewRow copy cannot drift apart.
-                method=row.get("method"),
-            )
+                "method": row.get("method"),
+            }
             session.add(SegmentRow(job_id=job.id, **fields))
             # include follows the category's summarize_default, which is a per-category DB flag -
             # see catalog.summarize_default_for for why the set is not what it looks like. It is NOT a

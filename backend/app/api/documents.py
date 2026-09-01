@@ -1209,6 +1209,7 @@ def resummarize(
             ReviewRow.end == summary.row_end,
         )
     )
+    flag = "x" if summary.manual_check else "-"
     row = (
         review_row.as_row()
         if review_row is not None
@@ -1218,7 +1219,7 @@ def resummarize(
             "category": summary.row_category,
             "date": summary.date,
             "injury_date": "-",
-            "flag": "x" if summary.manual_check else "-",
+            "flag": flag,
         }
     )
 
