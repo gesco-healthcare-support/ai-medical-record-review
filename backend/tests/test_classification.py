@@ -1292,3 +1292,55 @@ def test_the_paperwork_valve_still_covers_what_it_covered_before():
     """
     assert classification.match_rules("Declaration of Service of Medical Legal Report") == "100"
     assert classification.match_rules("Proof of Service of Medical Legal Report") == "100"
+
+
+# #222. The senior reviewer's instruction is "Yes, do not include the excerpted medical records"
+# (#159), and we mostly obeyed it - but nothing PINNED the bare title, so the cascade re-decided it
+# per record and eventually answered differently: two rows on that reviewer's own account reached
+# category 1, included, and shipped summaries.
+#
+# #159 deliberately declined to add a rule and was right about the rule it considered. A SUBSTRING
+# match on "excerpt" also claims the qualified forms, and the same reviewer's answer carves those
+# out - he wants embedded diagnostic studies summarized. `_DOCUMENT_NOUN` cannot rescue them either,
+# because "records" is deliberately absent from it. So the predicate is "the title IS the wrapper and
+# nothing else", which is what these anchors express and what the second test below defends.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Medical Records Excerpt",
+        "Medical Record Excerpt",
+        "MEDICAL RECORDS EXCERPTS",
+        "  medical records excerpt  ",
+        "Medical Excerpted Records",
+        "Excerpted Medical Records",
+        "Review of Medical Records",
+        "Review of the Medical Records",
+    ],
+)
+def test_a_bare_excerpt_wrapper_is_administrative(title):
+    assert classification.match_rules(title) == "100"
+
+
+# The half the substring rule would have broken. These must NOT be claimed: two of them carry no
+# `_RULES` match at all, so an administrative hit would send them to DEFAULT_ID and drop real
+# content - a diagnostic study in the first case, which is precisely what the reviewer asked to keep.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Medical Record Excerpt - MRI of Right Knee", "3"),  # the study still wins
+        ("Medical Record Excerpt - UCLA Medical Center", None),  # cascade decides
+        ("Medical Record Excerpt - ABC Occupational Medical Center", None),
+        ("Excerpted Medical Records - Lumbar Spine MRI Report", "3"),
+    ],
+)
+def test_a_qualified_excerpt_is_left_to_the_document_it_names(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+def test_the_records_index_is_unchanged_and_not_claimed_by_these_anchors():
+    """`medical excerpted records index` already reaches 100 through the pre-existing
+    `records? (request|index)` rule, so the anchors here must neither claim it nor take credit for
+    it. Pinned because the issue reported its STORED category as 3 - which is an old build's answer,
+    not what the rules say today (the stored-vs-current trap)."""
+    assert classification.match_rules("medical excerpted records index") == "100"
+    assert classification.match_rules("Index of Records") == "100"
