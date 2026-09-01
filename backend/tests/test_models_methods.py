@@ -59,7 +59,9 @@ def test_segment_and_review_as_row():
         suggest_merge=True,
     )
     row = seg.as_row()
-    assert row["start"] == 1 and row["category"] == "1" and row["suggest_merge"] is True
+    assert row["start"] == 1
+    assert row["category"] == "1"
+    assert row["suggest_merge"] is True
     assert "include" not in row  # SegmentRow rows carry no include flag
 
     rev = ReviewRow(
@@ -75,7 +77,8 @@ def test_segment_and_review_as_row():
         include=False,
     )
     review_row = rev.as_row()
-    assert review_row["include"] is False and review_row["suggest_merge"] is False
+    assert review_row["include"] is False
+    assert review_row["suggest_merge"] is False
 
 
 def test_summary_effective_and_listing():

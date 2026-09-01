@@ -101,7 +101,9 @@ async def test_upload_list_get_status_delete(authed):
     got = await client.get(f"/api/documents/{doc_id}")
     assert got.status_code == 200
     body = got.json()
-    assert body["id"] == doc_id and body["rows"] == [] and "categories" in body
+    assert body["id"] == doc_id
+    assert body["rows"] == []
+    assert "categories" in body
 
     status = await client.get(f"/api/documents/{doc_id}/status")
     assert status.json() == {
@@ -130,7 +132,8 @@ async def test_rows_put_validation_and_persistence(authed):
         f"/api/documents/{doc_id}/rows",
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY}]},
     )
-    assert ok.status_code == 200 and ok.json()["count"] == 1
+    assert ok.status_code == 200
+    assert ok.json()["count"] == 1
 
     bad_range = await client.put(
         f"/api/documents/{doc_id}/rows",
@@ -794,7 +797,9 @@ async def test_export_pdf_returns_linked_pdf_with_working_links(authed):
     assert len(gotos) == 1
     link = gotos[0]
     assert link["page"] == summ + (2 - 1)  # source page row_start=2 -> combined index
-    assert link["from"].width > 1 and link["from"].height > 1  # real, clickable hotspot
+    # real, clickable hotspot
+    assert link["from"].width > 1
+    assert link["from"].height > 1
     doc.close()
 
 
@@ -819,7 +824,8 @@ def test_manualcheck_flag_is_stripped_from_both_exports():
     pdf = _pdf_entry(summary)
     assert "[ManualCheck]" not in word["summaryTitle"]
     assert "[ManualCheck]" not in pdf["linkTitle"]
-    assert "MRI Report" in word["summaryTitle"] and "MRI Report" in pdf["linkTitle"]
+    assert "MRI Report" in word["summaryTitle"]
+    assert "MRI Report" in pdf["linkTitle"]
 
 
 # One decorated title, one date, one body, shared by the three tests below. `summarize_row` returns
@@ -1351,7 +1357,8 @@ async def test_put_summary_category_writes_through_to_the_row(authed):
             )
         )
         assert entry is not None
-        assert _VALID_CATEGORY in entry.detail and _OTHER_CATEGORY in entry.detail
+        assert _VALID_CATEGORY in entry.detail
+        assert _OTHER_CATEGORY in entry.detail
 
 
 async def test_a_row_save_records_the_boundary_work(authed):
@@ -1700,7 +1707,8 @@ async def test_cancel_flags_a_running_job(authed):
         with get_sessionmaker()() as session:
             assert session.get(Job, job_id).cancel_requested is True
             entry = session.scalar(select(AuditLog).where(AuditLog.action == "job.cancel"))
-            assert entry is not None and "force False" in entry.detail
+            assert entry is not None
+            assert "force False" in entry.detail
     finally:
         cancel_mod.clear_cancel(job_id)
 
@@ -1841,7 +1849,8 @@ async def test_segment_start_enqueues_then_conflicts(authed):
     queue.empty()
     try:
         first = await client.post(f"/api/documents/{doc_id}/segment/start")
-        assert first.status_code == 200 and first.json() == {"ok": True}
+        assert first.status_code == 200
+        assert first.json() == {"ok": True}
         assert queue.count == 1
 
         # The DB one-active-job index rejects a second enqueue while the first is queued.
@@ -2025,7 +2034,8 @@ async def test_extract_header_ocr_unavailable_does_not_persist(authed, monkeypat
     assert resp.status_code == 503
 
     got = (await client.get(f"/api/documents/{doc_id}")).json()
-    assert got["patient_first_name"] == "" and got["law_firm"] == ""
+    assert got["patient_first_name"] == ""
+    assert got["law_firm"] == ""
 
 
 async def test_extract_header_ocr_unavailable_returns_503(authed, monkeypatch):
@@ -2059,7 +2069,8 @@ async def test_aggregate_merges_creates_rows_and_enqueues_classify(authed):
         )
         assert resp.status_code == 201
         body = resp.json()
-        assert body["page_count"] == 5 and len(body["records"]) == 2
+        assert body["page_count"] == 5
+        assert len(body["records"]) == 2
 
         got = await client.get(f"/api/documents/{body['id']}")
         rows = got.json()["rows"]
@@ -2067,7 +2078,8 @@ async def test_aggregate_merges_creates_rows_and_enqueues_classify(authed):
         assert (rows[0]["start"], rows[0]["end"]) == (1, 2)
         assert (rows[1]["start"], rows[1]["end"]) == (3, 5)
         # General (100) seeds off-by-default (classify re-derives per row afterwards).
-        assert rows[0]["include"] is False and rows[1]["include"] is False
+        assert rows[0]["include"] is False
+        assert rows[1]["include"] is False
 
         assert queue.count == 1
         assert queue.jobs[0].func_name.endswith("classify_document")
@@ -2147,8 +2159,10 @@ async def test_a_copy_declared_distinct_after_keep_one_returns_to_the_report(aut
         "excluded drops its pages from the report with nothing on screen to say so"
     )
     # The surviving pair is untouched: still one cluster, still resolved to the kept copy.
-    assert rows[0].dupe_group == 1 and rows[1].dupe_group == 1
-    assert rows[0].include is True and rows[1].include is False
+    assert rows[0].dupe_group == 1
+    assert rows[1].dupe_group == 1
+    assert rows[0].include is True
+    assert rows[1].include is False
 
 
 async def test_the_last_copy_of_a_collapsed_cluster_also_returns_to_the_report(authed):
@@ -2207,7 +2221,8 @@ async def test_duplicates_list_status_and_keep_one(authed):
             r.idx: r
             for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
         }
-    assert rows[0].dupe_primary is True and rows[0].include is True
+    assert rows[0].dupe_primary is True
+    assert rows[0].include is True
     assert rows[1].include is False  # the other copy is excluded from summarization
 
     status2 = await client.get(f"/api/documents/{doc_id}/status")
@@ -2282,7 +2297,9 @@ async def test_keep_one_does_not_opt_an_excluded_cluster_into_the_report(authed)
             for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
         }
     assert rows[0].dupe_primary is True  # the kept copy is still recorded
-    assert rows[0].include is False and rows[1].include is False  # but nothing was opted in
+    # but nothing was opted in
+    assert rows[0].include is False
+    assert rows[1].include is False
     # Resolving still clears the cluster from the advisory count.
     status = await client.get(f"/api/documents/{doc_id}/status")
     assert status.json()["unreviewed_duplicate_groups"] == 0
@@ -2331,7 +2348,8 @@ async def test_duplicates_dismiss_and_error_paths(authed):
     assert bad.status_code == 400
 
     started = await client.post(f"/api/documents/{doc_id}/dedup/start")
-    assert started.status_code == 200 and started.json()["ok"] is True
+    assert started.status_code == 200
+    assert started.json()["ok"] is True
 
 
 async def test_duplicates_keep_one_bad_primary_is_400(authed):
@@ -2358,7 +2376,8 @@ async def test_duplicates_paths_while_a_job_is_active(authed):
         session.commit()
 
     dup = await client.get(f"/api/documents/{doc_id}/duplicates")
-    assert dup.status_code == 200 and dup.json()["job"] is not None  # progress surfaced
+    assert dup.status_code == 200
+    assert dup.json()["job"] is not None  # progress surfaced
 
     resolved = await client.post(
         f"/api/documents/{doc_id}/duplicates/5/resolve", json={"action": "dismiss"}
@@ -2405,7 +2424,8 @@ async def test_remove_member_drops_one_copy_and_keeps_the_rest_clustered(authed)
             for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
         }
     assert rows[2].dupe_group is None
-    assert rows[0].dupe_group == 1 and rows[1].dupe_group == 1
+    assert rows[0].dupe_group == 1
+    assert rows[1].dupe_group == 1
     # The removed copy stays in the report: it is a distinct document, not an excluded duplicate.
     assert rows[2].include is True
 
@@ -2512,7 +2532,9 @@ async def test_duplicates_say_whether_a_check_has_ever_completed(authed):
     body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
     assert body["checked"] is False, "no dedup job has ever run on this document"
     # The three fields that previously had to carry this meaning, and could not.
-    assert body["clusters"] == [] and body["stale"] is False and body["unreadable"] == 0
+    assert body["clusters"] == []
+    assert body["stale"] is False
+    assert body["unreadable"] == 0
 
     _finish_dedup(doc_id)
     body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
@@ -2663,7 +2685,8 @@ async def test_a_cancelled_recheck_does_not_erase_the_completed_check_before_it(
     _finish_dedup(doc_id)
 
     before = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
-    assert before["checked"] is True and len(before["clusters"]) == 1
+    assert before["checked"] is True
+    assert len(before["clusters"]) == 1
 
     # The reviewer starts a re-check on a large record and presses Stop.
     _dedup_job(doc_id, "cancelled")
@@ -2696,7 +2719,8 @@ async def test_a_failed_recheck_still_reports_what_the_completed_run_found(authe
     body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
     assert body["checked"] is True
     assert body["unreadable"] == 1, "the completed run's warning must survive a failed re-check"
-    assert body["job"]["state"] == "error" and body["job"]["error"]
+    assert body["job"]["state"] == "error"
+    assert body["job"]["error"]
 
 
 async def test_a_record_whose_only_dedup_failed_still_reports_as_unchecked(authed):
@@ -2709,7 +2733,8 @@ async def test_a_record_whose_only_dedup_failed_still_reports_as_unchecked(authe
 
     body = (await client.get(f"/api/documents/{doc_id}/duplicates")).json()
     assert body["checked"] is False
-    assert body["stale"] is False and body["unreadable"] == 0
+    assert body["stale"] is False
+    assert body["unreadable"] == 0
     assert body["job"]["state"] == "error"
 
 

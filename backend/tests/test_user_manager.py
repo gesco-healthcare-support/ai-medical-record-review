@@ -16,18 +16,21 @@ def _manager() -> UserManager:
 
 
 async def test_rejects_too_short():
+    manager, user = _manager(), object()
     with pytest.raises(InvalidPasswordException):
-        await _manager().validate_password("Ab1!", object())
+        await manager.validate_password("Ab1!", user)
 
 
 async def test_rejects_missing_digit():
+    manager, user = _manager(), object()
     with pytest.raises(InvalidPasswordException):
-        await _manager().validate_password("Password!", object())
+        await manager.validate_password("Password!", user)
 
 
 async def test_rejects_missing_symbol():
+    manager, user = _manager(), object()
     with pytest.raises(InvalidPasswordException):
-        await _manager().validate_password("Password1", object())
+        await manager.validate_password("Password1", user)
 
 
 async def test_accepts_strong_password():

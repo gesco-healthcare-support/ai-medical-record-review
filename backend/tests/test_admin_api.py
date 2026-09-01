@@ -86,12 +86,14 @@ async def test_anonymous_and_non_admin_are_blocked(client):
 
 async def test_whoami(admin_client):
     body = (await admin_client.get("/api/admin/whoami")).json()
-    assert body["is_admin"] is True and "@" in body["email"]
+    assert body["is_admin"] is True
+    assert "@" in body["email"]
 
 
 async def test_list_categories_returns_a_list(admin_client):
     resp = await admin_client.get("/api/admin/categories")
-    assert resp.status_code == 200 and isinstance(resp.json(), list)
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
 
 
 async def test_create_category_and_validation(admin_client):
@@ -101,7 +103,8 @@ async def test_create_category_and_validation(admin_client):
     )
     assert created.status_code == 201
     body = created.json()
-    assert body["id"] == "9001" and body["name"] == "Test Category"
+    assert body["id"] == "9001"
+    assert body["name"] == "Test Category"
     assert body["has_summary_prompt"] is False
     assert body["summarize_default"] is True  # on by default
 
@@ -114,7 +117,8 @@ async def test_create_category_and_validation(admin_client):
         "/api/admin/categories",
         json={"id": "9005", "name": "Off", "summarize_default": False},
     )
-    assert off.status_code == 201 and off.json()["summarize_default"] is False
+    assert off.status_code == 201
+    assert off.json()["summarize_default"] is False
 
     # Validation: non-numeric id, duplicate, empty name -> 400.
     assert (
@@ -159,13 +163,15 @@ async def test_creating_a_category_leaves_every_other_category_valid(admin_clien
 
     # An id the constants already carry is now a conflict, not a shadow row beside the built-in.
     dup = await admin_client.post("/api/admin/categories", json={"id": "13", "name": "Shadow"})
-    assert dup.status_code == 400 and "already exists" in dup.json()["detail"]
+    assert dup.status_code == 400
+    assert "already exists" in dup.json()["detail"]
 
 
 async def test_update_category_soft_delete(admin_client):
     await admin_client.post("/api/admin/categories", json={"id": "9003", "name": "Soft"})
     resp = await admin_client.patch("/api/admin/categories/9003", json={"active": False})
-    assert resp.status_code == 200 and resp.json()["active"] is False
+    assert resp.status_code == 200
+    assert resp.json()["active"] is False
     # Soft-deleted, not gone: still present in the admin listing.
     listing = (await admin_client.get("/api/admin/categories")).json()
     assert any(c["id"] == "9003" and c["active"] is False for c in listing)
@@ -173,7 +179,8 @@ async def test_update_category_soft_delete(admin_client):
     toggled = await admin_client.patch(
         "/api/admin/categories/9003", json={"summarize_default": False}
     )
-    assert toggled.status_code == 200 and toggled.json()["summarize_default"] is False
+    assert toggled.status_code == 200
+    assert toggled.json()["summarize_default"] is False
     # Unknown category -> 404.
     assert (
         await admin_client.patch("/api/admin/categories/9999", json={"name": "z"})
@@ -183,10 +190,12 @@ async def test_update_category_soft_delete(admin_client):
 async def test_prompt_get_and_put(admin_client):
     await admin_client.post("/api/admin/categories", json={"id": "9004", "name": "Prompted"})
     put = await admin_client.put("/api/admin/prompts/9004", json={"text": "Summarize this."})
-    assert put.status_code == 200 and put.json()["custom"] is True
+    assert put.status_code == 200
+    assert put.json()["custom"] is True
 
     got = (await admin_client.get("/api/admin/prompts/9004")).json()
-    assert got["text"] == "Summarize this." and got["custom"] is True
+    assert got["text"] == "Summarize this."
+    assert got["custom"] is True
 
     # Empty prompt text -> 400; unknown category -> 404.
     assert (
@@ -209,7 +218,8 @@ async def test_prompt_delete_reverts_to_the_built_in(admin_client):
     assert deleted.json()["custom"] is False
 
     got = (await admin_client.get("/api/admin/prompts/9005")).json()
-    assert got["text"] is None and got["custom"] is False
+    assert got["text"] is None
+    assert got["custom"] is False
     # 9005 has no code prompt of its own, so the effective text is the general one.
     assert got["effective_text"]
 
@@ -316,8 +326,10 @@ async def test_the_admin_page_shows_the_built_ins_without_writing_them(admin_cli
         assert category_id in ids
     # Same shape as a row-backed category, or the admin UI cannot render it.
     general = next(c for c in listing if c["id"] == "100")
-    assert general["summarize_default"] is False and general["active"] is True
-    assert "has_summary_prompt" in general and "examples" in general
+    assert general["summarize_default"] is False
+    assert general["active"] is True
+    assert "has_summary_prompt" in general
+    assert "examples" in general
 
     # A GET must not write - it is cached, prefetched and repeated. The edit routes seed instead.
     with get_sessionmaker()() as session:
@@ -346,7 +358,8 @@ async def test_a_built_in_category_can_be_edited_on_a_fresh_box(admin_client):
 
 async def test_a_built_in_category_can_take_a_custom_prompt_on_a_fresh_box(admin_client):
     put = await admin_client.put("/api/admin/prompts/13", json={"text": "Summarize this."})
-    assert put.status_code == 200 and put.json()["custom"] is True
+    assert put.status_code == 200
+    assert put.json()["custom"] is True
     # An id that is not a category at all is still a 404 - seeding must not invent one.
     assert (
         await admin_client.put("/api/admin/prompts/9998", json={"text": "x"})
@@ -416,7 +429,8 @@ async def test_a_category_in_use_cannot_be_deactivated(admin_client):
     resp = await admin_client.patch("/api/admin/categories/9009", json={"active": False})
     assert resp.status_code == 409
     detail = resp.json()["detail"]
-    assert "9009" in detail and "cannot be deactivated" in detail
+    assert "9009" in detail
+    assert "cannot be deactivated" in detail
 
     # The half a reviewer feels: a row carrying that category still saves.
     with get_sessionmaker()() as session:
@@ -429,7 +443,8 @@ async def test_an_unused_category_can_still_be_deactivated(admin_client):
     could never be retired."""
     await admin_client.post("/api/admin/categories", json={"id": "9007", "name": "Unused"})
     resp = await admin_client.patch("/api/admin/categories/9007", json={"active": False})
-    assert resp.status_code == 200 and resp.json()["active"] is False
+    assert resp.status_code == 200
+    assert resp.json()["active"] is False
 
 
 async def test_reactivating_a_category_in_use_is_not_blocked(admin_client):
@@ -440,4 +455,5 @@ async def test_reactivating_a_category_in_use_is_not_blocked(admin_client):
     _row_in_category("9008")
 
     resp = await admin_client.patch("/api/admin/categories/9008", json={"active": True})
-    assert resp.status_code == 200 and resp.json()["active"] is True
+    assert resp.status_code == 200
+    assert resp.json()["active"] is True

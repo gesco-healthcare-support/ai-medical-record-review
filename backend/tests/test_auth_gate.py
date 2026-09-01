@@ -40,19 +40,23 @@ async def test_public_path_allows_anonymous():
 
 
 async def test_protected_path_anonymous_json_401():
+    request = _req("/api/documents")
     with pytest.raises(HTTPException) as exc:
-        await enforce_auth(_req("/api/documents"), user=None)
+        await enforce_auth(request, user=None)
     assert exc.value.status_code == 401
 
 
 async def test_protected_path_anonymous_browser_redirects():
+    request = _req("/api/documents", accept="text/html")
     with pytest.raises(AuthRedirect):
-        await enforce_auth(_req("/api/documents", accept="text/html"), user=None)
+        await enforce_auth(request, user=None)
 
 
 async def test_admin_path_non_admin_forbidden():
+    request = _req("/api/admin/categories")
+    non_admin = _User(is_superuser=False)
     with pytest.raises(HTTPException) as exc:
-        await enforce_auth(_req("/api/admin/categories"), user=_User(is_superuser=False))
+        await enforce_auth(request, user=non_admin)
     assert exc.value.status_code == 403
 
 

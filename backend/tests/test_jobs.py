@@ -219,7 +219,8 @@ def test_two_users_land_on_separate_lanes():
             jobs.enqueue(session, doc_a, "segment", model="m", prompt_version="1")
             jobs.enqueue(session, doc_b, "segment", model="m", prompt_version="1")
         assert queue_a.name != queue_b.name
-        assert queue_a.count == 1 and queue_b.count == 1
+        assert queue_a.count == 1
+        assert queue_b.count == 1
     finally:
         queue_a.empty()
         queue_b.empty()
@@ -488,7 +489,8 @@ def test_summarize_document_persists_summaries(monkeypatch):
         assert job.state == "done"
         assert job.progress()["attention"] is None  # a clean run carries no failure detail
         summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
-        assert len(summaries) == 1 and summaries[0].title == "T (Pages 1-1)"
+        assert len(summaries) == 1
+        assert summaries[0].title == "T (Pages 1-1)"
         assert summaries[0].manual_check is False
 
 
@@ -531,7 +533,8 @@ def test_summarize_document_flags_a_truncated_summary_for_manual_check(monkeypat
     summarize_document(job_id)
     with get_sessionmaker()() as session:
         summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
-        assert len(summaries) == 1 and summaries[0].manual_check is True
+        assert len(summaries) == 1
+        assert summaries[0].manual_check is True
 
 
 def test_summarize_document_preserves_row_order_under_parallelism(monkeypatch):
@@ -879,7 +882,9 @@ def test_summarize_does_not_give_up_once_a_row_has_succeeded(monkeypatch):
         job = session.get(Job, job_id)
         assert job.state == "paused"  # NOT needs_attention: one row proved the model answers
         summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
-        assert len(summaries) == 1 and summaries[0].row_start == 1  # the good row is kept
+        # the good row is kept
+        assert len(summaries) == 1
+        assert summaries[0].row_start == 1
     assert scheduled["delay"] == get_settings().summarize_resume_delay
 
 
@@ -1034,9 +1039,12 @@ def test_summarize_needs_attention_on_permanent_keeps_partial(monkeypatch):
         assert job.state == "needs_attention"
         assert session.get(Document, doc_id).status == "needs_attention"
         assert "could not be summarized" in (job.error or "")
-        assert job.attention and job.attention["rows"][0]["pages"] == "1-1"
+        assert job.attention
+        assert job.attention["rows"][0]["pages"] == "1-1"
         summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
-        assert len(summaries) == 1 and summaries[0].row_start == 2  # readable row kept
+        # readable row kept
+        assert len(summaries) == 1
+        assert summaries[0].row_start == 2
 
 
 def test_job_progress_exposes_attention_rows(monkeypatch):
@@ -1303,7 +1311,9 @@ def test_dedup_document_clusters_confirmed_duplicates(monkeypatch):
                 select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
             ).all()
         }
-    assert rows[0].source_text and rows[1].source_text  # OCR text persisted per row
+    # OCR text persisted per row
+    assert rows[0].source_text
+    assert rows[1].source_text
     assert rows[0].dupe_group is not None
     assert rows[0].dupe_group == rows[1].dupe_group  # the two copies share a group
     assert rows[2].dupe_group is None  # the distinct document is not grouped
@@ -1552,7 +1562,8 @@ def test_dedup_document_skips_excluded_rows_and_keeps_an_unchanged_dismissal(mon
     assert rows[0].dupe_dismissed is False
     # The dismissed pair was re-examined and re-dismissed (same two page ranges).
     assert rows[2].dupe_group == rows[3].dupe_group is not None
-    assert rows[2].dupe_dismissed is True and rows[3].dupe_dismissed is True
+    assert rows[2].dupe_dismissed is True
+    assert rows[3].dupe_dismissed is True
     assert rows[4].dupe_group is None
     # Nothing survives a re-check now, so group ids restart from 1 rather than climbing forever.
     assert min(r.dupe_group for r in rows.values() if r.dupe_group) == 1
@@ -1601,7 +1612,8 @@ def test_dedup_document_failure_leaves_the_previous_clusters_intact(monkeypatch)
         assert session.get(Job, job_id).state == "error"
     rows = _rows_by_idx(doc_id)
     assert rows[0].dupe_group == rows[1].dupe_group == 3  # untouched
-    assert rows[0].source_text and rows[1].source_text
+    assert rows[0].source_text
+    assert rows[1].source_text
 
 
 def test_dedup_document_stores_the_cluster_similarity(monkeypatch):
@@ -2527,7 +2539,8 @@ def test_one_success_keeps_the_job_paused_at_any_concurrency(monkeypatch, lanes)
             f"at {lanes} lanes the job ended instead of pausing, even though a row succeeded"
         )
         summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
-        assert len(summaries) == 1 and summaries[0].row_start == 1
+        assert len(summaries) == 1
+        assert summaries[0].row_start == 1
 
 
 @pytest.mark.parametrize("lanes", [1, 2, 5, 8])
@@ -3197,7 +3210,8 @@ class TestASecondDuplicateGroupInOneCandidate:
         assert groups[0] == groups[1]
         assert groups[2] == groups[3]
         assert groups[0] != groups[2]  # two distinct groups, not one lumped four
-        assert seen[0] == 4 and seen[1] == 2  # asked again about the remainder
+        assert seen[0] == 4
+        assert seen[1] == 2  # asked again about the remainder
 
     def test_a_carved_out_group_carries_its_own_similarity_not_the_candidates(self, monkeypatch):
         # The candidate's similarity is the MINIMUM across all four, dragged down by the pair the

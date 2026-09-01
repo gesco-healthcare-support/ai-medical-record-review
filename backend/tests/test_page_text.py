@@ -110,7 +110,8 @@ def test_a_failed_page_is_recorded_as_failed_and_retried_on_read(monkeypatch):
     with get_sessionmaker()() as session:
         text, report = pt.get_row_text_with_report(session, doc_id, [1], pdf_path="/x.pdf")
         assert text == "recovered"
-        assert report["errored"] == [] and report["blank"] == []
+        assert report["errored"] == []
+        assert report["blank"] == []
 
 
 def test_a_tesseract_timeout_is_recorded_as_failed_not_blank(monkeypatch):
@@ -128,7 +129,7 @@ def test_a_tesseract_timeout_is_recorded_as_failed_not_blank(monkeypatch):
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", timed_out)
     monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [object()])
-    ocr._configured = True  # skip _ensure_tesseract's settings read
+    monkeypatch.setattr(ocr, "_configured", True)  # skip _ensure_tesseract's settings read
 
     text, ok = pt._extract("/nonexistent/synthetic.pdf", 1)
     assert text == ""
@@ -150,7 +151,8 @@ def test_get_page_text_retries_a_page_stored_as_failed(monkeypatch):
     with get_sessionmaker()() as session:
         assert pt.get_page_text(session, doc_id, 1, pdf_path="/x.pdf") == "recovered"
         row = session.scalar(select(PageText).where(PageText.document_id == doc_id))
-        assert row.extract_ok is True and row.char_count == len("recovered")
+        assert row.extract_ok is True
+        assert row.char_count == len("recovered")
 
 
 def test_populate_reattempts_a_page_stored_as_failed(monkeypatch):
@@ -216,7 +218,8 @@ def test_no_pages_requested_is_not_an_error(pages):
     with get_sessionmaker()() as session:
         assert pt.get_pages_text(session, doc_id, pages or []) == ""
         text, report = pt.get_row_text_with_report(session, doc_id, pages or [])
-        assert text == "" and report["pages"] == []
+        assert text == ""
+        assert report["pages"] == []
 
 
 def test_a_missing_tesseract_fails_fast_instead_of_marking_every_page_failed(monkeypatch):
@@ -239,7 +242,7 @@ def test_a_missing_tesseract_fails_fast_instead_of_marking_every_page_failed(mon
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", not_installed)
     monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [object()])
-    ocr._configured = True  # skip _ensure_tesseract's settings read
+    monkeypatch.setattr(ocr, "_configured", True)  # skip _ensure_tesseract's settings read
 
     with pytest.raises(OcrUnavailableError):
         pt._extract("/nonexistent/synthetic.pdf", 1)

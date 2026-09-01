@@ -56,7 +56,9 @@ def test_build_linked_pdf_structure_and_links(tmp_path):
     assert len(gotos) == 2
     for pno, link in gotos:
         assert pno < summ  # hotspot sits on a summary page
-        assert link["from"].width > 1 and link["from"].height > 1  # clickable, non-zero area
+        # clickable, non-zero area
+        assert link["from"].width > 1
+        assert link["from"].height > 1
     targets = sorted(link["page"] for _, link in gotos)
     assert targets == [summ + 1, summ + 2]  # startPage 2 and 3 -> combined source indices
     doc.close()

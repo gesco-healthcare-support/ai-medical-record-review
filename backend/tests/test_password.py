@@ -64,4 +64,6 @@ def test_wrong_salt_does_not_verify():
 def test_generate_is_random_and_nonempty():
     helper = MrrPasswordHelper(salt=_SALT)
     a, b = helper.generate(), helper.generate()
-    assert a and b and a != b
+    assert a
+    assert b
+    assert a != b

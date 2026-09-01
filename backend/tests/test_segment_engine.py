@@ -304,8 +304,9 @@ def test_a_config_failure_in_the_escalation_is_not_swallowed(monkeypatch):
     def missing_binary(page):
         raise OcrUnavailableError("no tesseract on this host")
 
+    row = _row(5, 7)
     with pytest.raises(OcrUnavailableError):
-        se._categorize("x.pdf", _row(5, 7), missing_binary)
+        se._categorize("x.pdf", row, missing_binary)
 
 
 def test_a_per_page_failure_in_the_escalation_still_falls_back_to_the_title(monkeypatch):

@@ -105,7 +105,8 @@ def test_overlap_is_rejected(total, first_end, start2):
         {"start": start2, "end": end2, "category": VALID_CATEGORY},
     ]
     result = validate_rows(None, rows, total)
-    assert result is not None and "overlaps" in result
+    assert result is not None
+    assert "overlaps" in result
 
 
 @_SETTINGS
@@ -119,7 +120,8 @@ def test_non_integer_pages_flagged(total, bad, which):
     row = {"start": 1, "end": 1, "category": VALID_CATEGORY}
     row[which] = bad
     result = validate_rows(None, [row], total)
-    assert result is not None and "integers" in result
+    assert result is not None
+    assert "integers" in result
 
 
 @_SETTINGS
@@ -136,7 +138,8 @@ def test_out_of_range_row_is_rejected(total, mode):
     else:
         row = {"start": 2, "end": 1, "category": VALID_CATEGORY}
     result = validate_rows(None, [row], total)
-    assert result is not None and "1 <= start <= end" in result
+    assert result is not None
+    assert "1 <= start <= end" in result
 
 
 @_SETTINGS
@@ -146,4 +149,5 @@ def test_fractional_page_is_rejected(base):
     server agrees with the client's Number.isInteger check instead of quietly accepting int(3.5)==3."""
     row = {"start": float(base) + 0.5, "end": base + 2, "category": VALID_CATEGORY}
     result = validate_rows(None, [row], base + 5)
-    assert result is not None and "integers" in result
+    assert result is not None
+    assert "integers" in result
