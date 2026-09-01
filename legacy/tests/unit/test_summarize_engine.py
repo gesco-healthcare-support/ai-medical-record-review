@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from mrr_ai.errors import EmptyExtractionError
 from mrr_ai.services import summarize_engine
 from mrr_ai.services.summarize_engine import summarize_row

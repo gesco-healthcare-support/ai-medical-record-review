@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-
 from mrr_ai.services import classification as clf
 from mrr_ai.services.classification import classify, match_rules
 

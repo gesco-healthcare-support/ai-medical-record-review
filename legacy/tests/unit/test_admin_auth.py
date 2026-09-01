@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 from flask_security import hash_password
-
 from mrr_ai.extensions import db
 
 

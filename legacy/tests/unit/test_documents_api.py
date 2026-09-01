@@ -59,7 +59,6 @@ _ROWS = [
 def other_client(app):
     """A SECOND authenticated user - the adversary in the ownership tests."""
     from flask_security import hash_password
-
     from mrr_ai.extensions import db
 
     with app.app_context():

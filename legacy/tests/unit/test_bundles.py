@@ -4,9 +4,8 @@ Pure logic + PDF assembly are deterministic and tested directly; the summarize p
 tested with summarize_row mocked (no Gemini).
 """
 
-from pypdf import PdfReader, PdfWriter
-
 from mrr_ai.services import bundles, summarize_engine
+from pypdf import PdfReader, PdfWriter
 
 
 def _rows(*specs):

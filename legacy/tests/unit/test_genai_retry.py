@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 from google.genai import errors
-
 from mrr_ai.services import genai_retry
 from mrr_ai.services.genai_retry import generate_with_retry
 

@@ -1,7 +1,6 @@
 """Unit tests for the Gemini helpers: upload, readiness polling, and response parsing."""
 
 import pytest
-
 from mrr_ai.services.gemini import parse_segment_item
 
 

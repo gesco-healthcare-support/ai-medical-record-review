@@ -76,7 +76,6 @@ def app(tmp_path):
 def user(app):
     """A registered user (plain credentials returned for login in tests)."""
     from flask_security import hash_password
-
     from mrr_ai.extensions import db
 
     with app.app_context():
