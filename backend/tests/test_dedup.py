@@ -234,6 +234,49 @@ def test_a_same_date_union_is_not_content_joined():
     assert clusters[0]["content_joined"] is False
 
 
+def _spanning_triangle():
+    """Two rows on one date plus a third on another, all three near-identical.
+
+    The cross-date edges 0-2 and 1-2 both clear the override and already connect the cluster, so
+    the same-date 0-1 edge joins nobody who was not joined on content already.
+    """
+    body = "physical therapy three times weekly for the lumbar spine. " * 30
+    return [
+        {"idx": 0, "date": "05/08/2022", "text": body + " alpha"},
+        {"idx": 1, "date": "05/08/2022", "text": body + " beta"},
+        {"idx": 2, "date": "06/09/2022", "text": body + " gamma"},
+    ]
+
+
+def test_a_redundant_same_date_edge_does_not_revoke_a_spanning_content_join():
+    """The strong edges alone connect this cluster, so the override was met right across it.
+
+    A same-date edge that adds no member cannot revoke provenance the spanning edges established.
+    """
+    clusters = dedup.cluster_rows(
+        _spanning_triangle(), jaccard_threshold=0.4, cross_date_override=0.90
+    )
+    assert len(clusters) == 1
+    assert len(clusters[0]["members"]) == 3
+    assert clusters[0]["content_joined"] is True
+
+
+def test_content_joined_is_stable_under_member_reordering():
+    """WHEN the same rows arrive in another order, THE SYSTEM SHALL report the same flag.
+
+    Guards the defect this test was written for: the pass recorded a union only when it merged
+    two components, so which edge fell out redundant - and with it the flag - followed row order.
+    """
+    items = _spanning_triangle()
+
+    def flag(rows):
+        clusters = dedup.cluster_rows(rows, jaccard_threshold=0.4, cross_date_override=0.90)
+        return [(len(c["members"]), c["content_joined"]) for c in clusters]
+
+    assert flag(items) == flag(list(reversed(items)))
+    assert flag(items) == flag([items[1], items[2], items[0]])
+
+
 def test_gate_admits_a_content_joined_chain_its_closure_minimum_would_reject():
     """THE DEFECT. Every edge cleared the override; the closure minimum cannot, by construction.
 
@@ -425,11 +468,16 @@ def test_autojunk_is_not_applied_to_character_comparisons():
 
 
 def test_the_score_barely_moves_when_the_pair_is_swapped():
-    """The score must be a property of the PAIR, not of which row came first.
+    """RAW `SequenceMatcher` stays mildly order-sensitive, and that is not something we fix.
 
-    Not asserted as exact equality: difflib's matcher is mildly order-sensitive even with autojunk
-    off. What the fix removes is the LARGE, autojunk-driven swing - 0.067 on this fixture and up to
-    0.249 on real pairs - which is what let a borderline pair land either side of the gate.
+    Subject is difflib itself, called directly, NOT `_min_difflib`. Turning autojunk off removed the
+    LARGE swing - 0.067 on this fixture, up to 0.249 on real pairs - but a residual remains, because
+    `find_longest_match` breaks ties earliest-in-a before earliest-in-b, so swapping the arguments
+    can pick a different decomposition. Hence `< 0.01` rather than equality.
+
+    The guarantee callers actually need - that the score is a property of the PAIR - is provided by
+    `_min_difflib` pinning the argument order, and is asserted in
+    `test_the_pair_score_does_not_depend_on_argument_order` below.
     """
     a, b = _ASYM_A, _ASYM_B
     forward = difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
@@ -439,6 +487,19 @@ def test_the_score_barely_moves_when_the_pair_is_swapped():
 
     assert abs(junk_forward - junk_backward) > 0.05, "fixture no longer shows the asymmetry"
     assert abs(forward - backward) < 0.01
+
+
+def test_the_pair_score_does_not_depend_on_argument_order():
+    """WHEN two texts are scored in either order, THE SYSTEM SHALL return the same value.
+
+    Two reproductions, because the small one proves the property and the large one proves it
+    matters. On the pre-fix code the five-character pair scores 0.75 one way and 0.5 the other -
+    with autojunk already off, which is what refutes the claim that disabling autojunk settled
+    this - and the clinical fixture scores 0.672 against 0.675, close enough to the 0.90 gate's
+    neighbourhood to flip a real verdict on a pair that happened to sit there.
+    """
+    assert dedup._min_difflib(["aba", "babba"]) == dedup._min_difflib(["babba", "aba"])
+    assert dedup._min_difflib([_ASYM_A, _ASYM_B]) == dedup._min_difflib([_ASYM_B, _ASYM_A])
 
 
 def test_an_identical_pair_still_scores_one():
@@ -466,7 +527,12 @@ def test_cluster_similarity_is_stable_under_member_reordering():
     ]
 
     def shape(rows):
-        return sorted((len(c["members"]), c["similarity"]) for c in dedup.cluster_rows(rows))
+        # content_joined belongs in this tuple: it is per-cluster reported state, and leaving it
+        # out is why an order-dependent flag survived a test named for order stability.
+        return sorted(
+            (len(c["members"]), c["similarity"], c["content_joined"])
+            for c in dedup.cluster_rows(rows)
+        )
 
     assert shape(items) == shape(list(reversed(items)))
     assert shape(items) == shape([items[1], items[2], items[0]])
@@ -501,3 +567,123 @@ def test_the_duplicate_thresholds_agree_between_config_and_compose():
             f"{attr}={getattr(settings, attr)}; a deployed container would use the compose value "
             f"and ignore the code default"
         )
+
+
+# #213: `confirm_cluster` answers with ONE sublist, so a candidate holding two unrelated duplicate
+# pairs left the model two wrong options - lump all four together, or name one pair and let the other
+# vanish with no record. The second undoes on the quiet what keeping the override low was meant to
+# buy: the reviewers asked that nothing be auto-deleted, which makes a missed duplicate cost more
+# than a surfaced one. `confirm_groups` asks again about whatever is left.
+class TestConfirmGroups:
+    @staticmethod
+    def _member(tag):
+        return {"title": tag, "date": tag, "text": tag * 40}
+
+    @staticmethod
+    def _replies(monkeypatch, answers):
+        """Serve `answers` (lists of 1-based indices) to successive confirm calls."""
+        calls = []
+        it = iter(answers)
+
+        def fake(*a, **k):
+            payload = next(it)
+            calls.append(payload)
+            return _Resp({"duplicate_indices": payload})
+
+        monkeypatch.setattr(dedup, "get_genai_client", lambda: None)
+        monkeypatch.setattr(dedup, "generate_with_retry", fake)
+        return calls
+
+    def test_a_second_pair_in_one_candidate_is_found_instead_of_dropped(self, monkeypatch):
+        members = [self._member(t) for t in "abcd"]
+        # First call names members 1 and 2; the remainder is then asked about and names both.
+        self._replies(monkeypatch, [[1, 2], [1, 2]])
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert len(groups) == 2
+        assert groups[0] == [members[0], members[1]]
+        assert groups[1] == [members[2], members[3]]
+
+    def test_a_candidate_the_model_confirms_whole_is_one_group_and_one_call(self, monkeypatch):
+        members = [self._member(t) for t in "abc"]
+        calls = self._replies(monkeypatch, [[1, 2, 3]])
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert groups == [members]
+        assert len(calls) == 1  # nothing left to ask about
+
+    def test_a_leftover_singleton_ends_the_loop(self, monkeypatch):
+        members = [self._member(t) for t in "abc"]
+        # 1 and 2 are copies; one member remains, which cannot be a group on its own.
+        calls = self._replies(monkeypatch, [[1, 2]])
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert groups == [[members[0], members[1]]]
+        assert len(calls) == 1  # a single member is never sent to the model
+
+    def test_no_duplicates_returns_nothing_exactly_as_before(self, monkeypatch):
+        members = [self._member(t) for t in "ab"]
+        self._replies(monkeypatch, [[1]])
+
+        assert dedup.confirm_groups(members, model="m") == []
+
+    def test_the_error_failsafe_is_inherited_and_stops_the_loop(self, monkeypatch):
+        # A broken confirm must still surface the whole candidate for review, and must not then be
+        # asked again - the fail-safe returns every member, so nothing is left.
+        members = [self._member(t) for t in "abc"]
+        calls = []
+
+        def boom(*a, **k):
+            calls.append(1)
+            raise RuntimeError("vertex down")
+
+        monkeypatch.setattr(dedup, "get_genai_client", lambda: None)
+        monkeypatch.setattr(dedup, "generate_with_retry", boom)
+
+        assert dedup.confirm_groups(members, model="m") == [members]
+        assert len(calls) == 1
+
+    def test_it_terminates_and_is_bounded_by_half_the_member_count(self, monkeypatch):
+        # A confirm that always names the first two of whatever it is given: six members must yield
+        # three pairs and stop, never loop. The bound is len(members) // 2 because each accepted
+        # group removes at least two.
+        members = [self._member(t) for t in "abcdef"]
+        calls = self._replies(monkeypatch, [[1, 2]] * 4)
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert [len(g) for g in groups] == [2, 2, 2]
+        assert len(calls) <= len(members) // 2
+
+    def test_members_are_matched_by_identity_not_by_value(self, monkeypatch):
+        # Two rows can carry equal dicts. Removing by value would drop both and lose a real
+        # duplicate, so the twin must survive into the second question.
+        same = self._member("a")
+        members = [dict(same), dict(same), self._member("b"), self._member("b")]
+        assert members[0] == members[1]  # equal by value, distinct objects
+        self._replies(monkeypatch, [[1, 3], [1, 2]])
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert len(groups) == 2
+        assert groups[0][0] is members[0]
+        assert groups[1][0] is members[1]
+
+
+def test_group_similarity_scores_only_its_own_members():
+    """The candidate's similarity is the minimum over members the model may since have rejected, so
+    a carved-out group needs its own number or it reports the divergence of documents not in it."""
+    twin = "the quick brown fox jumps over the lazy dog " * 6
+    members = [
+        {"text": twin},
+        {"text": twin},
+        {"text": "entirely unrelated content about hydraulic machinery " * 6},
+    ]
+    whole = dedup._min_difflib([m["text"] for m in members])
+    pair = dedup.group_similarity(members[:2])
+
+    assert pair > 0.99  # the two copies are near-identical
+    assert whole < 0.5  # the candidate's own figure is dragged down by the third member

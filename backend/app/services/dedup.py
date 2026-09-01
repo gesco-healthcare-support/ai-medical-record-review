@@ -70,6 +70,18 @@ def _jaccard(a, b):
     return len(a & b) / len(a | b)
 
 
+def _find(parent: list[int], x: int) -> int:
+    """Union-find root of ``x`` in ``parent``, compressing the path it walks.
+
+    Module-level rather than a closure because `cluster_rows` keeps two of these structures over
+    the same rows and they must not diverge in behaviour.
+    """
+    while parent[x] != x:
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    return x
+
+
 def _min_difflib(texts):
     """The lowest pairwise char-level ratio across ``texts`` (1.0 for a single item). Low = the
     members diverge in content (likely a recurring-form series), high = near-identical re-scans.
@@ -94,12 +106,37 @@ def _min_difflib(texts):
     direction that costs content here: a missed duplicate ships two near-identical paragraphs to a
     client with nothing on screen to hint at it.
 
-    A second symptom shows the score was not even a well-defined property of a PAIR: autojunk is
+    A second symptom showed the score was not even a well-defined property of a PAIR: autojunk is
     computed on the SECOND sequence only, so ``ratio(a, b) != ratio(b, a)``. On the 78 pairs of one
     real 13-member cluster, swapping the arguments moved a score by up to **0.249** (0.894 one way,
     0.645 the other) and 10 of those pairs straddled the 0.90 gate - so whether two sub-documents
-    counted as candidate copies turned on which of them held the lower ``idx``. Turning autojunk off
-    collapsed that swing to 0.000 on every pair measured.
+    counted as candidate copies turned on which of them held the lower ``idx``.
+
+    THIS FILE PREVIOUSLY CLAIMED "turning autojunk off collapsed that swing to 0.000 on every pair
+    measured", AND THAT WAS WRONG - true of the one cluster it was measured on, false in general.
+    Autojunk was *a* cause and disabling it removed that one. A second cause is structural and
+    survives it: ``find_longest_match`` returns the maximal block that "starts earliest in a, and of
+    all those ... starts earliest in b" (CPython ``difflib.py``), a tie-break that ranks position in
+    ``a`` above position in ``b``. Swap the arguments and a different block can win the tie, which
+    changes the whole recursive decomposition and the matched total ``M``; ``ratio()`` is ``2M/T``
+    and only ``T`` is symmetric. With autojunk already off, ``ratio("aba", "babba")`` is 0.750 and
+    ``ratio("babba", "aba")`` is 0.500. `test_dedup.py` knew this - its swap test asserts
+    ``< 0.01`` rather than equality - while this docstring said the opposite, and the contradiction
+    is why nobody looked again for a month.
+
+    Ties need repeated substrings, so it is REPETITION that decides whether this bites, and the
+    13-member cluster measured had little. Across three synthetic corpora: distinct clinical prose
+    0.1% of pairs asymmetric and no gate verdict affected, two scans of one form 0.0%, and a
+    recurring FORM SERIES - the dominant real false positive, boilerplate-heavy and scoring
+    0.869-0.982 astride the gate - **90% asymmetric with 12.75% of gate verdicts decided by row
+    order alone**. Real duplicates score 0.916-1.000 and are untouched, so what row order decided
+    was whether a false positive cost a confirm call, never whether a duplicate was found.
+
+    FIXED by sorting the excerpts below, which pins the argument order. Note what that does and does
+    not do: difflib remains asymmetric, and this function stops exposing it. Sorting was chosen over
+    max/min/mean of both directions because it costs 1.01x rather than 2.36x on roughly half of
+    dedup's runtime, and because `config.py` establishes this score does not separate duplicates
+    from form series at any threshold - so paying to shift it buys nothing measurable.
 
     THE RE-DERIVATION WAS DONE, 2026-08-25, and it says the threshold cannot be derived at all. See
     the note on `dupe_similarity_override` in `config.py`. In short: on the corrected scale, reviewer-
@@ -125,7 +162,12 @@ def _min_difflib(texts):
     from 1.000 to 0.918 - and it only reaches 0.995 at 3,000 characters, which still passes the 0.99
     gate. So the verdict change costs 27x, not 3.5x, for one cluster. 1500 stays.
     """
-    excerpts = [mask_dates(text)[:_EXCERPT_CHARS] for text in texts]
+    # SORTED, and that is the whole of the argument-order fix. `ratio()` is not symmetric (see the
+    # tie-break note above), and `combinations` preserves input order, so without this every pair
+    # reaches the matcher in whatever order its rows arrived and scores accordingly. Sorting pins
+    # the smaller text as `a` for every pair, which is what makes the result a property of the
+    # texts. `min` over the pairs is an aggregate, so ordering the list cannot change anything else.
+    excerpts = sorted(mask_dates(text)[:_EXCERPT_CHARS] for text in texts)
     ratios = [
         difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
         for a, b in itertools.combinations(excerpts, 2)
@@ -162,17 +204,14 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
     sigs = [_sig(it.get("text")) for it in items]
     dates = [_norm(it.get("date")) for it in items]
     n = len(items)
+    # TWO structures over the same rows. `parent` is the cluster itself, joined by either branch.
+    # `strong` is joined by the CONTENT branch alone, and is what `content_joined` is read from
+    # below. It has to be a second structure rather than a tally taken while unioning, because a
+    # tally can only see the unions this pass happened to perform: in a cycle one edge is always
+    # redundant, and which one that is follows the row order.
     parent = list(range(n))
+    strong = list(range(n))
 
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    # Each union that actually merges two components, and whether the CONTENT branch admitted it.
-    # Resolved to final roots after the loop, so the attribution does not depend on edge order.
-    merges: list[tuple[int, bool]] = []
     for i in range(n):
         for j in range(i + 1, n):
             # Jaccard first for every pair, same date or not: it is a set intersection, and it is the
@@ -180,29 +219,19 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
             if _jaccard(sigs[i], sigs[j]) < jaccard_threshold:
                 continue
             if dates[i] == dates[j]:
-                if find(i) != find(j):
-                    merges.append((i, False))
-                parent[find(i)] = find(j)
+                parent[_find(parent, i)] = _find(parent, j)
             elif _min_difflib([items[i].get("text") or "", items[j].get("text") or ""]) >= (
                 cross_date_override
             ):
-                if find(i) != find(j):
-                    merges.append((i, True))
-                parent[find(i)] = find(j)
+                parent[_find(parent, i)] = _find(parent, j)
+                strong[_find(strong, i)] = _find(strong, j)
 
     groups: dict[int, list[int]] = {}
     for k in range(n):
-        groups.setdefault(find(k), []).append(k)
-
-    # A cluster is content-joined when EVERY union that built it cleared the override. That is the
-    # provenance `duplicate_gate` needs: for such a cluster the override has already been satisfied
-    # edge by edge, so re-asking it of the transitive closure - whose minimum no chain longer than
-    # one hop can reach - rejects genuine re-scans for a test they cannot pass. A single same-date
-    # union makes it False, because that branch joins without scoring content at all.
-    weak_roots = {find(i) for i, strong in merges if not strong}
+        groups.setdefault(_find(parent, k), []).append(k)
 
     clusters = []
-    for root, members_idx in groups.items():
+    for members_idx in groups.values():
         if len(members_idx) < 2:
             continue
         members = [items[k] for k in members_idx]
@@ -210,7 +239,15 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
             {
                 "members": members,
                 "similarity": _min_difflib([m.get("text") or "" for m in members]),
-                "content_joined": root not in weak_roots,
+                # Content-joined when the content edges ALONE hold this cluster together. That is
+                # the provenance `duplicate_gate` needs: the override was already satisfied along a
+                # path reaching every member, so re-asking it of the transitive closure - whose
+                # minimum no chain longer than one hop can reach - rejects genuine re-scans for a
+                # test they cannot pass. False the moment a member hangs off a same-date edge only,
+                # because that branch joins without scoring content at all. A same-date edge
+                # BESIDE a content path revokes nothing: it adds no member the content did not
+                # already reach, and connectivity does not depend on which edge came first.
+                "content_joined": len({_find(strong, k) for k in members_idx}) == 1,
             }
         )
     return clusters
@@ -263,10 +300,10 @@ def duplicate_gate(members, similarity, override=None, content_joined=False) -> 
     same_category = len(categories) == 1 and "" not in categories
     if same_date and (same_title or same_category):
         return True
-    # `content_joined` says every union that built this cluster already cleared `override` on its
-    # own content. Testing the CLOSURE minimum as well applies the same threshold twice at two
-    # different scopes, and the second is unsatisfiable: in a chain A~B~C the A-C pair was never
-    # required to be similar and generally is not. Measured on the box at the running 0.90, that
+    # `content_joined` says the edges that already cleared `override` on their own content reach
+    # every member of this cluster. Testing the CLOSURE minimum as well applies the same threshold
+    # twice at two different scopes, and the second is unsatisfiable: in a chain A~B~C the A-C pair
+    # was never required to be similar and generally is not. Measured on the box at 0.90, that
     # rejected 21 candidates - 20 of them chains of strong edges, none sharing a date - whose
     # STRONGEST pair had a median of 1.000, byte-identical after date masking.
     #
@@ -321,3 +358,53 @@ def confirm_cluster(members, model=None):
     except Exception as exc:
         logger.warning("dedup confirm failed; trusting the algorithmic candidate: %s", exc)
         return list(members)
+
+
+def group_similarity(members):
+    """The similarity to store for a confirmed group: the min pairwise ratio over ITS members.
+
+    Public because the worker needs it for a group the confirm step carved out of a larger
+    candidate.
+    The candidate's own `similarity` is the minimum over every member INCLUDING the ones the model
+    rejected, so attributing it to a two-member group extracted from a six-member candidate reports
+    the divergence of documents that are not in the group.
+    """
+    return _min_difflib([m.get("text") or "" for m in members])
+
+
+def confirm_groups(members, model=None):
+    """EVERY duplicate group inside one candidate, as ``[[member, ...], ...]`` (each >= 2).
+
+    `confirm_cluster` answers with one sublist, so a candidate holding two unrelated duplicate pairs
+    leaves the model two wrong options: lump all four together, or name one pair and let the other
+    vanish. The second is a silent recall loss, and it undoes on the quiet exactly what keeping
+    `dupe_similarity_override` low was meant to buy - the reviewers' position is that nothing be
+    auto-deleted, which makes a missed duplicate cost more than a surfaced one (#213).
+
+    So: ask again about what is left. A proper subset becomes a second question instead of a
+    discard, and no response schema has to change.
+
+    TERMINATION. Each accepted group removes at least two members, so the loop cannot run more than
+    ``len(members) // 2`` times - the most disjoint groups of two that could exist. The explicit
+    no-progress break below is belt-and-braces for a future `confirm_cluster` that returned members
+    it was not given: this runs inside a worker job, and a loop here would hang it rather than fail.
+
+    Members are matched by IDENTITY, not by value: `confirm_cluster` returns the very objects it was
+    handed, and two rows can carry equal dicts.
+
+    The error fail-safe is inherited unchanged - a broken confirm returns all members, which lands
+    here as one group covering the whole candidate and ends the loop. A candidate the model judges
+    entirely distinct returns ``[]``, exactly as before.
+    """
+    groups = []
+    remaining = list(members)
+    while len(remaining) >= 2:
+        confirmed = confirm_cluster(remaining, model=model)
+        if len(confirmed) < 2:
+            break
+        groups.append(confirmed)
+        before = len(remaining)
+        remaining = [m for m in remaining if not any(m is c for c in confirmed)]
+        if len(remaining) >= before:
+            break
+    return groups
