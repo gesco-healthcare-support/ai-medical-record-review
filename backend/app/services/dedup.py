@@ -326,7 +326,8 @@ def confirm_cluster(members, model=None):
 def group_similarity(members):
     """The similarity to store for a confirmed group: the min pairwise ratio over ITS members.
 
-    Public because the worker needs it for a group the confirm step carved out of a larger candidate.
+    Public because the worker needs it for a group the confirm step carved out of a larger
+    candidate.
     The candidate's own `similarity` is the minimum over every member INCLUDING the ones the model
     rejected, so attributing it to a two-member group extracted from a six-member candidate reports
     the divergence of documents that are not in the group.

@@ -719,9 +719,11 @@ def dedup_document(job_id) -> None:
             groups = confirm_groups(members)
             for confirmed in groups:
                 # The candidate's `similarity` is the minimum over every member the CLUSTERER put
-                # together, including the ones the model has just rejected. For a group carved out of
+                # together, including the ones the model has just rejected. For a group carved
+                # out of
                 # a larger candidate that number describes documents not in the group, so recompute
-                # it. An untouched candidate is skipped: `group_similarity` would return the value it
+                # it. An untouched candidate is skipped: `group_similarity` would return the
+                # value it
                 # already has, by the same definition that produced it.
                 confirmed_clusters.append(
                     (
