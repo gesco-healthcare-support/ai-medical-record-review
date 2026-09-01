@@ -3,6 +3,22 @@ import type { Row } from "@/lib/types";
 /** A row plus a stable client key, so React keeps input focus/cursor when rows re-sort. */
 export type EditorRow = Row & { _key: string };
 
+/**
+ * Module-global and never reset, deliberately. **Do not make this per-document.**
+ *
+ * `_key` is not merely a React key: `touchKey` builds the touched set out of it, and that set is
+ * what stops a reload on another tab reverting an unsaved re-classify (`applyServerRowChanges`).
+ * The set is cleared whenever the buffer is replaced wholesale, but only ONE hook owns that
+ * discipline. Keys that are unique for the lifetime of the page are the second, independent reason
+ * a stale entry cannot do damage: `r42` is minted once, so `r42:category` can never come to mean a
+ * different row.
+ *
+ * Reset it per document - which looks like a tidy way to get deterministic keys in tests - and a
+ * leftover entry silently re-points at a real row in the next document, pinning a field to a value
+ * the reviewer never typed there. It surfaces as "my edit did not stick" or "a value I did not type
+ * appeared", intermittently, depending on the order documents were opened in that browser session.
+ * Tests that want fixed keys should build `EditorRow`s directly, as the existing ones do.
+ */
 let keySeq = 0;
 
 /** Tag API rows with stable client keys for editing. */
