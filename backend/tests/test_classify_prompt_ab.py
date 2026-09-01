@@ -95,8 +95,10 @@ def test_each_arm_sends_the_instruction_block_it_claims_to(ab, monkeypatch):
     ab.run_arm("B-null", "bn", "m")
 
     assert sent["ap"] == ab.PRODUCTION_INSTRUCTIONS
-    assert ab.CREDENTIAL_INSTRUCTIONS in sent["b"] and ab.NULL_INSTRUCTIONS not in sent["b"]
-    assert ab.NULL_INSTRUCTIONS in sent["bn"] and ab.CREDENTIAL_INSTRUCTIONS not in sent["bn"]
+    assert ab.CREDENTIAL_INSTRUCTIONS in sent["b"]
+    assert ab.NULL_INSTRUCTIONS not in sent["b"]
+    assert ab.NULL_INSTRUCTIONS in sent["bn"]
+    assert ab.CREDENTIAL_INSTRUCTIONS not in sent["bn"]
     # Every arm but A carries production's block, or it is not measuring an ADDITION to it.
     for key in ("ap", "b", "bn"):
         assert sent[key].startswith(ab.PRODUCTION_INSTRUCTIONS)

@@ -137,7 +137,8 @@ def test_markers_default_to_the_record_page(_stub_ocr):
     # WHEN no offset is given, THE SYSTEM SHALL label markers with the record page, byte-identically to
     # before - every existing caller depends on this.
     text = ocr.extract_text_from_selected_pages("/x.pdf", [418, 419], mark_pages=True)
-    assert "Page 418:" in text and "Page 419:" in text
+    assert "Page 418:" in text
+    assert "Page 419:" in text
 
 
 def test_an_offset_relabels_markers_with_transcript_pages(_stub_ocr):
@@ -146,7 +147,8 @@ def test_an_offset_relabels_markers_with_transcript_pages(_stub_ocr):
     text = ocr.extract_text_from_selected_pages(
         "/x.pdf", [418, 419], mark_pages=True, page_label_offset=-417
     )
-    assert "Page 1:" in text and "Page 2:" in text
+    assert "Page 1:" in text
+    assert "Page 2:" in text
     assert "Page 418:" not in text
 
 

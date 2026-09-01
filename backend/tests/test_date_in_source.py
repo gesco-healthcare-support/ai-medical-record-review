@@ -130,7 +130,8 @@ def test_unparseable_dates_are_refused_rather_than_guessed(bad):
 
 def test_patterns_are_built_for_a_valid_date():
     got = date_patterns("03/11/2026")
-    assert got is not None and set(got) == {"strict", "loose", "spelled", "month_only"}
+    assert got is not None
+    assert set(got) == {"strict", "loose", "spelled", "month_only"}
 
 
 # --------------------------------------------------------------------------------------- the report

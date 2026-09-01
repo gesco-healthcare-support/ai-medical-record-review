@@ -807,8 +807,10 @@ def test_the_preamble_is_assembled_per_category():
     # wording changed on 2026-08-06 from one line per page to groups of three, so this asserts the
     # CURRENT rule - if it ever asserted both, the two would be contradicting each other in one
     # preamble, which is the defect the category-9 prompt already had.
-    assert "ONE continuous paragraph" in treating and "GROUPS OF THREE" not in treating
-    assert "GROUPS OF THREE" in deposition and "ONE continuous paragraph" not in deposition
+    assert "ONE continuous paragraph" in treating
+    assert "GROUPS OF THREE" not in treating
+    assert "GROUPS OF THREE" in deposition
+    assert "ONE continuous paragraph" not in deposition
     # And the point of the exercise: the laboratory prompt is materially shorter.
     assert len(lab) < len(treating) * 0.7
 
@@ -1019,7 +1021,8 @@ def test_a_cosmetic_rewrite_that_drops_headings_is_rejected(monkeypatch, caplog)
     assert "**Body part being treated**" in out["summaryText"]
     # The reviewer still sees what was flagged; the guard is not a silent swallow.
     assert out["verifyIssues"] == [{"type": "capitalization", "detail": "capitalized headers"}]
-    assert "1-2" in caplog.text and "capitalization" in caplog.text
+    assert "1-2" in caplog.text
+    assert "capitalization" in caplog.text
 
 
 def test_a_substantive_rewrite_that_drops_headings_is_accepted(monkeypatch):
@@ -1364,7 +1367,8 @@ def test_body_falls_back_on_a_spent_daily_quota_too(monkeypatch):
     assert out["model"] == "gemini-3.5-flash"
     assert out["bodyFallbackFrom"] == "gemini-2.5-pro"
     # Both predicates hold for this exception, which is why it reaches the handler at all.
-    assert is_rate_limited(_DailyQuota()) and is_daily_quota(_DailyQuota())
+    assert is_rate_limited(_DailyQuota())
+    assert is_daily_quota(_DailyQuota())
 
 
 def test_a_successful_body_reports_no_fallback(monkeypatch):
@@ -1471,9 +1475,12 @@ def test_a_notice_row_is_attributed_to_no_model(monkeypatch):
     _notice_fixtures(monkeypatch, errored=[1, 2])
     out = se.summarize_row("/x.pdf", _row(), prompt="P")
     assert out["model"] is None
-    assert out["titleModel"] is None and out["auditModel"] is None
-    assert out["promptFingerprint"] is None and out["auditFingerprint"] is None
-    assert out["verified"] is False and out["verifiedText"] is None
+    assert out["titleModel"] is None
+    assert out["auditModel"] is None
+    assert out["promptFingerprint"] is None
+    assert out["auditFingerprint"] is None
+    assert out["verified"] is False
+    assert out["verifiedText"] is None
     assert out["truncated"] is False
     # None, not "": storing "" would record an empty extraction as a successful one.
     assert out["sourceText"] is None
@@ -1564,7 +1571,8 @@ def test_a_clean_row_carries_no_notice_and_no_unreadable_pages(monkeypatch):
 
     out = se.summarize_row("/x.pdf", _row(), prompt="P")
 
-    assert out["unreadablePages"] == [] and out["noticeOnly"] is False
+    assert out["unreadablePages"] == []
+    assert out["noticeOnly"] is False
     assert "unintelligible" not in out["summaryText"].lower()
 
 

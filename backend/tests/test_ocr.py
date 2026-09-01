@@ -108,7 +108,8 @@ def test_all_pages_skips_failing_page(monkeypatch):
 
     # Page headers are still emitted; the unreadable body is skipped without aborting.
     out = ocr.extract_text_from_all_pages("dummy.pdf")
-    assert "Page 1:" in out and "Page 2:" in out
+    assert "Page 1:" in out
+    assert "Page 2:" in out
 
 
 def test_tesseract_missing_still_fails_fast(monkeypatch):

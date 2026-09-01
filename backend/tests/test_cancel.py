@@ -274,7 +274,8 @@ def test_cancel_keeps_work_already_committed():
     with get_sessionmaker()() as session:
         assert session.get(Job, job_id).state == "cancelled"
         kept = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
-    assert len(kept) == 1 and kept[0].title == "Kept"
+    assert len(kept) == 1
+    assert kept[0].title == "Kept"
 
 
 def test_cancel_clears_the_redis_flag_so_a_restart_is_not_born_cancelled():
