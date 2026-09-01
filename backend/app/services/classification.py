@@ -115,6 +115,37 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         r"|\b(er|emergency room) registration\b|\bconditions of admission\b"
         r"|\b(admission|inpatient|emergency patient) record\b|\bmedication administration\b"
         r"|\bed care timeline\b",
+        # EXCERPTED / REVIEWED RECORDS, and the anchors are the whole point (#222).
+        #
+        # The senior reviewer's instruction is unambiguous - "Yes, do not include the excerpted
+        # medical records" (#159) - and we mostly obeyed it. But nothing PINNED the bare title, so
+        # the cascade re-decided it on every record and eventually answered differently: two rows on
+        # that reviewer's own account reached category 1, included, and shipped summaries, while the
+        # identical normalised title sat at 100 on another record.
+        #
+        # #159 looked at this and deliberately declined to add a rule, and that reasoning was right
+        # for the rule it considered. A SUBSTRING match on "excerpt" also claims the qualified
+        # forms, and the same answer carves those out - he wants embedded studies summarized:
+        #
+        #   Medical Record Excerpt - MRI of Right Knee            -> 3, summarized, CORRECTLY
+        #   Medical Record Excerpt - UCLA Medical Center          -> 2, summarized
+        #   Medical Record Excerpt - ABC Occupational Med Center  -> 1, summarized
+        #
+        # `_DOCUMENT_NOUN` cannot rescue those, because "records" is deliberately absent from it
+        # (see its comment), so a substring rule really would bury them. The two facility-qualified
+        # forms are decided by the CASCADE with no `_RULES` match at all, which means an
+        # administrative hit would send them to DEFAULT_ID and drop real content.
+        #
+        # So the predicate is not "contains the wrapper" but "IS the wrapper and nothing else". That
+        # is testable against all five real titles above and it is why every alternative here is
+        # anchored at both ends.
+        #
+        # `medical excerpted records index` is deliberately NOT matched: it currently reaches
+        # category 3 and is not included, so nothing ships from it, and moving it would be a
+        # behaviour change nobody asked for. Reported on #222 instead.
+        r"^\s*medical\s+records?\s+excerpts?\s*$"
+        r"|^\s*(?:excerpted\s+medical|medical\s+excerpted)\s+records?\s*$"
+        r"|^\s*review\s+of\s+(?:the\s+)?medical\s+records?\s*$",
     )
 )
 
