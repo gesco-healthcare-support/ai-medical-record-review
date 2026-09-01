@@ -102,8 +102,9 @@ def test_store_is_always_false(captured):
 def test_a_pdf_part_is_refused_rather_than_silently_dropped():
     # Chat completions has no inline-PDF part. Dropping it would send a request the caller believes
     # contained a document - the PDF paths (segmentation, DOI) stay on Gemini for this reason.
+    parts = [DocumentPart(b"%PDF-1.4")]
     with pytest.raises(TypeError, match="inline PDF"):
-        _to_messages(None, [DocumentPart(b"%PDF-1.4")])
+        _to_messages(None, parts)
 
 
 # --- payload shape --------------------------------------------------------------------------------
@@ -371,9 +372,11 @@ def test_a_non_retryable_error_raises_immediately(monkeypatch):
     import openai
 
     state = _provider_with(monkeypatch, [_status_error(400), _Raw(_Completion("never"))])
+    provider = OpenAIProvider()
+    parts = [TextPart("hi")]
     with pytest.raises(openai.APIStatusError):
-        OpenAIProvider().generate_text(
-            model="m", system=None, parts=[TextPart("hi")], temperature=0.0, max_output_tokens=16
+        provider.generate_text(
+            model="m", system=None, parts=parts, temperature=0.0, max_output_tokens=16
         )
     # Exactly one attempt: a 400 must not consume the retry budget.
     assert state["i"] == 1
@@ -386,9 +389,11 @@ def test_retries_are_exhausted_and_the_last_error_is_raised(monkeypatch):
 
     attempts = get_settings().genai_max_retries
     _provider_with(monkeypatch, [_status_error(429) for _ in range(attempts)])
+    provider = OpenAIProvider()
+    parts = [TextPart("hi")]
     with pytest.raises(openai.APIStatusError):
-        OpenAIProvider().generate_text(
-            model="m", system=None, parts=[TextPart("hi")], temperature=0.0, max_output_tokens=16
+        provider.generate_text(
+            model="m", system=None, parts=parts, temperature=0.0, max_output_tokens=16
         )
 
 

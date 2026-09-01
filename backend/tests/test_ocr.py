@@ -38,8 +38,9 @@ def test_ocr_image_timeout_raises_runtimeerror_not_unavailable(monkeypatch):
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
     monkeypatch.setattr(ocr, "_configured", True)
 
+    sentinel = _Sentinel()
     with pytest.raises(RuntimeError) as excinfo:
-        ocr._ocr_image(_Sentinel())
+        ocr._ocr_image(sentinel)
     assert not isinstance(excinfo.value, OcrUnavailableError)
 
 
@@ -119,8 +120,9 @@ def test_tesseract_missing_still_fails_fast(monkeypatch):
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
     monkeypatch.setattr(ocr, "_configured", True)
 
+    sentinel = _Sentinel()
     with pytest.raises(OcrUnavailableError):
-        ocr._ocr_image(_Sentinel())
+        ocr._ocr_image(sentinel)
 
 
 class _Page:

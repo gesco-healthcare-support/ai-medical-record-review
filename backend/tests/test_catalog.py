@@ -318,8 +318,9 @@ def test_creating_a_category_that_is_already_a_constant_is_a_conflict(session):
     session.add(user)
     session.commit()
 
+    payload = CategoryCreate(id="13", name="Shadow")
     with pytest.raises(HTTPException) as exc:
-        create_category(CategoryCreate(id="13", name="Shadow"), session, user)
+        create_category(payload, session, user)
     assert exc.value.status_code == 400
     assert "already exists" in exc.value.detail
     assert len([c for c in catalog.get_categories(session) if c["id"] == "13"]) == 1

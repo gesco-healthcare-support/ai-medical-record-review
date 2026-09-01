@@ -91,8 +91,9 @@ def test_empty_ocr_fails_fast(monkeypatch):
     )
     monkeypatch.setattr(se, "_generate", lambda *a, **k: ("unused", False))
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    row = _row()
     with pytest.raises(EmptyExtractionError):
-        se.summarize_row("/x.pdf", _row(), prompt="CATEGORY PROMPT")
+        se.summarize_row("/x.pdf", row, prompt="CATEGORY PROMPT")
 
 
 def test_verify_populates_verified_fields_when_issues_found(monkeypatch):
@@ -1296,8 +1297,9 @@ def test_body_does_not_fall_back_on_a_non_429(monkeypatch):
     monkeypatch.setenv("SUMMARY_BODY_FALLBACK_MODEL", "gemini-3.5-flash")
     get_settings.cache_clear()
     try:
+        row = _row()
         with pytest.raises(_BadRequest):
-            se.summarize_row("/x.pdf", _row(), model="gemini-2.5-pro", prompt="P")
+            se.summarize_row("/x.pdf", row, model="gemini-2.5-pro", prompt="P")
     finally:
         get_settings.cache_clear()
 
@@ -1306,8 +1308,9 @@ def test_body_does_not_fall_back_to_the_model_that_just_failed(monkeypatch):
     """When the body already IS the fallback there is nowhere below it: raise rather than retry it."""
     calls = _fallback_fixtures(monkeypatch, fail_for="gemini-3.5-flash")
     try:
+        row = _row()
         with pytest.raises(_Rejected):
-            se.summarize_row("/x.pdf", _row(), model="gemini-3.5-flash", prompt="P")
+            se.summarize_row("/x.pdf", row, model="gemini-3.5-flash", prompt="P")
     finally:
         get_settings.cache_clear()
     assert [c["model"] for c in calls if not c["is_title"]] == ["gemini-3.5-flash"], (
@@ -1323,8 +1326,9 @@ def test_body_fallback_can_be_disabled(monkeypatch):
     """
     calls = _fallback_fixtures(monkeypatch, fail_for="gemini-2.5-pro", fallback="none")
     try:
+        row = _row()
         with pytest.raises(_Rejected):
-            se.summarize_row("/x.pdf", _row(), model="gemini-2.5-pro", prompt="P")
+            se.summarize_row("/x.pdf", row, model="gemini-2.5-pro", prompt="P")
     finally:
         get_settings.cache_clear()
     assert [c["model"] for c in calls if not c["is_title"]] == ["gemini-2.5-pro"]
@@ -1498,8 +1502,9 @@ def test_a_row_that_read_cleanly_but_holds_no_words_still_says_nothing(monkeypat
         lambda path, pages, mark_pages=False, **_kw: ("   ", _clean(pages, blank=pages)),
     )
     monkeypatch.setattr(se, "_generate", _boom)
+    row = _row()
     with pytest.raises(EmptyExtractionError):
-        se.summarize_row("/x.pdf", _row(), prompt="P")
+        se.summarize_row("/x.pdf", row, prompt="P")
 
 
 def test_a_partially_unreadable_row_is_summarized_and_names_the_lost_pages(monkeypatch):

@@ -32,8 +32,9 @@ def test_drain_pool_times_out_and_reports_unfinished():
         fast = [pool.submit(lambda: "fast") for _ in range(2)]
         slow = pool.submit(time.sleep, 3)  # blocks past the deadline
         seen = []
+        draining = drain_pool(fast + [slow], timeout=0.5)
         with pytest.raises(PoolTimeout) as excinfo:
-            for future in drain_pool(fast + [slow], timeout=0.5):
+            for future in draining:
                 seen.append(future)
         assert set(seen) == set(fast)  # the fast futures were yielded before the deadline
         assert excinfo.value.unfinished == [slow]  # the straggler is reported (and cancelled)
