@@ -20,7 +20,14 @@ from app.services.rows import validate_rows
 VALID_CATEGORY = "1"
 # A constant, function-scoped monkeypatch stub is safe to reuse across Hypothesis examples (it
 # never varies per example), so suppress the function_scoped_fixture health check on each test.
-_SETTINGS = settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+#
+# too_slow is suppressed for a different reason: it fails on the WALL-CLOCK time Hypothesis spends
+# generating inputs, so a loaded laptop or a contended CI runner fails these tests while nothing is
+# wrong with them. Observed three times locally and once on a GitHub runner on 2026-09-01, each time
+# passing on a re-run of identical code. Speed is not the invariant these tests exist to check.
+_SETTINGS = settings(
+    suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow]
+)
 
 # Letters only -> int() always raises, so these never parse as a page number.
 _non_integer = st.one_of(st.none(), st.text(alphabet="abcdefghijklmnopqrstuvwxyz", min_size=1))
