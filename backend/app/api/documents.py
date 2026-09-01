@@ -1161,7 +1161,18 @@ def get_summaries(document: Document = Depends(get_owned_document)):
     return [_summary_response(document, summary) for summary in document.summaries]
 
 
-@router.put("/{document_id}/summaries/{idx}")
+@router.put(
+    "/{document_id}/summaries/{idx}",
+    # 400 and part of the 409 come from `_apply_row_category`, not from this handler's own body.
+    responses={
+        400: {"description": "The requested category is not in the catalog."},
+        404: {"description": "No summary exists at this index."},
+        409: {
+            "description": "A job is running for this document, summarization is rewriting "
+            "these summaries, or this summary's sub-document boundaries changed."
+        },
+    },
+)
 def put_summary(
     idx: int,
     payload: SummaryEditPayload | None = None,
@@ -1560,7 +1571,14 @@ def export_document_pdf(
     )
 
 
-@router.post("/{document_id}/bundle/pdf")
+@router.post(
+    "/{document_id}/bundle/pdf",
+    # Both codes come from `_matched_rows`, which this handler calls.
+    responses={
+        400: {"description": "The category list is empty."},
+        409: {"description": "No sub-document in this record matches those categories."},
+    },
+)
 def bundle_pdf(
     payload: BundlePayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -1581,7 +1599,17 @@ def bundle_pdf(
     )
 
 
-@router.post("/{document_id}/bundle/summarize")
+@router.post(
+    "/{document_id}/bundle/summarize",
+    # 400 and the first 409 come from `_matched_rows`; the cap check below adds the second 409.
+    responses={
+        400: {"description": "The category list is empty."},
+        409: {
+            "description": "No sub-document in this record matches those categories, or the "
+            "match is larger than the on-demand summarize limit."
+        },
+    },
+)
 def bundle_summarize(
     payload: BundlePayload | None = None,
     document: Document = Depends(get_owned_document),
