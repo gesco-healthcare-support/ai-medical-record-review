@@ -124,8 +124,8 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # identical normalised title sat at 100 on another record.
         #
         # #159 looked at this and deliberately declined to add a rule, and that reasoning was right
-        # for the rule it considered. A SUBSTRING match on "excerpt" also claims the qualified forms,
-        # and the same answer carves those out - he wants embedded diagnostic studies summarized:
+        # for the rule it considered. A SUBSTRING match on "excerpt" also claims the qualified
+        # forms, and the same answer carves those out - he wants embedded studies summarized:
         #
         #   Medical Record Excerpt - MRI of Right Knee            -> 3, summarized, CORRECTLY
         #   Medical Record Excerpt - UCLA Medical Center          -> 2, summarized
