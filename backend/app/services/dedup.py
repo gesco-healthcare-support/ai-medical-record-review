@@ -358,3 +358,53 @@ def confirm_cluster(members, model=None):
     except Exception as exc:
         logger.warning("dedup confirm failed; trusting the algorithmic candidate: %s", exc)
         return list(members)
+
+
+def group_similarity(members):
+    """The similarity to store for a confirmed group: the min pairwise ratio over ITS members.
+
+    Public because the worker needs it for a group the confirm step carved out of a larger
+    candidate.
+    The candidate's own `similarity` is the minimum over every member INCLUDING the ones the model
+    rejected, so attributing it to a two-member group extracted from a six-member candidate reports
+    the divergence of documents that are not in the group.
+    """
+    return _min_difflib([m.get("text") or "" for m in members])
+
+
+def confirm_groups(members, model=None):
+    """EVERY duplicate group inside one candidate, as ``[[member, ...], ...]`` (each >= 2).
+
+    `confirm_cluster` answers with one sublist, so a candidate holding two unrelated duplicate pairs
+    leaves the model two wrong options: lump all four together, or name one pair and let the other
+    vanish. The second is a silent recall loss, and it undoes on the quiet exactly what keeping
+    `dupe_similarity_override` low was meant to buy - the reviewers' position is that nothing be
+    auto-deleted, which makes a missed duplicate cost more than a surfaced one (#213).
+
+    So: ask again about what is left. A proper subset becomes a second question instead of a
+    discard, and no response schema has to change.
+
+    TERMINATION. Each accepted group removes at least two members, so the loop cannot run more than
+    ``len(members) // 2`` times - the most disjoint groups of two that could exist. The explicit
+    no-progress break below is belt-and-braces for a future `confirm_cluster` that returned members
+    it was not given: this runs inside a worker job, and a loop here would hang it rather than fail.
+
+    Members are matched by IDENTITY, not by value: `confirm_cluster` returns the very objects it was
+    handed, and two rows can carry equal dicts.
+
+    The error fail-safe is inherited unchanged - a broken confirm returns all members, which lands
+    here as one group covering the whole candidate and ends the loop. A candidate the model judges
+    entirely distinct returns ``[]``, exactly as before.
+    """
+    groups = []
+    remaining = list(members)
+    while len(remaining) >= 2:
+        confirmed = confirm_cluster(remaining, model=model)
+        if len(confirmed) < 2:
+            break
+        groups.append(confirmed)
+        before = len(remaining)
+        remaining = [m for m in remaining if not any(m is c for c in confirmed)]
+        if len(remaining) >= before:
+            break
+    return groups

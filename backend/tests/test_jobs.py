@@ -2988,3 +2988,90 @@ def test_the_completing_write_lands_for_a_stage_that_is_not_the_last():
     _run(job_id, work)
 
     assert seen == [("ocr", 3, 3)]
+
+
+# #213: a candidate holding TWO unrelated duplicate pairs. Before `confirm_groups`, the model could
+# name one pair and the second vanished with no record anywhere - a silent recall loss, and the one
+# failure mode that undoes what keeping `dupe_similarity_override` low was meant to buy.
+class TestASecondDuplicateGroupInOneCandidate:
+    @staticmethod
+    def _seed(doc_id):
+        # Four rows sharing a date and title, so the accuracy gate passes on metadata. Two pairs:
+        # {0,1} and {2,3}. Enough shared vocabulary that cluster_rows puts all four in one candidate.
+        shared = " ".join(f"w{i}" for i in range(40))
+        return _dedup_rows(
+            doc_id,
+            [
+                (1, 1, True, False, None, f"{shared} alpha alpha alpha"),
+                (2, 2, True, False, None, f"{shared} alpha alpha alpha"),
+                (3, 3, True, False, None, f"{shared} omega omega omega"),
+                (4, 4, True, False, None, f"{shared} omega omega omega"),
+            ],
+            dates=["05/08/2022"] * 4,
+            titles=["Work Status Report"] * 4,
+        )
+
+    def test_both_pairs_are_stored_as_separate_groups(self, monkeypatch):
+        doc_id = _make_user_and_doc(page_count=4)
+        job_id = self._seed(doc_id)
+
+        # The model names the first two of whatever it is shown - the "picks one pair" answer that
+        # used to drop the rest.
+        seen = []
+
+        def confirm(members, model=None):
+            seen.append(len(members))
+            return members[:2]
+
+        monkeypatch.setattr("app.services.dedup.confirm_cluster", confirm)
+        dedup_document(job_id)
+
+        rows = _rows_by_idx(doc_id)
+        groups = {idx: r.dupe_group for idx, r in rows.items()}
+        assert all(g is not None for g in groups.values()), groups
+        assert groups[0] == groups[1]
+        assert groups[2] == groups[3]
+        assert groups[0] != groups[2]  # two distinct groups, not one lumped four
+        assert seen[0] == 4 and seen[1] == 2  # asked again about the remainder
+
+    def test_a_carved_out_group_carries_its_own_similarity_not_the_candidates(self, monkeypatch):
+        # The candidate's similarity is the MINIMUM across all four, dragged down by the pair the
+        # model rejected. Storing it on a two-member group reports the divergence of documents that
+        # are not in the group.
+        doc_id = _make_user_and_doc(page_count=4)
+        job_id = self._seed(doc_id)
+        monkeypatch.setattr(
+            "app.services.dedup.confirm_cluster", lambda members, model=None: members[:2]
+        )
+
+        dedup_document(job_id)
+
+        rows = _rows_by_idx(doc_id)
+        from app.services.dedup import _min_difflib
+
+        with get_sessionmaker()() as session:
+            texts = [
+                r.source_text
+                for r in session.scalars(
+                    select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+                ).all()
+            ]
+        whole = _min_difflib(texts)
+        assert rows[0].dupe_similarity is not None
+        assert rows[0].dupe_similarity > whole  # its own pair scores better than the candidate
+        assert rows[0].dupe_similarity == rows[1].dupe_similarity
+
+    def test_an_untouched_candidate_is_unchanged(self, monkeypatch):
+        # The common case must not move: when the model confirms every member, one group is stored
+        # and it keeps the candidate's own similarity.
+        doc_id = _make_user_and_doc(page_count=4)
+        job_id = self._seed(doc_id)
+        monkeypatch.setattr(
+            "app.services.dedup.confirm_cluster", lambda members, model=None: members
+        )
+
+        dedup_document(job_id)
+
+        rows = _rows_by_idx(doc_id)
+        assert len({r.dupe_group for r in rows.values()}) == 1
+        assert all(r.dupe_group is not None for r in rows.values())
