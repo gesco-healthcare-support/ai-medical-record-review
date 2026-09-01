@@ -2990,6 +2990,171 @@ def test_the_completing_write_lands_for_a_stage_that_is_not_the_last():
     assert seen == [("ocr", 3, 3)]
 
 
+# #217: a re-segment deletes every ReviewRow, so it replaces every boundary edit and every category
+# correction on that document. The reviewer IS warned before it runs, so these are not about consent
+# - they are about there being a RECORD afterwards. The corrections are the only classification
+# ground truth this project has, and without a trail a measurement cannot tell a document that never
+# had corrections from one whose corrections were destroyed.
+class TestSegmentRowsReplacedIsRecorded:
+    @staticmethod
+    def _row(start, category, end=None):
+        return {
+            "start": start,
+            "end": end or start,
+            "category": category,
+            "title": "A",
+            "date": "-",
+            "injury_date": "-",
+            "flag": "-",
+            "suggest_merge": False,
+        }
+
+    def _segment(self, monkeypatch, doc_id, rows):
+        """Run one segmentation generation producing `rows`, with OCR and the model stubbed out."""
+        import app.services.page_text as page_text_mod
+        import app.services.segment_engine as se
+
+        monkeypatch.setattr(page_text_mod, "populate_document", lambda *a, **k: 0)
+        monkeypatch.setattr(
+            se,
+            "run_segmentation",
+            lambda pdf_path, total_pages, progress=None, page_text_fn=None: rows,
+        )
+        with get_sessionmaker()() as session:
+            job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+        segment_document(job_id)
+        return job_id
+
+    @staticmethod
+    def _events(doc_id):
+        from app.models import AuditLog
+
+        with get_sessionmaker()() as session:
+            return session.scalars(
+                select(AuditLog)
+                .where(AuditLog.document_id == doc_id, AuditLog.action == "segment.rows_replaced")
+                .order_by(AuditLog.id)
+            ).all()
+
+    def test_a_first_segment_records_nothing_because_it_replaces_nothing(self, monkeypatch):
+        doc_id = _make_user_and_doc(page_count=2)
+        self._segment(monkeypatch, doc_id, [self._row(1, "1"), self._row(2, "100")])
+        assert self._events(doc_id) == []
+
+    def test_a_re_segment_records_the_corrections_it_destroyed(self, monkeypatch):
+        doc_id = _make_user_and_doc(page_count=3)
+        self._segment(
+            monkeypatch, doc_id, [self._row(1, "1"), self._row(2, "100"), self._row(3, "100")]
+        )
+
+        # The reviewer acts: re-classifies page 2, and merges pages 2-3 into one document. Both are
+        # corrections and they are counted separately, because a moved boundary is not a category
+        # choice - #136 showed one page of boundary can decide a whole document.
+        with get_sessionmaker()() as session:
+            rows = session.scalars(
+                select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+            ).all()
+            rows[1].category = "13"  # same span, different category -> recategorized
+            rows[2].end = 3
+            rows[2].start = 3
+            rows[2].category = "100"
+            session.delete(rows[0])
+            session.add(
+                ReviewRow(
+                    document_id=doc_id,
+                    idx=99,
+                    start=1,
+                    end=2,  # a span the model never proposed -> respanned
+                    category="1",
+                    title="A",
+                    date="-",
+                    injury_date="-",
+                    flag="-",
+                    suggest_merge=False,
+                    include=True,
+                )
+            )
+            session.commit()
+
+        self._segment(
+            monkeypatch, doc_id, [self._row(1, "1"), self._row(2, "1"), self._row(3, "1")]
+        )
+
+        events = self._events(doc_id)
+        assert len(events) == 1
+        assert events[0].detail == "rows 3->0 (recategorized 1, respanned 1)"
+
+    def test_it_records_the_replacement_even_when_nothing_was_corrected(self, monkeypatch):
+        # The record is of the row set being replaced, not only of corrections dying. A zero here is
+        # the useful answer: it says this document's ground truth was intact when it was discarded.
+        doc_id = _make_user_and_doc(page_count=2)
+        rows = [self._row(1, "1"), self._row(2, "100")]
+        self._segment(monkeypatch, doc_id, rows)
+        self._segment(monkeypatch, doc_id, rows)
+
+        events = self._events(doc_id)
+        assert len(events) == 1
+        assert events[0].detail == "rows 2->0 (recategorized 0, respanned 0)"
+
+    def test_the_event_is_attributed_to_the_owner_and_carries_no_title(self, monkeypatch):
+        doc_id = _make_user_and_doc(page_count=2)
+        rows = [self._row(1, "1"), self._row(2, "100")]
+        self._segment(monkeypatch, doc_id, rows)
+        self._segment(monkeypatch, doc_id, rows)
+
+        with get_sessionmaker()() as session:
+            owner_id = session.get(Document, doc_id).user_id
+        event = self._events(doc_id)[0]
+        # get_owned_document is an owner-only guard with no admin bypass, so the owner IS whoever
+        # asked for the re-segment.
+        assert event.user_id == owner_id
+        # Titles carry physician names and must never reach the audit table.
+        assert "A" not in event.detail
+        assert len(event.action) <= 32  # AuditLog.action is String(32)
+
+
+class TestLostCorrectionsArithmetic:
+    """The pure half of #217. `ReviewRow` starts as a copy of `SegmentRow`, so comparing the two on
+    an identical page span is the only way to separate a reviewer's decision from the model's."""
+
+    @staticmethod
+    def _call(review, model):
+        from app.worker.tasks import _lost_corrections
+
+        return _lost_corrections(review, model)
+
+    def test_same_span_different_category_is_a_recategorization(self):
+        got = self._call([(1, 2, "13")], [(1, 2, "100")])
+        assert got == {"rows": 1, "recategorized": 1, "respanned": 0}
+
+    def test_a_span_the_model_never_proposed_is_a_respan(self):
+        got = self._call([(1, 4, "1")], [(1, 2, "1"), (3, 4, "1")])
+        assert got == {"rows": 1, "recategorized": 0, "respanned": 1}
+
+    def test_an_untouched_row_counts_as_neither(self):
+        got = self._call([(1, 2, "1"), (3, 3, "100")], [(1, 2, "1"), (3, 3, "100")])
+        assert got == {"rows": 2, "recategorized": 0, "respanned": 0}
+
+    def test_with_no_baseline_every_row_reads_as_respanned_which_is_why_the_detail_says_so(self):
+        # Nothing to compare against cannot distinguish a correction from the model's own answer, so
+        # `_replaced_rows_detail` prints `baseline none` rather than these numbers.
+        got = self._call([(1, 2, "1")], [])
+        assert got == {"rows": 1, "recategorized": 0, "respanned": 1}
+
+    def test_categories_compare_as_strings_so_an_int_row_is_not_a_false_correction(self):
+        got = self._call([(1, 2, 13)], [(1, 2, "13")])
+        assert got["recategorized"] == 0
+
+    def test_the_detail_string_hides_counts_it_cannot_stand_behind(self):
+        from app.worker.tasks import _replaced_rows_detail
+
+        lost = {"rows": 7, "recategorized": 2, "respanned": 1}
+        assert _replaced_rows_detail(lost, had_baseline=True) == (
+            "rows 7->0 (recategorized 2, respanned 1)"
+        )
+        assert _replaced_rows_detail(lost, had_baseline=False) == "rows 7->0 (baseline none)"
+
+
 # #213: a candidate holding TWO unrelated duplicate pairs. Before `confirm_groups`, the model could
 # name one pair and the second vanished with no record anywhere - a silent recall loss, and the one
 # failure mode that undoes what keeping `dupe_similarity_override` low was meant to buy.
