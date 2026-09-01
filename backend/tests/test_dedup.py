@@ -468,11 +468,16 @@ def test_autojunk_is_not_applied_to_character_comparisons():
 
 
 def test_the_score_barely_moves_when_the_pair_is_swapped():
-    """The score must be a property of the PAIR, not of which row came first.
+    """RAW `SequenceMatcher` stays mildly order-sensitive, and that is not something we fix.
 
-    Not asserted as exact equality: difflib's matcher is mildly order-sensitive even with autojunk
-    off. What the fix removes is the LARGE, autojunk-driven swing - 0.067 on this fixture and up to
-    0.249 on real pairs - which is what let a borderline pair land either side of the gate.
+    Subject is difflib itself, called directly, NOT `_min_difflib`. Turning autojunk off removed the
+    LARGE swing - 0.067 on this fixture, up to 0.249 on real pairs - but a residual remains, because
+    `find_longest_match` breaks ties earliest-in-a before earliest-in-b, so swapping the arguments
+    can pick a different decomposition. Hence `< 0.01` rather than equality.
+
+    The guarantee callers actually need - that the score is a property of the PAIR - is provided by
+    `_min_difflib` pinning the argument order, and is asserted in
+    `test_the_pair_score_does_not_depend_on_argument_order` below.
     """
     a, b = _ASYM_A, _ASYM_B
     forward = difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
@@ -482,6 +487,19 @@ def test_the_score_barely_moves_when_the_pair_is_swapped():
 
     assert abs(junk_forward - junk_backward) > 0.05, "fixture no longer shows the asymmetry"
     assert abs(forward - backward) < 0.01
+
+
+def test_the_pair_score_does_not_depend_on_argument_order():
+    """WHEN two texts are scored in either order, THE SYSTEM SHALL return the same value.
+
+    Two reproductions, because the small one proves the property and the large one proves it
+    matters. On the pre-fix code the five-character pair scores 0.75 one way and 0.5 the other -
+    with autojunk already off, which is what refutes the claim that disabling autojunk settled
+    this - and the clinical fixture scores 0.672 against 0.675, close enough to the 0.90 gate's
+    neighbourhood to flip a real verdict on a pair that happened to sit there.
+    """
+    assert dedup._min_difflib(["aba", "babba"]) == dedup._min_difflib(["babba", "aba"])
+    assert dedup._min_difflib([_ASYM_A, _ASYM_B]) == dedup._min_difflib([_ASYM_B, _ASYM_A])
 
 
 def test_an_identical_pair_still_scores_one():

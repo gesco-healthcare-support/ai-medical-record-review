@@ -106,12 +106,37 @@ def _min_difflib(texts):
     direction that costs content here: a missed duplicate ships two near-identical paragraphs to a
     client with nothing on screen to hint at it.
 
-    A second symptom shows the score was not even a well-defined property of a PAIR: autojunk is
+    A second symptom showed the score was not even a well-defined property of a PAIR: autojunk is
     computed on the SECOND sequence only, so ``ratio(a, b) != ratio(b, a)``. On the 78 pairs of one
     real 13-member cluster, swapping the arguments moved a score by up to **0.249** (0.894 one way,
     0.645 the other) and 10 of those pairs straddled the 0.90 gate - so whether two sub-documents
-    counted as candidate copies turned on which of them held the lower ``idx``. Turning autojunk off
-    collapsed that swing to 0.000 on every pair measured.
+    counted as candidate copies turned on which of them held the lower ``idx``.
+
+    THIS FILE PREVIOUSLY CLAIMED "turning autojunk off collapsed that swing to 0.000 on every pair
+    measured", AND THAT WAS WRONG - true of the one cluster it was measured on, false in general.
+    Autojunk was *a* cause and disabling it removed that one. A second cause is structural and
+    survives it: ``find_longest_match`` returns the maximal block that "starts earliest in a, and of
+    all those ... starts earliest in b" (CPython ``difflib.py``), a tie-break that ranks position in
+    ``a`` above position in ``b``. Swap the arguments and a different block can win the tie, which
+    changes the whole recursive decomposition and the matched total ``M``; ``ratio()`` is ``2M/T``
+    and only ``T`` is symmetric. With autojunk already off, ``ratio("aba", "babba")`` is 0.750 and
+    ``ratio("babba", "aba")`` is 0.500. `test_dedup.py` knew this - its swap test asserts
+    ``< 0.01`` rather than equality - while this docstring said the opposite, and the contradiction
+    is why nobody looked again for a month.
+
+    Ties need repeated substrings, so it is REPETITION that decides whether this bites, and the
+    13-member cluster measured had little. Across three synthetic corpora: distinct clinical prose
+    0.1% of pairs asymmetric and no gate verdict affected, two scans of one form 0.0%, and a
+    recurring FORM SERIES - the dominant real false positive, boilerplate-heavy and scoring
+    0.869-0.982 astride the gate - **90% asymmetric with 12.75% of gate verdicts decided by row
+    order alone**. Real duplicates score 0.916-1.000 and are untouched, so what row order decided
+    was whether a false positive cost a confirm call, never whether a duplicate was found.
+
+    FIXED by sorting the excerpts below, which pins the argument order. Note what that does and does
+    not do: difflib remains asymmetric, and this function stops exposing it. Sorting was chosen over
+    max/min/mean of both directions because it costs 1.01x rather than 2.36x on roughly half of
+    dedup's runtime, and because `config.py` establishes this score does not separate duplicates
+    from form series at any threshold - so paying to shift it buys nothing measurable.
 
     THE RE-DERIVATION WAS DONE, 2026-08-25, and it says the threshold cannot be derived at all. See
     the note on `dupe_similarity_override` in `config.py`. In short: on the corrected scale, reviewer-
@@ -137,7 +162,12 @@ def _min_difflib(texts):
     from 1.000 to 0.918 - and it only reaches 0.995 at 3,000 characters, which still passes the 0.99
     gate. So the verdict change costs 27x, not 3.5x, for one cluster. 1500 stays.
     """
-    excerpts = [mask_dates(text)[:_EXCERPT_CHARS] for text in texts]
+    # SORTED, and that is the whole of the argument-order fix. `ratio()` is not symmetric (see the
+    # tie-break note above), and `combinations` preserves input order, so without this every pair
+    # reaches the matcher in whatever order its rows arrived and scores accordingly. Sorting pins
+    # the smaller text as `a` for every pair, which is what makes the result a property of the
+    # texts. `min` over the pairs is an aggregate, so ordering the list cannot change anything else.
+    excerpts = sorted(mask_dates(text)[:_EXCERPT_CHARS] for text in texts)
     ratios = [
         difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
         for a, b in itertools.combinations(excerpts, 2)
