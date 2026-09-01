@@ -82,7 +82,16 @@ def list_categories(session: Session = Depends(get_db)):
     ]
 
 
-@router.post("/categories", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/categories",
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: {
+            "description": "The id is not a positive number, the name is empty, "
+            "or a category with that id already exists."
+        }
+    },
+)
 def create_category(
     payload: CategoryCreate,
     session: Session = Depends(get_db),
@@ -124,7 +133,17 @@ def create_category(
     return _category_payload(session, category)
 
 
-@router.patch("/categories/{category_id}")
+@router.patch(
+    "/categories/{category_id}",
+    responses={
+        400: {"description": "The name is empty."},
+        404: {"description": "No category has this id."},
+        409: {
+            "description": "The category is still used by sub-documents, so it cannot be "
+            "deactivated until those rows move to another category."
+        },
+    },
+)
 def update_category(
     category_id: str,
     payload: CategoryUpdate,
@@ -203,7 +222,13 @@ def get_summary_prompt(category_id: str, session: Session = Depends(get_db)):
     }
 
 
-@router.put("/prompts/{category_id}")
+@router.put(
+    "/prompts/{category_id}",
+    responses={
+        400: {"description": "The prompt text is empty."},
+        404: {"description": "No category has this id."},
+    },
+)
 def put_summary_prompt(
     category_id: str,
     payload: PromptPut,
@@ -231,7 +256,10 @@ def put_summary_prompt(
     return {"category_id": category_id, "text": text, "custom": True}
 
 
-@router.delete("/prompts/{category_id}")
+@router.delete(
+    "/prompts/{category_id}",
+    responses={404: {"description": "This category has no custom prompt to delete."}},
+)
 def delete_summary_prompt(
     category_id: str,
     session: Session = Depends(get_db),
@@ -259,7 +287,14 @@ def delete_summary_prompt(
     }
 
 
-@router.post("/reprocess/{document_id}")
+@router.post(
+    "/reprocess/{document_id}",
+    responses={
+        400: {"description": "The document has no reviewed rows to summarize."},
+        404: {"description": "No document has this id."},
+        409: {"description": "A job is already running for this document."},
+    },
+)
 def reprocess(
     document_id: str,
     session: Session = Depends(get_db),
