@@ -14,7 +14,7 @@ import {
   startSummarize,
   type HeaderFields,
 } from "@/lib/review-api";
-import type { CategoryOption, DocumentStatus, FailedRow, JobKind } from "@/lib/types";
+import type { CategoryOption, DocumentStatus, FailedRow, JobKind, Row } from "@/lib/types";
 import {
   applyServerRowChanges,
   rowErrors,
@@ -104,6 +104,22 @@ export function useReviewWorkflow(
   // unsaved untick or re-classify is not reverted by an action on another tab. Cleared the moment a
   // save lands, because the server then holds those values itself and there is nothing to protect.
   const touchedRef = useRef<Set<string>>(new Set());
+  // Replace the buffer wholesale with a server answer, which is only ever correct when there is
+  // nothing local to protect - so it drops the touched set in the same breath.
+  //
+  // Every `withKeys` caller goes through here, and that is the point. The set is keyed on `_key`,
+  // which `withKeys` re-mints for every row it tags, so after a wholesale replacement no entry in
+  // the set can describe a row that is still on screen: they name rows that no longer exist. Left
+  // in place they were only harmless because `keySeq` is a module-global that is never reset (see
+  // `lib/review-rows.ts`) - a stale `r42:category` could not collide with a real row because `r42`
+  // is minted once per page load. That made a document switch safe by accident rather than by
+  // decision, and it made "reset keySeq per document" - a reasonable-looking cleanup - silently
+  // re-point stale entries at real rows in the NEXT document, pinning a field to a local value the
+  // reviewer never typed on it.
+  const replaceRows = (next: Row[]) => {
+    touchedRef.current = new Set();
+    applyRows(sortRows(withKeys(next)));
+  };
   const [header, setHeader] = useState<HeaderFields | null>(null);
   // A calm, non-error notice when a summarize run ended "needs attention" (item 7): the message
   // plus the sub-documents that failed, so the UI can list + highlight exactly which ones.
@@ -239,7 +255,8 @@ export function useReviewWorkflow(
         return;
       }
       const detail = await getDocument(documentId as string);
-      applyRows(sortRows(withKeys(detail.rows || [])));
+      // A segment run deletes and rewrites every row, so nothing local survives it to protect.
+      replaceRows(detail.rows || []);
       setStatus(detail.status);
       setHeader({
         patient_first_name: detail.patient_first_name || "",
@@ -336,7 +353,9 @@ export function useReviewWorkflow(
       if (cancelled) return;
       setTotalPages(detail.page_count);
       setCategories(detail.categories || []);
-      applyRows(sortRows(withKeys(detail.rows || [])));
+      // The document switch. Whatever the previous document left in the touched set describes rows
+      // that are gone; carrying it into this one is the leak.
+      replaceRows(detail.rows || []);
       setStatus(detail.status);
       setFilename(detail.original_filename || "");
       setHeader({
@@ -452,10 +471,8 @@ export function useReviewWorkflow(
       if (unsaved && rowsRef.current.length) {
         applyRows(sortRows(applyServerRowChanges(rowsRef.current, server, touchedRef.current)));
       } else {
-        // Nothing local to protect, so the server is authoritative and the set is meaningless -
-        // its keys refer to rows that no longer exist.
-        touchedRef.current = new Set();
-        applyRows(sortRows(withKeys(server)));
+        // Nothing local to protect, so the server is authoritative.
+        replaceRows(server);
       }
     } catch {
       /* keep the current rows if the refresh fails */

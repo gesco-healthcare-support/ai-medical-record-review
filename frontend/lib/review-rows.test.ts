@@ -414,3 +414,35 @@ describe("the two predicates are disjoint and neither drives the other", () => {
     }
   });
 });
+
+// #204. `_key` is not only a React key: `touchKey` builds the touched set out of it, and
+// `applyServerRowChanges` reads that set to decide whether a reload may overwrite a field. The hook
+// clears the set whenever it replaces the buffer wholesale, but keys that are unique for the
+// lifetime of the page are the SECOND, independent reason a leftover entry cannot do damage - and
+// that property was undocumented, which is what made the leak worth an issue rather than a shrug.
+//
+// So pin it here. Making keySeq per-document or per-call looks like a tidy way to get deterministic
+// keys in tests; it would silently re-point a stale entry at a real row in the next document.
+describe("client keys are unique for the lifetime of the module", () => {
+  it("withKeys never re-mints a key it has already handed out", () => {
+    const first = withKeys([row(1, 2), row(3, 4)]).map((r) => r._key);
+    const second = withKeys([row(1, 2), row(3, 4)]).map((r) => r._key);
+    expect(new Set([...first, ...second]).size).toBe(4);
+  });
+
+  it("newKey does not collide with withKeys, so a split cannot inherit a stale claim", () => {
+    const before = withKeys([row(1, 2)])[0]._key;
+    const inserted = newKey();
+    const after = withKeys([row(3, 4)])[0]._key;
+    expect(new Set([before, inserted, after]).size).toBe(3);
+  });
+
+  it("a key from an earlier batch cannot name a row in a later one", () => {
+    // The failure mode stated as the set sees it: touchKey over two batches yields four distinct
+    // entries, so document A's claim can never match document B's row.
+    const a = withKeys([row(1, 2)])[0];
+    const b = withKeys([row(1, 2)])[0];
+    expect(touchKey(a, "category")).not.toBe(touchKey(b, "category"));
+    expect(touchKey(a, "include")).not.toBe(touchKey(b, "include"));
+  });
+});
