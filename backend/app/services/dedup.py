@@ -70,6 +70,18 @@ def _jaccard(a, b):
     return len(a & b) / len(a | b)
 
 
+def _find(parent: list[int], x: int) -> int:
+    """Union-find root of ``x`` in ``parent``, compressing the path it walks.
+
+    Module-level rather than a closure because `cluster_rows` keeps two of these structures over
+    the same rows and they must not diverge in behaviour.
+    """
+    while parent[x] != x:
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    return x
+
+
 def _min_difflib(texts):
     """The lowest pairwise char-level ratio across ``texts`` (1.0 for a single item). Low = the
     members diverge in content (likely a recurring-form series), high = near-identical re-scans.
@@ -162,17 +174,14 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
     sigs = [_sig(it.get("text")) for it in items]
     dates = [_norm(it.get("date")) for it in items]
     n = len(items)
+    # TWO structures over the same rows. `parent` is the cluster itself, joined by either branch.
+    # `strong` is joined by the CONTENT branch alone, and is what `content_joined` is read from
+    # below. It has to be a second structure rather than a tally taken while unioning, because a
+    # tally can only see the unions this pass happened to perform: in a cycle one edge is always
+    # redundant, and which one that is follows the row order.
     parent = list(range(n))
+    strong = list(range(n))
 
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    # Each union that actually merges two components, and whether the CONTENT branch admitted it.
-    # Resolved to final roots after the loop, so the attribution does not depend on edge order.
-    merges: list[tuple[int, bool]] = []
     for i in range(n):
         for j in range(i + 1, n):
             # Jaccard first for every pair, same date or not: it is a set intersection, and it is the
@@ -180,29 +189,19 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
             if _jaccard(sigs[i], sigs[j]) < jaccard_threshold:
                 continue
             if dates[i] == dates[j]:
-                if find(i) != find(j):
-                    merges.append((i, False))
-                parent[find(i)] = find(j)
+                parent[_find(parent, i)] = _find(parent, j)
             elif _min_difflib([items[i].get("text") or "", items[j].get("text") or ""]) >= (
                 cross_date_override
             ):
-                if find(i) != find(j):
-                    merges.append((i, True))
-                parent[find(i)] = find(j)
+                parent[_find(parent, i)] = _find(parent, j)
+                strong[_find(strong, i)] = _find(strong, j)
 
     groups: dict[int, list[int]] = {}
     for k in range(n):
-        groups.setdefault(find(k), []).append(k)
-
-    # A cluster is content-joined when EVERY union that built it cleared the override. That is the
-    # provenance `duplicate_gate` needs: for such a cluster the override has already been satisfied
-    # edge by edge, so re-asking it of the transitive closure - whose minimum no chain longer than
-    # one hop can reach - rejects genuine re-scans for a test they cannot pass. A single same-date
-    # union makes it False, because that branch joins without scoring content at all.
-    weak_roots = {find(i) for i, strong in merges if not strong}
+        groups.setdefault(_find(parent, k), []).append(k)
 
     clusters = []
-    for root, members_idx in groups.items():
+    for members_idx in groups.values():
         if len(members_idx) < 2:
             continue
         members = [items[k] for k in members_idx]
@@ -210,7 +209,15 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
             {
                 "members": members,
                 "similarity": _min_difflib([m.get("text") or "" for m in members]),
-                "content_joined": root not in weak_roots,
+                # Content-joined when the content edges ALONE hold this cluster together. That is
+                # the provenance `duplicate_gate` needs: the override was already satisfied along a
+                # path reaching every member, so re-asking it of the transitive closure - whose
+                # minimum no chain longer than one hop can reach - rejects genuine re-scans for a
+                # test they cannot pass. False the moment a member hangs off a same-date edge only,
+                # because that branch joins without scoring content at all. A same-date edge
+                # BESIDE a content path revokes nothing: it adds no member the content did not
+                # already reach, and connectivity does not depend on which edge came first.
+                "content_joined": len({_find(strong, k) for k in members_idx}) == 1,
             }
         )
     return clusters
@@ -263,10 +270,10 @@ def duplicate_gate(members, similarity, override=None, content_joined=False) -> 
     same_category = len(categories) == 1 and "" not in categories
     if same_date and (same_title or same_category):
         return True
-    # `content_joined` says every union that built this cluster already cleared `override` on its
-    # own content. Testing the CLOSURE minimum as well applies the same threshold twice at two
-    # different scopes, and the second is unsatisfiable: in a chain A~B~C the A-C pair was never
-    # required to be similar and generally is not. Measured on the box at the running 0.90, that
+    # `content_joined` says the edges that already cleared `override` on their own content reach
+    # every member of this cluster. Testing the CLOSURE minimum as well applies the same threshold
+    # twice at two different scopes, and the second is unsatisfiable: in a chain A~B~C the A-C pair
+    # was never required to be similar and generally is not. Measured on the box at 0.90, that
     # rejected 21 candidates - 20 of them chains of strong edges, none sharing a date - whose
     # STRONGEST pair had a median of 1.000, byte-identical after date masking.
     #
