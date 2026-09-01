@@ -523,3 +523,32 @@ def test_the_header_stays_times_new_roman_at_ten_point():
     run = later.paragraphs[0].runs[0]
     assert run.font.size == Pt(10)
     assert run.font.name == "Times New Roman"
+
+
+def test_fill_header_clears_whatever_the_paragraph_already_held():
+    """WHEN the header's first paragraph already carries runs, THE SYSTEM SHALL remove all of them.
+
+    `_fill_header` reuses the existing paragraph rather than adding one, so anything already in it
+    has to go or it would sit above the patient line on every page. Nothing else reaches this loop:
+    a fresh header's first paragraph has no runs, which is why the removal was uncovered until now.
+
+    It also guards the `list()` that used to wrap the loop. Deleting the elements being iterated is
+    only safe because python-docx rebuilds `paragraph.runs` from the XML on each access; if that
+    ever stops being true, this test fails rather than the deliverable silently keeping stale runs.
+    """
+    import docx
+
+    from app.services.reporting import _fill_header
+
+    document = docx.Document()
+    header = document.sections[0].header
+    header.paragraphs[0].add_run("stale name")
+    header.paragraphs[0].add_run(" and a stale dob")
+    assert len(header.paragraphs[0].runs) == 2
+
+    _fill_header(header, "RE: Synthetic Patient", "DOB: 01/01/1990", numbered=False)
+
+    text = header.paragraphs[0].text
+    assert "stale" not in text
+    assert "Synthetic Patient" in text
+    assert "01/01/1990" in text

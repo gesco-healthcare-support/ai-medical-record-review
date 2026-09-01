@@ -138,7 +138,9 @@ def _fill_header(header, re_line, dob_line, *, numbered: bool) -> None:
     paragraph = header.paragraphs[0]
     # Removing the run ELEMENTS, not `paragraph.text = ""` - that assignment leaves one empty run
     # behind, so the first run of the header carried no font at all and `runs[0]` was not the text.
-    for run in list(paragraph.runs):
+    # Safe to iterate while deleting: `runs` builds a fresh list from the XML on every access, so
+    # this is already a snapshot and the copy that used to wrap it added nothing.
+    for run in paragraph.runs:
         run._element.getparent().remove(run._element)
     _run(paragraph, f"{re_line}\n{dob_line}" + ("\nPage " if numbered else ""), size=Pt(10))
     if numbered:
