@@ -50,7 +50,9 @@ from pathlib import Path
 # it would pass CI and raise only when someone ran the script against the box.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from date_in_source import one_copy_per_pdf  # noqa: E402
+# From `corpus` rather than `date_in_source`: the rule is a property of the corpus, not of that
+# script, and importing one eval script from another made it look like a local convention (#219).
+from corpus import one_copy_per_pdf  # noqa: E402
 
 # A date in the forms OCR produces. Deliberately the same tolerance as date_in_source: a
 # slashes-only reader over-reports by about 2x.

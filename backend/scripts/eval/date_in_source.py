@@ -48,6 +48,10 @@ So one copy per PDF is the DEFAULT here, and `--all-copies` is available for any
 pooled figure. Quoting 1.4% understates the rate by about a third, purely from counting seven records
 twice.
 
+`one_copy_per_pdf` itself now lives in `corpus.py` alongside the general statement of this rule and
+what it has cost elsewhere (#219) - it applies to every pooled query in this directory, not just to
+this script, and it was only here for historical reasons.
+
 Coverage is still not the population - 1,920 rows are skipped for incomplete stored page text, and
 that count falls every time a dedup pass stores more pages. Re-run after one rather than treating any
 single run as final.
@@ -60,7 +64,16 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from collections import Counter
+from pathlib import Path
+
+# scripts/ is not a package, so make the sibling import work however this is invoked - by path, as
+# `-m scripts.eval.date_in_source`, or from a test. At MODULE level so a missing helper fails on
+# import and the suite catches it, rather than only when someone runs it against the box.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from corpus import one_copy_per_pdf  # noqa: E402
 
 _MONTHS = (
     "january february march april may june july august september october november december".split()
@@ -176,34 +189,6 @@ def summarise(buckets) -> str:
         f"  defect count is between {absent} and {absent + day}."
     )
     return "\n".join(lines)
-
-
-def one_copy_per_pdf(pairs):
-    """Keep the rows of ONE document per distinct `sha256`; -> (kept, rows dropped, docs dropped).
-
-    THE DENOMINATOR PROBLEM this exists for. `documents.sha256` is indexed and not unique, and the
-    same PDF is uploaded more than once as a matter of course - re-running a case is legitimate, and
-    the upload warning is scoped to one user (`api/documents.py`), so a second account re-uploading
-    the same record is not warned at all. Measured 2026-08-21: 53 documents, 39 distinct PDFs, and
-    every one of user 5's seven records was a byte-identical re-upload of user 3's.
-
-    Any rate pooled across accounts therefore counts those records twice, and the copies are not
-    independent samples - they are the same pages through the same pipeline. That does not
-    necessarily move a percentage much, but it makes the denominator a number nobody can interpret.
-
-    Earliest copy wins, so the figure is stable as further copies are uploaded.
-    """
-    documents = {doc.id: doc for _row, doc in pairs}
-    by_sha: dict[str, object] = {}
-    for doc in documents.values():
-        winner = by_sha.get(doc.sha256)
-        # (created_at, id): earliest copy wins, id breaks a same-timestamp tie so the choice is
-        # deterministic. `created_at` is NOT NULL on documents, so no null case to carry.
-        if winner is None or (doc.created_at, doc.id) < (winner.created_at, winner.id):
-            by_sha[doc.sha256] = doc
-    keep_ids = {doc.id for doc in by_sha.values()}
-    kept = [(row, doc) for row, doc in pairs if doc.id in keep_ids]
-    return kept, len(pairs) - len(kept), len(documents) - len(keep_ids)
 
 
 def main() -> None:  # pragma: no cover - I/O wrapper around the tested functions above
