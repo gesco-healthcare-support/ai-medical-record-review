@@ -65,14 +65,14 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # from matching. Confirmed by the reviewers, who name "mails" in an excluded-types list.
         # A BARE "Letter" joins this rule 2026-09-01, answered directly: "Leave out". It is the same
         # family as the three alternations beside it and the same defect they each fixed - only the
-        # qualified forms were listed, so a title that is nothing but the word matched no rule at all
-        # and the cascade re-decided it on every record (34 rows / 77 pages, three different stored
-        # categories, 2 of them shipping).
+        # qualified forms were listed, so a title that is nothing but the word matched no rule
+        # at all and the cascade re-decided it on every record (34 rows / 77 pages, three
+        # different stored categories, 2 of them shipping).
         #
         # ANCHORED at both ends, unlike its neighbours, and deliberately. `\bletters?\b` unanchored
         # would claim "Letter - Request for Supplemental Report" and every clinical document that
-        # merely arrives under cover of one; the cover/transmittal and evaluator alternations already
-        # answer those, and the whole point of #222 is that the wrapper-plus-a-document case belongs
+        # merely arrives under cover of one; the cover/transmittal and evaluator alternations
+        # already answer those, and the whole point of #222 is that a wrapper-plus-document belongs
         # to the document. Only the title that IS the word is claimed here.
         r"\b(cover|transmittal) letter\b|\b(ame|qme|pqme) letter\b"
         r"|\bcorrespondence\b|^\s*e-?mails?\b|^\s*letters?\s*$",
@@ -130,8 +130,8 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # determinism they are not visibly missing - and a rule hit skips the review flag. Both stay
         # pinned xfail so a rule appearing later still shows up.
         # `patient referral` was REMOVED from this alternation 2026-09-01. It was added on the
-        # strength of one record's excluded-pages list naming it - and the caveat written beside that
-        # evidence at the time, that a type named on one list was excluded THERE rather than always,
+        # strength of one record's excluded-pages list naming it - and the caveat written beside
+        # that evidence, that a type named on one list was excluded THERE rather than always,
         # is exactly what came true. Asked directly, the answer was "Referral should be categorized
         # as an authorization request", so it is now a document-type rule at the end of `_RULES`.
         r"\bfacesheet\b|\bflowsheets?\b|\bafter visit summary\b|\bcoding summary\b"
