@@ -501,3 +501,123 @@ def test_the_duplicate_thresholds_agree_between_config_and_compose():
             f"{attr}={getattr(settings, attr)}; a deployed container would use the compose value "
             f"and ignore the code default"
         )
+
+
+# #213: `confirm_cluster` answers with ONE sublist, so a candidate holding two unrelated duplicate
+# pairs left the model two wrong options - lump all four together, or name one pair and let the other
+# vanish with no record. The second undoes on the quiet what keeping the override low was meant to
+# buy: the reviewers asked that nothing be auto-deleted, which makes a missed duplicate cost more
+# than a surfaced one. `confirm_groups` asks again about whatever is left.
+class TestConfirmGroups:
+    @staticmethod
+    def _member(tag):
+        return {"title": tag, "date": tag, "text": tag * 40}
+
+    @staticmethod
+    def _replies(monkeypatch, answers):
+        """Serve `answers` (lists of 1-based indices) to successive confirm calls."""
+        calls = []
+        it = iter(answers)
+
+        def fake(*a, **k):
+            payload = next(it)
+            calls.append(payload)
+            return _Resp({"duplicate_indices": payload})
+
+        monkeypatch.setattr(dedup, "get_genai_client", lambda: None)
+        monkeypatch.setattr(dedup, "generate_with_retry", fake)
+        return calls
+
+    def test_a_second_pair_in_one_candidate_is_found_instead_of_dropped(self, monkeypatch):
+        members = [self._member(t) for t in "abcd"]
+        # First call names members 1 and 2; the remainder is then asked about and names both.
+        self._replies(monkeypatch, [[1, 2], [1, 2]])
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert len(groups) == 2
+        assert groups[0] == [members[0], members[1]]
+        assert groups[1] == [members[2], members[3]]
+
+    def test_a_candidate_the_model_confirms_whole_is_one_group_and_one_call(self, monkeypatch):
+        members = [self._member(t) for t in "abc"]
+        calls = self._replies(monkeypatch, [[1, 2, 3]])
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert groups == [members]
+        assert len(calls) == 1  # nothing left to ask about
+
+    def test_a_leftover_singleton_ends_the_loop(self, monkeypatch):
+        members = [self._member(t) for t in "abc"]
+        # 1 and 2 are copies; one member remains, which cannot be a group on its own.
+        calls = self._replies(monkeypatch, [[1, 2]])
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert groups == [[members[0], members[1]]]
+        assert len(calls) == 1  # a single member is never sent to the model
+
+    def test_no_duplicates_returns_nothing_exactly_as_before(self, monkeypatch):
+        members = [self._member(t) for t in "ab"]
+        self._replies(monkeypatch, [[1]])
+
+        assert dedup.confirm_groups(members, model="m") == []
+
+    def test_the_error_failsafe_is_inherited_and_stops_the_loop(self, monkeypatch):
+        # A broken confirm must still surface the whole candidate for review, and must not then be
+        # asked again - the fail-safe returns every member, so nothing is left.
+        members = [self._member(t) for t in "abc"]
+        calls = []
+
+        def boom(*a, **k):
+            calls.append(1)
+            raise RuntimeError("vertex down")
+
+        monkeypatch.setattr(dedup, "get_genai_client", lambda: None)
+        monkeypatch.setattr(dedup, "generate_with_retry", boom)
+
+        assert dedup.confirm_groups(members, model="m") == [members]
+        assert len(calls) == 1
+
+    def test_it_terminates_and_is_bounded_by_half_the_member_count(self, monkeypatch):
+        # A confirm that always names the first two of whatever it is given: six members must yield
+        # three pairs and stop, never loop. The bound is len(members) // 2 because each accepted
+        # group removes at least two.
+        members = [self._member(t) for t in "abcdef"]
+        calls = self._replies(monkeypatch, [[1, 2]] * 4)
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert [len(g) for g in groups] == [2, 2, 2]
+        assert len(calls) <= len(members) // 2
+
+    def test_members_are_matched_by_identity_not_by_value(self, monkeypatch):
+        # Two rows can carry equal dicts. Removing by value would drop both and lose a real
+        # duplicate, so the twin must survive into the second question.
+        same = self._member("a")
+        members = [dict(same), dict(same), self._member("b"), self._member("b")]
+        assert members[0] == members[1]  # equal by value, distinct objects
+        self._replies(monkeypatch, [[1, 3], [1, 2]])
+
+        groups = dedup.confirm_groups(members, model="m")
+
+        assert len(groups) == 2
+        assert groups[0][0] is members[0]
+        assert groups[1][0] is members[1]
+
+
+def test_group_similarity_scores_only_its_own_members():
+    """The candidate's similarity is the minimum over members the model may since have rejected, so
+    a carved-out group needs its own number or it reports the divergence of documents not in it."""
+    twin = "the quick brown fox jumps over the lazy dog " * 6
+    members = [
+        {"text": twin},
+        {"text": twin},
+        {"text": "entirely unrelated content about hydraulic machinery " * 6},
+    ]
+    whole = dedup._min_difflib([m["text"] for m in members])
+    pair = dedup.group_similarity(members[:2])
+
+    assert pair > 0.99  # the two copies are near-identical
+    assert whole < 0.5  # the candidate's own figure is dragged down by the third member

@@ -583,7 +583,12 @@ def dedup_document(job_id) -> None:
     """
     import gc
 
-    from app.services.dedup import cluster_rows, confirm_cluster, duplicate_gate
+    from app.services.dedup import (
+        cluster_rows,
+        confirm_groups,
+        duplicate_gate,
+        group_similarity,
+    )
     from app.services.page_text import get_row_text_with_report
 
     def work(session, job, report):
@@ -711,10 +716,34 @@ def dedup_document(job_id) -> None:
                 )
                 confirmed_clusters.append((members, similarity))
                 continue
-            confirmed = confirm_cluster(members)
-            if len(confirmed) >= 2:
-                confirmed_clusters.append((confirmed, similarity))
-            else:
+            groups = confirm_groups(members)
+            for confirmed in groups:
+                # The candidate's `similarity` is the minimum over every member the CLUSTERER put
+                # together, including the ones the model has just rejected. For a group carved out of
+                # a larger candidate that number describes documents not in the group, so recompute
+                # it. An untouched candidate is skipped: `group_similarity` would return the value it
+                # already has, by the same definition that produced it.
+                confirmed_clusters.append(
+                    (
+                        confirmed,
+                        similarity
+                        if len(confirmed) == len(members)
+                        else group_similarity(confirmed),
+                    )
+                )
+            if len(groups) > 1:
+                # The event #213 is about. Logged because it is otherwise invisible: before this,
+                # every group after the first was dropped without a line anywhere.
+                logger.info(
+                    "dedup found %d separate duplicate groups in one %d-member candidate on "
+                    "document %s (sizes %s, pages %s)",
+                    len(groups),
+                    len(members),
+                    job.document_id,
+                    [len(g) for g in groups],
+                    pages,
+                )
+            if not groups:
                 # Previously invisible: the candidate was dropped with no record, so a reported miss
                 # could not be explained from the logs at all.
                 logger.warning(
