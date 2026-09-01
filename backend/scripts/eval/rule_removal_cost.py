@@ -13,6 +13,17 @@ cascade would do anyway and can be removed cheaply; a low number means the rule 
 removing it trades 10 fixes for hundreds of regressions.
 
 No writes. Sampled in a stable order so the run is repeatable.
+
+THE COUNTS IN THE FIRST PARAGRAPH ARE POOLED across duplicate uploads of the same PDF and are about
+2x too high (#219). Re-measured corpus-wide 2026-09-01 with `rule_blast_radius.py`:
+
+    every uploaded copy ....... 1,399 rows claimed, 24 reviewer-corrected
+    one copy per distinct PDF ..  622 rows claimed, 12 reviewer-corrected
+
+They are left as written rather than silently recomputed, because they are quoted in the issue
+discussion this script came from and the ratio - a rule right on the overwhelming majority of what
+it claims - is unchanged by halving both sides. What DOES change is any absolute number read off
+them. `--all-copies` reproduces the pooled figure; see `corpus.py`.
 """
 
 import argparse
@@ -26,6 +37,8 @@ import sys
 # container and this has to run from a checkout too.
 _BACKEND = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_BACKEND))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # for the sibling corpus helper
+from corpus import one_copy_per_document  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from app.db import get_sessionmaker  # noqa: E402
 from app.models import Document, Job, PageText, ReviewRow, SegmentRow, User  # noqa: E402
@@ -51,6 +64,11 @@ parser.add_argument(
 parser.add_argument("--term", default="progress note", help="the rule alternative under test")
 parser.add_argument("--sample", type=int, default=40)
 parser.add_argument("--repeats", type=int, default=3, help="temperature 0 is not deterministic")
+parser.add_argument(
+    "--all-copies",
+    action="store_true",
+    help="count every uploaded copy of a record, not one per distinct PDF (see corpus.py)",
+)
 args = parser.parse_args()
 
 TARGET = re.compile(args.term)
@@ -69,7 +87,17 @@ user = session.scalar(select(User).where(User.email == args.user_email))
 if user is None:
     sys.exit(f"no user with email {args.user_email}")
 candidates = []
-for doc in session.scalars(select(Document).where(Document.user_id == user.id)):
+# One copy per distinct PDF (#219). Scoping to one user reduces this hazard but does NOT remove it:
+# measured 2026-09-01, user 2 holds 45 documents for 41 distinct PDFs and user 3 holds 27 for 26, so
+# a single-account run still double-counts a handful of records - and this script SPENDS model calls
+# on its sample, so a duplicate is paid for twice to learn nothing. See `corpus.py`.
+_documents = list(session.scalars(select(Document).where(Document.user_id == user.id)))
+if not args.all_copies:
+    _documents, _dropped = one_copy_per_document(_documents)
+    print(
+        f"one copy per distinct PDF: {len(_documents)} document(s), {_dropped} copy/copies excluded"
+    )
+for doc in _documents:
     job = session.scalar(
         select(Job)
         .where(Job.document_id == doc.id, Job.kind == "segment", Job.state == "done")

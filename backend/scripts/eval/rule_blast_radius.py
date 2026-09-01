@@ -6,8 +6,15 @@ many rows corpus-wide each one carries - the same shape of number every categori
 carried, which is exactly what a prompt change cannot produce.
 
 No model calls. Regex over stored titles only.
+
+ONE COPY PER DISTINCT PDF by default, because both numbers this prints are pooled across the corpus
+and the same PDF is held several times over - 87 document rows for 42 distinct PDFs, measured
+2026-08-31 (#219). Both halves were affected, and the corrected-row half worst: pooling reports 204
+reviewer corrections corpus-wide where there are 102, exactly 2x. `--all-copies` gives the pooled
+figure for anyone who wants it. See `corpus.py` for the rule and what it has already cost.
 """
 
+import argparse
 import collections
 import re
 import pathlib
@@ -18,6 +25,8 @@ import sys
 # container and this has to run from a checkout too.
 _BACKEND = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_BACKEND))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # for the sibling corpus helper
+from corpus import one_copy_per_document  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from app.db import get_sessionmaker  # noqa: E402
 from app.models import Document, Job, ReviewRow, SegmentRow  # noqa: E402
@@ -47,11 +56,27 @@ def earlier_rule_wins(title):
     return any(pattern.search(title) for pattern, _c in classification._RULES[:PR2_INDEX])
 
 
+_args = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+_args.add_argument(
+    "--all-copies",
+    action="store_true",
+    help="count every uploaded copy of a record, not one per distinct PDF (see corpus.py)",
+)
+_args = _args.parse_args()
+
 session = get_sessionmaker()()
 owner = collections.Counter()  # which alternative first claims the title
 labelled = collections.Counter()  # among reviewer-corrected rows
-rows_seen = set()
-for doc in session.scalars(select(Document)):
+documents = list(session.scalars(select(Document)))
+if not _args.all_copies:
+    documents, dropped = one_copy_per_document(documents)
+    print(
+        f"one copy per distinct PDF: {len(documents)} document(s), "
+        f"{dropped} redundant copy/copies excluded (--all-copies to include them)"
+    )
+else:
+    print(f"ALL COPIES: {len(documents)} document(s), including re-uploads of the same PDF")
+for doc in documents:
     job = session.scalar(
         select(Job)
         .where(Job.document_id == doc.id, Job.kind == "segment", Job.state == "done")
