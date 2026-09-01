@@ -25,7 +25,7 @@ def test_ocr_image_forwards_timeout(monkeypatch):
         return "text"
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
-    ocr._configured = True  # skip _ensure_tesseract's settings read
+    monkeypatch.setattr(ocr, "_configured", True)  # skip _ensure_tesseract's settings read
 
     assert ocr._ocr_image(_Sentinel()) == "text"
     assert captured["timeout"] == ocr.get_settings().ocr_timeout_seconds == 120
@@ -36,7 +36,7 @@ def test_ocr_image_timeout_raises_runtimeerror_not_unavailable(monkeypatch):
         raise RuntimeError("Tesseract process timeout")
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     with pytest.raises(RuntimeError) as excinfo:
         ocr._ocr_image(_Sentinel())
@@ -49,7 +49,7 @@ def test_selected_pages_skips_failing_page(monkeypatch):
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
     monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [_Sentinel()])
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     # A per-page OCR timeout must be logged + skipped, never propagate out of the loop.
     assert ocr.extract_text_from_selected_pages("dummy.pdf", [1, 2]) == ""
@@ -60,7 +60,7 @@ def test_selected_pages_marks_absolute_page_numbers_when_asked(monkeypatch):
     # page ends. The markers carry the ABSOLUTE record page, not a 1-based offset within the range.
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", lambda image, timeout=0: "body")
     monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [_Sentinel()])
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     out = ocr.extract_text_from_selected_pages("dummy.pdf", [143, 144], mark_pages=True)
     assert out == "Page 143:\nbody\nPage 144:\nbody\n"
@@ -72,7 +72,7 @@ def test_selected_pages_is_unmarked_by_default(monkeypatch):
     # other categories they would push page numbers into ordinary summaries.
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", lambda image, timeout=0: "body")
     monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [_Sentinel()])
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     assert ocr.extract_text_from_selected_pages("dummy.pdf", [143, 144]) == "bodybody"
     assert "Page" not in ocr.extract_text_from_selected_pages("dummy.pdf", [143])
@@ -91,7 +91,7 @@ def test_marked_page_is_skipped_without_losing_the_following_markers(monkeypatch
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", flaky)
     monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [_Sentinel()])
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     out = ocr.extract_text_from_selected_pages("dummy.pdf", [7, 8], mark_pages=True)
     assert "Page 7:" not in out  # the failed page contributes nothing at all
@@ -104,7 +104,7 @@ def test_all_pages_skips_failing_page(monkeypatch):
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
     monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [_Sentinel(), _Sentinel()])
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     # Page headers are still emitted; the unreadable body is skipped without aborting.
     out = ocr.extract_text_from_all_pages("dummy.pdf")
@@ -117,7 +117,7 @@ def test_tesseract_missing_still_fails_fast(monkeypatch):
         raise ocr.pytesseract.TesseractNotFoundError()
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     with pytest.raises(OcrUnavailableError):
         ocr._ocr_image(_Sentinel())
@@ -150,7 +150,7 @@ def test_report_separates_pages_that_errored_from_pages_that_read_blank(monkeypa
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", by_page)
     monkeypatch.setattr(ocr, "_rasterize", _per_page_rasterize)
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     text, report = ocr.extract_pages_with_report("dummy.pdf", [1, 2, 3], retries=0)
     assert text == "real body text"
@@ -170,7 +170,7 @@ def test_report_retries_only_the_errored_page(monkeypatch):
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", flaky)
     monkeypatch.setattr(ocr, "_rasterize", _per_page_rasterize)
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     text, report = ocr.extract_pages_with_report("dummy.pdf", [1, 2], retries=1)
     assert attempts == [1, 1, 2]  # page 1 retried and recovered; page 2 read once
@@ -187,7 +187,7 @@ def test_report_fails_fast_when_tesseract_is_missing(monkeypatch):
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", missing)
     monkeypatch.setattr(ocr, "_rasterize", _per_page_rasterize)
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     with pytest.raises(OcrUnavailableError):
         ocr.extract_pages_with_report("dummy.pdf", [1, 2])
@@ -252,7 +252,7 @@ def test_the_rendered_dpi_is_declared_to_tesseract(monkeypatch):
         return "text"
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     class _Rendered:
         info = {"dpi": (80, 80)}
@@ -271,7 +271,7 @@ def test_an_image_without_recorded_dpi_passes_no_config(monkeypatch):
         return "text"
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
 
     assert ocr._ocr_image(_Sentinel()) == "text"
     assert captured["called"] is True
@@ -292,7 +292,7 @@ def test_the_base_dpi_is_not_declared_so_ordinary_pages_are_unchanged(monkeypatc
         return "text"
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
-    ocr._configured = True
+    monkeypatch.setattr(ocr, "_configured", True)
     base = ocr.get_settings().ocr_base_dpi
 
     class _AtBase:

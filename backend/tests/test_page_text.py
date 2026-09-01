@@ -129,7 +129,7 @@ def test_a_tesseract_timeout_is_recorded_as_failed_not_blank(monkeypatch):
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", timed_out)
     monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [object()])
-    ocr._configured = True  # skip _ensure_tesseract's settings read
+    monkeypatch.setattr(ocr, "_configured", True)  # skip _ensure_tesseract's settings read
 
     text, ok = pt._extract("/nonexistent/synthetic.pdf", 1)
     assert text == ""
@@ -242,7 +242,7 @@ def test_a_missing_tesseract_fails_fast_instead_of_marking_every_page_failed(mon
 
     monkeypatch.setattr(ocr.pytesseract, "image_to_string", not_installed)
     monkeypatch.setattr(ocr, "_rasterize", lambda *a, **k: [object()])
-    ocr._configured = True  # skip _ensure_tesseract's settings read
+    monkeypatch.setattr(ocr, "_configured", True)  # skip _ensure_tesseract's settings read
 
     with pytest.raises(OcrUnavailableError):
         pt._extract("/nonexistent/synthetic.pdf", 1)
