@@ -33,17 +33,18 @@ def _set_admin(email: str, value: bool) -> int:
         return 0
 
 
-def _list_admins() -> int:
+def _list_admins() -> None:
+    """Unlike `_set_admin` this returns nothing: listing has no failure mode, so an exit code it
+    could only ever set to 0 was noise. `main` supplies the 0."""
     with get_sessionmaker()() as session:
         admins = session.scalars(
             select(User).where(User.is_admin.is_(True)).order_by(User.email)
         ).all()
         if not admins:
             print("No admin accounts.")
-            return 0
+            return
         for user in admins:
             print(user.email)
-        return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -65,7 +66,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _set_admin(args.email, True)
     if args.action == "revoke":
         return _set_admin(args.email, False)
-    return _list_admins()
+    _list_admins()
+    return 0
 
 
 if __name__ == "__main__":

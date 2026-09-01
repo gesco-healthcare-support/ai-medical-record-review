@@ -144,8 +144,8 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # category 3 and is not included, so nothing ships from it, and moving it would be a
         # behaviour change nobody asked for. Reported on #222 instead.
         r"^\s*medical\s+records?\s+excerpts?\s*$"
-        r"|^\s*(?:excerpted\s+medical|medical\s+excerpted)\s+records?\s*$"
-        r"|^\s*review\s+of\s+(?:the\s+)?medical\s+records?\s*$",
+        + r"|^\s*(?:excerpted\s+medical|medical\s+excerpted)\s+records?\s*$"
+        + r"|^\s*review\s+of\s+(?:the\s+)?medical\s+records?\s*$",
     )
 )
 
@@ -443,8 +443,8 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # reviewer is never offered them. Adam asked for them summarized, which is what 10 gives.
         (
             r"\bprescriptions?\b"
-            r"|\b(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct|ekg|ecg|emg|ncs)\s+orders?\b"
-            r"|\borders?\s+for\s+(?:an?\s+)?(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct)\b",
+            + r"|\b(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct|ekg|ecg|emg|ncs)\s+orders?\b"
+            + r"|\borders?\s+for\s+(?:an?\s+)?(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct)\b",
             "10",
         ),
         # MODALITY terms only. `laborator` used to be here and it defeated D-01/D-02 entirely: that

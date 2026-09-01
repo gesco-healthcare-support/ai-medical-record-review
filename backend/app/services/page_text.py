@@ -143,7 +143,7 @@ def get_pages_text(
     every category's model input, and the duplicate check feeds this text into similarity scoring
     where a shared ``Page 1: Page 2:`` vocabulary makes unrelated documents look alike.
     """
-    wanted = sorted(set(int(p) for p in pages))
+    wanted = sorted({int(p) for p in pages})
     if not wanted:
         return ""
     found = {
@@ -261,7 +261,7 @@ def get_row_text_with_report(session, document_id: str, pages, pdf_path=None):
     A page stored as errored IS retried here when a path is given, mirroring the retry the direct
     extraction path performs - a cached failure must not become permanent.
     """
-    wanted = sorted(set(int(p) for p in pages))
+    wanted = sorted({int(p) for p in pages})
     report = {"pages": wanted, "errored": [], "blank": []}
     if not wanted:
         return "", report

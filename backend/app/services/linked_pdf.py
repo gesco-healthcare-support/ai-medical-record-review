@@ -62,7 +62,9 @@ def _sort_key(entry: dict):
     return parsed_date(entry) or datetime.max
 
 
-def _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm) -> str:
+def _summary_html(entries, num_pages, qme_or_ame, lawfirm) -> str:
+    """Render the summary letter's body. The patient identity is deliberately NOT a parameter: it
+    goes on the running header, which `_draw_running_header` paints onto the rendered pages."""
     rows = []
     for i, e in enumerate(entries):
         # id='t{i}' lets Story report this title's rendered rect (see _render_summary_pdf).
@@ -162,7 +164,7 @@ def build_linked_pdf(
     entries = sorted(entries, key=_sort_key)
 
     summary_doc, title_rects = _render_summary_pdf(
-        _summary_html(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm)
+        _summary_html(entries, num_pages, qme_or_ame, lawfirm)
     )
     _draw_running_header(summary_doc, patient_name, patient_dob)
     summ_n = (

@@ -75,16 +75,16 @@ def _window_rows(pdf_path, window_start, window_end, client):
         except (KeyError, TypeError, ValueError):
             continue  # one malformed element must not abort the window
         rows.append(
-            dict(
-                start=s + window_start - 1,
-                end=e + window_start - 1,
-                title=title,
-                date=date,
+            {
+                "start": s + window_start - 1,
+                "end": e + window_start - 1,
+                "title": title,
+                "date": date,
                 # Filled by the isolated per-sub-document read at the end of run_segmentation;
                 # the segmentation call no longer reports one. "-" means "states none".
-                injury_date="-",
-                flag=manual,
-            )
+                "injury_date": "-",
+                "flag": manual,
+            }
         )
     return sorted(rows, key=lambda r: (r["start"], r["end"]))
 
@@ -108,7 +108,9 @@ def merge_window_rows(window_reports, windows, total_pages):
 
     if not deduped or deduped[0]["start"] > 1:
         # Never leave front pages uncovered; an explicit low-confidence row is honest.
-        deduped.insert(0, dict(start=1, end=1, title="-", date="-", injury_date="-", flag="x"))
+        deduped.insert(
+            0, {"start": 1, "end": 1, "title": "-", "date": "-", "injury_date": "-", "flag": "x"}
+        )
     for i, row in enumerate(deduped):
         row["end"] = (deduped[i + 1]["start"] - 1) if i + 1 < len(deduped) else total_pages
     return deduped

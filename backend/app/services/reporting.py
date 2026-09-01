@@ -40,6 +40,7 @@ CONCLUSION = "This concludes the review of submitted records."
 # the primary deliverable. Centralised here so the next change moves both renderers at once.
 REVIEW_HEADING = "MEDICAL RECORD REVIEW"
 TITLE_SEPARATOR = ". "
+_REPORT_FONT = "Times New Roman"
 
 
 def header_lines(patient_name, patient_dob) -> tuple[str, str]:
@@ -84,7 +85,7 @@ def _run(paragraph, s, *, bold=False, italic=False, size=None):
     run = paragraph.add_run(s)
     run.bold = bold
     run.italic = italic
-    run.font.name = "Times New Roman"
+    run.font.name = _REPORT_FONT
     run.font.size = size or Pt(11)
     return run
 
@@ -137,7 +138,9 @@ def _fill_header(header, re_line, dob_line, *, numbered: bool) -> None:
     paragraph = header.paragraphs[0]
     # Removing the run ELEMENTS, not `paragraph.text = ""` - that assignment leaves one empty run
     # behind, so the first run of the header carried no font at all and `runs[0]` was not the text.
-    for run in list(paragraph.runs):
+    # Safe to iterate while deleting: `runs` builds a fresh list from the XML on every access, so
+    # this is already a snapshot and the copy that used to wrap it added nothing.
+    for run in paragraph.runs:
         run._element.getparent().remove(run._element)
     _run(paragraph, f"{re_line}\n{dob_line}" + ("\nPage " if numbered else ""), size=Pt(10))
     if numbered:
@@ -209,7 +212,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     title_format.underline = True
     title_format.font.size = Pt(12)
     title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-    title_format.font.name = "Times New Roman"
+    title_format.font.name = _REPORT_FONT
 
     doc.add_paragraph("")
 
@@ -219,7 +222,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     second_title_format.underline = True
     second_title_format.font.size = Pt(12)
     second_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
-    second_title_format.font.name = "Times New Roman"
+    second_title_format.font.name = _REPORT_FONT
 
     intro_text = intro_sentence(num_pages, lawfirm)
     second_intro_text = SUMMARY_INTRO
@@ -231,7 +234,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     third_title_format.underline = False
     third_title_format.font.size = Pt(12)
     third_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
-    third_title_format.font.name = "Times New Roman"
+    third_title_format.font.name = _REPORT_FONT
 
     fourth_title = doc.add_paragraph(second_intro_text)
     fourth_title_format = fourth_title.runs[0]
@@ -239,7 +242,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     fourth_title_format.underline = False
     fourth_title_format.font.size = Pt(12)
     fourth_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
-    fourth_title_format.font.name = "Times New Roman"
+    fourth_title_format.font.name = _REPORT_FONT
 
     # Two-column borderless table: date | title + body. The default "Table Normal" style has no
     # cell borders, matching the canonical MRR summary layout (date sits in its own left column,
@@ -281,6 +284,6 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     nine_title_format.underline = False
     nine_title_format.font.size = Pt(12)
     nine_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
-    nine_title_format.font.name = "Times New Roman"
+    nine_title_format.font.name = _REPORT_FONT
 
     return doc
