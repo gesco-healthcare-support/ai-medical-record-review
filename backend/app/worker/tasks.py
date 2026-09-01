@@ -20,6 +20,7 @@ from app.db import get_engine, get_sessionmaker
 from app.errors import user_facing_message
 from app.models import Document, Job, PageText, ReviewRow, SegmentRow, Summary
 from app.services import catalog
+from app.services.audit import audit
 from app.services.jobs import (
     INTERRUPTIBLE_DOCUMENT_STATUSES,
     STATUS_ON_CANCEL,
@@ -50,6 +51,83 @@ _PROGRESS_MIN_INTERVAL = 1.0  # seconds between same-stage progress writes (DB c
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _replaced_rows_detail(lost: dict[str, int], *, had_baseline: bool) -> str:
+    """Non-PHI audit detail for a row-set replacement: counts only, in the shape `_rows_edit_detail`
+    already established for the reviewer-side edit.
+
+    Without an earlier generation to compare against, the two correction counts would both read 0 -
+    which is indistinguishable from a document nobody had corrected. So say `baseline none` instead
+    of printing a zero that cannot be trusted. That distinction is the whole point of the record.
+    """
+    if not had_baseline:
+        return f"rows {lost['rows']}->0 (baseline none)"
+    return (
+        f"rows {lost['rows']}->0 "
+        f"(recategorized {lost['recategorized']}, respanned {lost['respanned']})"
+    )
+
+
+def _prior_model_rows(session, document_id: str, current_job_id: int):
+    """`(start, end, category)` from the newest EARLIER segment generation of this document.
+
+    A re-segmented document keeps every generation's `SegmentRow`s, so "the model's answer" has to
+    be pinned to one job: the most recent segment job that is not the one now running and that
+    actually produced rows. Empty when there is no earlier generation - which is the honest state
+    for a document segmented once, and is why the audit detail distinguishes "no corrections" from
+    "no baseline to compare against".
+    """
+    prior_job = session.scalars(
+        select(Job.id)
+        .join(SegmentRow, SegmentRow.job_id == Job.id)
+        .where(Job.document_id == document_id, Job.kind == "segment", Job.id != current_job_id)
+        .order_by(Job.id.desc())
+        .limit(1)
+    ).first()
+    if prior_job is None:
+        return []
+    return session.execute(
+        select(SegmentRow.start, SegmentRow.end, SegmentRow.category).where(
+            SegmentRow.job_id == prior_job
+        )
+    ).all()
+
+
+def _lost_corrections(review_rows, model_rows) -> dict[str, int]:
+    """How much reviewer work a row-set replacement is about to destroy, as counts.
+
+    `review_rows` is the editable set about to be deleted, `model_rows` the `SegmentRow` output of
+    the run that produced it - both as `(start, end, category)` triples. Comparing the two on an
+    IDENTICAL page span is the only way to tell a reviewer's decision from the model's: `ReviewRow`
+    starts as a copy of `SegmentRow`, so a difference is a human acting (the same method used to
+    audit the shipped categorization rules, which found 97 corrections across 4,040 rows).
+
+    Three counts, because they are three different losses:
+
+        rows            how many editable rows are going away, correction or not
+        recategorized   same span, different category - a category the reviewer chose
+        respanned       a span the model never proposed - a split or merge the reviewer made
+
+    `respanned` is deliberately separate rather than folded in: a moved boundary is not a category
+    correction, and it is the class that #136 showed can decide a whole document. Note it also
+    counts a row the model produced in a DIFFERENT generation, so on a document re-segmented more
+    than once it is an upper bound.
+
+    `include` is NOT compared, because `SegmentRow` has no such column - a reviewer's tick is
+    invisible to this and is not claimed to be counted. Counts only, never a title: titles carry
+    physician names and must not reach the audit table.
+    """
+    review = list(review_rows)
+    by_span = {(int(s), int(e)): str(c) for s, e, c in model_rows}
+    counts = {"rows": len(review), "recategorized": 0, "respanned": 0}
+    for start, end, category in review:
+        was = by_span.get((int(start), int(end)))
+        if was is None:
+            counts["respanned"] += 1
+        elif was != str(category):
+            counts["recategorized"] += 1
+    return counts
 
 
 def _run(job_id, work) -> None:
@@ -452,6 +530,22 @@ def segment_document(job_id) -> None:
             progress=report,
             page_text_fn=_stored_page_text,
         )
+        # Count what this replacement destroys BEFORE destroying it (#217). The reviewer IS warned
+        # ("Re-running identification replaces the current document list AND your corrections"), so
+        # this is not about consent - it is that afterwards nothing recorded that the corrections
+        # existed. They are the only classification ground truth this project has and no more are
+        # coming, so a measurement scored against them cannot currently tell "this document never
+        # had corrections" from "this document's corrections were destroyed": 12 of 82 documents
+        # have been re-segmented, up to 3 times each.
+        prior = _prior_model_rows(session, document.id, job.id)
+        lost = _lost_corrections(
+            session.execute(
+                select(ReviewRow.start, ReviewRow.end, ReviewRow.category).where(
+                    ReviewRow.document_id == document.id
+                )
+            ).all(),
+            prior,
+        )
         session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
         for idx, row in enumerate(rows):
             fields = dict(
@@ -480,6 +574,23 @@ def segment_document(job_id) -> None:
                     include=catalog.summarize_default_for(session, fields["category"]),
                     **fields,
                 )
+            )
+
+        # AFTER the replacement rows exist, not between the delete and the inserts - `audit` commits
+        # its own row on this session, and committing in the gap would persist a document with no
+        # rows at all if the process then died. Here the same commit carries the new row set, which
+        # `_run` would otherwise only commit at the very end.
+        #
+        # Attributed to `document.user_id`: `get_owned_document` is an owner-only guard with no admin
+        # bypass, so whoever asked for this re-segment IS the owner. Not a stand-in for a requester
+        # we do not have.
+        if lost["rows"]:
+            audit(
+                session,
+                "segment.rows_replaced",
+                document.user_id,
+                document.id,
+                detail=_replaced_rows_detail(lost, had_baseline=bool(prior)),
             )
 
         # Best-effort report header: auto-extract name/DOB/law firm so Review opens pre-filled. A
