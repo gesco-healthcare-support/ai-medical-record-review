@@ -11,6 +11,11 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# The pinned Gemini flash model: the Vertex default, and the step-down for the title and
+# audit calls. Named once so a version bump is a single edit.
+_GEMINI_FLASH_MODEL = "gemini-2.5-flash"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -486,7 +491,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _derive(self) -> "Settings":
-        default_model = "gemini-2.5-flash" if self.use_vertex else "gemini-flash-latest"
+        default_model = _GEMINI_FLASH_MODEL if self.use_vertex else "gemini-flash-latest"
         self.genai_model = self.genai_model or default_model
         # Summarization uses 3.5-flash as of 2026-08-14, replacing the 2.5-pro chosen in an earlier
         # A/B for condensing + faithfulness on long records. Two reasons, in order of weight:
@@ -525,8 +530,8 @@ class Settings(BaseSettings):
             # Set HERE rather than as field defaults so the openai branch below still sees "" for an
             # unset key and can refuse to start. A field default would silently satisfy that guard.
             self.summary_body_model = self.summary_body_model or self.summary_model
-            self.summary_title_model = self.summary_title_model or "gemini-2.5-flash"
-            self.audit_model = self.audit_model or "gemini-2.5-flash"
+            self.summary_title_model = self.summary_title_model or _GEMINI_FLASH_MODEL
+            self.audit_model = self.audit_model or _GEMINI_FLASH_MODEL
             # Defaulted ON rather than opt-in: the failure it guards against is an outage of the
             # configured body model, and someone raising SUMMARY_MODEL to a pro tier is exactly the
             # person who will not have thought about it. Harmless when the body already IS this model

@@ -33,6 +33,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from app.db import Base
 
+# Foreign-key targets and the cascade rule, spelled once: each must match a table name
+# declared below, and a repeated literal is where a rename silently goes wrong.
+_FK_USER_ID = "user.id"
+_FK_DOCUMENTS_ID = "documents.id"
+_CASCADE_DELETE_ORPHAN = "all, delete-orphan"
+
 
 def _uuid() -> str:
     import uuid
@@ -79,7 +85,7 @@ def _utc_iso(value: datetime | None) -> str | None:
 roles_users = Table(
     "roles_users",
     Base.metadata,
-    Column("user_id", Integer, ForeignKey("user.id")),
+    Column("user_id", Integer, ForeignKey(_FK_USER_ID)),
     Column("role_id", Integer, ForeignKey("role.id")),
 )
 
@@ -143,7 +149,7 @@ class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
     __tablename__ = "access_token"
 
     user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("user.id", ondelete="cascade"), nullable=False
+        Integer, ForeignKey(_FK_USER_ID, ondelete="cascade"), nullable=False
     )
 
 
@@ -156,7 +162,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(String(36), primary_key=True, default=_uuid)
-    user_id = Column(Integer, ForeignKey("user.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey(_FK_USER_ID), nullable=False, index=True)
     original_filename = Column(String(512), nullable=False)  # PHI-bearing: never log
     stored_path = Column(String(1024), nullable=False)
     sha256 = Column(String(64), nullable=False, index=True)
@@ -170,12 +176,14 @@ class Document(Base):
     patient_dob = Column(String(32))
     law_firm = Column(String(512))
 
-    jobs = relationship("Job", backref="document", cascade="all, delete-orphan", order_by="Job.id")
+    jobs = relationship(
+        "Job", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Job.id"
+    )
     review_rows = relationship(
-        "ReviewRow", backref="document", cascade="all, delete-orphan", order_by="ReviewRow.idx"
+        "ReviewRow", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="ReviewRow.idx"
     )
     summaries = relationship(
-        "Summary", backref="document", cascade="all, delete-orphan", order_by="Summary.idx"
+        "Summary", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Summary.idx"
     )
 
     @property
@@ -225,7 +233,7 @@ class Job(Base):
     )
 
     id = Column(Integer, primary_key=True)
-    document_id = Column(String(36), ForeignKey("documents.id"), nullable=False, index=True)
+    document_id = Column(String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True)
     kind = Column(String(16), nullable=False)
     state = Column(String(16), nullable=False, default="queued")
     stage = Column(String(32), nullable=False, default="starting")
@@ -270,7 +278,7 @@ class Job(Base):
     finished_at = Column(DateTime)
 
     segment_rows = relationship(
-        "SegmentRow", backref="job", cascade="all, delete-orphan", order_by="SegmentRow.idx"
+        "SegmentRow", backref="job", cascade=_CASCADE_DELETE_ORPHAN, order_by="SegmentRow.idx"
     )
 
     def progress(self):
@@ -324,7 +332,7 @@ class ReviewRow(Base):
     __tablename__ = "review_rows"
 
     id = Column(Integer, primary_key=True)
-    document_id = Column(String(36), ForeignKey("documents.id"), nullable=False, index=True)
+    document_id = Column(String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True)
     idx = Column(Integer, nullable=False)
     start = Column(Integer, nullable=False)
     end = Column(Integer, nullable=False)
@@ -374,7 +382,7 @@ class Summary(Base):
     __tablename__ = "summaries"
 
     id = Column(Integer, primary_key=True)
-    document_id = Column(String(36), ForeignKey("documents.id"), nullable=False, index=True)
+    document_id = Column(String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True)
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
     idx = Column(Integer, nullable=False)
     title = Column(String(512), nullable=False)
@@ -540,7 +548,7 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("user.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey(_FK_USER_ID), nullable=False, index=True)
     action = Column(String(32), nullable=False)
     document_id = Column(String(36))
     # What CHANGED, when the action alone does not say it - e.g. a category edit needs the id it came
@@ -572,7 +580,7 @@ class PageText(Base):
     __table_args__ = (UniqueConstraint("document_id", "page", name="uq_page_texts_document_page"),)
 
     id = Column(Integer, primary_key=True)
-    document_id = Column(String(36), ForeignKey("documents.id"), nullable=False, index=True)
+    document_id = Column(String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True)
     page = Column(Integer, nullable=False)
     # PHI-bearing, exactly like review_rows.source_text: never log, never leave the box.
     text = Column(Text, nullable=False, default="")

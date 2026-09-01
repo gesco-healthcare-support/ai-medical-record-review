@@ -70,6 +70,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
+_JOB_RUNNING_DETAIL = "a job is running for this document; wait for it"
+_JOB_ALREADY_RUNNING_DETAIL = "a job is already running for this document"
+_PDF_MEDIA_TYPE = "application/pdf"
+_NOT_FOUND_DETAIL = "not found"
+
 
 def _sha256(path: str) -> str:
     digest = hashlib.sha256()
@@ -565,9 +570,7 @@ def delete_document(
     user: User = Depends(current_active_user),
 ):
     if document.active_job is not None:
-        raise HTTPException(
-            status_code=409, detail="a job is running for this document; wait for it"
-        )
+        raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     stored_path = document.stored_path
     # The persisted id (a DB-sourced value, not the raw request path) is safe to log.
     document_uuid = document.id
@@ -589,7 +592,7 @@ def get_pdf(
 ):
     audit(session, "view_pdf", user.id, document.id)
     # FileResponse serves conditional/range requests so the browser viewer can seek.
-    return FileResponse(document.stored_path, media_type="application/pdf")
+    return FileResponse(document.stored_path, media_type=_PDF_MEDIA_TYPE)
 
 
 def _dupe_groups(document: Document) -> dict[int, list[ReviewRow]]:
@@ -769,7 +772,7 @@ def dedup_start(
             catalog_revision=catalog.catalog_version(session),
         )
     except JobConflict:
-        raise HTTPException(status_code=409, detail="a job is already running for this document")
+        raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
     return {"ok": True}
 
 
@@ -838,9 +841,7 @@ def resolve_duplicate(
     if not members:
         raise HTTPException(status_code=404, detail="no such duplicate group")
     if document.active_job is not None:
-        raise HTTPException(
-            status_code=409, detail="a job is running for this document; wait for it"
-        )
+        raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     if payload.action == "keep_one":
         primary = next((m for m in members if m.idx == payload.primary_idx), None)
         if primary is None:
@@ -891,9 +892,7 @@ def put_rows(
 ):
     if document.active_job is not None:
         # A finishing segment job would overwrite these rows; a summarize job is reading them.
-        raise HTTPException(
-            status_code=409, detail="a job is running for this document; wait for it"
-        )
+        raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     rows = (payload.rows if payload else None) or []
     error, stats = _store_rows(session, document, rows)
     if error:
@@ -922,7 +921,7 @@ def cancel_job(
     """
     job = session.get(Job, job_id)
     if job is None or job.document_id != document.id:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
 
     # The UI needs to know when to offer "Force stop", and that number must come from the SERVER:
     # hardcoding it in the client would let JOB_CANCEL_GRACE_SECONDS drift from the moment the button
@@ -978,7 +977,7 @@ def segment_start(
             catalog_revision=catalog.catalog_version(session),
         )
     except JobConflict:
-        raise HTTPException(status_code=409, detail="a job is already running for this document")
+        raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
     return {"ok": True}
 
 
@@ -1005,9 +1004,7 @@ def summarize_start(
     payload = payload or SummarizeStartPayload()
     if payload.rows is not None:
         if document.active_job is not None:
-            raise HTTPException(
-                status_code=409, detail="a job is already running for this document"
-            )
+            raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
         error, stats = _store_rows(session, document, payload.rows)
         if error:
             raise HTTPException(status_code=400, detail=error)
@@ -1065,7 +1062,7 @@ def summarize_start(
             catalog_revision=catalog.catalog_version(session),
         )
     except JobConflict:
-        raise HTTPException(status_code=409, detail="a job is already running for this document")
+        raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
     return {"ok": True}
 
 
@@ -1134,7 +1131,7 @@ def put_summary(
         select(Summary).where(Summary.document_id == document.id, Summary.idx == idx)
     )
     if summary is None:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
 
     body = payload.model_dump(exclude_unset=True) if payload else {}
     if "category" in body:
@@ -1200,11 +1197,9 @@ def resummarize(
         select(Summary).where(Summary.document_id == document.id, Summary.idx == idx)
     )
     if summary is None:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
     if document.active_job is not None:
-        raise HTTPException(
-            status_code=409, detail="a job is running for this document; wait for it"
-        )
+        raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
 
     # Prefer the current review row (full, live metadata); fall back to the summary's snapshot.
     review_row = session.scalar(
@@ -1499,7 +1494,7 @@ def export_document_pdf(
     audit(session, "export_pdf", user.id, document.id)
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
+        media_type=_PDF_MEDIA_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{_linked_filename(document)}"'},
     )
 
@@ -1518,7 +1513,7 @@ def bundle_pdf(
     audit(session, "bundle_pdf", user.id, document.id)
     return StreamingResponse(
         buffer,
-        media_type="application/pdf",
+        media_type=_PDF_MEDIA_TYPE,
         headers={
             "Content-Disposition": f'attachment; filename="{_download_name(payload.label, "pdf")}"'
         },
