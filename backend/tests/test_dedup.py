@@ -234,6 +234,49 @@ def test_a_same_date_union_is_not_content_joined():
     assert clusters[0]["content_joined"] is False
 
 
+def _spanning_triangle():
+    """Two rows on one date plus a third on another, all three near-identical.
+
+    The cross-date edges 0-2 and 1-2 both clear the override and already connect the cluster, so
+    the same-date 0-1 edge joins nobody who was not joined on content already.
+    """
+    body = "physical therapy three times weekly for the lumbar spine. " * 30
+    return [
+        {"idx": 0, "date": "05/08/2022", "text": body + " alpha"},
+        {"idx": 1, "date": "05/08/2022", "text": body + " beta"},
+        {"idx": 2, "date": "06/09/2022", "text": body + " gamma"},
+    ]
+
+
+def test_a_redundant_same_date_edge_does_not_revoke_a_spanning_content_join():
+    """The strong edges alone connect this cluster, so the override was met right across it.
+
+    A same-date edge that adds no member cannot revoke provenance the spanning edges established.
+    """
+    clusters = dedup.cluster_rows(
+        _spanning_triangle(), jaccard_threshold=0.4, cross_date_override=0.90
+    )
+    assert len(clusters) == 1
+    assert len(clusters[0]["members"]) == 3
+    assert clusters[0]["content_joined"] is True
+
+
+def test_content_joined_is_stable_under_member_reordering():
+    """WHEN the same rows arrive in another order, THE SYSTEM SHALL report the same flag.
+
+    Guards the defect this test was written for: the pass recorded a union only when it merged
+    two components, so which edge fell out redundant - and with it the flag - followed row order.
+    """
+    items = _spanning_triangle()
+
+    def flag(rows):
+        clusters = dedup.cluster_rows(rows, jaccard_threshold=0.4, cross_date_override=0.90)
+        return [(len(c["members"]), c["content_joined"]) for c in clusters]
+
+    assert flag(items) == flag(list(reversed(items)))
+    assert flag(items) == flag([items[1], items[2], items[0]])
+
+
 def test_gate_admits_a_content_joined_chain_its_closure_minimum_would_reject():
     """THE DEFECT. Every edge cleared the override; the closure minimum cannot, by construction.
 
@@ -466,7 +509,12 @@ def test_cluster_similarity_is_stable_under_member_reordering():
     ]
 
     def shape(rows):
-        return sorted((len(c["members"]), c["similarity"]) for c in dedup.cluster_rows(rows))
+        # content_joined belongs in this tuple: it is per-cluster reported state, and leaving it
+        # out is why an order-dependent flag survived a test named for order stability.
+        return sorted(
+            (len(c["members"]), c["similarity"], c["content_joined"])
+            for c in dedup.cluster_rows(rows)
+        )
 
     assert shape(items) == shape(list(reversed(items)))
     assert shape(items) == shape([items[1], items[2], items[0]])
