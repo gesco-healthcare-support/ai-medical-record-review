@@ -399,7 +399,12 @@ def test_recurring_paperwork_is_answered_by_a_rule(title):
         "Medication Administration",
         "ED Care Timeline",
         # named in the excluded-pages list of the 229-page record
-        "Patient Referral",
+        #
+        # "Patient Referral" was HERE and was removed 2026-09-01. It is the one entry in this list
+        # whose evidence turned out to be the weak kind the list's own caveat warned about: named on
+        # ONE record's excluded pages, which establishes that it was excluded THERE. Asked directly,
+        # the answer was "Referral should be categorized as an authorization request", so it is now
+        # pinned at 10 by `test_a_referral_is_an_authorization_request`. Everything else here stands.
         "Patient Signature Page",
         "Emergency Patient Record",
         # same family, and the type a facesheet arrives attached to
@@ -1344,3 +1349,74 @@ def test_the_records_index_is_unchanged_and_not_claimed_by_these_anchors():
     not what the rules say today (the stored-vs-current trap)."""
     assert classification.match_rules("medical excerpted records index") == "100"
     assert classification.match_rules("Index of Records") == "100"
+
+
+# Three answers from the reviewers, 2026-09-01. Each question was asked with our current behaviour
+# stated underneath it, so they were reacting to something concrete rather than to an abstraction:
+#
+#   "A document titled only 'Letter' - summarize or leave out?"   -> "Leave out"
+#   "Records Order Summary - summarize or leave out?"             -> "Leave out"
+#   "Patient Referral - summarized, and as what?"                 -> "Referral should be
+#                                                                    categorized as an
+#                                                                    authorization request."
+@pytest.mark.parametrize("title", ["Letter", "letters", "LETTER", "  letter  ", "Letters"])
+def test_a_bare_letter_is_administrative(title):
+    assert classification.match_rules(title) == "100"
+
+
+# The half an unanchored `\bletters?\b` would have broken. Each of these already had an answer and
+# keeps it - the wrapper-plus-a-document case belongs to the document, which is the whole principle
+# `test_document_type_beats_administrative_wrapper` above exists to defend.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Letter - Request for Supplemental Report", "100"),
+        ("Cover Letter - PR-2 Progress Report", "1"),  # the report wins, as it always has
+        ("Transmittal Letter", "100"),
+        ("Joint AME Letter", "100"),
+        ("Transmittal Letter - MRI Lumbar Spine", "3"),
+    ],
+)
+def test_a_qualified_letter_is_unchanged(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+def test_an_order_summary_is_administrative_and_is_not_over_claimed():
+    """Buys determinism rather than a new answer - all 8 rows already reached 100 through the
+    cascade and none was included. The value is that the answer stops being re-decided per record,
+    which is how the bare excerpt wrapper came to ship two summaries against an instruction."""
+    assert classification.match_rules("Records Order Summary") == "100"
+    assert classification.match_rules("Patient Order Summary") == "100"
+    # "order summary" alone is not claimed: a clinical document summarising orders is not this.
+    assert classification.match_rules("Order Summary") is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Referral", "Patient Referral", "Medical Referral", "Referral for Authorization", "referrals"],
+)
+def test_a_referral_is_an_authorization_request(title):
+    """REVERSES the earlier reading, and that is the point. `patient referral` was administrative on
+    the strength of one record's excluded-pages list naming it; #134 wrote the caveat beside that
+    evidence itself. 23 rows / 46 pages move out of General, unchecked, into a category that ships."""
+    assert classification.match_rules(title) == "10"
+
+
+# The referral rule is LAST in `_RULES` and anchored at the start. Both properties are load-bearing
+# and these are the cases that fail if either is lost.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Acupuncture Referral", "5"),  # every document-type rule above still wins
+        ("Chiropractic Referral", "5"),
+        ("Referral for MRI Lumbar Spine", "3"),
+        # An email is administrative however it is titled (#220). UNANCHORED, `\breferrals?\b`
+        # claimed this one and turned an email into an authorization request, because a
+        # document-type match outranks an administrative one in `match_rules`. Measured over every
+        # title on the box: unanchored moved 22, anchored moves 12, and this is the difference.
+        ("Email and Referral Flyer", "100"),
+        ("Email - Referral", "100"),
+    ],
+)
+def test_a_title_that_merely_mentions_a_referral_is_not_one(title, expected):
+    assert classification.match_rules(title) == expected
