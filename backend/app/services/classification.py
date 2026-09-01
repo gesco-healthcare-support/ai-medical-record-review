@@ -47,8 +47,24 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # administrative rule at all and the bare `ame` in rule 13 answered it. Safe because
         # _EVALUATOR_MENTION withholds ONLY 13: a real document type in the same title still wins, so
         # "Supplemental AME Letter" keeps 12.
+        # `e-?mails?\b` UNANCHORED at the end, 2026-08-31. `^\s*e-?mail\s*$` matched only a title
+        # that is EXACTLY the word, so anything an email is ABOUT fell through - and where that
+        # something was an evaluator, the bare `ame`/`qme` in rule 13 answered it and the email was
+        # summarized as the evaluation:
+        #
+        #     Email - QME Report/records          -> 13     found in a real record, delivered
+        #     Email - AME Evaluation              -> 13
+        #     Email Chain / Emails                -> no rule at all
+        #
+        # This is the SAME defect as `(ame|qme|pqme) letter` above and the same argument word for
+        # word: a message ABOUT an evaluation is procedural, only the bare form was listed, so the
+        # evaluator mention won. Fixed there in #119 and missed here.
+        #
+        # Still anchored at the START. An email is one when the title OPENS with it; a clinical
+        # document that merely mentions email later is not, and `\b` at the end keeps "emailed"
+        # from matching. Confirmed by the reviewers, who name "mails" in an excluded-types list.
         r"\b(cover|transmittal) letter\b|\b(ame|qme|pqme) letter\b"
-        r"|\bcorrespondence\b|^\s*e-?mail\s*$",
+        r"|\bcorrespondence\b|^\s*e-?mails?\b",
         # `declaration of service` added UNANCHORED 2026-08-18. `^declaration\b` only matches a title
         # that STARTS with the word, so "QME Declaration of Service" was answered 13 by the evaluator
         # mention while a bare "Declaration of Service" was answered 100 - the same document, decided
@@ -190,6 +206,22 @@ _DOCUMENT_NOUN = re.compile(
 #
 # 2026-08-18: decided in-house, NOT confirmed with eData.
 _PAPERWORK_ABOUT_A_DOCUMENT = re.compile(
+    # NOT widened to cover emails, and the attempt is worth recording because it looked right.
+    #
+    # 2026-08-31 a real record delivered `Email - QME Report/records` as category 13 - summarized
+    # with the evaluation checklist - and adding `^\s*e-?mails?\b` here fixes exactly that: the
+    # `_DOCUMENT_NOUN` valve stops standing the administrative rule down on the word "Report", so
+    # the email stays 100.
+    #
+    # It also breaks `test_evaluation_reports_survive_their_cover_page`, which pins
+    # "Email Correspondence - QME Report" at 13 on purpose. That pin is the document-beats-wrapper
+    # principle, and the title alone cannot separate the two readings: an email COVER PAGE on a
+    # 40-page QME report, and a 2-page email ABOUT one, are the same string.
+    #
+    # The pin wins. SS15.7 measured this valve over 2,874 rows and found ZERO confirmed cases of a
+    # real clinical document lost to a wrapper, and content hidden inside another record is never
+    # surfaced again while a wrongly-kept email is visible to the reviewer. One observed row does not
+    # buy reintroducing that risk. The row is reported instead.
     r"\b(declaration|proof|certificate) of (service|mailing) of\b"
 )
 

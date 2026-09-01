@@ -1207,3 +1207,88 @@ def test_a_real_llm_failure_is_still_swallowed(monkeypatch):
     monkeypatch.setattr(classification, "get_genai_client", object)
 
     assert classification.llm_classify("Progress Report") is None
+
+
+# ---------------------------------------------------------------------------------------------
+# An email is administrative however it is titled. `^\s*e-?mail\s*$` matched only a title that IS
+# the word, so anything an email was ABOUT fell through - and where that something was an evaluator,
+# the bare `ame`/`qme` in rule 13 answered it. Found in a real record on 2026-08-31, delivered:
+#
+#     Email - QME Report/records   -> 13, summarized with the evaluation checklist
+#
+# Same defect and the same argument as `(ame|qme|pqme) letter`, fixed there in #119 and missed here.
+# The reviewers name "mails" in an excluded-types list, so the destination is not in doubt.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Email",
+        "E-mail",
+        "EMAIL",
+        "Emails",
+        "Email Chain",
+        "Email from the claims examiner",
+        "Email - AME Evaluation",
+        "E-mails regarding scheduling",
+        # NOT "Email - QME Report/records", which is the row that FOUND this: it carries a document
+        # NOUN, so the `_DOCUMENT_NOUN` valve stands the administrative rule down and rule 13
+        # answers. Document beats wrapper, pinned by test_evaluation_reports_survive_their_cover_page
+        # and deliberately not overridden - see the note on _PAPERWORK_ABOUT_A_DOCUMENT. So this
+        # change fixes the family and leaves that one row, which is reported rather than forced.
+    ],
+)
+def test_an_email_is_administrative_however_it_is_titled(title):
+    assert classification.match_rules(title) == classification.DEFAULT_ID
+
+
+# The safety property #119 established for letters, restated for emails: standing the administrative
+# rule down is not the same as claiming the category. A title naming a real document type keeps it,
+# because the valve withholds ONLY the evaluator mention.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Email - MRI of the Lumbar Spine", "3"),
+        ("Email - Operative Report", "8"),
+        ("Email - Deposition Transcript", "9"),
+        ("Email - Laboratory Results", "14"),
+        # A SUPPLEMENTAL QME report is a document type of its own (12), not a bare evaluator
+        # mention, so it survives where the plain "QME Report" does not.
+        ("Email - Supplemental QME Report", "12"),
+    ],
+)
+def test_a_real_document_type_in_an_email_title_still_wins(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# The trailing word boundary. Without it `e-?mails?` would swallow "Emailed", turning a progress
+# report that happens to have been emailed into paperwork - which is content loss, the direction
+# that matters.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [("Emailed Progress Report", "1"), ("Emailing Instructions", None)],
+)
+def test_emailed_is_not_an_email(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# The anchor. An email is one when the title OPENS with it; a clinical document that mentions email
+# further in is not, or "Progress Report - please email the patient" becomes paperwork.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Progress Report - sent by email", "1"),
+        ("Operative Report forwarded via e-mail", "8"),
+    ],
+)
+def test_an_email_mentioned_later_in_a_title_is_not_an_email(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+def test_the_paperwork_valve_still_covers_what_it_covered_before():
+    """`_PAPERWORK_ABOUT_A_DOCUMENT` gained the email alternative; its original one must still fire.
+
+    That pattern is what stops `_DOCUMENT_NOUN` standing the administrative rules down on the word
+    "Report" inside "Declaration of Service of Medical Legal Report" - the case #119 and #122 were
+    about - so a regression here would quietly re-open that one.
+    """
+    assert classification.match_rules("Declaration of Service of Medical Legal Report") == "100"
+    assert classification.match_rules("Proof of Service of Medical Legal Report") == "100"
