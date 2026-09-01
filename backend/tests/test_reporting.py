@@ -152,7 +152,7 @@ def test_summary_body_is_justified():
 def _pdf_letter(num_pages, lawfirm) -> str:
     """The linked-PDF letter HTML. Imported lazily so a missing pymupdf skips instead of erroring."""
     linked_pdf = pytest.importorskip("app.services.linked_pdf")
-    return linked_pdf._summary_html([], num_pages, "Synthetic Patient", "-", "QME", lawfirm)
+    return linked_pdf._summary_html([], num_pages, "QME", lawfirm)
 
 
 @pytest.mark.parametrize("lawfirm", ["Example Law Firm", "Smith & Jones, LLP", "", "   ", None])
@@ -399,7 +399,7 @@ def test_both_renderers_use_the_same_title_separator():
     doc = build_mrr_document(entries, 10, "A B", "01/01/1980", "QME", "Firm")
     word_cell = doc.tables[0].rows[0].cells[1].text
     linked_pdf = pytest.importorskip("app.services.linked_pdf")
-    letter = linked_pdf._summary_html(entries, 10, "A B", "01/01/1980", "QME", "Firm")
+    letter = linked_pdf._summary_html(entries, 10, "QME", "Firm")
     assert word_cell.startswith(f"A REPORT{TITLE_SEPARATOR}")
     assert f"</a>{html.escape(TITLE_SEPARATOR)}" in letter
 

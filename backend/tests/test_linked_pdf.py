@@ -121,3 +121,34 @@ def test_build_linked_pdf_empty_entries_is_summary_only(tmp_path):
     ]
     assert gotos == []
     doc.close()
+
+
+def test_the_running_header_carries_the_patient_name_and_dob(tmp_path):
+    """WHEN a linked PDF is built, THE SYSTEM SHALL print the patient identity on the summary pages.
+
+    The summary letter's HTML never receives the identity: `_draw_running_header` paints it onto the
+    rendered pages instead. Pinned here so that removing the unused parameters from the HTML builder
+    cannot quietly drop the identity from the deliverable - nothing else asserted it.
+    """
+    source = _make_source(tmp_path, pages=2)
+    data = build_linked_pdf(
+        source,
+        [
+            {
+                "summaryDate": "01/01/2020",
+                "linkTitle": "PROGRESS REPORT (Pages 1-1)",
+                "summaryText": "Body text.",
+                "startPage": 1,
+            }
+        ],
+        num_pages=2,
+        patient_name="Synthetic Patient",
+        patient_dob="01/01/1990",
+        qme_or_ame="QME",
+        lawfirm="Example Firm",
+    )
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    summary_text = doc[0].get_text()
+    doc.close()
+    assert "Synthetic Patient" in summary_text
+    assert "01/01/1990" in summary_text
