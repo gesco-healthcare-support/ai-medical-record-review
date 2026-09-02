@@ -540,9 +540,17 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         #
         # ANCHORED AT THE START, and that is not tidiness. Unanchored, `\breferrals?\b` claimed
         # "Email and Referral Flyer" - an email, which is administrative however it is titled (#220)
-        # - because a document-type match outranks an administrative one in `match_rules`. Measured
-        # before and after: unanchored moved 22 titles including that one, anchored moves 15 and
-        # leaves it at 100. A title merely MENTIONING a referral is not a referral.
+        # - because a document-type match outranks an administrative one in `match_rules`.
+        #
+        # Measured over all 1,519 distinct titles on the box, and the two counts are different
+        # questions - stated separately because a comment conflating them outlives the PR:
+        #
+        #                     titles MATCHED    titles whose ANSWER CHANGES
+        #   this pattern            15                      9   (33 rows, 66 pages, 15 included)
+        #   unanchored              29                     16   (45 rows, 88 pages, 19 included)
+        #
+        # So the anchor withholds 7 titles the unanchored form would have claimed, "Email and
+        # Referral Flyer" among them. A title merely MENTIONING a referral is not a referral.
         #
         # LAST in `_RULES`, so every document-type rule above still wins: "Acupuncture Referral"
         # stays 5, "Referral for MRI Lumbar Spine" stays 3, and a referral naming an evaluator
