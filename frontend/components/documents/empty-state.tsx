@@ -19,19 +19,11 @@ export function EmptyState({
         Upload a medical record and MRR identifies the documents inside it. You review and correct
         the result before anything is summarized.
       </p>
-      <div
-        className={cn("hd-drop", dragging && "dragging")}
-        role="button"
-        tabIndex={0}
-        aria-label="Drag a PDF here, or browse your files"
-        onClick={onBrowse}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onBrowse();
-          }
-        }}
-      >
+      {/* Not a control, deliberately: the "Browse files" button inside it is. Giving this div a
+          button role plus a tab stop made one action two separate stops, and nothing told a keyboard
+          user they did the same thing. The click handler stays as a mouse convenience over the whole
+          area; keyboard and screen-reader users reach the button. */}
+      <div className={cn("hd-drop", dragging && "dragging")} onClick={onBrowse}>
         <span className="hd-drop-icon">
           <UploadCloud width={26} height={26} aria-hidden />
         </span>
