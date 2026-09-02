@@ -709,3 +709,54 @@ describe("useReviewWorkflow reloadRows protects unsaved edits to the server-writ
     expect(result.current.rows[0].title).toBe("t"); // the still-unsaved title survives
   });
 });
+
+
+// #202. `get_status` now resolves the attention payload from the newest SUMMARIZE job while
+// progress still describes the newest job of any kind, so after a dedup has run `job.error` is the
+// dedup's (usually null) and only the payload still knows why the summarize stopped. The message
+// must therefore come from the payload, so it and the row list are always the same run's.
+describe("useReviewWorkflow recovers the needs_attention detail after a later job", () => {
+  const failedRows = [{ idx: 2, pages: "5-6", reason: "unreadable" }];
+
+  it("takes the message from the attention payload, not the newest job's error", async () => {
+    mockDoc.mockResolvedValue(detail({ status: "needs_attention" }));
+    mockStatus.mockResolvedValue({
+      status: "needs_attention",
+      job: {
+        id: 9,
+        kind: "dedup", // a dedup ran after the failed summarize
+        state: "done",
+        stage: "deduping",
+        current: 1,
+        total: 1,
+        error: null, // the dedup's error - null, and NOT the reason the summarize stopped
+        attention: { message: "Two documents could not be read.", rows: failedRows },
+      },
+    });
+
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    expect(result.current.attention?.message).toBe("Two documents could not be read.");
+    expect(result.current.attention?.rows).toHaveLength(1);
+    expect(result.current.attention?.rows[0].idx).toBe(2);
+  });
+
+  it("keeps the generic notice when neither source says anything", async () => {
+    mockDoc.mockResolvedValue(detail({ status: "needs_attention" }));
+    mockStatus.mockResolvedValue({
+      status: "needs_attention",
+      job: {
+        id: 9, kind: "dedup", state: "done", stage: "deduping", current: 1, total: 1,
+        error: null,
+        attention: null,
+      },
+    });
+
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    expect(result.current.attention?.message).toBe("Some documents need attention.");
+    expect(result.current.attention?.rows).toEqual([]);
+  });
+});
