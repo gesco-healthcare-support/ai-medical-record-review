@@ -192,25 +192,33 @@ _EVALUATOR_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, d
 # "follow-up visit"/"follow-up appointment", was measured too and REJECTED: it moved 4 real titles
 # from 1 to no-rule-at-all, spending live content to fix nothing.
 _FOLLOWUP_MENTION = "1"
-_FOLLOWUP_TOKEN = re.compile(r"follow ?-? ?up")
-# The category-1 rule minus that token: did anything else in it match?
+_FOLLOWUP_TOKEN_SOURCE = r"follow ?-? ?up"
+_FOLLOWUP_TOKEN = re.compile(_FOLLOWUP_TOKEN_SOURCE)
+
+# Rule 1's treating-visit synonyms, WITHOUT the position-in-care token. Rule 1 is built from these
+# two constants below, so "the category-1 rule minus that token" is now literally true rather than
+# maintained by hand.
 #
-# THIS LIST AND RULE 1 ARE A PAIR AND MOVE TOGETHER. Nothing but this comment enforces it, and it
-# has now been missed twice - `work status` arrived in rule 1 in #146 and `activity status` in this
-# change, and neither came here on its own. The cost is silent and only shows on titles carrying
-# BOTH a follow-up token and a modality, which is why no existing test caught it:
+# It used to be a second copy of the same list, and the comment here said "THIS LIST AND RULE 1 ARE
+# A PAIR AND MOVE TOGETHER. Nothing but this comment enforces it" - which was accurate, and the pair
+# had already drifted TWICE: `work status` arrived in rule 1 in #146 and `activity status` in #195,
+# and neither reached the copy on its own. The cost is silent, and shows only on a title carrying
+# BOTH a follow-up token and a modality, which is why no test caught either:
 #
 #     Work Status Report Follow-Up MRI          -> 1
 #     Activity Status Report Follow-Up MRI      -> 3      the same document, two answers
 #
-# A token in rule 1 but not here means that synonym surrenders category 1 to imaging, operative,
-# deposition or laboratory where its twin keeps it. Caught by @adrian-g on review, who replayed it:
-# 4 of 4 such pairs diverged before, 0 of 4 after, and 72 titles move x -> 1, every one carrying
-# both tokens.
-_TREATING_VISIT_WITHOUT_FOLLOWUP = re.compile(
+# The second was caught by @adrian-g on review rather than by the code. One source removes the class
+# of defect instead of re-synchronising the copy a third time.
+_TREATING_VISIT_TOKENS = (
     r"\bpr-?2\b|progress report|progress note|office visit|work status|\bactivity status\b"
 )
+_TREATING_VISIT_WITHOUT_FOLLOWUP = re.compile(_TREATING_VISIT_TOKENS)
 _FOLLOWUP_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, deposition, lab
+
+# A title that is ONLY the position-in-care token. A category-1 rule that does not match this
+# answers 1 for some other reason, which is what `_answered_for_another_reason` asks.
+_FOLLOWUP_ONLY = "follow-up"
 
 # Words that name a DOCUMENT rather than the paperwork wrapped around it. The segmenter is told to
 # fold a cover sheet into the document it travels with and to title the record from the visible
@@ -404,11 +412,10 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         #
         # Rules 12, 13 and 2 all precede this one, so an evaluator's own report, a Permanent and
         # Stationary or a Doctor's First Report still wins if a title ever carries both.
-        (
-            r"\bpr-?2\b|progress report|progress note|office visit|follow ?-? ?up"
-            r"|work status|\bactivity status\b",
-            "1",
-        ),
+        # Composed from the two constants above rather than spelled out, so the mirror used by the
+        # follow-up withholding IS this rule minus that one token, by construction. Written out
+        # twice, the pair drifted twice - see the note on `_TREATING_VISIT_TOKENS`.
+        (rf"{_TREATING_VISIT_TOKENS}|{_FOLLOWUP_TOKEN_SOURCE}", "1"),
         # ORDERS AND PRESCRIPTIONS -> 10, answered by Adam 2026-08-24: "All orders can probably go
         # under the RFA category", and for prescriptions "if they are on their own it's probably fine
         # to put it under the RFA category since it should be the same information being summarized.
@@ -508,6 +515,33 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
 )
 
 
+def _answered_for_another_reason(text: str, category: str) -> bool:
+    """Did a rule OTHER than the position-in-care one answer `category` for this title?
+
+    The follow-up withholding is documented as firing "ONLY when follow-up is the sole reason
+    category 1 matched", and `_TREATING_VISIT_WITHOUT_FOLLOWUP` answers that for rule 1's OWN
+    synonyms. It cannot answer it for a DIFFERENT rule, and three others now answer category 1: the
+    return-to-work voucher (#140), the emergency-department visit (#160) and History & Physical
+    (#161). Each names a treating document outright, so each is exactly the case the guard exists to
+    protect - and each surrendered category 1 anyway, because the demotion filters `matches` by
+    VALUE and so drops every "1" in it, whichever rule put it there:
+
+        Progress Report Follow-Up MRI                       -> 1
+        Return-to-Work and Voucher Report Follow-Up MRI     -> 3
+        Emergency Department Record Follow-Up MRI           -> 3
+        History and Physical Follow-Up MRI                  -> 3
+
+    Derived rather than listed, so a fourth rule answering category 1 is covered the day it is
+    written - the same reasoning that made rule 1 and its mirror one constant instead of two. A rule
+    qualifies when it matches this title but NOT the bare token, i.e. it has a reason of its own.
+    """
+    return any(
+        pattern.search(text) and not pattern.search(_FOLLOWUP_ONLY)
+        for pattern, rule_category in _RULES
+        if rule_category == category
+    )
+
+
 @dataclass
 class Classification:
     """Result of classifying one sub-document."""
@@ -540,7 +574,10 @@ def match_rules(title):
     if (
         _FOLLOWUP_MENTION in matches
         and _FOLLOWUP_TOKEN.search(text)
+        # Two ways category 1 can be earned by something other than the token, and both must be
+        # asked: rule 1 matching on one of its OWN synonyms, and a different rule answering 1.
         and not _TREATING_VISIT_WITHOUT_FOLLOWUP.search(text)
+        and not _answered_for_another_reason(text, _FOLLOWUP_MENTION)
         and not _FOLLOWUP_YIELDS_TO.isdisjoint(matches)
     ):
         matches = [c for c in matches if c != _FOLLOWUP_MENTION]
