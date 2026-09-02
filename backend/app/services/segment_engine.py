@@ -159,11 +159,11 @@ def _escalation_text(pdf_path, row, page_text_fn=None):
         #
         # Through `extract_pages_with_report` rather than `extract_text_from_selected_pages` (#212),
         # which catches a per-page Tesseract failure and continues - so this returned a short
-        # escalation window and raised nothing. PRODUCTION NEVER TAKES THIS BRANCH: the worker always
-        # supplies `page_text_fn`. Which is exactly who it could mislead - the eval harnesses in
-        # `scripts/eval/` run segmentation outside the worker, so a silently short window changed
-        # what the classifier was scored on while the run reported a clean number. Twice this month a
-        # measurement defect has inverted a conclusion, so an unattributable one is worth closing.
+        # escalation window and raised nothing. PRODUCTION NEVER TAKES THIS BRANCH: the worker
+        # always supplies `page_text_fn`. Which is exactly who it could mislead - the eval harnesses
+        # in `scripts/eval/` run segmentation outside the worker, so a silently short window changed
+        # what the classifier was scored on while the run reported a clean number. Twice this
+        # month a measurement defect has inverted a conclusion, so an unattributable one matters.
         text, report = extract_pages_with_report(pdf_path, pages)
         if report["errored"]:
             logger.warning(
