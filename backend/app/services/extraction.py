@@ -6,13 +6,16 @@ export/bundle header in one call. Vertex-only (BAA path); PHI OCR text stays on 
 """
 
 import json
+import logging
 
 from google.genai import types
 
 from app.config import get_settings
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
-from app.services.ocr import extract_text_from_selected_pages
+from app.services.ocr import extract_pages_with_report
+
+logger = logging.getLogger(__name__)
 
 _HEADER_SYSTEM = (
     "You extract administrative header fields from a California workers'-compensation medical "
@@ -43,8 +46,33 @@ _BLANK = {"first_name": "", "last_name": "", "dob": "", "lawfirm": ""}
 
 def extract_header(pdf_path, pages) -> dict:
     """OCR ``pages`` and extract {first_name, last_name, dob, lawfirm} via Vertex; blanks when
-    nothing is found."""
-    text = extract_text_from_selected_pages(pdf_path, pages)
+    nothing is found.
+
+    Reads through ``extract_pages_with_report``, NOT ``extract_text_from_selected_pages`` (#211).
+    The latter catches a per-page Tesseract failure and continues, so a dropped page is
+    indistinguishable from a page with no words on it - and the two failures are not equally safe
+    here:
+
+    * EVERY page fails -> empty text -> `_BLANK` -> the reviewer meets four empty fields and fills
+      them in. Visible and recoverable.
+    * ONE page fails -> a header extracted from what survived, which LOOKS complete. The four
+      fields are reviewer-facing on the landing table and travel into the deliverable, so a name or
+      a date of birth taken from a partial read is indistinguishable from one taken from the whole.
+
+    A partial read is now attributable: the errored pages are logged by number. That is deliberately
+    all it does - surfacing "this header came from a partial read" to the REVIEWER is a product
+    decision about what the landing table should then show, and is left open on the issue rather
+    than invented here.
+    """
+    text, report = extract_pages_with_report(pdf_path, pages)
+    if report["errored"]:
+        # Page numbers only: non-PHI, and enough to re-read those pages by hand.
+        logger.warning(
+            "header extracted from a PARTIAL read: %d of %d page(s) could not be OCR'd (%s)",
+            len(report["errored"]),
+            len(report["pages"]),
+            report["errored"],
+        )
     if not text.strip():
         return dict(_BLANK)
 

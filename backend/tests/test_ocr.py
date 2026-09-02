@@ -156,7 +156,9 @@ def test_report_separates_pages_that_errored_from_pages_that_read_blank(monkeypa
 
     text, report = ocr.extract_pages_with_report("dummy.pdf", [1, 2, 3], retries=0)
     assert text == "real body text"
-    assert report == {"pages": 3, "errored": [1], "blank": [2]}
+    # `pages` is the LIST attempted, not a count (#210): it was a count here and a list in
+    # `page_text.get_row_text_with_report`, whose docstring asserted the two matched exactly.
+    assert report == {"pages": [1, 2, 3], "errored": [1], "blank": [2]}
 
 
 def test_report_retries_only_the_errored_page(monkeypatch):
@@ -177,7 +179,7 @@ def test_report_retries_only_the_errored_page(monkeypatch):
     text, report = ocr.extract_pages_with_report("dummy.pdf", [1, 2], retries=1)
     assert attempts == [1, 1, 2]  # page 1 retried and recovered; page 2 read once
     assert text == "body"
-    assert report == {"pages": 2, "errored": [], "blank": [2]}
+    assert report == {"pages": [1, 2], "errored": [], "blank": [2]}
 
 
 def test_report_fails_fast_when_tesseract_is_missing(monkeypatch):
@@ -309,3 +311,32 @@ def test_the_base_dpi_is_not_declared_so_ordinary_pages_are_unchanged(monkeypatc
     captured.clear()
     assert ocr._ocr_image(_Capped()) == "text"
     assert captured.get("config") == "--dpi 72"
+
+
+def test_the_two_report_contracts_agree_on_the_types_of_all_three_keys(monkeypatch):
+    """#210: `pages` was a COUNT here and a LIST in `page_text.get_row_text_with_report`, whose
+    docstring asserted the two matched "exactly". Nothing read the field, so nothing was broken -
+    which is why it survived. Pinned as a TYPE comparison across both functions, because that is
+    the claim the stale docstring made and the one a caller would rely on."""
+    from app.services import page_text as pt
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", lambda image, timeout=0: "body")
+    monkeypatch.setattr(ocr, "_rasterize", _per_page_rasterize)
+    monkeypatch.setattr(ocr, "_configured", True)
+
+    _text, direct = ocr.extract_pages_with_report("dummy.pdf", [4, 5])
+
+    # The store-backed sibling builds its report the same way; compare the shapes, not the values.
+    stored = {"pages": [4, 5], "errored": [], "blank": []}
+    assert set(direct) == set(stored) == {"pages", "errored", "blank"}
+    for key in stored:
+        assert isinstance(direct[key], list), key
+        assert type(direct[key]) is type(stored[key]), key
+    assert direct["pages"] == [4, 5]  # the pages ASKED for, in order
+    # And the count is still one call away, which is what the old shape offered.
+    assert len(direct["pages"]) == 2
+    # Deliberately NOT asserting anything about the docstring text. The first version of this test
+    # checked that the word "exactly" was gone and FAILED - because the corrected docstring uses the
+    # word to explain that it used to be there. A test of prose tests prose; the type comparison
+    # above is the claim that matters.
+    assert pt.get_row_text_with_report.__doc__ is not None

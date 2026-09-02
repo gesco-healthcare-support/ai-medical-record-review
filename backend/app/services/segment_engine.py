@@ -25,7 +25,7 @@ from app.services.gemini import (
 )
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
-from app.services.ocr import extract_text_from_selected_pages
+from app.services.ocr import extract_pages_with_report
 from app.services.pools import PoolTimeout, drain_pool
 from app.services.summary_doi import extract_injury_date
 from app.services.taxonomy import DEFAULT_ID
@@ -156,7 +156,26 @@ def _escalation_text(pdf_path, row, page_text_fn=None):
     pages = list(range(start, min(start + _ESCALATION_PAGES - 1, end) + 1))
     if page_text_fn is None:
         # Standalone path: one extraction call for the whole span, keeping this module DB-free.
-        return extract_text_from_selected_pages(pdf_path, pages)[:_ESCALATION_CHARS]
+        #
+        # Through `extract_pages_with_report` rather than `extract_text_from_selected_pages` (#212),
+        # which catches a per-page Tesseract failure and continues - so this returned a short
+        # escalation window and raised nothing. PRODUCTION NEVER TAKES THIS BRANCH: the worker always
+        # supplies `page_text_fn`. Which is exactly who it could mislead - the eval harnesses in
+        # `scripts/eval/` run segmentation outside the worker, so a silently short window changed
+        # what the classifier was scored on while the run reported a clean number. Twice this month a
+        # measurement defect has inverted a conclusion, so an unattributable one is worth closing.
+        text, report = extract_pages_with_report(pdf_path, pages)
+        if report["errored"]:
+            logger.warning(
+                "escalation window for pages %s-%s is SHORT: %d of %d page(s) could not be OCR'd "
+                "(%s); a classification scored on this text is scored on part of it",
+                start,
+                end,
+                len(report["errored"]),
+                len(report["pages"]),
+                report["errored"],
+            )
+        return text[:_ESCALATION_CHARS]
     parts = []
     total = 0
     for page in pages:
