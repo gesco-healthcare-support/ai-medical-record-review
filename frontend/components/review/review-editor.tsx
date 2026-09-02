@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import type { CategoryOption, Row } from "@/lib/types";
 import {
   categoryWasGuessed,
+  clearFlagOnEdit,
   couldNotIdentify,
   mergeRows,
   newKey,
@@ -74,7 +75,11 @@ export function ReviewEditor({
   }
 
   function field(i: number, patch: Partial<Row>) {
-    onRowsChange(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+    // Every row edit in the table arrives here, which is why the flag rule lives at this one point
+    // rather than at the eleven `onField` call sites in rows-table.
+    onRowsChange(
+      rows.map((r, idx) => (idx === i ? { ...r, ...clearFlagOnEdit(r, patch) } : r)),
+    );
   }
 
   function mergeUp(i: number) {
