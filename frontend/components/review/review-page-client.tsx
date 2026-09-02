@@ -404,7 +404,7 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
       {/* The post-stop choice lives HERE rather than in the progress bar, because that bar unmounts
           the moment the job stops being active and so cannot host it. */}
       {wf.cancelledJob ? (
-        <div className="banner" role="status">
+        <output className="banner">
           <strong>Stopped.</strong> Anything already finished has been kept.{" "}
           <button
             type="button"
@@ -420,10 +420,10 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
           >
             Start over
           </button>
-        </div>
+        </output>
       ) : null}
       {unresolvedDupes > 0 && tab !== "duplicates" ? (
-        <div className="banner" role="status">
+        <output className="banner">
           {unresolvedDupes} possible duplicate {unresolvedDupes === 1 ? "group" : "groups"} to
           review before summarizing.{" "}
           <button
@@ -433,10 +433,10 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
           >
             Review duplicates
           </button>
-        </div>
+        </output>
       ) : null}
       {wf.attention ? (
-        <div className="notice-attention" role="status">
+        <output className="notice-attention">
           <p>{wf.attention.message}</p>
           {failedRows.length ? (
             <ul className="notice-attention-list">
@@ -454,7 +454,7 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
               })}
             </ul>
           ) : null}
-        </div>
+        </output>
       ) : null}
       {showSummarizeBlockers && save.kind === "error" && errors.size === 0 ? (
         <div className="banner" role="alert">
