@@ -3254,3 +3254,62 @@ class TestASecondDuplicateGroupInOneCandidate:
         rows = _rows_by_idx(doc_id)
         assert len({r.dupe_group for r in rows.values()}) == 1
         assert all(r.dupe_group is not None for r in rows.values())
+
+
+def test_a_row_reusing_the_duplicate_checks_text_still_names_its_unreadable_pages(monkeypatch):
+    """GUARDS the whole of #236, through the REAL engine rather than a stub of it.
+
+    #236 reasoned that a row reusing dedup's `review_rows.source_text` can never name the pages lost
+    while that text was produced: `summarize_row` only overrides `unreadable_pages` from a fresh
+    extraction, and a reusing row performs none. The conclusion was that the fact would have to be
+    persisted per row when dedup writes the text.
+
+    It does not, because the fact is already persisted per PAGE. Three hops, each in a different
+    module, and no test crossed all three until this one:
+
+      1. dedup reads through `page_text.get_row_text_with_report`, which STORES what it extracted
+         including failures as `extract_ok=False` - even on an empty store, so it does not depend on
+         `populate_document` having run (pinned in test_page_text.py);
+      2. `summarize_document` seeds every row's `unreadable_pages` from `page_texts.extract_ok`
+         BEFORE the reuse loop, so a row that already carries `source_text` keeps its seed;
+      3. `summarize_row` uses that seed when it does not re-extract (pinned in
+         test_summarize_engine.py).
+
+    `extract_pages_with_report` is `_boom` here, so the assertion below is only reachable without a
+    single fresh extraction - which is what makes this the reuse case and not a re-read in disguise.
+    """
+    import app.services.summarize_engine as se
+
+    from app.models import PageText
+
+    def boom(*_a, **_kw):
+        raise AssertionError("re-extracted, so this is not the reuse path #236 is about")
+
+    monkeypatch.setattr(se, "extract_pages_with_report", boom)
+    monkeypatch.setattr(
+        se,
+        "_generate",
+        lambda model, system_msg, user_text, temperature, max_output_tokens=None: (
+            "Progress Note - Dr Smith" if system_msg == se.TITLE_PROMPT else "Summary body",
+            False,
+        ),
+    )
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: {"fixed_text": "", "issues": []})
+
+    doc_id, job_id = _doc_with_summarize_rows(1)  # one row, pages 1-1
+    with get_sessionmaker()() as session:
+        # The state dedup leaves behind: the row's text, and page 1 recorded as a failed read.
+        # Text is present, so nothing re-extracts; the page store is the only record of the loss.
+        row = session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).one()
+        row.source_text = "what dedup managed to read"
+        session.add(PageText(document_id=doc_id, page=1, text="", extract_ok=False, char_count=0))
+        session.commit()
+
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        summary = session.scalars(select(Summary).where(Summary.document_id == doc_id)).one()
+        assert summary.unreadable is True
+        assert "1" in summary.text and "unintelligible" in summary.text.lower(), (
+            "the delivered summary must name the page lost while dedup produced its text"
+        )

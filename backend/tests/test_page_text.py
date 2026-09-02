@@ -380,3 +380,41 @@ def test_population_without_progress_still_works(monkeypatch):
     doc_id = _doc(pages=3)
     with get_sessionmaker()() as session:
         assert pt.populate_document(session, doc_id, "/x.pdf", 3) == 3
+
+
+def test_a_row_read_from_an_empty_store_persists_the_page_that_failed(monkeypatch):
+    """The link #236 assumed was missing, pinned end to end at this layer.
+
+    #236 reasoned that a document whose `populate_document` never ran leaves an empty store, so a
+    row reusing the duplicate check's `source_text` could never name the pages lost while that text
+    was produced - nothing having recorded them.
+
+    It records them here. `get_row_text_with_report` extracts on a miss and STORES the outcome
+    including a failure (`extract_ok=False`), which is what the summarize worker later reads to seed
+    `row["unreadable_pages"]`. So the fact travels with the store rather than needing to be carried
+    on the row, and dedup does not depend on `populate_document` having run first.
+
+    Pinned because the chain is three hops long across three modules and nothing else asserts the
+    first one: the other row-report test populates the store up front, so it never exercises a miss.
+    """
+    outcomes = {1: ("real text", True), 2: ("", False)}
+    monkeypatch.setattr(pt, "_extract", lambda path, page: outcomes[page])
+    doc_id = _doc(pages=2)
+
+    with get_sessionmaker()() as session:
+        # Nothing populated: this is the state the issue describes.
+        assert session.scalars(select(PageText).where(PageText.document_id == doc_id)).all() == []
+        text, report = pt.get_row_text_with_report(session, doc_id, [1, 2], pdf_path="/x.pdf")
+
+    assert text == "real text"
+    assert report["errored"] == [2]
+
+    with get_sessionmaker()() as session:
+        stored = {
+            r.page: r.extract_ok
+            for r in session.scalars(select(PageText).where(PageText.document_id == doc_id))
+        }
+    assert stored == {1: True, 2: False}, (
+        "the failure must be recorded, or the pages lost while dedup produced a row's text are "
+        "unrecoverable by the time that row is summarized"
+    )
