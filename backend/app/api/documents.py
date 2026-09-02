@@ -340,7 +340,11 @@ def _apply_row_category(
     )
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    responses={400: {"description": "No PDF was uploaded, or the file is not a readable PDF."}},
+)
 def create_document(
     pdf: UploadFile | None = File(default=None),
     session: Session = Depends(get_db),
@@ -389,7 +393,11 @@ def create_document(
     return {"id": document_id, "page_count": page_count, "sha256_duplicate": duplicate}
 
 
-@router.post("/aggregate", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/aggregate",
+    status_code=status.HTTP_201_CREATED,
+    responses={400: {"description": "No PDFs were uploaded, or none of them is readable."}},
+)
 def aggregate_documents(
     pdfs: list[UploadFile] = File(default=[]),
     name: str = Form(default=""),
@@ -563,7 +571,10 @@ def put_header(
     return document.listing()
 
 
-@router.delete("/{document_id}")
+@router.delete(
+    "/{document_id}",
+    responses={409: {"description": "A job is running for this document."}},
+)
 def delete_document(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
@@ -741,7 +752,10 @@ def get_duplicates(
     }
 
 
-@router.post("/{document_id}/dedup/start")
+@router.post(
+    "/{document_id}/dedup/start",
+    responses={409: {"description": "A job is already running for this document."}},
+)
 def dedup_start(
     payload: DedupStartPayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -829,7 +843,17 @@ def _leave_cluster(session: Session, row: ReviewRow) -> None:
     row.include = catalog.summarize_default_for(session, row.category)
 
 
-@router.post("/{document_id}/duplicates/{group}/resolve")
+@router.post(
+    "/{document_id}/duplicates/{group}/resolve",
+    responses={
+        400: {
+            "description": "The action is not one of keep_one, dismiss or remove_member, "
+            "or an index is not in this cluster."
+        },
+        404: {"description": "No duplicate group has this number."},
+        409: {"description": "A job is running for this document."},
+    },
+)
 def resolve_duplicate(
     group: int,
     payload: DuplicateResolvePayload,
@@ -883,7 +907,13 @@ def resolve_duplicate(
     return {"ok": True}
 
 
-@router.put("/{document_id}/rows")
+@router.put(
+    "/{document_id}/rows",
+    responses={
+        400: {"description": "The submitted rows failed validation."},
+        409: {"description": "A job is running for this document."},
+    },
+)
 def put_rows(
     payload: RowsPayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -905,7 +935,10 @@ def put_rows(
     return {"ok": True, "count": len(rows), "reopened": reopened}
 
 
-@router.post("/{document_id}/jobs/{job_id}/cancel")
+@router.post(
+    "/{document_id}/jobs/{job_id}/cancel",
+    responses={404: {"description": "No job with this id belongs to this document."}},
+)
 def cancel_job(
     job_id: int,
     payload: CancelPayload | None = None,
@@ -955,7 +988,10 @@ def cancel_job(
     return {**job.progress(), **grace}
 
 
-@router.post("/{document_id}/segment/start")
+@router.post(
+    "/{document_id}/segment/start",
+    responses={409: {"description": "A job is already running for this document."}},
+)
 def segment_start(
     payload: SegmentStartPayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -981,7 +1017,19 @@ def segment_start(
     return {"ok": True}
 
 
-@router.post("/{document_id}/summarize/start")
+@router.post(
+    "/{document_id}/summarize/start",
+    responses={
+        400: {
+            "description": "No rows are marked for summarization, or the submitted rows "
+            "failed validation."
+        },
+        409: {
+            "description": "A job is already running for this document, or the record has "
+            "not been checked for duplicates since it last changed."
+        },
+    },
+)
 def summarize_start(
     payload: SummarizeStartPayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -1113,7 +1161,18 @@ def get_summaries(document: Document = Depends(get_owned_document)):
     return [_summary_response(document, summary) for summary in document.summaries]
 
 
-@router.put("/{document_id}/summaries/{idx}")
+@router.put(
+    "/{document_id}/summaries/{idx}",
+    # 400 and part of the 409 come from `_apply_row_category`, not from this handler's own body.
+    responses={
+        400: {"description": "The requested category is not in the catalog."},
+        404: {"description": "No summary exists at this index."},
+        409: {
+            "description": "A job is running for this document, summarization is rewriting "
+            "these summaries, or this summary's sub-document boundaries changed."
+        },
+    },
+)
 def put_summary(
     idx: int,
     payload: SummaryEditPayload | None = None,
@@ -1176,7 +1235,13 @@ def put_summary(
     return _summary_response(document, summary)
 
 
-@router.post("/{document_id}/summaries/{idx}/resummarize")
+@router.post(
+    "/{document_id}/summaries/{idx}/resummarize",
+    responses={
+        404: {"description": "No summary exists at this index."},
+        409: {"description": "A job is running for this document."},
+    },
+)
 def resummarize(
     idx: int,
     payload: ResummarizePayload | None = None,
@@ -1438,7 +1503,10 @@ def _matched_rows(session: Session, document: Document, categories):
     return matched
 
 
-@router.post("/{document_id}/export")
+@router.post(
+    "/{document_id}/export",
+    responses={409: {"description": "There are no summaries to export yet."}},
+)
 def export_document(
     payload: ExportPayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -1469,7 +1537,10 @@ def export_document(
     )
 
 
-@router.post("/{document_id}/export/pdf")
+@router.post(
+    "/{document_id}/export/pdf",
+    responses={409: {"description": "There are no summaries to export yet."}},
+)
 def export_document_pdf(
     payload: ExportPayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -1500,7 +1571,14 @@ def export_document_pdf(
     )
 
 
-@router.post("/{document_id}/bundle/pdf")
+@router.post(
+    "/{document_id}/bundle/pdf",
+    # Both codes come from `_matched_rows`, which this handler calls.
+    responses={
+        400: {"description": "The category list is empty."},
+        409: {"description": "No sub-document in this record matches those categories."},
+    },
+)
 def bundle_pdf(
     payload: BundlePayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -1521,7 +1599,17 @@ def bundle_pdf(
     )
 
 
-@router.post("/{document_id}/bundle/summarize")
+@router.post(
+    "/{document_id}/bundle/summarize",
+    # 400 and the first 409 come from `_matched_rows`; the cap check below adds the second 409.
+    responses={
+        400: {"description": "The category list is empty."},
+        409: {
+            "description": "No sub-document in this record matches those categories, or the "
+            "match is larger than the on-demand summarize limit."
+        },
+    },
+)
 def bundle_summarize(
     payload: BundlePayload | None = None,
     document: Document = Depends(get_owned_document),
