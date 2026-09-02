@@ -14,7 +14,7 @@ import {
   startSummarize,
   type HeaderFields,
 } from "@/lib/review-api";
-import type { CategoryOption, DocumentStatus, FailedRow, JobKind, Row } from "@/lib/types";
+import type { CategoryOption, FailedRow, JobKind, Row } from "@/lib/types";
 import {
   applyServerRowChanges,
   rowErrors,
@@ -84,7 +84,6 @@ export function useReviewWorkflow(
   };
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [totalPages, setTotalPages] = useState(0);
-  const [, setStatus] = useState<DocumentStatus | "">("");
   const [filename, setFilename] = useState("");
   const [banner, setBanner] = useState("");
   const [watching, setWatching] = useState(false);
@@ -257,7 +256,6 @@ export function useReviewWorkflow(
       const detail = await getDocument(documentId as string);
       // A segment run deletes and rewrites every row, so nothing local survives it to protect.
       replaceRows(detail.rows || []);
-      setStatus(detail.status);
       setHeader({
         patient_first_name: detail.patient_first_name || "",
         patient_last_name: detail.patient_last_name || "",
@@ -314,12 +312,10 @@ export function useReviewWorkflow(
           message: result.message || "Some documents need attention.",
           rows: result.rows ?? [],
         });
-        setStatus("needs_attention");
         if (rowsRef.current.length) enterEditor();
         else showStart();
         return;
       }
-      setStatus("done");
       if (enableSummaries) showSummaries();
       else if (rowsRef.current.length) enterEditor();
       else showStart();
@@ -356,7 +352,6 @@ export function useReviewWorkflow(
       // The document switch. Whatever the previous document left in the touched set describes rows
       // that are gone; carrying it into this one is the leak.
       replaceRows(detail.rows || []);
-      setStatus(detail.status);
       setFilename(detail.original_filename || "");
       setHeader({
         patient_first_name: detail.patient_first_name || "",
