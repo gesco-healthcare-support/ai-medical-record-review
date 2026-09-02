@@ -38,12 +38,32 @@ const DOI_PREFIX_NEW = new RegExp(
 );
 const DOI_PREFIX_LEGACY = /^\s*\*\*DOI\*\*:\s*([\d/.-]{4,}(?:\s*,\s*[\d/.-]{4,})*)\s*,\s*/;
 
+const MANUAL_CHECK_PREFIX = /^\s*\[ManualCheck\]\s*/i;
+const PAGES_SUFFIX = /\(Pages\s+\d+\s*[-–]\s*\d+\)\s*$/i;
+const DIAGNOSTIC_SUFFIX = /\[Diagnostic Study\]\s*$/i;
+
+/** Drop a trailing marker and the whitespace in front of it.
+ *
+ *  The two suffix patterns deliberately do NOT begin with `\s*`. Written as `\s*MARKER…$` the engine
+ *  re-scans the whitespace run from every start position, which is quadratic: on a whitespace-only
+ *  title of 20,000 characters that measured 424ms against 0.07ms for this form. Titles come out of
+ *  the model, so a pathological one would stall the tab. Matching the marker first and trimming what
+ *  preceded it is linear and yields the identical string. */
+function stripTrailingMarker(value: string, marker: RegExp) {
+  const found = marker.exec(value);
+  return found ? value.slice(0, found.index).trimEnd() : value;
+}
+
+/** The title as the reading column shows it, with the decorations the engine bakes into the stored
+ *  string removed. Exported for the equivalence + timing test; the view goes through parseDisplay. */
+export function displayTitle(raw: string) {
+  const body = (raw || "").replace(MANUAL_CHECK_PREFIX, "");
+  return stripTrailingMarker(stripTrailingMarker(body, PAGES_SUFFIX), DIAGNOSTIC_SUFFIX);
+}
+
 /** Strip the decorations the engine bakes into stored strings; the web view shows chips/meta. */
 function parseDisplay(item: SummaryItem) {
-  const title = (item.summaryTitle || "")
-    .replace(/^\s*\[ManualCheck\]\s*/i, "")
-    .replace(/\s*\(Pages\s+\d+\s*[-–]\s*\d+\)\s*$/i, "")
-    .replace(/\s*\[Diagnostic Study\]\s*$/i, "");
+  const title = displayTitle(item.summaryTitle || "");
   let text = item.summaryText || "";
   let doi: string | null = null;
   const match = DOI_PREFIX_NEW.exec(text) ?? DOI_PREFIX_LEGACY.exec(text);
