@@ -276,8 +276,8 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
                         </tr>
                       </thead>
                       <tbody>
-                        {matches.map((row, i) => (
-                          <tr key={i}>
+                        {matches.map((row) => (
+                          <tr key={`${row.start}-${row.end}`}>
                             <td className="hd-muted">
                               {row.start}
                               {"–"}
