@@ -312,6 +312,22 @@ _DEPOSITION_CATEGORIES = frozenset({"9"})
 # review - verified by scanning all 14 category prompts - so only they carry that rule and only they
 # can act on a list of the record's other studies.
 _EMBEDDED_REVIEW_CATEGORIES = frozenset({"12", "13"})
+# The catch-all. Its ID is known; its CONTENT is not, and that is the distinction this exists to
+# draw (#216). Every other known id earns a reduced preamble because its documents structurally
+# cannot contain the withheld thing - a Request For Authorization has no range of motion. 100 holds
+# whatever nothing else claimed, so nothing can be said about what its documents contain.
+#
+# And the population that REACHES the summarizer at 100 is selected for being clinical. 100 seeds
+# `summarize_default = False`, so a row there is unchecked unless a reviewer deliberately ticks it -
+# which they do when they judge the content worth summarizing. Measured 2026-09-02: 16 of 1,834
+# rows at 100 are ticked (0.9%), and 141 summaries have been produced at this category. So the one
+# population guaranteed to arrive with clinical content was the one guaranteed to receive none of
+# the clinical instructions.
+#
+# Treated exactly as an unrecognised id: same situation, same answer, and it is what the
+# default-INCLUDE policy in `build_preamble` was written for.
+_CATCH_ALL_CATEGORIES = frozenset({"100"})
+
 # Every id the catalog ships. An id outside this set gets EVERY block (see build_preamble).
 _KNOWN_CATEGORIES = (
     _EXAM_CATEGORIES
@@ -335,13 +351,29 @@ def build_preamble(category) -> str:
     never silently under-instructed. Only a KNOWN id has blocks withheld, and only where its documents
     structurally cannot contain the thing - a laboratory result has no range of motion, and a
     deposition transcript is not written as one paragraph.
+
+    THE CATCH-ALL TAKES THE DEFAULT TOO (#216). Withholding requires knowing what the documents
+    contain, and 100 is the one category about which nothing can be said - see
+    `_CATCH_ALL_CATEGORIES`. It is not a special case bolted on; it is the same situation as an
+    unrecognised id, so `content_unknown` covers both and the rest of the function is untouched.
+
+    WHY THE `exam` FLAG IS NOT SPLIT, since #216 calls that a prerequisite. It would be, if the
+    catch-all needed normal-findings WITHOUT vitals/pain/range-of-motion. It does not, because every
+    conditional block is guarded by its own wording rather than by the flag: normal-findings applies
+    "when describing an examination, a history, or a clinical assessment", `_C_PAIN` speaks only to
+    pain, `_C_RANGE_OF_MOTION` presupposes a measurement, and `_C_VERDICT` addresses "a diagnostic
+    study or a laboratory or test result". On a routing slip that lands at 100 every one of them is
+    inert. `_C_VITALS` is the exception and it argues the same way round: it PROHIBITS height and
+    weight, and a facesheet at 100 is exactly a document that carries them. So both groups are
+    wanted here and splitting the flag would buy a distinction nothing needs.
     """
     cat = str(category)
     unknown = cat not in _KNOWN_CATEGORIES
+    content_unknown = unknown or cat in _CATCH_ALL_CATEGORIES
     deposition = cat in _DEPOSITION_CATEGORIES
-    exam = unknown or cat in _EXAM_CATEGORIES
-    verdict = unknown or cat in _VERDICT_CATEGORIES
-    embedded = unknown or cat in _EMBEDDED_REVIEW_CATEGORIES
+    exam = content_unknown or cat in _EXAM_CATEGORIES
+    verdict = content_unknown or cat in _VERDICT_CATEGORIES
+    embedded = content_unknown or cat in _EMBEDDED_REVIEW_CATEGORIES
 
     parts = [_FACTUALITY, _CONTENT_HEADER, _C_POINT_SCOPE]
     if exam:

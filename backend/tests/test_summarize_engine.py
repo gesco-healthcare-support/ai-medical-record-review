@@ -1849,3 +1849,61 @@ def test_a_usable_audited_title_still_comes_through(monkeypatch):
 
     assert out["verifiedTitle"] is not None
     assert corrected in out["verifiedTitle"]
+
+
+# #216: the catch-all was getting the MINIMAL preamble - the same one as category 10 - and it is the
+# one category selected for misfiled clinical content. 100 seeds `summarize_default = False`, so a
+# row there is unchecked unless a reviewer deliberately ticks it, which they do when the content is
+# worth summarizing. Measured 2026-09-02: 16 of 1,834 rows at 100 are ticked (0.9%) and 141
+# summaries have been produced there - so the population that reaches the summarizer at 100 is
+# selected FOR being clinical, and received none of the clinical instructions.
+def test_the_catch_all_receives_every_block_like_an_unrecognised_id():
+    """Withholding a block requires knowing what the documents contain. 100 is the one category
+    about which nothing can be said, so it takes the same default-INCLUDE path as a new id."""
+    catch_all = se.build_preamble("100")
+    for block in (
+        "Do NOT infer",
+        "Report positive and abnormal findings",  # an H&P has been found at 100
+        "verdict IS the content",  # so has a misfiled diagnostic study
+        "review of earlier medical records",  # excerpt wrappers land here by rule (#229)
+        "height or weight",  # a facesheet at 100 is exactly a document carrying them
+        "For pain, give frequency",
+        "Range of motion",
+        "ONE continuous paragraph",
+        "ordinary sentence case",
+    ):
+        assert block in catch_all, block
+    # ...but NOT the deposition format, which contradicts the paragraph rule. 100 is not a transcript.
+    assert "one line per transcript page" not in catch_all
+
+
+def test_the_catch_all_and_an_unrecognised_id_get_the_IDENTICAL_preamble():
+    """Stated as equality rather than block-by-block, because the point is that they are the same
+    SITUATION - the id is known, the content is not - and a future block added to the default path
+    must reach both without anyone remembering to."""
+    assert se.build_preamble("100") == se.build_preamble("777")
+
+
+def test_no_other_category_is_disturbed_by_the_catch_all_change():
+    """The whole risk of this change is over-reach: every other id earns its reduced preamble because
+    its documents structurally cannot contain the withheld thing, and those must not move."""
+    # A laboratory result still has no examination, pain scale or joint.
+    lab = se.build_preamble("14")
+    for absent in ("Range of motion", "For pain, give frequency", "height or weight"):
+        assert absent not in lab, absent
+    assert "verdict IS the content" in lab
+    # An authorization request still gets the minimal preamble - it is the category 100 used to share.
+    rfa = se.build_preamble("10")
+    for absent in (
+        "Report positive and abnormal findings",
+        "verdict IS the content",
+        "review of earlier medical records",
+        "Range of motion",
+    ):
+        assert absent not in rfa, absent
+    # A treating report still gets the exam blocks and not the verdict rule.
+    treating = se.build_preamble("1")
+    assert "Range of motion" in treating
+    assert "verdict IS the content" not in treating
+    # And 15 keeps the minimal preamble it was deliberately given (see _KNOWN_CATEGORIES).
+    assert se.build_preamble("15") == rfa
