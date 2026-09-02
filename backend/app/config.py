@@ -268,10 +268,24 @@ class Settings(BaseSettings):
     # page is pure waste is WRONG - at 72 DPI an 8pt glyph is 8px tall, below what Tesseract needs to
     # resolve, so the extra pixels buy real accuracy.
     #
-    # Turning this on needs a proper quality metric first. Character count and difflib similarity are
-    # not enough: similarity sat near 70% even at DPI 135, because it punishes line reordering and
-    # whitespace rather than measuring accuracy. Word-level recall against a reference is the missing
-    # instrument. Until then, spending 8 seconds beats losing text out of a medical record.
+    # That missing instrument now EXISTS - scripts/eval/ocr_cap_word_recall.py (#237) - and its
+    # first run makes the case against capping far stronger than the character count did. On a
+    # 182-page record whose every page is 3456pt, 12 pages sampled, against an uncapped reference:
+    #
+    #   cap    speed    pooled word recall    worst page    below 0.90    invented words
+    #   3500   7.81x                 0.684         0.000       11 of 12               352
+    #   6500   2.04x                 0.708         0.125       11 of 12               563
+    #
+    # So the real cost is 32% of the WORDS, not 6.0% of the characters - character volume
+    # understated it fivefold, which is the same trap that made the PDF-text-layer experiment look
+    # like a win (see the note atop services/ocr.py). Two pages returned essentially nothing at all.
+    #
+    # And it kills the obvious follow-up. "Cap only the expensive pages" cannot work here: the two
+    # slowest reference pages (120.5s and 41.4s) are exactly the two the cap destroyed, scoring
+    # 0.000 and 0.042. The speedup is concentrated precisely where the loss is total.
+    #
+    # Measured on one document class, so it does not prove a cap can never pay anywhere. It does
+    # mean nobody enables this without running that script on the records they care about first.
     ocr_max_long_edge_px: int = 0
 
     # Safety margin (seconds) subtracted from the size-aware job_timeout to bound every
