@@ -3105,3 +3105,27 @@ async def test_a_summary_with_no_live_row_reports_no_method(authed):
     assert body[0]["rowMissing"] is True
     assert body[0]["rowMethodLive"] is None
     assert body[0]["rowCategoryLive"] is None
+
+
+def test_an_unopenable_pdf_answers_422_not_503():
+    """#201. `PdfUnreadableError` subclasses `OcrUnavailableError` so every internal layer keeps
+    refusing to degrade on it - but at the HTTP boundary the two part company. A bad upload is not a
+    service outage, and 503 tells the caller to wait for someone to fix the server when what they
+    need to do is re-upload the file.
+
+    The isinstance ORDER in `_pipeline_error_response` is what makes this work, so it is pinned."""
+    import json
+
+    from app.api.documents import _pipeline_error_response
+    from app.errors import EmptyExtractionError, OcrUnavailableError, PdfUnreadableError
+
+    bad_file = _pipeline_error_response("doc-1", PdfUnreadableError("truncated"))
+    assert bad_file.status_code == 422
+    assert "could not be opened" in json.loads(bad_file.body)["error"]
+
+    # The config failure keeps 503: it IS a server problem and retrying the upload will not help.
+    no_binary = _pipeline_error_response("doc-1", OcrUnavailableError("no poppler"))
+    assert no_binary.status_code == 503
+
+    # And the sibling document-property error is unchanged.
+    assert _pipeline_error_response("doc-1", EmptyExtractionError("blank")).status_code == 422

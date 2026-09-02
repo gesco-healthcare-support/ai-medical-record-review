@@ -25,7 +25,7 @@ from app.api.deps import get_owned_document
 from app.auth.deps import current_active_user
 from app.config import get_settings
 from app.db import get_db
-from app.errors import EmptyExtractionError, OcrUnavailableError, PipelineError
+from app.errors import EmptyExtractionError, OcrUnavailableError, PdfUnreadableError, PipelineError
 from app.models import Document, Job, ReviewRow, Summary, User
 from app.schemas.documents import (
     BundlePayload,
@@ -87,12 +87,19 @@ def _sha256(path: str) -> str:
 def _pipeline_error_response(document_id: str, exc: PipelineError) -> JSONResponse:
     """Surface a sync-AI failure as a friendly message (never the raw vendor error). Log the
     technical detail server-side (ids only). OCR-unavailable is a server config problem (503);
-    empty extraction is a property of the document (422)."""
+    an unopenable PDF and an empty extraction are properties of the document (422).
+
+    `PdfUnreadableError` is tested BEFORE `OcrUnavailableError` and the order is load-bearing: it
+    subclasses it, because every internal layer that refuses to degrade on unreadable pages must
+    refuse for a corrupt file too (#201). Here the two part company - a bad upload is not a service
+    outage, and answering 503 tells the caller to wait for someone to fix the server when what they
+    need to do is re-upload the file.
+    """
     logger.warning("pipeline error on document %s: %s", document_id, exc)
-    if isinstance(exc, OcrUnavailableError):
-        code = status.HTTP_503_SERVICE_UNAVAILABLE
-    elif isinstance(exc, EmptyExtractionError):
+    if isinstance(exc, (PdfUnreadableError, EmptyExtractionError)):
         code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    elif isinstance(exc, OcrUnavailableError):
+        code = status.HTTP_503_SERVICE_UNAVAILABLE
     else:
         code = status.HTTP_500_INTERNAL_SERVER_ERROR
     return JSONResponse(status_code=code, content={"error": exc.user_message})

@@ -49,7 +49,7 @@ from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError
 from pypdf import PdfReader
 
 from app.config import get_settings
-from app.errors import OcrUnavailableError
+from app.errors import OcrUnavailableError, PdfUnreadableError
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ def _dpi_for_page(pdf_path, page) -> int:
 
 
 def _rasterize(pdf_path, **kwargs):
-    """Rasterize pages, mapping a missing/broken Poppler to OcrUnavailableError.
+    """Rasterize pages, separating a missing Poppler from a PDF that cannot be opened.
 
     Picks the DPI when the caller did not (see ``_dpi_for_page``) and records it on every image, so
     ``_ocr_image`` can declare the same value to Tesseract without any call site threading it through.
@@ -148,8 +148,15 @@ def _rasterize(pdf_path, **kwargs):
     dpi = kwargs["dpi"]
     try:
         images = convert_from_path(pdf_path, **kwargs)
-    except (PDFInfoNotInstalledError, PDFPageCountError) as exc:
+    except PDFInfoNotInstalledError as exc:
+        # The binary really is absent: a server problem, identical on every document.
         raise OcrUnavailableError(f"Poppler (pdf2image) unavailable: {exc}") from exc
+    except PDFPageCountError as exc:
+        # NOT a config problem, though it was reported as one until #201. `pdfinfo` raises this
+        # whenever it cannot read a page count - a corrupt or encrypted upload, a truncated file, a
+        # deleted path, an unmounted volume - all of which happen on a perfectly healthy install.
+        # Labelling it "Poppler unavailable" sends the operator to check a binary that is fine.
+        raise PdfUnreadableError(f"cannot read the PDF ({pdf_path}): {exc}") from exc
     for image in images:
         image.info["dpi"] = (dpi, dpi)
     return images
