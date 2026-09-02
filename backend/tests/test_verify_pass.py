@@ -10,6 +10,7 @@ gives 60.2% at 45.6% from 31% fewer calls.
 """
 
 from app.config import get_settings
+from app.services import verify_pass
 from app.services.verify_pass import SHORT_ROW_PAGES, suspect_indices
 
 
@@ -80,3 +81,38 @@ def test_the_default_comes_from_settings_and_is_off():
     deliberately on a box rather than by upgrading."""
     assert get_settings().verify_triggered_only is False
     assert suspect_indices(_ROWS, cap=1000) == [1, 2, 3]
+
+
+def test_verify_and_merge_can_pin_the_net_instead_of_inheriting_the_box(monkeypatch):
+    """DEMONSTRATES the #209 prerequisite: without this, flipping a live setting silently narrows
+    the net under a harness whose job is to hold everything but the prompt constant.
+
+    `VERIFY_TRIGGERED_ONLY` sits in the compose env block precisely so it can be flipped on a box
+    and measured without a rebuild. But `verify_and_merge` called `suspect_indices(rows)` with no
+    argument, so the boundary A/B - which runs this function on BOTH arms - would have inherited the
+    flip and compared two narrow-net arms while reporting numbers gathered on the wide one. Nothing
+    in the run would have looked wrong.
+
+    Three cases, because the useful property is not "the argument is accepted" but "the caller wins
+    over the box, in both directions, and omitting it still defers".
+    """
+    checked = []
+
+    def spy(pdf_path, prev, row):
+        checked.append(int(row["start"]))
+        return False  # refute nothing, so the rows come back untouched
+
+    monkeypatch.setattr(verify_pass, "_same_document", spy)
+    monkeypatch.setattr(get_settings(), "verify_triggered_only", True)  # the box is narrow
+
+    checked.clear()
+    verify_pass.verify_and_merge("x.pdf", _ROWS, triggered_only=False)
+    assert sorted(checked) == [11, 21, 41], "the caller asked for the wide net and must get it"
+
+    checked.clear()
+    verify_pass.verify_and_merge("x.pdf", _ROWS, triggered_only=True)
+    assert sorted(checked) == [11, 41], "and the narrow net when it asks for that"
+
+    checked.clear()
+    verify_pass.verify_and_merge("x.pdf", _ROWS)
+    assert sorted(checked) == [11, 41], "omitted still defers to the box - production's case"
