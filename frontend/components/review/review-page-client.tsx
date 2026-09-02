@@ -64,7 +64,7 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
   // pages).
   const failedRows = wf.attention?.rows ?? [];
   const attentionPages = new Set(failedRows.map((r) => r.pages));
-  const titleByPages = new Map(
+  const titleByPages = new Map<string, string>(
     wf.rows.map((r) => [`${r.start}-${r.end}`, r.title && r.title !== "-" ? r.title : ""]),
   );
 
