@@ -78,7 +78,7 @@ export function ExportDialog({
       }
       if (!resp.ok) throw new Error(`export failed (${resp.status})`);
       const cd = resp.headers.get("Content-Disposition") || "";
-      const match = cd.match(/filename="?([^"]+)"?/);
+      const match = /filename="?([^"]+)"?/.exec(cd);
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");

@@ -32,6 +32,9 @@ export function DuplicatesView({
 
   const job = data?.job;
   const running = job?.state === "queued" || job?.state === "running";
+  // Both places that announce the running check render this identical suffix; naming it once
+  // keeps them from drifting and avoids nesting a template literal inside another one.
+  const checkingSuffix = job?.total ? ` (${job.current}/${job.total})` : "...";
   const clusters = data?.clusters ?? [];
   const unreadable = data?.unreadable ?? 0;
   // The last check ran and did not finish. Nothing said so: `checked` is false for a failed job, so
@@ -98,7 +101,7 @@ export function DuplicatesView({
             <div className="sum-countline">
               <span>
                 {running
-                  ? `Checking for duplicates${job?.total ? ` (${job.current}/${job.total})` : "..."}`
+                  ? `Checking for duplicates${checkingSuffix}`
                   : countLine}
               </span>
               <span className="muted">{msg || loadError}</span>
@@ -171,7 +174,7 @@ export function DuplicatesView({
                 run cannot support. */}
             <p className="empty-title">
               {running
-                ? `Checking for duplicates${job?.total ? ` (${job.current}/${job.total})` : "..."}`
+                ? `Checking for duplicates${checkingSuffix}`
                 : failed
                   ? "Check did not finish"
                   : neverChecked

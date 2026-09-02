@@ -54,6 +54,20 @@ function parseDisplay(item: SummaryItem) {
   return { title, text, doi };
 }
 
+/** True when the row was re-classified after this summary was written.
+ *
+ *  `??` rather than a `!== null` guard, and deliberately: null means no row covers these pages any
+ *  more, and UNDEFINED means the field is missing entirely because an older backend is serving this
+ *  page. Neither is a mismatch, but `undefined !== null` is true, so the explicit null check reported
+ *  every card as stale during a rolling deploy. Coalescing to the snapshot makes both absences
+ *  compare equal and stay silent.
+ *
+ *  Module scope, not inside the component: it closes over nothing, so re-creating it on
+ *  every render bought nothing. */
+function categoryIsStale(item: SummaryItem) {
+  return (item.rowCategoryLive ?? item.row.category) !== item.row.category;
+}
+
 /** Summaries & export (DS §4): a reading column of SummaryCards with Edited / Manual check /
  *  Excluded badges, inline edit, Re-draft, and an "In export" toggle, beside the same PDF viewer as
  *  Review & correct - clicking a card jumps the viewer to that summary's first source page so the
@@ -155,17 +169,6 @@ export function SummariesView({
       // A 409 here means a job is running: the row would be overwritten, so the server refused.
       setSaveMsg(`Category not saved: ${humanizeError(err, { fallback: "please try again" })}`);
     }
-  }
-
-  /** True when the row was re-classified after this summary was written.
-   *
-   *  `??` rather than a `!== null` guard, and deliberately: null means no row covers these pages any
-   *  more, and UNDEFINED means the field is missing entirely because an older backend is serving this
-   *  page. Neither is a mismatch, but `undefined !== null` is true, so the explicit null check reported
-   *  every card as stale during a rolling deploy. Coalescing to the snapshot makes both absences
-   *  compare equal and stay silent. */
-  function categoryIsStale(item: SummaryItem) {
-    return (item.rowCategoryLive ?? item.row.category) !== item.row.category;
   }
 
   async function reDraft(item: SummaryItem) {
