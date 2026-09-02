@@ -23,7 +23,7 @@ type Tab = "review" | "duplicates" | "summaries";
  *  Auto-fill / Segment / Summarize) over a tab body - the always-on Review & correct editor or the
  *  Summaries view. The identify/summarize lifecycle lives in useReviewWorkflow; a running job turns
  *  the header actions into an inline progress bar and dims the editor. */
-export function ReviewPageClient({ documentId }: { documentId: string }) {
+export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }>) {
   const wf = useReviewWorkflow(documentId);
   const { data: summaries = [] } = useSummaries(documentId);
   const { data: dupData } = useDuplicates(documentId);

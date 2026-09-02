@@ -23,7 +23,7 @@ function tokenize(input: string): Seg[] {
 
 /** Render the summarizer's inline markdown (**bold**, *italic*, _italic_) as real emphasis so no
  *  raw markers show. Anything else is passed through as plain text. */
-export function MarkdownText({ text }: { text: string }) {
+export function MarkdownText({ text }: Readonly<{ text: string }>) {
   return (
     <>
       {tokenize(text).map((s, i) =>

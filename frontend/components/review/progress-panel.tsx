@@ -3,11 +3,11 @@ export function ProgressPanel({
   title,
   pct,
   detail,
-}: {
+}: Readonly<{
   title: string;
   pct: number;
   detail: string;
-}) {
+}>) {
   return (
     <section className="panel center-panel">
       <h1>{title}</h1>

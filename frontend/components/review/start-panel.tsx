@@ -4,12 +4,12 @@ export function StartPanel({
   disabled,
   hint,
   onStart,
-}: {
+}: Readonly<{
   rerun: boolean;
   disabled?: boolean;
   hint?: string;
   onStart: () => void;
-}) {
+}>) {
   const defaultHint = rerun
     ? "Re-running replaces the current document list - including every correction you made - with a fresh AI pass over the record."
     : "The record is split into its component documents and categorized. You review and correct the result before any summaries are written.";

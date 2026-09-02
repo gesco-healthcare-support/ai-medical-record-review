@@ -19,11 +19,11 @@ export function DuplicatesView({
   documentId,
   filename,
   onResolved,
-}: {
+}: Readonly<{
   documentId: string;
   filename?: string;
   onResolved?: () => void;
-}) {
+}>) {
   const { data, isLoading, error } = useDuplicates(documentId);
   const resolve = useResolveDuplicate(documentId);
   const pdfRef = useRef<PdfViewerHandle>(null);
@@ -231,7 +231,7 @@ function ClusterCard({
   onKeep,
   onDismiss,
   onRemove,
-}: {
+}: Readonly<{
   cluster: DuplicateCluster;
   busy: boolean;
   selectedIdx: number | null;
@@ -239,7 +239,7 @@ function ClusterCard({
   onKeep: (idx: number) => void;
   onDismiss: () => void;
   onRemove: (row: DuplicateRow) => void;
-}) {
+}>) {
   // Resolved = at most one copy would still be summarized (the reviewer kept one, or excluded the
   // rest by hand). Inclusion - not the "kept" mark - is the test, so a cluster stays resolved after a
   // re-check recomputes its group, and is flagged again if it gains another included copy.

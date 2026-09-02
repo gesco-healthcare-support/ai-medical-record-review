@@ -20,7 +20,7 @@ export const metadata: Metadata = {
   description: "Medical Record Review",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className={`${inter.variable} ${poppins.variable}`}>
       <body>

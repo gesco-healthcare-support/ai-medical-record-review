@@ -17,11 +17,11 @@ export function Container({
   size = "wide",
   className,
   children,
-}: {
+}: Readonly<{
   size?: keyof typeof MAX_WIDTH;
   className?: string;
   children: ReactNode;
-}) {
+}>) {
   return (
     <div className={cn("mx-auto w-full px-[var(--gutter)]", MAX_WIDTH[size], className)}>
       {children}

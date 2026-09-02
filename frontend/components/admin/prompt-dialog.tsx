@@ -23,11 +23,11 @@ export function PromptDialog({
   open,
   onOpenChange,
   category,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
   category: AdminCategory | null;
-}) {
+}>) {
   const id = category?.id ?? "";
   const [text, setText] = useState("");
   const [error, setError] = useState("");

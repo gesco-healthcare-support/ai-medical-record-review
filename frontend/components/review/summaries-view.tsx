@@ -67,7 +67,7 @@ export function SummariesView({
   onHeaderSaved,
   onGotoSummarizeStep,
   onRowsChanged,
-}: {
+}: Readonly<{
   documentId: string;
   filename?: string;
   categories: CategoryOption[];
@@ -80,7 +80,7 @@ export function SummariesView({
    *  so leaving it stale means the reviewer's next edit there silently reverts the category. Same
    *  reason DuplicatesView takes onResolved. */
   onRowsChanged?: () => void;
-}) {
+}>) {
   const { data: summaries = [], isLoading, error } = useSummaries(documentId);
   const save = useSaveSummary(documentId);
   const redraft = useResummarize(documentId);

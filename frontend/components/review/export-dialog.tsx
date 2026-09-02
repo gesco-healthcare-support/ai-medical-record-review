@@ -25,14 +25,14 @@ export function ExportDialog({
   includedCount,
   excludedCount,
   defaults,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
   documentId: string;
   includedCount: number;
   excludedCount: number;
   defaults?: HeaderFields | null;
-}) {
+}>) {
   const [patient, setPatient] = useState("");
   const [dob, setDob] = useState("");
   const [qme, setQme] = useState(DEFAULT_QME);

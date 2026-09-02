@@ -24,7 +24,7 @@ const STATUS_TONES: Record<string, string> = {
 };
 
 /** DS status badge (.hd-badge): a colored pill with a dot; running states append "(current/total)". */
-export function StatusPill({ doc }: { doc: DocumentListItem }) {
+export function StatusPill({ doc }: Readonly<{ doc: DocumentListItem }>) {
   const job = doc.active_job;
   const progress = job && job.total ? ` (${job.current}/${job.total})` : "";
   const label = (STATUS_LABELS[doc.status] ?? doc.status) + progress;

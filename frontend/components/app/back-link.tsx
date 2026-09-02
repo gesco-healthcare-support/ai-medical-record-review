@@ -8,11 +8,11 @@ export function BackLink({
   href = "/",
   label = "My documents",
   className,
-}: {
+}: Readonly<{
   href?: string;
   label?: string;
   className?: string;
-}) {
+}>) {
   return (
     <Link href={href} className={cn("ev-backlink", className)}>
       <ArrowLeft width={15} height={15} aria-hidden /> {label}

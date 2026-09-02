@@ -7,11 +7,11 @@ export function EmptyState({
   dragging,
   uploading,
   onBrowse,
-}: {
+}: Readonly<{
   dragging: boolean;
   uploading: boolean;
   onBrowse: () => void;
-}) {
+}>) {
   return (
     <section className="hd-empty">
       <h1>Start your first review</h1>

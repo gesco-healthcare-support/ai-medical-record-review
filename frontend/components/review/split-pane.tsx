@@ -16,14 +16,14 @@ export function SplitPane({
   defaultLeft = 58,
   min = 24,
   max = 70,
-}: {
+}: Readonly<{
   left: ReactNode;
   right: ReactNode;
   storageKey?: string;
   defaultLeft?: number;
   min?: number;
   max?: number;
-}) {
+}>) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [pct, setPct] = useState(defaultLeft);
   const [dragging, setDragging] = useState(false);

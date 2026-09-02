@@ -45,7 +45,7 @@ export function RowsTable({
   unidentifiedKeys,
   guessedKeys,
   hiddenKeys,
-}: {
+}: Readonly<{
   rows: EditorRow[];
   categories: CategoryOption[];
   totalPages: number;
@@ -69,7 +69,7 @@ export function RowsTable({
    *  never by narrowing this array: `#` is `i + 1` and the gap strips come from `previousEnd`,
    *  so a filtered array would renumber every document and invent gaps that are not real. */
   hiddenKeys?: Set<string>;
-}) {
+}>) {
   const splitRef = useRef<HTMLInputElement>(null);
   let previousEnd = 0;
   // Between two rows the filter has separated, a gap strip would fire on every one of them and
