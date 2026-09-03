@@ -46,11 +46,42 @@ class PipelineError(Exception):
 
 
 class OcrUnavailableError(PipelineError):
-    """Tesseract or Poppler is missing/unreachable, so pages cannot be read."""
+    """Tesseract or Poppler is missing/unreachable, so pages cannot be read.
+
+    THE TYPE MEANS "no page of this document can be read, and no retry will help". Several layers
+    key on that: `page_text._extract`, `segment_engine._categorize` and the OCR loops all re-raise
+    it rather than degrading to empty text, because a config failure fails identically on every row
+    and swallowing it turns one broken install into a corpus of silently empty documents.
+
+    `PdfUnreadableError` below is a SUBCLASS for exactly that reason - it shares the property, so it
+    must share the fail-fast treatment - while carrying its own cause and message.
+    """
 
     user_message = (
         "Text recognition (OCR) is unavailable on the server, so this document could not be "
         "read. Please contact your administrator."
+    )
+
+
+class PdfUnreadableError(OcrUnavailableError):
+    """The PDF itself cannot be opened: corrupt, encrypted, truncated, or no longer on disk.
+
+    Split out from `OcrUnavailableError` because `pdf2image` reported both through one exception
+    type and the pipeline labelled both "Poppler unavailable" (#201). `PDFInfoNotInstalledError`
+    genuinely means the binary is absent; `PDFPageCountError` fires whenever `pdfinfo` cannot read a
+    page count, which on a healthy install means a bad file. An operator meeting "Poppler
+    (pdf2image) unavailable" for a corrupt upload checks Poppler, finds it healthy, and is stranded.
+
+    A SUBCLASS rather than a sibling, deliberately: every layer that refuses to degrade on an
+    unreadable-pages condition must keep refusing here too - segmentation on an unopenable file is
+    meaningless, and returning empty text would be the silent-swallow defect in a new place. What
+    changes is the cause the operator is told, and the HTTP status, since this is a property of the
+    DOCUMENT rather than of the server (see `_pipeline_error_response`).
+    """
+
+    user_message = (
+        "This PDF could not be opened - it may be corrupt, password-protected, or incomplete. "
+        "Try re-uploading the file; if it opens normally elsewhere, contact your administrator."
     )
 
 

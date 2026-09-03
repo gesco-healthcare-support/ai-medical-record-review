@@ -313,6 +313,79 @@ def test_the_base_dpi_is_not_declared_so_ordinary_pages_are_unchanged(monkeypatc
     assert captured.get("config") == "--dpi 72"
 
 
+def test_a_corrupt_pdf_is_not_reported_as_a_missing_poppler(monkeypatch):
+    """#201. `pdf2image` reported two very different failures through one exception type and the
+    pipeline labelled both "Poppler unavailable". `PDFPageCountError` fires whenever `pdfinfo`
+    cannot read a page count - a corrupt or encrypted upload, a truncated file, a deleted path - all
+    of which happen on a perfectly healthy install. An operator meeting that message checks Poppler,
+    finds it fine, and is stranded."""
+    from pdf2image.exceptions import PDFPageCountError
+
+    from app.errors import OcrUnavailableError, PdfUnreadableError
+
+    def unreadable(*a, **k):
+        raise PDFPageCountError("Unable to get page count. Is poppler installed?")
+
+    monkeypatch.setattr(ocr, "convert_from_path", unreadable)
+    monkeypatch.setattr(ocr, "_dpi_for_page", lambda *a, **k: 200)
+
+    with pytest.raises(PdfUnreadableError) as excinfo:
+        ocr._rasterize("/tmp/corrupt.pdf", first_page=1, last_page=1)
+
+    # The message names the FILE, not the binary.
+    assert "cannot read the PDF" in str(excinfo.value)
+    assert "corrupt.pdf" in str(excinfo.value)
+    assert "Poppler (pdf2image) unavailable" not in str(excinfo.value)
+    # And what the USER is shown points at the upload rather than at the server.
+    assert "could not be opened" in excinfo.value.user_message
+    assert "OCR) is unavailable on the server" not in excinfo.value.user_message
+    # STILL an OcrUnavailableError, and that is load-bearing rather than incidental: every layer
+    # that refuses to degrade on unreadable pages must refuse for a bad file too, or segmentation
+    # would carry on over an unopenable document and store empty text for every row.
+    assert isinstance(excinfo.value, OcrUnavailableError)
+
+
+def test_a_genuinely_missing_poppler_still_reports_itself(monkeypatch):
+    """The other half. This one IS a config failure - identical on every document - and must keep
+    both its message and its type, or #201 would have traded one wrong diagnosis for another."""
+    from pdf2image.exceptions import PDFInfoNotInstalledError
+
+    from app.errors import OcrUnavailableError, PdfUnreadableError
+
+    def no_binary(*a, **k):
+        raise PDFInfoNotInstalledError(
+            "Unable to get page count. Is poppler installed and in PATH?"
+        )
+
+    monkeypatch.setattr(ocr, "convert_from_path", no_binary)
+    monkeypatch.setattr(ocr, "_dpi_for_page", lambda *a, **k: 200)
+
+    with pytest.raises(OcrUnavailableError) as excinfo:
+        ocr._rasterize("/tmp/fine.pdf", first_page=1, last_page=1)
+
+    assert "Poppler (pdf2image) unavailable" in str(excinfo.value)
+    assert not isinstance(excinfo.value, PdfUnreadableError)
+    assert "unavailable on the server" in excinfo.value.user_message
+
+
+def test_an_unopenable_pdf_still_fails_the_page_read_rather_than_returning_empty(monkeypatch):
+    """The property the subclassing exists to preserve, pinned at a real call site: the per-page
+    loops catch every other exception and continue, and must NOT swallow this one."""
+    from pdf2image.exceptions import PDFPageCountError
+
+    from app.errors import PdfUnreadableError
+
+    def unreadable(*a, **k):
+        raise PDFPageCountError("truncated file")
+
+    monkeypatch.setattr(ocr, "convert_from_path", unreadable)
+    monkeypatch.setattr(ocr, "_dpi_for_page", lambda *a, **k: 200)
+    monkeypatch.setattr(ocr, "_configured", True)
+
+    with pytest.raises(PdfUnreadableError):
+        ocr.extract_pages_with_report("/tmp/truncated.pdf", [1, 2, 3])
+
+
 def test_the_two_report_contracts_agree_on_the_types_of_all_three_keys(monkeypatch):
     """#210: `pages` was a COUNT here and a LIST in `page_text.get_row_text_with_report`, whose
     docstring asserted the two matched "exactly". Nothing read the field, so nothing was broken -
