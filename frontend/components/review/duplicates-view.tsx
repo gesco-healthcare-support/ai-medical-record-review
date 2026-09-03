@@ -15,6 +15,54 @@ import { SplitPane } from "./split-pane";
  *  the viewer to its first page. The reviewer keeps one copy (excluding the rest from summarization)
  *  or dismisses the cluster as not-duplicates. Advisory - it never blocks Summarize. `onResolved`
  *  lets the parent refresh the Review editor's rows so a later Summarize respects the exclusions. */
+/** The empty panel's two lines. `failed` is checked before the clean result deliberately: with no
+ *  stored clusters, a check that died would otherwise read as "No duplicates", which is the one
+ *  conclusion a failed run cannot support. Top-level so its four branches do not count against the
+ *  component enclosing it, and one function so the title and body can never disagree. */
+function emptyStateCopy(state: {
+  running: boolean;
+  failed: boolean;
+  neverChecked: boolean;
+  checkingSuffix: string;
+}) {
+  if (state.running) {
+    return {
+      title: `Checking for duplicates${state.checkingSuffix}`,
+      body: "Scanning the record for documents that were scanned more than once.",
+    };
+  }
+  if (state.failed) {
+    return {
+      title: "Check did not finish",
+      body: "The last duplicate check stopped before it could compare this record.",
+    };
+  }
+  if (state.neverChecked) {
+    return {
+      title: "Not checked yet",
+      body: "This record has not been scanned for duplicates.",
+    };
+  }
+  return {
+    title: "No duplicates",
+    body: "The record has no groups of duplicate documents to review.",
+  };
+}
+
+/** Where a cluster stands: dismissed beats resolved, resolved beats needing review. */
+function clusterChip(dismissed: boolean, resolved: boolean) {
+  if (dismissed) return <span className="ev-chip ev-chip-neutral">Dismissed</span>;
+  if (resolved) return <span className="ev-chip ev-chip-edit">Resolved</span>;
+  return <span className="ev-chip ev-chip-review">Needs review</span>;
+}
+
+/** What became of one copy in a resolved cluster. */
+function copyStateLabel(row: DuplicateRow) {
+  if (row.primary) return " - kept";
+  if (row.include === false) return " - excluded";
+  return "";
+}
+
 export function DuplicatesView({
   documentId,
   filename,
@@ -86,11 +134,13 @@ export function DuplicatesView({
 
   const loadError = error ? humanizeError(error, { fallback: "Could not load duplicates." }) : "";
 
+  const groupNoun = clusters.length === 1 ? "group" : "groups";
+  const noClustersLine = neverChecked ? "Not checked yet" : "No duplicate documents found";
   const countLine = clusters.length
-    ? `${clusters.length} possible duplicate ${clusters.length === 1 ? "group" : "groups"}`
-    : neverChecked
-      ? "Not checked yet"
-      : "No duplicate documents found";
+    ? `${clusters.length} possible duplicate ${groupNoun}`
+    : noClustersLine;
+
+  const emptyCopy = emptyStateCopy({ running, failed, neverChecked, checkingSuffix });
 
   const list = (
     <div className="rce-splitcol">
@@ -162,7 +212,7 @@ export function DuplicatesView({
           </div>
         ) : null}
 
-        {isLoading ? null : clusters.length === 0 ? (
+        {!isLoading && clusters.length === 0 ? (
           <div className="summary-empty">
             <Copy width={34} height={34} aria-hidden />
             {/* The counter belongs HERE, not only in the count line above: a large record takes tens
@@ -172,26 +222,11 @@ export function DuplicatesView({
             {/* `failed` has to come before the clean result: with no stored clusters a check that
                 died would otherwise read as "No duplicates", which is the one conclusion a failed
                 run cannot support. */}
-            <p className="empty-title">
-              {running
-                ? `Checking for duplicates${checkingSuffix}`
-                : failed
-                  ? "Check did not finish"
-                  : neverChecked
-                    ? "Not checked yet"
-                    : "No duplicates"}
-            </p>
-            <p>
-              {running
-                ? "Scanning the record for documents that were scanned more than once."
-                : failed
-                  ? "The last duplicate check stopped before it could compare this record."
-                  : neverChecked
-                    ? "This record has not been scanned for duplicates."
-                    : "The record has no groups of duplicate documents to review."}
-            </p>
+            <p className="empty-title">{emptyCopy.title}</p>
+            <p>{emptyCopy.body}</p>
           </div>
-        ) : (
+        ) : null}
+        {!isLoading && clusters.length > 0 ? (
           <div className="summary-list">
             {clusters.map((cluster) => (
               <ClusterCard
@@ -206,7 +241,7 @@ export function DuplicatesView({
               />
             ))}
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -254,13 +289,7 @@ function ClusterCard({
         <h3 className="sum-heading">
           Possible duplicate - {cluster.rows.length} copies
         </h3>
-        {cluster.dismissed ? (
-          <span className="ev-chip ev-chip-neutral">Dismissed</span>
-        ) : resolved ? (
-          <span className="ev-chip ev-chip-edit">Resolved</span>
-        ) : (
-          <span className="ev-chip ev-chip-review">Needs review</span>
-        )}
+        {clusterChip(cluster.dismissed, resolved)}
       </div>
       {/* Advisory only, so it reads as a plain number: a colour scale would imply a cut-off the app
           does not enforce. Absent on clusters stored before the score was kept. */}
@@ -288,7 +317,7 @@ function ClusterCard({
                 {row.date && row.date !== "-" ? row.date : "no date"} - pages {row.pages.start}
                 {"–"}
                 {row.pages.end}
-                {row.primary ? " - kept" : row.include === false ? " - excluded" : ""}
+                {copyStateLabel(row)}
               </span>
               <span className="dupe-copy-title">
                 {row.title && row.title !== "-" ? row.title : "Untitled"}
