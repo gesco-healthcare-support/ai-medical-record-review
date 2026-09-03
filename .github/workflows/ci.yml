@@ -238,3 +238,40 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@v8.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # The quality gate cannot enforce "no new issues" on this plan, so it is enforced here.
+      #
+      # "Sonar way" is BUILT-IN and will not accept extra conditions, and associating a custom gate
+      # with a project is a paid feature - the project's own Quality Gate page says so outright. That
+      # leaves six rating/ratio conditions, none of which can fail on a low-effort maintainability
+      # finding: the maintainability rating is a debt RATIO (A is <= 5%), so a one-minute issue
+      # cannot move it. That is how python:S5799 was reintroduced on 2026-09-03 with every check
+      # green, after bucket 2 had cleared it to zero.
+      #
+      # Runs after the scan, which already waits for analysis (sonar.qualitygate.wait=true), so the
+      # issue list is final. No token needed: the project is public. Fails CLOSED - an unreadable
+      # response blocks rather than passing blind, since a silent pass is the exact failure this
+      # step exists to remove.
+      - name: Fail on any new SonarCloud issue in this PR
+        if: github.event_name == 'pull_request'
+        env:
+          PROJECT: gesco-healthcare-support_ai-medical-record-review
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          set -euo pipefail
+          url="https://sonarcloud.io/api/issues/search?componentKeys=${PROJECT}&pullRequest=${PR_NUMBER}&resolved=false&ps=100"
+          body=$(curl -sS --retry 3 --retry-delay 5 "$url")
+          total=$(printf '%s' "$body" | jq -r '.total // "unreadable"')
+          if [ "$total" = "unreadable" ]; then
+            echo "Could not read the issue count from SonarCloud - failing rather than passing blind."
+            echo "$body" | head -c 500
+            exit 1
+          fi
+          if [ "$total" -gt 0 ]; then
+            echo "This PR introduces ${total} new SonarCloud issue(s):"
+            printf '%s' "$body" | jq -r '.issues[] | "  " + .rule + "  " + (.component | sub("^[^:]+:"; "")) + ":" + (.line | tostring) + "  " + .message'
+            echo ""
+            echo "Fix each one, or mark it in SonarCloud with a reason, then re-run this job."
+            exit 1
+          fi
+          echo "No new SonarCloud issues in this PR."
