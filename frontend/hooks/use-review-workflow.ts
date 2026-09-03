@@ -249,8 +249,7 @@ export function useReviewWorkflow(
         setCancelledJob({ kind: activeJobRef.current?.kind ?? "segment" });
         // Whatever rows survive are the reviewer's to see; with none, the start screen is the only
         // honest thing to show.
-        if (rowsRef.current.length) enterEditor();
-        else showStart();
+        showRowsOrStart();
         return;
       }
       const detail = await getDocument(documentId as string);
@@ -268,6 +267,32 @@ export function useReviewWorkflow(
       setWatching(false);
       setBanner(message(err, "identification failed"));
       showStart();
+    }
+  }
+
+  /** Where to land when a run ends: the editor if there are rows to correct, otherwise the start
+   *  panel. Five outcomes decide this identically and must not drift apart.
+   *
+   *  The parameter is not decoration. The failure path reads the `rows` STATE while the others read
+   *  `rowsRef.current`; folding that difference away would change behaviour, so it is explicit. */
+  function showRowsOrStart(current: { length: number } = rowsRef.current) {
+    if (current.length) enterEditor();
+    else showStart();
+  }
+
+  /** Recover why a needs_attention run stopped. The call site's comment explains why the stored
+   *  attention payload is preferred over `job.error`. Never throws: a failed status read still has
+   *  to land the reviewer somewhere, so it falls back to an honest generic message. */
+  async function loadAttention() {
+    try {
+      const snap = await getStatus(documentId as string);
+      setAttention({
+        message:
+          snap.job?.attention?.message || snap.job?.error || "Some documents need attention.",
+        rows: snap.job?.attention?.rows ?? [],
+      });
+    } catch {
+      setAttention({ message: "Some documents need attention.", rows: [] });
     }
   }
 
@@ -301,8 +326,7 @@ export function useReviewWorkflow(
       if (result.outcome === "cancelled") {
         setCancelledJob({ kind: "summarize" });
         // Summaries finished before the stop are already committed and stay visible.
-        if (rowsRef.current.length) enterEditor();
-        else showStart();
+        showRowsOrStart();
         return;
       }
       if (result.outcome === "needs_attention") {
@@ -312,18 +336,15 @@ export function useReviewWorkflow(
           message: result.message || "Some documents need attention.",
           rows: result.rows ?? [],
         });
-        if (rowsRef.current.length) enterEditor();
-        else showStart();
+        showRowsOrStart();
         return;
       }
       if (enableSummaries) showSummaries();
-      else if (rowsRef.current.length) enterEditor();
-      else showStart();
+      else showRowsOrStart();
     } catch (err) {
       setWatching(false);
       setBanner(message(err, "summarization failed"));
-      if (rows.length) enterEditor();
-      else showStart();
+      showRowsOrStart(rows);
     }
   }
 
@@ -379,18 +400,8 @@ export function useReviewWorkflow(
         // today. Kept because this is JSON off the wire, which the type cannot enforce - but there
         // is deliberately no test for it, since constructing that state needs a cast that would
         // assert something the type forbids.
-        try {
-          const snap = await getStatus(documentId as string);
-          setAttention({
-            message:
-              snap.job?.attention?.message || snap.job?.error || "Some documents need attention.",
-            rows: snap.job?.attention?.rows ?? [],
-          });
-        } catch {
-          setAttention({ message: "Some documents need attention.", rows: [] });
-        }
-        if ((detail.rows || []).length) return enterEditor();
-        return showStart();
+        await loadAttention();
+        return showRowsOrStart(detail.rows || []);
       }
       if (detail.status === "error") setBanner("The last run failed - you can start again.");
       else if (detail.status === "interrupted")
