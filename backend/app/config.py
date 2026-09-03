@@ -84,6 +84,23 @@ class Settings(BaseSettings):
     summary_image_max_pages: int = 15
     # DPI for the summary page images (lean JPEG); 120 was enough to read tables/handwriting in the eval.
     summary_image_dpi: int = 120
+    # Ceiling on the rendered LONG EDGE in pixels, applied by lowering the DPI per page. A DPI alone
+    # is not a resolution: it only means something against a page's declared box, and a scanned PDF
+    # can declare anything. Measured across the 17-record benchmark corpus, three geometries exist -
+    # ~605x790pt pages (a real 150 dpi source), ~1258x1631pt pages, and 2700x3455pt pages. The last
+    # two declare their box EQUAL to their pixel count, i.e. 72 points per inch, so asking for 120 dpi
+    # magnifies those scans 1.67x and costs 2.8x the vision tokens for no extra information at all.
+    #
+    # Consequence before this cap existed: summarize images cost ~6,100 tokens each instead of ~850,
+    # and the largest measured payload reached 121,306 tokens - against a 128,000-token model, with
+    # 8,192 of that reserved for output. The OCR text leg is uncapped on top.
+    #
+    # 1024 is not a new number. It is the segmentation render target, chosen on 2026-08-17 by A/B
+    # against ground truth (+32.6% throughput AND better exact F1, 0.708 vs 0.676, winning 6 of 7
+    # records) and recorded in 03_Reports/RESULTS_2026-08-17_122b_capacity.md. Segmentation expresses
+    # it as a pixel target and was therefore immune to all of the above; this makes summarization
+    # agree. Changing it is not a local decision - see that report first.
+    summary_image_long_edge_px: int = 1024
     # Dynamic thinking (-1) for the summary body. Originally forced: 2.5-pro REJECTS the seam's
     # default thinking_budget=0 with a 400. It stays at -1 under 3.5-flash for a DIFFERENT reason -
     # the 2026-08-14 scoring arm that selected 3.5-flash ran with -1, so the quality measurement only

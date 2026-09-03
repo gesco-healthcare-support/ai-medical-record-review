@@ -14,6 +14,7 @@ import logging
 import re
 
 from pdf2image import convert_from_path
+from pypdf import PdfReader
 
 from app.config import get_settings
 from app.errors import EmptyExtractionError, is_rate_limited
@@ -551,6 +552,33 @@ def _generate(model, system_msg, contents, temperature, max_output_tokens=None):
     return response.text, response.truncated
 
 
+def _page_dpi(reader, page, settings):
+    """Render DPI for one page, lowered so its long edge lands on ``summary_image_long_edge_px``.
+
+    A DPI is not a resolution. It is a resolution only relative to a page's declared box, and a
+    scanned PDF declares whatever its producer felt like: two thirds of the benchmark corpus sets the
+    box EQUAL to the pixel count, so "120 dpi" silently means a 1.67x upscale there and a normal
+    render elsewhere. Deriving the DPI per page from the box makes the OUTPUT the fixed thing, which
+    is what `SEGMENT_LONG_EDGE_PX` already does on the segmentation pass.
+
+    Uses the CROP box, because that is the region Poppler actually renders; pypdf falls back to the
+    media box when no crop box is set. Orientation is handled by taking the longer side rather than
+    reading ``/Rotate``, so a landscape scan is capped on its long edge too.
+
+    NOTE this lowers a NORMAL letter page as well, from 1020x1320 to about 791x1024. That is
+    deliberate - it is the same target segmentation renders at, so both passes now see the same page
+    at the same size - but it IS a change to what the summarizer reads, and it was never separately
+    A/B'd for summarization. See ``summary_image_long_edge_px``.
+    """
+    box = reader.pages[page - 1].cropbox
+    long_edge_pt = max(float(box.width), float(box.height))
+    if long_edge_pt <= 0:  # a degenerate box would divide by zero; fall back rather than guess
+        return settings.summary_image_dpi
+    fitted = int(settings.summary_image_long_edge_px * 72.0 / long_edge_pt)
+    # Never raise the DPI above the configured one, and never fall to zero on an absurd box.
+    return max(1, min(settings.summary_image_dpi, fitted))
+
+
 def _page_image_parts(pdf_path, start, end):
     """Rasterize a sub-document's pages to lean JPEG image Parts for multimodal summarization.
 
@@ -574,10 +602,13 @@ def _page_image_parts(pdf_path, start, end):
     """
     settings = get_settings()
     last = min(int(end), int(start) + settings.summary_image_max_pages - 1)
+    # ONE reader for the whole row rather than one per page. It parses the PDF once, against the
+    # fifteen Poppler subprocesses the loop below already pays for, so it is noise next to them.
+    reader = PdfReader(pdf_path)
     parts = []
     for page in range(int(start), last + 1):
         for image in convert_from_path(
-            pdf_path, first_page=page, last_page=page, dpi=settings.summary_image_dpi
+            pdf_path, first_page=page, last_page=page, dpi=_page_dpi(reader, page, settings)
         ):
             buffer = io.BytesIO()
             image.convert("RGB").save(buffer, format="JPEG", quality=70)
