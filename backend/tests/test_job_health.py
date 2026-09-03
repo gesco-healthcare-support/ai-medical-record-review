@@ -171,7 +171,8 @@ def test_the_corrected_rate_is_lower_than_the_naive_one_on_the_measured_shape():
     assert summary["outcomes"]["orphaned"] == 18
     # And the report has to make the wrong number visible, or nobody stops quoting it.
     report = render(summary, "segment")
-    assert "27.4%" in report and "WRONG" in report
+    assert "27.4%" in report
+    assert "WRONG" in report
     assert "12.6%" in report
 
 
@@ -189,7 +190,8 @@ def test_the_report_names_every_bucket_it_counts_and_says_which_are_failures():
         assert outcome in report
         assert JOB_OUTCOMES[outcome] in report
     assert "FAIL failed_external" in report
-    assert "FAIL orphaned" not in report and "FAIL completed" not in report
+    assert "FAIL orphaned" not in report
+    assert "FAIL completed" not in report
 
 
 def test_the_report_says_it_counts_runs_rather_than_documents():
@@ -202,13 +204,15 @@ def test_the_report_says_it_counts_runs_rather_than_documents():
     """
     report = render(classify([("done", None)]))
 
-    assert "sha256" in report and "corpus.py" in report
+    assert "sha256" in report
+    assert "corpus.py" in report
 
 
 def test_an_empty_scope_reports_nothing_rather_than_dividing_by_zero():
     summary = classify([])
 
-    assert summary["total"] == 0 and summary["failure_rate"] == 0.0
+    assert summary["total"] == 0
+    assert summary["failure_rate"] == 0.0
     assert "(none)" in render(summary)
 
 
