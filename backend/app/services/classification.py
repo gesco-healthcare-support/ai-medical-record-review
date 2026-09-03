@@ -135,10 +135,10 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # is exactly what came true. Asked directly, the answer was "Referral should be categorized
         # as an authorization request", so it is now a document-type rule at the end of `_RULES`.
         r"\bfacesheet\b|\bflowsheets?\b|\bafter visit summary\b|\bcoding summary\b"
-        r"|\bpatient (signature page|information sheet)\b"
-        r"|\b(er|emergency room) registration\b|\bconditions of admission\b"
-        r"|\b(admission|inpatient|emergency patient) record\b|\bmedication administration\b"
-        r"|\bed care timeline\b",
+        + r"|\bpatient (signature page|information sheet)\b"
+        + r"|\b(er|emergency room) registration\b|\bconditions of admission\b"
+        + r"|\b(admission|inpatient|emergency patient) record\b|\bmedication administration\b"
+        + r"|\bed care timeline\b",
         # EXCERPTED / REVIEWED RECORDS, and the anchors are the whole point (#222).
         #
         # The senior reviewer's instruction is unambiguous - "Yes, do not include the excerpted
