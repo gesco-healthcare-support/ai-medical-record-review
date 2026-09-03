@@ -1524,12 +1524,32 @@ def _linked_filename(document: Document) -> str:
 
 
 def _matched_rows(session: Session, document: Document, categories):
-    """The current review rows whose category is in the requested set, or raise: empty/invalid
-    categories -> 400; a set that matches nothing in this record -> 409."""
+    """The review rows this record SHIPS whose category is in the requested set.
+
+    Empty/invalid categories -> 400; nothing in this record has those categories -> 409; every one
+    that does is excluded -> a different 409, because those are different situations for a reviewer
+    to read and a single message for both sends them looking for documents that are right there.
+
+    `include` is the filter, and its absence here was a real defect. A bundle is a DELIVERABLE - a
+    combined PDF or a Word report a client receives - and this path selected purely on category,
+    straight off the table. The single-record export does not: it takes `document.summaries` and
+    drops `summary.excluded` first. So the two delivery paths disagreed about what the reviewer had
+    decided to ship, which is the same shape as the markers the bundle export used to leak (#162):
+    one deliverable built by a path that skipped what the others do.
+
+    What it costs, concretely: `resolve_duplicate`'s keep_one sets `member.include = is_primary and
+    wanted`, so every non-primary copy of a confirmed duplicate is unchecked with its CATEGORY
+    LEFT ALONE. Category-only selection therefore put the dismissed copy's pages back into the
+    bundle PDF a second time, and made bundle-summarize spend three model calls writing an
+    independent summary of the document the reviewer had just resolved away.
+
+    Read off the ORM row rather than `as_row()`, which does not carry `include` (ROW_FIELDS) - that
+    omission is why the rule could not be applied where the category rule lives.
+    """
     if not isinstance(categories, list) or not categories:
         raise HTTPException(status_code=400, detail="categories must be a non-empty list")
     rows = [
-        row.as_row()
+        {**row.as_row(), "include": row.include}
         for row in session.scalars(
             select(ReviewRow).where(ReviewRow.document_id == document.id).order_by(ReviewRow.idx)
         ).all()
@@ -1537,7 +1557,16 @@ def _matched_rows(session: Session, document: Document, categories):
     matched = bundles.matched_rows(rows, categories)
     if not matched:
         raise HTTPException(status_code=409, detail="no matching documents in this record")
-    return matched
+    shipping = [row for row in matched if row.get("include", True)]
+    if not shipping:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"all {len(matched)} matching documents are excluded from the report; "
+                "re-include one in Review & correct to bundle it"
+            ),
+        )
+    return shipping
 
 
 @router.post(

@@ -125,4 +125,44 @@ describe("BundlePageClient error handling", () => {
     expect(screen.getByLabelText("DOB")).toHaveValue("01/02/1990");
     expect(screen.getByLabelText("Attorney law firm")).toHaveValue("Acme LLP");
   });
+
+  it("counts only the documents the record is shipping, matching what the bundle contains", async () => {
+    // DEMONSTRATES the bug on this side. The server builds the bundle from included rows only; if
+    // this preview counts every row of the category, it promises a document the download does not
+    // contain. The reachable case is a resolved duplicate: keep_one unchecks the non-primary copy
+    // and leaves its category alone, so it looks identical to a shipping row here.
+    const user = userEvent.setup();
+    const row = (start: number, include: boolean) => ({
+      start,
+      end: start,
+      category: "3",
+      title: "MRI",
+      date: "",
+      injury_date: "",
+      flag: "-",
+      suggest_merge: false,
+      include,
+    });
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      id: "d1",
+      original_filename: "rec.pdf",
+      page_count: 3,
+      status: "reviewing",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_name: "",
+      patient_dob: "",
+      law_firm: "",
+      rows: [row(1, true), row(2, false), row(3, true)],
+      categories: [{ id: "3", name: "Imaging" }],
+    });
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(await screen.findByText("2 matching documents")).toBeInTheDocument();
+    expect(screen.queryByText("3 matching documents")).not.toBeInTheDocument();
+  });
 });

@@ -72,7 +72,14 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
 
   const rows = detail?.rows ?? [];
   const categories = detail?.categories ?? [];
-  const matches = rows.filter((row) => config.categories.includes(String(row.category)));
+  // `include !== false` mirrors the server's `_matched_rows`, which builds the bundle from the rows
+  // this record SHIPS rather than every row of the category. Without it the count here and the
+  // bundle disagree: a reviewer who resolved a duplicate cluster leaves the non-primary copy
+  // unchecked with its category unchanged, so this list would promise a document the download does
+  // not contain. Same rule, both sides, or the preview is a lie about the artifact.
+  const matches = rows.filter(
+    (row) => config.categories.includes(String(row.category)) && row.include !== false,
+  );
   const identified = rows.length > 0;
 
   const pickerDocs = [...docs].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
