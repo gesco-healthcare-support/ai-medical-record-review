@@ -872,6 +872,57 @@ def test_the_bundle_export_strips_the_same_markers_as_the_review_export(monkeypa
     assert title == _PRESENTABLE_TITLE
 
 
+def test_one_blank_document_does_not_discard_the_rest_of_the_bundle(monkeypatch):
+    """DEMONSTRATES the bug: an unreadable row threw away every summary generated before it.
+
+    `summarize_row` raises EmptyExtractionError for a row whose pages read cleanly and yield no
+    words - a photograph, a film, a separator sheet. With no per-row isolation that propagated out
+    of `bundle_summary_entries`, and the caller's `except PipelineError` discarded the `entries`
+    list, throwing away real model calls already spent and failing a bundle that was mostly fine.
+    `_pipeline_error_response` already classifies that exception 422, "a property of the document".
+    """
+    from app.errors import EmptyExtractionError
+    from app.services import bundles
+
+    rows = [
+        {"start": 1, "end": 2, "category": "3", "flag": "-"},
+        {"start": 3, "end": 3, "category": "3", "flag": "-"},  # the blank one
+        {"start": 4, "end": 5, "category": "3", "flag": "-"},
+    ]
+
+    def fake(pdf_path, row, *a, **k):
+        if int(row["start"]) == 3:
+            raise EmptyExtractionError("no OCR text for pages 3-3")
+        return {"summaryDate": _ENTRY_DATE, "summaryTitle": _DECORATED_TITLE, "summaryText": "b"}
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    entries = bundles.bundle_summary_entries("/x.pdf", rows)
+
+    # The two readable documents survive; the blank one is omitted rather than sinking the bundle.
+    assert len(entries) == 2
+
+
+def test_a_missing_ocr_binary_still_aborts_the_whole_bundle(monkeypatch):
+    """GUARDS the carve-out, and it is the half that makes the fix safe.
+
+    OcrUnavailableError means Tesseract or Poppler is absent, which fails identically on every
+    remaining row - continuing would spend the rest of the loop rediscovering that one row at a
+    time and hand back a bundle silently missing everything. Only the per-document failure is
+    skipped.
+    """
+    from app.errors import OcrUnavailableError
+    from app.services import bundles
+
+    def fake(pdf_path, row, *a, **k):
+        raise OcrUnavailableError("Tesseract not found")
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    with pytest.raises(OcrUnavailableError):
+        bundles.bundle_summary_entries("/x.pdf", [_BUNDLE_ROW])
+
+
 def test_all_three_export_paths_agree_on_the_same_decorated_title(monkeypatch):
     """Asserts the paths AGREE rather than checking each alone.
 
