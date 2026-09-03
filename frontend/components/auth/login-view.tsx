@@ -16,12 +16,12 @@ export function LoginView() {
   const params = useSearchParams();
   const token = params.get("token");
   const viewParam = params.get("view");
+  // A reset link carries a token, so it lands on the reset form; anything else starts at sign-in.
+  const fallbackView: View = token ? "reset" : "signin";
   const initialView: View =
     viewParam === "register" || viewParam === "forgot" || viewParam === "reset"
       ? viewParam
-      : token
-        ? "reset"
-        : "signin";
+      : fallbackView;
 
   const [view, setView] = useState<View>(initialView);
   const router = useRouter();

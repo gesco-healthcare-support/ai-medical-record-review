@@ -27,6 +27,51 @@ const stop = (e: MouseEvent) => e.stopPropagation();
  * pages between non-contiguous rows. Purely presentational: every edit is emitted via a callback and
  * the parent owns the rows + autosave.
  */
+/** The row's advisory chips.
+ *
+ *  Extracted from the row render callback purely to keep that function readable: three
+ *  conditionals nested four levels deep inside a 260-line map dominated its complexity. The
+ *  wording and colour rules below are the reason this is one place rather than three. */
+function RowChips({
+  failed,
+  unidentified,
+  guessed,
+}: Readonly<{ failed: boolean; unidentified: boolean; guessed: boolean }>) {
+  return (
+    <>
+      {failed ? (
+        <span
+          className="rc-attn-chip"
+          title="This document could not be summarized - exclude it or fix its pages, then summarize again"
+        >
+          Could not summarize
+        </span>
+      ) : null}
+      {/* Deliberately not amber and with no row background: a row can carry both
+          chips, and two amber signals on one line cannot be told apart. */}
+      {unidentified ? (
+        <span
+          className="rc-unid-chip"
+          title="Nothing identified this document - it is in General because no rule or model could name it"
+        >
+          Could not identify
+        </span>
+      ) : null}
+      {/* Mutually exclusive with the chip above by construction - categoryWasGuessed
+          skips General - so a row never carries both, which is the same reason the
+          comment above keeps this column to one signal. */}
+      {guessed ? (
+        <span
+          className="rc-unid-chip"
+          title="The category was a guess: no rule matched and the two classifiers did not agree. This document IS being summarized under it."
+        >
+          Category guessed
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 export function RowsTable({
   rows,
   categories,
@@ -144,35 +189,11 @@ export function RowsTable({
                       onClick={stop}
                       onChange={(e) => onField(i, { title: e.target.value })}
                     />
-                    {failed ? (
-                      <span
-                        className="rc-attn-chip"
-                        title="This document could not be summarized - exclude it or fix its pages, then summarize again"
-                      >
-                        Could not summarize
-                      </span>
-                    ) : null}
-                    {/* Deliberately not amber and with no row background: a row can carry both
-                        chips, and two amber signals on one line cannot be told apart. */}
-                    {unidentified ? (
-                      <span
-                        className="rc-unid-chip"
-                        title="Nothing identified this document - it is in General because no rule or model could name it"
-                      >
-                        Could not identify
-                      </span>
-                    ) : null}
-                    {/* Mutually exclusive with the chip above by construction - categoryWasGuessed
-                        skips General - so a row never carries both, which is the same reason the
-                        comment above keeps this column to one signal. */}
-                    {guessed ? (
-                      <span
-                        className="rc-unid-chip"
-                        title="The category was a guess: no rule matched and the two classifiers did not agree. This document IS being summarized under it."
-                      >
-                        Category guessed
-                      </span>
-                    ) : null}
+                    <RowChips
+                      failed={failed}
+                      unidentified={unidentified}
+                      guessed={guessed}
+                    />
                     <span className="rc-rowactions">
                       {splitting === i ? (
                         <>

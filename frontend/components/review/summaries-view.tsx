@@ -211,9 +211,10 @@ export function SummariesView({
 
   const excludedCount = summaries.filter((s) => s.excluded).length;
   const includedCount = summaries.length - excludedCount;
+  const summaryNoun = summaries.length === 1 ? "summary" : "summaries";
+  const excludedNote = excludedCount ? ` · ${excludedCount} excluded from export` : "";
   const countLine = summaries.length
-    ? `${summaries.length} summar${summaries.length === 1 ? "y" : "ies"}` +
-      (excludedCount ? ` · ${excludedCount} excluded from export` : "")
+    ? `${summaries.length} ${summaryNoun}` + excludedNote
     : "";
   const pageCount = Math.max(1, Math.ceil(summaries.length / PAGE_SIZE));
   const curPage = Math.min(page, pageCount - 1);
@@ -245,7 +246,7 @@ export function SummariesView({
           </button>
         </div>
 
-        {isLoading ? null : summaries.length === 0 ? (
+        {!isLoading && summaries.length === 0 ? (
           <div className="summary-empty">
             <FileText width={34} height={34} aria-hidden />
             <p className="empty-title">No summaries yet</p>
@@ -254,7 +255,8 @@ export function SummariesView({
               Go to Duplicates
             </button>
           </div>
-        ) : (
+        ) : null}
+        {!isLoading && summaries.length > 0 ? (
           <div className="summary-list">
             {pageItems.map((item) => {
               const { title, text, doi } = parseDisplay(item);
@@ -438,7 +440,7 @@ export function SummariesView({
               );
             })}
           </div>
-        )}
+        ) : null}
 
         {pageCount > 1 ? (
           <div className="ev-pager">

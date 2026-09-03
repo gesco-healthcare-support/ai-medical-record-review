@@ -138,11 +138,12 @@ export function AdminView() {
               </tr>
             </thead>
             <tbody>
-              {isLoading ? null : categories.length === 0 ? (
+              {!isLoading && categories.length === 0 ? (
                 <tr className="hd-norows">
                   <td colSpan={8}>No categories yet.</td>
                 </tr>
-              ) : (
+              ) : null}
+              {!isLoading && categories.length > 0 ? (
                 categories.map((cat) => (
                   <tr key={cat.id} className={cn(!cat.active && "admin-inactive")}>
                     <td className="hd-muted">{cat.id}</td>
@@ -198,7 +199,7 @@ export function AdminView() {
                     </td>
                   </tr>
                 ))
-              )}
+              ) : null}
             </tbody>
           </table>
         </div>

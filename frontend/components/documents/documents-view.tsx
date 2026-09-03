@@ -114,9 +114,10 @@ export function DocumentsView() {
         onChange={(e) => void uploadFile(e.target.files?.[0])}
       />
 
-      {isLoading ? null : docs.length === 0 ? (
+      {!isLoading && docs.length === 0 ? (
         <EmptyState dragging={dragging} uploading={upload.isPending} onBrowse={pickFile} />
-      ) : (
+      ) : null}
+      {!isLoading && docs.length > 0 ? (
         <section className="hd-column">
           <div className="hd-header">
             <h1>My documents</h1>
@@ -145,7 +146,7 @@ export function DocumentsView() {
             onDelete={(doc) => setDeleteTarget(doc)}
           />
         </section>
-      )}
+      ) : null}
 
       <SplitUploadDialog open={splitOpen} onOpenChange={setSplitOpen} />
 
