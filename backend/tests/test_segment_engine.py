@@ -321,3 +321,56 @@ def test_a_per_page_failure_in_the_escalation_still_falls_back_to_the_title(monk
     row = se._categorize("x.pdf", _row(5, 7), timed_out)
     assert seen == [None], "only the title-only classify should have run"
     assert row["category"] == "100"
+
+
+def test_the_standalone_escalation_reports_pages_it_could_not_read(monkeypatch, caplog):
+    """#212. The standalone branch read through `extract_text_from_selected_pages`, which catches a
+    per-page Tesseract failure and continues - so it returned a SHORT escalation window and raised
+    nothing.
+
+    Production never takes this branch (the worker always supplies `page_text_fn`), which is exactly
+    who it could mislead: the eval harnesses in `scripts/eval/` run segmentation outside the worker,
+    so a silently short window changed what the classifier was scored on while the run reported a
+    clean number. Now the shortfall is attributable.
+    """
+    import logging
+
+    from app.services import ocr as ocr_mod
+    from app.services import segment_engine as se
+
+    def one_page_fails(pdf_path, pages, **kwargs):
+        assert kwargs.get("retries", 1) or True
+        return "text of page 6 only", {"pages": list(pages), "errored": [5], "blank": []}
+
+    monkeypatch.setattr(se, "extract_pages_with_report", one_page_fails)
+    assert ocr_mod is not None  # the real module is untouched; only the seam is stubbed
+
+    with caplog.at_level(logging.WARNING):
+        text = se._escalation_text("x.pdf", _row(5, 6))
+
+    assert text == "text of page 6 only"  # still degrades rather than failing
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "SHORT" in logged
+    assert "[5]" in logged, "the errored page number must be named, so it is attributable"
+
+
+def test_the_standalone_escalation_stays_quiet_when_every_page_reads(monkeypatch, caplog):
+    """The complement: a clean read must not warn, or the signal is worthless."""
+    import logging
+
+    from app.services import segment_engine as se
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda pdf_path, pages, **k: (
+            "all of it",
+            {"pages": list(pages), "errored": [], "blank": []},
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        text = se._escalation_text("x.pdf", _row(5, 6))
+
+    assert text == "all of it"
+    assert not [r for r in caplog.records if "SHORT" in r.getMessage()]
