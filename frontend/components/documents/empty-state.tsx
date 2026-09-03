@@ -1,6 +1,10 @@
 import { UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+/** Id of the hidden file input in DocumentsView. Declared HERE and imported there, not the other
+ *  way round: that file already imports this one, so the reverse would be a cycle. */
+export const UPLOAD_INPUT_ID = "record-file-input";
+
 /** First-run empty state (DS .hd-empty): dropzone + 3-step explainer. Drag-drop is handled by
  *  the parent (which wraps the whole area); this shows the visual dragging state and a browse CTA. */
 export function EmptyState({
@@ -19,11 +23,15 @@ export function EmptyState({
         Upload a medical record and MRR identifies the documents inside it. You review and correct
         the result before anything is summarized.
       </p>
-      {/* Not a control, deliberately: the "Browse files" button inside it is. Giving this div a
-          button role plus a tab stop made one action two separate stops, and nothing told a keyboard
-          user they did the same thing. The click handler stays as a mouse convenience over the whole
-          area; keyboard and screen-reader users reach the button. */}
-      <div className={cn("hd-drop", dragging && "dragging")} onClick={onBrowse}>
+      {/* A real <label> for the hidden file input, so the BROWSER opens the picker: clicking anywhere
+          in the area still works, with no click handler on a non-interactive element and no role or
+          tab stop of its own to duplicate the button below. Per the HTML spec a label is not
+          activated by clicks on its interactive content, so the "Browse files" button does not fire
+          this as well - it keeps its own handler and stays the one keyboard control. */}
+      <label
+        htmlFor={UPLOAD_INPUT_ID}
+        className={cn("hd-drop", dragging && "dragging")}
+      >
         <span className="hd-drop-icon">
           <UploadCloud width={26} height={26} aria-hidden />
         </span>
@@ -40,7 +48,7 @@ export function EmptyState({
         >
           {uploading ? "Uploading..." : "Browse files"}
         </button>
-      </div>
+      </label>
       <div className="hd-steps">
         <div className="hd-step">
           <span className="hd-step-num">1</span>

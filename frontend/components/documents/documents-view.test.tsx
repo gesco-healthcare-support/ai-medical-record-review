@@ -32,3 +32,28 @@ describe("DocumentsView error handling", () => {
     );
   });
 });
+
+describe("DocumentsView upload affordances", () => {
+  it("binds the drop area to the file input and opens the picker once from each control", () => {
+    const { container, getByText } = render(<DocumentsView />);
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const label = container.querySelector("label.hd-drop") as HTMLLabelElement;
+
+    // The binding itself: the drop area is a real <label> for the input, which is what lets the
+    // browser open the picker without a click handler on a non-interactive element.
+    expect(label).not.toBeNull();
+    expect(label.htmlFor).toBe(input.id);
+    expect(input.id).not.toBe("");
+
+    const clicks = vi.fn();
+    input.addEventListener("click", clicks);
+
+    fireEvent.click(label);
+    expect(clicks).toHaveBeenCalledTimes(1);
+
+    // "Browse files" is interactive content inside the label, so per the HTML spec clicking it does
+    // NOT also activate the label. It must open the picker exactly once more, never twice.
+    fireEvent.click(getByText("Browse files"));
+    expect(clicks).toHaveBeenCalledTimes(2);
+  });
+});
