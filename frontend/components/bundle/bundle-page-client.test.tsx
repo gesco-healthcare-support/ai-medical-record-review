@@ -27,9 +27,10 @@ vi.mock("@/hooks/use-documents", () => ({
   }),
 }));
 const downloadBundlePdf = vi.fn();
+const downloadBundleSummary = vi.fn();
 vi.mock("@/lib/bundle-api", () => ({
   downloadBundlePdf: (...args: unknown[]) => downloadBundlePdf(...args),
-  downloadBundleSummary: vi.fn(),
+  downloadBundleSummary: (...args: unknown[]) => downloadBundleSummary(...args),
 }));
 vi.mock("@/lib/review-api", () => ({
   getDocument: vi.fn().mockResolvedValue({
@@ -124,5 +125,33 @@ describe("BundlePageClient error handling", () => {
     expect(await screen.findByLabelText("Patient name")).toHaveValue("Jane Roe");
     expect(screen.getByLabelText("DOB")).toHaveValue("01/02/1990");
     expect(screen.getByLabelText("Attorney law firm")).toHaveValue("Acme LLP");
+  });
+});
+
+/** The failure path above was covered; the success path was not, so nothing pinned that a finished
+ *  download tells the reviewer it finished, or that the record id and bundle config reach the API. */
+describe("BundlePageClient success path", () => {
+  it("confirms a finished combined-PDF download", async () => {
+    const user = userEvent.setup();
+    downloadBundlePdf.mockResolvedValue(undefined);
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+    await user.click(await screen.findByRole("button", { name: /Download combined PDF/i }));
+    expect(await screen.findByText(/Combined PDF downloaded/i)).toBeInTheDocument();
+    expect(downloadBundlePdf).toHaveBeenCalledWith("b1", CONFIG);
+  });
+
+  it("sends the header fields with the Word report and confirms it", async () => {
+    const user = userEvent.setup();
+    downloadBundleSummary.mockResolvedValue(undefined);
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+    await user.click(await screen.findByRole("button", { name: /Summarize to Word/i }));
+    expect(await screen.findByText(/Word report downloaded/i)).toBeInTheDocument();
+    expect(downloadBundleSummary).toHaveBeenCalledWith(
+      "b1",
+      CONFIG,
+      expect.objectContaining({ QMEorAME: expect.any(String) }),
+    );
   });
 });
