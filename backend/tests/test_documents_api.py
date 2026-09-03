@@ -1035,6 +1035,71 @@ async def test_bundle_pdf_and_category_errors(authed):
     assert unmatched.status_code == 409  # nothing in this record matches
 
 
+async def test_a_bundle_ships_only_the_documents_the_reviewer_is_shipping(authed):
+    """DEMONSTRATES the bug: an unchecked row was bundled anyway.
+
+    A bundle is a deliverable - a combined PDF or a Word report a client receives - and this path
+    selected purely on category, straight off the table. The single-record export does not: it drops
+    `summary.excluded` first. So the two delivery paths disagreed about what the reviewer had
+    decided to ship.
+
+    The reachable case is `resolve_duplicate`'s keep_one, which sets `member.include = is_primary
+    and wanted` and leaves the CATEGORY alone - so a confirmed duplicate copy stayed in category 3
+    and its pages went into the bundle PDF a second time.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 1, "category": _VALID_CATEGORY, "include": True},
+                # The shape keep_one leaves behind: same category, unchecked.
+                {"start": 2, "end": 2, "category": _VALID_CATEGORY, "include": False},
+                {"start": 3, "end": 3, "category": _VALID_CATEGORY, "include": True},
+            ]
+        },
+    )
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200
+    # Two included pages, not three: the excluded row's page is absent from the delivered PDF.
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
+
+
+async def test_a_bundle_whose_every_match_is_excluded_says_so_rather_than_none(authed):
+    """The two 409s are different situations and a reviewer reads them differently.
+
+    "no matching documents in this record" sent someone looking for documents that are right there
+    on screen in the right category - they had just unchecked them. Worth its own message.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 1, "category": _VALID_CATEGORY, "include": False},
+                {"start": 2, "end": 2, "category": _VALID_CATEGORY, "include": False},
+            ]
+        },
+    )
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    assert got.status_code == 409
+    detail = got.json()["detail"]
+    assert "excluded" in detail and "2" in detail
+    assert "no matching documents" not in detail
+
+
 async def test_bundle_summarize_ocr_unavailable_returns_friendly_503(authed, monkeypatch):
     client, _ = authed
     doc_id = await _upload(client, pages=1)
