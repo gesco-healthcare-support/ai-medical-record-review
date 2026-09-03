@@ -26,15 +26,11 @@ function tokenize(input: string): Seg[] {
 export function MarkdownText({ text }: Readonly<{ text: string }>) {
   return (
     <>
-      {tokenize(text).map((s, i) =>
-        s.bold ? (
-          <strong key={i}>{s.text}</strong>
-        ) : s.italic ? (
-          <em key={i}>{s.text}</em>
-        ) : (
-          <Fragment key={i}>{s.text}</Fragment>
-        ),
-      )}
+      {tokenize(text).map((s, i) => {
+        if (s.bold) return <strong key={i}>{s.text}</strong>;
+        if (s.italic) return <em key={i}>{s.text}</em>;
+        return <Fragment key={i}>{s.text}</Fragment>;
+      })}
     </>
   );
 }

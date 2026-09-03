@@ -95,7 +95,9 @@ export function DocumentsTable({
       )
       .sort((a, b) => {
         const [va, vb] = [accessor(a), accessor(b)];
-        return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+        if (va < vb) return -sortDir;
+        if (va > vb) return sortDir;
+        return 0;
       });
   }, [docs, filter, search, sortKey, sortDir]);
 
@@ -151,18 +153,19 @@ export function DocumentsTable({
             <tr>
               {COLUMNS.map((col) => {
                 const active = sortKey === col.key;
+                const direction = sortDir === 1 ? "ascending" : "descending";
+                const arrow =
+                  sortDir === 1 ? (
+                    <ArrowUp width={11} height={11} aria-hidden />
+                  ) : (
+                    <ArrowDown width={11} height={11} aria-hidden />
+                  );
                 return (
-                  <th key={col.key} className={cn(col.cls, active && "sorted")} aria-sort={active ? (sortDir === 1 ? "ascending" : "descending") : "none"}>
+                  <th key={col.key} className={cn(col.cls, active && "sorted")} aria-sort={active ? direction : "none"}>
                     <button type="button" className="hd-sortbtn" onClick={() => toggleSort(col.key)}>
                       <span className="hd-sortlabel">
                         {col.label}
-                        {active ? (
-                          sortDir === 1 ? (
-                            <ArrowUp width={11} height={11} aria-hidden />
-                          ) : (
-                            <ArrowDown width={11} height={11} aria-hidden />
-                          )
-                        ) : null}
+                        {active ? arrow : null}
                       </span>
                     </button>
                   </th>
