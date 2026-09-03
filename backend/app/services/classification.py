@@ -63,8 +63,19 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # Still anchored at the START. An email is one when the title OPENS with it; a clinical
         # document that merely mentions email later is not, and `\b` at the end keeps "emailed"
         # from matching. Confirmed by the reviewers, who name "mails" in an excluded-types list.
+        # A BARE "Letter" joins this rule 2026-09-01, answered directly: "Leave out". It is the same
+        # family as the three alternations beside it and the same defect they each fixed - only the
+        # qualified forms were listed, so a title that is nothing but the word matched no rule
+        # at all and the cascade re-decided it on every record (34 rows / 77 pages, three
+        # different stored categories, 2 of them shipping).
+        #
+        # ANCHORED at both ends, unlike its neighbours, and deliberately. `\bletters?\b` unanchored
+        # would claim "Letter - Request for Supplemental Report" and every clinical document that
+        # merely arrives under cover of one; the cover/transmittal and evaluator alternations
+        # already answer those, and the whole point of #222 is that a wrapper-plus-document belongs
+        # to the document. Only the title that IS the word is claimed here.
         r"\b(cover|transmittal) letter\b|\b(ame|qme|pqme) letter\b"
-        r"|\bcorrespondence\b|^\s*e-?mails?\b",
+        r"|\bcorrespondence\b|^\s*e-?mails?\b|^\s*letters?\s*$",
         # `declaration of service` added UNANCHORED 2026-08-18. `^declaration\b` only matches a title
         # that STARTS with the word, so "QME Declaration of Service" was answered 13 by the evaluator
         # mention while a bare "Declaration of Service" was answered 100 - the same document, decided
@@ -75,8 +86,16 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # service of medical legal report". See the NOT-fixed note below for the second one.
         r"^declaration\b|\bdeclaration of service\b|proof of service"
         r"|certificate of (service|mailing)|declaration under penalty",
+        # `order summary` added 2026-09-01, answered directly: "Leave out". Unlike the rest of this
+        # PR it changes no delivered content - all 8 rows already reach 100 through the cascade and
+        # none is included - so it buys DETERMINISM only, which is the same argument the hospital
+        # paperwork below makes: an unruled title is re-decided on every record, and that is exactly
+        # how the bare excerpt wrapper came to ship two summaries against an instruction (#222).
+        #
+        # Qualified by `records`/`patient` rather than matching "order summary" alone, so a clinical
+        # document that happens to summarise orders is not claimed.
         r"schedule of records|index of records|records? (request|index)"
-        r"|request for (medical )?records",
+        r"|request for (medical )?records|\b(?:records?|patient)\s+order\s+summary\b",
         r"\b(request|notice|scheduling) (for |of |to )?[\w\s-]{0,24}\b(evaluation|examination)\b"
         r"|\b(evaluation|examination) (request|notice|appointment)\b",
         # HOSPITAL AND REGISTRATION PAPERWORK, added 2026-08-19. Every phrase here is named VERBATIM in
@@ -110,8 +129,13 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # The last two are answered correctly by the cascade and cost nothing, so a rule would buy
         # determinism they are not visibly missing - and a rule hit skips the review flag. Both stay
         # pinned xfail so a rule appearing later still shows up.
+        # `patient referral` was REMOVED from this alternation 2026-09-01. It was added on the
+        # strength of one record's excluded-pages list naming it - and the caveat written beside
+        # that evidence, that a type named on one list was excluded THERE rather than always,
+        # is exactly what came true. Asked directly, the answer was "Referral should be categorized
+        # as an authorization request", so it is now a document-type rule at the end of `_RULES`.
         r"\bfacesheet\b|\bflowsheets?\b|\bafter visit summary\b|\bcoding summary\b"
-        r"|\bpatient (referral|signature page|information sheet)\b"
+        r"|\bpatient (signature page|information sheet)\b"
         r"|\b(er|emergency room) registration\b|\bconditions of admission\b"
         r"|\b(admission|inpatient|emergency patient) record\b|\bmedication administration\b"
         r"|\bed care timeline\b",
@@ -511,6 +535,34 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # `history` is not matched on its own: it appears in "History of Injury", "Past Medical
         # History" and similar, none of which are this document.
         (r"\bhistory (?:and|&) physical\b|\bh ?& ?p\b", "1"),
+        # A referral is an authorization request, answered directly 2026-09-01: "Referral should be
+        # categorized as an authorization request."
+        #
+        # This REVERSES an earlier reading rather than filling a gap. `patient referral` was
+        # administrative paperwork because one record's excluded-pages list named it, and #134 wrote
+        # the caveat beside that evidence itself. The direct answer is the better evidence, and the
+        # direction of the correction is the safer one: 23 rows / 46 pages move OUT of General and
+        # into a category that ships, and over-inclusion is visible to a reviewer while a document
+        # dropped to General is not.
+        #
+        # ANCHORED AT THE START, and that is not tidiness. Unanchored, `\breferrals?\b` claimed
+        # "Email and Referral Flyer" - an email, which is administrative however it is titled (#220)
+        # - because a document-type match outranks an administrative one in `match_rules`.
+        #
+        # Measured over all 1,519 distinct titles on the box, and the two counts are different
+        # questions - stated separately because a comment conflating them outlives the PR:
+        #
+        #                     titles MATCHED    titles whose ANSWER CHANGES
+        #   this pattern            15                      9   (33 rows, 66 pages, 15 included)
+        #   unanchored              29                     16   (45 rows, 88 pages, 19 included)
+        #
+        # So the anchor withholds 7 titles the unanchored form would have claimed, "Email and
+        # Referral Flyer" among them. A title merely MENTIONING a referral is not a referral.
+        #
+        # LAST in `_RULES`, so every document-type rule above still wins: "Acupuncture Referral"
+        # stays 5, "Referral for MRI Lumbar Spine" stays 3, and a referral naming an evaluator
+        # stays 13. This only answers a title nothing more specific already did.
+        (r"^\s*(?:patient|medical)?\s*referrals?\b", "10"),
     )
 )
 
