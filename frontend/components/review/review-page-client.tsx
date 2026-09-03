@@ -23,6 +23,121 @@ type Tab = "review" | "duplicates" | "summaries";
  *  Auto-fill / Segment / Summarize) over a tab body - the always-on Review & correct editor or the
  *  Summaries view. The identify/summarize lifecycle lives in useReviewWorkflow; a running job turns
  *  the header actions into an inline progress bar and dims the editor. */
+/** The stop button's three states. Top-level so its branches do not count against the page
+ *  component, which is what this file is being trimmed for. */
+function stopButtonLabel(forceReady: boolean, stopping: boolean) {
+  if (forceReady) return "Force stop";
+  if (stopping) return "Stopping...";
+  return "Stop";
+}
+
+/** Every banner the review page can show, in the order it shows them.
+ *
+ *  Extracted from the page component for one reason: six conditionals nested inside a 500-line
+ *  function dominated its complexity, and a conditional costs more the deeper it sits. Kept in this
+ *  file rather than given its own, per the decision recorded in the cleanup plan. */
+function ReviewBanners({
+  wf,
+  tab,
+  unresolvedDupes,
+  failedRows,
+  titleByPages,
+  showSummarizeBlockers,
+  save,
+  errors,
+  onRestart,
+  onReviewDuplicates,
+}: Readonly<{
+  wf: ReturnType<typeof useReviewWorkflow>;
+  tab: Tab;
+  unresolvedDupes: number;
+  failedRows: { pages: string; reason: string }[];
+  titleByPages: Map<string, string>;
+  showSummarizeBlockers: boolean;
+  save: { kind: string; message?: string };
+  errors: Map<number, string>;
+  onRestart: (fresh: boolean) => void;
+  onReviewDuplicates: () => void;
+}>) {
+  return (
+    <>
+      {wf.banner ? <div className="banner">{wf.banner}</div> : null}
+      {/* The post-stop choice lives HERE rather than in the progress bar, because that bar unmounts
+          the moment the job stops being active and so cannot host it. */}
+      {wf.cancelledJob ? (
+        <output className="banner">
+          <strong>Stopped.</strong> Anything already finished has been kept.{" "}
+          <button
+            type="button"
+            className="ev-btn ev-btn-primary ev-btn-sm"
+            onClick={() => onRestart(false)}
+          >
+            Continue
+          </button>{" "}
+          <button
+            type="button"
+            className="ev-btn ev-btn-outline ev-btn-sm"
+            onClick={() => onRestart(true)}
+          >
+            Start over
+          </button>
+        </output>
+      ) : null}
+      {unresolvedDupes > 0 && tab !== "duplicates" ? (
+        <output className="banner">
+          {unresolvedDupes} possible duplicate {unresolvedDupes === 1 ? "group" : "groups"} to
+          review before summarizing.{" "}
+          <button
+            type="button"
+            className="ev-btn ev-btn-ghost ev-btn-sm"
+            onClick={onReviewDuplicates}
+          >
+            Review duplicates
+          </button>
+        </output>
+      ) : null}
+      {wf.attention ? (
+        <output className="notice-attention">
+          <p>{wf.attention.message}</p>
+          {failedRows.length ? (
+            <ul className="notice-attention-list">
+              {failedRows.map((r) => {
+                const title = titleByPages.get(r.pages);
+                return (
+                  <li key={r.pages}>
+                    <strong>
+                      Pages {r.pages}
+                      {title ? ` - ${title}` : ""}:
+                    </strong>{" "}
+                    {r.reason}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+        </output>
+      ) : null}
+      {showSummarizeBlockers && save.kind === "error" && errors.size === 0 ? (
+        <div className="banner" role="alert">
+          {save.message}
+        </div>
+      ) : null}
+      {showSummarizeBlockers && errors.size > 0 ? (
+        <div className="banner" aria-live="polite">
+          <strong>Fix these before summarizing:</strong>
+          <ul>
+            {[...errors.entries()].map(([i, msg]) => (
+              <li key={i}>
+                Document {i + 1}: {msg}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }>) {
   const wf = useReviewWorkflow(documentId);
   const { data: summaries = [] } = useSummaries(documentId);
@@ -58,6 +173,7 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
 
   const errors = rowErrors(wf.rows, wf.totalPages);
   const included = wf.rows.filter((r) => r.include !== false).length;
+  const documentNoun = included === 1 ? "document" : "documents";
 
   // The sub-documents a needs_attention run could not summarize, keyed by page range for matching
   // to editor rows (the idx in attention is the included-position, not review_row.idx - match on
@@ -298,7 +414,7 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
                     : "Ask this run to stop at its next safe point"
                 }
               >
-                {forceReady ? "Force stop" : stopping ? "Stopping..." : "Stop"}
+                {stopButtonLabel(forceReady, stopping)}
               </button>
             </div>
           ) : (
@@ -361,9 +477,7 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
                     title={summarizeHint}
                     onClick={() => wf.onSummarize()}
                   >
-                    {included
-                      ? `Summarize ${included} document${included === 1 ? "" : "s"}`
-                      : "Summarize"}
+                    {included ? `Summarize ${included} ${documentNoun}` : "Summarize"}
                   </button>
                   {/* Only when the duplicate gate is the ONLY thing in the way - offering it while
                       rows are invalid or unsaved would let a reviewer skip past a different
@@ -400,92 +514,33 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
         </div>
       </header>
 
-      {wf.banner ? <div className="banner">{wf.banner}</div> : null}
-      {/* The post-stop choice lives HERE rather than in the progress bar, because that bar unmounts
-          the moment the job stops being active and so cannot host it. */}
-      {wf.cancelledJob ? (
-        <output className="banner">
-          <strong>Stopped.</strong> Anything already finished has been kept.{" "}
-          <button
-            type="button"
-            className="ev-btn ev-btn-primary ev-btn-sm"
-            onClick={() => onRestart(false)}
-          >
-            Continue
-          </button>{" "}
-          <button
-            type="button"
-            className="ev-btn ev-btn-outline ev-btn-sm"
-            onClick={() => onRestart(true)}
-          >
-            Start over
-          </button>
-        </output>
-      ) : null}
-      {unresolvedDupes > 0 && tab !== "duplicates" ? (
-        <output className="banner">
-          {unresolvedDupes} possible duplicate {unresolvedDupes === 1 ? "group" : "groups"} to
-          review before summarizing.{" "}
-          <button
-            type="button"
-            className="ev-btn ev-btn-ghost ev-btn-sm"
-            onClick={() => setTab("duplicates")}
-          >
-            Review duplicates
-          </button>
-        </output>
-      ) : null}
-      {wf.attention ? (
-        <output className="notice-attention">
-          <p>{wf.attention.message}</p>
-          {failedRows.length ? (
-            <ul className="notice-attention-list">
-              {failedRows.map((r) => {
-                const title = titleByPages.get(r.pages);
-                return (
-                  <li key={r.pages}>
-                    <strong>
-                      Pages {r.pages}
-                      {title ? ` - ${title}` : ""}:
-                    </strong>{" "}
-                    {r.reason}
-                  </li>
-                );
-              })}
-            </ul>
-          ) : null}
-        </output>
-      ) : null}
-      {showSummarizeBlockers && save.kind === "error" && errors.size === 0 ? (
-        <div className="banner" role="alert">
-          {save.message}
-        </div>
-      ) : null}
-      {showSummarizeBlockers && errors.size > 0 ? (
-        <div className="banner" aria-live="polite">
-          <strong>Fix these before summarizing:</strong>
-          <ul>
-            {[...errors.entries()].map(([i, msg]) => (
-              <li key={i}>
-                Document {i + 1}: {msg}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      <ReviewBanners
+        wf={wf}
+        tab={tab}
+        unresolvedDupes={unresolvedDupes}
+        failedRows={failedRows}
+        titleByPages={titleByPages}
+        showSummarizeBlockers={showSummarizeBlockers}
+        save={save}
+        errors={errors}
+        onRestart={onRestart}
+        onReviewDuplicates={() => setTab("duplicates")}
+      />
+
 
       <div className="rce-body">
-        {tab === "review" ? (
-          wf.rows.length === 0 && wf.watching ? (
-            <ProgressPanel
-              title={wf.progress.title}
-              pct={wf.progress.pct}
-              detail={wf.progress.detail}
-            />
-          ) : wf.rows.length === 0 ? (
-            <StartPanel rerun={false} hint={wf.startHint} onStart={wf.onStart} />
-          ) : (
-            <>
+        {tab === "review" && wf.rows.length === 0 && wf.watching ? (
+          <ProgressPanel
+            title={wf.progress.title}
+            pct={wf.progress.pct}
+            detail={wf.progress.detail}
+          />
+        ) : null}
+        {tab === "review" && wf.rows.length === 0 && !wf.watching ? (
+          <StartPanel rerun={false} hint={wf.startHint} onStart={wf.onStart} />
+        ) : null}
+        {tab === "review" && wf.rows.length > 0 ? (
+          <>
               <HeaderBar documentId={documentId} header={wf.header} onSaved={(f) => wf.setHeader(f)} />
               <div className={cn("rce-editor", wf.watching && "busy")}>
                 <ReviewEditor
@@ -498,15 +553,16 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
                   attentionPages={attentionPages}
                 />
               </div>
-            </>
-          )
-        ) : tab === "duplicates" ? (
+          </>
+        ) : null}
+        {tab === "duplicates" ? (
           <DuplicatesView
             documentId={documentId}
             filename={wf.filename}
             onResolved={wf.reloadRows}
           />
-        ) : (
+        ) : null}
+        {tab === "summaries" ? (
           <SummariesView
             documentId={documentId}
             filename={wf.filename}
@@ -516,7 +572,7 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
             onGotoSummarizeStep={() => setTab("duplicates")}
             onRowsChanged={wf.reloadRows}
           />
-        )}
+        ) : null}
       </div>
     </div>
   );
