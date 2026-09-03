@@ -1952,8 +1952,8 @@ def _long_edge_px(width_pt, height_pt):
     [
         (2700, 3455),  # de-identified records A/B/C: box == pixel count, 120 dpi renders 4500x5758
         (1258, 1631),  # records 01-04 and 07-09: also box == pixel count
-        (605, 790),    # records 05, 06, 10-14: an honest box over a 150 dpi source
-        (612, 792),    # US Letter, which no record in the corpus actually has
+        (605, 790),  # records 05, 06, 10-14: an honest box over a 150 dpi source
+        (612, 792),  # US Letter, which no record in the corpus actually has
     ],
 )
 def test_page_dpi_lands_every_corpus_geometry_on_the_configured_long_edge(width_pt, height_pt):
