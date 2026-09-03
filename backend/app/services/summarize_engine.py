@@ -312,6 +312,24 @@ _DEPOSITION_CATEGORIES = frozenset({"9"})
 # review - verified by scanning all 14 category prompts - so only they carry that rule and only they
 # can act on a list of the record's other studies.
 _EMBEDDED_REVIEW_CATEGORIES = frozenset({"12", "13"})
+# The catch-all. Its ID is known; its CONTENT is not, and that is the distinction this exists to
+# draw (#216). Every other known id earns a reduced preamble because its documents structurally
+# cannot contain the withheld thing - a Request For Authorization has no range of motion. 100 holds
+# whatever nothing else claimed, so nothing can be said about what its documents contain.
+#
+# And the population that REACHES the summarizer at 100 is selected for being clinical. 100 seeds
+# `summarize_default = False`, so a row there is unchecked unless a reviewer deliberately ticks it -
+# which they do when they judge the content worth summarizing. Measured 2026-09-02: 16 of 1,834
+# rows at 100 are ticked (0.9%), and 141 summaries have been produced at this category. So the one
+# population guaranteed to arrive with clinical content was the one guaranteed to receive none of
+# the clinical instructions.
+#
+# Treated as an unrecognised id for the blocks that describe CONTENT, which is what the
+# default-INCLUDE policy in `build_preamble` was written for - but NOT for the three measurement
+# blocks. Instructing the catch-all about vitals, pain scales and range of motion is a scope change
+# that belongs to #216, so the flag is split rather than the question quietly answered here.
+_CATCH_ALL_CATEGORIES = frozenset({"100"})
+
 # Every id the catalog ships. An id outside this set gets EVERY block (see build_preamble).
 _KNOWN_CATEGORIES = (
     _EXAM_CATEGORIES
@@ -335,23 +353,43 @@ def build_preamble(category) -> str:
     never silently under-instructed. Only a KNOWN id has blocks withheld, and only where its documents
     structurally cannot contain the thing - a laboratory result has no range of motion, and a
     deposition transcript is not written as one paragraph.
+
+    THE CATCH-ALL TAKES THE DEFAULT TOO (#216). Withholding requires knowing what the documents
+    contain, and 100 is the one category about which nothing can be said - see
+    `_CATCH_ALL_CATEGORIES`. It is not a special case bolted on; it is the same situation as an
+    unrecognised id, so `content_unknown` covers both and the rest of the function is untouched.
+
+    THE `exam` FLAG IS SPLIT IN TWO, which #216 asks for and which is what keeps the catch-all's
+    share of this narrow. One flag used to gate both `_C_NORMAL_FINDINGS` and, later,
+    `_C_VITALS`/`_C_PAIN`/`_C_RANGE_OF_MOTION`, so 100 could not be given the first without the
+    other three - and instructing the catch-all about vitals, pain scales and range of motion is a
+    scope change rather than a defect fix. Split, the catch-all takes what it plainly needs (a
+    normal finding is content, and dropping it is content lost) and the scope question does not
+    arise. `_EXAM_CATEGORIES` still drives both, so no other category moves.
+
+    So `build_preamble("100")` is deliberately NOT identical to an unrecognised id's. They differ by
+    exactly the three measurement blocks, and that difference is the open question left on #216 -
+    an unknown id is default-INCLUDE by policy, while 100 is a known id whose content is unknown and
+    whose measurement instructions nobody has decided on.
     """
     cat = str(category)
     unknown = cat not in _KNOWN_CATEGORIES
+    content_unknown = unknown or cat in _CATCH_ALL_CATEGORIES
     deposition = cat in _DEPOSITION_CATEGORIES
-    exam = unknown or cat in _EXAM_CATEGORIES
-    verdict = unknown or cat in _VERDICT_CATEGORIES
-    embedded = unknown or cat in _EMBEDDED_REVIEW_CATEGORIES
+    findings = content_unknown or cat in _EXAM_CATEGORIES
+    measurements = unknown or cat in _EXAM_CATEGORIES
+    verdict = content_unknown or cat in _VERDICT_CATEGORIES
+    embedded = content_unknown or cat in _EMBEDDED_REVIEW_CATEGORIES
 
     parts = [_FACTUALITY, _CONTENT_HEADER, _C_POINT_SCOPE]
-    if exam:
+    if findings:
         parts.append(_C_NORMAL_FINDINGS)
     if verdict:
         parts.append(_C_VERDICT)
     if embedded:
         parts.append(_C_EMBEDDED_REVIEW)
     parts.append(_C_CODES)
-    if exam:
+    if measurements:
         parts += [_C_VITALS, _C_PAIN, _C_RANGE_OF_MOTION]
     parts += ["\n", _FORMAT_HEADER]
     parts.append(_F_DEPOSITION if deposition else _F_ONE_PARAGRAPH)
