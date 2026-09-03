@@ -30,7 +30,7 @@ export function ReviewEditor({
   totalPages,
   onRowsChange,
   attentionPages,
-}: {
+}: Readonly<{
   documentId: string;
   filename: string;
   rows: EditorRow[];
@@ -38,7 +38,7 @@ export function ReviewEditor({
   totalPages: number;
   onRowsChange: (rows: EditorRow[]) => void;
   attentionPages?: Set<string>;
-}) {
+}>) {
   const pdfRef = useRef<PdfViewerHandle>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [splittingKey, setSplittingKey] = useState<string | null>(null);
@@ -134,7 +134,7 @@ export function ReviewEditor({
   }
 
   function openAdd() {
-    const last = rows[rows.length - 1];
+    const last = rows.at(-1);
     const start = last ? Math.min(Number(last.end) + 1, totalPages) : 1;
     setAddStart(String(start));
     setAddEnd(String(start));

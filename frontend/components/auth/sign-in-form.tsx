@@ -10,10 +10,10 @@ import { AuthError } from "./auth-error";
 export function SignInForm({
   onRegister,
   onForgot,
-}: {
+}: Readonly<{
   onRegister: () => void;
   onForgot: () => void;
-}) {
+}>) {
   const router = useRouter();
   const login = useLogin();
   const [email, setEmail] = useState("");

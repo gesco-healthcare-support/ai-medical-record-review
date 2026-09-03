@@ -25,14 +25,14 @@ export function ExportDialog({
   includedCount,
   excludedCount,
   defaults,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
   documentId: string;
   includedCount: number;
   excludedCount: number;
   defaults?: HeaderFields | null;
-}) {
+}>) {
   const [patient, setPatient] = useState("");
   const [dob, setDob] = useState("");
   const [qme, setQme] = useState(DEFAULT_QME);
@@ -78,7 +78,7 @@ export function ExportDialog({
       }
       if (!resp.ok) throw new Error(`export failed (${resp.status})`);
       const cd = resp.headers.get("Content-Disposition") || "";
-      const match = cd.match(/filename="?([^"]+)"?/);
+      const match = /filename="?([^"]+)"?/.exec(cd);
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");

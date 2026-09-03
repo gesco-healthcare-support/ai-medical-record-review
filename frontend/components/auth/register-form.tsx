@@ -10,7 +10,7 @@ import { AuthError } from "./auth-error";
 import { PasswordChecklist, passwordValid } from "./password-checklist";
 
 /** Registration does not start a session, so a successful create is followed by a login. */
-export function RegisterForm({ onSignIn }: { onSignIn: () => void }) {
+export function RegisterForm({ onSignIn }: Readonly<{ onSignIn: () => void }>) {
   const router = useRouter();
   const register = useRegister();
   const login = useLogin();

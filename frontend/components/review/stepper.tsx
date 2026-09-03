@@ -15,11 +15,11 @@ export function Stepper({
   activeStep,
   busy,
   onStep,
-}: {
+}: Readonly<{
   activeStep: StepId;
   busy: boolean;
   onStep: (step: StepId) => void;
-}) {
+}>) {
   const activeIdx = ORDER.indexOf(activeStep);
   return (
     <nav className="ev-stepper" aria-label="Pipeline steps">

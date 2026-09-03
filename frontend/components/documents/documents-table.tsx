@@ -69,12 +69,12 @@ export function DocumentsTable({
   onOpen,
   onIdentify,
   onDelete,
-}: {
+}: Readonly<{
   docs: DocumentListItem[];
   onOpen: (id: string) => void;
   onIdentify?: (doc: DocumentListItem) => void;
   onDelete?: (doc: DocumentListItem) => void;
-}) {
+}>) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("uploaded");

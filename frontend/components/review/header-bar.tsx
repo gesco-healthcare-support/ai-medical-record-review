@@ -20,11 +20,11 @@ export function HeaderBar({
   documentId,
   header,
   onSaved,
-}: {
+}: Readonly<{
   documentId: string;
   header: HeaderFields | null;
   onSaved: (fields: HeaderFields) => void;
-}) {
+}>) {
   const [fields, setFields] = useState<HeaderFields>(header ?? EMPTY);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);

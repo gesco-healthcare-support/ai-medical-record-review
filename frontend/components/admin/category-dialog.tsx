@@ -22,14 +22,14 @@ export function CategoryDialog({
   onCreate,
   onUpdate,
   saving,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
   editing: AdminCategory | null;
   onCreate: (body: CategoryInput & { id: string }) => Promise<void>;
   onUpdate: (id: string, body: Partial<CategoryInput>) => Promise<void>;
   saving: boolean;
-}) {
+}>) {
   const creating = !editing;
   const [id, setId] = useState("");
   const [name, setName] = useState("");

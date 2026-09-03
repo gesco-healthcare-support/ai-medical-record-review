@@ -10,11 +10,11 @@ export function AuthShell({
   title,
   subtitle,
   children,
-}: {
+}: Readonly<{
   title: string;
   subtitle?: string;
   children: ReactNode;
-}) {
+}>) {
   return (
     <>
       <header className="ev-topbar">

@@ -6,7 +6,7 @@ import { UserMenu } from "./user-menu";
  * Navy app bar for signed-in screens (mirrors the Flask .ev-topbar). Brand on the left; an
  * optional contextual action plus the user menu, right-aligned via .ev-topbar-nav.
  */
-export function AppBar({ action }: { action?: ReactNode }) {
+export function AppBar({ action }: Readonly<{ action?: ReactNode }>) {
   return (
     <header className="ev-topbar">
       <Brand homeLink />

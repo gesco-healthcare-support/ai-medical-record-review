@@ -12,12 +12,12 @@ export function SegmentedTabs<T extends string>({
   value,
   onValueChange,
   ariaLabel,
-}: {
+}: Readonly<{
   tabs: ReadonlyArray<{ value: T; label: React.ReactNode }>;
   value: T;
   onValueChange: (value: T) => void;
   ariaLabel: string;
-}) {
+}>) {
   return (
     <div className="ev-segtabs" role="tablist" aria-label={ariaLabel}>
       {tabs.map((tab) => (

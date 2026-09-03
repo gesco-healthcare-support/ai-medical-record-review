@@ -1,7 +1,7 @@
 import { AlertCircle } from "lucide-react";
 
 /** In-card error banner (DS .auth-alert): danger band, announced to assistive tech. */
-export function AuthError({ message }: { message: string | null }) {
+export function AuthError({ message }: Readonly<{ message: string | null }>) {
   if (!message) return null;
   return (
     <div className="auth-alert" role="alert">
