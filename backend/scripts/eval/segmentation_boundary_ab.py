@@ -222,7 +222,12 @@ def _segment_once(pdf_path, total_pages, prompt, stage):
     if stage == "full":
         for row in rows:
             row.setdefault("category", "100")
-        rows, _stats = segment_engine.verify_and_merge(pdf_path, rows)
+        # The WIDE net, pinned rather than inherited. `VERIFY_TRIGGERED_ONLY` is a live-box setting
+        # meant to be flipped and measured (#177), and both arms of this A/B run through here - so
+        # inheriting it would narrow the net under a comparison built to hold everything but the
+        # prompt constant, and nothing in the output would say so. False, not the current default,
+        # because every number this harness has produced was measured on the wide net.
+        rows, _stats = segment_engine.verify_and_merge(pdf_path, rows, triggered_only=False)
     return [(int(r["start"]), int(r["end"])) for r in rows]
 
 

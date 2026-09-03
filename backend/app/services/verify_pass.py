@@ -156,11 +156,30 @@ def suspect_indices(rows, cap=None, triggered_only=None):
     return sorted(candidates[: max(cap, 0)])
 
 
-def verify_and_merge(pdf_path, rows, progress=None, workers=None, auto=False, pool_timeout=None):
+def verify_and_merge(
+    pdf_path,
+    rows,
+    progress=None,
+    workers=None,
+    auto=False,
+    pool_timeout=None,
+    triggered_only=None,
+):
     """Verify suspect boundaries; refuted ones become MERGE SUGGESTIONS by default (auto=False).
     Returns (rows, stats). Merging preserves tiling. The boundary-check pool is bounded by
     pool_timeout (size-aware, from the last row's page); a stall leaves the outstanding boundaries
-    UNVERIFIED, which keeps their splits - never an auto-merge on missing evidence, never a hang."""
+    UNVERIFIED, which keeps their splits - never an auto-merge on missing evidence, never a hang.
+
+    ``triggered_only`` selects the net, and exists so a CALLER can pin it rather than inheriting
+    whatever the box is set to. `None` keeps the setting, which is what production wants: the flag
+    is in the compose env block precisely so it can be flipped and measured without a rebuild.
+
+    A measurement harness wants the opposite. `VERIFY_TRIGGERED_ONLY` was built to be flipped on a
+    live box, and the boundary A/B calls this function on BOTH arms - so flipping it would have
+    silently narrowed the net under a comparison whose whole job is to hold everything but the
+    prompt constant, and the run would have looked entirely normal. Passing it explicitly there is
+    what makes the flag safe to flip (#209).
+    """
     settings = get_settings()
     if workers is None:
         workers = settings.classify_workers
@@ -171,7 +190,7 @@ def verify_and_merge(pdf_path, rows, progress=None, workers=None, auto=False, po
         if progress is not None:
             progress("verifying", current, total)
 
-    suspects = suspect_indices(rows)
+    suspects = suspect_indices(rows, triggered_only=triggered_only)
     report(0, len(suspects))
     same_doc = {}
     if suspects:
