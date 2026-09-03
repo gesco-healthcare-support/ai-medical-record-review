@@ -324,8 +324,10 @@ _EMBEDDED_REVIEW_CATEGORIES = frozenset({"12", "13"})
 # population guaranteed to arrive with clinical content was the one guaranteed to receive none of
 # the clinical instructions.
 #
-# Treated exactly as an unrecognised id: same situation, same answer, and it is what the
-# default-INCLUDE policy in `build_preamble` was written for.
+# Treated as an unrecognised id for the blocks that describe CONTENT, which is what the
+# default-INCLUDE policy in `build_preamble` was written for - but NOT for the three measurement
+# blocks. Instructing the catch-all about vitals, pain scales and range of motion is a scope change
+# that belongs to #216, so the flag is split rather than the question quietly answered here.
 _CATCH_ALL_CATEGORIES = frozenset({"100"})
 
 # Every id the catalog ships. An id outside this set gets EVERY block (see build_preamble).
@@ -357,33 +359,37 @@ def build_preamble(category) -> str:
     `_CATCH_ALL_CATEGORIES`. It is not a special case bolted on; it is the same situation as an
     unrecognised id, so `content_unknown` covers both and the rest of the function is untouched.
 
-    WHY THE `exam` FLAG IS NOT SPLIT, since #216 calls that a prerequisite. It would be, if the
-    catch-all needed normal-findings WITHOUT vitals/pain/range-of-motion. It does not, because every
-    conditional block is guarded by its own wording rather than by the flag: normal-findings applies
-    "when describing an examination, a history, or a clinical assessment", `_C_PAIN` speaks only to
-    pain, `_C_RANGE_OF_MOTION` presupposes a measurement, and `_C_VERDICT` addresses "a diagnostic
-    study or a laboratory or test result". On a routing slip that lands at 100 every one of them is
-    inert. `_C_VITALS` is the exception and it argues the same way round: it PROHIBITS height and
-    weight, and a facesheet at 100 is exactly a document that carries them. So both groups are
-    wanted here and splitting the flag would buy a distinction nothing needs.
+    THE `exam` FLAG IS SPLIT IN TWO, which #216 asks for and which is what keeps the catch-all's
+    share of this narrow. One flag used to gate both `_C_NORMAL_FINDINGS` and, later,
+    `_C_VITALS`/`_C_PAIN`/`_C_RANGE_OF_MOTION`, so 100 could not be given the first without the
+    other three - and instructing the catch-all about vitals, pain scales and range of motion is a
+    scope change rather than a defect fix. Split, the catch-all takes what it plainly needs (a
+    normal finding is content, and dropping it is content lost) and the scope question does not
+    arise. `_EXAM_CATEGORIES` still drives both, so no other category moves.
+
+    So `build_preamble("100")` is deliberately NOT identical to an unrecognised id's. They differ by
+    exactly the three measurement blocks, and that difference is the open question left on #216 -
+    an unknown id is default-INCLUDE by policy, while 100 is a known id whose content is unknown and
+    whose measurement instructions nobody has decided on.
     """
     cat = str(category)
     unknown = cat not in _KNOWN_CATEGORIES
     content_unknown = unknown or cat in _CATCH_ALL_CATEGORIES
     deposition = cat in _DEPOSITION_CATEGORIES
-    exam = content_unknown or cat in _EXAM_CATEGORIES
+    findings = content_unknown or cat in _EXAM_CATEGORIES
+    measurements = unknown or cat in _EXAM_CATEGORIES
     verdict = content_unknown or cat in _VERDICT_CATEGORIES
     embedded = content_unknown or cat in _EMBEDDED_REVIEW_CATEGORIES
 
     parts = [_FACTUALITY, _CONTENT_HEADER, _C_POINT_SCOPE]
-    if exam:
+    if findings:
         parts.append(_C_NORMAL_FINDINGS)
     if verdict:
         parts.append(_C_VERDICT)
     if embedded:
         parts.append(_C_EMBEDDED_REVIEW)
     parts.append(_C_CODES)
-    if exam:
+    if measurements:
         parts += [_C_VITALS, _C_PAIN, _C_RANGE_OF_MOTION]
     parts += ["\n", _FORMAT_HEADER]
     parts.append(_F_DEPOSITION if deposition else _F_ONE_PARAGRAPH)
