@@ -1147,7 +1147,8 @@ async def test_a_bundle_whose_every_match_is_excluded_says_so_rather_than_none(a
 
     assert got.status_code == 409
     detail = got.json()["detail"]
-    assert "excluded" in detail and "2" in detail
+    assert "excluded" in detail
+    assert "2" in detail
     assert "no matching documents" not in detail
 
 
