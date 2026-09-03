@@ -38,6 +38,32 @@ function categoryLabel(categories: CategoryOption[], id: string) {
 /** Category-bundle workspace (DS §5): pick an already-identified record, see the documents whose
  *  category is in this page's set (read-only), then download a combined PDF or summarize just those
  *  to Word. One component, two configs (Diagnostic & Operative / Depositions) switched via tabs. */
+type BundleResult = { kind: "ok" | "err" | ""; msg: string };
+
+/** Both downloads follow one script: refuse without a record, mark busy, report the outcome either
+ *  way, and always clear busy. Written once so the two cannot report differently on the same
+ *  failure, and TOP-LEVEL rather than inside the component - a nested function's branches count
+ *  toward the function enclosing it, so hiding this inside would not have simplified anything. */
+async function runBundleDownload(
+  id: string | null,
+  setBusy: (busy: boolean) => void,
+  setResult: (result: BundleResult) => void,
+  labels: { pending: string; ok: string; failure: string },
+  action: (id: string) => Promise<void>,
+) {
+  if (!id) return;
+  setBusy(true);
+  setResult({ kind: "", msg: labels.pending });
+  try {
+    await action(id);
+    setResult({ kind: "ok", msg: labels.ok });
+  } catch (err) {
+    setResult({ kind: "err", msg: errMessage(err, labels.failure) });
+  } finally {
+    setBusy(false);
+  }
+}
+
 export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>) {
   const router = useRouter();
   const { data: docs = [] } = useDocuments();
@@ -57,7 +83,7 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
   const [autoFilling, setAutoFilling] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [sumBusy, setSumBusy] = useState(false);
-  const [result, setResult] = useState<{ kind: "ok" | "err" | ""; msg: string }>({ kind: "", msg: "" });
+  const [result, setResult] = useState<BundleResult>({ kind: "", msg: "" });
 
   // Reuse the record's persisted header: prefill the export fields when they are still empty, so a
   // header detected once on Review carries here. A manual edit or a prior Auto-fill wins; qme stays
@@ -103,37 +129,30 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
     }
   }
 
-  async function downloadPdf() {
-    if (!selectedId) return;
-    setPdfBusy(true);
-    setResult({ kind: "", msg: "Combining pages..." });
-    try {
-      await downloadBundlePdf(selectedId, config);
-      setResult({ kind: "ok", msg: "Combined PDF downloaded." });
-    } catch (err) {
-      setResult({ kind: "err", msg: errMessage(err, "The download failed.") });
-    } finally {
-      setPdfBusy(false);
-    }
+  function downloadPdf() {
+    return runBundleDownload(
+      selectedId,
+      setPdfBusy,
+      setResult,
+      { pending: "Combining pages...", ok: "Combined PDF downloaded.", failure: "The download failed." },
+      (id) => downloadBundlePdf(id, config),
+    );
   }
 
-  async function summarize() {
-    if (!selectedId) return;
-    setSumBusy(true);
-    setResult({ kind: "", msg: "Preparing report..." });
-    try {
-      await downloadBundleSummary(selectedId, config, {
-        patientName: patient,
-        patientdob: dob,
-        QMEorAME: qme,
-        lawfirm: firm,
-      });
-      setResult({ kind: "ok", msg: "Word report downloaded." });
-    } catch (err) {
-      setResult({ kind: "err", msg: errMessage(err, "The report failed.") });
-    } finally {
-      setSumBusy(false);
-    }
+  function summarize() {
+    return runBundleDownload(
+      selectedId,
+      setSumBusy,
+      setResult,
+      { pending: "Preparing report...", ok: "Word report downloaded.", failure: "The report failed." },
+      (id) =>
+        downloadBundleSummary(id, config, {
+          patientName: patient,
+          patientdob: dob,
+          QMEorAME: qme,
+          lawfirm: firm,
+        }),
+    );
   }
 
   type BundleSlug = (typeof BUNDLE_TABS)[number]["value"];
@@ -235,7 +254,7 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
               {tabs}
             </div>
 
-            {detailLoading ? null : !identified ? (
+            {!detailLoading && !identified ? (
               <div className="bnd-empty">
                 <p className="bnd-empty-title">This record hasn&apos;t been identified yet</p>
                 <p>
@@ -251,7 +270,8 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
                   </Link>
                 </div>
               </div>
-            ) : (
+            ) : null}
+            {!detailLoading && identified ? (
               <div className="bnd-grid">
                 <div className="hd-card">
                   <div className="bnd-card-head">
@@ -387,7 +407,7 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
                   <div className={`bnd-result ${result.kind}`}>{result.msg}</div>
                 </aside>
               </div>
-            )}
+            ) : null}
           </>
         )}
       </div>
