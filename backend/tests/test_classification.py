@@ -852,6 +852,51 @@ def test_the_followup_guard_still_yields_where_181_said_it_should():
     assert classification.match_rules("Office Visit Follow-Up MRI") == "1"
 
 
+# The SAME divergence one level up, and the level the mirror cannot reach. `_TREATING_VISIT_TOKENS`
+# asks "did rule 1 match on one of its own other tokens" - it says nothing about the THREE other
+# rules that answer category 1 (return-to-work voucher #140, emergency-department visit #160,
+# History & Physical #161). The demotion filters `matches` by VALUE, so it removed their category 1
+# too, and each of those rules names a treating document outright - exactly the case the guard
+# exists to protect. Measured over all 1,877 distinct titles on the box: ZERO change answer, so this
+# is a statement of intent for the day a title carries both tokens, not a fix for observed loss.
+@pytest.mark.parametrize(
+    "treating",
+    ["Return-to-Work and Voucher Report", "Emergency Department Record", "History and Physical"],
+)
+@pytest.mark.parametrize("modality", ["MRI of the Lumbar Spine", "Operative Report"])
+def test_every_rule_that_names_a_treating_document_keeps_category_1(treating, modality):
+    """Asserted as a PAIR against rule 1's own synonym, for the reason the test above gives: what
+    must never happen is two titles naming a treating document answering differently."""
+    theirs = classification.match_rules(f"{treating} Follow-Up {modality}")
+    rule_one = classification.match_rules(f"Progress Report Follow-Up {modality}")
+
+    assert theirs == rule_one, (
+        f"{treating!r} surrenders category 1 to {modality!r} where 'Progress Report' keeps it: "
+        f"{theirs} vs {rule_one}"
+    )
+
+
+def test_the_guard_covers_every_category_1_rule_including_ones_not_written_yet():
+    """DERIVED, so a fourth rule answering category 1 is protected the day it is written.
+
+    Both failures this file records were "a list someone had to remember to grow". Enumerating the
+    three rules here would be that mistake a third time, so this walks `_RULES` instead.
+    """
+    own_reason = [
+        pattern.pattern
+        for pattern, category in classification._RULES
+        if category == "1" and not pattern.search(classification._FOLLOWUP_ONLY)
+    ]
+    assert len(own_reason) >= 3, "the three rules answering 1 for a reason of their own are gone"
+
+    # Lowercase, because this takes the already-normalised text `match_rules` hands it rather than a
+    # raw title - the rules are all lowercase patterns. Passing a real title here silently answered
+    # False for every rule, which is what this comment is here to stop happening twice.
+    assert classification._answered_for_another_reason("emergency department record", "1") is True
+    # The bare token is never a reason of its own - that is the whole premise of the withholding.
+    assert classification._answered_for_another_reason("follow-up", "1") is False
+
+
 # ---------------------------------------------------------------------------------------------
 # Orders and prescriptions -> 10, answered by Adam 2026-08-24: "All orders can probably go under the
 # RFA category", and for prescriptions "if they are on their own it's probably fine to put it under
