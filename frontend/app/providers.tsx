@@ -28,7 +28,7 @@ function redirectOnAuthError(error: unknown) {
  * and the Radix tooltip provider. Instantiated once via useState so the client survives
  * re-renders but is per-request on the server.
  */
-export function Providers({ children }: { children: ReactNode }) {
+export function Providers({ children }: Readonly<{ children: ReactNode }>) {
   const [queryClient] = useState(
     () =>
       new QueryClient({

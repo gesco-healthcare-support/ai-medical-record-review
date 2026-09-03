@@ -38,7 +38,7 @@ function categoryLabel(categories: CategoryOption[], id: string) {
 /** Category-bundle workspace (DS §5): pick an already-identified record, see the documents whose
  *  category is in this page's set (read-only), then download a combined PDF or summarize just those
  *  to Word. One component, two configs (Diagnostic & Operative / Depositions) switched via tabs. */
-export function BundlePageClient({ config }: { config: BundleConfig }) {
+export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>) {
   const router = useRouter();
   const { data: docs = [] } = useDocuments();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -276,8 +276,8 @@ export function BundlePageClient({ config }: { config: BundleConfig }) {
                         </tr>
                       </thead>
                       <tbody>
-                        {matches.map((row, i) => (
-                          <tr key={i}>
+                        {matches.map((row) => (
+                          <tr key={`${row.start}-${row.end}`}>
                             <td className="hd-muted">
                               {row.start}
                               {"–"}

@@ -13,7 +13,7 @@ export function passwordValid(password: string): boolean {
 }
 
 /** Live requirements list (DS .auth-checklist): each item flips gray to green as it is met. */
-export function PasswordChecklist({ password }: { password: string }) {
+export function PasswordChecklist({ password }: Readonly<{ password: string }>) {
   return (
     <div className="auth-checklist" aria-live="polite">
       {passwordRules.map((rule) => {

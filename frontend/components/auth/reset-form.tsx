@@ -10,7 +10,7 @@ import { PasswordChecklist, passwordValid } from "./password-checklist";
 
 /** Consumes the reset token from the link (?token=...); email delivery is deferred, so in dev
  *  the token comes from the server log. */
-export function ResetForm({ token, onSignIn }: { token: string; onSignIn: () => void }) {
+export function ResetForm({ token, onSignIn }: Readonly<{ token: string; onSignIn: () => void }>) {
   const reset = useResetPassword();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");

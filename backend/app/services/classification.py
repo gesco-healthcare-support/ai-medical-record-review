@@ -63,8 +63,19 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # Still anchored at the START. An email is one when the title OPENS with it; a clinical
         # document that merely mentions email later is not, and `\b` at the end keeps "emailed"
         # from matching. Confirmed by the reviewers, who name "mails" in an excluded-types list.
+        # A BARE "Letter" joins this rule 2026-09-01, answered directly: "Leave out". It is the same
+        # family as the three alternations beside it and the same defect they each fixed - only the
+        # qualified forms were listed, so a title that is nothing but the word matched no rule
+        # at all and the cascade re-decided it on every record (34 rows / 77 pages, three
+        # different stored categories, 2 of them shipping).
+        #
+        # ANCHORED at both ends, unlike its neighbours, and deliberately. `\bletters?\b` unanchored
+        # would claim "Letter - Request for Supplemental Report" and every clinical document that
+        # merely arrives under cover of one; the cover/transmittal and evaluator alternations
+        # already answer those, and the whole point of #222 is that a wrapper-plus-document belongs
+        # to the document. Only the title that IS the word is claimed here.
         r"\b(cover|transmittal) letter\b|\b(ame|qme|pqme) letter\b"
-        r"|\bcorrespondence\b|^\s*e-?mails?\b",
+        r"|\bcorrespondence\b|^\s*e-?mails?\b|^\s*letters?\s*$",
         # `declaration of service` added UNANCHORED 2026-08-18. `^declaration\b` only matches a title
         # that STARTS with the word, so "QME Declaration of Service" was answered 13 by the evaluator
         # mention while a bare "Declaration of Service" was answered 100 - the same document, decided
@@ -75,8 +86,16 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # service of medical legal report". See the NOT-fixed note below for the second one.
         r"^declaration\b|\bdeclaration of service\b|proof of service"
         r"|certificate of (service|mailing)|declaration under penalty",
+        # `order summary` added 2026-09-01, answered directly: "Leave out". Unlike the rest of this
+        # PR it changes no delivered content - all 8 rows already reach 100 through the cascade and
+        # none is included - so it buys DETERMINISM only, which is the same argument the hospital
+        # paperwork below makes: an unruled title is re-decided on every record, and that is exactly
+        # how the bare excerpt wrapper came to ship two summaries against an instruction (#222).
+        #
+        # Qualified by `records`/`patient` rather than matching "order summary" alone, so a clinical
+        # document that happens to summarise orders is not claimed.
         r"schedule of records|index of records|records? (request|index)"
-        r"|request for (medical )?records",
+        r"|request for (medical )?records|\b(?:records?|patient)\s+order\s+summary\b",
         r"\b(request|notice|scheduling) (for |of |to )?[\w\s-]{0,24}\b(evaluation|examination)\b"
         r"|\b(evaluation|examination) (request|notice|appointment)\b",
         # HOSPITAL AND REGISTRATION PAPERWORK, added 2026-08-19. Every phrase here is named VERBATIM in
@@ -110,8 +129,13 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # The last two are answered correctly by the cascade and cost nothing, so a rule would buy
         # determinism they are not visibly missing - and a rule hit skips the review flag. Both stay
         # pinned xfail so a rule appearing later still shows up.
+        # `patient referral` was REMOVED from this alternation 2026-09-01. It was added on the
+        # strength of one record's excluded-pages list naming it - and the caveat written beside
+        # that evidence, that a type named on one list was excluded THERE rather than always,
+        # is exactly what came true. Asked directly, the answer was "Referral should be categorized
+        # as an authorization request", so it is now a document-type rule at the end of `_RULES`.
         r"\bfacesheet\b|\bflowsheets?\b|\bafter visit summary\b|\bcoding summary\b"
-        r"|\bpatient (referral|signature page|information sheet)\b"
+        r"|\bpatient (signature page|information sheet)\b"
         r"|\b(er|emergency room) registration\b|\bconditions of admission\b"
         r"|\b(admission|inpatient|emergency patient) record\b|\bmedication administration\b"
         r"|\bed care timeline\b",
@@ -192,25 +216,33 @@ _EVALUATOR_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, d
 # "follow-up visit"/"follow-up appointment", was measured too and REJECTED: it moved 4 real titles
 # from 1 to no-rule-at-all, spending live content to fix nothing.
 _FOLLOWUP_MENTION = "1"
-_FOLLOWUP_TOKEN = re.compile(r"follow ?-? ?up")
-# The category-1 rule minus that token: did anything else in it match?
+_FOLLOWUP_TOKEN_SOURCE = r"follow ?-? ?up"
+_FOLLOWUP_TOKEN = re.compile(_FOLLOWUP_TOKEN_SOURCE)
+
+# Rule 1's treating-visit synonyms, WITHOUT the position-in-care token. Rule 1 is built from these
+# two constants below, so "the category-1 rule minus that token" is now literally true rather than
+# maintained by hand.
 #
-# THIS LIST AND RULE 1 ARE A PAIR AND MOVE TOGETHER. Nothing but this comment enforces it, and it
-# has now been missed twice - `work status` arrived in rule 1 in #146 and `activity status` in this
-# change, and neither came here on its own. The cost is silent and only shows on titles carrying
-# BOTH a follow-up token and a modality, which is why no existing test caught it:
+# It used to be a second copy of the same list, and the comment here said "THIS LIST AND RULE 1 ARE
+# A PAIR AND MOVE TOGETHER. Nothing but this comment enforces it" - which was accurate, and the pair
+# had already drifted TWICE: `work status` arrived in rule 1 in #146 and `activity status` in #195,
+# and neither reached the copy on its own. The cost is silent, and shows only on a title carrying
+# BOTH a follow-up token and a modality, which is why no test caught either:
 #
 #     Work Status Report Follow-Up MRI          -> 1
 #     Activity Status Report Follow-Up MRI      -> 3      the same document, two answers
 #
-# A token in rule 1 but not here means that synonym surrenders category 1 to imaging, operative,
-# deposition or laboratory where its twin keeps it. Caught by @adrian-g on review, who replayed it:
-# 4 of 4 such pairs diverged before, 0 of 4 after, and 72 titles move x -> 1, every one carrying
-# both tokens.
-_TREATING_VISIT_WITHOUT_FOLLOWUP = re.compile(
+# The second was caught by @adrian-g on review rather than by the code. One source removes the class
+# of defect instead of re-synchronising the copy a third time.
+_TREATING_VISIT_TOKENS = (
     r"\bpr-?2\b|progress report|progress note|office visit|work status|\bactivity status\b"
 )
+_TREATING_VISIT_WITHOUT_FOLLOWUP = re.compile(_TREATING_VISIT_TOKENS)
 _FOLLOWUP_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, deposition, lab
+
+# A title that is ONLY the position-in-care token. A category-1 rule that does not match this
+# answers 1 for some other reason, which is what `_answered_for_another_reason` asks.
+_FOLLOWUP_ONLY = "follow-up"
 
 # Words that name a DOCUMENT rather than the paperwork wrapped around it. The segmenter is told to
 # fold a cover sheet into the document it travels with and to title the record from the visible
@@ -404,11 +436,10 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         #
         # Rules 12, 13 and 2 all precede this one, so an evaluator's own report, a Permanent and
         # Stationary or a Doctor's First Report still wins if a title ever carries both.
-        (
-            r"\bpr-?2\b|progress report|progress note|office visit|follow ?-? ?up"
-            r"|work status|\bactivity status\b",
-            "1",
-        ),
+        # Composed from the two constants above rather than spelled out, so the mirror used by the
+        # follow-up withholding IS this rule minus that one token, by construction. Written out
+        # twice, the pair drifted twice - see the note on `_TREATING_VISIT_TOKENS`.
+        (rf"{_TREATING_VISIT_TOKENS}|{_FOLLOWUP_TOKEN_SOURCE}", "1"),
         # ORDERS AND PRESCRIPTIONS -> 10, answered by Adam 2026-08-24: "All orders can probably go
         # under the RFA category", and for prescriptions "if they are on their own it's probably fine
         # to put it under the RFA category since it should be the same information being summarized.
@@ -504,8 +535,63 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # `history` is not matched on its own: it appears in "History of Injury", "Past Medical
         # History" and similar, none of which are this document.
         (r"\bhistory (?:and|&) physical\b|\bh ?& ?p\b", "1"),
+        # A referral is an authorization request, answered directly 2026-09-01: "Referral should be
+        # categorized as an authorization request."
+        #
+        # This REVERSES an earlier reading rather than filling a gap. `patient referral` was
+        # administrative paperwork because one record's excluded-pages list named it, and #134 wrote
+        # the caveat beside that evidence itself. The direct answer is the better evidence, and the
+        # direction of the correction is the safer one: 23 rows / 46 pages move OUT of General and
+        # into a category that ships, and over-inclusion is visible to a reviewer while a document
+        # dropped to General is not.
+        #
+        # ANCHORED AT THE START, and that is not tidiness. Unanchored, `\breferrals?\b` claimed
+        # "Email and Referral Flyer" - an email, which is administrative however it is titled (#220)
+        # - because a document-type match outranks an administrative one in `match_rules`.
+        #
+        # Measured over all 1,519 distinct titles on the box, and the two counts are different
+        # questions - stated separately because a comment conflating them outlives the PR:
+        #
+        #                     titles MATCHED    titles whose ANSWER CHANGES
+        #   this pattern            15                      9   (33 rows, 66 pages, 15 included)
+        #   unanchored              29                     16   (45 rows, 88 pages, 19 included)
+        #
+        # So the anchor withholds 7 titles the unanchored form would have claimed, "Email and
+        # Referral Flyer" among them. A title merely MENTIONING a referral is not a referral.
+        #
+        # LAST in `_RULES`, so every document-type rule above still wins: "Acupuncture Referral"
+        # stays 5, "Referral for MRI Lumbar Spine" stays 3, and a referral naming an evaluator
+        # stays 13. This only answers a title nothing more specific already did.
+        (r"^\s*(?:patient|medical)?\s*referrals?\b", "10"),
     )
 )
+
+
+def _answered_for_another_reason(text: str, category: str) -> bool:
+    """Did a rule OTHER than the position-in-care one answer `category` for this title?
+
+    The follow-up withholding is documented as firing "ONLY when follow-up is the sole reason
+    category 1 matched", and `_TREATING_VISIT_WITHOUT_FOLLOWUP` answers that for rule 1's OWN
+    synonyms. It cannot answer it for a DIFFERENT rule, and three others now answer category 1: the
+    return-to-work voucher (#140), the emergency-department visit (#160) and History & Physical
+    (#161). Each names a treating document outright, so each is exactly the case the guard exists to
+    protect - and each surrendered category 1 anyway, because the demotion filters `matches` by
+    VALUE and so drops every "1" in it, whichever rule put it there:
+
+        Progress Report Follow-Up MRI                       -> 1
+        Return-to-Work and Voucher Report Follow-Up MRI     -> 3
+        Emergency Department Record Follow-Up MRI           -> 3
+        History and Physical Follow-Up MRI                  -> 3
+
+    Derived rather than listed, so a fourth rule answering category 1 is covered the day it is
+    written - the same reasoning that made rule 1 and its mirror one constant instead of two. A rule
+    qualifies when it matches this title but NOT the bare token, i.e. it has a reason of its own.
+    """
+    return any(
+        pattern.search(text) and not pattern.search(_FOLLOWUP_ONLY)
+        for pattern, rule_category in _RULES
+        if rule_category == category
+    )
 
 
 @dataclass
@@ -540,7 +626,10 @@ def match_rules(title):
     if (
         _FOLLOWUP_MENTION in matches
         and _FOLLOWUP_TOKEN.search(text)
+        # Two ways category 1 can be earned by something other than the token, and both must be
+        # asked: rule 1 matching on one of its OWN synonyms, and a different rule answering 1.
         and not _TREATING_VISIT_WITHOUT_FOLLOWUP.search(text)
+        and not _answered_for_another_reason(text, _FOLLOWUP_MENTION)
         and not _FOLLOWUP_YIELDS_TO.isdisjoint(matches)
     ):
         matches = [c for c in matches if c != _FOLLOWUP_MENTION]

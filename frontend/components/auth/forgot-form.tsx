@@ -6,7 +6,7 @@ import { useForgotPassword } from "@/hooks/use-auth";
 import { AuthShell } from "./auth-shell";
 
 /** Always shows the confirmation view on submit (no account enumeration; the backend 202s). */
-export function ForgotForm({ onSignIn }: { onSignIn: () => void }) {
+export function ForgotForm({ onSignIn }: Readonly<{ onSignIn: () => void }>) {
   const forgot = useForgotPassword();
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);

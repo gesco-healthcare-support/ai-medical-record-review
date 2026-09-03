@@ -3129,3 +3129,135 @@ def test_an_unopenable_pdf_answers_422_not_503():
 
     # And the sibling document-property error is unchanged.
     assert _pipeline_error_response("doc-1", EmptyExtractionError("blank")).status_code == 422
+
+
+# #202: `get_status` answered two different questions with one row. "What is happening now" is the
+# newest job of any kind; "which sub-documents could not be summarized" belongs to the summarize run
+# that recorded it. Reading both off the newest job meant ANY later job hid the row list - measured
+# before the fix, 5 of the 6 jobs holding an attention payload were already buried, and the reviewer
+# saw "Some documents need attention." with an empty list and no way back.
+def _seed_job(doc_id, kind, state, *, attention=None, error=None, stage=None, current=0, total=0):
+    with get_sessionmaker()() as session:
+        session.add(
+            Job(
+                document_id=doc_id,
+                kind=kind,
+                state=state,
+                stage=stage,
+                current=current,
+                total=total,
+                error=error,
+                attention=attention,
+                model="m",
+                prompt_version="1",
+            )
+        )
+        session.commit()
+
+
+# The shape `_finalize_needs_attention` actually stores: `pages` as a string, not start/end. The
+# first version of this fixture invented start/end and only the FRONTEND typechecker caught it -
+# these tests had passed against the fiction, because the endpoint just passes the JSON through.
+_ATTENTION = {
+    "rows": [{"idx": 2, "pages": "5-6", "reason": "unreadable"}],
+    "message": "2 could not be read",
+}
+
+
+async def test_a_later_dedup_no_longer_hides_the_needs_attention_row_list(authed):
+    """The bug. A dedup after a failed summarize displaced the payload entirely."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_job(
+        doc_id, "summarize", "needs_attention", attention=_ATTENTION, error="2 could not be read"
+    )
+    _seed_job(doc_id, "dedup", "done", stage="deduping", current=1, total=1)
+
+    job = (await client.get(f"/api/documents/{doc_id}/status")).json()["job"]
+
+    assert job["kind"] == "dedup"  # progress still describes what is happening NOW
+    assert job["state"] == "done"
+    assert job["attention"]["rows"][0]["idx"] == 2  # ...and the row list survives
+    assert job["attention"]["message"] == "2 could not be read"
+
+
+async def test_a_successful_re_summarize_clears_the_payload_rather_than_resurrecting_it(authed):
+    """The trap in the tempting version. "Newest job that CARRIES attention" would surface the old
+    payload forever, because a successful run records none - so the reviewer would keep being told
+    about rows they have already fixed. Keying on the summarize KIND gets this right."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_job(
+        doc_id, "summarize", "needs_attention", attention=_ATTENTION, error="2 could not be read"
+    )
+    _seed_job(doc_id, "summarize", "done", stage="summarizing", current=3, total=3)
+    _seed_job(doc_id, "dedup", "done", stage="deduping")
+
+    job = (await client.get(f"/api/documents/{doc_id}/status")).json()["job"]
+
+    assert job["kind"] == "dedup"
+    assert job["attention"] is None
+
+
+async def test_the_newest_summarize_wins_when_it_also_needs_attention(authed):
+    """A second failed run supersedes the first: its list is the current one."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_job(doc_id, "summarize", "needs_attention", attention=_ATTENTION, error="old")
+    later = {
+        "rows": [{"idx": 0, "pages": "1-1", "reason": "blank"}],
+        "message": "1 could not be read",
+    }
+    _seed_job(doc_id, "summarize", "needs_attention", attention=later, error="1 could not be read")
+    _seed_job(doc_id, "dedup", "done")
+
+    job = (await client.get(f"/api/documents/{doc_id}/status")).json()["job"]
+
+    assert [r["idx"] for r in job["attention"]["rows"]] == [0]
+    assert job["attention"]["message"] == "1 could not be read"
+
+
+async def test_a_running_job_still_reports_its_own_progress(authed):
+    """The splice must not disturb the poller: a dedup running after a failed summarize shows its
+    own state and stage, which is what drives the progress bar."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_job(doc_id, "summarize", "needs_attention", attention=_ATTENTION)
+    _seed_job(doc_id, "dedup", "running", stage="deduping", current=2, total=5)
+
+    job = (await client.get(f"/api/documents/{doc_id}/status")).json()["job"]
+
+    assert (job["kind"], job["state"], job["stage"]) == ("dedup", "running", "deduping")
+    assert (job["current"], job["total"]) == (2, 5)
+    # The frontend reads `attention` only when state is needs_attention, so carrying it here is
+    # inert - but it must be the summarize's, not an empty one.
+    assert job["attention"]["rows"][0]["idx"] == 2
+
+
+async def test_a_document_with_no_summarize_job_reports_no_attention(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_job(doc_id, "segment", "done", stage="segmenting")
+    _seed_job(doc_id, "dedup", "done", stage="deduping")
+
+    job = (await client.get(f"/api/documents/{doc_id}/status")).json()["job"]
+
+    assert job["kind"] == "dedup"
+    assert job["attention"] is None
+
+
+async def test_the_summarize_job_itself_is_unchanged_when_it_is_newest(authed):
+    """Guard: the common case must not move. When the needs_attention summarize IS the newest job,
+    every field comes from it exactly as before."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_job(
+        doc_id, "summarize", "needs_attention", attention=_ATTENTION, error="2 could not be read"
+    )
+
+    job = (await client.get(f"/api/documents/{doc_id}/status")).json()["job"]
+
+    assert job["kind"] == "summarize"
+    assert job["state"] == "needs_attention"
+    assert job["error"] == "2 could not be read"
+    assert job["attention"]["rows"][0]["idx"] == 2

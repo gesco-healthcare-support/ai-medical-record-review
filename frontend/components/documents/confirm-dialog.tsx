@@ -21,7 +21,7 @@ export function ConfirmDialog({
   confirmLabel,
   onConfirm,
   destructive = false,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
@@ -29,7 +29,7 @@ export function ConfirmDialog({
   confirmLabel: string;
   onConfirm: () => void;
   destructive?: boolean;
-}) {
+}>) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>

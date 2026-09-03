@@ -12,7 +12,7 @@ import {
 import { humanizeError } from "@/lib/errors";
 import type { DocumentListItem } from "@/lib/types";
 import { DocumentsTable } from "./documents-table";
-import { EmptyState } from "./empty-state";
+import { EmptyState, UPLOAD_INPUT_ID } from "./empty-state";
 import { SplitUploadDialog } from "./split-upload-dialog";
 import { ConfirmDialog } from "./confirm-dialog";
 
@@ -107,6 +107,7 @@ export function DocumentsView() {
     >
       <input
         ref={fileInput}
+        id={UPLOAD_INPUT_ID}
         type="file"
         accept="application/pdf"
         className="hidden"

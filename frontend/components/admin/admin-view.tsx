@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { CategoryDialog } from "./category-dialog";
 import { PromptDialog } from "./prompt-dialog";
 
-function Badge({ tone, children }: { tone: string; children: ReactNode }) {
+function Badge({ tone, children }: Readonly<{ tone: string; children: ReactNode }>) {
   return (
     <span className={cn("hd-badge", `hd-badge-${tone}`)}>
       <span className="hd-dot" aria-hidden />

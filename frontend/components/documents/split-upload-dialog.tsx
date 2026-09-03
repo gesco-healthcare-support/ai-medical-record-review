@@ -23,10 +23,10 @@ function isPdf(file: File) {
 export function SplitUploadDialog({
   open,
   onOpenChange,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}) {
+}>) {
   const aggregate = useAggregateDocuments();
   const [name, setName] = useState("");
   const [files, setFiles] = useState<File[]>([]);

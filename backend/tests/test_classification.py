@@ -399,7 +399,12 @@ def test_recurring_paperwork_is_answered_by_a_rule(title):
         "Medication Administration",
         "ED Care Timeline",
         # named in the excluded-pages list of the 229-page record
-        "Patient Referral",
+        #
+        # "Patient Referral" was HERE and was removed 2026-09-01. It is the one entry in this list
+        # whose evidence turned out to be the weak kind the list's own caveat warned about: named on
+        # ONE record's excluded pages, which establishes that it was excluded THERE. Asked directly,
+        # the answer was "Referral should be categorized as an authorization request", so it is now
+        # pinned at 10 by `test_a_referral_is_an_authorization_request`. Everything else here stands.
         "Patient Signature Page",
         "Emergency Patient Record",
         # same family, and the type a facesheet arrives attached to
@@ -850,6 +855,51 @@ def test_the_followup_guard_still_yields_where_181_said_it_should():
     assert classification.match_rules("Follow-Up Laboratory Results") == "14"
     # ...and one WITH a treating-visit token still keeps 1, which is the other half.
     assert classification.match_rules("Office Visit Follow-Up MRI") == "1"
+
+
+# The SAME divergence one level up, and the level the mirror cannot reach. `_TREATING_VISIT_TOKENS`
+# asks "did rule 1 match on one of its own other tokens" - it says nothing about the THREE other
+# rules that answer category 1 (return-to-work voucher #140, emergency-department visit #160,
+# History & Physical #161). The demotion filters `matches` by VALUE, so it removed their category 1
+# too, and each of those rules names a treating document outright - exactly the case the guard
+# exists to protect. Measured over all 1,877 distinct titles on the box: ZERO change answer, so this
+# is a statement of intent for the day a title carries both tokens, not a fix for observed loss.
+@pytest.mark.parametrize(
+    "treating",
+    ["Return-to-Work and Voucher Report", "Emergency Department Record", "History and Physical"],
+)
+@pytest.mark.parametrize("modality", ["MRI of the Lumbar Spine", "Operative Report"])
+def test_every_rule_that_names_a_treating_document_keeps_category_1(treating, modality):
+    """Asserted as a PAIR against rule 1's own synonym, for the reason the test above gives: what
+    must never happen is two titles naming a treating document answering differently."""
+    theirs = classification.match_rules(f"{treating} Follow-Up {modality}")
+    rule_one = classification.match_rules(f"Progress Report Follow-Up {modality}")
+
+    assert theirs == rule_one, (
+        f"{treating!r} surrenders category 1 to {modality!r} where 'Progress Report' keeps it: "
+        f"{theirs} vs {rule_one}"
+    )
+
+
+def test_the_guard_covers_every_category_1_rule_including_ones_not_written_yet():
+    """DERIVED, so a fourth rule answering category 1 is protected the day it is written.
+
+    Both failures this file records were "a list someone had to remember to grow". Enumerating the
+    three rules here would be that mistake a third time, so this walks `_RULES` instead.
+    """
+    own_reason = [
+        pattern.pattern
+        for pattern, category in classification._RULES
+        if category == "1" and not pattern.search(classification._FOLLOWUP_ONLY)
+    ]
+    assert len(own_reason) >= 3, "the three rules answering 1 for a reason of their own are gone"
+
+    # Lowercase, because this takes the already-normalised text `match_rules` hands it rather than a
+    # raw title - the rules are all lowercase patterns. Passing a real title here silently answered
+    # False for every rule, which is what this comment is here to stop happening twice.
+    assert classification._answered_for_another_reason("emergency department record", "1") is True
+    # The bare token is never a reason of its own - that is the whole premise of the withholding.
+    assert classification._answered_for_another_reason("follow-up", "1") is False
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1344,3 +1394,74 @@ def test_the_records_index_is_unchanged_and_not_claimed_by_these_anchors():
     not what the rules say today (the stored-vs-current trap)."""
     assert classification.match_rules("medical excerpted records index") == "100"
     assert classification.match_rules("Index of Records") == "100"
+
+
+# Three answers from the reviewers, 2026-09-01. Each question was asked with our current behaviour
+# stated underneath it, so they were reacting to something concrete rather than to an abstraction:
+#
+#   "A document titled only 'Letter' - summarize or leave out?"   -> "Leave out"
+#   "Records Order Summary - summarize or leave out?"             -> "Leave out"
+#   "Patient Referral - summarized, and as what?"                 -> "Referral should be
+#                                                                    categorized as an
+#                                                                    authorization request."
+@pytest.mark.parametrize("title", ["Letter", "letters", "LETTER", "  letter  ", "Letters"])
+def test_a_bare_letter_is_administrative(title):
+    assert classification.match_rules(title) == "100"
+
+
+# The half an unanchored `\bletters?\b` would have broken. Each of these already had an answer and
+# keeps it - the wrapper-plus-a-document case belongs to the document, which is the whole principle
+# `test_document_type_beats_administrative_wrapper` above exists to defend.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Letter - Request for Supplemental Report", "100"),
+        ("Cover Letter - PR-2 Progress Report", "1"),  # the report wins, as it always has
+        ("Transmittal Letter", "100"),
+        ("Joint AME Letter", "100"),
+        ("Transmittal Letter - MRI Lumbar Spine", "3"),
+    ],
+)
+def test_a_qualified_letter_is_unchanged(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+def test_an_order_summary_is_administrative_and_is_not_over_claimed():
+    """Buys determinism rather than a new answer - all 8 rows already reached 100 through the
+    cascade and none was included. The value is that the answer stops being re-decided per record,
+    which is how the bare excerpt wrapper came to ship two summaries against an instruction."""
+    assert classification.match_rules("Records Order Summary") == "100"
+    assert classification.match_rules("Patient Order Summary") == "100"
+    # "order summary" alone is not claimed: a clinical document summarising orders is not this.
+    assert classification.match_rules("Order Summary") is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Referral", "Patient Referral", "Medical Referral", "Referral for Authorization", "referrals"],
+)
+def test_a_referral_is_an_authorization_request(title):
+    """REVERSES the earlier reading, and that is the point. `patient referral` was administrative on
+    the strength of one record's excluded-pages list naming it; #134 wrote the caveat beside that
+    evidence itself. 23 rows / 46 pages move out of General, unchecked, into a category that ships."""
+    assert classification.match_rules(title) == "10"
+
+
+# The referral rule is LAST in `_RULES` and anchored at the start. Both properties are load-bearing
+# and these are the cases that fail if either is lost.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Acupuncture Referral", "5"),  # every document-type rule above still wins
+        ("Chiropractic Referral", "5"),
+        ("Referral for MRI Lumbar Spine", "3"),
+        # An email is administrative however it is titled (#220). UNANCHORED, `\breferrals?\b`
+        # claimed this one and turned an email into an authorization request, because a
+        # document-type match outranks an administrative one in `match_rules`. Measured over every
+        # title on the box: unanchored moved 22, anchored moves 12, and this is the difference.
+        ("Email and Referral Flyer", "100"),
+        ("Email - Referral", "100"),
+    ],
+)
+def test_a_title_that_merely_mentions_a_referral_is_not_one(title, expected):
+    assert classification.match_rules(title) == expected

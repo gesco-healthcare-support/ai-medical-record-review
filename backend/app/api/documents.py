@@ -657,12 +657,42 @@ def get_status(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
 ):
+    """Live progress for the poller, plus the per-row detail of a needs_attention summarize.
+
+    THOSE ARE TWO DIFFERENT QUESTIONS and this endpoint used to answer both with one row (#202).
+    "What is happening now" is the newest job of any kind - a dedup running after a failed summarize
+    must show its own progress. "Which sub-documents could not be summarized" belongs to the
+    summarize run that recorded it, and reading it off the newest job meant ANY later job hid it:
+    measured before the fix, 5 of the 6 jobs holding an attention payload were already buried, and
+    the reviewer saw "Some documents need attention." with an empty list and no way back.
+
+    Resolved from the newest SUMMARIZE job rather than "the newest job that carries attention",
+    which is the tempting version and is subtly wrong: a successful re-summarize records no
+    attention, so "newest carrying" would resurrect the payload of a run the reviewer has already
+    dealt with. Keying on the kind that OWNS the concept gets both cases right - `attention` is
+    written in exactly one place (`_finalize_needs_attention`, reached only from summarize), so a
+    later summarize is always the authoritative answer and a later job of any other kind is
+    irrelevant by construction.
+
+    The splice cannot show an incoherent pair. The frontend reads `attention` only when
+    `job.state == "needs_attention"`, and no kind but summarize can produce that state - so either
+    the newest job IS the summarize (and both fields come from it), or the state is something else
+    and the payload is ignored.
+    """
     latest = session.scalars(
         select(Job).where(Job.document_id == document.id).order_by(Job.id.desc())
     ).first()
+    job = latest.progress() if latest else None
+    if job is not None and latest.kind != "summarize":
+        newest_summarize = session.scalars(
+            select(Job)
+            .where(Job.document_id == document.id, Job.kind == "summarize")
+            .order_by(Job.id.desc())
+        ).first()
+        job["attention"] = newest_summarize.attention if newest_summarize else None
     return {
         "status": document.status,
-        "job": latest.progress() if latest else None,
+        "job": job,
         # Advisory only - the FE badges/notices this but Summarize is never blocked on it.
         "unreviewed_duplicate_groups": _unreviewed_dupe_count(_dupe_groups(document)),
     }

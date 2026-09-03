@@ -19,11 +19,11 @@ export function DuplicatesView({
   documentId,
   filename,
   onResolved,
-}: {
+}: Readonly<{
   documentId: string;
   filename?: string;
   onResolved?: () => void;
-}) {
+}>) {
   const { data, isLoading, error } = useDuplicates(documentId);
   const resolve = useResolveDuplicate(documentId);
   const pdfRef = useRef<PdfViewerHandle>(null);
@@ -32,6 +32,9 @@ export function DuplicatesView({
 
   const job = data?.job;
   const running = job?.state === "queued" || job?.state === "running";
+  // Both places that announce the running check render this identical suffix; naming it once
+  // keeps them from drifting and avoids nesting a template literal inside another one.
+  const checkingSuffix = job?.total ? ` (${job.current}/${job.total})` : "...";
   const clusters = data?.clusters ?? [];
   const unreadable = data?.unreadable ?? 0;
   // The last check ran and did not finish. Nothing said so: `checked` is false for a failed job, so
@@ -98,7 +101,7 @@ export function DuplicatesView({
             <div className="sum-countline">
               <span>
                 {running
-                  ? `Checking for duplicates${job?.total ? ` (${job.current}/${job.total})` : "..."}`
+                  ? `Checking for duplicates${checkingSuffix}`
                   : countLine}
               </span>
               <span className="muted">{msg || loadError}</span>
@@ -171,7 +174,7 @@ export function DuplicatesView({
                 run cannot support. */}
             <p className="empty-title">
               {running
-                ? `Checking for duplicates${job?.total ? ` (${job.current}/${job.total})` : "..."}`
+                ? `Checking for duplicates${checkingSuffix}`
                 : failed
                   ? "Check did not finish"
                   : neverChecked
@@ -231,7 +234,7 @@ function ClusterCard({
   onKeep,
   onDismiss,
   onRemove,
-}: {
+}: Readonly<{
   cluster: DuplicateCluster;
   busy: boolean;
   selectedIdx: number | null;
@@ -239,7 +242,7 @@ function ClusterCard({
   onKeep: (idx: number) => void;
   onDismiss: () => void;
   onRemove: (row: DuplicateRow) => void;
-}) {
+}>) {
   // Resolved = at most one copy would still be summarized (the reviewer kept one, or excluded the
   // rest by hand). Inclusion - not the "kept" mark - is the test, so a cluster stays resolved after a
   // re-check recomputes its group, and is flagged again if it gains another included copy.

@@ -38,12 +38,32 @@ const DOI_PREFIX_NEW = new RegExp(
 );
 const DOI_PREFIX_LEGACY = /^\s*\*\*DOI\*\*:\s*([\d/.-]{4,}(?:\s*,\s*[\d/.-]{4,})*)\s*,\s*/;
 
+const MANUAL_CHECK_PREFIX = /^\s*\[ManualCheck\]\s*/i;
+const PAGES_SUFFIX = /\(Pages\s+\d+\s*[-–]\s*\d+\)\s*$/i;
+const DIAGNOSTIC_SUFFIX = /\[Diagnostic Study\]\s*$/i;
+
+/** Drop a trailing marker and the whitespace in front of it.
+ *
+ *  The two suffix patterns deliberately do NOT begin with `\s*`. Written as `\s*MARKER…$` the engine
+ *  re-scans the whitespace run from every start position, which is quadratic: on a whitespace-only
+ *  title of 20,000 characters that measured 424ms against 0.07ms for this form. Titles come out of
+ *  the model, so a pathological one would stall the tab. Matching the marker first and trimming what
+ *  preceded it is linear and yields the identical string. */
+function stripTrailingMarker(value: string, marker: RegExp) {
+  const found = marker.exec(value);
+  return found ? value.slice(0, found.index).trimEnd() : value;
+}
+
+/** The title as the reading column shows it, with the decorations the engine bakes into the stored
+ *  string removed. Exported for the equivalence + timing test; the view goes through parseDisplay. */
+export function displayTitle(raw: string) {
+  const body = (raw || "").replace(MANUAL_CHECK_PREFIX, "");
+  return stripTrailingMarker(stripTrailingMarker(body, PAGES_SUFFIX), DIAGNOSTIC_SUFFIX);
+}
+
 /** Strip the decorations the engine bakes into stored strings; the web view shows chips/meta. */
 function parseDisplay(item: SummaryItem) {
-  const title = (item.summaryTitle || "")
-    .replace(/^\s*\[ManualCheck\]\s*/i, "")
-    .replace(/\s*\(Pages\s+\d+\s*[-–]\s*\d+\)\s*$/i, "")
-    .replace(/\s*\[Diagnostic Study\]\s*$/i, "");
+  const title = displayTitle(item.summaryTitle || "");
   let text = item.summaryText || "";
   let doi: string | null = null;
   const match = DOI_PREFIX_NEW.exec(text) ?? DOI_PREFIX_LEGACY.exec(text);
@@ -52,6 +72,20 @@ function parseDisplay(item: SummaryItem) {
     text = text.slice(match[0].length);
   }
   return { title, text, doi };
+}
+
+/** True when the row was re-classified after this summary was written.
+ *
+ *  `??` rather than a `!== null` guard, and deliberately: null means no row covers these pages any
+ *  more, and UNDEFINED means the field is missing entirely because an older backend is serving this
+ *  page. Neither is a mismatch, but `undefined !== null` is true, so the explicit null check reported
+ *  every card as stale during a rolling deploy. Coalescing to the snapshot makes both absences
+ *  compare equal and stay silent.
+ *
+ *  Module scope, not inside the component: it closes over nothing, so re-creating it on
+ *  every render bought nothing. */
+function categoryIsStale(item: SummaryItem) {
+  return (item.rowCategoryLive ?? item.row.category) !== item.row.category;
 }
 
 /** Summaries & export (DS §4): a reading column of SummaryCards with Edited / Manual check /
@@ -67,7 +101,7 @@ export function SummariesView({
   onHeaderSaved,
   onGotoSummarizeStep,
   onRowsChanged,
-}: {
+}: Readonly<{
   documentId: string;
   filename?: string;
   categories: CategoryOption[];
@@ -80,7 +114,7 @@ export function SummariesView({
    *  so leaving it stale means the reviewer's next edit there silently reverts the category. Same
    *  reason DuplicatesView takes onResolved. */
   onRowsChanged?: () => void;
-}) {
+}>) {
   const { data: summaries = [], isLoading, error } = useSummaries(documentId);
   const save = useSaveSummary(documentId);
   const redraft = useResummarize(documentId);
@@ -155,17 +189,6 @@ export function SummariesView({
       // A 409 here means a job is running: the row would be overwritten, so the server refused.
       setSaveMsg(`Category not saved: ${humanizeError(err, { fallback: "please try again" })}`);
     }
-  }
-
-  /** True when the row was re-classified after this summary was written.
-   *
-   *  `??` rather than a `!== null` guard, and deliberately: null means no row covers these pages any
-   *  more, and UNDEFINED means the field is missing entirely because an older backend is serving this
-   *  page. Neither is a mismatch, but `undefined !== null` is true, so the explicit null check reported
-   *  every card as stale during a rolling deploy. Coalescing to the snapshot makes both absences
-   *  compare equal and stay silent. */
-  function categoryIsStale(item: SummaryItem) {
-    return (item.rowCategoryLive ?? item.row.category) !== item.row.category;
   }
 
   async function reDraft(item: SummaryItem) {
