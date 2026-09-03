@@ -70,7 +70,8 @@ def test_a_cap_does_not_bind_on_an_ordinary_page_so_it_is_not_scored():
     plan = binding_pages(edges, [3500], base=200)
 
     assert sorted(plan) == [2, 5], "only the oversized pages should be in the plan"
-    assert plan[2][3500] == 93 and plan[5][3500] == 50
+    assert plan[2][3500] == 93
+    assert plan[5][3500] == 50
     assert binding_pages([792.0] * 10, [3500], base=200) == {}
 
 
@@ -94,7 +95,8 @@ def test_reflow_case_and_punctuation_are_not_losses():
     assert score["recall"] == 1.0
     assert score["precision"] == 1.0
     assert score["set_recall"] == 1.0
-    assert score["lost"]["n"] == 0 and score["gained"]["n"] == 0
+    assert score["lost"]["n"] == 0
+    assert score["gained"]["n"] == 0
 
 
 def test_thinned_repeats_are_a_loss_that_a_word_set_would_score_as_perfect():
@@ -163,7 +165,8 @@ def test_the_old_metrics_get_both_pages_backwards_and_this_one_gets_both_right()
     # Character volume cannot tell them apart at all.
     assert abs(intact["char_ratio"] - broken["char_ratio"]) < 0.15
     # Word recall separates them completely, and in the right direction.
-    assert intact["recall"] == 1.0 and broken["recall"] == 0.0
+    assert intact["recall"] == 1.0
+    assert broken["recall"] == 0.0
 
 
 def test_precision_catches_a_render_that_invented_tokens():
@@ -214,7 +217,8 @@ def test_shape_reports_numbers_and_never_the_words():
 
     assert set(shape) == {"n", "mean_len", "alpha_share"}
     assert not any(isinstance(v, str) for v in shape.values())
-    assert shape["n"] == 2 and shape["alpha_share"] == 1.0
+    assert shape["n"] == 2
+    assert shape["alpha_share"] == 1.0
 
     speckle = _shape(Counter(["i1", "rn", "f"]))
     assert speckle["mean_len"] < shape["mean_len"]
@@ -242,8 +246,11 @@ def test_the_summary_leads_with_the_worst_page_not_the_mean():
 
     assert row["mean"] > 0.80, "the mean looks acceptable, which is the problem"
     assert row["worst"] == 0.41
-    assert row["below_0.7"] == 1 and row["below_0.9"] == 1 and row["below_0.98"] == 1
-    assert row["lost_words"] == 59 and row["gained_words"] == 2
+    assert row["below_0.7"] == 1
+    assert row["below_0.9"] == 1
+    assert row["below_0.98"] == 1
+    assert row["lost_words"] == 59
+    assert row["gained_words"] == 2
 
 
 def test_the_summary_counts_a_page_against_every_floor_it_falls_below():
@@ -293,7 +300,8 @@ def test_the_sample_is_spread_across_the_document_and_is_deterministic():
     assert len(picked) == 5
     assert max(picked) > 60, "the tail of the document must be represented"
     assert picked != candidates[:5]
-    assert spread(candidates, 0) == [] and spread([], 5) == []
+    assert spread(candidates, 0) == []
+    assert spread([], 5) == []
     assert spread([7, 3], 5) == [3, 7], "fewer candidates than asked for returns them all, sorted"
 
 

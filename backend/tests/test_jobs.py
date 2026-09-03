@@ -3310,6 +3310,9 @@ def test_a_row_reusing_the_duplicate_checks_text_still_names_its_unreadable_page
     with get_sessionmaker()() as session:
         summary = session.scalars(select(Summary).where(Summary.document_id == doc_id)).one()
         assert summary.unreadable is True
-        assert "1" in summary.text and "unintelligible" in summary.text.lower(), (
+        assert "1" in summary.text, (
             "the delivered summary must name the page lost while dedup produced its text"
+        )
+        assert "unintelligible" in summary.text.lower(), (
+            "and must say that page was unreadable, rather than omitting it silently"
         )
