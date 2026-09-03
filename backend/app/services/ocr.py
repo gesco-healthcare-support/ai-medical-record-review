@@ -220,9 +220,16 @@ def extract_pages_with_report(
 ):
     """OCR ``selected_pages``, retrying pages that ERRORED, and report what each page did.
 
-    Returns ``(text, report)`` where report is ``{"pages", "errored", "blank"}``: ``errored`` lists
-    pages whose rasterize/OCR raised on every attempt, ``blank`` lists pages that read cleanly but
-    carried no text.
+    Returns ``(text, report)`` where report is ``{"pages", "errored", "blank"}``. All three are
+    LISTS of page numbers: ``pages`` is what was attempted, ``errored`` those whose rasterize/OCR
+    raised on every attempt, ``blank`` those that read cleanly but carried no text.
+
+    ``pages`` was a COUNT here and a LIST in `page_text.get_row_text_with_report`, whose docstring
+    asserted the two contracts matched "exactly" (#210). Nothing read the field, so nothing was
+    broken - but a docstring that states the false thing is worse than one that says nothing: the
+    next caller writes `for page in report["pages"]` and gets a silent iteration over an integer or
+    a TypeError depending on which of the two functions they happened to call. A list is the right
+    shape of the two, because it is the shape of its siblings and `len()` recovers the count.
 
     The distinction is the whole point. ``extract_text_from_selected_pages`` collapses both into a
     silent skip, so a row that produced no text is indistinguishable from a row nobody tried to read
@@ -264,7 +271,7 @@ def extract_pages_with_report(
             text += f"Page {page_number + page_label_offset}:\n{page_text or ''}\n"
         else:
             text += page_text or ""
-    return text, {"pages": len(pages), "errored": errored, "blank": blank}
+    return text, {"pages": pages, "errored": errored, "blank": blank}
 
 
 def extract_text_from_all_pages(pdf_path) -> str:

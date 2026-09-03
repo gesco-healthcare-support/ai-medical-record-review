@@ -231,3 +231,41 @@ export function rowErrors(rows: Row[], totalPages: number): Map<number, string> 
   });
   return errors;
 }
+
+/**
+ * Fields whose edit means the reviewer has adjudicated the row, so the review flag can come down.
+ *
+ * Named individually rather than "anything but `flag`", because the two omissions are the decision:
+ *
+ *   - `flag` itself is the reviewer's explicit control. Clearing on it would make ticking the box
+ *     impossible - the tick would immediately undo itself.
+ *   - `include` is the work item, not an adjudication. Deciding whether a document is summarized is
+ *     a different question from whether its boundaries and category are right, and a reviewer
+ *     sweeping the Summarize column would silently clear every flag on the record.
+ *
+ * `suggest_merge` is absent because nothing reviewer-facing sets it.
+ */
+const ADJUDICATING_FIELDS = ["title", "category", "start", "end", "date", "injury_date"] as const;
+
+/**
+ * A row patch, with the review flag cleared when the edit adjudicates the row (#214).
+ *
+ * The flag only ever went UP. It arrives from segmentation - which sets it on 77% of rows - and the
+ * work that means "I have looked at this and dealt with it" left it exactly as the segmenter wrote
+ * it, so clearing it was a second, separate tick that bought the reviewer nothing. Both tables read
+ * 77.0%, before and after reviewer editing: not a signal that decayed, the arithmetic of a counter
+ * with no decrement anyone is motivated to use.
+ *
+ * Only a REAL change clears. A patch that re-sends the value already there is a focus/blur or a
+ * re-render, not an adjudication, and treating it as one would clear flags nobody touched.
+ *
+ * Deliberately does NOT change what SETS the flag. That is the open half of #214 and needs a
+ * reviewer to answer it; this only makes the existing signal capable of going down.
+ */
+export function clearFlagOnEdit<T extends Row>(row: T, patch: Partial<Row>): Partial<Row> {
+  if (String(row.flag).toLowerCase() !== "x") return patch;
+  const adjudicated = ADJUDICATING_FIELDS.some(
+    (key) => key in patch && String(patch[key] ?? "") !== String(row[key] ?? ""),
+  );
+  return adjudicated ? { ...patch, flag: "-" } : patch;
+}

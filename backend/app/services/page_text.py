@@ -250,7 +250,12 @@ def populate_document(
 
 def get_row_text_with_report(session, document_id: str, pages, pdf_path=None):
     """``(text, report)`` for a page range, served from the store, matching the contract of
-    ``ocr.extract_pages_with_report`` exactly: ``report`` is ``{"pages", "errored", "blank"}``.
+    ``ocr.extract_pages_with_report``: ``report`` is ``{"pages", "errored", "blank"}``, and all
+    three are LISTS of page numbers - ``pages`` is what was asked for.
+
+    The word "exactly" used to appear in that sentence and was not true: this returned a list and
+    the direct extractor returned a count (#210). They agree now, and the two docstrings state the
+    types rather than asserting agreement, which is the claim that went stale.
 
     That contract is preserved rather than simplified because the duplicate check reports the
     difference to the reviewer: an ERRORED page may be a transient Tesseract timeout worth another

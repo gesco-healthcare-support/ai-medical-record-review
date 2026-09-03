@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyServerRowChanges,
   categoryWasGuessed,
+  clearFlagOnEdit,
   couldNotIdentify,
   mergeRows,
   newKey,
@@ -444,5 +445,68 @@ describe("client keys are unique for the lifetime of the module", () => {
     const b = withKeys([row(1, 2)])[0];
     expect(touchKey(a, "category")).not.toBe(touchKey(b, "category"));
     expect(touchKey(a, "include")).not.toBe(touchKey(b, "include"));
+  });
+});
+
+describe("clearFlagOnEdit", () => {
+  // The flag arrives from segmentation on 77% of rows and only ever went UP: both `segment_rows`
+  // and `review_rows` read 77.0%, before and after reviewer editing. Not a signal that decayed -
+  // a counter with no decrement anyone was motivated to use (#214).
+  const flagged = (over: Partial<Row> = {}): Row => ({ ...row(1, 3), flag: "x", ...over });
+
+  it("clears the flag when the reviewer re-categorises the row", () => {
+    expect(clearFlagOnEdit(flagged(), { category: "13" })).toEqual({
+      category: "13",
+      flag: "-",
+    });
+  });
+
+  it.each([
+    ["title", { title: "MRI CERVICAL SPINE" }],
+    ["boundaries", { end: 9 }],
+    ["date", { date: "03/11/2026" }],
+    ["injury date", { injury_date: "01/02/2025" }],
+  ])("clears the flag when the reviewer fixes the %s", (_label, patch) => {
+    expect(clearFlagOnEdit(flagged(), patch).flag).toBe("-");
+  });
+
+  it("leaves the flag alone when the reviewer sets it deliberately", () => {
+    // The one field that must never self-clear: the tick would immediately undo itself, and the
+    // checkbox is the reviewer's explicit way of saying "come back to this".
+    expect(clearFlagOnEdit(flagged(), { flag: "x" })).toEqual({ flag: "x" });
+    expect(clearFlagOnEdit(row(1, 3), { flag: "x" })).toEqual({ flag: "x" });
+  });
+
+  it("leaves the flag alone when only the Summarize box changes", () => {
+    // `include` is the work item, not an adjudication - whether a document is summarized is a
+    // different question from whether its boundaries and category are right. Sweeping the column
+    // would otherwise clear every flag on the record in one gesture.
+    expect(clearFlagOnEdit(flagged(), { include: false })).toEqual({ include: false });
+  });
+
+  it("does not clear on a patch that changes nothing", () => {
+    // A focus/blur or a re-render re-sends the value already there. Treating that as adjudication
+    // would clear flags on rows the reviewer only tabbed through.
+    expect(clearFlagOnEdit(flagged({ title: "Same" }), { title: "Same" })).toEqual({
+      title: "Same",
+    });
+    expect(clearFlagOnEdit(flagged(), { start: 1 })).toEqual({ start: 1 });
+  });
+
+  it("is a no-op on a row that carries no flag", () => {
+    expect(clearFlagOnEdit(row(1, 3), { category: "13" })).toEqual({ category: "13" });
+  });
+
+  it("compares loosely enough that a numeric page typed as text still counts", () => {
+    // The page inputs hand back `Number(...)`, but a Row read from the API may hold either, and a
+    // 3-vs-"3" mismatch would clear a flag on an edit that changed nothing.
+    //
+    // Note what an untouched patch looks like: the PATCH comes back, not the row, so there is no
+    // `flag` key on it at all - which is the point. Asserting `.flag === "x"` here reads naturally
+    // and is wrong, because a returned flag would mean the function had written one.
+    expect(clearFlagOnEdit(flagged({ end: 3 }), { end: "3" } as unknown as Partial<Row>)).toEqual({
+      end: "3",
+    });
+    expect(clearFlagOnEdit(flagged({ end: 3 }), { end: 4 } as Partial<Row>).flag).toBe("-");
   });
 });
