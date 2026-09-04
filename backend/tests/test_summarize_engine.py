@@ -1524,6 +1524,53 @@ def test_a_partially_unreadable_row_is_summarized_and_names_the_lost_pages(monke
     assert out["summaryText"].endswith(se.partial_unreadable_notice([2]))
 
 
+def test_the_notice_cites_the_same_numbering_the_body_above_it_uses():
+    """A deposition body cites the TRANSCRIPT's printed pages; the notice cited RECORD pages.
+
+    `report["errored"]` is always record pages - `extract_pages_with_report` appends the loop
+    variable before any offset - while `_deposition_pages_block` hands the model markers already
+    shifted and tells it to cite them exactly. So one summary carried two numbering systems with
+    nothing marking the change, and on a long transcript they are a hundred apart.
+    """
+    # Non-deposition, and a deposition whose offset could not be established: record pages are
+    # already what the body uses (or the body cites nothing), so nothing shifts.
+    assert se.notice_pages([12, 13], None) == [12, 13]
+    # Offset established: the notice follows the body into transcript numbering.
+    assert se.notice_pages([420, 421], -419) == [1, 2]
+
+
+def test_the_notice_refuses_to_invent_a_page_zero():
+    """A shifted number at or below zero is a page BEFORE the transcript's own page 1.
+
+    Citing "page 0" would be a worse answer than the record number, so the whole notice falls back
+    rather than mixing the two numbering systems inside one sentence. #259 is the general form of
+    that defect; this only declines to add to it.
+    """
+    assert se.notice_pages([418, 419], -419) == [418, 419]
+    assert se.notice_pages([419], -419) == [419]  # exactly zero, not just negative
+    # One bad page takes the whole list back, deliberately - a notice must not be half-shifted.
+    assert se.notice_pages([419, 425], -419) == [419, 425]
+
+
+def test_a_deposition_notice_names_transcript_pages_end_to_end(monkeypatch):
+    """The integration, because the unit above cannot show the two halves agreeing.
+
+    Record pages 420-423 print transcript pages 1-4. Page 422 fails. The body cites transcript
+    numbers, so the notice must say page 3 - not 422.
+    """
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([422], text="readable text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setattr(se, "transcript_page_offset", lambda *a, **k: -419)
+
+    out = se.summarize_row("/x.pdf", _row(start=420, end=423, category="9"), prompt="P")
+
+    assert out["summaryText"].endswith(se.partial_unreadable_notice([3]))
+    assert "page 422" not in out["summaryText"]
+    # The raw list keeps RECORD pages: it is what the reviewer's row-level tooling matches against.
+    assert out["unreadablePages"] == [422]
+
+
 def test_the_partial_notice_is_never_shown_to_the_faithfulness_audit(monkeypatch):
     """The audit checks the body against its SOURCE TEXT, and this sentence is by definition not in
     that source. Showing it invites the audit to "correct" an unsupported claim, or to record a

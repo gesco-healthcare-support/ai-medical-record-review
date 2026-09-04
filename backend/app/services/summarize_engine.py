@@ -705,6 +705,33 @@ def unreadable_notice(pages) -> str:
     return _NOTICE_LEAD.format(phrase=page_phrase(pages)) + ", so there was no text to summarize."
 
 
+def notice_pages(unreadable_pages, page_offset) -> list:
+    """The page numbers the notice should CITE, in the numbering the summary body above it uses.
+
+    `report["errored"]` is always in RECORD pages - `ocr.extract_pages_with_report` appends the loop
+    variable, before any offset. That is right for every category but one. A deposition's body cites
+    the TRANSCRIPT's own printed numbers, because `_deposition_pages_block` hands the model markers
+    already shifted by `page_offset` and tells it to "cite them exactly as given". So the notice was
+    naming pages in a different numbering from the paragraphs directly above it, with nothing saying
+    so - on a 60-page transcript the two can be a hundred apart, and both look like page numbers.
+
+    `page_offset` is None for every non-deposition row and for a deposition whose offset could not
+    be established; in both cases the body cites record pages or nothing, and the record numbers are
+    already the right answer.
+
+    A shifted number that lands at or below zero is NOT emitted. That is a page preceding the
+    transcript's own page 1, and inventing "page 0" for it would be a worse citation than the record
+    number - so the whole notice falls back to record pages rather than mixing the two. See #259,
+    which is the general form of that defect; this only refuses to add to it.
+    """
+    if page_offset is None:
+        return list(unreadable_pages)
+    shifted = [int(p) + page_offset for p in unreadable_pages]
+    if any(page <= 0 for page in shifted):
+        return list(unreadable_pages)
+    return shifted
+
+
 def partial_unreadable_notice(pages) -> str:
     """The sentence appended to a summary built from a row's READABLE pages, naming the rest.
 
@@ -1215,7 +1242,12 @@ def summarize_row(
     # delivers, and after sentence_case_caps_runs so that transform never rewrites it.
     partial_notice = ""
     if unreadable_pages:
-        partial_notice = " " + partial_unreadable_notice(unreadable_pages)
+        # Cited in the SAME numbering as the body above it - see `notice_pages`. For a deposition
+        # the body cites transcript pages, so a record-page notice put two different numbering
+        # systems in one summary with nothing marking the change.
+        partial_notice = " " + partial_unreadable_notice(
+            notice_pages(unreadable_pages, page_offset)
+        )
         if verified_text is not None:
             verified_text += partial_notice
 
