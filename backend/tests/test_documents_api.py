@@ -872,6 +872,57 @@ def test_the_bundle_export_strips_the_same_markers_as_the_review_export(monkeypa
     assert title == _PRESENTABLE_TITLE
 
 
+def test_one_blank_document_does_not_discard_the_rest_of_the_bundle(monkeypatch):
+    """DEMONSTRATES the bug: an unreadable row threw away every summary generated before it.
+
+    `summarize_row` raises EmptyExtractionError for a row whose pages read cleanly and yield no
+    words - a photograph, a film, a separator sheet. With no per-row isolation that propagated out
+    of `bundle_summary_entries`, and the caller's `except PipelineError` discarded the `entries`
+    list, throwing away real model calls already spent and failing a bundle that was mostly fine.
+    `_pipeline_error_response` already classifies that exception 422, "a property of the document".
+    """
+    from app.errors import EmptyExtractionError
+    from app.services import bundles
+
+    rows = [
+        {"start": 1, "end": 2, "category": "3", "flag": "-"},
+        {"start": 3, "end": 3, "category": "3", "flag": "-"},  # the blank one
+        {"start": 4, "end": 5, "category": "3", "flag": "-"},
+    ]
+
+    def fake(pdf_path, row, *a, **k):
+        if int(row["start"]) == 3:
+            raise EmptyExtractionError("no OCR text for pages 3-3")
+        return {"summaryDate": _ENTRY_DATE, "summaryTitle": _DECORATED_TITLE, "summaryText": "b"}
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    entries = bundles.bundle_summary_entries("/x.pdf", rows)
+
+    # The two readable documents survive; the blank one is omitted rather than sinking the bundle.
+    assert len(entries) == 2
+
+
+def test_a_missing_ocr_binary_still_aborts_the_whole_bundle(monkeypatch):
+    """GUARDS the carve-out, and it is the half that makes the fix safe.
+
+    OcrUnavailableError means Tesseract or Poppler is absent, which fails identically on every
+    remaining row - continuing would spend the rest of the loop rediscovering that one row at a
+    time and hand back a bundle silently missing everything. Only the per-document failure is
+    skipped.
+    """
+    from app.errors import OcrUnavailableError
+    from app.services import bundles
+
+    def fake(pdf_path, row, *a, **k):
+        raise OcrUnavailableError("Tesseract not found")
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    with pytest.raises(OcrUnavailableError):
+        bundles.bundle_summary_entries("/x.pdf", [_BUNDLE_ROW])
+
+
 def test_all_three_export_paths_agree_on_the_same_decorated_title(monkeypatch):
     """Asserts the paths AGREE rather than checking each alone.
 
@@ -1033,6 +1084,72 @@ async def test_bundle_pdf_and_category_errors(authed):
         f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_OTHER_CATEGORY]}
     )
     assert unmatched.status_code == 409  # nothing in this record matches
+
+
+async def test_a_bundle_ships_only_the_documents_the_reviewer_is_shipping(authed):
+    """DEMONSTRATES the bug: an unchecked row was bundled anyway.
+
+    A bundle is a deliverable - a combined PDF or a Word report a client receives - and this path
+    selected purely on category, straight off the table. The single-record export does not: it drops
+    `summary.excluded` first. So the two delivery paths disagreed about what the reviewer had
+    decided to ship.
+
+    The reachable case is `resolve_duplicate`'s keep_one, which sets `member.include = is_primary
+    and wanted` and leaves the CATEGORY alone - so a confirmed duplicate copy stayed in category 3
+    and its pages went into the bundle PDF a second time.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 1, "category": _VALID_CATEGORY, "include": True},
+                # The shape keep_one leaves behind: same category, unchecked.
+                {"start": 2, "end": 2, "category": _VALID_CATEGORY, "include": False},
+                {"start": 3, "end": 3, "category": _VALID_CATEGORY, "include": True},
+            ]
+        },
+    )
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200
+    # Two included pages, not three: the excluded row's page is absent from the delivered PDF.
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
+
+
+async def test_a_bundle_whose_every_match_is_excluded_says_so_rather_than_none(authed):
+    """The two 409s are different situations and a reviewer reads them differently.
+
+    "no matching documents in this record" sent someone looking for documents that are right there
+    on screen in the right category - they had just unchecked them. Worth its own message.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 1, "category": _VALID_CATEGORY, "include": False},
+                {"start": 2, "end": 2, "category": _VALID_CATEGORY, "include": False},
+            ]
+        },
+    )
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    assert got.status_code == 409
+    detail = got.json()["detail"]
+    assert "excluded" in detail
+    assert "2" in detail
+    assert "no matching documents" not in detail
 
 
 async def test_bundle_summarize_ocr_unavailable_returns_friendly_503(authed, monkeypatch):

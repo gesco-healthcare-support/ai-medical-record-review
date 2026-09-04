@@ -6,10 +6,14 @@ per-document and stay in memory - no ~/MRRs artifacts (HIPAA); ids-only logging 
 """
 
 import io
+import logging
 
 from pypdf import PdfReader, PdfWriter
 
+from app.errors import EmptyExtractionError
 from app.services import summarize_engine
+
+logger = logging.getLogger(__name__)
 
 
 def matched_rows(rows, categories):
@@ -54,7 +58,32 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
     for row in rows:
         prompt = prompt_for(row) if prompt_for is not None else None
         # The bundle export is a bounded quick path: skip the faithfulness verify pass to keep it fast.
-        output = summarize_engine.summarize_row(pdf_path, row, model, prompt=prompt, verify=False)
+        try:
+            output = summarize_engine.summarize_row(
+                pdf_path, row, model, prompt=prompt, verify=False
+            )
+        except EmptyExtractionError:
+            # ONE blank row must not discard the whole bundle. `summarize_row` raises this for a row
+            # whose pages read cleanly and yield no words - a photograph, a film, a separator
+            # sheet - and `_pipeline_error_response` already classifies it 422, "a property of the
+            # document", i.e. an expected per-row outcome rather than a systemic failure.
+            #
+            # Without this the exception left `bundle_summary_entries` entirely and the caller's
+            # `except PipelineError` discarded `entries` - throwing away every summary generated
+            # BEFORE the blank row, each of which cost real model calls, and returning an error
+            # for a bundle that was mostly fine. The main summarize worker treats the identical class
+            # per-row for the same reason.
+            #
+            # Deliberately NOT a bare `except PipelineError`: an OcrUnavailableError means Tesseract
+            # or Poppler is missing, which fails identically on every remaining row, so continuing
+            # would spend the rest of the loop discovering that one row at a time. That one must
+            # still abort the bundle.
+            logger.warning(
+                "bundle: no readable text for pages %s-%s; that document is omitted",
+                row.get("start"),
+                row.get("end"),
+            )
+            continue
         entries.append(
             {
                 "summaryDate": output.get("summaryDate") or "-",
