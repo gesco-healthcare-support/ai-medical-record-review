@@ -50,6 +50,23 @@ export function PromptDialog({
   const isCustom = Boolean(data?.custom);
   const builtinText = data?.builtin_text ?? "";
 
+  // The error case is tested FIRST because the other two both ASSERT which prompt this
+  // category is using, and on a failed fetch we do not know. Leaving "uses the built-in
+  // prompt" up when the request failed is the same misrepresentation as the empty editable
+  // box #263 is about, one element further down.
+  let blurb: string;
+  if (isError) {
+    blurb =
+      "This category's prompt could not be loaded, so nothing here reflects the server. " +
+      "Close and try again.";
+  } else if (isCustom) {
+    blurb = "This category uses a custom prompt saved here, which overrides the built-in one.";
+  } else {
+    blurb =
+      "This category uses the built-in prompt that ships with the app. Saving creates a " +
+      "custom prompt that overrides it until you revert.";
+  }
+
   useEffect(() => {
     if (open) setError("");
   }, [open]);
@@ -121,17 +138,7 @@ export function PromptDialog({
       <DialogContent className="ev-dialog-wide">
         <DialogHeader>
           <DialogTitle>Summary prompt{category ? ` - ${category.name}` : ""}</DialogTitle>
-          <DialogDescription>
-            {/* The error case comes FIRST, because both other sentences assert which prompt this
-                category is using - and on a failed fetch we do not know. Stating "uses the built-in
-                prompt" when the request failed is the same misrepresentation as the empty editable
-                box #263 is about, one line further up. */}
-            {isError
-              ? "This category's prompt could not be loaded, so nothing here reflects the server. Close and try again."
-              : isCustom
-                ? "This category uses a custom prompt saved here, which overrides the built-in one."
-                : "This category uses the built-in prompt that ships with the app. Saving creates a custom prompt that overrides it until you revert."}
-          </DialogDescription>
+          <DialogDescription>{blurb}</DialogDescription>
         </DialogHeader>
 
         {isCustom && builtinText ? (
