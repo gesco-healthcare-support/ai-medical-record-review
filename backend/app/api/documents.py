@@ -1643,12 +1643,23 @@ def bundle_pdf(
 @router.post(
     "/{document_id}/bundle/summarize",
     # 400 and the first 409 come from `_matched_rows`; the cap check below adds the second 409.
+    # 422 and 503 come from `_pipeline_error_response`: this route reads pages, so unlike
+    # /bundle/pdf it can fail on the document itself or on a missing OCR binary. Both were
+    # reachable before and undeclared; the all-blank case (every matched document unreadable) is
+    # the 422 that `bundle_summary_entries` re-raises rather than streaming an empty report.
     responses={
         400: {"description": "The category list is empty."},
         409: {
             "description": "No sub-document in this record matches those categories, or the "
             "match is larger than the on-demand summarize limit."
         },
+        # 422 is FastAPI's own validation-error code, and declaring it here REPLACES that
+        # description - so it has to name both meanings or the generated spec loses one.
+        422: {
+            "description": "The request body is invalid, OR no readable text was found in the "
+            "matching documents / the PDF could not be opened."
+        },
+        503: {"description": "Text recognition (OCR) is unavailable on the server."},
     },
 )
 def bundle_summarize(
