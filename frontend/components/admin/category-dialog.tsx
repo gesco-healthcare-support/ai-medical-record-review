@@ -75,7 +75,11 @@ export function CategoryDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    // Same refusal as `PromptDialog`: `disabled={saving}` covers the buttons, but Escape, an
+    // overlay click and the corner close button all reach `onOpenChange` directly. Dismissing
+    // mid-save wrote the failure into `error` state rendered inside the now-closed dialog, with
+    // no toast fallback - so a save that failed looked like one that worked.
+    <Dialog open={open} onOpenChange={(next) => (!next && saving ? undefined : onOpenChange(next))}>
       {/* Wide: at the 384px default the description and the examples list are unusably cramped. */}
       <DialogContent className="ev-dialog-wide">
         <DialogHeader>
