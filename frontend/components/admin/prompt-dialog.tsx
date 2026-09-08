@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -34,7 +35,13 @@ export function PromptDialog({
   const save = useSavePrompt();
   const revert = useRevertPrompt();
 
-  const { data, isLoading } = useQuery({
+  // `isError` is read, and #263 is why. `data` is undefined both while the query is in flight AND
+  // once it has FAILED, and `isLoading` is false in the second case - so the reset below
+  // rendered an empty EDITABLE box on a failed fetch, which reads as "this category has no
+  // custom prompt" when
+  // the truth is "we could not load it". The whole point of #262 was the dialog not misrepresenting
+  // server state, and that branch did exactly that.
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["admin", "prompt", id],
     queryFn: () => getPrompt(id),
     enabled: open && Boolean(id),
@@ -42,6 +49,23 @@ export function PromptDialog({
 
   const isCustom = Boolean(data?.custom);
   const builtinText = data?.builtin_text ?? "";
+
+  // The error case is tested FIRST because the other two both ASSERT which prompt this
+  // category is using, and on a failed fetch we do not know. Leaving "uses the built-in
+  // prompt" up when the request failed is the same misrepresentation as the empty editable
+  // box #263 is about, one element further down.
+  let blurb: string;
+  if (isError) {
+    blurb =
+      "This category's prompt could not be loaded, so nothing here reflects the server. " +
+      "Close and try again.";
+  } else if (isCustom) {
+    blurb = "This category uses a custom prompt saved here, which overrides the built-in one.";
+  } else {
+    blurb =
+      "This category uses the built-in prompt that ships with the app. Saving creates a " +
+      "custom prompt that overrides it until you revert.";
+  }
 
   useEffect(() => {
     if (open) setError("");
@@ -57,8 +81,10 @@ export function PromptDialog({
   // `CategoryDialog` next door already resets every field in an `[open, editing]`-keyed effect for
   // exactly this reason; this makes the two agree.
   //
-  // Resetting to "" while `data` is still loading is deliberate: the textarea is `disabled`
-  // then, so the reviewer sees an empty disabled box rather than a stale draft that looks fetched.
+  // Resetting to "" when there is no `data` covers TWO states - still loading, and failed - and
+  // that is safe only because the textarea is disabled in both (`isLoading || isError` below). #263
+  // caught the version where it was disabled on the first and editable on the second, so a failed
+  // fetch rendered an empty writable box that read as "this category has no custom prompt".
   useEffect(() => {
     if (!open) return;
     setText(data ? (data.text ?? data.effective_text ?? "") : "");
@@ -70,7 +96,13 @@ export function PromptDialog({
       await save.mutateAsync({ id, text });
       onOpenChange(false);
     } catch (err) {
-      setError(humanizeError(err, { fallback: "Could not save the prompt." }));
+      // BOTH: inline so a reviewer still looking at the dialog sees it beside the field they were
+      // editing, and a toast because `Toaster` lives in the root layout and therefore survives this
+      // dialog closing. That pairing is what makes trapping the dialog open unnecessary (#264) - a
+      // mid-save dismissal can no longer swallow the failure.
+      const message = humanizeError(err, { fallback: "Could not save the prompt." });
+      setError(message);
+      toast.error(message);
     }
   }
 
@@ -87,28 +119,26 @@ export function PromptDialog({
       await revert.mutateAsync(id); // the hook refetches this category's prompt + the list
       onOpenChange(false);
     } catch (err) {
-      setError(humanizeError(err, { fallback: "Could not revert the prompt." }));
+      const message = humanizeError(err, { fallback: "Could not revert the prompt." });
+      setError(message);
+      toast.error(message);
     }
   }
 
   const busy = save.isPending || revert.isPending;
 
   return (
-    // A dismissal while a save is in flight is REFUSED, not just discouraged. `disabled={busy}`
-    // covers the Cancel/Save/Revert buttons but nothing about Radix's own exits - Escape, an
-    // overlay click, and the corner close button all reach `onOpenChange` directly. Taking one of
-    // mid-save closed the dialog, and the failure was then written into `error` state that renders
-    // INSIDE the closed dialog with no toast fallback: the reviewer is told nothing and the prompt
-    // silently did not save.
-    <Dialog open={open} onOpenChange={(next) => (!next && busy ? undefined : onOpenChange(next))}>
+    // NOT guarded against a mid-save dismissal, and #264 is why the guard was wrong. Refusing the
+    // close left Escape, an overlay click and the corner button all silently doing nothing
+    // while the close button still looked active - so a hung save trapped the reviewer in the
+    // modal with no
+    // explanation, which is a worse failure than the one it fixed. The failure is surfaced by the
+    // toast in the catch blocks above instead, which outlives this dialog.
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="ev-dialog-wide">
         <DialogHeader>
           <DialogTitle>Summary prompt{category ? ` - ${category.name}` : ""}</DialogTitle>
-          <DialogDescription>
-            {isCustom
-              ? "This category uses a custom prompt saved here, which overrides the built-in one."
-              : "This category uses the built-in prompt that ships with the app. Saving creates a custom prompt that overrides it until you revert."}
-          </DialogDescription>
+          <DialogDescription>{blurb}</DialogDescription>
         </DialogHeader>
 
         {isCustom && builtinText ? (
@@ -136,7 +166,7 @@ export function PromptDialog({
             className="ev-inp ev-mono"
             rows={20}
             value={text}
-            disabled={isLoading}
+            disabled={isLoading || isError}
             onChange={(e) => setText(e.target.value)}
           />
         </div>
@@ -168,7 +198,7 @@ export function PromptDialog({
             type="button"
             className="ev-btn ev-btn-primary"
             onClick={submit}
-            disabled={busy || isLoading}
+            disabled={busy || isLoading || isError}
           >
             {save.isPending ? "Saving..." : "Save prompt"}
           </button>

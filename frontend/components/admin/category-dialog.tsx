@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -70,16 +71,24 @@ export function CategoryDialog({
       else if (editing) await onUpdate(editing.id, body);
       onOpenChange(false);
     } catch (err) {
-      setError(humanizeError(err, { fallback: "Could not save the category." }));
+      // BOTH, for the reason in the `Dialog` comment below: inline so a reviewer still looking
+      // at the form sees it beside the fields, and a toast because `Toaster` lives in the root
+      // layout and therefore outlives this dialog. That pairing is what makes refusing a
+      // mid-save dismissal unnecessary (#264) - the failure can no longer be swallowed.
+      const message = humanizeError(err, { fallback: "Could not save the category." });
+      setError(message);
+      toast.error(message);
     }
   }
 
   return (
-    // Same refusal as `PromptDialog`: `disabled={saving}` covers the buttons, but Escape, an
-    // overlay click and the corner close button all reach `onOpenChange` directly. Dismissing
-    // mid-save wrote the failure into `error` state rendered inside the now-closed dialog, with
-    // no toast fallback - so a save that failed looked like one that worked.
-    <Dialog open={open} onOpenChange={(next) => (!next && saving ? undefined : onOpenChange(next))}>
+    // NOT guarded against a mid-save dismissal, and #264 is why that guard was wrong. Refusing
+    // the close left Escape, an overlay click and the corner button all silently doing nothing
+    // while the close button still rendered as active, so a hung save trapped the reviewer in
+    // the modal with no explanation. The real defect was the failure being written ONLY into
+    // `error` state rendered inside a dialog that was closing; the toast in `save()` above
+    // fixes that at the source, so the dismissal can be allowed.
+    <Dialog open={open} onOpenChange={onOpenChange}>
       {/* Wide: at the 384px default the description and the examples list are unusably cramped. */}
       <DialogContent className="ev-dialog-wide">
         <DialogHeader>
