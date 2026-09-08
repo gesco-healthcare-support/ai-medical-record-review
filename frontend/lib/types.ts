@@ -102,6 +102,14 @@ export type Row = {
    *  `empty`, or `timeout`. Absent or null means UNKNOWN (the row predates the column, or the
    *  editor created it) and must never be read as "confidently classified". */
   method?: string | null;
+  /** The duplicate cluster this row belongs to, or null/absent for a standalone row. Sent by
+   *  `_editor_row` (via `ReviewRow.as_row()`) and read by the bundle preview, which must not count a
+   *  copy the reviewer resolved away. `dupe_dismissed` means "these are NOT duplicates", so a
+   *  dismissed cluster's members are real documents again - all three fields are needed to tell a
+   *  resolved-away copy from a dismissed one. */
+  dupe_group?: number | null;
+  dupe_primary?: boolean;
+  dupe_dismissed?: boolean;
 };
 
 /** A selectable category ({id, name}) from catalog.get_category_options. */

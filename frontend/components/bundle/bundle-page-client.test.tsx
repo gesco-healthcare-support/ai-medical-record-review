@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
+import type { Row } from "@/lib/types";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/hooks/use-documents", () => ({
@@ -127,13 +128,16 @@ describe("BundlePageClient error handling", () => {
     expect(screen.getByLabelText("Attorney law firm")).toHaveValue("Acme LLP");
   });
 
-  it("counts only the documents the record is shipping, matching what the bundle contains", async () => {
-    // DEMONSTRATES the bug on this side. The server builds the bundle from included rows only; if
-    // this preview counts every row of the category, it promises a document the download does not
-    // contain. The reachable case is a resolved duplicate: keep_one unchecks the non-primary copy
-    // and leaves its category alone, so it looks identical to a shipping row here.
+  it("does not count a copy the reviewer resolved away as a duplicate", async () => {
+    // DEMONSTRATES the bug on this side. The server omits a resolved-away duplicate from the
+    // bundle; if this preview counts it, the list promises a document the download does not
+    // contain. keep_one marks one member primary and leaves the category alone, so the copy looks
+    // identical to a shipping row here.
+    //
+    // Keyed on the duplicate fields, NOT on `include` - filtering on `include` would have emptied
+    // the Depositions preset for older records (see bundles.matched_rows).
     const user = userEvent.setup();
-    const row = (start: number, include: boolean) => ({
+    const row = (start: number, over: Partial<Row> = {}) => ({
       start,
       end: start,
       category: "3",
@@ -142,12 +146,13 @@ describe("BundlePageClient error handling", () => {
       injury_date: "",
       flag: "-",
       suggest_merge: false,
-      include,
+      include: true,
+      ...over,
     });
     vi.mocked(getDocument).mockResolvedValueOnce({
       id: "d1",
       original_filename: "rec.pdf",
-      page_count: 3,
+      page_count: 4,
       status: "reviewing",
       created_at: "2026-01-01",
       updated_at: "2026-01-01",
@@ -157,14 +162,20 @@ describe("BundlePageClient error handling", () => {
       patient_name: "",
       patient_dob: "",
       law_firm: "",
-      rows: [row(1, true), row(2, false), row(3, true)],
+      rows: [
+        row(1),
+        row(2, { dupe_group: 1, dupe_primary: true }),
+        row(3, { dupe_group: 1, dupe_primary: false }),
+        // Unchecked but NOT a duplicate: still counted, or the Depositions preset breaks.
+        row(4, { include: false }),
+      ],
       categories: [{ id: "3", name: "Imaging" }],
     });
     withClient(<BundlePageClient config={CONFIG} />);
     await user.click(await screen.findByRole("button", { name: "Select" }));
 
-    expect(await screen.findByText("2 matching documents")).toBeInTheDocument();
-    expect(screen.queryByText("3 matching documents")).not.toBeInTheDocument();
+    expect(await screen.findByText("3 matching documents")).toBeInTheDocument();
+    expect(screen.queryByText("4 matching documents")).not.toBeInTheDocument();
   });
 });
 

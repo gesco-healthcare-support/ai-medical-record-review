@@ -903,6 +903,30 @@ def test_one_blank_document_does_not_discard_the_rest_of_the_bundle(monkeypatch)
     assert len(entries) == 2
 
 
+def test_an_all_blank_bundle_raises_rather_than_downloading_an_empty_report(monkeypatch):
+    """The regression the per-row skip introduced, and the reason it needs a floor.
+
+    Skipping every blank row leaves `entries == []`, which `bundle_summarize` would hand to
+    `build_mrr_document` and stream as a 200 - a Word file with a letterhead and no summaries. That
+    converts a clear error into a silently empty client deliverable. Re-raising restores the 422
+    "No readable text was found in this document" the un-isolated loop produced, which is the honest
+    answer when there is nothing to deliver. Caught on review by @adrian-g.
+    """
+    from app.errors import EmptyExtractionError
+    from app.services import bundles
+
+    def fake(pdf_path, row, *a, **k):
+        raise EmptyExtractionError("no OCR text")
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    with pytest.raises(EmptyExtractionError):
+        bundles.bundle_summary_entries("/x.pdf", [_BUNDLE_ROW, dict(_BUNDLE_ROW, start=20, end=21)])
+
+    # An EMPTY row list is not the same situation - nothing was asked for, so nothing is wrong.
+    assert bundles.bundle_summary_entries("/x.pdf", []) == []
+
+
 def test_a_missing_ocr_binary_still_aborts_the_whole_bundle(monkeypatch):
     """GUARDS the carve-out, and it is the half that makes the fix safe.
 
@@ -1086,31 +1110,30 @@ async def test_bundle_pdf_and_category_errors(authed):
     assert unmatched.status_code == 409  # nothing in this record matches
 
 
-async def test_a_bundle_ships_only_the_documents_the_reviewer_is_shipping(authed):
-    """DEMONSTRATES the bug: an unchecked row was bundled anyway.
+async def test_a_bundle_omits_a_copy_the_reviewer_resolved_away(authed):
+    """DEMONSTRATES the bug: a confirmed duplicate copy was bundled a second time.
 
-    A bundle is a deliverable - a combined PDF or a Word report a client receives - and this path
-    selected purely on category, straight off the table. The single-record export does not: it drops
-    `summary.excluded` first. So the two delivery paths disagreed about what the reviewer had
-    decided to ship.
-
-    The reachable case is `resolve_duplicate`'s keep_one, which sets `member.include = is_primary
-    and wanted` and leaves the CATEGORY alone - so a confirmed duplicate copy stayed in category 3
-    and its pages went into the bundle PDF a second time.
+    `resolve_duplicate`'s keep_one marks one member `dupe_primary` and leaves the CATEGORY alone, so
+    the other copies still look like ordinary rows of that category. Selecting purely on category
+    put their pages into the combined PDF again, and made bundle-summarize pay to write an
+    independent summary of a document already being delivered once.
     """
     client, _ = authed
     doc_id = await _upload(client, pages=3)
     await client.put(
         f"/api/documents/{doc_id}/rows",
-        json={
-            "rows": [
-                {"start": 1, "end": 1, "category": _VALID_CATEGORY, "include": True},
-                # The shape keep_one leaves behind: same category, unchecked.
-                {"start": 2, "end": 2, "category": _VALID_CATEGORY, "include": False},
-                {"start": 3, "end": 3, "category": _VALID_CATEGORY, "include": True},
-            ]
-        },
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2, 3)]},
     )
+    # The state keep_one leaves: one cluster, page 2 the primary, page 3 a resolved-away copy.
+    with get_sessionmaker()() as session:
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.start)
+        ).all()
+        for row, primary in ((rows[1], True), (rows[2], False)):
+            row.dupe_group = 1
+            row.dupe_primary = primary
+            row.dupe_dismissed = False
+        session.commit()
 
     got = await client.post(
         f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
@@ -1119,15 +1142,48 @@ async def test_a_bundle_ships_only_the_documents_the_reviewer_is_shipping(authed
     from pypdf import PdfReader
 
     assert got.status_code == 200
-    # Two included pages, not three: the excluded row's page is absent from the delivered PDF.
+    # The standalone row and the cluster's primary - not the copy resolved away.
     assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
 
 
-async def test_a_bundle_whose_every_match_is_excluded_says_so_rather_than_none(authed):
-    """The two 409s are different situations and a reviewer reads them differently.
+async def test_a_dismissed_cluster_keeps_both_copies_in_the_bundle(authed):
+    """GUARDS the carve-out, and it is what stops this over-reaching.
 
-    "no matching documents in this record" sent someone looking for documents that are right there
-    on screen in the right category - they had just unchecked them. Worth its own message.
+    "Dismiss" means the reviewer looked and said these are NOT duplicates - both rows are real
+    documents again and both belong in the bundle. Filtering on `dupe_group` alone would drop one.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2)]},
+    )
+    with get_sessionmaker()() as session:
+        for row in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all():
+            row.dupe_group = 1
+            row.dupe_primary = False
+            row.dupe_dismissed = True
+        session.commit()
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
+
+
+async def test_an_unchecked_row_is_still_bundled(authed):
+    """GUARDS against the fix I nearly shipped, which would have broken the Depositions bundle.
+
+    Filtering on `include` looks like the natural rule and is wrong: migration `a7c3f2e9b1d4` ran
+    `UPDATE review_rows SET include = false WHERE category IN ('9','100')`, and `a9c4e13f70b2`
+    turned depositions back on WITHOUT backfilling the rows. Measured on the box, an `include`
+    filter would have returned nothing for 11 of 30 documents holding depositions and 30 of 67
+    holding diagnostic/operative records - so the Depositions preset would have stopped working on
+    older records. Caught on review by @adrian-g.
     """
     client, _ = authed
     doc_id = await _upload(client, pages=2)
@@ -1145,11 +1201,10 @@ async def test_a_bundle_whose_every_match_is_excluded_says_so_rather_than_none(a
         f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
     )
 
-    assert got.status_code == 409
-    detail = got.json()["detail"]
-    assert "excluded" in detail
-    assert "2" in detail
-    assert "no matching documents" not in detail
+    from pypdf import PdfReader
+
+    assert got.status_code == 200, "an unchecked row is not a duplicate and still belongs here"
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
 
 
 async def test_bundle_summarize_ocr_unavailable_returns_friendly_503(authed, monkeypatch):
