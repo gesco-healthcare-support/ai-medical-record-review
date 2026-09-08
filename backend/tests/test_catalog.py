@@ -217,6 +217,36 @@ def test_an_unseeded_catalog_still_offers_category_fifteen(session):
     assert catalog.summarize_default_for(session, "15") is True
 
 
+def test_an_unseeded_catalog_offers_the_discharge_summary_category(session):
+    """The same guard for category 16, added 2026-09-08.
+
+    Its migration takes the identical do-nothing path on an unseeded catalog, which is only safe
+    because the constants carry the category. Pinned separately rather than folded into the test
+    above, because "the fallback carries 15" and "the fallback carries 16" fail for different
+    reasons: the first if the fallback breaks, the second if someone adds a category to a migration
+    and forgets `taxonomy.py`.
+    """
+    from app.services import catalog
+
+    ids = catalog.get_category_ids(session, active_only=True, auto_assign=True)
+    assert "16" in ids, "an unseeded catalog must still offer category 16 from the constants"
+    assert catalog.summarize_default_for(session, "16") is True
+
+
+def test_the_discharge_summary_category_resolves_its_own_code_prompt(session):
+    """No prompt ROW is inserted for 16, deliberately - f1a83b5c60d2 exists to delete seeded prompt
+    rows because they shadow `prompts.py` forever. So the category has to reach its code prompt
+    with no row at all, and that prompt has to be the discharge one rather than General's."""
+    from app.services import catalog
+
+    prompt = catalog.get_prompt(session, "summary", "16")
+
+    assert "discharge" in prompt.lower()
+    assert "Patient condition at discharge" in prompt
+    assert "Work status or restrictions" in prompt
+    assert prompt != catalog.get_prompt(session, "summary", "100")
+
+
 def test_seed_categories_materializes_every_constant(session):
     """GUARDS the new code. Nothing may survive that keeps the catalog collapsible."""
     from app.services.seed_catalog import seed_categories
@@ -291,13 +321,15 @@ def test_creating_a_category_does_not_collapse_an_unseeded_catalog(session):
     session.add(user)
     session.commit()
 
-    created = create_category(CategoryCreate(id="16", name="A New Category"), session, user)
-    assert created["id"] == "16"
+    # 17, not 16: 16 became a real category (hospital discharge summary, 2026-09-08), and this test
+    # needs an id the catalog does NOT already carry or `create_category` answers 409 duplicate.
+    created = create_category(CategoryCreate(id="17", name="A New Category"), session, user)
+    assert created["id"] == "17"
 
     ids = catalog.get_category_ids(session, active_only=True)
-    assert "16" in ids, "the category the admin created must exist"
-    for category_id in ("1", "3", "5", "10", "13", "15", "100"):
-        assert category_id in ids, f"category {category_id} was destroyed by creating '16'"
+    assert "17" in ids, "the category the admin created must exist"
+    for category_id in ("1", "3", "5", "10", "13", "15", "16", "100"):
+        assert category_id in ids, f"category {category_id} was destroyed by creating '17'"
     assert validate_rows(session, [{"start": 1, "end": 2, "category": "1"}], 5) is None
     assert catalog.summarize_default_for(session, "100") is False  # General still off by default
 
