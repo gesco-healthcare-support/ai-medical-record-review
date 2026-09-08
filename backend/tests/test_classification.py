@@ -416,6 +416,120 @@ def test_hospital_and_registration_paperwork_is_general(title):
     assert classification.match_rules(title) == "100"
 
 
+# THE ADMINISTRATIVE LIST, answered directly 2026-09-08. Fourteen types that appear on the
+# reviewers' own excluded-pages lists but had no rule, so the cascade re-decided each one on every
+# record. Asked as a list, answered unqualified:
+#
+#   "No I wouldn't summarize any of those documents. The only Admin documents we care about are the
+#    DWC claim related forms that we already summarize."
+#
+# A DIRECT answer, which is stronger evidence than the exclusion-list reading #134's rules rest on -
+# that evidence proves a type was excluded THERE, and the return-to-work voucher is the case where
+# it turned out wrong (named on an exclusion list; the reviewers then said they DO summarize it).
+#
+# Measured over all 1,739 distinct titles on the box: 51 change answer (2.93%), 179 rows / 448
+# pages, 14 of them currently summarized - and EVERY transition is None -> 100. Nothing loses a
+# shipping category, which is the direction that would cost content.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Patient Demographics",
+        "Face Sheet",
+        "Medication List",
+        "W-9",
+        "Taxpayer Identification Form",
+        "Provider Listing",
+        "Confirmed Delivery",
+        "Subpoena Duces Tecum",
+        "Document Cover Sheet",
+        "Document Separator Sheet",
+        "Attestation",
+        "Medical Record Chronology",
+        "Billing Statement",
+        "Cover Sheet",
+        "Attachment Information",
+        "Invoice",
+    ],
+)
+def test_the_administrative_list_the_reviewer_named_is_general(title):
+    assert classification.match_rules(title) == "100"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Application for Adjudication of Claim",
+        "DWC-1 Claim Form",
+        "Compensation Claim Form",
+    ],
+)
+def test_the_dwc_claim_forms_he_carved_out_still_ship(title):
+    """The second sentence of the answer, and the half a broad admin rule would have broken.
+
+    "The only Admin documents we care about are the DWC claim related forms that we already
+    summarize." Those answer category 7, and a document-type match outranks an administrative one -
+    so the carve-out needs no new code, but it does need pinning, because it is the one thing in
+    this change that could have gone wrong silently.
+    """
+    assert classification.match_rules(title) == "7"
+
+
+def test_the_administrative_list_claims_nothing_clinical():
+    """GUARDS the blast radius. Every transition measured was None -> 100; nothing that already
+    reached a shipping category may start answering General."""
+    for title, expected in [
+        ("Patient Referral", "10"),  # answered 2026-09-01, eight days before this list
+        ("Progress Report", "1"),
+        ("MRI of the Lumbar Spine", "3"),
+        ("Operative Report", "8"),
+        ("Deposition Transcript", "9"),
+        ("Laboratory Results", "14"),
+        ("Work Status Report", "1"),
+        ("Emergency Department Record", "1"),
+        ("History and Physical", "1"),
+    ]:
+        assert classification.match_rules(title) == expected, title
+
+
+def test_a_wrapper_naming_a_real_document_still_answers_the_document():
+    """The `_DOCUMENT_NOUN` precedence, unchanged and deliberately so.
+
+    "Transmittal Letter - MRI Lumbar Spine is an MRI" is the existing rule, and these new phrases
+    inherit it: an administrative match stands down when the title also names a document. Pinned
+    because it is the behaviour someone reading only the new alternation would not expect.
+
+    The third case is worth naming as a known imperfection rather than hiding it: a subpoena FOR a
+    transcript is administrative paperwork, but "deposition" reaches rule 9 and the document type
+    wins. Measured on the box: 4 such rows, none of them summarized. #140 measured the noun valve
+    over 2,874 rows and concluded it should not be rebuilt, so this is left as it stands.
+    """
+    assert classification.match_rules("Billing Statement - MRI Report") == "3"
+    assert classification.match_rules("Cover Sheet - PR-2 Progress Report") == "1"
+    assert classification.match_rules("Subpoena for Deposition Transcript") == "9"
+
+
+def test_medical_referral_still_answers_10_because_two_answers_disagree():
+    """PINS AN UNRESOLVED CONFLICT rather than picking a side.
+
+    "medical referral" was on the administrative list answered 2026-09-08 with "I wouldn't summarize
+    any of those documents". But #233 shipped `^\s*(?:patient|medical)?\s*referrals?\b -> 10` on
+    2026-09-01, from an equally direct answer: "Referral should be categorized as an authorization
+    request." That pattern names `medical` explicitly, so the two answers contradict each other
+    eight days apart.
+
+    I first thought this was moot because no title on the box says "medical referral" - true of the
+    DATA, and irrelevant to the RULE, which claims the phrase regardless. This test is what caught
+    that.
+
+    So the administrative alternation deliberately omits it and the shipped rule stands, because
+    reversing a decision from eight days earlier on an ambiguous later answer is the worse error:
+    it would move a document OUT of a category that ships, and that direction loses content
+    invisibly. Escalated for the reviewer to settle.
+    """
+    assert classification.match_rules("Patient Referral") == "10"
+    assert classification.match_rules("Medical Referral") == "10"
+
+
 # The other half of the same split. When this was written all three were blocked by `_DOCUMENT_NOUN`
 # standing the administrative rules down for a report/note title, and the expected answer was clear
 # with no way to express it.

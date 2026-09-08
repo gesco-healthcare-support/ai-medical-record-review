@@ -170,6 +170,44 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         r"^\s*medical\s+records?\s+excerpts?\s*$"
         + r"|^\s*(?:excerpted\s+medical|medical\s+excerpted)\s+records?\s*$"
         + r"|^\s*review\s+of\s+(?:the\s+)?medical\s+records?\s*$",
+        # THE ADMINISTRATIVE LIST, answered directly on 2026-09-08. Asked as a list of fourteen
+        # types that appear on the reviewers' own excluded-pages lists but had no rule, so the
+        # cascade re-decided each one on every record. The answer was unqualified:
+        #
+        #   "No I wouldn't summarize any of those documents. The only Admin documents we care about
+        #    are the DWC claim related forms that we already summarize."
+        #
+        # That second sentence is the carve-out and it is already a rule: the claim forms answer
+        # category 7 (`adjudication of claim|application for adjudication|compensation claim|dwc-1`)
+        # and are untouched here, because a document-type match outranks an administrative one.
+        #
+        # A DIRECT answer, which is the strongest evidence available for a type. #134's fourteen
+        # rules rest on "named verbatim in one record's exclusion list", and that file carries the
+        # caveat that being excluded THERE does not prove a type is always excluded - the
+        # return-to-work voucher was named on an exclusion list and the reviewers then said they DO
+        # summarize it. This list was put as a question and answered as a rule.
+        #
+        # `medication list` is the one that reads clinical, and it rests entirely on that answer.
+        # Left in deliberately rather than second-guessed: 3 titles / 4 rows / 12 pages on the box,
+        # none currently summarized, so the rule buys determinism and risks nothing delivered.
+        #
+        # `medical referral` was on the asked list and is deliberately NOT here, because the two
+        # answers CONTRADICT each other eight days apart. #233 shipped
+        # `^\s*(?:patient|medical)?\s*referrals? -> 10` on 2026-09-01 from "Referral should be
+        # categorized as an authorization request" - and that pattern names `medical` explicitly, so
+        # this list's "I wouldn't summarize any of those" reverses it.
+        #
+        # (No title on the box says "medical referral", which is a fact about the DATA and
+        # irrelevant to the RULE - the pattern claims the phrase regardless. A test caught that
+        # distinction after I had first written the conflict off as moot.)
+        #
+        # The shipped rule stands and the conflict is escalated. Reversing an eight-day-old decision
+        # on the more ambiguous of two direct answers would move a document OUT of a category that
+        # ships, and that direction loses content invisibly.
+        r"\bdemographics?\b|\bface sheet\b|\bmedication list\b|\bw-?9\b"
+        r"|taxpayer identification|provider list(?:ing)?\b|confirmed delivery"
+        r"|\bsubpoenas?\b|\bcover sheet\b|separator sheet\b|\battestations?\b"
+        r"|record chronology|\bbillings?\b|\binvoices?\b|attachment information",
     )
 )
 
