@@ -1,6 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("sonner", () => ({
+  toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
+}));
+
+import { toast } from "sonner";
 
 import { CategoryDialog } from "@/components/admin/category-dialog";
 import { ApiError } from "@/lib/api";
@@ -52,11 +58,17 @@ describe("CategoryDialog error handling", () => {
 });
 
 describe("CategoryDialog dismissal", () => {
-  it("refuses to close while a save is in flight", async () => {
-    // GUARDS the dismissal path. `disabled={saving}` covers the Cancel/Save buttons but nothing
-    // about Radix's own exits - Escape, an overlay click, the corner close button - which reach
-    // `onOpenChange` directly. Dismissing mid-save wrote the failure into `error` state rendered
-    // inside the now-closed dialog, with no toast fallback, so a failed save looked successful.
+  beforeEach(() => {
+    vi.mocked(toast.error).mockClear();
+  });
+
+  // #264 REVERSES what this block used to pin. The previous version asserted the dialog refused
+  // to close while `saving`, which left Escape, an overlay click and the corner button silently
+  // doing nothing while the close button still rendered as active - so a hung save trapped the
+  // reviewer with no explanation. The defect the guard was reaching for is fixed at its source
+  // instead: the failure is toasted, and `Toaster` lives in the root layout, so it survives the
+  // dialog closing.
+  it("closes on Escape even while a save is in flight", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
     render(
@@ -72,26 +84,26 @@ describe("CategoryDialog dismissal", () => {
     await screen.findByRole("dialog");
     await user.keyboard("{Escape}");
 
-    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it("still closes on Escape when nothing is saving", async () => {
-    // The other half: the guard must not make the dialog un-closable.
+  it("toasts a failed save, so a dismissal cannot swallow it", async () => {
+    // The half that makes allowing the dismissal safe. Without this the message existed only in
+    // `error` state rendered inside the dialog, so closing mid-save made a failure look like a
+    // success. Fails on origin/main.
     const user = userEvent.setup();
-    const onOpenChange = vi.fn();
     render(
       <CategoryDialog
         open
-        onOpenChange={onOpenChange}
+        onOpenChange={vi.fn()}
         editing={null}
-        onCreate={vi.fn()}
+        onCreate={vi.fn().mockRejectedValue(new ApiError("network", 0))}
         onUpdate={vi.fn()}
         saving={false}
       />,
     );
-    await screen.findByRole("dialog");
-    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/couldn.t reach the server/i));
   });
 });

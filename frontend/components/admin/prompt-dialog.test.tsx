@@ -6,6 +6,11 @@ import type { ReactNode } from "react";
 
 vi.mock("@/hooks/use-admin", () => ({ useSavePrompt: vi.fn(), useRevertPrompt: vi.fn() }));
 vi.mock("@/lib/admin-api", () => ({ getPrompt: vi.fn() }));
+vi.mock("sonner", () => ({
+  toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
+}));
+
+import { toast } from "sonner";
 
 import { ApiError } from "@/lib/api";
 import { getPrompt, type PromptInfo } from "@/lib/admin-api";
@@ -160,11 +165,12 @@ describe("PromptDialog reopen and dismissal", () => {
     expect(await screen.findByLabelText(/prompt sent to the model/i)).toHaveValue("ON THE SERVER");
   });
 
-  it("refuses to close while a save is in flight", async () => {
-    // GUARDS the dismissal path. `disabled={busy}` covers the buttons but not Radix's own exits -
-    // Escape, an overlay click, the corner close button. Dismissing mid-save wrote the failure into
-    // `error` state rendered inside the closed dialog, with no toast fallback, so a failed save
-    // looked like a successful one.
+  it("closes on Escape even while a save is in flight", async () => {
+    // #264 REVERSES what this used to pin. Refusing the close left Escape, an overlay click and
+    // the corner button all silently doing nothing while the close button still rendered as
+    // active, so a hung save trapped the reviewer with no explanation. The failure the guard was
+    // reaching for is now toasted instead, and `Toaster` lives in the root layout, so it outlives
+    // this dialog.
     const user = userEvent.setup();
     vi.mocked(getPrompt).mockResolvedValue(promptInfo());
     const onOpenChange = vi.fn();
@@ -187,6 +193,51 @@ describe("PromptDialog reopen and dismissal", () => {
     await screen.findByRole("dialog");
     await user.keyboard("{Escape}");
 
-    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("toasts a failed save, so a dismissal cannot swallow it", async () => {
+    // The half that makes allowing the dismissal safe. Fails on origin/main, where the message
+    // existed only in `error` state rendered inside the dialog that was closing.
+    const user = userEvent.setup();
+    vi.mocked(toast.error).mockClear();
+    vi.mocked(getPrompt).mockResolvedValue(promptInfo({ text: "hi", effective_text: "hi" }));
+    mockHooks({ save: vi.fn().mockRejectedValue(new ApiError("network", 0)) });
+
+    open();
+    await user.click(await screen.findByRole("button", { name: "Save prompt" }));
+
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/couldn.t reach the server/i));
+  });
+});
+
+describe("PromptDialog when the prompt could not be loaded", () => {
+  // #263. `data` is undefined both while the query is IN FLIGHT and once it has FAILED, and
+  // `isLoading` is false in the second case - so the reset to "" rendered an empty EDITABLE box
+  // with Save enabled, which reads as "this category has no custom prompt" when the truth is "we
+  // could not load it". All three assertions below fail on origin/main.
+  async function openFailing() {
+    vi.mocked(getPrompt).mockRejectedValue(new ApiError("network", 0));
+    mockHooks();
+    open();
+    return screen.findByText(/could not be loaded/i);
+  }
+
+  it("says so, rather than asserting which prompt is in use", async () => {
+    await openFailing();
+    // The two normal sentences both CLAIM which prompt this category uses, and on a failed fetch
+    // we do not know - so neither may appear.
+    expect(screen.queryByText(/built-in prompt that ships with the app/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/uses a custom prompt saved here/i)).not.toBeInTheDocument();
+  });
+
+  it("leaves the empty editor read-only", async () => {
+    await openFailing();
+    expect(screen.getByLabelText(/prompt sent to the model/i)).toBeDisabled();
+  });
+
+  it("does not offer to save nothing over the prompt on the server", async () => {
+    await openFailing();
+    expect(screen.getByRole("button", { name: "Save prompt" })).toBeDisabled();
   });
 });
