@@ -601,6 +601,25 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # stays 5, "Referral for MRI Lumbar Spine" stays 3, and a referral naming an evaluator
         # stays 13. This only answers a title nothing more specific already did.
         (r"^\s*(?:patient|medical)?\s*referrals?\b", "10"),
+        # Discharge summary -> its own category 16, answered directly 2026-09-08: "Make a new
+        # category summarize two things, patient condition, and any comment on work status if
+        # there."
+        #
+        # It had no rule, and measured over every row on the box the same document type was answered
+        # SIX different ways - 100 fourteen times, then 1, 3, 14, 5 and 8 - across 24 rows and 92
+        # pages, 8 of them summarized. A type answered six ways is wrong whichever answer happens to
+        # be right on a given record.
+        #
+        # LAST in the table, after every clinical modality rule, and that ordering is deliberate.
+        # "Discharge Summary - Operative Report" answers 8 today and keeps answering 8: the specific
+        # document produced during the stay is the better answer, which is the same precedence the
+        # emergency-department rule documents. Only a title nothing else claims reaches here.
+        #
+        # `summary` is REQUIRED, so "Discharge Report" and "Discharge Instructions" are untouched.
+        # "discharge report" is named in a reviewer's own excluded-pages list (see the hospital
+        # paperwork rule above), so claiming it here would contradict that; and nobody has been
+        # asked about discharge instructions.
+        (r"\bdischarge summar(?:y|ies)\b", "16"),
     )
 )
 

@@ -563,7 +563,12 @@ def test_paperwork_whose_title_carries_a_document_noun_is_general(title):
         # "provider registration" contains "er registration" but not at a word boundary
         ("Provider Registration Form", None),
         # a real clinical document that merely mentions an admission
-        ("Discharge Summary - Hospital Admission 03/04/2026", None),
+        # Expected value changed None -> "16" on 2026-09-08, when the discharge summary got its own
+        # category. The guard's INTENT was "the `admission` phrase must not drag this into General",
+        # and 16 satisfies that more strongly than no-rule-at-all did. The pin stays, because the
+        # thing it guards against - the hospital-paperwork rule claiming this title - is still the
+        # failure that matters.
+        ("Discharge Summary - Hospital Admission 03/04/2026", "16"),
         # the phrases are multi-word on purpose: a bare "summary" or "record" must not fire
         ("Operative Summary", None),
         ("Medical Record Review", None),
@@ -1579,3 +1584,36 @@ def test_a_referral_is_an_authorization_request(title):
 )
 def test_a_title_that_merely_mentions_a_referral_is_not_one(title, expected):
     assert classification.match_rules(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Discharge Summary",
+        "Hospital Discharge Summary",
+        "Medication Discharge Summary Report",
+        "Discharge Summary and Instructions",
+    ],
+)
+def test_a_discharge_summary_gets_its_own_category(title):
+    """Answered directly 2026-09-08: "Make a new category summarize two things, patient condition,
+    and any comment on work status if there."
+
+    It had no rule, and measured over every row on the box the same type was answered SIX different
+    ways - 100 fourteen times, then 1, 3, 14, 5 and 8 - across 24 rows / 92 pages, 8 summarized. A
+    type answered six ways is wrong whichever answer happens to be right on a given record.
+    """
+    assert classification.match_rules(title) == "16"
+
+
+def test_the_discharge_rule_claims_only_a_summary():
+    """GUARDS the breadth, and each exclusion is a decision rather than an oversight.
+
+    `discharge report` is named in a reviewer's own excluded-pages list (see the hospital paperwork
+    rule), so claiming it as category 16 would contradict that. Nobody has been asked about
+    discharge instructions. And a title naming a MORE specific document keeps it - the same
+    precedence the emergency-department rule documents, which is why this rule sits last.
+    """
+    assert classification.match_rules("Discharge Report") is None
+    assert classification.match_rules("Discharge Instructions") is None
+    assert classification.match_rules("Discharge Summary - Operative Report") == "8"

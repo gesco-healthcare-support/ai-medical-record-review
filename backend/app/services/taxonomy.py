@@ -295,6 +295,30 @@ CATEGORIES: dict[str, "Category"] = {
             "IMR Final Determination Letter",
         ),
     ),
+    "16": Category(
+        "16",
+        "Hospital discharge summary",
+        # The embedding and LLM stages read this text, so it names the two things the reviewer asked
+        # for and nothing else. Asked directly on 2026-09-08 ("Discharge Summary - summarize, and as
+        # what?") and answered: "Make a new category summarize two things, patient condition, and
+        # any comment on work status if there."
+        #
+        # The last sentence is load-bearing for the same reason category 15's is: a discharge
+        # summary recites the whole admission at length, and every one of those documents - the
+        # operative report, the imaging, the labs - has its own place in the record. Without this
+        # the classifier had no way to tell the summary OF a stay from the documents INSIDE it, and
+        # answered six different categories across 24 rows.
+        "The document written when a patient leaves a hospital stay, stating their condition at "
+        "discharge and any restriction on returning to work. It summarizes the admission rather "
+        "than being one of the documents produced during it - the operative report, the imaging "
+        "and the laboratory results from that same stay each belong to their own category.",
+        (
+            "Discharge Summary",
+            "Hospital Discharge Summary",
+            "Medication Discharge Summary Report",
+            "Discharge Summary and Instructions",
+        ),
+    ),
     "100": Category(
         "100",
         "General or uncategorized documents",
