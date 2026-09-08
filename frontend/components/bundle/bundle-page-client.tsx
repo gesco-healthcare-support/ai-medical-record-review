@@ -98,7 +98,26 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
 
   const rows = detail?.rows ?? [];
   const categories = detail?.categories ?? [];
-  const matches = rows.filter((row) => config.categories.includes(String(row.category)));
+  // Mirrors the server's `bundles.matched_rows`: a copy the reviewer resolved away as a duplicate is
+  // not in the bundle, so it must not be counted here either. Without the same rule on both sides
+  // this list promises a document the download does not contain.
+  //
+  // CLUSTER state, not row state. A cluster the dedup worker just wrote has no primary at all, so
+  // testing a row alone reads "no primary" as "resolved away" and drops every member - the document
+  // then appears nowhere. Computed over ALL rows, before the category filter, because a cluster can
+  // span categories and its primary may sit outside this preset.
+  //
+  // Keyed on the duplicate fields, not on `include` - see `bundles.matched_rows` for why `include`
+  // is the wrong filter (a migration unchecked whole categories, so it would empty the Depositions
+  // preset for older records).
+  const resolvedGroups = new Set(
+    rows.filter((row) => row.dupe_group != null && row.dupe_primary).map((row) => row.dupe_group),
+  );
+  const matches = rows.filter(
+    (row) =>
+      config.categories.includes(String(row.category)) &&
+      !(resolvedGroups.has(row.dupe_group) && !row.dupe_primary && !row.dupe_dismissed),
+  );
   const identified = rows.length > 0;
 
   const pickerDocs = [...docs].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));

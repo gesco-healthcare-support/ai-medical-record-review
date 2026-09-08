@@ -872,6 +872,81 @@ def test_the_bundle_export_strips_the_same_markers_as_the_review_export(monkeypa
     assert title == _PRESENTABLE_TITLE
 
 
+def test_one_blank_document_does_not_discard_the_rest_of_the_bundle(monkeypatch):
+    """DEMONSTRATES the bug: an unreadable row threw away every summary generated before it.
+
+    `summarize_row` raises EmptyExtractionError for a row whose pages read cleanly and yield no
+    words - a photograph, a film, a separator sheet. With no per-row isolation that propagated out
+    of `bundle_summary_entries`, and the caller's `except PipelineError` discarded the `entries`
+    list, throwing away real model calls already spent and failing a bundle that was mostly fine.
+    `_pipeline_error_response` already classifies that exception 422, "a property of the document".
+    """
+    from app.errors import EmptyExtractionError
+    from app.services import bundles
+
+    rows = [
+        {"start": 1, "end": 2, "category": "3", "flag": "-"},
+        {"start": 3, "end": 3, "category": "3", "flag": "-"},  # the blank one
+        {"start": 4, "end": 5, "category": "3", "flag": "-"},
+    ]
+
+    def fake(pdf_path, row, *a, **k):
+        if int(row["start"]) == 3:
+            raise EmptyExtractionError("no OCR text for pages 3-3")
+        return {"summaryDate": _ENTRY_DATE, "summaryTitle": _DECORATED_TITLE, "summaryText": "b"}
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    entries = bundles.bundle_summary_entries("/x.pdf", rows)
+
+    # The two readable documents survive; the blank one is omitted rather than sinking the bundle.
+    assert len(entries) == 2
+
+
+def test_an_all_blank_bundle_raises_rather_than_downloading_an_empty_report(monkeypatch):
+    """The regression the per-row skip introduced, and the reason it needs a floor.
+
+    Skipping every blank row leaves `entries == []`, which `bundle_summarize` would hand to
+    `build_mrr_document` and stream as a 200 - a Word file with a letterhead and no summaries. That
+    converts a clear error into a silently empty client deliverable. Re-raising restores the 422
+    "No readable text was found in this document" the un-isolated loop produced, which is the honest
+    answer when there is nothing to deliver. Caught on review by @adrian-g.
+    """
+    from app.errors import EmptyExtractionError
+    from app.services import bundles
+
+    def fake(pdf_path, row, *a, **k):
+        raise EmptyExtractionError("no OCR text")
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    with pytest.raises(EmptyExtractionError):
+        bundles.bundle_summary_entries("/x.pdf", [_BUNDLE_ROW, dict(_BUNDLE_ROW, start=20, end=21)])
+
+    # An EMPTY row list is not the same situation - nothing was asked for, so nothing is wrong.
+    assert bundles.bundle_summary_entries("/x.pdf", []) == []
+
+
+def test_a_missing_ocr_binary_still_aborts_the_whole_bundle(monkeypatch):
+    """GUARDS the carve-out, and it is the half that makes the fix safe.
+
+    OcrUnavailableError means Tesseract or Poppler is absent, which fails identically on every
+    remaining row - continuing would spend the rest of the loop rediscovering that one row at a
+    time and hand back a bundle silently missing everything. Only the per-document failure is
+    skipped.
+    """
+    from app.errors import OcrUnavailableError
+    from app.services import bundles
+
+    def fake(pdf_path, row, *a, **k):
+        raise OcrUnavailableError("Tesseract not found")
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    with pytest.raises(OcrUnavailableError):
+        bundles.bundle_summary_entries("/x.pdf", [_BUNDLE_ROW])
+
+
 def test_all_three_export_paths_agree_on_the_same_decorated_title(monkeypatch):
     """Asserts the paths AGREE rather than checking each alone.
 
@@ -1033,6 +1108,143 @@ async def test_bundle_pdf_and_category_errors(authed):
         f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_OTHER_CATEGORY]}
     )
     assert unmatched.status_code == 409  # nothing in this record matches
+
+
+async def test_a_bundle_omits_a_copy_the_reviewer_resolved_away(authed):
+    """DEMONSTRATES the bug: a confirmed duplicate copy was bundled a second time.
+
+    `resolve_duplicate`'s keep_one marks one member `dupe_primary` and leaves the CATEGORY alone, so
+    the other copies still look like ordinary rows of that category. Selecting purely on category
+    put their pages into the combined PDF again, and made bundle-summarize pay to write an
+    independent summary of a document already being delivered once.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2, 3)]},
+    )
+    # The state keep_one leaves: one cluster, page 2 the primary, page 3 a resolved-away copy.
+    with get_sessionmaker()() as session:
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.start)
+        ).all()
+        for row, primary in ((rows[1], True), (rows[2], False)):
+            row.dupe_group = 1
+            row.dupe_primary = primary
+            row.dupe_dismissed = False
+        session.commit()
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200
+    # The standalone row and the cluster's primary - not the copy resolved away.
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
+
+
+async def test_an_unresolved_cluster_keeps_every_member_in_the_bundle(authed):
+    """The state a cluster spends MOST of its life in, and the one a row-only test missed.
+
+    `worker/tasks.py` writes `dupe_group`, `dupe_similarity` and `dupe_dismissed` on each member and
+    never touches `dupe_primary` - that becomes true only in `resolve_duplicate`'s keep_one. So a
+    cluster nobody has opened has no primary, and judging a row in isolation reads that as "resolved
+    away" and drops EVERY member: the document is delivered zero times instead of once, strictly
+    worse than the double delivery this fix is for.
+
+    Measured on the box: 48 of 138 clusters (35%) are in this state, and 125 of the 165 rows the
+    row-only test removed came from them. Caught on review by @adrian-g; the keep_one and dismiss
+    tests both passed while this was broken.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2)]},
+    )
+    # Exactly what the dedup worker leaves behind: grouped, no primary, not dismissed.
+    with get_sessionmaker()() as session:
+        for row in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all():
+            row.dupe_group = 1
+            row.dupe_primary = False
+            row.dupe_dismissed = False
+        session.commit()
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200, "an unopened cluster is a question, not a resolution"
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
+
+
+async def test_a_dismissed_cluster_keeps_both_copies_in_the_bundle(authed):
+    """GUARDS the carve-out, and it is what stops this over-reaching.
+
+    "Dismiss" means the reviewer looked and said these are NOT duplicates - both rows are real
+    documents again and both belong in the bundle. Filtering on `dupe_group` alone would drop one.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2)]},
+    )
+    with get_sessionmaker()() as session:
+        for row in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all():
+            row.dupe_group = 1
+            row.dupe_primary = False
+            row.dupe_dismissed = True
+        session.commit()
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
+
+
+async def test_an_unchecked_row_is_still_bundled(authed):
+    """GUARDS against the fix I nearly shipped, which would have broken the Depositions bundle.
+
+    Filtering on `include` looks like the natural rule and is wrong: migration `a7c3f2e9b1d4` ran
+    `UPDATE review_rows SET include = false WHERE category IN ('9','100')`, and `a9c4e13f70b2`
+    turned depositions back on WITHOUT backfilling the rows. Measured on the box, an `include`
+    filter would have returned nothing for 11 of 30 documents holding depositions - so the
+    Depositions preset would have stopped working on older records. Caught on review by @adrian-g.
+
+    (Diagnostic/operative would have been emptied for 0 of 67, not the 30 an earlier version of this
+    note claimed - that came from a `bool_and(include)` query, which answers "has ANY unchecked row"
+    where it needed `bool_or`.)
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 1, "category": _VALID_CATEGORY, "include": False},
+                {"start": 2, "end": 2, "category": _VALID_CATEGORY, "include": False},
+            ]
+        },
+    )
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200, "an unchecked row is not a duplicate and still belongs here"
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
 
 
 async def test_bundle_summarize_ocr_unavailable_returns_friendly_503(authed, monkeypatch):

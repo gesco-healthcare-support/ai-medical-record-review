@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
+import type { Row } from "@/lib/types";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/hooks/use-documents", () => ({
@@ -125,6 +126,98 @@ describe("BundlePageClient error handling", () => {
     expect(await screen.findByLabelText("Patient name")).toHaveValue("Jane Roe");
     expect(screen.getByLabelText("DOB")).toHaveValue("01/02/1990");
     expect(screen.getByLabelText("Attorney law firm")).toHaveValue("Acme LLP");
+  });
+
+  it("does not count a copy the reviewer resolved away as a duplicate", async () => {
+    // DEMONSTRATES the bug on this side. The server omits a resolved-away duplicate from the
+    // bundle; if this preview counts it, the list promises a document the download does not
+    // contain. keep_one marks one member primary and leaves the category alone, so the copy looks
+    // identical to a shipping row here.
+    //
+    // Keyed on the duplicate fields, NOT on `include` - filtering on `include` would have emptied
+    // the Depositions preset for older records (see bundles.matched_rows).
+    const user = userEvent.setup();
+    const row = (start: number, over: Partial<Row> = {}) => ({
+      start,
+      end: start,
+      category: "3",
+      title: "MRI",
+      date: "",
+      injury_date: "",
+      flag: "-",
+      suggest_merge: false,
+      include: true,
+      ...over,
+    });
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      id: "d1",
+      original_filename: "rec.pdf",
+      page_count: 4,
+      status: "reviewing",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_name: "",
+      patient_dob: "",
+      law_firm: "",
+      rows: [
+        row(1),
+        row(2, { dupe_group: 1, dupe_primary: true }),
+        row(3, { dupe_group: 1, dupe_primary: false }),
+        // Unchecked but NOT a duplicate: still counted, or the Depositions preset breaks.
+        row(4, { include: false }),
+      ],
+      categories: [{ id: "3", name: "Imaging" }],
+    });
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(await screen.findByText("3 matching documents")).toBeInTheDocument();
+    expect(screen.queryByText("4 matching documents")).not.toBeInTheDocument();
+  });
+
+  it("counts every member of a cluster nobody has resolved yet", async () => {
+    // The state the dedup worker leaves: grouped, NO primary, not dismissed. Reading a row alone
+    // treats that as "resolved away" and drops the whole cluster, so the preview would under-count
+    // and the download would omit the document entirely. 48 of 138 clusters on the box sit here.
+    const user = userEvent.setup();
+    const row = (start: number, over: Partial<Row> = {}) => ({
+      start,
+      end: start,
+      category: "3",
+      title: "MRI",
+      date: "",
+      injury_date: "",
+      flag: "-",
+      suggest_merge: false,
+      include: true,
+      ...over,
+    });
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      id: "d2",
+      original_filename: "rec.pdf",
+      page_count: 2,
+      status: "reviewing",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_name: "",
+      patient_dob: "",
+      law_firm: "",
+      rows: [
+        row(1, { dupe_group: 1, dupe_primary: false }),
+        row(2, { dupe_group: 1, dupe_primary: false }),
+      ],
+      categories: [{ id: "3", name: "Imaging" }],
+    });
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(await screen.findByText("2 matching documents")).toBeInTheDocument();
   });
 });
 
