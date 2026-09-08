@@ -50,3 +50,48 @@ describe("CategoryDialog error handling", () => {
     expect(screen.getByRole("dialog")).toHaveClass("ev-dialog-wide");
   });
 });
+
+describe("CategoryDialog dismissal", () => {
+  it("refuses to close while a save is in flight", async () => {
+    // GUARDS the dismissal path. `disabled={saving}` covers the Cancel/Save buttons but nothing
+    // about Radix's own exits - Escape, an overlay click, the corner close button - which reach
+    // `onOpenChange` directly. Dismissing mid-save wrote the failure into `error` state rendered
+    // inside the now-closed dialog, with no toast fallback, so a failed save looked successful.
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(
+      <CategoryDialog
+        open
+        onOpenChange={onOpenChange}
+        editing={null}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        saving
+      />,
+    );
+    await screen.findByRole("dialog");
+    await user.keyboard("{Escape}");
+
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("still closes on Escape when nothing is saving", async () => {
+    // The other half: the guard must not make the dialog un-closable.
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(
+      <CategoryDialog
+        open
+        onOpenChange={onOpenChange}
+        editing={null}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        saving={false}
+      />,
+    );
+    await screen.findByRole("dialog");
+    await user.keyboard("{Escape}");
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+});

@@ -47,9 +47,22 @@ export function PromptDialog({
     if (open) setError("");
   }, [open]);
 
+  // Keyed on `open` as well as `data`, which is the whole of this fix. `PromptDialog` is never
+  // unmounted - only the inner Radix `Dialog` toggles - so `text` survives a close, and a `[data]`
+  // key alone does not fire on reopen: the query is keyed by category id, the client's `staleTime`
+  // is 30s, and structural sharing hands back the SAME object reference when the refetched content
+  // is unchanged. So reopening the same category showed a leftover unsaved draft as if it were the
+  // prompt on the server - and Save would then write it.
+  //
+  // `CategoryDialog` next door already resets every field in an `[open, editing]`-keyed effect for
+  // exactly this reason; this makes the two agree.
+  //
+  // Resetting to "" while `data` is still loading is deliberate: the textarea is `disabled`
+  // then, so the reviewer sees an empty disabled box rather than a stale draft that looks fetched.
   useEffect(() => {
-    if (data) setText(data.text ?? data.effective_text ?? "");
-  }, [data]);
+    if (!open) return;
+    setText(data ? (data.text ?? data.effective_text ?? "") : "");
+  }, [open, data]);
 
   async function submit() {
     setError("");
@@ -81,7 +94,13 @@ export function PromptDialog({
   const busy = save.isPending || revert.isPending;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    // A dismissal while a save is in flight is REFUSED, not just discouraged. `disabled={busy}`
+    // covers the Cancel/Save/Revert buttons but nothing about Radix's own exits - Escape, an
+    // overlay click, and the corner close button all reach `onOpenChange` directly. Taking one of
+    // mid-save closed the dialog, and the failure was then written into `error` state that renders
+    // INSIDE the closed dialog with no toast fallback: the reviewer is told nothing and the prompt
+    // silently did not save.
+    <Dialog open={open} onOpenChange={(next) => (!next && busy ? undefined : onOpenChange(next))}>
       <DialogContent className="ev-dialog-wide">
         <DialogHeader>
           <DialogTitle>Summary prompt{category ? ` - ${category.name}` : ""}</DialogTitle>

@@ -120,3 +120,73 @@ describe("PromptDialog built-in vs custom", () => {
     expect(revert).not.toHaveBeenCalled();
   });
 });
+
+describe("PromptDialog reopen and dismissal", () => {
+  it("shows the server's prompt on reopen, not a leftover unsaved draft", async () => {
+    // DEMONSTRATES the bug. PromptDialog is never unmounted - only the inner Radix Dialog toggles -
+    // so `text` survives a close. The old sync was keyed on `data` alone, and React Query hands
+    // back the SAME object reference within its 30s staleTime when the content is unchanged, so the
+    // effect never fired again and the stale draft looked like the prompt on the server. Save would
+    // then have written it.
+    const user = userEvent.setup();
+    vi.mocked(getPrompt).mockResolvedValue(
+      promptInfo({ text: "ON THE SERVER", effective_text: "ON THE SERVER" }),
+    );
+    mockHooks();
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const dialog = (isOpen: boolean) => (
+      <QueryClientProvider client={client}>
+        <PromptDialog
+          open={isOpen}
+          onOpenChange={vi.fn()}
+          category={{ id: "3", name: "Imaging" } as never}
+        />
+      </QueryClientProvider>
+    );
+
+    const { rerender } = render(dialog(true));
+    // Wait for the fetch to land: the textarea is `disabled` while loading, and user-event refuses
+    // to type into a disabled element.
+    await screen.findByDisplayValue("ON THE SERVER");
+    const box = await screen.findByLabelText(/prompt sent to the model/i);
+    await user.clear(box);
+    await user.type(box, "UNSAVED DRAFT");
+    expect(box).toHaveValue("UNSAVED DRAFT");
+
+    rerender(dialog(false)); // closed without saving - the component stays mounted
+    rerender(dialog(true)); // reopened, same category, cached data, same reference
+
+    expect(await screen.findByLabelText(/prompt sent to the model/i)).toHaveValue("ON THE SERVER");
+  });
+
+  it("refuses to close while a save is in flight", async () => {
+    // GUARDS the dismissal path. `disabled={busy}` covers the buttons but not Radix's own exits -
+    // Escape, an overlay click, the corner close button. Dismissing mid-save wrote the failure into
+    // `error` state rendered inside the closed dialog, with no toast fallback, so a failed save
+    // looked like a successful one.
+    const user = userEvent.setup();
+    vi.mocked(getPrompt).mockResolvedValue(promptInfo());
+    const onOpenChange = vi.fn();
+    vi.mocked(useSavePrompt).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: true, // a save is in flight
+    } as unknown as ReturnType<typeof useSavePrompt>);
+    vi.mocked(useRevertPrompt).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useRevertPrompt>);
+
+    withClient(
+      <PromptDialog
+        open
+        onOpenChange={onOpenChange}
+        category={{ id: "3", name: "Imaging" } as never}
+      />,
+    );
+    await screen.findByRole("dialog");
+    await user.keyboard("{Escape}");
+
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+});
