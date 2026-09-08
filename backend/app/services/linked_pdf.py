@@ -78,7 +78,14 @@ def _summary_html(entries, num_pages, qme_or_ame, lawfirm) -> str:
       body {{ font-family: 'Times New Roman', serif; font-size: 11pt; }}
       .ttl {{ text-align: center; font-weight: bold; text-decoration: underline; font-size: 12pt; margin: 10pt 0; }}
       .h2 {{ font-weight: bold; text-decoration: underline; font-size: 12pt; }}
-      p {{ margin: 0 0 8pt 0; text-align: justify; }}
+      /* Letter paragraphs are RAGGED and the summary bodies are JUSTIFIED - a distinction
+         `reporting.py` draws deliberately, with four explicit LEFT assignments against one
+         explicit JUSTIFY for the table bodies. A blanket `text-align: justify` here collapsed
+         it, so the intro sentence shipped stretched in the .pdf and ragged in the .docx (14.5pt
+         apart at the right edge, measured). Only that sentence wraps - REVIEW_HEADING,
+         SUMMARY_INTRO and CONCLUSION are one line each, where justify is a no-op - and it is
+         the same sentence #115 and #158 each had to correct. */
+      p {{ margin: 0 0 8pt 0; }}
       table {{ width: 100%; border-collapse: collapse; }}
       td {{ vertical-align: top; padding: 0 0 10pt 0; }}
       td.d {{ width: 72px; }}
