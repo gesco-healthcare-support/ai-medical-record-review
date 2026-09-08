@@ -16,18 +16,47 @@ from app.services import summarize_engine
 logger = logging.getLogger(__name__)
 
 
-def is_resolved_duplicate(row) -> bool:
-    """True for a copy the reviewer resolved AWAY: a live cluster's non-primary member.
+def resolved_clusters(rows) -> set:
+    """The `dupe_group` ids a reviewer actually resolved with keep_one, i.e. that HAVE a primary.
+
+    Cluster state, not row state, and that distinction is the whole of this function. A cluster the
+    dedup worker has just written has NO primary: `worker/tasks.py` sets `dupe_group`,
+    `dupe_similarity` and `dupe_dismissed` on each member and never touches `dupe_primary`, which
+    becomes true only in `resolve_duplicate`'s keep_one. Measured on the box, **48 of 138 clusters
+    (35%) sit in exactly that state** - written, never opened.
+
+    Judging a row in isolation therefore reads "no primary named" as "resolved away" and drops EVERY
+    member of an unresolved cluster, delivering the document zero times instead of once - strictly
+    worse than the double delivery this module is fixing. Of the 165 rows the row-only test removed
+    corpus-wide, **125 came from unresolved clusters**. Caught on review by @adrian-g.
+
+    Group ids are per-document and `matched_rows` is called with one document's rows, so there is no
+    cross-document collision to worry about.
+    """
+    return {
+        row.get("dupe_group")
+        for row in rows
+        if row.get("dupe_group") is not None and row.get("dupe_primary")
+    }
+
+
+def is_resolved_duplicate(row, resolved_groups) -> bool:
+    """True for a copy the reviewer resolved AWAY: a non-primary member of a RESOLVED cluster.
 
     `resolve_duplicate`'s keep_one marks one member `dupe_primary` and clears `dupe_dismissed` on
     all of them, so the others are copies of a document already being delivered once.
 
-    `dupe_dismissed` is checked because dismissing means "these are NOT duplicates" - both rows are
-    real documents again and both belong in a bundle. A row that LEFT a cluster has `dupe_group`
-    cleared by `_leave_cluster`, so it reads as an ordinary row here, which is correct.
+    Three conditions, each excluding a state that must stay in the bundle:
+      * in a resolved cluster - an UNRESOLVED one is a question nobody has answered, so all of its
+        members are still real documents (see `resolved_clusters`);
+      * not the primary - that is the copy being kept;
+      * not dismissed - dismissing means "these are NOT duplicates", so both copies are real again.
+
+    A row that LEFT a cluster has `dupe_group` cleared by `_leave_cluster`, so it reads as an
+    ordinary row here, which is correct.
     """
     return (
-        row.get("dupe_group") is not None
+        row.get("dupe_group") in resolved_groups
         and not row.get("dupe_primary")
         and not row.get("dupe_dismissed")
     )
@@ -49,19 +78,29 @@ def matched_rows(rows, categories):
       * migration `a7c3f2e9b1d4` ran `UPDATE review_rows SET include = false WHERE category IN
         ('9','100')`, and `a9c4e13f70b2` turned depositions back on in `categories.summarize_default`
         WITHOUT backfilling the rows. So a blanket migration unchecked them, not a reviewer.
-      * measured on the box: filtering on `include` would return NOTHING for **11 of 30** documents
-        holding depositions and **30 of 67** holding diagnostic/operative records. The Depositions
-        bundle preset is `["9"]`, so that preset would simply stop working for older records.
-      * filtering on the duplicate fields instead removes **16 of 441** rows corpus-wide and leaves
-        **zero** documents empty - it takes exactly the copies the defect is about.
+      * measured on the box: an `include` filter would return NOTHING for **11 of 30** documents
+        holding depositions. The Depositions preset is `["9"]`, so it would simply stop working for
+        older records.
+      * diagnostic/operative is NOT affected by that migration - **0 of 67** such documents would be
+        emptied. An earlier version of this note said 30, from a query using `bool_and(include)`,
+        which answers "has ANY unchecked row" where it needed `bool_or`. The two coincide for
+        depositions precisely because the migration unchecked them ALL, which is how a wrong query
+        produced a right number there and hid the error.
+
+    `resolved_groups` is computed over ALL the document's rows, BEFORE the category filter: cluster
+    state belongs to the cluster, and `duplicate_gate` can group rows of different categories
+    (`same_date and (same_title or same_category)`), so a primary may sit outside the requested set.
 
     Here rather than in the API layer because this is where the category rule lives, so the next
     caller cannot reintroduce the bug by selecting on category alone. `ReviewRow.as_row()` carries
     `dupe_group`, `dupe_primary` and `dupe_dismissed`, so nothing needs threading through.
     """
     wanted = {str(c) for c in categories}
+    resolved_groups = resolved_clusters(rows)
     return [
-        row for row in rows if str(row["category"]) in wanted and not is_resolved_duplicate(row)
+        row
+        for row in rows
+        if str(row["category"]) in wanted and not is_resolved_duplicate(row, resolved_groups)
     ]
 
 

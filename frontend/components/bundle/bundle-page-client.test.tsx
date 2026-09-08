@@ -177,6 +177,48 @@ describe("BundlePageClient error handling", () => {
     expect(await screen.findByText("3 matching documents")).toBeInTheDocument();
     expect(screen.queryByText("4 matching documents")).not.toBeInTheDocument();
   });
+
+  it("counts every member of a cluster nobody has resolved yet", async () => {
+    // The state the dedup worker leaves: grouped, NO primary, not dismissed. Reading a row alone
+    // treats that as "resolved away" and drops the whole cluster, so the preview would under-count
+    // and the download would omit the document entirely. 48 of 138 clusters on the box sit here.
+    const user = userEvent.setup();
+    const row = (start: number, over: Partial<Row> = {}) => ({
+      start,
+      end: start,
+      category: "3",
+      title: "MRI",
+      date: "",
+      injury_date: "",
+      flag: "-",
+      suggest_merge: false,
+      include: true,
+      ...over,
+    });
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      id: "d2",
+      original_filename: "rec.pdf",
+      page_count: 2,
+      status: "reviewing",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_name: "",
+      patient_dob: "",
+      law_firm: "",
+      rows: [
+        row(1, { dupe_group: 1, dupe_primary: false }),
+        row(2, { dupe_group: 1, dupe_primary: false }),
+      ],
+      categories: [{ id: "3", name: "Imaging" }],
+    });
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(await screen.findByText("2 matching documents")).toBeInTheDocument();
+  });
 });
 
 /** The failure path above was covered; the success path was not, so nothing pinned that a finished

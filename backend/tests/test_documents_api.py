@@ -1146,6 +1146,43 @@ async def test_a_bundle_omits_a_copy_the_reviewer_resolved_away(authed):
     assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
 
 
+async def test_an_unresolved_cluster_keeps_every_member_in_the_bundle(authed):
+    """The state a cluster spends MOST of its life in, and the one a row-only test missed.
+
+    `worker/tasks.py` writes `dupe_group`, `dupe_similarity` and `dupe_dismissed` on each member and
+    never touches `dupe_primary` - that becomes true only in `resolve_duplicate`'s keep_one. So a
+    cluster nobody has opened has no primary, and judging a row in isolation reads that as "resolved
+    away" and drops EVERY member: the document is delivered zero times instead of once, strictly
+    worse than the double delivery this fix is for.
+
+    Measured on the box: 48 of 138 clusters (35%) are in this state, and 125 of the 165 rows the
+    row-only test removed came from them. Caught on review by @adrian-g; the keep_one and dismiss
+    tests both passed while this was broken.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2)]},
+    )
+    # Exactly what the dedup worker leaves behind: grouped, no primary, not dismissed.
+    with get_sessionmaker()() as session:
+        for row in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all():
+            row.dupe_group = 1
+            row.dupe_primary = False
+            row.dupe_dismissed = False
+        session.commit()
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200, "an unopened cluster is a question, not a resolution"
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
+
+
 async def test_a_dismissed_cluster_keeps_both_copies_in_the_bundle(authed):
     """GUARDS the carve-out, and it is what stops this over-reaching.
 
@@ -1181,9 +1218,12 @@ async def test_an_unchecked_row_is_still_bundled(authed):
     Filtering on `include` looks like the natural rule and is wrong: migration `a7c3f2e9b1d4` ran
     `UPDATE review_rows SET include = false WHERE category IN ('9','100')`, and `a9c4e13f70b2`
     turned depositions back on WITHOUT backfilling the rows. Measured on the box, an `include`
-    filter would have returned nothing for 11 of 30 documents holding depositions and 30 of 67
-    holding diagnostic/operative records - so the Depositions preset would have stopped working on
-    older records. Caught on review by @adrian-g.
+    filter would have returned nothing for 11 of 30 documents holding depositions - so the
+    Depositions preset would have stopped working on older records. Caught on review by @adrian-g.
+
+    (Diagnostic/operative would have been emptied for 0 of 67, not the 30 an earlier version of this
+    note claimed - that came from a `bool_and(include)` query, which answers "has ANY unchecked row"
+    where it needed `bool_or`.)
     """
     client, _ = authed
     doc_id = await _upload(client, pages=2)
