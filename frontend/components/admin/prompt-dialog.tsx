@@ -36,8 +36,9 @@ export function PromptDialog({
   const revert = useRevertPrompt();
 
   // `isError` is read, and #263 is why. `data` is undefined both while the query is in flight AND
-  // once it has FAILED, and `isLoading` is false in the second case - so the reset below rendered an
-  // empty EDITABLE box on a failed fetch, which reads as "this category has no custom prompt" when
+  // once it has FAILED, and `isLoading` is false in the second case - so the reset below
+  // rendered an empty EDITABLE box on a failed fetch, which reads as "this category has no
+  // custom prompt" when
   // the truth is "we could not load it". The whole point of #262 was the dialog not misrepresenting
   // server state, and that branch did exactly that.
   const { data, isLoading, isError } = useQuery({
@@ -111,8 +112,9 @@ export function PromptDialog({
 
   return (
     // NOT guarded against a mid-save dismissal, and #264 is why the guard was wrong. Refusing the
-    // close left Escape, an overlay click and the corner button all silently doing nothing while the
-    // close button still looked active - so a hung save trapped the reviewer in the modal with no
+    // close left Escape, an overlay click and the corner button all silently doing nothing
+    // while the close button still looked active - so a hung save trapped the reviewer in the
+    // modal with no
     // explanation, which is a worse failure than the one it fixed. The failure is surfaced by the
     // toast in the catch blocks above instead, which outlives this dialog.
     <Dialog open={open} onOpenChange={onOpenChange}>
