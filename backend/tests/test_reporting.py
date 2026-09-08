@@ -350,6 +350,83 @@ def test_both_renderers_agree_that_the_summary_intro_is_bold():
     assert word_is_bold, "both renderers agree, but on NOT bold - the intended style is bold"
 
 
+def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
+    """`reporting.py` draws a distinction the PDF collapsed: four explicit LEFT assignments for
+    the letter paragraphs against one explicit JUSTIFY for the table bodies. `linked_pdf` set a
+    blanket `p { text-align: justify }`, so the intro sentence shipped STRETCHED in the .pdf and
+    ragged in the .docx - measured 14.5pt apart at the right edge of its first line.
+
+    Only that sentence wraps at 157 characters; REVIEW_HEADING (21), SUMMARY_INTRO (44) and
+    CONCLUSION (47) are one line each, and a paragraph's last line is never justified, so the
+    other three were invisible. It is the third defect in this one sentence after #115 and #158.
+
+    Geometry rather than CSS text, because the CSS is the thing under test: the justified bodies
+    reach the measure, so a ragged letter paragraph must fall SHORT of it. That is page-size
+    independent, which a hardcoded x-coordinate would not be.
+    """
+    linked_pdf = pytest.importorskip("app.services.linked_pdf")
+
+    intro = intro_sentence(259, "Example Law Firm")
+    entries = [
+        {
+            "summaryDate": "01/02/2020",
+            "summaryTitle": "A REPORT",
+            "linkTitle": "A REPORT",
+            "summaryText": "Body sentence that has to wrap. " * 12,
+            "dateLabel": "01/02/2020",
+        }
+    ]
+
+    # Word: the letter paragraph is LEFT, the body cell is JUSTIFY.
+    doc = build_mrr_document(
+        entries,
+        num_pages=259,
+        patient_name="Synthetic Patient",
+        patient_dob="01/01/1980",
+        qme_or_ame="QME",
+        lawfirm="Example Law Firm",
+    )
+    word_letter = _paragraph_named(doc, intro).alignment
+    word_body = doc.tables[0].rows[0].cells[1].paragraphs[0].alignment
+    assert word_letter == WD_PARAGRAPH_ALIGNMENT.LEFT
+    assert word_body == WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+
+    # PDF: same distinction, read off the rendered page.
+    rendered, _ = linked_pdf._render_summary_pdf(
+        linked_pdf._summary_html(entries, 259, "QME", "Example Law Firm")
+    )
+    # Read the two COLUMNS off the page rather than matching on text: a wrapped body line starts
+    # mid-sentence, so a text prefix is luck. The letter sits at the page margin and the table
+    # body is indented past the date column, which separates them by left edge alone.
+    wrapped = [
+        line
+        for block in rendered[0].get_text("dict")["blocks"]
+        for line in block.get("lines", [])
+        if len("".join(span["text"] for span in line["spans"]).strip()) >= 45
+    ]
+    assert wrapped, "nothing wrapped in the rendered PDF, so there is no alignment to read"
+    margin = min(line["bbox"][0] for line in wrapped)
+    letter = [line for line in wrapped if line["bbox"][0] < margin + 10]
+    body = [line for line in wrapped if line["bbox"][0] >= margin + 10]
+
+    intro_line = next(
+        (
+            line
+            for line in letter
+            if "".join(span["text"] for span in line["spans"]).lstrip().startswith(intro.split()[0])
+        ),
+        None,
+    )
+    assert intro_line is not None, "the intro sentence did not wrap in the rendered PDF"
+    assert body, "no wrapped body line to read the measure from"
+    letter_right = intro_line["bbox"][2]
+    body_right = max(line["bbox"][2] for line in body)  # justified, so this IS the measure
+    assert letter_right < body_right - 2, (
+        "the .pdf stretches the intro sentence to the measure while the .docx leaves it ragged "
+        f"(letter right edge {letter_right:.1f}, justified measure {body_right:.1f})"
+    )
+
+
 # The heading and the title separator were the two strings each renderer still held its own copy of,
 # and the copies had already diverged. Both are checked against the eight human deliverables on disk:
 # "MEDICAL RECORD REVIEW" in 8 of 8 files, and a PERIOD after the title in 329 of 329 date-anchored
