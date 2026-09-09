@@ -342,7 +342,17 @@ _KNOWN_CATEGORIES = (
     # "a diagnostic study or a laboratory or test result", which a determination letter is not, and
     # the requirement is stated directly in category 15's own prompt instead. Listing it here gives
     # it the same minimal preamble as 10, the request this category answers.
-    | frozenset({"4", "7", "8", "10", "11", "15", "100"})
+    #
+    # 16 (hospital discharge summaries) is here for the same reason and needs the argument stated,
+    # because the block it MUST NOT have looks like the one it obviously should. Its content is the
+    # patient's condition at discharge, so `_C_NORMAL_FINDINGS` fires on it as "a clinical
+    # assessment" and instructs the model to omit anything "recorded as normal, negative,
+    # unremarkable, or within normal limits" - which is most of what a discharge summary says, and
+    # exactly the content the reviewers asked this category for. That block's only carve-out is the
+    # verdict of a diagnostic study or a laboratory result, which a discharge summary is not, so
+    # nothing rescues it. `_C_VERDICT` is ruled out on the same wording. The requirement is stated
+    # in category 16's own prompt instead, as category 15 states its determination requirement.
+    | frozenset({"4", "7", "8", "10", "11", "15", "16", "100"})
 )
 
 

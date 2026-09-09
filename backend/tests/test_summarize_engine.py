@@ -1974,6 +1974,70 @@ def test_no_other_category_is_disturbed_by_the_catch_all_change():
     assert se.build_preamble("15") == rfa
 
 
+def test_every_catalog_category_is_registered_in_the_preamble_sets():
+    """WHEN the catalog ships a category, THE SYSTEM SHALL choose its preamble deliberately.
+
+    THE GUARD THIS FILE WAS MISSING. `_KNOWN_CATEGORIES`'s own comment is "Every id the catalog
+    ships", and `build_preamble` withholds blocks only from a KNOWN id - so an id absent from the
+    set silently takes the default written for a category that does not exist yet.
+
+    That is exactly how category 16 shipped: the constant, the guarded migration, the prompt and
+    the classification rule all landed together, and this set was the one place a new category has
+    to be named by hand with nothing checking that it was. Category 15, added the same way five
+    weeks earlier, DID include this edit - so the omission was invisible by comparison too.
+    """
+    from app.services.taxonomy import CATEGORIES
+
+    missing = sorted(set(CATEGORIES) - se._KNOWN_CATEGORIES, key=int)
+    assert not missing, (
+        f"catalog categories missing from _KNOWN_CATEGORIES: {missing}. Each one silently receives "
+        "the every-block default meant for an id the catalog does not ship - pick its blocks in "
+        "summarize_engine and say why, as categories 15 and 16 do."
+    )
+
+
+def test_a_discharge_summary_is_not_told_to_drop_a_reassuring_condition():
+    """WHEN summarizing a discharge summary, THE SYSTEM SHALL not withhold an unremarkable one.
+
+    The reviewers defined this category as two things and the first is the patient's condition at
+    discharge. `_C_NORMAL_FINDINGS` instructs the model to omit anything "recorded as normal,
+    negative, unremarkable, or within normal limits" whenever it is "describing an examination, a
+    history, or a clinical assessment" - which a condition at discharge is - and its only carve-out
+    is the verdict of a diagnostic study or a laboratory result, which a discharge summary is not.
+
+    So while 16 was unregistered it received that block and was instructed to drop precisely the
+    content the category exists to report. Most admissions end uneventfully, so that empties most
+    of these summaries rather than trimming them.
+    """
+    preamble = se.build_preamble("16")
+    assert se._C_NORMAL_FINDINGS not in preamble
+    assert se._C_VERDICT not in preamble  # worded for a study or lab result; this is neither
+    assert se._C_EMBEDDED_REVIEW not in preamble  # and it is never handed the studies list either
+    # The minimal preamble, the same one category 15 was deliberately given.
+    assert preamble == se.build_preamble("15")
+    # And no longer byte-identical to an id the catalog does not ship, which is what it was.
+    assert preamble != se.build_preamble("999")
+
+
+def test_the_discharge_prompt_carries_the_requirement_the_preamble_no_longer_states():
+    """The other half of the same fix, and the reason the minimal preamble is safe.
+
+    Category 15 states its own "ALWAYS report the determination, even when the request was
+    approved" because `_C_VERDICT` is worded for studies and labs and could not carry it. Category
+    16 is in the same position for the same reason, so the requirement is stated in its prompt
+    rather than left to a shared block that would have to be reworded to reach it.
+    """
+    from app.services.prompts import prompts as code_prompts
+
+    prompt = code_prompts["category_16"]
+    assert "ALWAYS report the condition at discharge" in prompt
+    assert "even when it is unremarkable" in prompt
+    # The escapes have to resolve, or the model receives one run-on line. This caught a literal
+    # backslash-n collapsing into a real newline mid-edit.
+    assert "\\n" not in prompt
+    assert prompt.count("\n") > 20
+
+
 # --- _page_dpi: the render resolution ---------------------------------------------------------
 #
 # These matter more than their size suggests. A DPI is a resolution only relative to a page's
