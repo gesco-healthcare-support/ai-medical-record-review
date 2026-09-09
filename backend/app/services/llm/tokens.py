@@ -19,9 +19,20 @@ from app.services.llm.parts import DocumentPart, ImagePart, Part, TextPart
 # few requests is a slowdown, admitting too many is a 429 storm.
 _CHARS_PER_TOKEN = 4.0
 
-# One rasterized US-Letter page at 120 dpi (the summary_image_dpi the pipeline actually sends),
-# measured per provider. The GPT-4 family varies enormously - gpt-4o-mini charged 25,503 for the
-# same image gpt-4o charged 767 - so a single constant across vendors would be badly wrong.
+# One rasterized US-Letter page, measured per provider. The GPT-4 family varies enormously -
+# gpt-4o-mini charged 25,503 for the same image gpt-4o charged 767 - so a single constant across
+# vendors would be badly wrong.
+#
+# MEASURED AT 120 DPI, which is no longer the size sent. `summary_image_dpi` is now a CEILING:
+# `summarize_engine._page_dpi` derives the DPI per page so the long edge lands on
+# `summary_image_long_edge_px` (1024), and its docstring records a normal letter page dropping
+# from 1020x1320 to about 791x1024 - 60% of the area these numbers were taken on. So both are
+# biased further HIGH than intended, which is at least the direction this module wants.
+#
+# Left as they are rather than re-measured, because nothing depends on the size of the bias:
+# `vertex_max_tpm` is 4,000,000, so the token bucket never binds (pro's measured pacer wait is
+# 48.8 ms per call). Re-measure before lowering that ceiling, or the estimate starts refusing
+# requests on a cost the pipeline stopped paying.
 _IMAGE_TOKENS = {
     "openai": 2200,  # mid-range of the measured 767 (4.1/4o) .. 3,319 (4.1-nano); 5.x is 1,624
     "gemini": 1300,  # not directly measured; Gemini bills images near its 258-token page unit x tiles
