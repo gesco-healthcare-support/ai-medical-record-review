@@ -53,6 +53,48 @@ def _builtin_payload(session: Session, listing: dict) -> dict:
     return {**listing, "has_summary_prompt": _has_summary_prompt(session, listing["id"])}
 
 
+# The fields a category edit can move, split by whether the trail may echo their VALUE.
+#
+# The flags decide BEHAVIOUR - whether the classifier may pick the category, whether its
+# documents are summarized by default, and whether the category exists for `validate_rows` at
+# all - and they are booleans, so `old -> new` is the whole story and carries nothing but an
+# enum value.
+#
+# name, description and examples are admin-typed FREE TEXT. `AuditLog.detail` is ids and enum
+# values only, so those are reported as having CHANGED without quoting them: "name changed"
+# tells a reader everything they need in order to go and look, and echoing arbitrary typed
+# text into an append-only trail buys nothing.
+_CATEGORY_FLAG_FIELDS = ("active", "auto_assign", "summarize_default")
+_CATEGORY_TEXT_FIELDS = ("name", "description", "examples")
+_CATEGORY_FIELDS = _CATEGORY_FLAG_FIELDS + _CATEGORY_TEXT_FIELDS
+
+
+def _category_update_detail(category_id: str, before: dict, after: dict) -> str:
+    """What a category PATCH actually moved, for the audit trail.
+
+    Compares VALUES rather than listing the fields the request carried, because the admin
+    dialog sends all six on every save (`category-dialog.tsx` builds a full `CategoryInput`) -
+    so a detail keyed on which fields were PRESENT would report every edit as changing
+    everything, and say no more than the action name already does.
+
+    "no change" is deliberate rather than an empty detail. Opening a category and confirming
+    it is a different fact from nobody having looked at it, and `updated_at` moves either way,
+    so the trail is the only thing that can separate them - the same argument as
+    `_rows_edit_detail` recording zero counts for a row save that changed nothing.
+    """
+    moved = [
+        f"{field} {before[field]} -> {after[field]}"
+        for field in _CATEGORY_FLAG_FIELDS
+        if field in before and before[field] != after[field]
+    ]
+    moved += [
+        f"{field} changed"
+        for field in _CATEGORY_TEXT_FIELDS
+        if field in before and before[field] != after[field]
+    ]
+    return f"category {category_id}: {', '.join(moved) if moved else 'no change'}"
+
+
 @router.get("/whoami")
 def whoami(user: User = Depends(current_superuser)):
     return {"email": user.email, "is_admin": bool(user.is_superuser)}
@@ -129,7 +171,13 @@ def create_category(
     session.add(category)
     session.commit()
     catalog.bump_revision(session)
-    audit(session, "category.create", user.id)
+    audit(
+        session,
+        "category.create",
+        user.id,
+        detail=f"category {category_id} active {category.active} "
+        f"auto_assign {category.auto_assign} summarize_default {category.summarize_default}",
+    )
     return _category_payload(session, category)
 
 
@@ -159,6 +207,9 @@ def update_category(
     if category is None:
         raise HTTPException(status_code=404, detail="not found")
     body = payload.model_dump(exclude_unset=True)  # id is immutable and not in the schema
+    # Snapshot BEFORE the walk below mutates the row: the audit detail reports what MOVED, and
+    # once the fields are assigned there is nothing left to compare them against.
+    before = {field: getattr(category, field) for field in _CATEGORY_FIELDS if field in body}
     if "name" in body:
         name = (body["name"] or "").strip()
         if not name:
@@ -201,7 +252,14 @@ def update_category(
         category.active = active  # active=False is the soft-delete
     session.commit()
     catalog.bump_revision(session)
-    audit(session, "category.update", user.id)
+    audit(
+        session,
+        "category.update",
+        user.id,
+        detail=_category_update_detail(
+            category_id, before, {field: getattr(category, field) for field in _CATEGORY_FIELDS}
+        ),
+    )
     return _category_payload(session, category)
 
 
@@ -247,12 +305,24 @@ def put_summary_prompt(
     )
     if row is None:
         session.add(Prompt(role="summary", category_id=category_id, text=text, revision=1))
+        change = "created"
     else:
+        previous = row.revision
         row.text = text
         row.revision += 1
+        change = f"revision {previous} -> {row.revision}"
     session.commit()
     catalog.bump_revision(session)
-    audit(session, "prompt.update", user.id)
+    # A custom prompt overrides the built-in for every summary written in this category until
+    # it is reverted, so the trail has to name the category and say how far it has diverged.
+    # The length rather than the text: prompt bodies are app content and not PHI, but the row
+    # already holds the text, and what a reader wants from a trail is which category changed.
+    audit(
+        session,
+        "prompt.update",
+        user.id,
+        detail=f"category {category_id} prompt {change}, {len(text)} chars",
+    )
     return {"category_id": category_id, "text": text, "custom": True}
 
 
@@ -275,10 +345,20 @@ def delete_summary_prompt(
     )
     if row is None:
         raise HTTPException(status_code=404, detail="this category has no custom prompt")
+    # Read the revision and the size BEFORE the delete. Reverting DISCARDS the custom text with
+    # no copy kept anywhere, so once this row is gone the audit row is the only remaining
+    # record that the category ever had a custom prompt at all - while summaries written under
+    # it still carry its fingerprint in `prompt_version`, which now resolves to nothing.
+    discarded = f"revision {row.revision}, {len(row.text or '')} chars"
     session.delete(row)
     session.commit()
     catalog.bump_revision(session)
-    audit(session, "prompt.revert", user.id)
+    audit(
+        session,
+        "prompt.revert",
+        user.id,
+        detail=f"category {category_id} prompt dropped: {discarded}",
+    )
     return {
         "category_id": category_id,
         "text": None,
