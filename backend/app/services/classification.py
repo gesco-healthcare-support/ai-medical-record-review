@@ -554,11 +554,12 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # Measured on the box: 2 rows a reviewer had INCLUDED at 14, delivering a lab verdict
         # today, moved to 16 without this. A third such title reaches category 8 via a pathology
         # rule further up and is unaffected either way.
-        (
-            r"lab(oratory)? results|test results"
-            r"|lab(oratory)? discharge summar(?:y|ies)",
-            "14",
-        ),
+        # Non-capturing groups: `pattern.search` only tests for a match, so a capturing group
+        # here is never read. ONE line, because two adjacent string literals inside a
+        # comma-separated tuple are an implicit concatenation - python:S5799, the finding
+        # Adrian fixed in #254 after one of my rule PRs introduced it. It fits, so there is
+        # nothing to concatenate.
+        (r"lab(?:oratory)? results|test results|lab(?:oratory)? discharge summar(?:y|ies)", "14"),
         # LAST in the table on purpose. An emergency-department visit is a treating encounter, and
         # the senior reviewer's rule (2026-08-25) is that "emergency department records in general
         # should be summarized just like a visit would be". But a title can name the department AND
