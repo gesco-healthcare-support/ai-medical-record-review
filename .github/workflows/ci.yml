@@ -210,7 +210,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0  # full history improves SonarCloud reporting relevance
+          fetch-depth: 0 # full history improves SonarCloud reporting relevance
 
       - name: Download backend coverage
         uses: actions/download-artifact@v5
@@ -252,26 +252,87 @@ jobs:
       # issue list is final. No token needed: the project is public. Fails CLOSED - an unreadable
       # response blocks rather than passing blind, since a silent pass is the exact failure this
       # step exists to remove.
+      #
+      # THREE WAYS THIS STEP USED TO PASS WITHOUT MEASURING ANYTHING. All three were reproduced
+      # against the live API on 2026-09-09, and all three are closed below.
+      #
+      #   1. api/issues/search answers HTTP 200 with {"total":0} for a pullRequest that does not
+      #      exist, AND for a componentKeys that does not exist. Both were confirmed by hand. So a
+      #      zero proves nothing on its own: a typo in PROJECT, an empty PR_NUMBER, or an analysis
+      #      that was never stored all read as "clean". The analysis is now proven to exist first.
+      #   2. Nothing tied the analysis to the commit under test, so re-running only this job could
+      #      pass on a stale analysis of an earlier push. The analysed commit sha is now compared to
+      #      the PR head sha. Verified these two agree in practice on PR #273 before relying on it.
+      #   3. Security hotspots are a separate finding type on a separate endpoint, and are never
+      #      returned by issues/search. A new hotspot passed this step entirely.
+      #
+      # Note the endpoints behave DIFFERENTLY on a bad key and must not be treated alike:
+      # api/hotspots/search fails closed (HTTP 404 with an error body) where api/issues/search does
+      # not. Everything below branches on curl's exit status via --fail-with-body, never on the
+      # shape of a response body.
       - name: Fail on any new SonarCloud issue in this PR
         if: github.event_name == 'pull_request'
         env:
           PROJECT: gesco-healthcare-support_ai-medical-record-review
           PR_NUMBER: ${{ github.event.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          url="https://sonarcloud.io/api/issues/search?componentKeys=${PROJECT}&pullRequest=${PR_NUMBER}&resolved=false&ps=100"
-          body=$(curl -sS --retry 3 --retry-delay 5 "$url")
-          total=$(printf '%s' "$body" | jq -r '.total // "unreadable"')
-          if [ "$total" = "unreadable" ]; then
-            echo "Could not read the issue count from SonarCloud - failing rather than passing blind."
-            echo "$body" | head -c 500
+
+          # --fail-with-body: non-zero exit on an HTTP error, while still printing the body so the
+          # log says why. set -e then stops the step rather than letting it read an error as data.
+          api() { curl -sS --fail-with-body --retry 3 --retry-delay 5 "$1"; }
+
+          # 1. The analysis must exist at all. Without this, every zero below is meaningless.
+          prs=$(api "https://sonarcloud.io/api/project_pull_requests/list?project=${PROJECT}")
+          pr=$(printf '%s' "$prs" | jq -c --arg k "$PR_NUMBER" \
+            '[.pullRequests[]? | select(.key == $k)] | .[0] // empty')
+          if [ -z "$pr" ]; then
+            echo "SonarCloud holds no analysis for PR ${PR_NUMBER} of ${PROJECT}."
+            echo "Refusing to report 'no new issues' from an analysis that does not exist."
             exit 1
           fi
+
+          # 2. ...and it must be an analysis OF THE COMMIT UNDER TEST.
+          analysed=$(printf '%s' "$pr" | jq -r '.commit.sha // ""')
+          if [ "$analysed" != "$HEAD_SHA" ]; then
+            echo "SonarCloud analysed ${analysed:-<no commit recorded>}, but this PR's head is ${HEAD_SHA}."
+            echo "Re-run the SonarQube Cloud scan so the issue list describes the code under test."
+            exit 1
+          fi
+
+          issues=$(api "https://sonarcloud.io/api/issues/search?componentKeys=${PROJECT}&pullRequest=${PR_NUMBER}&resolved=false&ps=500")
+          total=$(printf '%s' "$issues" | jq -r '.total // "unreadable"')
+          if [ "$total" = "unreadable" ]; then
+            echo "Could not read the issue count from SonarCloud - failing rather than passing blind."
+            printf '%s' "$issues" | head -c 500
+            exit 1
+          fi
+
+          # 3. Hotspots, which issues/search never returns.
+          hotspots=$(api "https://sonarcloud.io/api/hotspots/search?projectKey=${PROJECT}&pullRequest=${PR_NUMBER}&status=TO_REVIEW&ps=500")
+          hot=$(printf '%s' "$hotspots" | jq -r '.paging.total // "unreadable"')
+          if [ "$hot" = "unreadable" ]; then
+            echo "Could not read the hotspot count from SonarCloud - failing rather than passing blind."
+            printf '%s' "$hotspots" | head -c 500
+            exit 1
+          fi
+
+          failed=0
           if [ "$total" -gt 0 ]; then
             echo "This PR introduces ${total} new SonarCloud issue(s):"
-            printf '%s' "$body" | jq -r '.issues[] | "  " + .rule + "  " + (.component | sub("^[^:]+:"; "")) + ":" + (.line | tostring) + "  " + .message'
+            printf '%s' "$issues" | jq -r '.issues[] | "  " + .rule + "  " + (.component | sub("^[^:]+:"; "")) + ":" + ((.line // "-") | tostring) + "  " + .message'
+            failed=1
+          fi
+          if [ "$hot" -gt 0 ]; then
+            echo "This PR introduces ${hot} security hotspot(s) awaiting review:"
+            printf '%s' "$hotspots" | jq -r '.hotspots[] | "  " + .ruleKey + "  " + (.component | sub("^[^:]+:"; "")) + ":" + ((.line // "-") | tostring) + "  " + .message'
+            failed=1
+          fi
+          if [ "$failed" -ne 0 ]; then
             echo ""
             echo "Fix each one, or mark it in SonarCloud with a reason, then re-run this job."
             exit 1
           fi
-          echo "No new SonarCloud issues in this PR."
+
+          echo "No new SonarCloud issues or hotspots in PR ${PR_NUMBER} (analysis of ${analysed})."
