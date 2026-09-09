@@ -330,6 +330,65 @@ describe("useReviewWorkflow autosave gating", () => {
     expect(result.current.saveState.kind).toBe("error");
     expect(result.current.saveState.message).toMatch(/fix the highlighted page ranges/i);
   });
+
+  it("flushes a pending edit when the editor unmounts instead of dropping it", async () => {
+    // The autosave is debounced 800ms and the boot effect's cleanup used to clearTimeout it, so an
+    // edit made in the window before the reviewer navigated away was discarded - with the header
+    // still reading "Unsaved changes...". Silent, and the reviewer's own work.
+    //
+    // This also proves the flush does NOT validate against a stale page count. `totalPages` is 0
+    // until boot sets it, and the cleanup's closure was created before that, so reading the state
+    // rather than the ref would mark this row out of range and refuse to save it.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" })); // page_count 10
+    mockSave.mockResolvedValue({ ok: true, count: 1 });
+    const { result, unmount } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() => result.current.onRowsChange([editorRow({ start: 2, end: 5 })]));
+    expect(mockSave).not.toHaveBeenCalled(); // still inside the debounce
+    act(() => unmount());
+
+    expect(mockSave).toHaveBeenCalledTimes(1);
+    expect(mockSave).toHaveBeenCalledWith("d1", [expect.objectContaining({ start: 2, end: 5 })]);
+    expect(mockSave.mock.calls[0][1][0]).not.toHaveProperty("_key");
+  });
+
+  it("does not flush an invalid row set on unmount either", async () => {
+    // GUARDS the new code rather than demonstrating the bug - it passes on origin/main too,
+    // where nothing is flushed at all. The validation guard has to survive being moved out of
+    // the timer, or unmounting becomes a way to post row ranges the editor refuses to save
+    // while it is open.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
+    mockSave.mockResolvedValue({ ok: true, count: 0 });
+    const { result, unmount } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() =>
+      result.current.onRowsChange([
+        editorRow({ _key: "a", start: 1, end: 5 }),
+        editorRow({ _key: "b", start: 3, end: 7 }), // overlaps the previous row
+      ]),
+    );
+    act(() => unmount());
+
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it("flushes only once - the debounce cannot fire again after the unmount flush", async () => {
+    // `flushPendingSave` nulls the pending set and the timer handle, so the timer firing
+    // later - or a second cleanup under StrictMode's double-invoke - is a no-op rather than
+    // a duplicate PUT.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
+    mockSave.mockResolvedValue({ ok: true, count: 1 });
+    const { result, unmount } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() => result.current.onRowsChange([editorRow({ start: 2, end: 5 })]));
+    act(() => unmount());
+    await new Promise((resolve) => setTimeout(resolve, 900)); // past the 800ms debounce
+
+    expect(mockSave).toHaveBeenCalledTimes(1);
+  });
 });
 
 // The stop/restart cycle. The critical one is the FIRST test: `cancelled` is not in the poller's

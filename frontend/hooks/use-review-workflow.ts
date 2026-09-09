@@ -84,6 +84,15 @@ export function useReviewWorkflow(
   };
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [totalPages, setTotalPages] = useState(0);
+  // Mirrored for the same reason as `rows` and `saveState`: the unmount flush below validates
+  // against it, and the boot effect's cleanup closure was created BEFORE boot set it - so
+  // reading the state there would validate every row against a page count of 0 and refuse to
+  // save work that is perfectly valid.
+  const totalPagesRef = useRef(0);
+  const applyTotalPages = (next: number) => {
+    totalPagesRef.current = next;
+    setTotalPages(next);
+  };
   const [filename, setFilename] = useState("");
   const [banner, setBanner] = useState("");
   const [watching, setWatching] = useState(false);
@@ -137,6 +146,42 @@ export function useReviewWorkflow(
   // on screen. Carries the kind because each kind restarts through its own endpoint.
   const [cancelledJob, setCancelledJob] = useState<{ kind: JobKind } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The row set a debounced save is holding, or null once it has fired. The boot effect's
+  // cleanup FLUSHES this rather than dropping it: an autosave that says "Unsaved changes..."
+  // has promised to persist, and clearing the timer on unmount silently broke that promise for
+  // any edit made in the 800ms before the reviewer navigated away.
+  const pendingSaveRef = useRef<EditorRow[] | null>(null);
+
+  /** Send the pending row set NOW, and clear the debounce. Reads only refs, because the boot
+   *  effect's cleanup calls it from a closure created before boot ran. `docId` is passed rather
+   *  than closed over so a flush on a document SWITCH still writes to the document the rows
+   *  belong to. */
+  function flushPendingSave(docId: string) {
+    const sorted = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    if (!sorted?.length) return; // nothing to save yet (transient mid-edit)
+    if (rowErrors(sorted, totalPagesRef.current).size) {
+      // Don't silently leave changes unsaved: tell the user why (and Summarize stays blocked).
+      applySaveState({
+        kind: "error",
+        message: "Not saved - fix the highlighted page ranges first.",
+      });
+      return;
+    }
+    saveRows(docId, stripKeys(sorted))
+      .then(() => {
+        touchedRef.current = new Set();
+        applySaveState({ kind: "saved" });
+      })
+      .catch((err) =>
+        applySaveState({
+          kind: "error",
+          message: `Not saved: ${humanizeError(err, { fallback: "please try again" })}`,
+        }),
+      );
+  }
 
   function clearPoll() {
     if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -368,7 +413,7 @@ export function useReviewWorkflow(
         return;
       }
       if (cancelled) return;
-      setTotalPages(detail.page_count);
+      applyTotalPages(detail.page_count);
       setCategories(detail.categories || []);
       // The document switch. Whatever the previous document left in the touched set describes rows
       // that are gone; carrying it into this one is the leak.
@@ -413,7 +458,11 @@ export function useReviewWorkflow(
     return () => {
       cancelled = true;
       clearPoll();
-      if (saveTimer.current) clearTimeout(saveTimer.current);
+      // FLUSH, not clearTimeout. This used to drop the pending save, so an edit made in the
+      // 800ms before the reviewer navigated away was discarded with the header still reading
+      // "Unsaved changes..." - silent, and the reviewer's own work. `documentId` here is the
+      // effect's dependency, so the write goes to the document those rows came from.
+      flushPendingSave(documentId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId]);
@@ -505,26 +554,9 @@ export function useReviewWorkflow(
     for (const key of touchedFields(rowsRef.current, sorted)) touchedRef.current.add(key);
     applyRows(sorted);
     applySaveState({ kind: "dirty", message: "Unsaved changes..." });
+    pendingSaveRef.current = sorted;
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      if (!sorted.length) return; // nothing to save yet (transient mid-edit)
-      if (rowErrors(sorted, totalPages).size) {
-        // Don't silently leave changes unsaved: tell the user why (and Summarize stays blocked).
-        applySaveState({ kind: "error", message: "Not saved - fix the highlighted page ranges first." });
-        return;
-      }
-      saveRows(documentId, stripKeys(sorted))
-        .then(() => {
-          touchedRef.current = new Set();
-          applySaveState({ kind: "saved" });
-        })
-        .catch((err) =>
-          applySaveState({
-            kind: "error",
-            message: `Not saved: ${humanizeError(err, { fallback: "please try again" })}`,
-          }),
-        );
-    }, 800);
+    saveTimer.current = setTimeout(() => flushPendingSave(documentId), 800);
   }
 
   return {
