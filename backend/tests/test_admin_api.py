@@ -14,7 +14,7 @@ from sqlalchemy import delete, select
 
 from app.auth.password import MrrPasswordHelper
 from app.db import get_sessionmaker
-from app.models import Category, Document, Prompt, ReviewRow, User
+from app.models import AuditLog, Category, Document, Prompt, ReviewRow, User
 from app.services.rows import validate_rows
 from tests.conftest import unique_test_email
 
@@ -457,3 +457,117 @@ async def test_reactivating_a_category_in_use_is_not_blocked(admin_client):
     resp = await admin_client.patch("/api/admin/categories/9008", json={"active": True})
     assert resp.status_code == 200
     assert resp.json()["active"] is True
+
+
+# The audit trail for the admin surface. `AuditLog.detail` and `audit()` both name a category edit
+# as the case the column exists for - "a category edit needs the id it came from as well as the one
+# it went to" - and all four category/prompt routes passed no detail at all, so the trail recorded
+# that SOMEBODY changed SOMETHING. Deactivating a category is the most consequential action here
+# (it makes every document holding it unsaveable, for every owner, which is why the 409 guard
+# exists) and the trail could not say which category it was.
+
+
+def _audit_detail(action: str, category_id: str) -> str | None:
+    """The newest audit detail for this action on this category.
+
+    Keyed on the category id inside the detail rather than on the user, because `admin_client` hands
+    back a client and not the user it created; newest-first because the suite shares one database.
+    The 900x ids are unique per test, so the prefix cannot collide.
+    """
+    with get_sessionmaker()() as session:
+        return session.scalar(
+            select(AuditLog.detail)
+            .where(AuditLog.action == action, AuditLog.detail.like(f"category {category_id}%"))
+            .order_by(AuditLog.id.desc())
+        )
+
+
+async def test_creating_a_category_records_its_id_and_routing_flags(admin_client):
+    """WHEN an admin creates a category, THE SYSTEM SHALL record which category and the three flags
+    that decide how it behaves."""
+    await admin_client.post(
+        "/api/admin/categories",
+        json={"id": "9006", "name": "Audited", "summarize_default": False},
+    )
+    assert (
+        _audit_detail("category.create", "9006")
+        == "category 9006 active True auto_assign True summarize_default False"
+    )
+
+
+async def test_deactivating_a_category_records_which_one_and_what_moved(admin_client):
+    """WHEN an admin deactivates a category, THE SYSTEM SHALL record the id and the transition.
+
+    The soft-delete is the action most worth being able to find later: it is not owner-scoped, so
+    one toggle reaches every reviewer, and nothing else in the app names who did it.
+    """
+    await admin_client.post("/api/admin/categories", json={"id": "9007", "name": "Toggled"})
+    await admin_client.patch("/api/admin/categories/9007", json={"active": False})
+    assert _audit_detail("category.update", "9007") == "category 9007: active True -> False"
+
+
+async def test_an_edit_that_changes_nothing_says_so(admin_client):
+    """WHEN a save resends every field unchanged, THE SYSTEM SHALL record that nothing moved.
+
+    This is the case that decides whether the detail is worth having. `category-dialog.tsx` sends
+    all six fields on every save, so a detail keyed on which fields the request CARRIED would report
+    every edit as changing everything - and "opened it and confirmed it" is still a different fact
+    from nobody having looked, so the row is written either way.
+    """
+    await admin_client.post("/api/admin/categories", json={"id": "9008", "name": "Unchanged"})
+    resent = await admin_client.patch(
+        "/api/admin/categories/9008",
+        json={
+            "name": "Unchanged",
+            "description": "",
+            "examples": [],
+            "active": True,
+            "auto_assign": True,
+            "summarize_default": True,
+        },
+    )
+    assert resent.status_code == 200
+    assert _audit_detail("category.update", "9008") == "category 9008: no change"
+
+
+async def test_a_free_text_edit_is_named_but_not_quoted(admin_client):
+    """WHEN an admin edits a free-text field, THE SYSTEM SHALL name the field without echoing it.
+
+    `AuditLog.detail` is ids and enum values only. A category name is taxonomy rather than patient
+    data, but it is arbitrary admin-typed text going into an append-only table, and "name changed"
+    tells a reader everything they need in order to go and look.
+    """
+    await admin_client.post("/api/admin/categories", json={"id": "9009", "name": "Before"})
+    await admin_client.patch("/api/admin/categories/9009", json={"name": "After"})
+    detail = _audit_detail("category.update", "9009")
+    assert detail == "category 9009: name changed"
+    assert "After" not in detail
+
+
+async def test_a_custom_prompt_records_the_category_and_its_revision(admin_client):
+    """WHEN an admin saves a custom prompt, THE SYSTEM SHALL record the category and how far it has
+    diverged from the built-in one."""
+    await admin_client.post("/api/admin/categories", json={"id": "9010", "name": "Prompt audit"})
+    await admin_client.put("/api/admin/prompts/9010", json={"text": "Summarize this."})
+    assert _audit_detail("prompt.update", "9010") == "category 9010 prompt created, 15 chars"
+
+    await admin_client.put("/api/admin/prompts/9010", json={"text": "Longer text here."})
+    assert (
+        _audit_detail("prompt.update", "9010") == "category 9010 prompt revision 1 -> 2, 17 chars"
+    )
+
+
+async def test_reverting_a_prompt_records_what_was_discarded(admin_client):
+    """WHEN an admin reverts to the built-in prompt, THE SYSTEM SHALL record what was dropped.
+
+    Reverting DELETES the custom row and keeps no copy, so after this the audit row is the only
+    remaining record that the category ever had a custom prompt - while summaries written under it
+    still carry its fingerprint in `prompt_version`.
+    """
+    await admin_client.post("/api/admin/categories", json={"id": "9011", "name": "Reverted"})
+    await admin_client.put("/api/admin/prompts/9011", json={"text": "Custom text."})
+    await admin_client.delete("/api/admin/prompts/9011")
+    assert (
+        _audit_detail("prompt.revert", "9011")
+        == "category 9011 prompt dropped: revision 1, 12 chars"
+    )
