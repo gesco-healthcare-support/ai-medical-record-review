@@ -1996,6 +1996,38 @@ def test_every_catalog_category_is_registered_in_the_preamble_sets():
     )
 
 
+def test_the_two_embedded_review_category_sets_agree():
+    """WHEN a category hosts an embedded records review, THE SYSTEM SHALL give it the rule AND the
+    data - which takes two modules agreeing.
+
+    The feature is split across three consumers and TWO independently-declared frozensets:
+
+        summarize_engine._EMBEDDED_REVIEW_CATEGORIES   the rule (`_C_EMBEDDED_REVIEW` in the
+                                                       preamble) and the standalone-studies list
+        worker.tasks._EMBEDDED_REVIEW_HOSTS            the embedded_review_pages seeded onto the row
+
+    They answer subtly different questions - "whose prompt mentions a review" against "what a review
+    sits inside" - which is why they are not collapsed into one. But the feature only works when
+    they agree, and it fails silently in BOTH directions:
+
+      rule without data   the model is instructed about a list it is never handed. This is not
+                          hypothetical - it is exactly what category 16 did before #272, where an
+                          unregistered id took the default and got `_C_EMBEDDED_REVIEW` while
+                          absent from `_EMBEDDED_REVIEW_CATEGORIES`.
+      data without rule   the row carries embedded_review_pages and nothing tells the model what
+                          to do with them.
+
+    Neither shows up as an error, so this asserts the coupling instead.
+    """
+    from app.worker.tasks import _EMBEDDED_REVIEW_HOSTS
+
+    assert se._EMBEDDED_REVIEW_CATEGORIES == _EMBEDDED_REVIEW_HOSTS, (
+        "summarize_engine._EMBEDDED_REVIEW_CATEGORIES and worker.tasks._EMBEDDED_REVIEW_HOSTS have "
+        "drifted. A category in the first but not the second is told about a studies list it never "
+        "receives; one in the second but not the first is handed pages nothing instructs it to use."
+    )
+
+
 def test_a_discharge_summary_is_not_told_to_drop_a_reassuring_condition():
     """WHEN summarizing a discharge summary, THE SYSTEM SHALL not withhold an unremarkable one.
 
