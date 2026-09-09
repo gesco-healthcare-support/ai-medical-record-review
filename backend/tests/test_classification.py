@@ -509,7 +509,9 @@ def test_a_wrapper_naming_a_real_document_still_answers_the_document():
 
 
 def test_medical_referral_still_answers_10_because_two_answers_disagree():
-    """PINS AN UNRESOLVED CONFLICT rather than picking a side.
+    # Raw, because the docstring quotes a regex: a bare `\s` in a docstring is an invalid
+    # escape sequence and warned on every collection of this file.
+    r"""PINS AN UNRESOLVED CONFLICT rather than picking a side.
 
     "medical referral" was on the administrative list answered 2026-09-08 with "I wouldn't summarize
     any of those documents". But #233 shipped `^\s*(?:patient|medical)?\s*referrals?\b -> 10` on
@@ -1617,3 +1619,29 @@ def test_the_discharge_rule_claims_only_a_summary():
     assert classification.match_rules("Discharge Report") is None
     assert classification.match_rules("Discharge Instructions") is None
     assert classification.match_rules("Discharge Summary - Operative Report") == "8"
+
+
+def test_a_laboratory_discharge_summary_stays_a_laboratory_result():
+    """WHEN a laboratory document is titled as a discharge summary, THE SYSTEM SHALL keep it at 14.
+
+    #266's rule claimed it, and that CONTRADICTED the prompt shipped in the same PR: category 16
+    tells the model the laboratory results from an admission "have their own place in this record
+    and are summarized there", and its two points - condition at discharge, work status - have
+    nowhere to put a result. The senior reviewer's answer on hospital stays asks for the labs to be
+    summarized, so moving them into a category whose prompt refuses them loses the value with
+    nothing on screen to show it.
+
+    Measured on the box before the fix: 2 rows a reviewer had INCLUDED at 14, delivering a lab
+    verdict today, moved to 16. Blast radius of the fix is that one title of 1,624 and nothing else.
+
+    The mechanism is ordering, not a special case - `match_rules` returns `matches[0]`, so claiming
+    the phrase in the laboratory rule (which sits above) is all it takes. That is the same
+    precedence the emergency-department and discharge rules both document.
+    """
+    assert classification.match_rules("Lab Discharge Summary Report") == "14"
+    assert classification.match_rules("Laboratory Discharge Summary") == "14"
+    # And the ordinary case is untouched.
+    assert classification.match_rules("Discharge Summary") == "16"
+    assert classification.match_rules("Hospital Discharge Summary") == "16"
+    # A pathology rule further up already claimed the third such title on the box; still does.
+    assert classification.match_rules("Surgical Pathology Lab Discharge Summary Report") == "8"
