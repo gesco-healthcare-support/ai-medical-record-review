@@ -1868,6 +1868,90 @@ def test_mark_terminal_transitions_once_under_a_race():
         assert session.get(Job, job_id).state == "cancelled"  # the second call changed nothing
 
 
+# Boot recovery and the single terminal writer. `mark_terminal`'s docstring names this function as
+# one of the racers it exists to serialise - "abandoned-job cleanup can overlap boot-time orphan
+# recovery" - and `test_mark_terminal_transitions_once_under_a_race` pins that a cancelled job
+# cannot be overwritten as interrupted. Recovery was the one party still hand-writing the
+# transition, so it had no conditional UPDATE and could do exactly that.
+
+
+class _RQStatus:
+    """The one thing recovery asks an RQ job for."""
+
+    def __init__(self, status: str):
+        self._status = status
+
+    def get_status(self, refresh: bool = False) -> str:
+        return self._status
+
+
+def test_recover_orphans_does_not_overwrite_an_outcome_another_writer_committed(monkeypatch):
+    """WHEN a stop is finalized while boot recovery is mid-sweep, THE SYSTEM SHALL keep the stop.
+
+    The window is real rather than theoretical: recovery SELECTs every active job, then makes one
+    Redis round-trip per job before writing, so a Force stop landing anywhere in that loop is
+    concurrent with it. A deploy restarting the API while a reviewer presses stop is all it takes.
+
+    Overwriting reported the reviewer's own deliberate cancel as a worker crash, and left the row
+    internally contradictory - `state = "interrupted"` beside `stage = "cancelled"` - because the
+    hand-written version set the state and not the stage.
+    """
+    import rq.job
+
+    from app.worker.recovery import recover_orphans
+
+    _doc_id, job_id = _running_job("segment")
+
+    def fetch(_rq_id, *_args, **_kwargs):
+        # The race, made deterministic: the stop lands between recovery's SELECT and its write.
+        with get_sessionmaker()() as other:
+            assert jobs.mark_terminal(other, job_id, "cancelled", stage="cancelled") is True
+        return _RQStatus("stopped")
+
+    monkeypatch.setattr(rq.job.Job, "fetch", staticmethod(fetch))
+
+    with get_sessionmaker()() as session:
+        assert recover_orphans(session) == 0  # nothing was reaped BY US
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "cancelled"
+        assert job.stage == "cancelled"
+
+
+def test_recover_orphans_returns_only_what_it_committed(monkeypatch):
+    """WHEN Redis goes away mid-sweep, THE SYSTEM SHALL return a count that matches the database.
+
+    It used to commit once after the loop and return early on a Redis error, so a blip returned a
+    non-zero count for jobs the session then discarded unwritten - and startup logged "interrupted
+    N stale job(s)" having interrupted none of them. Nothing downstream reads that count, so the
+    only symptom was a log line asserting work that had not happened.
+    """
+    import rq.job
+    from redis.exceptions import RedisError
+    from rq.exceptions import NoSuchJobError
+
+    from app.worker.recovery import recover_orphans
+
+    job_ids = [_running_job("segment")[1] for _ in range(2)]
+    calls = {"n": 0}
+
+    def fetch(_rq_id, *_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise NoSuchJobError  # a genuine orphan: RQ has no record of it
+        raise RedisError("blip")  # and Redis goes away before the next one
+
+    monkeypatch.setattr(rq.job.Job, "fetch", staticmethod(fetch))
+
+    with get_sessionmaker()() as session:
+        reaped = recover_orphans(session)
+
+    with get_sessionmaker()() as session:
+        persisted = sum(1 for jid in job_ids if session.get(Job, jid).state == "interrupted")
+    assert reaped == persisted == 1
+
+
 def test_enqueue_registers_both_finalizer_callbacks():
     """The wiring itself: without these on the RQ job, nothing finalizes a killed horse."""
     from app.worker.finalizers import on_job_failed, on_job_stopped
