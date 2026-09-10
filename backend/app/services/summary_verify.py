@@ -152,7 +152,25 @@ _RESPONSE_SCHEMA = {
 }
 
 
-def _unverified(summary_text, title):
+def _usage_fields(response=None):
+    """The two token counts, present on EVERY return path.
+
+    ADDED 2026-09-10. The provider has always computed both (``LLMResponse`` carries them, see
+    ``llm/base.py``) and this module dropped them on the floor, so nothing downstream could tell a
+    reply that exhausted the token cap from any other unverified row without re-running it.
+
+    They are on every path deliberately, including the failure paths. The caller that most needs
+    these numbers is the one handling a FAILURE, and a shape that carries them only on success
+    forces that caller to branch on key presence - which is how "absent" and "zero" get conflated.
+    ``None`` here means the provider reported nothing, which is a different fact from 0.
+    """
+    return {
+        "input_tokens": getattr(response, "input_tokens", None),
+        "output_tokens": getattr(response, "output_tokens", None),
+    }
+
+
+def _unverified(summary_text, title, response=None, truncated=False):
     """The fail-safe shape: the originals, no issues, and ``ok`` False.
 
     ``ok`` False is the load-bearing part. The caller stores it as ``Summary.verified``, and before
@@ -160,11 +178,29 @@ def _unverified(summary_text, title):
     the audit actually ran - so a row whose check threw or truncated was stored asserting it had been
     verified. On a medical summary that is a false record, and an unrecoverable one: no later query
     can separate "audited, nothing to fix" from "audit failed, nobody looked".
+
+    ``truncated`` splits that further, and it is the reason this signature grew. ``ok`` False folds
+    together three different events - nothing to audit, the reply hit the cap, and something raised -
+    and the benchmark measured the second one at 46 percent of a record's wall clock without being
+    able to name it. ``truncated`` True says which, and ``output_tokens`` beside it says whether the
+    cap was genuinely exhausted or the message is wrong about why.
+
+    ADDITIVE ONLY. ``summarize_engine`` hard-indexes ``issues`` and ``fixed_text`` and reads ``ok``;
+    every one of those keys keeps its name, type and meaning.
     """
-    return {"fixed_text": summary_text, "fixed_title": title, "issues": [], "ok": False}
+    return {
+        "fixed_text": summary_text,
+        "fixed_title": title,
+        "issues": [],
+        "ok": False,
+        "truncated": bool(truncated),
+        **_usage_fields(response),
+    }
 
 
-def verify_summary(model, source_text, summary_text, title=None, document_date=None):
+def verify_summary(
+    model, source_text, summary_text, title=None, document_date=None, max_output_tokens=None
+):
     """Audit ``summary_text`` and (when given) ``title`` against ``source_text`` and the house rules.
 
     Returns ``{"fixed_text": str, "fixed_title": str, "issues": list[dict], "ok": bool}``.
@@ -202,7 +238,19 @@ def verify_summary(model, source_text, summary_text, title=None, document_date=N
             # category-1 or diagnostic summary came back as truncated JSON, which the parse then
             # discarded - silently keeping the unverified original. Track the summary budget, since
             # the output is at minimum as long as the input.
-            max_output_tokens=get_settings().summary_max_output_tokens,
+            #
+            # OVERRIDABLE SINCE 2026-09-10, because tracking the summary budget is right in
+            # principle and far too generous in practice. Measured over 139 successful audits on the
+            # 20-record benchmark: replies were 56 to 7,728 characters, median 456 - roughly 171
+            # output tokens at the median and ~2,898 at the largest. The caller had been passing
+            # 32,768, so the audit carried ELEVEN TIMES the budget its biggest real answer has ever
+            # needed, and a runaway therefore got to spend ~168s at ~195 tok/s before anything
+            # stopped it. That was 93 percent of the stage's model-time producing nothing.
+            #
+            # The cap does not prevent a runaway; it bounds what one costs. Callers that know their
+            # own distribution should pass it. None keeps the historical behaviour exactly, so
+            # nothing that does not opt in can change.
+            max_output_tokens=(max_output_tokens or get_settings().summary_max_output_tokens),
         )
         if response.truncated:
             # Checked BEFORE the parse, because parsing a cut-off reply reports the symptom and hides
@@ -212,10 +260,16 @@ def verify_summary(model, source_text, summary_text, title=None, document_date=N
             # hard row leaves nothing for the answer. The provider already computes this flag from the
             # MAX_TOKENS finish reason - it was simply never consulted here.
             logger.warning(
-                "summary verify reply hit the %s-token cap; keeping original (unverified)",
+                "summary verify reply hit the %s-token cap after %s output token(s); "
+                "keeping original (unverified)",
                 get_settings().summary_max_output_tokens,
+                response.output_tokens,
             )
-            return _unverified(summary_text, title)
+            # The response is passed on now. Without it this branch asserted the cap was hit and
+            # carried no evidence of it, so a caller could neither confirm nor contradict the
+            # message - which is the position the benchmark was in when the audit turned out to be
+            # 46 percent of a record's wall clock.
+            return _unverified(summary_text, title, response, truncated=True)
         data = json.loads((response.text or "").strip())
         fixed = (data.get("fixed_text") or "").strip()
         issues = data.get("issues") or []
@@ -223,11 +277,25 @@ def verify_summary(model, source_text, summary_text, title=None, document_date=N
         # the audit ran and answered, so the summary HAS been checked; that is a different event from
         # the audit failing, and conflating the two is what kept this invisible.
         if not fixed:
-            return {"fixed_text": summary_text, "fixed_title": title, "issues": [], "ok": True}
+            return {
+                "fixed_text": summary_text,
+                "fixed_title": title,
+                "issues": [],
+                "ok": True,
+                "truncated": False,
+                **_usage_fields(response),
+            }
         # A blank fixed_title falls back to the original: the schema does not require the field, and
         # a title is never replaced by nothing.
         fixed_title = (data.get("fixed_title") or "").strip() or title
-        return {"fixed_text": fixed, "fixed_title": fixed_title, "issues": issues, "ok": True}
+        return {
+            "fixed_text": fixed,
+            "fixed_title": fixed_title,
+            "issues": issues,
+            "ok": True,
+            "truncated": False,
+            **_usage_fields(response),
+        }
     except Exception as exc:
         logger.warning("summary verify failed; keeping original: %s", exc)
         return _unverified(summary_text, title)
