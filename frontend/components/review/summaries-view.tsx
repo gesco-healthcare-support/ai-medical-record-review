@@ -88,6 +88,87 @@ function categoryIsStale(item: SummaryItem) {
   return (item.rowCategoryLive ?? item.row.category) !== item.row.category;
 }
 
+/** The review flags on a summary card, in one place.
+ *
+ *  Extracted from the card body because eight independent conditions inline in the map callback
+ *  put it over SonarCloud's cognitive-complexity ceiling (typescript:S3776) - and because a
+ *  reader asking "what can this card tell me?" had to scan the whole card to find out.
+ *
+ *  Module scope and closes over nothing, the same reason `categoryIsStale` sits out here:
+ *  `categoryLabel` is passed in rather than captured, so this is not re-created per render.
+ *
+ *  Order is deliberate and unchanged: what the REVIEWER did (Edited), then what the SYSTEM
+ *  flagged, then what is stale, then Excluded last because it describes the export rather than
+ *  the summary. */
+function SummaryChips({
+  item,
+  categoryLabel,
+}: Readonly<{ item: SummaryItem; categoryLabel: (id: string) => string }>) {
+  return (
+    <>
+      {item.edited ? (
+        <span className="ev-chip ev-chip-edit">
+          <Pencil width={12} height={12} aria-hidden />
+          Edited
+        </span>
+      ) : null}
+      {item.manualCheck ? (
+        <span className="ev-chip ev-chip-review">
+          <Flag width={12} height={12} aria-hidden />
+          Manual check
+        </span>
+      ) : null}
+      {item.verifyChanged ? (
+        <span className="ev-chip ev-chip-review" title="AI verify pass corrected this summary - please confirm">
+          <ShieldCheck width={12} height={12} aria-hidden />
+          AI-fixed
+        </span>
+      ) : null}
+      {item.verifyFailed ? (
+        <span
+          className="ev-chip ev-chip-review"
+          title="The AI check did not finish on this summary, so nothing was compared against the source pages. It exports as-is - read it against the pages first."
+        >
+          <ShieldAlert width={12} height={12} aria-hidden />
+          Not checked
+        </span>
+      ) : null}
+      {categoryWasGuessed({
+        category: item.rowCategoryLive ?? item.row.category,
+        method: item.rowMethodLive,
+      }) ? (
+        <span
+          className="ev-chip ev-chip-review"
+          title="The category was a guess: no rule matched and the two classifiers did not agree. This summary was written under it, so check it against the pages before exporting."
+        >
+          <Flag width={12} height={12} aria-hidden />
+          Category guessed
+        </span>
+      ) : null}
+      {item.rowMissing ? (
+        <span
+          className="ev-chip ev-chip-review"
+          title="No sub-document covers these pages any more - they were merged or re-spanned after this summary was written. It still exports as-is. Re-run Summarize to rebuild it from the current sub-documents."
+        >
+          <Flag width={12} height={12} aria-hidden />
+          Pages changed - re-summarize
+        </span>
+      ) : null}
+      {categoryIsStale(item) ? (
+        <span
+          className="ev-chip ev-chip-review"
+          title={`This summary was written as ${categoryLabel(item.row.category)}. Re-draft it to rewrite under ${categoryLabel(item.rowCategoryLive as string)}.`}
+        >
+          <Flag width={12} height={12} aria-hidden />
+          Category changed - re-draft to apply
+        </span>
+      ) : null}
+      {item.excluded ? <span className="ev-chip ev-chip-neutral">Excluded</span> : null}
+    </>
+  );
+}
+
+
 /** Summaries & export (DS §4): a reading column of SummaryCards with Edited / Manual check /
  *  Excluded badges, inline edit, Re-draft, and an "In export" toggle, beside the same PDF viewer as
  *  Review & correct - clicking a card jumps the viewer to that summary's first source page so the
@@ -335,64 +416,7 @@ export function SummariesView({
                         <MarkdownText text={title} />
                       </button>
                     </h3>
-                    {item.edited ? (
-                      <span className="ev-chip ev-chip-edit">
-                        <Pencil width={12} height={12} aria-hidden />
-                        Edited
-                      </span>
-                    ) : null}
-                    {item.manualCheck ? (
-                      <span className="ev-chip ev-chip-review">
-                        <Flag width={12} height={12} aria-hidden />
-                        Manual check
-                      </span>
-                    ) : null}
-                    {item.verifyChanged ? (
-                      <span className="ev-chip ev-chip-review" title="AI verify pass corrected this summary - please confirm">
-                        <ShieldCheck width={12} height={12} aria-hidden />
-                        AI-fixed
-                      </span>
-                    ) : null}
-                    {item.verifyFailed ? (
-                      <span
-                        className="ev-chip ev-chip-review"
-                        title="The AI check did not finish on this summary, so nothing was compared against the source pages. It exports as-is - read it against the pages first."
-                      >
-                        <ShieldAlert width={12} height={12} aria-hidden />
-                        Not checked
-                      </span>
-                    ) : null}
-                    {categoryWasGuessed({
-                      category: item.rowCategoryLive ?? item.row.category,
-                      method: item.rowMethodLive,
-                    }) ? (
-                      <span
-                        className="ev-chip ev-chip-review"
-                        title="The category was a guess: no rule matched and the two classifiers did not agree. This summary was written under it, so check it against the pages before exporting."
-                      >
-                        <Flag width={12} height={12} aria-hidden />
-                        Category guessed
-                      </span>
-                    ) : null}
-                    {item.rowMissing ? (
-                      <span
-                        className="ev-chip ev-chip-review"
-                        title="No sub-document covers these pages any more - they were merged or re-spanned after this summary was written. It still exports as-is. Re-run Summarize to rebuild it from the current sub-documents."
-                      >
-                        <Flag width={12} height={12} aria-hidden />
-                        Pages changed - re-summarize
-                      </span>
-                    ) : null}
-                    {categoryIsStale(item) ? (
-                      <span
-                        className="ev-chip ev-chip-review"
-                        title={`This summary was written as ${categoryLabel(item.row.category)}. Re-draft it to rewrite under ${categoryLabel(item.rowCategoryLive as string)}.`}
-                      >
-                        <Flag width={12} height={12} aria-hidden />
-                        Category changed - re-draft to apply
-                      </span>
-                    ) : null}
-                    {item.excluded ? <span className="ev-chip ev-chip-neutral">Excluded</span> : null}
+                    <SummaryChips item={item} categoryLabel={categoryLabel} />
                     <span className="card-actions">
                       <button
                         type="button"
