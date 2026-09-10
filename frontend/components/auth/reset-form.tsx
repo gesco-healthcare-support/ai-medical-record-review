@@ -72,7 +72,6 @@ export function ResetForm({ token, onSignIn }: Readonly<{ token: string; onSignI
             className="ev-inp"
             placeholder="Create a password"
             autoComplete="new-password"
-            autoFocus
             required
             value={password}
             disabled={reset.isPending}

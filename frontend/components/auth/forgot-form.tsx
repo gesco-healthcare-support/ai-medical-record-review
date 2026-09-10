@@ -54,7 +54,6 @@ export function ForgotForm({ onSignIn }: Readonly<{ onSignIn: () => void }>) {
             className="ev-inp"
             placeholder="you@email.com"
             autoComplete="email"
-            autoFocus
             required
             value={email}
             disabled={forgot.isPending}

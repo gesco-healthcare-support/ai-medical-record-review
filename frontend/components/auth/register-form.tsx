@@ -57,7 +57,6 @@ export function RegisterForm({ onSignIn }: Readonly<{ onSignIn: () => void }>) {
             className="ev-inp"
             placeholder="Jane Evaluator"
             autoComplete="name"
-            autoFocus
             required
             value={name}
             disabled={busy}
