@@ -17,13 +17,13 @@ faithfully and needs no extra dependency.
 
 import html
 import io
-import re
 from datetime import datetime
 
 import pymupdf
 
 from app.services.reporting import (
     CONCLUSION,
+    INLINE_EMPHASIS_RE,
     REVIEW_HEADING,
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
@@ -34,7 +34,6 @@ from app.services.reporting import (
 )
 
 _TITLE_COLOR = "#0000EE"  # link-blue for the clickable titles (CSS)
-_INLINE_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_", re.DOTALL)
 _LETTER = pymupdf.paper_rect("letter")  # 612 x 792 pt
 _CONTENT = pymupdf.Rect(72, 90, _LETTER.width - 72, _LETTER.height - 72)
 
@@ -42,7 +41,7 @@ _CONTENT = pymupdf.Rect(72, 90, _LETTER.width - 72, _LETTER.height - 72)
 def _inline_html(text: str) -> str:
     """Escape ``text`` then turn **bold** / *italic* / _italic_ markers into <b>/<i>."""
     out, pos, esc = [], 0, html.escape(text or "")
-    for m in _INLINE_RE.finditer(esc):
+    for m in INLINE_EMPHASIS_RE.finditer(esc):
         if m.start() > pos:
             out.append(esc[pos : m.start()])
         out.append(

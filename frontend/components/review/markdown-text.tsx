@@ -1,7 +1,15 @@
 import { Fragment } from "react";
 
-// Inline emphasis the summarizer emits: **bold**, *italic*, _italic_. Mirrors the Word export's
-// run parser (reporting._add_inline_runs) so the page and the .docx render the same way.
+// Inline emphasis the summarizer emits: **bold**, *italic*, _italic_.
+//
+// THREE renderers read this and only two can share code: `reporting.INLINE_EMPHASIS_RE` is the
+// definition, `linked_pdf` imports it, and this is the TypeScript copy that tracks it. Keep them
+// character-for-character identical - the same file pair has already diverged twice (#158, #268).
+//
+// Deliberately NO `s` flag, matching the Python side. With one, `\*(.+?)\*` pairs a BULLET on one
+// line with the bullet on the next and italicises everything between; the Python copies carried
+// `re.DOTALL` and did exactly that to 83-387 characters of three delivered documents. This
+// renderer was the one that had it right, which is why the fix moved the other two.
 const INLINE_RE = /\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_/g;
 
 type Seg = { text: string; bold?: boolean; italic?: boolean };

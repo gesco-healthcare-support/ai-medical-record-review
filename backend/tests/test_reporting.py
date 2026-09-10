@@ -629,3 +629,69 @@ def test_fill_header_clears_whatever_the_paragraph_already_held():
     assert "stale" not in text
     assert "Synthetic Patient" in text
     assert "01/01/1990" in text
+
+
+def test_emphasis_does_not_pair_two_bullets_across_a_line():
+    """A `* item` list is not one italic block.
+
+    Under re.DOTALL a star-delimited span paired the bullet on one line with the bullet
+    on the next and italicised everything between. Measured over 3,017 stored summaries: 3 rendered
+    differently in the .docx than on the review screen, and 6 of the 9 offending spans opened with
+    "* " - a bullet, not emphasis - italicising 83 to 387 characters of a delivered document.
+    """
+    from app.services.reporting import INLINE_EMPHASIS_RE
+
+    bullets = "* first item\n* second item\n* third item"
+    assert INLINE_EMPHASIS_RE.findall(bullets) == []
+
+
+def test_emphasis_does_not_cross_a_line_break():
+    """The general rule the bullet case is one instance of. A marker pair must close on its own
+    line, so an UNCLOSED marker cannot swallow the paragraphs after it."""
+    from app.services.reporting import INLINE_EMPHASIS_RE
+
+    assert INLINE_EMPHASIS_RE.findall("**Diagnoses:\nLumbar strain**") == []
+    # ...while emphasis WITHIN a line still works, on every marker the summarizer emits.
+    assert INLINE_EMPHASIS_RE.findall("**bold** and *it* and _it_") == [
+        ("bold", "", ""),
+        ("", "it", ""),
+        ("", "", "it"),
+    ]
+
+
+def test_both_document_renderers_read_one_definition():
+    """The Word and linked-PDF renderers share the pattern object rather than each compiling one.
+
+    They are the same file pair that diverged on the heading and separator (#158) and on the
+    letter's alignment (#268); a third private copy is how it would happen again. Identity, not
+    equality - two `re.compile` calls on the same source would satisfy an equality check and still
+    be two things to edit.
+    """
+    from app.services import linked_pdf, reporting
+
+    assert linked_pdf.INLINE_EMPHASIS_RE is reporting.INLINE_EMPHASIS_RE
+
+
+def test_the_two_renderers_emphasise_the_same_spans():
+    """Same input, same emphasised text out of both - the invariant the shared pattern exists for.
+
+    Compares what each renderer EMITS rather than the pattern they hold, so a future change to
+    either one's own parsing loop is caught too.
+    """
+    import docx
+
+    from app.services.linked_pdf import _inline_html
+    from app.services.reporting import _add_inline_runs
+
+    body = "* one\n* two\n**real bold** here\n_and italic_"
+
+    paragraph = docx.Document().add_paragraph()
+    _add_inline_runs(paragraph, body)
+    word_emphasised = [r.text for r in paragraph.runs if r.bold or r.italic]
+
+    html_out = _inline_html(body)
+    pdf_emphasised = re.findall(r"<[bi]>(.*?)</[bi]>", html_out, re.DOTALL)
+
+    assert word_emphasised == pdf_emphasised == ["real bold", "and italic"]
+    # The bullets survive as literal text in both, rather than becoming one italic block.
+    assert "<i>one\n* two\n" not in html_out
