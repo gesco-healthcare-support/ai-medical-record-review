@@ -157,7 +157,8 @@ def test_a_refuted_boundary_becomes_a_suggestion_and_keeps_every_row(monkeypatch
 
     assert len(out) == 3, "nothing is merged away when the reviewer has not asked for it"
     assert out[1]["suggest_merge"] is True
-    assert "suggest_merge" not in out[0] and "suggest_merge" not in out[2]
+    assert "suggest_merge" not in out[0]
+    assert "suggest_merge" not in out[2]
     assert stats == {"suspects": 2, "suggested": 1}
     assert "suggest_merge" not in rows[1], "the caller's own rows must come back untouched"
 
