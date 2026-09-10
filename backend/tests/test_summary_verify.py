@@ -61,7 +61,21 @@ def test_blank_summary_short_circuits(monkeypatch):
     result = sv.verify_summary("m", "src", "   ", title="A TITLE")
     # ok is False, not True: no model was called, so nothing was verified. A degenerate row must not
     # end up claiming a check that never happened.
-    assert result == {"fixed_text": "   ", "fixed_title": "A TITLE", "issues": [], "ok": False}
+    assert result == {
+        "fixed_text": "   ",
+        "fixed_title": "A TITLE",
+        "issues": [],
+        "ok": False,
+        # Still exact equality, deliberately. These two assertions pin the WHOLE fail-safe shape,
+        # which is the point of them - loosening to a subset match to accommodate new keys would
+        # throw away the guarantee. The token fields joined that shape on 2026-09-10.
+        #
+        # None, not 0: no model was ever called here, so there is no usage to report. Zero tokens
+        # would mean the provider answered and spent nothing, which is a different event.
+        "truncated": False,
+        "input_tokens": None,
+        "output_tokens": None,
+    }
     assert called == []  # no model call for an empty summary
 
 
@@ -78,6 +92,14 @@ def test_model_failure_returns_original(monkeypatch):
         "fixed_title": "ORIGINAL TITLE",
         "issues": [],
         "ok": False,
+        # The call RAISED, so no response object exists to read usage from - None rather than 0,
+        # and truncated False because nothing came back to be truncated. That distinction is the
+        # reason these fields were added: `ok` False alone folds "nothing to audit", "the reply hit
+        # the cap" and "something threw" into one value, and the benchmark could not tell them
+        # apart on the stage that turned out to waste 93 percent of its model time.
+        "truncated": False,
+        "input_tokens": None,
+        "output_tokens": None,
     }
 
 
