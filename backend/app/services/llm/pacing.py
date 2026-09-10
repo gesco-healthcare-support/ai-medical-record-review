@@ -257,6 +257,26 @@ def _try_acquire_one(conn, provider, model, meter, cost, ceiling):
     return bool(allowed), int(wait_ms)
 
 
+def _wait_ms_for_capacity(conn, provider, model, est_tokens, req_ceiling, tok_ceiling) -> int:
+    """Ask BOTH meters once. Returns the longest wait any of them demands, 0 when all admitted.
+
+    Both meters are asked on every pass even when the first already refuses, because each call
+    also CONSUMES from its bucket - skipping the second would let token spend accumulate unmetered
+    behind a request-rate refusal. A ceiling of 0 or less disables that meter individually.
+    """
+    wait_ms = 0
+    for meter, cost, ceiling in (
+        ("req", 1, req_ceiling),
+        ("tok", max(1, int(est_tokens)), tok_ceiling),
+    ):
+        if ceiling <= 0:
+            continue
+        allowed, meter_wait = _try_acquire_one(conn, provider, model, meter, cost, ceiling)
+        if not allowed:
+            wait_ms = max(wait_ms, meter_wait)
+    return wait_ms
+
+
 def acquire(
     provider: str, model: str, est_tokens: int = 1, max_wait_s: float = MAX_ACQUIRE_WAIT_S
 ) -> bool:
@@ -278,16 +298,9 @@ def acquire(
     deadline = time.monotonic() + max_wait_s
     while True:
         try:
-            wait_ms = 0
-            for meter, cost, ceiling in (
-                ("req", 1, req_ceiling),
-                ("tok", max(1, int(est_tokens)), tok_ceiling),
-            ):
-                if ceiling <= 0:
-                    continue
-                allowed, meter_wait = _try_acquire_one(conn, provider, model, meter, cost, ceiling)
-                if not allowed:
-                    wait_ms = max(wait_ms, meter_wait)
+            wait_ms = _wait_ms_for_capacity(
+                conn, provider, model, est_tokens, req_ceiling, tok_ceiling
+            )
             if wait_ms == 0:
                 return True
         except Exception as exc:  # noqa: BLE001

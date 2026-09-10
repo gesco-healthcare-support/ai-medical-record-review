@@ -192,6 +192,43 @@ def _min_difflib(texts):
     return round(min(ratios), 3) if ratios else 1.0
 
 
+def _union_pairs(items, jaccard_threshold, cross_date_override):
+    """Join every qualifying pair, returning the two union-find structures ``cluster_rows`` reads.
+
+    Extracted from ``cluster_rows`` to keep that function under the cognitive-complexity ceiling.
+    Note this MOVES the nesting rather than removing it: the double loop was already at the top
+    level of ``cluster_rows``, so the points land here (about 12, still well under the limit)
+    instead of being destroyed. The gain is that each function is separately legible, not that
+    the work got simpler.
+    """
+    n = len(items)
+    sigs = [_sig(it.get("text")) for it in items]
+    dates = [_norm(it.get("date")) for it in items]
+    # TWO structures over the same rows. `parent` is the cluster itself, joined by either branch.
+    # `strong` is joined by the CONTENT branch alone, and is what `content_joined` is read from
+    # below. It has to be a second structure rather than a tally taken while unioning, because a
+    # tally can only see the unions this pass happened to perform: in a cycle one edge is always
+    # redundant, and which one that is follows the row order.
+    parent = list(range(n))
+    strong = list(range(n))
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Jaccard first for every pair, same date or not: it is a set intersection, and it is the
+            # cheap gate that keeps the quadratic difflib below off pairs that share nothing.
+            if _jaccard(sigs[i], sigs[j]) < jaccard_threshold:
+                continue
+            if dates[i] == dates[j]:
+                parent[_find(parent, i)] = _find(parent, j)
+            elif _min_difflib([items[i].get("text") or "", items[j].get("text") or ""]) >= (
+                cross_date_override
+            ):
+                parent[_find(parent, i)] = _find(parent, j)
+                strong[_find(strong, i)] = _find(strong, j)
+
+    return parent, strong
+
+
 def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
     """Group ``items`` (dicts with at least ``text``, and ``date`` where known) into candidates.
 
@@ -218,30 +255,8 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
         jaccard_threshold = settings.dupe_jaccard_threshold
     if cross_date_override is None:
         cross_date_override = settings.dupe_similarity_override
-    sigs = [_sig(it.get("text")) for it in items]
-    dates = [_norm(it.get("date")) for it in items]
     n = len(items)
-    # TWO structures over the same rows. `parent` is the cluster itself, joined by either branch.
-    # `strong` is joined by the CONTENT branch alone, and is what `content_joined` is read from
-    # below. It has to be a second structure rather than a tally taken while unioning, because a
-    # tally can only see the unions this pass happened to perform: in a cycle one edge is always
-    # redundant, and which one that is follows the row order.
-    parent = list(range(n))
-    strong = list(range(n))
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            # Jaccard first for every pair, same date or not: it is a set intersection, and it is the
-            # cheap gate that keeps the quadratic difflib below off pairs that share nothing.
-            if _jaccard(sigs[i], sigs[j]) < jaccard_threshold:
-                continue
-            if dates[i] == dates[j]:
-                parent[_find(parent, i)] = _find(parent, j)
-            elif _min_difflib([items[i].get("text") or "", items[j].get("text") or ""]) >= (
-                cross_date_override
-            ):
-                parent[_find(parent, i)] = _find(parent, j)
-                strong[_find(strong, i)] = _find(strong, j)
+    parent, strong = _union_pairs(items, jaccard_threshold, cross_date_override)
 
     groups: dict[int, list[int]] = {}
     for k in range(n):

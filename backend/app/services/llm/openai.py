@@ -194,6 +194,21 @@ def _cancellable_sleep(total: float) -> None:
         remaining -= slice_seconds
 
 
+def _record_attempt_failure(model: str, exc: Exception) -> None:
+    """Record one failed attempt: the outcome metric, and a pacing rejection when it was a 429.
+
+    Note this evaluates ``status_code`` ONCE where the inline version evaluated it twice. That is
+    the only behavioural difference, and it is safe: ``getattr`` on an exception is pure.
+    """
+    rate_limited = getattr(exc, "status_code", None) == 429
+    genai_metrics.record(
+        model,
+        genai_metrics.OUTCOME_RATE_LIMITED if rate_limited else genai_metrics.OUTCOME_SERVER_ERROR,
+    )
+    if rate_limited:
+        pacing.record_rejection(_PROVIDER, model)
+
+
 class OpenAIProvider:
     """LLMProvider over the OpenAI chat completions API."""
 
@@ -238,14 +253,7 @@ class OpenAIProvider:
                 raw = client.chat.completions.with_raw_response.create(**kwargs)
             except Exception as exc:  # noqa: BLE001 - classified immediately below
                 retry, advised = _retryable(exc)
-                genai_metrics.record(
-                    model,
-                    genai_metrics.OUTCOME_RATE_LIMITED
-                    if getattr(exc, "status_code", None) == 429
-                    else genai_metrics.OUTCOME_SERVER_ERROR,
-                )
-                if getattr(exc, "status_code", None) == 429:
-                    pacing.record_rejection(_PROVIDER, model)
+                _record_attempt_failure(model, exc)
                 if not retry:
                     raise
                 last = exc

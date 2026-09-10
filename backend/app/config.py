@@ -552,52 +552,69 @@ class Settings(BaseSettings):
                 "BAA-covered Vertex endpoint, never the Developer API."
             )
         self.summary_provider = (self.summary_provider or "gemini").strip().lower()
-        if self.summary_provider != "openai":
-            # Gemini per-call-type defaults. The body call reads page images and applies a long
-            # format spec, so it keeps summary_model. The title is extraction from OCR text and the
-            # audit is a check, so both step down to flash. Justified by call reduction alone,
-            # independent of which model the body happens to be running.
-            #
-            # Set HERE rather than as field defaults so the openai branch below still sees "" for an
-            # unset key and can refuse to start. A field default would silently satisfy that guard.
-            self.summary_body_model = self.summary_body_model or self.summary_model
-            self.summary_title_model = self.summary_title_model or _GEMINI_FLASH_MODEL
-            self.audit_model = self.audit_model or _GEMINI_FLASH_MODEL
-            # Defaulted ON rather than opt-in: the failure it guards against is an outage of the
-            # configured body model, and someone raising SUMMARY_MODEL to a pro tier is exactly the
-            # person who will not have thought about it. Harmless when the body already IS this model
-            # - summarize_engine skips a fallback that equals the model that just failed.
-            _fb = self.summary_body_fallback_model.strip()
-            self.summary_body_fallback_model = (
-                "" if _fb.lower() in ("none", "off") else (_fb or "gemini-3.5-flash")
-            )
-        if self.summary_provider == "openai":
-            # Fail at startup, not on the first summary. A worker that boots and then errors per row
-            # burns a job and leaves the reviewer with a half-processed document.
-            missing = [
-                name
-                for name, value in (
-                    ("OPENAI_API_KEY", self.openai_api_key),
-                    ("SUMMARY_BODY_MODEL", self.summary_body_model),
-                    ("SUMMARY_TITLE_MODEL", self.summary_title_model),
-                    ("AUDIT_MODEL", self.audit_model),
-                )
-                if not value
-            ]
-            if missing:
-                raise RuntimeError(
-                    "SUMMARY_PROVIDER=openai requires " + ", ".join(missing) + ". There is no "
-                    "default model on purpose: pick one by measuring it against the frozen human "
-                    "baselines, not by inheriting a guess."
-                )
-            if self.environment == "prod" and not self.openai_zdr_acknowledged:
-                raise RuntimeError(
-                    "OPENAI_ZDR_ACKNOWLEDGED must be true to send PHI to OpenAI in production. A "
-                    "signed BAA is not sufficient on its own - Zero Data Retention (or Modified "
-                    "Abuse Monitoring / Eyes Off) must also be approved on the organization. Check "
-                    "Settings > Organization > Data controls > Data retention before setting this."
-                )
+        # Order matters: the provider name is normalised directly above, and BOTH helpers below
+        # branch on it. Neither may run before that normalisation.
+        self._apply_gemini_call_defaults()
+        self._validate_openai_provider()
         return self
+
+    def _apply_gemini_call_defaults(self) -> None:
+        """Per-call-type model defaults for every provider that is NOT OpenAI.
+
+        Named for Gemini because that is the only other provider today, but the guard is
+        deliberately "not openai" rather than "is gemini": a third provider added later inherits
+        these defaults instead of starting with empty model keys and failing at the first call.
+        """
+        if self.summary_provider == "openai":
+            return
+        # Gemini per-call-type defaults. The body call reads page images and applies a long
+        # format spec, so it keeps summary_model. The title is extraction from OCR text and the
+        # audit is a check, so both step down to flash. Justified by call reduction alone,
+        # independent of which model the body happens to be running.
+        #
+        # Set HERE rather than as field defaults so the openai branch still sees "" for an
+        # unset key and can refuse to start. A field default would silently satisfy that guard.
+        self.summary_body_model = self.summary_body_model or self.summary_model
+        self.summary_title_model = self.summary_title_model or _GEMINI_FLASH_MODEL
+        self.audit_model = self.audit_model or _GEMINI_FLASH_MODEL
+        # Defaulted ON rather than opt-in: the failure it guards against is an outage of the
+        # configured body model, and someone raising SUMMARY_MODEL to a pro tier is exactly the
+        # person who will not have thought about it. Harmless when the body already IS this model
+        # - summarize_engine skips a fallback that equals the model that just failed.
+        _fb = self.summary_body_fallback_model.strip()
+        self.summary_body_fallback_model = (
+            "" if _fb.lower() in ("none", "off") else (_fb or "gemini-3.5-flash")
+        )
+
+    def _validate_openai_provider(self) -> None:
+        """Refuse to start an OpenAI-backed deployment that is missing a key, a model, or ZDR."""
+        if self.summary_provider != "openai":
+            return
+        # Fail at startup, not on the first summary. A worker that boots and then errors per row
+        # burns a job and leaves the reviewer with a half-processed document.
+        missing = [
+            name
+            for name, value in (
+                ("OPENAI_API_KEY", self.openai_api_key),
+                ("SUMMARY_BODY_MODEL", self.summary_body_model),
+                ("SUMMARY_TITLE_MODEL", self.summary_title_model),
+                ("AUDIT_MODEL", self.audit_model),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "SUMMARY_PROVIDER=openai requires " + ", ".join(missing) + ". There is no "
+                "default model on purpose: pick one by measuring it against the frozen human "
+                "baselines, not by inheriting a guess."
+            )
+        if self.environment == "prod" and not self.openai_zdr_acknowledged:
+            raise RuntimeError(
+                "OPENAI_ZDR_ACKNOWLEDGED must be true to send PHI to OpenAI in production. A "
+                "signed BAA is not sufficient on its own - Zero Data Retention (or Modified "
+                "Abuse Monitoring / Eyes Off) must also be approved on the organization. Check "
+                "Settings > Organization > Data controls > Data retention before setting this."
+            )
 
     def model_for(self, kind: str) -> str:
         """The model that should answer one summarize-stage call: "body", "title" or "audit".
