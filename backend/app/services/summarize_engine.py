@@ -914,6 +914,334 @@ def _unreadable_output(row, unreadable_pages) -> dict:
     }
 
 
+def _resolved_models(model, title_model, audit_model) -> tuple[str, str, str]:
+    """Fill in whichever of the three summarize models the caller omitted, from config.
+
+    The worker passes the values persisted on the Job, so a resumed job cannot switch models
+    mid-document; only a standalone caller reaches these defaults.
+    """
+    settings = get_settings()
+    return (
+        model or settings.model_for("body"),
+        title_model or settings.model_for("title"),
+        audit_model or settings.model_for("audit"),
+    )
+
+
+def _build_system_message(pdf_path, row, prompt, standalone_studies):
+    """The system message for one row, its prompt fingerprint, and the deposition facts behind it.
+
+    Returns ``(system_msg, prompt_fingerprint, deposition, page_offset)``. The last two are returned
+    rather than kept private because the caller needs both afterwards: ``deposition`` decides whether
+    stored OCR may be reused, and ``page_offset`` labels both the re-extraction and the trailing
+    notice. Discovering that offset READS THE PDF, so it is named in the return rather than left as a
+    side effect of something called "build system message".
+    """
+    # Prepend the shared rules that can bind on THIS category (applies to DB-resolved and fallback
+    # prompts alike, and to any future category - build_preamble defaults an unknown id to everything).
+    preamble = build_preamble(row["category"])
+    system_msg = preamble + prompt
+    # Fingerprint the PROMPT TEXT only, and do it HERE - before the per-row blocks below are appended.
+    # Those carry row and document DATA, so hashing them would give two rows on an identical prompt
+    # different fingerprints and make the cohort query this exists to enable useless.
+    prompt_fingerprint = summary_prompt_fingerprint(preamble, prompt)
+    # E-08: append the record's other diagnostic studies AFTER the category rules, so the list reads
+    # as a qualification of the rule that just told the model to take studies out of the embedded
+    # review. Appended to the SYSTEM message, not the user content, so the payload ordering
+    # (images -> OCR text -> instruction) is untouched.
+    if standalone_studies and str(row["category"]) in _EMBEDDED_REVIEW_CATEGORIES:
+        system_msg += _standalone_studies_block(standalone_studies)
+    # Tell a treating report which encounter it is, so a recap of the previous visit can be told
+    # apart from this visit's own findings by date rather than by guesswork.
+    if str(row["category"]) in _CURRENT_VISIT_CATEGORIES:
+        system_msg += _document_date_block(row.get("date"))
+
+    # Depositions are summarized in groups of consecutive transcript pages, so this category needs to
+    # SEE where each page ends. The stored text cannot be reused for them: page boundaries cannot be
+    # retrofitted onto text that was already concatenated without them, so a marked re-extraction is
+    # the only way. Confined to category 9 - markers in every category's input would push page numbers
+    # into ordinary summaries and pollute the duplicate check's similarity scoring.
+    deposition = str(row["category"]) == "9"
+    page_offset = None
+    if deposition:
+        # Label the markers with the TRANSCRIPT's own printed page numbers, discovered once. When the
+        # offset cannot be established the markers fall back to record pages and the prompt is told
+        # not to cite them at all: a citation that looks like a transcript page but is not one sends a
+        # reviewer to the wrong page, which is worse than giving them no page at all.
+        page_offset = transcript_page_offset(pdf_path, row["start"], row["end"])
+        system_msg += _deposition_pages_block(page_offset)
+    return system_msg, prompt_fingerprint, deposition, page_offset
+
+
+def _row_source_text(pdf_path, row, deposition, page_offset) -> tuple[str, list]:
+    """The row's OCR text, and which of its pages the recognizer FAILED on.
+
+    Reuse the duplicate check's OCR when it exists: it ran the SAME extraction over the SAME pages
+    and persisted it per row, so a second full pass is pure waste - on a 1500-page record that is
+    ~45 minutes of OCR done twice. Blank text is not reused, so a page whose OCR failed the first
+    time is retried here rather than being permanently condemned to EmptyExtractionError.
+
+    STOPS at the extraction. What an empty result MEANS is the caller's decision, and both answers
+    leave summarize_row entirely - a notice-only dict, or EmptyExtractionError that two callers catch
+    by type - so neither can live behind a helper call.
+    """
+    text = "" if deposition else (row.get("source_text") or "").strip()
+    # Which of this row's pages the recognizer FAILED on, as opposed to read cleanly and found empty.
+    # Seeded from the row when the caller knows (it can read `page_texts.extract_ok`, which this
+    # DB-free module cannot), then OVERRIDDEN by a fresh extraction below - what just happened is
+    # authoritative over what a previous stage recorded, because an errored page is often a transient
+    # timeout that a later attempt reads fine, and announcing a page as unintelligible when this run
+    # read it is worse than saying nothing.
+    unreadable_pages = sorted({int(p) for p in (row.get("unreadable_pages") or [])})
+    if not text:
+        pages = list(range(int(row["start"]), int(row["end"]) + 1))
+        # The REPORTING extractor, so a row that produced no text can say WHY. The plain variant
+        # collapses a failed page and a legitimately blank one into the same silent skip, and that is
+        # exactly the distinction the notice below turns on. It also retries an errored page once on
+        # the way through, so a transient Tesseract timeout gets another chance before it is
+        # announced to a client.
+        text, report = extract_pages_with_report(
+            pdf_path, pages, mark_pages=deposition, page_label_offset=page_offset or 0
+        )
+        unreadable_pages = sorted(report["errored"])
+    return text, unreadable_pages
+
+
+def _doi_lead(injury_date) -> str:
+    """The house DOI prefix with EXACTLY one trailing space, or "" when the document states none.
+
+    House grammar (see summary_doi): "**DOI**: <value>." - colon-space, period terminator. Stored
+    summaries written before 2026-07-29 carry the old "**DOI**:<value>," form and stay readable;
+    summary_doi.doi_prefix parses both.
+
+    THE TRAILING SPACE BELONGS TO THE PREFIX, not to the interpolation. Both bodies used to be built
+    as f"{doi_final} {body}", so a row whose document states no injury date stored a body beginning
+    with a space. Nothing downstream strips it: effective_text() returns it verbatim,
+    _export_title_and_text only prepends, and the Word renderer writes the title, then ". ", then the
+    body unmodified. Those entries shipped with TWO spaces after the title while their DOI-carrying
+    neighbours shipped with one - and the linked PDF showed one either way, because HTML collapses
+    whitespace. That is #115 (a double space in the letter) and #158 (the two renderers disagreeing)
+    arriving together, one row at a time.
+
+    `scripts/backfill_doi.py` bakes it in permanently: apply_doi_prefix(" Body.", "09/25/23")
+    returns "**DOI**: 09/25/23.  Body."
+    """
+    if injury_date in ("", "-"):
+        return ""
+    return f"**DOI**: {injury_date}. "
+
+
+def _trailing_notices(verified_text, unreadable_pages, embedded_review_pages, page_offset):
+    """The sentences appended AFTER the audit, and the verified body carrying them.
+
+    Returns ``(partial_notice, verified_text)``. ``verified_text`` MUST be returned and rebound by the
+    caller: it is a str, so appending to it in here could never reach them.
+
+    Appended after the verify pass deliberately. The audit checks the body against the SOURCE TEXT,
+    and these sentences are by definition not in that source - letting the audit see them invites it
+    to "correct" an unsupported claim, or to count one as a faithfulness issue and flag the row. They
+    are applied to the verified body too, so the notice survives whichever body effective_text()
+    delivers, and after sentence_case_caps_runs so that transform never rewrites them.
+
+    THE ORDER IS A DECISION. A row can be both partly unreadable and followed by an excluded review;
+    when it is, the reader is told what this summary does not cover before being told what sits next
+    to it, which is decreasing relevance to the body above. The two appends are collapsed into one,
+    which is exact - appending an empty string is a no-op - but it is the same order.
+    """
+    partial_notice = ""
+    if unreadable_pages:
+        # Cited in the SAME numbering as the body above it - see `notice_pages`. For a deposition the
+        # body cites transcript pages, so a record-page notice put two different numbering systems in
+        # one summary with nothing marking the change.
+        partial_notice = " " + partial_unreadable_notice(
+            notice_pages(unreadable_pages, page_offset)
+        )
+    if embedded_review_pages:
+        partial_notice += " " + embedded_review_notice(embedded_review_pages)
+    if verified_text is not None:
+        verified_text += partial_notice
+    return partial_notice, verified_text
+
+
+def _generate_body(model, system_msg, body_contents, row):
+    """The summary body, with the 429 fallback. Returns (summary, truncated, model, fallback_from).
+
+    The body model can be unavailable rather than slow: on 2026-08-13 Vertex refused 2.5-pro for this
+    project outright and every summarize job failed. `generate_with_retry` already rides out transient
+    429s; this catches the case where its whole budget is spent and the 429 is still coming, and
+    answers the row with a lesser model instead of losing it.
+
+    Three properties this deliberately has:
+
+      FALLBACK, NOT RACE. Only after retries are exhausted. Firing both and taking the first would
+      double the load on a pool that is already refusing us.
+
+      LOUD. Logged at WARNING with both models named. A silent downgrade would reproduce the exact
+      problem this pipeline keeps hitting - output nobody can attribute to a model.
+
+      TWO WAYS IN, not one. The obvious path is Dynamic Shared Quota: transient 429s that
+      generate_with_retry rides out until its budget is spent. The second is a spent per-day /
+      free-tier allowance, which that seam re-raises IMMEDIATELY without retrying - and it still
+      carries `code == 429`, so it lands here too. That is the behaviour we want (a different model
+      has a different allowance) but it is worth naming, because reading this without it suggests DSQ
+      is the only path in. `errors.is_daily_quota` distinguishes the two if that ever matters.
+
+      RECORDED PER ROW. `model` is reassigned and RETURNED, so the caller's provenance - and
+      therefore `summaries.model` - names the model that ACTUALLY answered, not the one the job
+      intended. Job-level provenance cannot express this: models.py resolves the three models once at
+      job creation, on purpose, so a resumed job cannot switch mid-flight. The row is the only place
+      this fact fits, and `_build_summary` already writes it there. A helper that failed to hand the
+      rebound name back would make a fallen-back row claim the model that refused it.
+
+    `get_settings()`, never a fresh `Settings()`: the fallback tests drive this through setenv plus
+    `get_settings.cache_clear()`, and a fresh construct would not obviously fail.
+    """
+    settings = get_settings()
+    fallback_model = settings.summary_body_fallback_model
+    try:
+        summary, truncated = _generate(
+            model,
+            system_msg,
+            body_contents,
+            temperature=settings.summary_temperature,
+            max_output_tokens=settings.summary_max_output_tokens,
+        )
+    except Exception as exc:
+        if not (fallback_model and fallback_model != model and is_rate_limited(exc)):
+            raise
+        logger.warning(
+            "body model %s exhausted its retries on 429 for pages %s-%s; falling back to %s",
+            model,
+            row["start"],
+            row["end"],
+            fallback_model,
+        )
+        summary, truncated = _generate(
+            fallback_model,
+            system_msg,
+            body_contents,
+            temperature=settings.summary_temperature,
+            max_output_tokens=settings.summary_max_output_tokens,
+        )
+        body_fallback_from, model = model, fallback_model
+    else:
+        body_fallback_from = None
+    return summary, truncated, model, body_fallback_from
+
+
+def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
+    """Audit the body and title, and turn the verdict into the four fields the row stores.
+
+    Returns ``(verified_text, verified_title, verify_issues, verify_ran)``.
+
+    `verify_ran` is taken from the audit's own `ok` and set OUTSIDE the issues check. That ordering is
+    load-bearing: an audit that RAN and found nothing is verified, with no issues, which is most
+    production rows. Returning early on an empty issue list - the obvious shape for this function -
+    would flip `verified` to False for exactly those rows and store a false record on a medical
+    summary, one no later query could tell apart from "the audit crashed and nobody looked".
+
+    `verify_issues` stays None on a clean audit rather than becoming []. The column is JSON, and NULL
+    versus '[]' changes what a later query means.
+
+    `result.get("ok")`, never `result["ok"]`: test_provenance's audit stub returns no `ok` key at all.
+
+    `doi_lead` is PASSED IN rather than re-derived. The caller computes it once and uses it for the
+    raw body too, so the two renderings agree by construction. Two independent derivations of the DOI
+    prefix disagreeing by one space is precisely what #115 and #158 were.
+    """
+    verified_text = None
+    verified_title = None
+    verify_issues = None
+    deposition = str(row["category"]) == "9"
+    manual_tag, diag_tag = _row_tags(row)
+
+    # The SAME gate generation uses, and it has to be. The document date is the sole switch for
+    # audit house rule 6 ("content the SOURCE attributes to an EARLIER date than this document's
+    # own date is a recap of a prior encounter and does not belong in this summary. ... This rule
+    # applies ONLY when a document date is given below"), and `verify_summary` emits the date
+    # block whenever the value is non-empty.
+    #
+    # Passing it unconditionally armed that rule on every category, including the ones generation
+    # deliberately withholds it from. `_CURRENT_VISIT_CATEGORIES` exists because "a medico-legal
+    # evaluation (12, 13) is REQUIRED to carry the injury history", and
+    # `test_other_categories_are_not_given_a_document_date` states the consequence outright: the
+    # rule "would only cost tokens and risk dropping wanted content".
+    #
+    # So the audit was enforcing on 3/5/9/12/13/100 exactly the rule the generator was forbidden
+    # to state, and the rewrite is ACCEPTED - `prior_visit` is not in `_CORRECTION_ONLY_ISSUES`,
+    # so `_drops_required_headings` returns False, `verified_text` is stored, and
+    # `effective_text()` prefers it over the raw body. A category-13 evaluation's History of
+    # Injury, Previous Injury and Treatment points are all attributed to earlier dates by their
+    # source. Category 9 is worse still: a deposition's whole substance is testimony about earlier
+    # events, and `_drops_deposition_structure` only compares paragraph and citation COUNTS, so a
+    # rewrite that keeps every "On pages N to M" opener and empties its substance passes the guard.
+    #
+    # This is the generation-versus-audit drift the summary_verify docstring already records for
+    # house rule 4 (#109, where the audit deleted directions the generator was required to add).
+    # Rule 6's generation-side counterpart was the one omission from that module's
+    # "must be edited together" list.
+    result = verify_summary(
+        audit_model,
+        text,
+        summary,
+        title=title,
+        document_date=(
+            row.get("date") if str(row["category"]) in _CURRENT_VISIT_CATEGORIES else None
+        ),
+    )
+    verify_ran = bool(result.get("ok"))
+    if result["issues"]:
+        issue_types = {
+            str(issue.get("type") or "") for issue in result["issues"] if isinstance(issue, dict)
+        }
+        if _drops_required_headings(summary, result["fixed_text"], issue_types):
+            # Keep the RAW body by leaving verified_text None: effective_text() then falls back to
+            # summaryText. The issues are still stored below, so the reviewer sees what was
+            # flagged, and this logs at WARNING so the guard's firing rate stays measurable rather
+            # than becoming an invisible silent correction.
+            logger.warning(
+                "verify pass dropped bold headings on pages %s-%s (issues: %s); keeping raw body",
+                row["start"],
+                row["end"],
+                ",".join(sorted(issue_types)),
+            )
+        elif deposition and _drops_deposition_structure(summary, result["fixed_text"]):
+            # Same remedy for the deposition format: the page grouping and its citations are what a
+            # reviewer navigates by, so a rewrite that flattens them is rejected and the raw body
+            # ships. Logged at WARNING for the same reason - a silent structural correction is
+            # indistinguishable from the model never having produced the structure.
+            logger.warning(
+                "verify pass flattened the deposition grouping on pages %s-%s; keeping raw body",
+                row["start"],
+                row["end"],
+            )
+        else:
+            # The audit may reintroduce capitals while fixing something else, so the transform runs
+            # over its output too - the verified text is what effective_text() delivers.
+            verified_text = f"{doi_lead}{sentence_case_caps_runs(result['fixed_text'])}"
+        verify_issues = result["issues"]
+        # The title is corrected INDEPENDENTLY of the body, including when the body rewrite was
+        # rejected above: effective_title() and effective_text() fall back separately, and a wrong
+        # date or laterality in the title is exactly what this pass exists to catch.
+        #
+        # Decorated exactly like the stored title, so a verified title is a drop-in replacement
+        # in every view; the export path strips the tags either way.
+        # Bounded by the same guard as the generated title, which it did NOT have. The audit's
+        # schema declares a plain {"type": "string"} with no maxLength - and Gemini ignores
+        # maxLength anyway, as the note above says - so nothing upstream bounds this either, and
+        # it is written to verified_title, the sibling varchar(512) the original guard never
+        # covered. An over-long correction is REJECTED here rather than truncated, which falls
+        # out of _usable_title returning `title`: an unusable rewrite then equals the current
+        # title and no verified_title is stored, exactly as a rejected BODY rewrite keeps the raw
+        # body.
+        fixed_title = _usable_title(result.get("fixed_title"), title, source="audited")
+        if fixed_title and fixed_title != title:
+            verified_title = (
+                f"{manual_tag}{fixed_title}{diag_tag} (Pages {row['start']}-{row['end']})"
+            )
+    return verified_text, verified_title, verify_issues, verify_ran
+
+
 def summarize_row(
     pdf_path,
     row,
@@ -951,74 +1279,20 @@ def summarize_row(
     where ``model_for`` used to live.
     """
     settings = get_settings()
-    model = model or settings.model_for("body")
-    title_model = title_model or settings.model_for("title")
-    audit_model = audit_model or settings.model_for("audit")
+    model, title_model, audit_model = _resolved_models(model, title_model, audit_model)
     if verify is None:
         verify = settings.summary_verify
     if prompt is None:
         key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
         prompt = prompts.get(key, prompts["category_100"])
-    # Prepend the shared rules that can bind on THIS category (applies to DB-resolved and fallback
-    # prompts alike, and to any future category - build_preamble defaults an unknown id to everything).
-    preamble = build_preamble(row["category"])
-    system_msg = preamble + prompt
-    # Fingerprint the PROMPT TEXT only, and do it HERE - before the per-row blocks below are appended.
-    # Those carry row and document DATA, so hashing them would give two rows on an identical prompt
-    # different fingerprints and make the cohort query this exists to enable useless.
-    prompt_fingerprint = summary_prompt_fingerprint(preamble, prompt)
-    # E-08: append the record's other diagnostic studies AFTER the category rules, so the list reads
-    # as a qualification of the rule that just told the model to take studies out of the embedded
-    # review. Appended to the SYSTEM message, not the user content, so the payload ordering
-    # (images -> OCR text -> instruction) is untouched.
-    if standalone_studies and str(row["category"]) in _EMBEDDED_REVIEW_CATEGORIES:
-        system_msg += _standalone_studies_block(standalone_studies)
-    # Tell a treating report which encounter it is, so a recap of the previous visit can be told
-    # apart from this visit's own findings by date rather than by guesswork.
-    if str(row["category"]) in _CURRENT_VISIT_CATEGORIES:
-        system_msg += _document_date_block(row.get("date"))
-
-    # Depositions are summarized in groups of consecutive transcript pages, so this category needs to
-    # SEE where each page ends. The stored text cannot be reused for them: page boundaries cannot be
-    # retrofitted onto text that was already concatenated without them, so a marked re-extraction is
-    # the only way. Confined to category 9 - markers in every category's input would push page numbers
-    # into ordinary summaries and pollute the duplicate check's similarity scoring.
-    deposition = str(row["category"]) == "9"
-    page_offset = None
-    if deposition:
-        # Label the markers with the TRANSCRIPT's own printed page numbers, discovered once. When the
-        # offset cannot be established the markers fall back to record pages and the prompt is told
-        # not to cite them at all: a citation that looks like a transcript page but is not one sends a
-        # reviewer to the wrong page, which is worse than giving them no page at all.
-        page_offset = transcript_page_offset(pdf_path, row["start"], row["end"])
-        system_msg += _deposition_pages_block(page_offset)
-    # Reuse the duplicate check's OCR when it exists: it ran the SAME extraction over the SAME pages
-    # and persisted it per row, so a second full pass is pure waste - on a 1500-page record that is
-    # ~45 minutes of OCR done twice. Blank text is not reused, so a page whose OCR failed the first
-    # time is retried here rather than being permanently condemned to EmptyExtractionError.
-    text = "" if deposition else (row.get("source_text") or "").strip()
-    # Which of this row's pages the recognizer FAILED on, as opposed to read cleanly and found empty.
-    # Seeded from the row when the caller knows (it can read `page_texts.extract_ok`, which this
-    # DB-free module cannot), then OVERRIDDEN by a fresh extraction below - what just happened is
-    # authoritative over what a previous stage recorded, because an errored page is often a transient
-    # timeout that a later attempt reads fine, and announcing a page as unintelligible when this run
-    # read it is worse than saying nothing.
-    unreadable_pages = sorted({int(p) for p in (row.get("unreadable_pages") or [])})
+    system_msg, prompt_fingerprint, deposition, page_offset = _build_system_message(
+        pdf_path, row, prompt, standalone_studies
+    )
+    text, unreadable_pages = _row_source_text(pdf_path, row, deposition, page_offset)
     # Pages of an excluded records-review block that belongs to THIS row. Seeded by the worker, which
     # is the only layer that can see the neighbouring rows - this module is deliberately DB-free, the
     # same reason `unreadable_pages` arrives as row data rather than being looked up here.
     embedded_review_pages = sorted({int(p) for p in (row.get("embedded_review_pages") or [])})
-    if not text:
-        pages = list(range(int(row["start"]), int(row["end"]) + 1))
-        # The REPORTING extractor, so a row that produced no text can say WHY. The plain variant
-        # collapses a failed page and a legitimately blank one into the same silent skip, and that is
-        # exactly the distinction the notice below turns on. It also retries an errored page once on
-        # the way through, so a transient Tesseract timeout gets another chance before it is
-        # announced to a client.
-        text, report = extract_pages_with_report(
-            pdf_path, pages, mark_pages=deposition, page_label_offset=page_offset or 0
-        )
-        unreadable_pages = sorted(report["errored"])
     if not text.strip():
         if unreadable_pages:
             # Deliver the row carrying a notice instead of losing it from the report. ONLY a genuine
@@ -1051,60 +1325,11 @@ def summarize_row(
                 row["end"],
                 exc,
             )
-    # The body model can be unavailable rather than slow: on 2026-08-13 Vertex refused 2.5-pro for
-    # this project outright and every summarize job failed. `generate_with_retry` already rides out
-    # transient 429s; this catches the case where its whole budget is spent and the 429 is still
-    # coming, and answers the row with a lesser model instead of losing it.
-    #
-    # Three properties this deliberately has:
-    #
-    #   FALLBACK, NOT RACE. Only after retries are exhausted. Firing both and taking the first would
-    #   double the load on a pool that is already refusing us.
-    #
-    #   LOUD. Logged at WARNING with both models named. A silent downgrade would reproduce the exact
-    #   problem this pipeline keeps hitting - output nobody can attribute to a model.
-    #
-    #   TWO WAYS IN, not one. The obvious path is Dynamic Shared Quota: transient 429s that
-    #   generate_with_retry rides out until its budget is spent. The second is a spent per-day /
-    #   free-tier allowance, which that seam re-raises IMMEDIATELY without retrying - and it still
-    #   carries `code == 429`, so it lands here too. That is the behaviour we want (a different model
-    #   has a different allowance) but it is worth naming, because reading this without it suggests
-    #   DSQ is the only path in. `errors.is_daily_quota` distinguishes the two if that ever matters.
-    #
-    #   RECORDED PER ROW. `model` is reassigned, so the returned provenance - and therefore
-    #   `summaries.model` - names the model that ACTUALLY answered, not the one the job intended.
-    #   Job-level provenance cannot express this: models.py resolves the three models once at job
-    #   creation, on purpose, so a resumed job cannot switch mid-flight. The row is the only place
-    #   this fact fits, and `_build_summary` already writes it there.
-    fallback_model = settings.summary_body_fallback_model
-    try:
-        summary, truncated = _generate(
-            model,
-            system_msg,
-            body_contents,
-            temperature=settings.summary_temperature,
-            max_output_tokens=settings.summary_max_output_tokens,
-        )
-    except Exception as exc:
-        if not (fallback_model and fallback_model != model and is_rate_limited(exc)):
-            raise
-        logger.warning(
-            "body model %s exhausted its retries on 429 for pages %s-%s; falling back to %s",
-            model,
-            row["start"],
-            row["end"],
-            fallback_model,
-        )
-        summary, truncated = _generate(
-            fallback_model,
-            system_msg,
-            body_contents,
-            temperature=settings.summary_temperature,
-            max_output_tokens=settings.summary_max_output_tokens,
-        )
-        body_fallback_from, model = model, fallback_model
-    else:
-        body_fallback_from = None
+    # `model` is REBOUND from the return: it names the model that actually answered, and the output
+    # dict records it as this row's provenance.
+    summary, truncated, model, body_fallback_from = _generate_body(
+        model, system_msg, body_contents, row
+    )
     title, _ = _generate(title_model, TITLE_PROMPT, text, temperature=0.0)
     # The title call has no response_schema, and Gemini does not enforce maxLength on strings even
     # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and
@@ -1122,23 +1347,7 @@ def summarize_row(
     # This used to run a SECOND isolated read here, which won over the row and therefore discarded any
     # manual correction - the reason "zero reviewer DOI corrections across 2,247 rows" was agreement in
     # appearance only. "-" means the document states none, and produces no prefix.
-    injury = row["injury_date"]
-    # House grammar (see summary_doi): "**DOI**: <value>." - colon-space, period terminator. Stored
-    # summaries written before 2026-07-29 carry the old "**DOI**:<value>," form and stay readable;
-    # summary_doi.doi_prefix parses both.
-    doi_final = "" if injury in ("", "-") else f"**DOI**: {injury}."
-    # The separator belongs to the PREFIX, not to the interpolation. Both bodies used to be built as
-    # f"{doi_final} {body}", so a row whose document states no injury date - where doi_final is "" -
-    # stored a body beginning with a space. Nothing downstream strips it: effective_text() returns it
-    # verbatim, _export_title_and_text only prepends, and the Word renderer writes the title, then
-    # ". ", then the body unmodified. So those entries shipped with TWO spaces after the title while
-    # their DOI-carrying and reviewer-edited neighbours shipped with one - and the linked PDF showed
-    # one either way, because HTML collapses whitespace. That is #115 (a double space in the letter)
-    # and #158 (the two renderers disagreeing) arriving together, one row at a time.
-    #
-    # `scripts/backfill_doi.py` bakes it in permanently: apply_doi_prefix(" Body.", "09/25/23")
-    # returns "**DOI**: 09/25/23.  Body."
-    doi_lead = f"{doi_final} " if doi_final else ""
+    doi_lead = _doi_lead(row["injury_date"])
     manual_tag, diag_tag = _row_tags(row)
 
     # Faithfulness verify pass (problem #3): audit the title AND the body against their source and,
@@ -1154,92 +1363,9 @@ def summarize_row(
     # Fail closed: anything that does not explicitly report success leaves this False.
     verify_ran = False
     if verify:
-        # The SAME gate generation uses, and it has to be. The document date is the sole switch for
-        # audit house rule 6 ("content the SOURCE attributes to an EARLIER date than this document's
-        # own date is a recap of a prior encounter and does not belong in this summary. ... This rule
-        # applies ONLY when a document date is given below"), and `verify_summary` emits the date
-        # block whenever the value is non-empty.
-        #
-        # Passing it unconditionally armed that rule on every category, including the ones generation
-        # deliberately withholds it from. `_CURRENT_VISIT_CATEGORIES` exists because "a medico-legal
-        # evaluation (12, 13) is REQUIRED to carry the injury history", and
-        # `test_other_categories_are_not_given_a_document_date` states the consequence outright: the
-        # rule "would only cost tokens and risk dropping wanted content".
-        #
-        # So the audit was enforcing on 3/5/9/12/13/100 exactly the rule the generator was forbidden
-        # to state, and the rewrite is ACCEPTED - `prior_visit` is not in `_CORRECTION_ONLY_ISSUES`,
-        # so `_drops_required_headings` returns False, `verified_text` is stored, and
-        # `effective_text()` prefers it over the raw body. A category-13 evaluation's History of
-        # Injury, Previous Injury and Treatment points are all attributed to earlier dates by their
-        # source. Category 9 is worse still: a deposition's whole substance is testimony about earlier
-        # events, and `_drops_deposition_structure` only compares paragraph and citation COUNTS, so a
-        # rewrite that keeps every "On pages N to M" opener and empties its substance passes the guard.
-        #
-        # This is the generation-versus-audit drift the summary_verify docstring already records for
-        # house rule 4 (#109, where the audit deleted directions the generator was required to add).
-        # Rule 6's generation-side counterpart was the one omission from that module's
-        # "must be edited together" list.
-        result = verify_summary(
-            audit_model,
-            text,
-            summary,
-            title=title,
-            document_date=(
-                row.get("date") if str(row["category"]) in _CURRENT_VISIT_CATEGORIES else None
-            ),
+        verified_text, verified_title, verify_issues, verify_ran = _verified_outputs(
+            audit_model, row, text, summary, title, doi_lead
         )
-        verify_ran = bool(result.get("ok"))
-        if result["issues"]:
-            issue_types = {
-                str(issue.get("type") or "")
-                for issue in result["issues"]
-                if isinstance(issue, dict)
-            }
-            if _drops_required_headings(summary, result["fixed_text"], issue_types):
-                # Keep the RAW body by leaving verified_text None: effective_text() then falls back to
-                # summaryText. The issues are still stored below, so the reviewer sees what was
-                # flagged, and this logs at WARNING so the guard's firing rate stays measurable rather
-                # than becoming an invisible silent correction.
-                logger.warning(
-                    "verify pass dropped bold headings on pages %s-%s (issues: %s); keeping raw body",
-                    row["start"],
-                    row["end"],
-                    ",".join(sorted(issue_types)),
-                )
-            elif deposition and _drops_deposition_structure(summary, result["fixed_text"]):
-                # Same remedy for the deposition format: the page grouping and its citations are what a
-                # reviewer navigates by, so a rewrite that flattens them is rejected and the raw body
-                # ships. Logged at WARNING for the same reason - a silent structural correction is
-                # indistinguishable from the model never having produced the structure.
-                logger.warning(
-                    "verify pass flattened the deposition grouping on pages %s-%s; keeping raw body",
-                    row["start"],
-                    row["end"],
-                )
-            else:
-                # The audit may reintroduce capitals while fixing something else, so the transform runs
-                # over its output too - the verified text is what effective_text() delivers.
-                verified_text = f"{doi_lead}{sentence_case_caps_runs(result['fixed_text'])}"
-            verify_issues = result["issues"]
-            # The title is corrected INDEPENDENTLY of the body, including when the body rewrite was
-            # rejected above: effective_title() and effective_text() fall back separately, and a wrong
-            # date or laterality in the title is exactly what this pass exists to catch.
-            #
-            # Decorated exactly like the stored title, so a verified title is a drop-in replacement
-            # in every view; the export path strips the tags either way.
-            # Bounded by the same guard as the generated title, which it did NOT have. The audit's
-            # schema declares a plain {"type": "string"} with no maxLength - and Gemini ignores
-            # maxLength anyway, as the note above says - so nothing upstream bounds this either, and
-            # it is written to verified_title, the sibling varchar(512) the original guard never
-            # covered. An over-long correction is REJECTED here rather than truncated, which falls
-            # out of _usable_title returning `title`: an unusable rewrite then equals the current
-            # title and no verified_title is stored, exactly as a rejected BODY rewrite keeps the raw
-            # body.
-            fixed_title = _usable_title(result.get("fixed_title"), title, source="audited")
-            if fixed_title and fixed_title != title:
-                verified_title = (
-                    f"{manual_tag}{fixed_title}{diag_tag} (Pages {row['start']}-{row['end']})"
-                )
 
     # PARTIAL unreadable row: the body above was summarized from the pages that COULD be read, so
     # state the ones that could not. Without this a ten-page row that lost one page delivers a
@@ -1250,30 +1376,14 @@ def summarize_row(
     # it to "correct" an unsupported claim, or to count it as a faithfulness issue and flag the row.
     # Applied to the verified body too, so the notice survives whichever body effective_text()
     # delivers, and after sentence_case_caps_runs so that transform never rewrites it.
-    partial_notice = ""
-    if unreadable_pages:
-        # Cited in the SAME numbering as the body above it - see `notice_pages`. For a deposition
-        # the body cites transcript pages, so a record-page notice put two different numbering
-        # systems in one summary with nothing marking the change.
-        partial_notice = " " + partial_unreadable_notice(
-            notice_pages(unreadable_pages, page_offset)
-        )
-        if verified_text is not None:
-            verified_text += partial_notice
-
-    # The embedded-review tag, appended here for all three of the reasons above: the audit would see
-    # a claim absent from the source text and try to "correct" it, the verified body has to carry it
-    # too or effective_text() can deliver a body without it, and sentence_case_caps_runs has already
-    # run so nothing rewrites it.
-    #
-    # AFTER the unreadable notice deliberately. A row can be both partly unreadable and followed by
-    # an excluded review; when it is, the reader is told what this summary does not cover before
-    # being told what sits next to it, which is the order of decreasing relevance to the body above.
-    if embedded_review_pages:
-        embedded_notice = " " + embedded_review_notice(embedded_review_pages)
-        partial_notice += embedded_notice
-        if verified_text is not None:
-            verified_text += embedded_notice
+    partial_notice, verified_text = _trailing_notices(
+        verified_text, unreadable_pages, embedded_review_pages, page_offset
+    )
+    # Computed once, because the two are absent TOGETHER - a different fact from "not recorded",
+    # which `verified` is what distinguishes.
+    audit_model_used, audit_fingerprint = (
+        (audit_model, fingerprint(VERIFY_PROMPT)) if verify else (None, None)
+    )
 
     return {
         "summaryDate": row["date"],
@@ -1302,9 +1412,9 @@ def summarize_row(
         # change; `job.model` vs `summaries.model` shows the same thing after the fact.
         "bodyFallbackFrom": body_fallback_from,
         "titleModel": title_model,
-        "auditModel": audit_model if verify else None,
+        "auditModel": audit_model_used,
         "promptFingerprint": prompt_fingerprint,
-        "auditFingerprint": fingerprint(VERIFY_PROMPT) if verify else None,
+        "auditFingerprint": audit_fingerprint,
         # Pages the recognizer could not read. Non-empty here means this row WAS summarized, off the
         # pages that could be read, and carries the notice appended above - `noticeOnly` False is
         # what separates it from a row where nothing could be read at all.

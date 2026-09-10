@@ -1389,6 +1389,155 @@ def test_a_successful_body_reports_no_fallback(monkeypatch):
 # --- C9: an unreadable page is STATED in the deliverable rather than vanishing from it -------------
 
 
+def test_a_clean_audit_still_records_that_it_ran(monkeypatch):
+    """WHEN the audit runs and finds nothing, THE SYSTEM SHALL record verified True with no issues.
+
+    `verify_ran` is set OUTSIDE `if result["issues"]`, so an audit that ran cleanly - which is most
+    production rows - is verified with verifyIssues left NULL. The obvious way to extract this block
+    is an early return when issues is empty, and that flips `verified` to False for exactly those
+    rows: a false record on a medical summary, and one no later query could separate from "the audit
+    crashed and nobody looked".
+
+    Nothing pinned it. test_verify_populates_verified_fields_when_issues_found is the only test
+    asserting `verified is True`, and its stub returns a NON-empty issues list.
+    """
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": summary,
+            "fixed_title": title,
+            "issues": [],
+            "ok": True,
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verified"] is True, "the audit ran, so the record must say it ran"
+    assert out["verifyIssues"] is None, "a clean audit stores NULL, never an empty list"
+    assert out["verifiedText"] is None
+    assert out["verifiedTitle"] is None
+
+
+def test_both_trailing_notices_appear_in_the_documented_order(monkeypatch):
+    """WHEN a row is partly unreadable AND carries an excluded review, THE SYSTEM SHALL state the
+    unreadable pages FIRST.
+
+    Decreasing relevance to the body: the reader is told what this summary does not cover before
+    being told what sits next to it. No test covered the pair - the embedded-review tests stub zero
+    errored pages, and the unreadable ones stub the WHOLE row unreadable, which returns early through
+    `_unreadable_output` before either notice is built.
+
+    Asserted on both bodies, because the verified one is a separate string that must be rebound by
+    whatever builds the notices.
+    """
+    monkeypatch.setattr(se, "extract_pages_with_report", _errored([2], text="readable text"))
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    partial = se.partial_unreadable_notice(se.notice_pages([2], None))
+    embedded = se.embedded_review_notice([46, 65])
+
+    plain = se.summarize_row(
+        "/x.pdf", _row(embedded_review_pages=[46, 65]), prompt="P", verify=False
+    )["summaryText"]
+    assert partial in plain
+    assert embedded in plain
+    assert plain.index(partial) < plain.index(embedded)
+
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": "Corrected body",
+            "fixed_title": title,
+            "issues": [{"type": "unsupported"}],
+            "ok": True,
+        },
+    )
+    audited = se.summarize_row(
+        "/x.pdf", _row(embedded_review_pages=[46, 65]), prompt="P", verify=True
+    )["verifiedText"]
+    assert audited.index(partial) < audited.index(embedded)
+
+
+def test_the_page_label_offset_is_zero_when_the_transcript_offset_is_unknown(monkeypatch):
+    """WHEN the transcript offset cannot be established, THE SYSTEM SHALL pass 0, not None.
+
+    `page_label_offset=page_offset or 0` has no test distinguishing an unknown offset from a zero
+    one: the only offset test uses a non-zero value. An extraction that threaded `page_offset`
+    straight through would hand None to the extractor and change how pages are labelled.
+    """
+    seen = {}
+
+    def capture(path, pages, mark_pages=False, **kw):
+        seen["mark_pages"] = mark_pages
+        seen["page_label_offset"] = kw.get("page_label_offset")
+        return "raw OCR text", _clean(pages)
+
+    monkeypatch.setattr(se, "extract_pages_with_report", capture)
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    se.summarize_row("/x.pdf", _row(), prompt="P")
+    assert seen["mark_pages"] is False, "only a deposition gets page markers"
+    assert seen["page_label_offset"] == 0
+
+    monkeypatch.setattr(se, "transcript_page_offset", lambda *a, **k: None)
+    seen.clear()
+    se.summarize_row("/x.pdf", _row(category="9"), prompt="P")
+    assert seen["mark_pages"] is True
+    assert seen["page_label_offset"] == 0, "an unknown offset is 0, never None"
+
+    monkeypatch.setattr(se, "transcript_page_offset", lambda *a, **k: -419)
+    seen.clear()
+    se.summarize_row("/x.pdf", _row(category="9"), prompt="P")
+    assert seen["page_label_offset"] == -419
+
+
+def test_the_fallback_branch_still_reports_truncation(monkeypatch):
+    """WHEN the FALLBACK model truncates, THE SYSTEM SHALL still flag the row truncated.
+
+    The six fallback tests assert which models were addressed and never `truncated`, and their fake
+    `_generate` always returns False - so a helper hardcoding False on the fallback path passes every
+    one of them. It would not surface downstream either: `manualCheck` is derived from
+    `truncated OR bodyFallbackFrom`, so the second term keeps the row flagged while the stored
+    `truncated` quietly says the body was complete.
+    """
+
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        if system_msg == se.TITLE_PROMPT:
+            return "Progress Note - Dr Smith", False
+        if model == "gemini-2.5-pro":
+            raise _Rejected("429 RESOURCE_EXHAUSTED")
+        return "Summary body", True  # the FALLBACK model hit the token cap
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setenv("SUMMARY_BODY_FALLBACK_MODEL", "gemini-3.5-flash")
+    get_settings.cache_clear()
+    try:
+        out = se.summarize_row("/x.pdf", _row(), model="gemini-2.5-pro", prompt="P")
+    finally:
+        get_settings.cache_clear()
+
+    assert out["truncated"] is True, "the fallback model's truncation must reach the row"
+    assert out["model"] == "gemini-3.5-flash", "provenance names the model that ANSWERED"
+    assert out["bodyFallbackFrom"] == "gemini-2.5-pro"
+
+
 def _boom(*_a, **_kw):
     """Any call here is a test failure. Pins that a path is NOT taken - an unreadable row must reach
     no model, and a row reusing stored OCR must run no extraction."""
