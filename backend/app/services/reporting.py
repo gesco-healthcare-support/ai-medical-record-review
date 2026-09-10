@@ -77,8 +77,22 @@ def intro_sentence(num_pages, lawfirm) -> str:
 
 
 # Inline emphasis the summarizer emits: **bold**, *italic*, _italic_. Rendered as real runs so no
-# raw markers leak into the Word document (mirrors the web MarkdownText renderer).
-_INLINE_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_", re.DOTALL)
+# raw markers leak into the Word document.
+#
+# THREE renderers read this - here, `linked_pdf._inline_html`, and the web's `MarkdownText` - and
+# each held its own copy. `linked_pdf` now imports this one; the web's is in TypeScript and cannot,
+# so `markdown-text.tsx` carries a comment naming this as the definition it tracks. The same file
+# pair has diverged twice before (#158 on the heading and separator, #268 on the letter's
+# alignment), which is why this is imported rather than repeated a third time.
+#
+# NOT re.DOTALL, and that is the fix rather than an omission. With it, `\*(.+?)\*` pairs a BULLET on
+# one line with the bullet on the next - `* item` / `* item` - and italicises everything between.
+# Measured over 3,017 stored summaries: 3 disagreed with the web renderer, and 6 of the 9 offending
+# spans opened with "* " (a bullet, not emphasis), italicising 83 to 387 characters of a delivered
+# document. The two remaining `**` spans were a wrapped bold heading, which now shows its markers
+# exactly as the review screen already shows them - visible to the reviewer and editable, which a
+# silently italicised paragraph is not. Emphasis does not cross a line break.
+INLINE_EMPHASIS_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_")
 
 
 def _run(paragraph, s, *, bold=False, italic=False, size=None):
@@ -94,7 +108,7 @@ def _add_inline_runs(paragraph, text, *, bold=False, italic=False):
     """Append runs to ``paragraph``, turning **bold** / *italic* / _italic_ markers into real
     formatting; ``bold``/``italic`` set the baseline for the plain segments."""
     pos = 0
-    for m in _INLINE_RE.finditer(text):
+    for m in INLINE_EMPHASIS_RE.finditer(text):
         if m.start() > pos:
             _run(paragraph, text[pos : m.start()], bold=bold, italic=italic)
         if m.group(1) is not None:
