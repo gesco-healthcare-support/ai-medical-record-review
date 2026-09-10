@@ -1638,6 +1638,92 @@ def test_dedup_document_stores_the_cluster_similarity(monkeypatch):
     assert rows[2].dupe_similarity is None  # a singleton carries no cluster score
 
 
+def test_the_similarity_override_skips_the_confirm_call_rather_than_passing_it(monkeypatch):
+    """WHEN a candidate scores at or above dupe_model_override, THE SYSTEM SHALL group it WITHOUT
+    asking the model.
+
+    No existing test can tell "the confirm call was skipped" from "the confirm call was made and
+    agreed". Several patch `confirm_cluster` and then assert a grouping the override produced without
+    ever consulting the patch - test_dedup_document_stores_the_cluster_similarity above is one - so
+    they read as protecting the confirm path while asserting nothing about it.
+
+    This spy REFUSES everything it is asked. If the override stops firing, the candidate goes to the
+    model, comes back rejected, and the rows arrive ungrouped.
+    """
+    doc_id = _make_user_and_doc(page_count=2)
+    same = "alpha beta gamma delta epsilon zeta eta theta"
+    job_id = _dedup_rows(doc_id, [(1, 1, True, False, None, same), (2, 2, True, False, None, same)])
+
+    asked = []
+
+    def refuse_everything(members, model=None):
+        asked.append(members)
+        return []
+
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", refuse_everything)
+
+    dedup_document(job_id)
+
+    assert asked == [], "identical text is above the override, so the model must not be asked"
+    rows = _rows_by_idx(doc_id)
+    assert rows[0].dupe_group is not None
+    assert rows[0].dupe_group == rows[1].dupe_group
+    assert rows[0].dupe_similarity == 1.0
+
+
+def test_each_rows_text_is_committed_before_the_next_row_is_read(monkeypatch):
+    """WHEN a row's text has been read, THE SYSTEM SHALL commit it before reading the next row.
+
+    The per-row commit inside the OCR loop is what makes a run that dies halfway cheap to retry: the
+    pages already read stay read. It is the OPPOSITE policy to the end-of-run grouping rewrite, which
+    is deliberately atomic, and the two live in the same function - so an extraction that lifted the
+    commit out of the loop, or pushed the final one into a helper, would swap them.
+
+    Observed from a SEPARATE session opened INSIDE the OCR stub, which is the only point where the
+    per-row commit is the thing that did the work. Two earlier versions of this test were inert and
+    were caught by deleting the commit and watching them still pass:
+
+    - Asserting after the run: the failure path commits the job's error state on the same session and
+      flushes the pending source_text with it.
+    - Probing from inside the clustering stub: `report(stage, total, total)` runs just before it, and
+      the completion tick is exempt from the throttle at `_run`, so it always commits.
+
+    The intervening per-row `report("deduping", i, total)` IS throttled (same stage, current < total,
+    inside the interval), so between two rows nothing else commits - which is what makes this the
+    right seam.
+
+    test_dedup_document_failure_leaves_the_previous_clusters_intact is inert for a simpler reason:
+    `_dedup_rows` SEEDS source_text, so its assertion holds on the fixture alone.
+    """
+    doc_id = _make_user_and_doc(page_count=2)
+    job_id = _dedup_rows(doc_id, [(1, 1, True, False, None, ""), (2, 2, True, False, None, "")])
+    texts = {1: "alpha beta gamma delta", 2: "epsilon zeta eta theta"}
+    read_text = _fake_row_text(texts)
+    seen = {}
+
+    def probe_then_read(session, document_id, pages, pdf_path=None, **kwargs):
+        pages = list(pages)
+        with get_sessionmaker()() as probe:
+            seen[pages[0]] = {
+                row.idx: row.source_text
+                for row in probe.scalars(
+                    select(ReviewRow).where(ReviewRow.document_id == doc_id)
+                ).all()
+            }
+        return read_text(session, document_id, pages, pdf_path=pdf_path, **kwargs)
+
+    monkeypatch.setattr("app.services.page_text.get_row_text_with_report", probe_then_read)
+
+    dedup_document(job_id)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+    assert seen[1][0] == "", "nothing is committed for row 1 before row 1 has been read"
+    assert seen[2][0] == "alpha beta gamma delta", (
+        "row 1's text must be committed by the time row 2 is read"
+    )
+
+
 def test_a_keep_one_resolution_is_not_reopened_by_a_re_check(monkeypatch):
     """A re-check must not reopen a keep-one resolution.
 

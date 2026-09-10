@@ -666,6 +666,181 @@ def classify_document(job_id) -> None:
     _run(job_id, work)
 
 
+def _dismissed_cluster_sets(rows) -> set[frozenset[tuple[int, int]]]:
+    """Which clusters the reviewer dismissed, keyed by their exact set of page ranges.
+
+    Pure over the row list - no session, no query. It reads `dupe_group` and `dupe_dismissed`, which
+    the end-of-run write-back later CLEARS, so it has to run before the OCR loop rather than beside
+    the regrouping it feeds.
+    """
+    previous_groups: dict[int, list[ReviewRow]] = {}
+    for row in rows:
+        if row.dupe_group is not None:
+            previous_groups.setdefault(row.dupe_group, []).append(row)
+    dismissed_sets = set()
+    for members in previous_groups.values():
+        if any(member.dupe_dismissed for member in members):
+            dismissed_sets.add(frozenset((member.start, member.end) for member in members))
+    return dismissed_sets
+
+
+def _ensure_row_source_text(session, document, row) -> int:
+    """Read and persist a row's OCR text when it has none. Returns how often it counted unreadable.
+
+    A COUNT, not a bool, and deliberately so. The blank-text increment sits inside the try whose
+    `except` also increments, so a row whose warning call raises is counted TWICE today. Returning a
+    bool would cap that at one - arguably a fix, but a behaviour change, and this refactor claims
+    none.
+
+    `document.id` is `job.document_id`: the caller loads the document with
+    `session.get(Document, job.document_id)`, so the log lines name the document they always named.
+
+    The import stays function-local. tests/test_jobs.py patches
+    "app.services.page_text.get_row_text_with_report" by dotted path, which lands only while the name
+    is re-bound on each call.
+    """
+    from app.services.page_text import get_row_text_with_report
+
+    if (row.source_text or "").strip():
+        return 0
+
+    unreadable = 0
+    try:
+        # From the page store (populated once by the segment job), which keeps the errored-vs-blank
+        # report intact while no longer re-OCRing pages segmentation already read. Falls back to
+        # extracting any page the store lacks.
+        text, ocr_report = get_row_text_with_report(
+            session,
+            document.id,
+            range(row.start, row.end + 1),
+            pdf_path=document.stored_path,
+        )
+        row.source_text = text
+        # A row with no text can never cluster with anything (_jaccard returns 0.0 when either side
+        # is empty), so it is invisible to the whole check rather than merely unmatched. Say so, and
+        # say WHICH failure it was: pages that errored may be transient, pages that read blank are
+        # films/photos/separators and will never yield words. Measured on a real 91-row record: 18
+        # rows were structurally uncomparable and the run still reported success.
+        if not text.strip():
+            unreadable += 1
+            logger.warning(
+                "dedup could not read row %d (pages %d-%d) of document %s: "
+                "%d page(s) errored, %d blank - it cannot match any duplicate",
+                row.idx,
+                row.start,
+                row.end,
+                document.id,
+                len(ocr_report["errored"]),
+                len(ocr_report["blank"]),
+            )
+    except Exception:
+        unreadable += 1
+        logger.warning("dedup OCR skipped a row on document %s", document.id, exc_info=True)
+        row.source_text = row.source_text or ""
+    return unreadable
+
+
+def _split_confirmed_groups(members, similarity, groups) -> list[tuple[list[dict], float | None]]:
+    """Pair each confirmed group with the similarity that actually describes it.
+
+    The candidate's `similarity` is the minimum over every member the CLUSTERER put together,
+    including the ones the model has just rejected. For a group carved out of a larger candidate that
+    number describes documents not in the group, so recompute it. An untouched candidate is skipped:
+    `group_similarity` would return the value it already has, by the same definition that produced it.
+
+    `len(confirmed) == len(members)` asks the "untouched candidate" question by name. Do not simplify
+    it to a truthiness check - that is a different question.
+    """
+    from app.services.dedup import group_similarity
+
+    return [
+        (
+            confirmed,
+            similarity if len(confirmed) == len(members) else group_similarity(confirmed),
+        )
+        for confirmed in groups
+    ]
+
+
+def _confirm_clusters(
+    items, by_id, document_id, model_override
+) -> list[tuple[list[dict], float | None]]:
+    """Candidate clusters -> the ones confirmed as copies, each paired with its similarity.
+
+    `by_id` maps a row id to the live ORM instance and is read here only to render page ranges for
+    the log lines; the caller reuses the same mapping for the write-back, so it is built once and
+    passed rather than rebuilt.
+
+    The dedup imports stay function-local. tests/test_jobs.py patches
+    "app.services.dedup.cluster_rows" by dotted path, which lands only while the name is re-bound on
+    each call.
+    """
+    from app.services.dedup import cluster_rows, confirm_groups, duplicate_gate
+
+    confirmed_clusters = []
+    for cluster in cluster_rows(items):
+        members, similarity = cluster["members"], cluster["similarity"]
+        pages = ", ".join(f"{by_id[m['id']].start}-{by_id[m['id']].end}" for m in members)
+        if not duplicate_gate(members, similarity, content_joined=cluster["content_joined"]):
+            # No shared date, or a shared date with neither title nor category agreeing, and
+            # the content is not near-identical: a recurring form series, not copies.
+            # Rejected without spending a confirm call.
+            logger.info(
+                "dedup rejected a %d-member candidate on document %s (similarity %s, pages %s): "
+                "date plus title-or-category did not agree",
+                len(members),
+                document_id,
+                similarity,
+                pages,
+            )
+            continue
+        # Above dupe_model_override the text has already settled it. Skipping the call both saves
+        # quota and removes the confirm step's silent-discard failure mode, which is the one way a
+        # real duplicate can vanish with no trace anywhere.
+        #
+        # This reads `similarity` - the closure MINIMUM - and must keep doing so. The gate above
+        # now also admits a cluster whose every EDGE cleared the override, which is a weaker
+        # statement: a chain A~B~C says nothing about A against C. Letting that provenance skip
+        # the confirm call would accept a whole chain wholesale with nothing adjudicating it.
+        if similarity is not None and similarity >= model_override:
+            logger.info(
+                "dedup accepted a %d-member candidate on document %s by similarity %s "
+                "(pages %s); confirm call skipped",
+                len(members),
+                document_id,
+                similarity,
+                pages,
+            )
+            confirmed_clusters.append((members, similarity))
+            continue
+        groups = confirm_groups(members)
+        confirmed_clusters.extend(_split_confirmed_groups(members, similarity, groups))
+        if len(groups) > 1:
+            # The event #213 is about. Logged because it is otherwise invisible: before this,
+            # every group after the first was dropped without a line anywhere.
+            logger.info(
+                "dedup found %d separate duplicate groups in one %d-member candidate on "
+                "document %s (sizes %s, pages %s)",
+                len(groups),
+                len(members),
+                document_id,
+                [len(g) for g in groups],
+                pages,
+            )
+        if not groups:
+            # Previously invisible: the candidate was dropped with no record, so a reported miss
+            # could not be explained from the logs at all.
+            logger.warning(
+                "dedup discarded a %d-member candidate on document %s after confirm "
+                "(similarity %s, pages %s): the model judged them distinct documents",
+                len(members),
+                document_id,
+                similarity,
+                pages,
+            )
+    return confirmed_clusters
+
+
 def dedup_document(job_id) -> None:
     """RQ entry: OCR every ReviewRow once (persist source_text), cluster likely-duplicate
     sub-documents by content, confirm each candidate with one cheap model call, and store a shared
@@ -694,14 +869,6 @@ def dedup_document(job_id) -> None:
     """
     import gc
 
-    from app.services.dedup import (
-        cluster_rows,
-        confirm_groups,
-        duplicate_gate,
-        group_similarity,
-    )
-    from app.services.page_text import get_row_text_with_report
-
     def work(session, job, report):
         settings = get_settings()
         document = session.get(Document, job.document_id)
@@ -712,16 +879,9 @@ def dedup_document(job_id) -> None:
         ).all()
         total = len(rows)
 
-        # Which clusters the reviewer dismissed, keyed by their exact set of page ranges. Captured
-        # BEFORE anything is rewritten so the answer can be re-applied to an identical cluster below.
-        dismissed_sets = set()
-        previous_groups: dict[int, list[ReviewRow]] = {}
-        for row in rows:
-            if row.dupe_group is not None:
-                previous_groups.setdefault(row.dupe_group, []).append(row)
-        for members in previous_groups.values():
-            if any(member.dupe_dismissed for member in members):
-                dismissed_sets.add(frozenset((member.start, member.end) for member in members))
+        # Captured BEFORE anything is rewritten, so the answer can be re-applied below to a cluster
+        # holding exactly the same copies.
+        dismissed_sets = _dismissed_cluster_sets(rows)
 
         # OCR each row's pages once (persist). The existing grouping is deliberately left in place:
         # a run that dies here must not empty the Duplicates tab, so clearing happens in one
@@ -729,42 +889,7 @@ def dedup_document(job_id) -> None:
         unreadable = 0
         for i, row in enumerate(rows):
             report("deduping", i, total)
-            if not (row.source_text or "").strip():
-                try:
-                    # From the page store (populated once by the segment job), which keeps the
-                    # errored-vs-blank report intact while no longer re-OCRing pages segmentation
-                    # already read. Falls back to extracting any page the store lacks.
-                    text, ocr_report = get_row_text_with_report(
-                        session,
-                        document.id,
-                        range(row.start, row.end + 1),
-                        pdf_path=document.stored_path,
-                    )
-                    row.source_text = text
-                    # A row with no text can never cluster with anything (_jaccard returns 0.0 when
-                    # either side is empty), so it is invisible to the whole check rather than merely
-                    # unmatched. Say so, and say WHICH failure it was: pages that errored may be
-                    # transient, pages that read blank are films/photos/separators and will never
-                    # yield words. Measured on a real 91-row record: 18 rows were structurally
-                    # uncomparable and the run still reported success.
-                    if not text.strip():
-                        unreadable += 1
-                        logger.warning(
-                            "dedup could not read row %d (pages %d-%d) of document %s: "
-                            "%d page(s) errored, %d blank - it cannot match any duplicate",
-                            row.idx,
-                            row.start,
-                            row.end,
-                            job.document_id,
-                            len(ocr_report["errored"]),
-                            len(ocr_report["blank"]),
-                        )
-                except Exception:
-                    unreadable += 1
-                    logger.warning(
-                        "dedup OCR skipped a row on document %s", job.document_id, exc_info=True
-                    )
-                    row.source_text = row.source_text or ""
+            unreadable += _ensure_row_source_text(session, document, row)
             session.commit()
             gc.collect()
         report("deduping", total, total)
@@ -791,82 +916,9 @@ def dedup_document(job_id) -> None:
             for row in rows
         ]
         by_id = {row.id: row for row in rows}
-        confirmed_clusters = []
-        for cluster in cluster_rows(items):
-            members, similarity = cluster["members"], cluster["similarity"]
-            pages = ", ".join(f"{by_id[m['id']].start}-{by_id[m['id']].end}" for m in members)
-            if not duplicate_gate(members, similarity, content_joined=cluster["content_joined"]):
-                # No shared date, or a shared date with neither title nor category agreeing, and
-                # the content is not near-identical: a recurring form series, not copies.
-                # Rejected without spending a confirm call.
-                logger.info(
-                    "dedup rejected a %d-member candidate on document %s (similarity %s, pages %s): "
-                    "date plus title-or-category did not agree",
-                    len(members),
-                    job.document_id,
-                    similarity,
-                    pages,
-                )
-                continue
-            # Above dupe_model_override the text has already settled it. Skipping the call both saves
-            # quota and removes the confirm step's silent-discard failure mode, which is the one way a
-            # real duplicate can vanish with no trace anywhere.
-            #
-            # This reads `similarity` - the closure MINIMUM - and must keep doing so. The gate above
-            # now also admits a cluster whose every EDGE cleared the override, which is a weaker
-            # statement: a chain A~B~C says nothing about A against C. Letting that provenance skip
-            # the confirm call would accept a whole chain wholesale with nothing adjudicating it.
-            if similarity is not None and similarity >= settings.dupe_model_override:
-                logger.info(
-                    "dedup accepted a %d-member candidate on document %s by similarity %s "
-                    "(pages %s); confirm call skipped",
-                    len(members),
-                    job.document_id,
-                    similarity,
-                    pages,
-                )
-                confirmed_clusters.append((members, similarity))
-                continue
-            groups = confirm_groups(members)
-            for confirmed in groups:
-                # The candidate's `similarity` is the minimum over every member the CLUSTERER put
-                # together, including the ones the model has just rejected. For a group carved
-                # out of
-                # a larger candidate that number describes documents not in the group, so recompute
-                # it. An untouched candidate is skipped: `group_similarity` would return the
-                # value it
-                # already has, by the same definition that produced it.
-                confirmed_clusters.append(
-                    (
-                        confirmed,
-                        similarity
-                        if len(confirmed) == len(members)
-                        else group_similarity(confirmed),
-                    )
-                )
-            if len(groups) > 1:
-                # The event #213 is about. Logged because it is otherwise invisible: before this,
-                # every group after the first was dropped without a line anywhere.
-                logger.info(
-                    "dedup found %d separate duplicate groups in one %d-member candidate on "
-                    "document %s (sizes %s, pages %s)",
-                    len(groups),
-                    len(members),
-                    job.document_id,
-                    [len(g) for g in groups],
-                    pages,
-                )
-            if not groups:
-                # Previously invisible: the candidate was dropped with no record, so a reported miss
-                # could not be explained from the logs at all.
-                logger.warning(
-                    "dedup discarded a %d-member candidate on document %s after confirm "
-                    "(similarity %s, pages %s): the model judged them distinct documents",
-                    len(members),
-                    job.document_id,
-                    similarity,
-                    pages,
-                )
+        confirmed_clusters = _confirm_clusters(
+            items, by_id, job.document_id, settings.dupe_model_override
+        )
 
         # Everything below is one transaction: the old grouping is dropped and the new one written
         # together, so the tab never shows a half-rewritten state (and a crash above changed nothing).
