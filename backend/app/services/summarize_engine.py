@@ -1190,6 +1190,28 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
         ),
     )
     verify_ran = bool(result.get("ok"))
+    if not verify_ran:
+        # `ok` False folds three events into one value - nothing to audit, the reply hit the
+        # token cap, and something raised. #285 put `truncated` and the token counts on EVERY
+        # return path precisely so the caller handling a failure could tell them apart, and this
+        # caller read neither, so the distinction stopped at the function boundary.
+        #
+        # Logged HERE rather than left to `summary_verify`, which names the cap but not the row:
+        # its warning cannot say WHICH summary went unaudited, and that is the only question a
+        # reviewer's report raises. The sibling warnings below use the same page-range form.
+        #
+        # WARNING because this body ships with no faithfulness check behind it. Measured on the
+        # box 2026-09-10: 36 of 1,155 audited rows (3.1%), every one delivered - so the line is
+        # rare enough to read, and it is the ONLY record of the cause. `Summary` stores the
+        # outcome (`verified`) and has no column for the reason.
+        logger.warning(
+            "summary audit did not complete on pages %s-%s "
+            "(truncated=%s, output tokens=%s); shipping the body unaudited",
+            row["start"],
+            row["end"],
+            result.get("truncated"),
+            result.get("output_tokens"),
+        )
     if result["issues"]:
         issue_types = {
             str(issue.get("type") or "") for issue in result["issues"] if isinstance(issue, dict)

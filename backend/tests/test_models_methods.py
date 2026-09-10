@@ -124,3 +124,45 @@ def test_summary_effective_text_precedence_and_verify_flag():
     summary.edited_text = "HUMAN"
     assert summary.effective_text() == "HUMAN"  # reviewer edit wins over the AI fix
     assert summary.listing()["summaryText"] == "HUMAN"
+
+
+def test_listing_says_when_an_audit_was_requested_and_did_not_complete():
+    """WHEN the audit was asked for and did not run, THE SYSTEM SHALL say so on the wire.
+
+    `verified` cannot express this by itself. `audit_model` records that an audit was REQUESTED (it
+    is set from the `verify` setting) and `verified` records the OUTCOME, so a client holding only
+    the second cannot separate a failed audit from one nobody asked for. The Summaries tab reads
+    `verifyChanged`, which is False for a clean audit AND for a failed one - so a summary nothing
+    checked rendered exactly like a summary that passed.
+
+    Measured on the box 2026-09-10 over the 1,155 summaries that requested an audit: 36 did not get
+    one, and all 36 were delivered (`excluded` false).
+    """
+    summary = Summary(
+        idx=0, title="T", date="-", text="RAW", row_start=1, row_end=2, row_category="9"
+    )
+    summary.audit_model = "gemini-2.5-pro"
+
+    summary.verified = False
+    assert summary.listing()["verifyFailed"] is True
+
+    # Completed with nothing to fix. Silent, and no longer confusable with the case above.
+    summary.verified = True
+    assert summary.listing()["verifyFailed"] is False
+    assert summary.listing()["verifyChanged"] is False
+
+
+def test_listing_is_silent_when_no_audit_was_ever_requested():
+    """The guard that keeps the flag off every card, and the reason it reads two columns.
+
+    `verified` is False when the audit was never asked for as well as when it failed.
+    `summary_verify` defaults True today, but it is a SETTING: derive the flag from `not verified`
+    alone and turning the audit off would flag every summary in the record as unchecked.
+    """
+    summary = Summary(
+        idx=0, title="T", date="-", text="RAW", row_start=1, row_end=2, row_category="1"
+    )
+    assert summary.audit_model is None
+    for verified in (False, True):
+        summary.verified = verified
+        assert summary.listing()["verifyFailed"] is False

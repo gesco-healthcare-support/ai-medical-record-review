@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { FileText, Flag, Pencil, ShieldCheck } from "lucide-react";
+import { FileText, Flag, Pencil, ShieldAlert, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
 import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summaries";
@@ -351,6 +351,15 @@ export function SummariesView({
                       <span className="ev-chip ev-chip-review" title="AI verify pass corrected this summary - please confirm">
                         <ShieldCheck width={12} height={12} aria-hidden />
                         AI-fixed
+                      </span>
+                    ) : null}
+                    {item.verifyFailed ? (
+                      <span
+                        className="ev-chip ev-chip-review"
+                        title="The AI check did not finish on this summary, so nothing was compared against the source pages. It exports as-is - read it against the pages first."
+                      >
+                        <ShieldAlert width={12} height={12} aria-hidden />
+                        Not checked
                       </span>
                     ) : null}
                     {categoryWasGuessed({
