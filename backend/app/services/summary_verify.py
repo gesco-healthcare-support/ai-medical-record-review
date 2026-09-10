@@ -198,7 +198,9 @@ def _unverified(summary_text, title, response=None, truncated=False):
     }
 
 
-def verify_summary(model, source_text, summary_text, title=None, document_date=None):
+def verify_summary(
+    model, source_text, summary_text, title=None, document_date=None, max_output_tokens=None
+):
     """Audit ``summary_text`` and (when given) ``title`` against ``source_text`` and the house rules.
 
     Returns ``{"fixed_text": str, "fixed_title": str, "issues": list[dict], "ok": bool}``.
@@ -236,7 +238,19 @@ def verify_summary(model, source_text, summary_text, title=None, document_date=N
             # category-1 or diagnostic summary came back as truncated JSON, which the parse then
             # discarded - silently keeping the unverified original. Track the summary budget, since
             # the output is at minimum as long as the input.
-            max_output_tokens=get_settings().summary_max_output_tokens,
+            #
+            # OVERRIDABLE SINCE 2026-09-10, because tracking the summary budget is right in
+            # principle and far too generous in practice. Measured over 139 successful audits on the
+            # 20-record benchmark: replies were 56 to 7,728 characters, median 456 - roughly 171
+            # output tokens at the median and ~2,898 at the largest. The caller had been passing
+            # 32,768, so the audit carried ELEVEN TIMES the budget its biggest real answer has ever
+            # needed, and a runaway therefore got to spend ~168s at ~195 tok/s before anything
+            # stopped it. That was 93 percent of the stage's model-time producing nothing.
+            #
+            # The cap does not prevent a runaway; it bounds what one costs. Callers that know their
+            # own distribution should pass it. None keeps the historical behaviour exactly, so
+            # nothing that does not opt in can change.
+            max_output_tokens=(max_output_tokens or get_settings().summary_max_output_tokens),
         )
         if response.truncated:
             # Checked BEFORE the parse, because parsing a cut-off reply reports the symptom and hides
