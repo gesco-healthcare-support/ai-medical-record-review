@@ -70,8 +70,12 @@ import { getDocument } from "@/lib/review-api";
 import { BundlePageClient } from "@/components/bundle/bundle-page-client";
 
 function withClient(ui: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+  );
 }
 
 const CONFIG = {
@@ -86,8 +90,12 @@ describe("BundlePageClient error handling", () => {
     downloadBundlePdf.mockRejectedValue(new ApiError("network", 0));
     withClient(<BundlePageClient config={CONFIG} />);
     await user.click(await screen.findByRole("button", { name: "Select" }));
-    await user.click(await screen.findByRole("button", { name: /Download combined PDF/i }));
-    expect(await screen.findByText(/couldn't reach the server/i)).toBeInTheDocument();
+    await user.click(
+      await screen.findByRole("button", { name: /Download combined PDF/i }),
+    );
+    expect(
+      await screen.findByText(/couldn't reach the server/i),
+    ).toBeInTheDocument();
   });
 
   it("prefills the export fields from the record's persisted header", async () => {
@@ -123,7 +131,9 @@ describe("BundlePageClient error handling", () => {
     withClient(<BundlePageClient config={CONFIG} />);
     await user.click(await screen.findByRole("button", { name: "Select" }));
 
-    expect(await screen.findByLabelText("Patient name")).toHaveValue("Jane Roe");
+    expect(await screen.findByLabelText("Patient name")).toHaveValue(
+      "Jane Roe",
+    );
     expect(screen.getByLabelText("DOB")).toHaveValue("01/02/1990");
     expect(screen.getByLabelText("Attorney law firm")).toHaveValue("Acme LLP");
   });
@@ -176,6 +186,50 @@ describe("BundlePageClient error handling", () => {
 
     expect(await screen.findByText("3 matching documents")).toBeInTheDocument();
     expect(screen.queryByText("4 matching documents")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state rather than the table when nothing matches the preset", async () => {
+    // The empty-vs-table branch was INERT: rendering the table unconditionally left every other test
+    // in this file green. Pinned here because the matches card is about to move into its own
+    // component, and "no documents here" is the whole point of that card on an unmatched record.
+    const user = userEvent.setup();
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      id: "b1",
+      original_filename: "rec.pdf",
+      page_count: 5,
+      status: "reviewing",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_name: "",
+      patient_dob: "",
+      law_firm: "",
+      rows: [
+        {
+          start: 1,
+          end: 3,
+          category: "1", // deliberately OUTSIDE CONFIG.categories, which is ["3", "8"]
+          title: "Progress note",
+          date: "",
+          injury_date: "",
+          flag: "-",
+          suggest_merge: false,
+          include: true,
+        },
+      ],
+      categories: [{ id: "1", name: "Progress report" }],
+    });
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(
+      await screen.findByText(`No ${CONFIG.label} documents here`),
+    ).toBeInTheDocument();
+    expect(screen.getByText("0 matching documents")).toBeInTheDocument();
+    // The row exists on the record but must not be listed: it is not part of this preset.
+    expect(screen.queryByText("Progress note")).not.toBeInTheDocument();
   });
 
   it("counts every member of a cluster nobody has resolved yet", async () => {
@@ -275,8 +329,12 @@ describe("BundlePageClient success path", () => {
     downloadBundlePdf.mockResolvedValue(undefined);
     withClient(<BundlePageClient config={CONFIG} />);
     await user.click(await screen.findByRole("button", { name: "Select" }));
-    await user.click(await screen.findByRole("button", { name: /Download combined PDF/i }));
-    expect(await screen.findByText(/Combined PDF downloaded/i)).toBeInTheDocument();
+    await user.click(
+      await screen.findByRole("button", { name: /Download combined PDF/i }),
+    );
+    expect(
+      await screen.findByText(/Combined PDF downloaded/i),
+    ).toBeInTheDocument();
     expect(downloadBundlePdf).toHaveBeenCalledWith("b1", CONFIG);
   });
 
@@ -285,8 +343,12 @@ describe("BundlePageClient success path", () => {
     downloadBundleSummary.mockResolvedValue(undefined);
     withClient(<BundlePageClient config={CONFIG} />);
     await user.click(await screen.findByRole("button", { name: "Select" }));
-    await user.click(await screen.findByRole("button", { name: /Summarize to Word/i }));
-    expect(await screen.findByText(/Word report downloaded/i)).toBeInTheDocument();
+    await user.click(
+      await screen.findByRole("button", { name: /Summarize to Word/i }),
+    );
+    expect(
+      await screen.findByText(/Word report downloaded/i),
+    ).toBeInTheDocument();
     expect(downloadBundleSummary).toHaveBeenCalledWith(
       "b1",
       CONFIG,

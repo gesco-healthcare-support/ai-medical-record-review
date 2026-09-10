@@ -53,6 +53,38 @@ describe("RowsTable", () => {
     expect(screen.getByLabelText("Last page")).toHaveValue(5);
   });
 
+  // The three row-action buttons below are each conditional, and NOTHING covered those conditions
+  // before these tests: breaking all three - rendering each button unconditionally - left every
+  // existing test in this file green. They are pinned here because the row-actions block is about to
+  // move into its own component, and a green suite that cannot see the move is not a safety net.
+
+  it("offers the merge suggestion only on a suggested row that has a row above it", () => {
+    renderTable([
+      erow({ suggest_merge: true }), // suggested, but FIRST - nothing to merge into
+      erow({ start: 4, end: 6, suggest_merge: true }), // suggested and has a predecessor
+      erow({ start: 7, end: 9, suggest_merge: false }), // not suggested
+    ]);
+    expect(
+      screen.getAllByRole("button", { name: /Likely same doc/i }),
+    ).toHaveLength(1);
+  });
+
+  it("offers Merge up on every row except the first", () => {
+    renderTable([
+      erow(),
+      erow({ start: 4, end: 6 }),
+      erow({ start: 7, end: 9 }),
+    ]);
+    expect(screen.getAllByRole("button", { name: /^Merge up$/ })).toHaveLength(
+      2,
+    );
+  });
+
+  it("offers Split only on a row spanning more than one page", () => {
+    renderTable([erow({ start: 1, end: 3 }), erow({ start: 4, end: 4 })]);
+    expect(screen.getAllByRole("button", { name: /^Split$/ })).toHaveLength(1);
+  });
+
   it("marks only the invalid row's fields row with the invalid class", () => {
     const { container } = render(
       <RowsTable
@@ -74,7 +106,9 @@ describe("RowsTable", () => {
     const invalidRows = container.querySelectorAll("tr.invalid");
     expect(invalidRows).toHaveLength(1);
     // ...and it is the SECOND document's fields row (start=3), not the first row or a title row.
-    expect(within(invalidRows[0] as HTMLElement).getByLabelText("First page")).toHaveValue(3);
+    expect(
+      within(invalidRows[0] as HTMLElement).getByLabelText("First page"),
+    ).toHaveValue(3);
   });
 
   it("reflects the include-in-summarization checkbox state", () => {

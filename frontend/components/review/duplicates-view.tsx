@@ -51,7 +51,8 @@ function emptyStateCopy(state: {
 
 /** Where a cluster stands: dismissed beats resolved, resolved beats needing review. */
 function clusterChip(dismissed: boolean, resolved: boolean) {
-  if (dismissed) return <span className="ev-chip ev-chip-neutral">Dismissed</span>;
+  if (dismissed)
+    return <span className="ev-chip ev-chip-neutral">Dismissed</span>;
   if (resolved) return <span className="ev-chip ev-chip-edit">Resolved</span>;
   return <span className="ev-chip ev-chip-review">Needs review</span>;
 }
@@ -61,6 +62,83 @@ function copyStateLabel(row: DuplicateRow) {
   if (row.primary) return " - kept";
   if (row.include === false) return " - excluded";
   return "";
+}
+
+/** Boundaries changed since the last check: point at the header's "Re-check duplicates" (a re-run is
+ *  always manual - it costs AI calls). Hidden while a check is already in flight. */
+function StaleBanner({ stale }: Readonly<{ stale: boolean }>) {
+  if (!stale) return null;
+  return (
+    <div className="banner" aria-live="polite">
+      <span>
+        Document boundaries changed since the last duplicate check, so this list
+        may be incomplete. Use &quot;Re-check duplicates&quot; above to scan
+        again.
+      </span>
+    </div>
+  );
+}
+
+/** Never checked is not a result at all. `StaleBanner` warns when a COMPLETED check may be
+ *  incomplete; this one covers the case that check never happened, which is the default state of
+ *  every record because dedup is only ever started by hand. */
+function NeverCheckedBanner({
+  neverChecked,
+}: Readonly<{ neverChecked: boolean }>) {
+  if (!neverChecked) return null;
+  return (
+    <div className="banner" aria-live="polite">
+      <span>
+        No duplicate check has run on this record yet, so nothing here has been
+        compared. Use &quot;Re-check duplicates&quot; above to scan for
+        documents that were scanned more than once.
+      </span>
+    </div>
+  );
+}
+
+/** A check that ran and failed. Without this the tab reverted to "Not checked yet" with no error
+ *  text, so the reviewer could not tell a failure from a mis-click, and re-clicking produced the
+ *  same silent outcome. When an earlier run DID complete, its clusters are still stored and still
+ *  listed, so the wording has to hold for both. */
+function FailedBanner({
+  failed,
+  jobError,
+  checked,
+}: Readonly<{ failed: boolean; jobError?: string | null; checked: boolean }>) {
+  if (!failed) return null;
+  return (
+    <div className="banner" aria-live="polite">
+      <span>
+        The last duplicate check did not finish
+        {jobError ? `: ${jobError}` : "."} Use &quot;Re-check duplicates&quot;
+        above to try again.
+        {checked
+          ? " The groups below are from the last check that completed."
+          : " Nothing in this record has been compared yet."}
+      </span>
+    </div>
+  );
+}
+
+/** A run that could not read part of the record is not a clean result: text-free sub-documents match
+ *  nothing, so any duplicate involving them was never even considered. Silence here reads as "no
+ *  duplicates", which is the wrong conclusion to hand a reviewer. */
+function UnreadableBanner({
+  unreadable,
+  running,
+}: Readonly<{ unreadable: number; running: boolean }>) {
+  if (unreadable <= 0 || running) return null;
+  return (
+    <div className="banner" aria-live="polite">
+      <span>
+        {unreadable} sub-document{unreadable === 1 ? "" : "s"} could not be read
+        (no text recognized) and {unreadable === 1 ? "was" : "were"} not
+        compared. Scanned images, photographs and blank separator pages have no
+        text; duplicates among them cannot be found automatically.
+      </span>
+    </div>
+  );
 }
 
 export function DuplicatesView({
@@ -93,7 +171,8 @@ export function DuplicatesView({
   // No check has ever finished on this record. Distinct from "checked and clean" and it must not read
   // as it: dedup only runs when someone asks, so this is the state a record sits in by default.
   // Also distinct from a check that FAILED, which has its own banner and its own next step.
-  const neverChecked = data !== undefined && !data.checked && !running && !failed;
+  const neverChecked =
+    data !== undefined && !data.checked && !running && !failed;
   // Boundaries changed since the last check: point at the header's "Re-check duplicates" (a re-run
   // is always manual - it costs AI calls). Hidden while a check is already in flight.
   const stale = Boolean(data?.stale) && !running;
@@ -113,7 +192,9 @@ export function DuplicatesView({
       await resolve.mutateAsync({ group, action, ...opts });
       onResolved?.();
     } catch (err) {
-      setMsg(humanizeError(err, { fallback: "Could not save - please try again." }));
+      setMsg(
+        humanizeError(err, { fallback: "Could not save - please try again." }),
+      );
     }
   }
 
@@ -132,15 +213,24 @@ export function DuplicatesView({
     void act(group, "remove_member", { idx: row.idx });
   }
 
-  const loadError = error ? humanizeError(error, { fallback: "Could not load duplicates." }) : "";
+  const loadError = error
+    ? humanizeError(error, { fallback: "Could not load duplicates." })
+    : "";
 
   const groupNoun = clusters.length === 1 ? "group" : "groups";
-  const noClustersLine = neverChecked ? "Not checked yet" : "No duplicate documents found";
+  const noClustersLine = neverChecked
+    ? "Not checked yet"
+    : "No duplicate documents found";
   const countLine = clusters.length
     ? `${clusters.length} possible duplicate ${groupNoun}`
     : noClustersLine;
 
-  const emptyCopy = emptyStateCopy({ running, failed, neverChecked, checkingSuffix });
+  const emptyCopy = emptyStateCopy({
+    running,
+    failed,
+    neverChecked,
+    checkingSuffix,
+  });
 
   const list = (
     <div className="rce-splitcol">
@@ -159,58 +249,15 @@ export function DuplicatesView({
           </div>
         </div>
 
-        {stale ? (
-          <div className="banner" aria-live="polite">
-            <span>
-              Document boundaries changed since the last duplicate check, so this list may be
-              incomplete. Use &quot;Re-check duplicates&quot; above to scan again.
-            </span>
-          </div>
-        ) : null}
+        <StaleBanner stale={stale} />
 
-        {/* Never checked is not a result at all. The banner above warns when a COMPLETED check may
-            be incomplete; this one covers the case that check never happened, which is the default
-            state of every record because dedup is only ever started by hand. */}
-        {neverChecked ? (
-          <div className="banner" aria-live="polite">
-            <span>
-              No duplicate check has run on this record yet, so nothing here has been compared. Use
-              &quot;Re-check duplicates&quot; above to scan for documents that were scanned more than
-              once.
-            </span>
-          </div>
-        ) : null}
-
-        {/* A check that ran and failed. Without this the tab reverted to "Not checked yet" with no
-            error text, so the reviewer could not tell a failure from a mis-click, and re-clicking
-            produced the same silent outcome. When an earlier run DID complete, its clusters are
-            still stored and still listed, so the wording has to hold for both. */}
-        {failed ? (
-          <div className="banner" aria-live="polite">
-            <span>
-              The last duplicate check did not finish
-              {job?.error ? `: ${job.error}` : "."} Use &quot;Re-check duplicates&quot; above to try
-              again.
-              {data?.checked
-                ? " The groups below are from the last check that completed."
-                : " Nothing in this record has been compared yet."}
-            </span>
-          </div>
-        ) : null}
-
-        {/* A run that could not read part of the record is not a clean result: text-free
-            sub-documents match nothing, so any duplicate involving them was never even considered.
-            Silence here reads as "no duplicates", which is the wrong conclusion to hand a reviewer. */}
-        {unreadable > 0 && !running ? (
-          <div className="banner" aria-live="polite">
-            <span>
-              {unreadable} sub-document{unreadable === 1 ? "" : "s"} could not be read (no text
-              recognized) and {unreadable === 1 ? "was" : "were"} not compared. Scanned images,
-              photographs and blank separator pages have no text; duplicates among them cannot be
-              found automatically.
-            </span>
-          </div>
-        ) : null}
+        <NeverCheckedBanner neverChecked={neverChecked} />
+        <FailedBanner
+          failed={failed}
+          jobError={job?.error}
+          checked={Boolean(data?.checked)}
+        />
+        <UnreadableBanner unreadable={unreadable} running={running} />
 
         {!isLoading && clusters.length === 0 ? (
           <div className="summary-empty">
@@ -235,7 +282,9 @@ export function DuplicatesView({
                 busy={resolve.isPending}
                 selectedIdx={selectedIdx}
                 onOpen={openRow}
-                onKeep={(idx) => act(cluster.group, "keep_one", { primaryIdx: idx })}
+                onKeep={(idx) =>
+                  act(cluster.group, "keep_one", { primaryIdx: idx })
+                }
                 onDismiss={() => act(cluster.group, "dismiss")}
                 onRemove={(row) => removeMember(cluster.group, row)}
               />
@@ -253,7 +302,11 @@ export function DuplicatesView({
         left={list}
         right={
           <div className="rce-viewer">
-            <PdfViewer ref={pdfRef} documentId={documentId} filename={filename} />
+            <PdfViewer
+              ref={pdfRef}
+              documentId={documentId}
+              filename={filename}
+            />
           </div>
         }
       />
@@ -295,8 +348,9 @@ function ClusterCard({
           does not enforce. Absent on clusters stored before the score was kept. */}
       {typeof cluster.similarity === "number" ? (
         <p className="meta dupe-similarity">
-          {Math.round(cluster.similarity * 100)}% of the text matches - a high score means one
-          document scanned twice, a low one means forms that share a template.
+          {Math.round(cluster.similarity * 100)}% of the text matches - a high
+          score means one document scanned twice, a low one means forms that
+          share a template.
         </p>
       ) : null}
       <ul className="dupe-copies">
@@ -312,9 +366,14 @@ function ClusterCard({
               selectedIdx === row.idx && "selected",
             )}
           >
-            <button type="button" className="row-jump dupe-copy-main" onClick={() => onOpen(row)}>
+            <button
+              type="button"
+              className="row-jump dupe-copy-main"
+              onClick={() => onOpen(row)}
+            >
               <span className="meta">
-                {row.date && row.date !== "-" ? row.date : "no date"} - pages {row.pages.start}
+                {row.date && row.date !== "-" ? row.date : "no date"} - pages{" "}
+                {row.pages.start}
                 {"–"}
                 {row.pages.end}
                 {copyStateLabel(row)}
@@ -355,7 +414,12 @@ function ClusterCard({
       </ul>
       <div className="edit-actions">
         {!cluster.dismissed ? (
-          <button type="button" className="ev-btn ev-btn-ghost" disabled={busy} onClick={onDismiss}>
+          <button
+            type="button"
+            className="ev-btn ev-btn-ghost"
+            disabled={busy}
+            onClick={onDismiss}
+          >
             Not duplicates
           </button>
         ) : null}
