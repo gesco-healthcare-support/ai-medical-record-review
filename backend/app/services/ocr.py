@@ -167,6 +167,30 @@ def extract_text_from_image(image) -> str:
     return _ocr_image(image)
 
 
+def _ocr_page_images(images, page_number: int, page_label_offset: int, mark_pages: bool) -> str:
+    """OCR every image rasterized from one record page, concatenated.
+
+    The ``except`` ORDER here is load-bearing and must not be reordered: ``PdfUnreadableError``
+    subclasses ``OcrUnavailableError`` (app/errors.py), so the fail-fast arm has to come first.
+    Swapping them would turn a configuration failure into a silently skipped page, which is the
+    exact outcome the fail-fast arm exists to prevent. The ``raise`` propagates out of this helper
+    to the same caller it reached before the extraction.
+    """
+    text = ""
+    for page_image in images:
+        try:
+            page_text = _ocr_image(page_image)
+        except OcrUnavailableError:
+            raise  # Tesseract missing: fail fast
+        except Exception as exc:
+            logger.warning("OCR skipped page %s: %s", page_number, exc)  # timeout/bad page
+            continue
+        # Same marker shape as extract_text_from_all_pages, so both extractors read alike.
+        label = page_number + page_label_offset
+        text += f"Page {label}:\n{page_text}\n" if mark_pages else page_text
+    return text
+
+
 def extract_text_from_selected_pages(
     pdf_path, selected_pages, *, mark_pages: bool = False, page_label_offset: int = 0
 ) -> str:
@@ -196,17 +220,7 @@ def extract_text_from_selected_pages(
                 "could not rasterize page %s: %s", page_number, exc
             )  # skip, do not abort
             continue
-        for page_image in images:
-            try:
-                page_text = _ocr_image(page_image)
-            except OcrUnavailableError:
-                raise  # Tesseract missing: fail fast
-            except Exception as exc:
-                logger.warning("OCR skipped page %s: %s", page_number, exc)  # timeout/bad page
-                continue
-            # Same marker shape as extract_text_from_all_pages, so both extractors read alike.
-            label = page_number + page_label_offset
-            extracted_text += f"Page {label}:\n{page_text}\n" if mark_pages else page_text
+        extracted_text += _ocr_page_images(images, page_number, page_label_offset, mark_pages)
     return extracted_text
 
 
