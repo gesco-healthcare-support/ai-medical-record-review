@@ -25,7 +25,18 @@ const FILTERS: ReadonlyArray<{
   { key: "running", label: "Running", match: (d) => Boolean(d.active_job) },
   { key: "done", label: "Summarized", match: (d) => d.status === "done" },
   { key: "uploaded", label: "Uploaded", match: (d) => d.status === "uploaded" },
-  { key: "failed", label: "Failed", match: (d) => d.status === "error" || d.status === "interrupted" },
+  { key: "failed", label: "Failed", match: (d) => d.status === "error" },
+  // `interrupted` is NOT a failure, and the backend says so in one place on purpose:
+  // `worker/failures._STATE_OUTCOMES` maps it to `orphaned`, described there as "reaped after a
+  // restart killed its worker - NOT a failure", and `is_failure` excludes it. #218 measured what
+  // conflating them costs - a 27.4% "did not complete cleanly" rate whose largest single part was
+  // twelve restart orphans from one day - and this chip was the last surface still giving that
+  // naive reading, under a label that tells the reviewer their record broke.
+  //
+  // It is a routine event rather than an exotic one: a worker restart produces it, and every deploy
+  // restarts the workers. The remedy is also different from a failure's - run it again, nothing is
+  // wrong with the record - which is why it earns its own chip rather than a softer shared label.
+  { key: "interrupted", label: "Interrupted", match: (d) => d.status === "interrupted" },
 ];
 
 const SORT_ACCESSORS = {
@@ -102,6 +113,10 @@ export function DocumentsTable({
   }, [docs, filter, search, sortKey, sortDir]);
 
   const pageCount = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  // `page` is what the buttons set; `curPage` is what is SHOWN, clamped in case the list shrank
+  // underneath it (deleting the last row of the last page, or a poll returning fewer records). The
+  // two then disagree, and Prev/Next must move from the page on screen rather than from the stale
+  // one - stepping back from `page` lands on the page already displayed and the click does nothing.
   const curPage = Math.min(page, pageCount - 1);
   const start = curPage * PAGE_SIZE;
   const pageDocs = visible.slice(start, start + PAGE_SIZE);
@@ -242,7 +257,7 @@ export function DocumentsTable({
             <button
               type="button"
               className="ev-btn ev-btn-outline ev-btn-sm"
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              onClick={() => setPage(Math.max(0, curPage - 1))}
               disabled={curPage === 0}
             >
               Prev
@@ -250,7 +265,7 @@ export function DocumentsTable({
             <button
               type="button"
               className="ev-btn ev-btn-outline ev-btn-sm"
-              onClick={() => setPage((p) => p + 1)}
+              onClick={() => setPage(curPage + 1)}
               disabled={curPage >= pageCount - 1}
             >
               Next

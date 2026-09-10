@@ -106,3 +106,78 @@ describe("DocumentsTable sorting", () => {
     expect(sorted[0].textContent).toContain("Document");
   });
 });
+
+describe("DocumentsTable status filters", () => {
+  function withStatus(id: string, status: DocumentListItem["status"]): DocumentListItem {
+    return { ...doc(id, `${id}.pdf`, 1, "2026-01-01T00:00:00Z"), status };
+  }
+
+  function chip(container: HTMLElement, label: string) {
+    return [...container.querySelectorAll(".hd-chip")].find((c) =>
+      c.textContent?.startsWith(label),
+    );
+  }
+
+  it("does not count an interrupted record as Failed", () => {
+    // `interrupted` is a restart orphan, and the backend says so in one place on purpose:
+    // `worker/failures._STATE_OUTCOMES` maps it to `orphaned`, "NOT a failure", and `is_failure`
+    // excludes it. #218 measured what conflating them costs. This chip was the last surface still
+    // giving the naive reading, under a label that tells the reviewer their record broke.
+    const { container } = render(
+      <DocumentsTable
+        docs={[withStatus("a", "error"), withStatus("b", "interrupted")]}
+        onOpen={vi.fn()}
+      />,
+    );
+
+    expect(chip(container, "Failed")?.textContent).toContain("1");
+    expect(chip(container, "Interrupted")?.textContent).toContain("1");
+  });
+
+  it("filters to the interrupted record on its own chip", () => {
+    const { container } = render(
+      <DocumentsTable
+        docs={[withStatus("a", "error"), withStatus("b", "interrupted")]}
+        onOpen={vi.fn()}
+      />,
+    );
+    fireEvent.click(chip(container, "Interrupted")!);
+    expect(names(container)).toEqual(["b.pdf"]);
+  });
+});
+
+describe("DocumentsTable paging when the list shrinks underneath it", () => {
+  function many(n: number): DocumentListItem[] {
+    return Array.from({ length: n }, (_, i) =>
+      doc(`d${i}`, `rec-${String(i).padStart(3, "0")}.pdf`, 1, "2026-01-01T00:00:00Z"),
+    );
+  }
+
+  function footer(container: HTMLElement) {
+    return container.querySelector(".hd-foot span")?.textContent;
+  }
+
+  it("steps back from the page on screen, not from a stale page number", () => {
+    // `page` is what the buttons set and `curPage` is what is SHOWN, clamped when the list
+    // shrinks - deleting the last row of the last page, or a poll returning fewer records. Prev
+    // stepped back from the STALE `page`, landing on the page already shown, so the click did
+    // nothing.
+    const { container, rerender } = render(
+      <DocumentsTable docs={many(41)} onOpen={vi.fn()} />,
+    );
+    const nav = (name: string) =>
+      [...container.querySelectorAll("button")].find((b) => b.textContent === name)!;
+    const next = () => fireEvent.click(nav("Next"));
+    const prev = () => fireEvent.click(nav("Prev"));
+
+    next();
+    next();
+    expect(footer(container)).toBe("41-41 of 41"); // page index 2 of 0-2
+
+    rerender(<DocumentsTable docs={many(21)} onOpen={vi.fn()} />);
+    expect(footer(container)).toBe("21-21 of 21"); // clamped to page index 1 of 0-1
+
+    prev();
+    expect(footer(container)).toBe("1-20 of 21");
+  });
+});
