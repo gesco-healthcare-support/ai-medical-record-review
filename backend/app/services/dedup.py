@@ -46,6 +46,23 @@ _CONFIRM_SCHEMA = {
 # date - a fax re-send line, a received stamp - from making two scans of ONE document score lower than
 # they should. It cannot make a recurring therapy series look alike, because those differ in their
 # findings, not merely in their dates.
+# NUMERIC forms only, and MEASURED rather than assumed. Extending this to ISO (2026-09-09) and
+# spelled-out ("Sep 9, 2026") dates looks obviously right - those forms appear in 785 of the 3,755
+# stored excerpts on the box and go unmasked - and it is NOT justified.
+#
+# Masking can only matter for a CROSS-DATE pair. Two documents sharing a date carry the same token
+# whether it is masked or not, so the same-date branch of `duplicate_gate` is unaffected either
+# way. Measured over the cross-date population that clears the Jaccard pre-gate (16,606 pairs,
+# 1,500 sampled through the real `_min_difflib`):
+#
+#     pairs whose score moves at all   117 of 1,500  (7.8%)
+#     mean movement                    -0.0006       NEGATIVE
+#     verdict flips at 0.90 / 0.99     2 / 0
+#
+# The mean is negative because replacing a varied date with a fixed-length placeholder shifts the
+# character alignment difflib matches on, which costs about as often as it helps. So there is no
+# measured case for widening it, and the obvious-looking change would rest on an intuition the
+# data does not support. Re-measure before revisiting; do not reason about it from the 785.
 _DATE_LIKE = re.compile(r"\b\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}\b")
 _DATE_MASK = "DATEMASK"
 
