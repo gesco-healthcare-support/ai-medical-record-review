@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLogin } from "@/hooks/use-auth";
+import { humanizeError, isOffline } from "@/lib/errors";
 import { AuthShell } from "./auth-shell";
 import { AuthError } from "./auth-error";
 
@@ -28,8 +29,16 @@ export function SignInForm({
     try {
       await login.mutateAsync({ email, password });
       router.replace("/");
-    } catch {
-      setError("We couldn't sign you in. Check your email and password, then try again.");
+    } catch (err) {
+      // "Check your email and password" is right for a rejected credential and wrong for a dropped
+      // connection - it sends the reader to reset a password that was never the problem. Only the
+      // transport case is delegated; `humanizeError` would turn the 401 this page expects into
+      // "your session has ended", which is nonsense on a sign-in form.
+      setError(
+        isOffline(err)
+          ? humanizeError(err)
+          : "We couldn't sign you in. Check your email and password, then try again.",
+      );
     }
   }
 

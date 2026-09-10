@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useLogin, useRegister } from "@/hooks/use-auth";
 import { ApiError } from "@/lib/api";
+import { humanizeError, isOffline } from "@/lib/errors";
 import { AuthShell } from "./auth-shell";
 import { AuthError } from "./auth-error";
 import { PasswordChecklist, passwordValid } from "./password-checklist";
@@ -38,6 +39,10 @@ export function RegisterForm({ onSignIn }: Readonly<{ onSignIn: () => void }>) {
     } catch (err) {
       if (err instanceof ApiError && err.status === 400) {
         setError("An account with this email already exists.");
+      } else if (isOffline(err)) {
+        // This branch already read the status, so the transport case was the one gap: "check your
+        // details" for a dropped connection sends the reader to re-check a form that was fine.
+        setError(humanizeError(err));
       } else {
         setError("Could not create your account. Check your details and try again.");
       }
