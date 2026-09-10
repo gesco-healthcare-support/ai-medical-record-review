@@ -248,6 +248,27 @@ def populate_document(
     return stored
 
 
+def _load_page(session, document_id: str, page: int, row, pdf_path):
+    """``(text, extract_ok)`` for one page: the stored copy, or a fresh extraction stored on a miss.
+
+    A row stored as FAILED is re-extracted when a path is given, mirroring the retry the direct
+    extraction path performs - a cached failure must not become permanent. With no path, the stored
+    outcome is returned as-is, failure included, because there is nothing to retry with.
+
+    The caller keeps the one case this cannot express: a page with no stored row AND no path is
+    reported errored and contributes nothing to the joined text, which is a `continue`, not a value.
+    """
+    if row is not None and (row.extract_ok or pdf_path is None):
+        return (row.text or ""), row.extract_ok
+    text, ok = _extract(pdf_path, page)
+    if row is None:
+        _store(session, document_id, page, text, ok)
+    else:
+        row.text, row.extract_ok, row.char_count = text, ok, len(text)
+        session.commit()
+    return text, ok
+
+
 def get_row_text_with_report(session, document_id: str, pages, pdf_path=None):
     """``(text, report)`` for a page range, served from the store, matching the contract of
     ``ocr.extract_pages_with_report``: ``report`` is ``{"pages", "errored", "blank"}``, and all
@@ -280,18 +301,12 @@ def get_row_text_with_report(session, document_id: str, pages, pdf_path=None):
     parts = []
     for page in wanted:
         row = rows.get(page)
-        if row is None or (not row.extract_ok and pdf_path is not None):
-            if pdf_path is None:
-                report["errored"].append(page)
-                continue
-            text, ok = _extract(pdf_path, page)
-            if row is None:
-                _store(session, document_id, page, text, ok)
-            else:
-                row.text, row.extract_ok, row.char_count = text, ok, len(text)
-                session.commit()
-        else:
-            text, ok = (row.text or ""), row.extract_ok
+        # Nothing stored and nothing to extract with: report it and contribute no text. This is the
+        # only case `_load_page` cannot express, because it is a skip rather than a value.
+        if row is None and pdf_path is None:
+            report["errored"].append(page)
+            continue
+        text, ok = _load_page(session, document_id, page, row, pdf_path)
         if not ok:
             report["errored"].append(page)
         elif not text.strip():

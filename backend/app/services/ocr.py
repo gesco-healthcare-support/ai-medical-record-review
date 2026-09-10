@@ -210,6 +210,32 @@ def extract_text_from_selected_pages(
     return extracted_text
 
 
+def _ocr_page_with_retries(pdf_path, page_number: int, retries: int):
+    """OCR one page, retrying only ERRORS. Returns ``(text, failure)``; exactly one is None.
+
+    ``OcrUnavailableError`` is re-raised rather than retried and rather than reported as a failure:
+    it means Tesseract or Poppler is missing, so no number of attempts can succeed and every other
+    page would fail identically. Note ``PdfUnreadableError`` subclasses it, so this arm catches
+    both - it must stay ahead of the general handler below it.
+
+    A blank page is NOT a failure here. It returns ("", None), and the caller decides whether an
+    empty read means blank; only errors are retried, because a film or separator sheet is
+    legitimately textless and retrying it just costs time.
+    """
+    page_text, failed = None, None
+    for _ in range(max(1, retries + 1)):
+        try:
+            images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
+            page_text = "".join(_ocr_image(image) for image in images)
+            failed = None
+            break
+        except OcrUnavailableError:
+            raise  # config failure (no Tesseract/Poppler): fail fast, never retry
+        except Exception as exc:
+            failed = exc
+    return page_text, failed
+
+
 def extract_pages_with_report(
     pdf_path,
     selected_pages,
@@ -248,17 +274,7 @@ def extract_pages_with_report(
     pages = sorted(set(selected_pages))
     text, errored, blank = "", [], []
     for page_number in pages:
-        page_text, failed = None, None
-        for _ in range(max(1, retries + 1)):
-            try:
-                images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
-                page_text = "".join(_ocr_image(image) for image in images)
-                failed = None
-                break
-            except OcrUnavailableError:
-                raise  # config failure (no Tesseract/Poppler): fail fast, never retry
-            except Exception as exc:
-                failed = exc
+        page_text, failed = _ocr_page_with_retries(pdf_path, page_number, retries)
         if failed is not None:
             logger.warning(
                 "OCR gave up on page %s after %d attempt(s): %s", page_number, retries + 1, failed

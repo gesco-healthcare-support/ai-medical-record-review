@@ -803,6 +803,59 @@ async def test_export_pdf_returns_linked_pdf_with_working_links(authed):
     doc.close()
 
 
+async def test_the_excluded_flag_survives_a_summary_edit(authed):
+    """`summary.excluded` is the SOLE server-side control of what reaches a deliverable - the export
+    takes `document.summaries` filtered only by this flag - and nothing asserted it round-trips.
+
+    Grepping `backend/tests/` for `excluded` returns only a duplicates-staleness test and comments,
+    so the one write path for the flag, `PUT /summaries/{idx}`, was unpinned. Written before the
+    surrounding handler is refactored, so it characterizes today's behaviour rather than the change.
+
+    Scope is deliberately the round-trip, not the export contents: proving a title is absent from a
+    generated .docx needs the document parsed, and the untested seam is the write, not the render.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        for idx in (0, 1):
+            session.add(
+                Summary(
+                    document_id=doc_id,
+                    job_id=job.id,
+                    idx=idx,
+                    title=f"Report {idx}",
+                    text=f"summary body {idx}",
+                    row_start=idx + 1,
+                    row_end=idx + 1,
+                    row_category=_VALID_CATEGORY,
+                )
+            )
+        session.commit()
+
+    resp = await client.put(f"/api/documents/{doc_id}/summaries/1", json={"excluded": True})
+    assert resp.status_code == 200, resp.text
+
+    with get_sessionmaker()() as session:
+        flags = {
+            s.idx: bool(s.excluded)
+            for s in session.scalars(select(Summary).where(Summary.document_id == doc_id))
+        }
+    assert flags == {0: False, 1: True}
+
+    # And it clears again, so the flag is a toggle rather than a one-way door.
+    assert (
+        await client.put(f"/api/documents/{doc_id}/summaries/1", json={"excluded": False})
+    ).status_code == 200
+    with get_sessionmaker()() as session:
+        again = session.scalar(
+            select(Summary).where(Summary.document_id == doc_id, Summary.idx == 1)
+        )
+        assert bool(again.excluded) is False
+
+
 def test_manualcheck_flag_is_stripped_from_both_exports():
     """The [ManualCheck] review flag never appears in the Word title or the linked-PDF link title
     (it stays an in-app flag only; a finished report/PDF cannot be edited to remove it)."""

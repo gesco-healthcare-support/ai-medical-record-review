@@ -212,6 +212,33 @@ def test_pages_are_joined_in_page_order_with_optional_markers(monkeypatch):
     assert marked == "Page 1:\nbody1\nPage 2:\nbody2\n"
 
 
+def test_the_row_text_joins_stored_pages_in_ascending_order_with_no_separator(monkeypatch):
+    """Pins the EXACT joined string, by equality, for three pages that all carry distinct text.
+
+    Written because nothing else could fail on a join mistake. The only other multi-page store-hit
+    test asserts `"real text" in text` - a substring check, which passes whatever the order is and
+    whatever sits between the pages. The equality assertions elsewhere in this file cover a single
+    page, two empty cases, and one two-page case where one page is empty, so none of them can see a
+    reordering, a stray separator or a duplicated page either.
+
+    That matters because `get_row_text_with_report` feeds the duplicate check's similarity scoring
+    and the summarize input: a silently reordered or doubled page changes both. The pages are asked
+    for out of order deliberately, so ascending output is pinned rather than assumed.
+    """
+    monkeypatch.setattr(pt, "_extract", lambda path, page: (f"body{page}", True))
+    doc_id = _doc(pages=3)
+    with get_sessionmaker()() as session:
+        pt.populate_document(session, doc_id, "/x.pdf", 3)
+
+    with get_sessionmaker()() as session:
+        text, report = pt.get_row_text_with_report(session, doc_id, [3, 1, 2])
+
+    assert text == "body1body2body3"
+    assert report["pages"] == [1, 2, 3]
+    assert report["errored"] == []
+    assert report["blank"] == []
+
+
 @pytest.mark.parametrize("pages", [[], None])
 def test_no_pages_requested_is_not_an_error(pages):
     doc_id = _doc(pages=1)
