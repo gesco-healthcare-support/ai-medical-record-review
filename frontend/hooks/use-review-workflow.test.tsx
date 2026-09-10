@@ -389,6 +389,44 @@ describe("useReviewWorkflow autosave gating", () => {
 
     expect(mockSave).toHaveBeenCalledTimes(1);
   });
+  it("a Summarize stands the pending save down rather than leaving it to fire later", async () => {
+    // Summarize sends the current rows itself, which is why the debounce was already being
+    // cancelled here. The flush path gave that pending set a SECOND way to reach the server: with
+    // the ref still populated, the next unmount or document switch wrote the same rows again,
+    // behind a Summarize that had already carried them. Harmless as a duplicate PUT, but it is a
+    // write the cancel exists to prevent, and it would overwrite anything a job changed between.
+    mockDoc.mockResolvedValue(detail({ status: "reviewing" }));
+    mockSave.mockResolvedValue({ ok: true, count: 1 });
+    mockStatus.mockResolvedValue({
+      status: "done",
+      job: {
+        id: 1,
+        kind: "summarize",
+        state: "done",
+        stage: "summarizing",
+        current: 1,
+        total: 1,
+        error: null,
+      },
+    });
+    const { result, unmount } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() => result.current.onRowsChange([editorRow({ start: 2, end: 5 })]));
+    await act(async () => {
+      await result.current.onSummarize();
+    });
+    // The rows did reach the server - via Summarize - so standing the save down loses nothing.
+    expect(mockStartSummarize).toHaveBeenCalledWith(
+      "d1",
+      [expect.objectContaining({ start: 2, end: 5 })],
+      false,
+      false,
+    );
+    act(() => unmount());
+
+    expect(mockSave).not.toHaveBeenCalled();
+  });
 });
 
 // The stop/restart cycle. The critical one is the FIRST test: `cancelled` is not in the poller's

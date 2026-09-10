@@ -152,15 +152,23 @@ export function useReviewWorkflow(
   // any edit made in the 800ms before the reviewer navigated away.
   const pendingSaveRef = useRef<EditorRow[] | null>(null);
 
+  /** Stand the debounced save down WITHOUT sending it, and hand back whatever it was holding.
+   *  Every path that cancels routes through here, because clearing the timer alone is only half
+   *  of it: a populated ref with no timer is a write waiting for the next flush to find it. */
+  function takePendingSave(): EditorRow[] | null {
+    const sorted = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    return sorted;
+  }
+
   /** Send the pending row set NOW, and clear the debounce. Reads only refs, because the boot
    *  effect's cleanup calls it from a closure created before boot ran. `docId` is passed rather
    *  than closed over so a flush on a document SWITCH still writes to the document the rows
    *  belong to. */
   function flushPendingSave(docId: string) {
-    const sorted = pendingSaveRef.current;
-    pendingSaveRef.current = null;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = null;
+    const sorted = takePendingSave();
     if (!sorted?.length) return; // nothing to save yet (transient mid-edit)
     if (rowErrors(sorted, totalPagesRef.current).size) {
       // Don't silently leave changes unsaved: tell the user why (and Summarize stays blocked).
@@ -506,7 +514,11 @@ export function useReviewWorkflow(
     if (!documentId) return;
     setBanner("");
     setAttention(null);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
+    // `startSummarize` below sends these rows itself, so the debounced copy is redundant and is
+    // stood down rather than flushed. Dropping the ref as well as the timer is the whole point:
+    // left populated, it would be written again by the next unmount or document switch, behind a
+    // Summarize that had already carried it.
+    takePendingSave();
     try {
       await startSummarize(documentId, stripKeys(sortRows(rows)), fresh, skipDuplicateCheck);
       await watchSummarize();
