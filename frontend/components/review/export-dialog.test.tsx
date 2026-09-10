@@ -7,9 +7,7 @@ import { ExportDialog } from "@/components/review/export-dialog";
 describe("ExportDialog error handling", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("shows a friendly fallback when the export request fails", async () => {
-    const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("boom")); // network/transport failure
+  function openDialog() {
     render(
       <ExportDialog
         open
@@ -19,8 +17,61 @@ describe("ExportDialog error handling", () => {
         excludedCount={0}
       />,
     );
+  }
+
+  it("names a transport failure, rather than showing a generic fallback", async () => {
+    // CHANGED EXPECTATION, deliberately. This asserted the generic "Export failed." for a rejected
+    // fetch, because the dialog's own `fetch` threw a plain Error that `humanizeError` cannot
+    // classify. Going through `downloadFile` makes it ApiError(status 0), which is the same shape
+    // apiFetch produces - so the export now gets the specific copy every other request already got
+    // for the same failure. The old expectation was the defect, not the contract.
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("boom"));
+    openDialog();
     await user.click(screen.getByRole("button", { name: "Export to Word" }));
-    expect(await screen.findByText("Export failed.")).toBeInTheDocument();
+    expect(await screen.findByText(/couldn't reach the server/i)).toBeInTheDocument();
+  });
+
+  it("shows the server's own reason for a refusal", async () => {
+    // The dialog never read the error body - it threw `export failed (500)` on the status alone -
+    // so a 422 naming the document it could not read, or a 503 naming an AI outage, reached the
+    // reviewer as "Export failed." and nothing else.
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 422,
+      headers: new Headers(),
+      json: async () => ({ detail: "One document could not be read." }),
+    } as unknown as Response);
+    openDialog();
+    await user.click(screen.getByRole("button", { name: "Export to Word" }));
+    expect(await screen.findByText("One document could not be read.")).toBeInTheDocument();
+  });
+
+  it("does not report success when the session has ended", async () => {
+    // A 401 used to `return`, so the dialog closed as though the file had been written. It now
+    // throws like every other client, and the reviewer is told before the redirect lands.
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: new Headers(),
+      json: async () => ({}),
+    } as unknown as Response);
+    render(
+      <ExportDialog
+        open
+        onOpenChange={onOpenChange}
+        documentId="d1"
+        includedCount={2}
+        excludedCount={0}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Export to Word" }));
+
+    expect(await screen.findByText(/session has ended/i)).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 });
 
