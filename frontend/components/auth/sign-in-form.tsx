@@ -47,7 +47,6 @@ export function SignInForm({
             className="ev-inp"
             placeholder="you@email.com"
             autoComplete="email"
-            autoFocus
             required
             value={email}
             disabled={busy}
