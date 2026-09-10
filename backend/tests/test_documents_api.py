@@ -2264,6 +2264,151 @@ async def test_extract_header_ocr_unavailable_returns_503(authed, monkeypatch):
     assert resp.status_code == 503
 
 
+async def _put_header(client, doc_id, **fields):
+    """Seed a stored header the way a reviewer does - through PUT /header, not the ORM."""
+    body = {
+        "patient_first_name": "",
+        "patient_last_name": "",
+        "patient_dob": "",
+        "law_firm": "",
+        **fields,
+    }
+    resp = await client.put(f"/api/documents/{doc_id}/header", json=body)
+    assert resp.status_code == 200, resp.text
+
+
+async def test_extract_header_does_not_erase_a_stored_header_when_it_finds_nothing(
+    authed, monkeypatch
+):
+    """A detection that found NOTHING must not replace a header a reviewer typed.
+
+    `extract_header` returns "" per field for "not found" - `_HEADER_SCHEMA` asks the model for ''
+    when a field is absent, and `_BLANK` is that shape for the whole response when the OCR came back
+    empty (a documented, deliberate return). The route used to persist all four unconditionally, so
+    one click on a re-detect blanked four reviewer-facing fields that travel into the deliverable -
+    and both callers then reported success.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _put_header(
+        client,
+        doc_id,
+        patient_first_name="Typed",
+        patient_last_name="ByHand",
+        patient_dob="01/02/1990",
+        law_firm="Example Law",
+    )
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "extract_header",
+        lambda pdf_path, pages: {"first_name": "", "last_name": "", "dob": "", "lawfirm": ""},
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert resp.status_code == 200
+
+    got = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert got["patient_first_name"] == "Typed"
+    assert got["patient_last_name"] == "ByHand"
+    assert got["patient_dob"] == "01/02/1990"
+    assert got["law_firm"] == "Example Law"
+
+
+async def test_extract_header_returns_the_merged_header_not_the_bare_extraction(
+    authed, monkeypatch
+):
+    """The response is what is STORED, so the form does not show a field vanishing that survived.
+
+    Both callers set their fields straight from this response - `header-bar` also calls `onSaved`
+    with it and clears its dirty flag - so returning the raw extraction would blank the form while
+    the database kept the value, and the next save would then write the blank back.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _put_header(client, doc_id, patient_dob="01/02/1990")
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "extract_header",
+        lambda pdf_path, pages: {"first_name": "", "last_name": "", "dob": "", "lawfirm": ""},
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert resp.json()["patient_dob"] == "01/02/1990"
+
+
+async def test_extract_header_keeps_only_the_fields_it_could_not_find(authed, monkeypatch):
+    """A PARTIAL answer is the likely case, not the exotic one, and it needs no OCR failure at all.
+
+    Measured on the box 2026-09-10: 17 of 87 documents carry no `patient_dob` while only 1 lacks
+    each of the other three, so the date of birth is the field extraction misses - and therefore the
+    one a reviewer supplies. A re-detect run for the law firm must not take the DOB with it.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _put_header(
+        client,
+        doc_id,
+        patient_first_name="Synthetic",
+        patient_last_name="Patient",
+        patient_dob="01/02/1990",
+    )
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "extract_header",
+        lambda pdf_path, pages: {
+            "first_name": "Synthetic",
+            "last_name": "Patient",
+            "dob": "",
+            "lawfirm": "Found This Time LLP",
+        },
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert resp.status_code == 200
+
+    got = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert got["law_firm"] == "Found This Time LLP"
+    assert got["patient_dob"] == "01/02/1990"
+
+
+async def test_extract_header_still_corrects_a_stored_field_it_does_find(authed, monkeypatch):
+    """GUARDS the new code rather than demonstrating the bug - it passes on origin/main too.
+
+    The point of the guard is that "do not overwrite" is the WRONG reading of the fix: a value the
+    extraction found still wins over a stored one, which is the re-detect `header-bar`'s comment
+    describes ("the button re-detects (overwrites) rather than first-fills"). Only the absence of a
+    detection loses.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _put_header(client, doc_id, patient_last_name="Misread", law_firm="Wrong Firm")
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "extract_header",
+        lambda pdf_path, pages: {
+            "first_name": "",
+            "last_name": "Corrected",
+            "dob": "",
+            "lawfirm": "Right Firm LLP",
+        },
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert resp.status_code == 200
+
+    got = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert got["patient_last_name"] == "Corrected"
+    assert got["law_firm"] == "Right Firm LLP"
+
+
 async def test_aggregate_merges_creates_rows_and_enqueues_classify(authed):
     """P6: multi-file upload merges into one Document, seeds a row per record, enqueues classify."""
     from tests.conftest import lanes

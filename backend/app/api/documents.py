@@ -548,18 +548,36 @@ def extract_header_route(
     """Re-extract {patient_first_name, patient_last_name, patient_dob, law_firm} from the record's
     first pages (Vertex) AND persist them onto the document, so a single detect is available
     everywhere (Review, Summaries, Export, bundles) without a separate Save. On a PipelineError
-    nothing is persisted. Sync-AI: FastAPI runs this sync handler in its threadpool."""
+    nothing is persisted, and a field the extraction did not FIND does not overwrite a stored one.
+    Sync-AI: FastAPI runs this sync handler in its threadpool."""
     pages = list(range(1, min(15, document.page_count) + 1))
     try:
         data = extract_header(document.stored_path, pages)
     except PipelineError as exc:
         return _pipeline_error_response(document.id, exc)
+    # "" means NOT FOUND, not "the record says this field is empty": `_HEADER_SCHEMA` asks the model
+    # for '' when a field is absent, `extract_header` coerces a missing key the same way, and
+    # `_BLANK` is that shape for the whole response when the OCR came back empty. So an empty field
+    # is the ABSENCE of a detection, and persisting it over a stored value replaces something a
+    # reviewer may have typed with nothing - while both callers report success ("Header detected and
+    # saved." in review/header-bar, "Header details filled from the record." in the bundle aside).
+    #
+    # This is not the re-detect that header-bar's own comment describes ("once any header value is
+    # stored, the button re-detects (overwrites) rather than first-fills"): a value found again
+    # still wins, including a corrected one. Only nothing loses to something. Clearing a field
+    # deliberately is PUT /header, where a reviewer's edit is the input and may blank it for real.
+    #
+    # Keyed off `_header_shape`, whose keys ARE the persisted attribute names, so a fifth field
+    # added there is covered without anyone remembering this loop.
     shape = _header_shape(data)
-    document.patient_first_name = shape["patient_first_name"]
-    document.patient_last_name = shape["patient_last_name"]
-    document.patient_dob = shape["patient_dob"]
-    document.law_firm = shape["law_firm"]
+    for field, found in shape.items():
+        if found:
+            setattr(document, field, found)
+        else:
+            shape[field] = getattr(document, field) or ""
     session.commit()
+    # The MERGED view, so the two callers show what is stored rather than the raw extraction - a
+    # kept field would otherwise vanish from the form while surviving in the database.
     return shape
 
 
