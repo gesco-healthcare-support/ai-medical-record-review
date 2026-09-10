@@ -36,9 +36,34 @@ export function SplitUploadDialog({
     setName("");
     setFiles([]);
   }
+  /** Dismissing clears the staged files, whichever control did it. Escape and the overlay went
+   *  through the Dialog's own `onOpenChange` (which resets) while the Cancel BUTTON called the
+   *  parent's setter directly and skipped it, so the same dismissal kept or cleared the list
+   *  depending on which one the reviewer used - and a Cancel left files staged to be combined into
+   *  the next record. One function, so the two cannot drift again (#264's shape). */
+  function close() {
+    reset();
+    onOpenChange(false);
+  }
   function addFiles(list: FileList | null) {
     if (!list) return;
-    setFiles((prev) => [...prev, ...Array.from(list).filter(isPdf)]);
+    // Say what was dropped. This used to filter silently, so picking three files and getting two
+    // listed left the reviewer to spot which one was missing - and these files are joined into ONE
+    // record, so an unnoticed drop is content absent from a deliverable. The single-file path in
+    // `DocumentsView` already announces the same rejection; two copies of `isPdf` and only one of
+    // them reported the result. The non-PDFs are dropped either way: the picker is not the place to
+    // argue about a file type, and keeping the good ones costs the reviewer nothing.
+    const picked = Array.from(list);
+    const pdfs = picked.filter(isPdf);
+    const rejected = picked.length - pdfs.length;
+    if (rejected > 0) {
+      toast.error(
+        rejected === 1
+          ? "Only PDF files can be combined. One file was not added."
+          : `Only PDF files can be combined. ${rejected} files were not added.`,
+      );
+    }
+    setFiles((prev) => [...prev, ...pdfs]);
     if (fileInput.current) fileInput.current.value = "";
   }
   function removeAt(index: number) {
@@ -53,8 +78,7 @@ export function SplitUploadDialog({
     try {
       await aggregate.mutateAsync({ name, files });
       toast.success("Records combined and uploaded.");
-      reset();
-      onOpenChange(false);
+      close();
     } catch (err) {
       toast.error(humanizeError(err, { fallback: "Could not combine the records." }));
     }
@@ -64,8 +88,8 @@ export function SplitUploadDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) reset();
-        onOpenChange(next);
+        if (next) onOpenChange(true);
+        else close();
       }}
     >
       <DialogContent>
@@ -140,7 +164,7 @@ export function SplitUploadDialog({
           <button
             type="button"
             className="ev-btn ev-btn-outline"
-            onClick={() => onOpenChange(false)}
+            onClick={close}
             disabled={aggregate.isPending}
           >
             Cancel
