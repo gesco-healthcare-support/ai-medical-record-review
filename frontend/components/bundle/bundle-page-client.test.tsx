@@ -219,6 +219,52 @@ describe("BundlePageClient error handling", () => {
 
     expect(await screen.findByText("2 matching documents")).toBeInTheDocument();
   });
+
+  it("says it could not LOAD the record, rather than calling it unidentified", async () => {
+    // A failed detail fetch left `detail` undefined, so `rows` was [] and `identified` false - and
+    // the screen then asserted "This record hasn't been identified yet" and told the reviewer to go
+    // and identify it. Both halves are things the page does not know, and the advice is wrong: the
+    // record may be fully identified and the fetch may simply have failed.
+    //
+    // The sibling screen loading the same document through the same API already reports this
+    // honestly ("Could not load this document: ..." in use-review-workflow's boot), so this was the
+    // one surface that did not.
+    const user = userEvent.setup();
+    vi.mocked(getDocument).mockRejectedValueOnce(new ApiError("gone", 404));
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(await screen.findByText(/no longer available/i)).toBeInTheDocument();
+    expect(screen.queryByText(/been identified yet/i)).not.toBeInTheDocument();
+  });
+
+  it("still calls a record with no rows unidentified", async () => {
+    // GUARDS the new code rather than demonstrating the bug: it passes on origin/main too, where
+    // every non-loading state rendered this. It is here because "stop saying unidentified" is the
+    // wrong reading of the fix - a record that really has no rows must still say so, and that is
+    // the message with the useful next step attached.
+    const user = userEvent.setup();
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      id: "b1",
+      original_filename: "rec.pdf",
+      page_count: 5,
+      status: "uploaded",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_name: "",
+      patient_dob: "",
+      law_firm: "",
+      rows: [],
+      categories: [],
+    });
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(await screen.findByText(/been identified yet/i)).toBeInTheDocument();
+  });
 });
 
 /** The failure path above was covered; the success path was not, so nothing pinned that a finished

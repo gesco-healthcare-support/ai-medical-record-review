@@ -69,7 +69,12 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
   const { data: docs = [] } = useDocuments();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { data: detail, isLoading: detailLoading } = useQuery({
+  const {
+    data: detail,
+    isLoading: detailLoading,
+    isError: detailFailed,
+    error: detailError,
+  } = useQuery({
     queryKey: ["document", selectedId],
     queryFn: () => getDocument(selectedId as string),
     enabled: Boolean(selectedId),
@@ -119,6 +124,23 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
       !(resolvedGroups.has(row.dupe_group) && !row.dupe_primary && !row.dupe_dismissed),
   );
   const identified = rows.length > 0;
+
+  // Which of the four states the detail pane is in, decided ONCE. A failed fetch used to fall
+  // through to `!identified`, because `detail` is undefined while loading AND after an error, so
+  // the screen asserted "this record hasn't been identified yet" - a fact it does not have - and
+  // sent the reviewer off to identify a record that may already be identified. `getDocument` can
+  // fail for real here: the retry policy does not retry a 404 at all, and this file's own
+  // `errMessage` already carries a `notFound` line for exactly that.
+  //
+  // The sibling screen loading the same document through the same API reports it honestly
+  // (`use-review-workflow`'s boot: "Could not load this document: ..."), so this was the one
+  // surface that did not. Computed as one value rather than three compounding `&&` guards, which
+  // is the shape #267 landed on for the same reason.
+  let pane: "loading" | "failed" | "unidentified" | "ready";
+  if (detailLoading) pane = "loading";
+  else if (detailFailed) pane = "failed";
+  else if (!identified) pane = "unidentified";
+  else pane = "ready";
 
   const pickerDocs = [...docs].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
 
@@ -273,7 +295,18 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
               {tabs}
             </div>
 
-            {!detailLoading && !identified ? (
+            {pane === "failed" ? (
+              <div className="bnd-empty">
+                <p className="bnd-empty-title">Could not load this record</p>
+                <p>{errMessage(detailError, "Something went wrong reading it.")}</p>
+                <div className="bundle-buttons" style={{ justifyContent: "center", marginTop: 14 }}>
+                  <button type="button" className="ev-btn ev-btn-ghost" onClick={chooseAnother}>
+                    Choose another record
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {pane === "unidentified" ? (
               <div className="bnd-empty">
                 <p className="bnd-empty-title">This record hasn&apos;t been identified yet</p>
                 <p>
@@ -290,7 +323,7 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
                 </div>
               </div>
             ) : null}
-            {!detailLoading && identified ? (
+            {pane === "ready" ? (
               <div className="bnd-grid">
                 <div className="hd-card">
                   <div className="bnd-card-head">
