@@ -18,6 +18,7 @@ from app.services.genai_retry import (
     _sleep_for,
     generate_with_retry,
 )
+from app.worker.failures import classify_failure
 
 
 class _FakeExc(Exception):
@@ -209,3 +210,42 @@ def test_sleep_for_falls_back_to_backoff():
     for _ in range(20):
         d = _sleep_for(0, None)
         assert 0.0 <= d <= ceiling
+
+
+# --- the seam and the worker must agree on which failures are transient ------------------------
+
+
+def _client_error(code, message):
+    return errors.ClientError(code, {"error": {"code": code, "message": message, "status": "x"}})
+
+
+@pytest.mark.parametrize(
+    ("message", "retried", "outcome"),
+    [
+        ("Quota exceeded: PerDay limit for this model", False, "permanent"),
+        ("free_tier quota exhausted", False, "permanent"),
+        ("RESOURCE_EXHAUSTED: no shared-quota capacity right now", True, "transient"),
+    ],
+)
+def test_the_seam_and_classify_failure_agree_on_a_429(quiet_seam, message, retried, outcome):
+    """One test over BOTH halves of a coupling neither side's own tests can cover.
+
+    `genai_retry`'s comment promises `worker.failures.classify_failure` mirrors its retryable set
+    "or the two disagree", and the consequence of disagreeing is not cosmetic: transient means the
+    summarize job PAUSES and auto-resumes, permanent means it ends `needs_attention`. So a 429 the
+    seam gives up on but the worker calls transient would be retried forever by a job that has
+    already stopped trying, and the reverse would end a job the seam was still riding out.
+
+    They agreed before this change too - `is_daily_quota` is exactly the string test the seam
+    re-implemented inline. The point is that nothing FAILED when it was duplicated. #281 is the same
+    shape: two tests each pinning one side of a hand-off, and neither covering the hand-off.
+    """
+    exc = _client_error(429, message)
+    client = _FakeClient(exc)
+
+    with pytest.raises(errors.ClientError):
+        generate_with_retry(client, model="gemini-2.5-flash")
+
+    attempts = get_settings().genai_max_retries if retried else 1
+    assert client.calls == attempts
+    assert classify_failure(exc) == outcome

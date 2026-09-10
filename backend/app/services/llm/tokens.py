@@ -5,8 +5,24 @@ segmentation window very differently from a 500-token title call. Charging both 
 the pacer wrong in whichever direction the traffic mix happens to lean.
 
 Why ESTIMATE rather than count exactly: the count is only knowable after the call, and the pacer has
-to decide before it. The estimate admits the request; ``reconcile`` corrects the bucket afterwards
-from the provider's own reported usage, so a systematically wrong estimate cannot drift forever.
+to decide before it.
+
+**The estimate is never corrected afterwards, and this docstring used to say it was.** It named a
+``reconcile`` that does not exist in this package or anywhere in ``app/`` - so the safety net the
+roughness of these constants was justified by is not there. What actually happens to the real
+numbers: ``gemini._usage`` reads ``usage_metadata`` off the response and returns it on
+``LLMResponse`` as PROVENANCE for the caller to store; nothing feeds it back to ``pacing``. The one
+mechanism that does correct a rate from a provider's own figures is ``pacing.observe_limits``, and
+its own docstring records that Vertex publishes nothing comparable so nothing calls it for gemini.
+
+Why that has not bitten, and the condition under which it would: ``acquire`` charges this estimate
+against the ``tok`` meter on every request, so it is a live admission input rather than dead code -
+but at ``vertex_max_rpm`` 60 and ``vertex_max_tpm`` 4,000,000 the token meter needs a ~66,000-token
+average request to bind before the request meter, and the largest thing sent is a ~30,000-token
+segmentation window. So the request meter binds first and the token meter effectively never does,
+which is why a wrong estimate has never shown up as anything. **Lower ``vertex_max_tpm``, or raise
+``vertex_max_rpm`` far enough, and these constants start deciding admission with nothing checking
+them.** That is the direction issue #156 is about.
 
 Every constant here was measured on 2026-08-03 rather than assumed - see
 ``W:\\MRR_Research_and_Analysis\\03_Reports\\OPENAI_OPTION_2026-08-03.md``.
@@ -42,7 +58,9 @@ _IMAGE_TOKENS_DEFAULT = 2200
 # One PDF page sent inline to Gemini measured at 259 tokens (10-page synthetic PDF -> 2,589).
 _PDF_PAGE_TOKENS = 259
 # A PDF part carries no page count without parsing it, and parsing to price it would cost more than
-# the estimate is worth. Assume a window-sized document; reconcile() corrects it from real usage.
+# the estimate is worth, so assume a window-sized document. Nothing corrects this afterwards - see
+# the module docstring; the sentence here used to name a reconcile() that does not exist. It errs
+# HIGH for a shorter window, which is the safe direction (a slowdown rather than a 429 storm).
 _PDF_ASSUMED_PAGES = 100
 
 

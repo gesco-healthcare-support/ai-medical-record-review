@@ -14,7 +14,7 @@ import httpx
 from google.genai import errors, types
 
 from app.config import get_settings
-from app.errors import is_deadline_exceeded
+from app.errors import is_daily_quota, is_deadline_exceeded
 from app.services import genai_metrics
 from app.services.llm import pacing
 from app.worker.cancel import current_job_cancelled
@@ -169,7 +169,14 @@ def generate_with_retry(client, **kwargs):
                 # Feed the controller BEFORE the PerDay carve-out below: a spent daily budget is
                 # still evidence that this model is unavailable right now.
                 pacing.record_rejection("gemini", model)
-                if "PerDay" in str(exc) or "free_tier" in str(exc):
+                # Through the shared predicate, not an inline copy of it. The comment above promises
+                # `worker.failures.classify_failure` mirrors this set "or the two disagree",
+                # and that one already asks `is_daily_quota`; a second reading of the same
+                # rule four lines from where the sibling carve-out correctly calls
+                # `is_deadline_exceeded` is how they would come to disagree - change either
+                # side and the other keeps the old answer, which decides whether a job
+                # PAUSES and auto-resumes or ends needs_attention.
+                if is_daily_quota(exc):
                     raise
                 last = exc
                 # Vertex does not populate RetryInfo in practice (measured 2026-08-05: the 429 body
