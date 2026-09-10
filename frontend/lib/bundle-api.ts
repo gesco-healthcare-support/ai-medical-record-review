@@ -1,5 +1,7 @@
 /** Category-bundle downloads (Diagnostic & Operative / Depositions). Both stream a file, so they
- *  go through fetch directly (not the JSON apiFetch) to read the blob + Content-Disposition. */
+ *  go through `downloadFile` (not the JSON apiFetch) to read the blob + Content-Disposition. */
+
+import { downloadFile } from "@/lib/download";
 
 export type BundleConfig = { label: string; slug: string; categories: string[] };
 
@@ -10,41 +12,13 @@ export type BundleHeaderFields = {
   lawfirm: string;
 };
 
-async function downloadBundle(
+function downloadBundle(
   documentId: string,
   action: "pdf" | "summarize",
   body: Record<string, unknown>,
   fallbackName: string,
 ) {
-  const resp = await fetch(`/api/documents/${documentId}/bundle/${action}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(body),
-  });
-  if (resp.status === 401) {
-    window.location.assign("/login");
-    return;
-  }
-  if (!resp.ok) {
-    let detail = `request failed (${resp.status})`;
-    try {
-      const data = await resp.json();
-      detail = data.detail || data.error || detail;
-    } catch {
-      // non-JSON error body; keep the status-code fallback
-    }
-    throw new Error(detail);
-  }
-  const blob = await resp.blob();
-  const disposition = resp.headers.get("Content-Disposition") || "";
-  const match = /filename="?([^"]+)"?/.exec(disposition);
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = match ? match[1] : fallbackName;
-  link.click();
-  URL.revokeObjectURL(url);
+  return downloadFile(`/documents/${documentId}/bundle/${action}`, body, fallbackName);
 }
 
 /** Concatenate the category-matched documents' pages into one PDF (no LLM). */

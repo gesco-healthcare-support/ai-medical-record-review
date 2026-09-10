@@ -13,6 +13,37 @@ export class ApiError extends Error {
   }
 }
 
+/** Session gone: send the reviewer to /login (guarding a loop when already there) and hand back the
+ *  error to throw. Every client throws it, so none of them can report a signed-out request as a
+ *  success - the streamed-download path used to `return` here and its caller then said the file had
+ *  downloaded. */
+export function signedOut(): ApiError {
+  if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+    window.location.assign("/login");
+  }
+  return new ApiError("signed out", 401);
+}
+
+/**
+ * The single reading of "what did this failed response say". Shared with the download path so the
+ * two clients cannot disagree about it, and so a download reaches `humanizeError` as an `ApiError`
+ * with a status - which is the only form that function preserves a server message from.
+ *
+ * `detail` is taken ONLY when it is a string. FastAPI's own validation errors put a LIST of
+ * `{loc, msg, type}` objects there - verified against the live app on `PUT /documents/{id}/rows`
+ * and `POST /documents/{id}/export` - and an array reaching `new ApiError(...)` stringifies to
+ * "[object Object]", which `humanizeError` then shows verbatim because a 422 carries an actionable
+ * message on every other path. A non-string detail is not a sentence, so it falls through to the
+ * synthesized fallback, which `humanizeError` recognises and replaces with safe copy.
+ */
+export async function errorFromResponse(resp: Response, path: string): Promise<ApiError> {
+  const data = await resp.json().catch(() => null);
+  const body = data as { detail?: unknown; error?: unknown } | null;
+  const detail = typeof body?.detail === "string" ? body.detail : undefined;
+  const error = typeof body?.error === "string" ? body.error : undefined;
+  return new ApiError(detail ?? error ?? `${path} failed (${resp.status})`, resp.status);
+}
+
 export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const method = (options.method ?? "GET").toUpperCase();
   const headers = new Headers(options.headers);
@@ -35,18 +66,7 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
     // as ApiError(status 0) so callers + humanizeError treat it as "couldn't reach the server".
     throw new ApiError("network", 0);
   }
-  if (resp.status === 401) {
-    // Session gone -> go to login (guard against a loop when already there).
-    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      window.location.assign("/login");
-    }
-    throw new ApiError("signed out", 401);
-  }
-  const data = resp.status === 204 ? null : await resp.json().catch(() => null);
-  if (!resp.ok) {
-    const body = data as { detail?: string; error?: string } | null;
-    const message = body?.detail ?? body?.error ?? `${path} failed (${resp.status})`;
-    throw new ApiError(message, resp.status);
-  }
-  return data as T;
+  if (resp.status === 401) throw signedOut();
+  if (!resp.ok) throw await errorFromResponse(resp, path);
+  return (resp.status === 204 ? null : await resp.json().catch(() => null)) as T;
 }

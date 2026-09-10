@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api";
 import { downloadBundlePdf } from "@/lib/bundle-api";
+import { humanizeError } from "@/lib/errors";
 
 /** The category-bundle download had no tests at all, despite owning the filename the reviewer ends
  *  up with on disk. These cover the three outcomes that differ: the server names the file, it does
@@ -63,5 +65,41 @@ describe("downloadBundlePdf", () => {
     );
     await expect(downloadBundlePdf("doc-1", CONFIG)).rejects.toThrow(/no matching documents/);
     expect(downloaded).toEqual([]);
+  });
+
+  it("raises it as an ApiError, so the screen shows the reason and not a fallback", async () => {
+    // The test above pins that the reason is READ. It was then thrown as a plain `Error`, and
+    // `humanizeError` discards a plain Error by design (errors.test.ts pins that too) - so the
+    // module extracted the server's words and the reviewer saw "The download failed." Two correct
+    // tests, one broken delivery; this one covers the join between them.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => respond(409, {}, { detail: "no matching documents in this record" })),
+    );
+    await expect(downloadBundlePdf("doc-1", CONFIG)).rejects.toBeInstanceOf(ApiError);
+
+    const err = await downloadBundlePdf("doc-1", CONFIG).catch((e: unknown) => e);
+    expect(humanizeError(err, { fallback: "The download failed." })).toBe(
+      "no matching documents in this record",
+    );
+  });
+
+  it("rejects when the session has ended, rather than resolving", async () => {
+    // A 401 redirected and RETURNED, so `runBundleDownload` saw a resolved promise and reported
+    // "Combined PDF downloaded." while the browser was navigating to /login.
+    vi.stubGlobal("fetch", vi.fn(async () => respond(401, {}, {})));
+    await expect(downloadBundlePdf("doc-1", CONFIG)).rejects.toThrow(/signed out/);
+    expect(downloaded).toEqual([]);
+  });
+
+  it("reports a transport failure as one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+    const err = await downloadBundlePdf("doc-1", CONFIG).catch((e: unknown) => e);
+    expect(humanizeError(err)).toMatch(/couldn't reach the server/i);
   });
 });

@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { HeaderFields } from "@/lib/review-api";
+import { downloadFile } from "@/lib/download";
 import { humanizeError } from "@/lib/errors";
 
 const DEFAULT_QME = "PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)";
@@ -60,32 +61,21 @@ export function ExportDialog({
     setBusy(true);
     setError("");
     try {
-      const resp = await fetch(`/api/documents/${documentId}/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
+      // Was its own fetch, which threw `export failed (500)` without reading the body - so the
+      // server's actual reason (a 422 naming the document it could not read, a 503 naming the AI
+      // outage) never reached this dialog, and a 401 RETURNED, closing nothing and reporting
+      // nothing while the browser navigated away.
+      await downloadFile(
+        `/documents/${documentId}/${endpoint}`,
+        {
           patientName: patient,
           patientdob: dob,
           QMEorAME: qme,
           lawfirm: firm,
           includePageNumbers: withPages,
-        }),
-      });
-      if (resp.status === 401) {
-        window.location.assign("/login");
-        return;
-      }
-      if (!resp.ok) throw new Error(`export failed (${resp.status})`);
-      const cd = resp.headers.get("Content-Disposition") || "";
-      const match = /filename="?([^"]+)"?/.exec(cd);
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = match ? match[1] : fallbackName;
-      link.click();
-      URL.revokeObjectURL(url);
+        },
+        fallbackName,
+      );
       onOpenChange(false);
     } catch (err) {
       setError(humanizeError(err, { fallback: "Export failed." }));
