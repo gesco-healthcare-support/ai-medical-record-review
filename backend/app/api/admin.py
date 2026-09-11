@@ -181,6 +181,33 @@ def create_category(
     return _category_payload(session, category)
 
 
+def _apply_category_edits(category: Category, body: dict) -> None:
+    """Assign the five plain editable fields present in ``body``. Raises 400 on an empty name.
+
+    Deliberately does NOT handle ``active``: deactivation carries an in-use check that must run
+    AFTER these assignments, because the 400 for an empty name has to win over the 409 for a
+    category in use. A single PATCH carrying both a blank name and active=false returns 400 today,
+    and that ordering is the only thing keeping it that way.
+
+    Defined ABOVE the route decorator on purpose. A helper placed between a decorator and its
+    function silently steals the decorator - FastAPI then tries to build a request model from this
+    signature and the real route never registers.
+    """
+    if "name" in body:
+        name = (body["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        category.name = name
+    if "description" in body:
+        category.description = (body["description"] or "").strip()
+    if "examples" in body:
+        category.examples = body["examples"] or []
+    if "auto_assign" in body:
+        category.auto_assign = bool(body["auto_assign"])
+    if "summarize_default" in body:
+        category.summarize_default = bool(body["summarize_default"])
+
+
 @router.patch(
     "/categories/{category_id}",
     responses={
@@ -210,19 +237,7 @@ def update_category(
     # Snapshot BEFORE the walk below mutates the row: the audit detail reports what MOVED, and
     # once the fields are assigned there is nothing left to compare them against.
     before = {field: getattr(category, field) for field in _CATEGORY_FIELDS if field in body}
-    if "name" in body:
-        name = (body["name"] or "").strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="name cannot be empty")
-        category.name = name
-    if "description" in body:
-        category.description = (body["description"] or "").strip()
-    if "examples" in body:
-        category.examples = body["examples"] or []
-    if "auto_assign" in body:
-        category.auto_assign = bool(body["auto_assign"])
-    if "summarize_default" in body:
-        category.summarize_default = bool(body["summarize_default"])
+    _apply_category_edits(category, body)
     if "active" in body:
         active = bool(body["active"])
         # Deactivating a category IN USE makes every document holding it unsaveable, for every

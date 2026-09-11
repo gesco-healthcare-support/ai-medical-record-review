@@ -898,6 +898,45 @@ def _leave_cluster(session: Session, row: ReviewRow) -> None:
     row.include = catalog.summarize_default_for(session, row.category)
 
 
+def _apply_keep_one(members, primary_idx) -> None:
+    """Mark one member of a duplicate cluster as the kept copy and exclude the rest.
+
+    This and its sibling below are defined ABOVE the route decorator on purpose. A helper placed
+    between a decorator and its function silently steals the decorator, so the real route never
+    registers and FastAPI tries to build a request model from the helper's signature instead.
+    """
+    primary = next((m for m in members if m.idx == primary_idx), None)
+    if primary is None:
+        raise HTTPException(status_code=400, detail="primary_idx is not in this cluster")
+    # Keeping a copy must not RAISE inclusion above what the cluster already had: three copies of
+    # a routing slip are category 100, which is unchecked by default, and turning the kept one on
+    # would put paperwork nobody asked for into the report. The cluster's existing intent moves
+    # onto the kept copy - so an all-excluded cluster stays excluded, and a normal cluster still
+    # produces exactly one summary.
+    wanted = any(m.include for m in members)
+    for member in members:
+        is_primary = member.idx == primary_idx
+        member.dupe_primary = is_primary
+        member.dupe_dismissed = False
+        member.include = is_primary and wanted
+
+
+def _apply_remove_member(session, members, idx) -> None:
+    """Take one row out of a duplicate cluster, dissolving the cluster if fewer than two remain."""
+    target = next((m for m in members if m.idx == idx), None)
+    if target is None:
+        raise HTTPException(status_code=400, detail="idx is not in this cluster")
+    # Leaving the group outright, rather than a per-row dismissed flag: `dismissed` is derived
+    # cluster-wide with any(...), so a per-row flag would make it ambiguous everywhere it is read.
+    _leave_cluster(session, target)
+    remaining = [m for m in members if m is not target]
+    if len(remaining) < 2:
+        # A cluster of one is not a duplicate set. _dupe_groups already hides it on read; clear it
+        # here too so the stored state matches what every surface shows.
+        for member in remaining:
+            _leave_cluster(session, member)
+
+
 @router.post(
     "/{document_id}/duplicates/{group}/resolve",
     responses={
@@ -922,37 +961,13 @@ def resolve_duplicate(
     if document.active_job is not None:
         raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     if payload.action == "keep_one":
-        primary = next((m for m in members if m.idx == payload.primary_idx), None)
-        if primary is None:
-            raise HTTPException(status_code=400, detail="primary_idx is not in this cluster")
-        # Keeping a copy must not RAISE inclusion above what the cluster already had: three copies of
-        # a routing slip are category 100, which is unchecked by default, and turning the kept one on
-        # would put paperwork nobody asked for into the report. The cluster's existing intent moves
-        # onto the kept copy - so an all-excluded cluster stays excluded, and a normal cluster still
-        # produces exactly one summary.
-        wanted = any(m.include for m in members)
-        for member in members:
-            is_primary = member.idx == payload.primary_idx
-            member.dupe_primary = is_primary
-            member.dupe_dismissed = False
-            member.include = is_primary and wanted
+        _apply_keep_one(members, payload.primary_idx)
     elif payload.action == "dismiss":
         for member in members:
             member.dupe_dismissed = True
             member.dupe_primary = False
     elif payload.action == "remove_member":
-        target = next((m for m in members if m.idx == payload.idx), None)
-        if target is None:
-            raise HTTPException(status_code=400, detail="idx is not in this cluster")
-        # Leaving the group outright, rather than a per-row dismissed flag: `dismissed` is derived
-        # cluster-wide with any(...), so a per-row flag would make it ambiguous everywhere it is read.
-        _leave_cluster(session, target)
-        remaining = [m for m in members if m is not target]
-        if len(remaining) < 2:
-            # A cluster of one is not a duplicate set. _dupe_groups already hides it on read; clear it
-            # here too so the stored state matches what every surface shows.
-            for member in remaining:
-                _leave_cluster(session, member)
+        _apply_remove_member(session, members, payload.idx)
     else:
         raise HTTPException(
             status_code=400,
@@ -1072,6 +1087,40 @@ def segment_start(
     return {"ok": True}
 
 
+def _enforce_or_audit_duplicate_check(session, document, user, skip: bool) -> None:
+    """Refuse to summarize a record whose duplicate check is missing or stale - or, when the
+    reviewer chose to skip it, record that they did.
+
+    Named for BOTH halves on purpose. This is not a pure guard: the skip branch WRITES, and
+    ``audit`` commits its own row, so this function is a transaction boundary. A name like
+    ``_enforce_duplicate_check`` would hide that from everyone who reads the call site.
+
+    The audit half is the #125 control. Skipping is allowed and must leave a trace, or it is
+    indistinguishable from the omission the gate exists to stop.
+
+    Defined ABOVE the route decorator on purpose; a helper between a decorator and its function
+    steals the decorator and the real route never registers.
+    """
+    checked, stale = duplicate_check_state(session, document)
+    if not skip and (not checked or stale):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "the documents changed since the last duplicate check"
+                if checked
+                else "this record has not been checked for duplicates"
+            ),
+        )
+    if skip and (not checked or stale):
+        audit(
+            session,
+            "summarize.skip_duplicate_check",
+            user.id,
+            document.id,
+            detail="stale check" if checked else "never checked",
+        )
+
+
 @router.post(
     "/{document_id}/summarize/start",
     responses={
@@ -1128,26 +1177,7 @@ def summarize_start(
     # 409 rather than 400: it is a state conflict, matching the "a job is already running" answer
     # this same route gives. Checked AFTER the row validation above, because a reviewer cannot act
     # on this while their rows are invalid.
-    checked, stale = duplicate_check_state(session, document)
-    if not payload.skip_duplicate_check and (not checked or stale):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "the documents changed since the last duplicate check"
-                if checked
-                else "this record has not been checked for duplicates"
-            ),
-        )
-    if payload.skip_duplicate_check and (not checked or stale):
-        # Soft gate: skipping is allowed and must leave a trace, or it is indistinguishable from the
-        # omission this gate exists to stop.
-        audit(
-            session,
-            "summarize.skip_duplicate_check",
-            user.id,
-            document.id,
-            detail="stale check" if checked else "never checked",
-        )
+    _enforce_or_audit_duplicate_check(session, document, user, payload.skip_duplicate_check)
     if payload.fresh:
         # "Re-summarize all": wipe prior summaries so the run regenerates every row (the resumable
         # worker otherwise reuses done rows by identity). Committed before enqueue so the worker
@@ -1216,6 +1246,32 @@ def get_summaries(document: Document = Depends(get_owned_document)):
     return [_summary_response(document, summary) for summary in document.summaries]
 
 
+def _apply_summary_edits(summary, body) -> list[str]:
+    """Apply the reviewer's field edits to one summary; returns the column names that changed.
+
+    ``excluded`` belongs here with the other edits rather than on a path of its own: it is the SOLE
+    server-side control of what reaches a deliverable - the export takes ``document.summaries``
+    filtered only by this flag - so separating it is how the two would drift.
+
+    Defined ABOVE the route decorator on purpose. A helper placed between a decorator and its
+    function steals the decorator, so the real route never registers.
+    """
+    changed = []
+    for field, column, cap in (
+        ("summaryTitle", "edited_title", 512),
+        ("summaryDate", "edited_date", 16),
+        ("summaryText", "edited_text", None),
+    ):
+        if field in body:
+            value = str(body[field])
+            setattr(summary, column, value[:cap] if cap else value)
+            changed.append(column)
+    if "excluded" in body:
+        summary.excluded = bool(body["excluded"])
+        changed.append("excluded")
+    return changed
+
+
 @router.put(
     "/{document_id}/summaries/{idx}",
     # 400 and part of the 409 come from `_apply_row_category`, not from this handler's own body.
@@ -1256,19 +1312,7 @@ def put_summary(
             status_code=409, detail="summarization is rewriting these summaries; wait"
         )
 
-    changed = []
-    for field, column, cap in (
-        ("summaryTitle", "edited_title", 512),
-        ("summaryDate", "edited_date", 16),
-        ("summaryText", "edited_text", None),
-    ):
-        if field in body:
-            value = str(body[field])
-            setattr(summary, column, value[:cap] if cap else value)
-            changed.append(column)
-    if "excluded" in body:
-        summary.excluded = bool(body["excluded"])
-        changed.append("excluded")
+    changed = _apply_summary_edits(summary, body)
     session.commit()
     if changed:
         # A LENGTH delta, never the text: this column is read by humans and must stay free of PHI,

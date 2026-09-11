@@ -117,6 +117,38 @@ def _cancellable_sleep(total: float) -> None:
         remaining -= slice_seconds
 
 
+def _note_client_error(exc, model) -> float | None:
+    """Record a 429 and decide whether the retry loop may have it. RAISES when it may not.
+
+    Named "note", but that name understates it and the docstring is here to stop it misleading a
+    reader: this function makes a CONTROL-FLOW decision. A non-429, and a 429 whose body says the
+    daily budget is spent, both propagate out of ``generate_with_retry`` from here and end the loop.
+    Only a transient 429 returns.
+
+    The bare ``raise`` re-raises the exception being handled by the caller's ``except`` block, which
+    is what keeps the original traceback intact.
+
+    Returns the server-advised retry delay when the response carries one, else None.
+    """
+    if getattr(exc, "code", None) != 429:
+        raise
+    genai_metrics.record(model, genai_metrics.OUTCOME_RATE_LIMITED)
+    # Feed the controller BEFORE the PerDay carve-out below: a spent daily budget is
+    # still evidence that this model is unavailable right now.
+    pacing.record_rejection("gemini", model)
+    # Through the shared predicate, not an inline copy of it. The comment in the caller promises
+    # `worker.failures.classify_failure` mirrors this set "or the two disagree", and that one
+    # already asks `is_daily_quota`; a second reading of the same rule is how they would come to
+    # disagree - change either side and the other keeps the old answer, which decides whether a job
+    # PAUSES and auto-resumes or ends needs_attention.
+    if is_daily_quota(exc):
+        raise
+    # Vertex does not populate RetryInfo in practice (measured 2026-08-05: the 429 body carries only
+    # code/message/status), so this returns None and backoff takes over. Kept because it costs
+    # nothing and other endpoints do send it.
+    return _retry_delay_seconds(exc)
+
+
 def generate_with_retry(client, **kwargs):
     """Call client.models.generate_content, retrying transient failures. Client passed explicitly
     so route/worker modules keep a single patchable client seam.
@@ -163,26 +195,9 @@ def generate_with_retry(client, **kwargs):
                     raise
                 last = exc
             except errors.ClientError as exc:  # retry only transient 429 rate limiting
-                if getattr(exc, "code", None) != 429:
-                    raise
-                genai_metrics.record(model, genai_metrics.OUTCOME_RATE_LIMITED)
-                # Feed the controller BEFORE the PerDay carve-out below: a spent daily budget is
-                # still evidence that this model is unavailable right now.
-                pacing.record_rejection("gemini", model)
-                # Through the shared predicate, not an inline copy of it. The comment above promises
-                # `worker.failures.classify_failure` mirrors this set "or the two disagree",
-                # and that one already asks `is_daily_quota`; a second reading of the same
-                # rule four lines from where the sibling carve-out correctly calls
-                # `is_deadline_exceeded` is how they would come to disagree - change either
-                # side and the other keeps the old answer, which decides whether a job
-                # PAUSES and auto-resumes or ends needs_attention.
-                if is_daily_quota(exc):
-                    raise
+                # Raises out of the loop for a non-429 and for a spent daily quota; see the helper.
+                retry_after = _note_client_error(exc, model)
                 last = exc
-                # Vertex does not populate RetryInfo in practice (measured 2026-08-05: the 429 body
-                # carries only code/message/status), so this returns None and backoff takes over.
-                # Kept because it costs nothing and other endpoints do send it.
-                retry_after = _retry_delay_seconds(exc)
             except httpx.TransportError as exc:  # disconnect without an HTTP status
                 last = exc
                 genai_metrics.record(model, genai_metrics.OUTCOME_TRANSPORT)

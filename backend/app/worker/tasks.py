@@ -209,35 +209,12 @@ def _run(job_id, work) -> None:
                 _finalize_needs_attention(session, job_id, sig)
                 return
             except Exception as exc:
-                session.rollback()  # the work may have died mid-transaction
-                job = session.get(Job, job_id)
-                job.state = "error"
-                job.error = user_facing_message(exc)  # friendly; never the raw vendor error
-                job.finished_at = _utcnow()
-                document = session.get(Document, job.document_id)
-                # Only move the document out of the stage THIS job put it in. Every other terminal
-                # writer already refuses to do more than that - mark_terminal's
-                # document_status_only_when, the failure callback, orphan recovery - and this path
-                # was the one that did not, so which failure mode killed a job decided whether the
-                # record survived it. An advisory dedup raising mid-run used to flip a fully
-                # summarized record to "Failed" on the landing page and offer to "start again",
-                # which points at re-running identification and deletes review_rows.
-                if document is not None and document.status in INTERRUPTIBLE_DOCUMENT_STATUSES:
-                    document.status = "error"
-                session.commit()
-                logger.exception(
-                    "job %s (%s) failed on document %s", job_id, job.kind, job.document_id
-                )
+                _finalize_failed(session, job_id, exc)
+                # The return STAYS here. A helper cannot end this try block, and falling through
+                # would mark a failed job done.
                 return
 
-            job.state = "done"
-            job.finished_at = _utcnow()
-            document = session.get(Document, job.document_id)
-            done_status = STATUS_ON_DONE[job.kind]
-            if document is not None and done_status is not None:
-                document.status = done_status
-            session.commit()
-            logger.info("job %s (%s) done on document %s", job_id, job.kind, job.document_id)
+            _finalize_done(session, job, job_id)
         finally:
             # A forked work-horse exits after one job, so this is belt-and-braces there - but it is
             # load-bearing for the tests, which run many jobs in one process, and for any future
@@ -250,6 +227,45 @@ def _job_timeout(session, document_id) -> int:
     settings = get_settings()
     pages = getattr(session.get(Document, document_id), "page_count", 0) or 0
     return settings.effective_job_timeout(pages)
+
+
+def _finalize_failed(session, job_id, exc) -> None:
+    """Terminal-error finalizer: roll back, record a friendly message, and move the document out of
+    the stage THIS job put it in - and only that stage.
+
+    The caller's ``return`` deliberately stays in the caller. A helper cannot end ``_run``'s try
+    block, so moving that ``return`` in here would let ``_run`` fall through to the success path and
+    mark a FAILED job done.
+    """
+    session.rollback()  # the work may have died mid-transaction
+    job = session.get(Job, job_id)
+    job.state = "error"
+    job.error = user_facing_message(exc)  # friendly; never the raw vendor error
+    job.finished_at = _utcnow()
+    document = session.get(Document, job.document_id)
+    # Only move the document out of the stage THIS job put it in. Every other terminal
+    # writer already refuses to do more than that - mark_terminal's
+    # document_status_only_when, the failure callback, orphan recovery - and this path
+    # was the one that did not, so which failure mode killed a job decided whether the
+    # record survived it. An advisory dedup raising mid-run used to flip a fully
+    # summarized record to "Failed" on the landing page and offer to "start again",
+    # which points at re-running identification and deletes review_rows.
+    if document is not None and document.status in INTERRUPTIBLE_DOCUMENT_STATUSES:
+        document.status = "error"
+    session.commit()
+    logger.exception("job %s (%s) failed on document %s", job_id, job.kind, job.document_id)
+
+
+def _finalize_done(session, job, job_id) -> None:
+    """Success finalizer: mark the job done and advance the document to this kind's done status."""
+    job.state = "done"
+    job.finished_at = _utcnow()
+    document = session.get(Document, job.document_id)
+    done_status = STATUS_ON_DONE[job.kind]
+    if document is not None and done_status is not None:
+        document.status = done_status
+    session.commit()
+    logger.info("job %s (%s) done on document %s", job_id, job.kind, job.document_id)
 
 
 def _finalize_paused(session, job_id, sig: JobPaused) -> None:
@@ -479,43 +495,92 @@ def _build_summary(job, idx, row, output) -> Summary:
     )
 
 
+def _populate_page_text(session, document, report) -> None:
+    """OCR every page ONCE, before segmentation, so classify/dedup/summarize and any later re-run
+    read stored text instead of re-extracting the same pages. Idempotent, so a re-segment pays
+    nothing.
+
+    Best-effort, with exactly two exceptions that must NOT be swallowed - see the handlers below.
+
+    Imports ``populate_document`` itself rather than taking it from the caller: the caller's import
+    statement binds two names and ``_stored_page_text`` still needs the other one, so narrowing that
+    statement here keeps each user importing only what it uses.
+    """
+    from app.services.page_text import populate_document
+
+    report("reading", 0, document.page_count or 0)
+    try:
+        populate_document(
+            session,
+            document.id,
+            document.stored_path,
+            document.page_count or 0,
+            progress=report,  # so the bar moves and Stop is heard during the OCR pass
+        )
+    except OcrUnavailableError:
+        # The ONE failure that best-effort must not cover. "Every reader falls back to extracting
+        # on demand" is true of a transient failure and false of a missing binary: there is no
+        # reader that can fall back, because nothing can extract. Swallowed, the document segments
+        # with no text at all and the operator meets the problem downstream as a Vertex 400 that
+        # names nothing about OCR. `_run` already turns this into a friendly "OCR" job error.
+        raise
+    except JobCancelled:
+        # The reviewer pressed Stop, which now reaches here because `report` is threaded into the
+        # pass above. It is a control-flow signal, not a failure: swallowed by the best-effort
+        # handler below it would leave the stop unheard AND let segmentation run on, which is
+        # the opposite of what making this pass interruptible was for.
+        raise
+    except Exception:
+        logger.warning("page text population failed for %s", document.id, exc_info=True)
+
+
+def _store_segment_rows(session, document, job, rows) -> None:
+    """Replace this document's ReviewRows with ``rows``, keeping an immutable SegmentRow copy.
+
+    The two copies are written from ONE shared ``fields`` dict deliberately, so the immutable model
+    output and the editable reviewer copy cannot drift apart.
+    """
+    session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
+    for idx, row in enumerate(rows):
+        fields = {
+            "idx": idx,
+            "start": int(row["start"]),
+            "end": int(row["end"]),
+            "category": str(row["category"]),
+            "title": str(row.get("title") or "-"),
+            "date": str(row.get("date") or "-"),
+            "injury_date": str(row.get("injury_date") or "-"),
+            "flag": str(row.get("flag") or "-"),
+            "suggest_merge": bool(row.get("suggest_merge")),
+            # Which cascade path decided the category (#188). `.get`, not `[...]`: a row the
+            # categorization pool never finished has no key, and NULL is the honest value for
+            # it. Carried on the SHARED dict deliberately, so the immutable SegmentRow copy and
+            # the editable ReviewRow copy cannot drift apart.
+            "method": row.get("method"),
+        }
+        session.add(SegmentRow(job_id=job.id, **fields))
+        # include follows the category's summarize_default, which is a per-category DB flag -
+        # see catalog.summarize_default_for for why the set is not what it looks like. It is NOT a
+        # SegmentRow column, so it is passed only to the editable ReviewRow copy.
+        session.add(
+            ReviewRow(
+                document_id=document.id,
+                include=catalog.summarize_default_for(session, fields["category"]),
+                **fields,
+            )
+        )
+
+
 def segment_document(job_id) -> None:
     """RQ entry: segment the document -> SegmentRows (immutable model output) + ReviewRows (the
     editable copy that diverges as the human corrects it)."""
     from app.services.segment_engine import run_segmentation
 
     def work(session, job, report):
-        from app.services.page_text import get_page_text, populate_document
+        from app.services.page_text import get_page_text
 
         document = session.get(Document, job.document_id)
-        # OCR every page ONCE, before segmentation, so classify/dedup/summarize and any later re-run
-        # read stored text instead of re-extracting the same pages. Idempotent, so a re-segment pays
-        # nothing. Best-effort: a failure here must not fail the job - every reader falls back to
-        # extracting on demand.
-        report("reading", 0, document.page_count or 0)
-        try:
-            populate_document(
-                session,
-                document.id,
-                document.stored_path,
-                document.page_count or 0,
-                progress=report,  # so the bar moves and Stop is heard during the OCR pass
-            )
-        except OcrUnavailableError:
-            # The ONE failure that best-effort must not cover. "Every reader falls back to extracting
-            # on demand" is true of a transient failure and false of a missing binary: there is no
-            # reader that can fall back, because nothing can extract. Swallowed, the document segments
-            # with no text at all and the operator meets the problem downstream as a Vertex 400 that
-            # names nothing about OCR. `_run` already turns this into a friendly "OCR" job error.
-            raise
-        except JobCancelled:
-            # The reviewer pressed Stop, which now reaches here because `report` is threaded into the
-            # pass above. It is a control-flow signal, not a failure: swallowed by the best-effort
-            # handler below it would leave the stop unheard AND let segmentation run on, which is
-            # the opposite of what making this pass interruptible was for.
-            raise
-        except Exception:
-            logger.warning("page text population failed for %s", document.id, exc_info=True)
+        _populate_page_text(session, document, report)
 
         # Read page text from the store rather than re-OCRing: population above already did it.
         # Its own session is used because this runs on segmentation's thread pool and a Session is
@@ -546,35 +611,7 @@ def segment_document(job_id) -> None:
             ).all(),
             prior,
         )
-        session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
-        for idx, row in enumerate(rows):
-            fields = {
-                "idx": idx,
-                "start": int(row["start"]),
-                "end": int(row["end"]),
-                "category": str(row["category"]),
-                "title": str(row.get("title") or "-"),
-                "date": str(row.get("date") or "-"),
-                "injury_date": str(row.get("injury_date") or "-"),
-                "flag": str(row.get("flag") or "-"),
-                "suggest_merge": bool(row.get("suggest_merge")),
-                # Which cascade path decided the category (#188). `.get`, not `[...]`: a row the
-                # categorization pool never finished has no key, and NULL is the honest value for
-                # it. Carried on the SHARED dict deliberately, so the immutable SegmentRow copy and
-                # the editable ReviewRow copy cannot drift apart.
-                "method": row.get("method"),
-            }
-            session.add(SegmentRow(job_id=job.id, **fields))
-            # include follows the category's summarize_default, which is a per-category DB flag -
-            # see catalog.summarize_default_for for why the set is not what it looks like. It is NOT a
-            # SegmentRow column, so it is passed only to the editable ReviewRow copy.
-            session.add(
-                ReviewRow(
-                    document_id=document.id,
-                    include=catalog.summarize_default_for(session, fields["category"]),
-                    **fields,
-                )
-            )
+        _store_segment_rows(session, document, job, rows)
 
         # AFTER the replacement rows exist, not between the delete and the inserts - `audit` commits
         # its own row on this session, and committing in the gap would persist a document with no
