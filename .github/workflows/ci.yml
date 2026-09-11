@@ -72,7 +72,7 @@ jobs:
           ENVIRONMENT: dev
         run: |
           uv run alembic upgrade head
-          uv run pytest --cov=app --cov-report=xml --cov-report=term-missing
+          uv run pytest --cov=app --cov-branch --cov-report=xml --cov-report=term-missing
 
       - name: Upload backend coverage
         uses: actions/upload-artifact@v5
@@ -201,6 +201,64 @@ jobs:
             https://github.com/gitleaks/gitleaks/releases/download/v8.30.0/gitleaks_8.30.0_linux_x64.tar.gz
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks dir . --redact --no-banner --exit-code 1
+
+  # Coverage floor. A SEPARATE job so a shortfall reads as "coverage" rather than as the test job
+  # failing. Backend only for now; the frontend floor lands once frontend coverage reaches 80 on all
+  # four metrics (Phase 5 Task 9) - a floor above today's number would make this permanently red,
+  # which teaches people to ignore it.
+  #
+  # NOT YET A REQUIRED CHECK. Until `coverage-floor` is added to the `main` ruleset's required
+  # checks, this reports and blocks NOTHING - the same evaluate-mode gap the ruleset flip closes.
+  #
+  # Fails CLOSED, mirroring the SonarCloud step below: a gate that reads a missing, empty or
+  # unparseable report and reports success is worse than no gate, because it looks like protection.
+  # The measurement is proved to exist before any number is read from it.
+  #
+  # The metric is coverage.py's branch-aware total, (covered lines + covered branches) /
+  # (valid lines + valid branches) - which is why the backend step passes --cov-branch. Read it from
+  # the ARTIFACT pytest-cov produced; regenerating from a .coverage data file does NOT reproduce it.
+  coverage-floor:
+    needs: [backend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download backend coverage
+        uses: actions/download-artifact@v5
+        with:
+          name: backend-coverage
+          path: backend
+
+      - name: Backend coverage must not fall below the floor
+        env:
+          FLOOR: "90"
+        run: |
+          set -euo pipefail
+          f=backend/coverage.xml
+          if [ ! -s "$f" ]; then
+            echo "No coverage report at $f."
+            echo "Refusing to report a floor from a measurement that does not exist."
+            exit 1
+          fi
+          python3 - "$f" "$FLOOR" <<'PYEOF'
+          import sys, xml.etree.ElementTree as ET
+          path, floor = sys.argv[1], float(sys.argv[2])
+          try:
+              root = ET.parse(path).getroot()
+          except Exception as exc:
+              sys.exit(f"coverage.xml did not parse ({exc}) - failing rather than passing blind.")
+          need = ("lines-covered", "lines-valid", "branches-covered", "branches-valid")
+          missing = [k for k in need if k not in root.attrib]
+          if missing:
+              sys.exit(f"coverage.xml lacks {missing}; cannot compute a branch-aware total.")
+          lc, lv = int(root.attrib["lines-covered"]), int(root.attrib["lines-valid"])
+          bc, bv = int(root.attrib["branches-covered"]), int(root.attrib["branches-valid"])
+          if lv + bv == 0:
+              sys.exit("coverage.xml reports zero measurable lines and branches - empty report.")
+          pct = 100.0 * (lc + bc) / (lv + bv)
+          print(f"backend coverage {pct:.2f}%  ({lc} + {bc}) / ({lv} + {bv})  floor {floor:.0f}%")
+          if pct < floor:
+              sys.exit(f"BELOW THE FLOOR: {pct:.2f}% < {floor:.0f}%")
+          print("above the floor")
+          PYEOF
 
   # Separate job so a quality-gate failure reads as "sonarcloud", not "tests". Consumes the
   # coverage reports produced by the backend + frontend jobs.
