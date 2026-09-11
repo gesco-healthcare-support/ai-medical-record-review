@@ -1040,9 +1040,7 @@ def _reconcile_summaries(session, document_id: str, wanted: set) -> dict[tuple, 
     The caller commits - the transaction boundary is its business, not this helper's.
     """
     existing: dict[tuple, Summary] = {}
-    for summary in session.scalars(
-        select(Summary).where(Summary.document_id == document_id)
-    ).all():
+    for summary in session.scalars(select(Summary).where(Summary.document_id == document_id)).all():
         key = (int(summary.row_start), int(summary.row_end), str(summary.row_category))
         # A notice-only row is deleted rather than reused, so "summarize again" re-reads its pages
         # instead of skipping them as done - see _is_retryable_notice.
