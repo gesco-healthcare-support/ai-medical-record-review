@@ -359,40 +359,58 @@ def test_a_stop_during_the_ocr_pass_returns_without_draining_the_queue(monkeypat
     Both hold whether or not the pool drains, because it stubbed `_extract` with an instant lambda
     and the drain is free when every page takes no time. The sleep is what gives the test teeth.
 
-    Self-calibrating rather than absolute: it measures a FULL pass on this machine and requires the
-    stopped one to be a fraction of it. A wall-clock threshold would be a flake on a loaded box.
+    Measured as WORK DONE, not wall-clock. `_extract` runs in the pool, so counting its calls says
+    directly whether the queued pages were cancelled or drained - which is the guarantee - and no
+    runner load can change the answer.
+
+    It used to time a full pass and require the stopped one to be a fraction of it. That flaked
+    twice on GitHub Actions (PR #235 2026-09-01, PR #298 2026-09-11) at the SAME 0.243s stopped
+    pass. The stopped path is dominated by FIXED overhead - pool setup, shutdown, the session - which
+    does not scale with page count, so a loaded runner inflates the numerator while the denominator
+    stays near theoretical. Widening the ratio only moves the next failure; 0.243/0.460 is already
+    53%, so even a /2 budget would have failed.
+
+    A STORED-COUNT assertion cannot replace it, which is why this counts reads instead. Extraction
+    happens in the threads but storage happens in the caller's loop, and the cancel raises out of
+    `progress` INSIDE that loop - so drained pages are extracted and never stored, and the stored
+    count is the same either way. That is what the earlier version of this test found.
     """
     import time
 
     from app.worker.failures import JobCancelled
 
     pages, per_page, workers = 60, 0.03, 4
+    reads: list[int] = []
     monkeypatch.setattr(
-        pt, "_extract", lambda path, page: (time.sleep(per_page), (f"p{page}", True))[1]
+        pt,
+        "_extract",
+        lambda path, page: (reads.append(page), time.sleep(per_page), (f"p{page}", True))[2],
     )
 
-    # The reference: how long the whole pass takes here.
+    # The control, in the same test: a full pass reads every page. Without this the assertion below
+    # could pass on a version that never reads anything at all.
     baseline_doc = _doc(pages=pages)
-    started = time.monotonic()
     with get_sessionmaker()() as session:
         pt.populate_document(session, baseline_doc, "/x.pdf", pages, workers=workers)
-    full_pass = time.monotonic() - started
+    assert len(reads) == pages, "a full pass must read every page - the control is broken"
+
+    reads.clear()
 
     def stop_after_four(stage, current, total):
         if current >= 4:
             raise JobCancelled(current, total)
 
     doc_id = _doc(pages=pages)
-    started = time.monotonic()
     with get_sessionmaker()() as session, pytest.raises(JobCancelled):
         pt.populate_document(
             session, doc_id, "/x.pdf", pages, workers=workers, progress=stop_after_four
         )
-    stopped = time.monotonic() - started
 
-    assert stopped < full_pass / 3, (
-        f"the stop returned in {stopped:.2f}s against a {full_pass:.2f}s full pass - the queued "
-        "pages were still drained on the way out of the pool"
+    # The few already running on the workers still finish, so this is a bound, not an exact count -
+    # but a drained pool reads all 60, so the two outcomes are never close.
+    assert len(reads) < pages / 2, (
+        f"the stop read {len(reads)} of {pages} pages - the queued pages were still drained on the "
+        "way out of the pool instead of being cancelled"
     )
     # Pages already read stay stored - the pass is idempotent, so a later run resumes. The few in
     # flight on the workers finish, so this is a range, not an exact count.
