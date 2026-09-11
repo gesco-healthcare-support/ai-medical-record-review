@@ -5,6 +5,8 @@ Pure (no DB, no Vertex): _generate, the OCR call, and verify_summary are monkeyp
 tests assert what summarize_row FEEDS the model and how it threads the verify result.
 """
 
+import logging
+
 import pytest
 
 from app.config import get_settings
@@ -2284,3 +2286,102 @@ def test_page_dpi_falls_back_rather_than_dividing_by_zero():
 def test_page_dpi_is_never_zero_on_an_absurdly_large_box():
     # A box big enough that the fitted DPI rounds to 0 must still render something.
     assert se._page_dpi(_reader_with_box(10_000_000, 10_000_000), 1, get_settings()) >= 1
+
+
+def _audit_returning(**over):
+    """The post-#285 `verify_summary` shape: its failure paths carry `truncated` and the counts."""
+    shape = {
+        "fixed_text": "Summary body",
+        "fixed_title": "Title - Dr",
+        "issues": [],
+        "ok": False,
+        "truncated": False,
+        "input_tokens": None,
+        "output_tokens": None,
+    }
+    shape.update(over)
+    return lambda *a, **k: shape
+
+
+def test_the_caller_records_why_an_audit_did_not_complete(monkeypatch, caplog):
+    """WHEN the audit does not complete, THE SYSTEM SHALL record the row and the reason.
+
+    #285 put `truncated` and the token counts on EVERY `verify_summary` return path, for the stated
+    reason that "the caller that most needs these numbers is the one handling a FAILURE". This
+    caller read neither, so the three events `ok` False folds together - nothing to audit, the reply
+    hit the cap, and something raised - stopped being distinguishable at the function boundary.
+
+    `summary_verify` logs the cap case itself but names no ROW, so a production log could not say
+    which summary shipped unaudited. `test_a_failed_audit_is_not_recorded_as_verified` above covers
+    the stored outcome; this covers the CAUSE, which nothing persists.
+    """
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", _audit_returning(truncated=True, output_tokens=8192))
+
+    with caplog.at_level(logging.WARNING):
+        out = se.summarize_row("/x.pdf", _row(start=12, end=19), prompt="P", verify=True)
+
+    logged = " ".join(r.getMessage() for r in caplog.records if "audit" in r.getMessage())
+    assert "12-19" in logged  # WHICH summary, the question summary_verify's own line cannot answer
+    assert "truncated=True" in logged  # WHICH of the three events
+    assert "8192" in logged  # and the evidence for it, rather than an unbacked assertion
+    assert out["verified"] is False  # unchanged: the body still ships, unaudited
+
+
+def test_a_completed_audit_logs_nothing(monkeypatch, caplog):
+    """A GUARD - it passes on `origin/main` too, which logs nothing on either path.
+
+    It is here because the warning is only worth reading while it stays rare: 3.1% of audited rows
+    (box, 2026-09-10). Logging the success path as well would make it noise, which is how the review
+    flag ended up on 79% of rows and stopped meaning anything.
+    """
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "verify_summary", _audit_returning(ok=True))
+
+    with caplog.at_level(logging.WARNING):
+        se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert not [r for r in caplog.records if "audit did not complete" in r.getMessage()]
+
+
+def test_the_caller_survives_an_audit_shape_without_the_new_keys(monkeypatch, caplog):
+    """Guards the NEW code rather than demonstrating the old defect, though it fails on
+    `origin/main` for the incidental reason that there is no log line there at all.
+
+    Every other stub in this file predates #285 and returns the four original keys only. The new
+    fields are read with `.get()` for that reason - a provider path or a test double that has not
+    caught up must degrade to "reason unknown" rather than raising inside the summarize loop, which
+    would turn a diagnostic into a lost row. Switching either read to `[...]` fails here.
+    """
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda *a, **k: {
+            "fixed_text": "Summary body",
+            "fixed_title": "T",
+            "issues": [],
+            "ok": False,
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verified"] is False
+    assert "truncated=None" in " ".join(r.getMessage() for r in caplog.records)

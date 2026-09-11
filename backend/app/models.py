@@ -493,6 +493,19 @@ class Summary(Base):
             "verifyIssues": self.verify_issues or [],
             # The reviewer-facing flag: the AI actually changed this summary (issues were found).
             "verifyChanged": bool(self.verified and self.verify_issues),
+            # The other reviewer-facing flag, and the one `verified` alone cannot express on the
+            # wire: the audit was ASKED FOR and did not complete. `audit_model` records the request
+            # (it is set from the `verify` setting) and `verified` records the outcome, so a client
+            # holding only `verified` cannot tell an audit that failed from an audit nobody ran -
+            # and renders both exactly like an audit that passed.
+            #
+            # Measured on the box 2026-09-10 over the 1,155 summaries that requested one: 36 failed
+            # and ALL 36 were delivered (`excluded` false). The rate tracks summary LENGTH, which is
+            # the shape the benchmark found independently - 0.4% at 500-1000 characters against
+            # 69.2% (18 of 26) above 4,000, because the audit's reply must carry a corrected copy of
+            # the whole summary while its budget stays flat. So it fails hardest on the longest
+            # documents: depositions (23.1%) and 14 of the 16 category-1 rows over 4,000 characters.
+            "verifyFailed": bool(self.audit_model and not self.verified),
             "row": {"start": self.row_start, "end": self.row_end, "category": self.row_category},
         }
 

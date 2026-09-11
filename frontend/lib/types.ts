@@ -130,6 +130,12 @@ export type SummaryItem = {
   // summary (issues were found). `verifyIssues` carries the {type, detail} list for later UIs.
   verified: boolean;
   verifyChanged: boolean;
+  // The audit was ASKED FOR and did not complete, so this body shipped with no faithfulness check.
+  // Derived on the server, because `verified` alone cannot say it: false there also means the audit
+  // was never requested, and this tab would then flag every card if the setting were off.
+  // Optional for the same rolling-deploy reason as `rowMissing` - an older backend omits it, and
+  // absent must read as "nothing to say" rather than as a flag.
+  verifyFailed?: boolean;
   verifyIssues: VerifyIssue[];
   // `row.category` is the category that GENERATED this text. `rowCategoryLive` is what the row says
   // NOW: they differ when the reviewer re-classified the sub-document but has not re-drafted yet, and

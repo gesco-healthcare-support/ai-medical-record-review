@@ -477,3 +477,55 @@ describe("SummariesView empty state", () => {
     expect(onGotoSummarizeStep).toHaveBeenCalled();
   });
 });
+
+/** The audit that did not run. `verifyChanged` is false for a clean audit AND for a failed one, so
+ *  until now a summary nothing checked rendered exactly like one that passed - on 36 delivered
+ *  rows, measured on the box 2026-09-10. `verifyFailed` is derived server-side from two columns,
+ *  `verified` alone cannot separate "failed" from "never asked for". */
+describe("SummariesView unaudited flag", () => {
+  const card = (over: Record<string, unknown>) => [
+    {
+      idx: 0,
+      summaryTitle: "Deposition of the Applicant (Pages 4-40)",
+      summaryDate: "01/02/2026",
+      summaryText: "Body.",
+      manualCheck: false,
+      excluded: false,
+      edited: false,
+      verified: false,
+      verifyChanged: false,
+      verifyIssues: [],
+      row: { start: 4, end: 40, category: "9" },
+      ...over,
+    },
+  ];
+
+  const renderWith = (over: Record<string, unknown>) => {
+    summariesState.error = null;
+    summariesState.isLoading = false;
+    summariesState.data = card(over);
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+  };
+
+  it("says so when the audit was requested and did not complete", () => {
+    renderWith({ verifyFailed: true });
+    expect(screen.getByText(/Not checked/i)).toBeInTheDocument();
+  });
+
+  it("stays silent when the audit completed", () => {
+    // A GUARD. The whole point of the chip is that it means something, and it would mean nothing on
+    // a card where the check actually ran - which is 96.9% of them.
+    renderWith({ verified: true, verifyFailed: false });
+    expect(screen.queryByText(/Not checked/i)).not.toBeInTheDocument();
+  });
+
+  it("stays silent when the backend does not send the field at all", () => {
+    // A GUARD, for the rolling deploy: a new frontend against an older backend gets `undefined`,
+    // and that must read as "nothing to say" rather than flagging every summary in the record.
+    // This is the same trap `rowMissing` and `rowCategoryLive` are optional for.
+    renderWith({});
+    expect(screen.queryByText(/Not checked/i)).not.toBeInTheDocument();
+  });
+});
