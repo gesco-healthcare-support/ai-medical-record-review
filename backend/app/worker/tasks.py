@@ -1101,6 +1101,9 @@ class _SummarizeRun:
 
     total: int
     done_count: int = 0
+    # The document this attempt belongs to. Context for the failure log lines, not an accumulator:
+    # a worker log is read without the job in front of you, so every line names its document.
+    document_id: str = ""
     # Permanent per-row failures, surfaced to the reviewer as {idx, pages, reason}. Non-PHI.
     attention_rows: list[dict] = field(default_factory=list)
     # Transient per-row failures. Reported only when the run gives up on the document entirely.
@@ -1253,6 +1256,160 @@ class _SummarizeRun:
             {"idx": i, "pages": f"{row['start']}-{row['end']}", "reason": reason_for(exc)}
         )
 
+    def record_failure(self, exc, i, row, settings, futures) -> str:
+        """Classify one row's failure, record it, and say whether the drain must STOP.
+
+        Returns "stop" only when the drain loop must end; "continue" in every other case, including
+        after a give-up - `record_transient` owns that distinction and the reasoning for it.
+
+        This dispatch used to sit in the loop body. Moving it here leaves the loop with one decision
+        per row instead of four branches. Neither branch changed: the transient path still reports
+        the consecutive count, and the permanent path still carries `exc_info`. Both log lines name
+        the document because a worker log is read without the job in front of you.
+        """
+        if classify_failure(exc) == "transient":
+            decision = self.record_transient(exc, i, row, settings, futures)
+            logger.warning(
+                "summarize row %d transient failure on document %s (%d in a row)",
+                i,
+                self.document_id,
+                self.consecutive_transient,
+            )
+            return decision
+        self.record_permanent(exc, i, row)
+        logger.warning(
+            "summarize row %d permanent failure on document %s",
+            i,
+            self.document_id,
+            exc_info=True,
+        )
+        return "continue"
+
+
+def _summarize_work(session, job, report) -> None:
+    from app.services.summarize_engine import (
+        page_phrase,
+        standalone_studies_from_rows,
+        summarize_row,
+    )
+
+    settings = get_settings()
+    document = session.get(Document, job.document_id)
+    rows = [
+        row.as_row()
+        for row in session.scalars(
+            select(ReviewRow)
+            .where(ReviewRow.document_id == job.document_id, ReviewRow.include.is_(True))
+            .order_by(ReviewRow.idx)
+        ).all()
+    ]
+    total = len(rows)
+    wanted = {(int(r["start"]), int(r["end"]), str(r["category"])) for r in rows}
+
+    _seed_row_text(session, job.document_id, rows)
+    _seed_embedded_review_pages(session, job.document_id, rows)
+
+    existing = _reconcile_summaries(session, job.document_id, wanted)
+    session.commit()
+
+    pending = _pending_rows(rows, existing)
+    session.commit()
+
+    run = _SummarizeRun(total=total, done_count=total - len(pending), document_id=job.document_id)
+    report("summarizing", run.done_count, run.total)
+    if not pending:
+        return  # everything already summarized -> _run marks done
+
+    prompt_by_cat = _prompts_for_rows(session, pending)
+
+    pdf_path, model = document.stored_path, job.model
+    # The three models come from the JOB, resolved once when it was created, so a config change
+    # mid-run cannot split one delivered document across two models. `or job.model` is what makes
+    # a job created before 2026-08-06 behave exactly as it did: those jobs used one model for all
+    # three calls, and their new columns are NULL rather than back-filled with a guess.
+    title_model = job.title_model or job.model
+    audit_model = job.audit_model or job.model
+
+    pool_timeout = settings.pool_timeout(document.page_count)
+    with ThreadPoolExecutor(max_workers=settings.pipeline_workers) as pool:
+        futures = {
+            pool.submit(
+                summarize_row,
+                pdf_path,
+                row,
+                model,
+                prompt_by_cat[str(row["category"])],
+                # E-08 document-set context, derived from the FULL included row set rather than
+                # `pending`: a study already summarized on an earlier attempt still stands as its
+                # own sub-document, so a resumed run must give the same context as the first.
+                standalone_studies=standalone_studies_from_rows(rows, exclude=row),
+                title_model=title_model,
+                audit_model=audit_model,
+            ): (i, row)
+            for i, row in pending
+        }
+        try:
+            for future in drain_pool(futures, pool_timeout):
+                if future.cancelled():
+                    # A row we skipped after deciding to stop submitting. `as_completed` yields
+                    # cancelled futures too, and `.result()` on one raises CancelledError, which
+                    # would otherwise be classified as a permanent per-row failure and reported
+                    # to the reviewer as a document that could not be summarized.
+                    continue
+                i, row = futures[future]
+                try:
+                    output = future.result()
+                except Exception as exc:
+                    if run.record_failure(exc, i, row, settings, futures) == "stop":
+                        break
+                    continue
+                # Success: persist immediately so a later failure never loses this row.
+                session.add(_build_summary(job, i, row, output))
+                session.commit()
+                run.record_success(output)
+                report("summarizing", run.done_count, total)
+                if output.get("noticeOnly"):
+                    # The row IS delivered, carrying a notice - and the job still ends
+                    # needs_attention naming it. Two signals for two audiences: the banner asks
+                    # the reviewer to re-run text recognition or exclude the row before
+                    # delivering, the notice tells the reader what happened if it ships anyway.
+                    # Dropping the banner would remove their last chance to recover a transient
+                    # OCR failure, since it is the only thing today that says a page was lost.
+                    #
+                    # Recorded AFTER the summary is committed, so a notice row is both persisted
+                    # and reported; `run.attention_rows` carries no PHI, only idx, pages and reason.
+                    run.attention_rows.append(
+                        {
+                            "idx": i,
+                            "pages": f"{row['start']}-{row['end']}",
+                            "reason": (
+                                "The text recognizer could not read "
+                                f"{page_phrase(output['unreadablePages'])}, so this "
+                                "sub-document was delivered with a note in place of a summary. "
+                                "Re-run it to try again, or exclude it."
+                            ),
+                        }
+                    )
+        except PoolTimeout as pt:
+            # A stalled pool near the wall-clock wall: pause and let the outstanding rows retry
+            # on the next resume (pending is recomputed by row identity), never hang.
+            #
+            # BOTH flags, and they are NOT interchangeable. For the final outcome the check is
+            # `should_pause or transient_left`, so setting `should_pause` here changes nothing
+            # observable - breaking it leaves every test green, verified 2026-09-11. But
+            # `should_pause` is NOT redundant inside the loop, where it gates whether pending
+            # rows get cancelled. Collapsing these two looks safe and is not.
+            run.transient_left = True
+            run.should_pause = True
+            logger.warning(
+                "summarize pool timed out after %ss on document %s; %d row(s) will retry",
+                pool_timeout,
+                job.document_id,
+                len(pt.unfinished),
+            )
+
+    run.finish(settings)
+
 
 def summarize_document(job_id) -> None:
     """RQ entry: summarize the included ReviewRows -> Summary rows, RESUMABLY (item 7).
@@ -1266,144 +1423,4 @@ def summarize_document(job_id) -> None:
     keeping every successful summary. The "Re-summarize all" path clears summaries in the route
     first, so nothing is reused here.
     """
-    from app.services.summarize_engine import (
-        page_phrase,
-        standalone_studies_from_rows,
-        summarize_row,
-    )
-
-    def work(session, job, report):
-        settings = get_settings()
-        document = session.get(Document, job.document_id)
-        rows = [
-            row.as_row()
-            for row in session.scalars(
-                select(ReviewRow)
-                .where(ReviewRow.document_id == job.document_id, ReviewRow.include.is_(True))
-                .order_by(ReviewRow.idx)
-            ).all()
-        ]
-        total = len(rows)
-        wanted = {(int(r["start"]), int(r["end"]), str(r["category"])) for r in rows}
-
-        _seed_row_text(session, job.document_id, rows)
-        _seed_embedded_review_pages(session, job.document_id, rows)
-
-        existing = _reconcile_summaries(session, job.document_id, wanted)
-        session.commit()
-
-        pending = _pending_rows(rows, existing)
-        session.commit()
-
-        run = _SummarizeRun(total=total, done_count=total - len(pending))
-        report("summarizing", run.done_count, run.total)
-        if not pending:
-            return  # everything already summarized -> _run marks done
-
-        prompt_by_cat = _prompts_for_rows(session, pending)
-
-        pdf_path, model = document.stored_path, job.model
-        # The three models come from the JOB, resolved once when it was created, so a config change
-        # mid-run cannot split one delivered document across two models. `or job.model` is what makes
-        # a job created before 2026-08-06 behave exactly as it did: those jobs used one model for all
-        # three calls, and their new columns are NULL rather than back-filled with a guess.
-        title_model = job.title_model or job.model
-        audit_model = job.audit_model or job.model
-
-        pool_timeout = settings.pool_timeout(document.page_count)
-        with ThreadPoolExecutor(max_workers=settings.pipeline_workers) as pool:
-            futures = {
-                pool.submit(
-                    summarize_row,
-                    pdf_path,
-                    row,
-                    model,
-                    prompt_by_cat[str(row["category"])],
-                    # E-08 document-set context, derived from the FULL included row set rather than
-                    # `pending`: a study already summarized on an earlier attempt still stands as its
-                    # own sub-document, so a resumed run must give the same context as the first.
-                    standalone_studies=standalone_studies_from_rows(rows, exclude=row),
-                    title_model=title_model,
-                    audit_model=audit_model,
-                ): (i, row)
-                for i, row in pending
-            }
-            try:
-                for future in drain_pool(futures, pool_timeout):
-                    if future.cancelled():
-                        # A row we skipped after deciding to stop submitting. `as_completed` yields
-                        # cancelled futures too, and `.result()` on one raises CancelledError, which
-                        # would otherwise be classified as a permanent per-row failure and reported
-                        # to the reviewer as a document that could not be summarized.
-                        continue
-                    i, row = futures[future]
-                    try:
-                        output = future.result()
-                    except Exception as exc:
-                        if classify_failure(exc) == "transient":
-                            decision = run.record_transient(exc, i, row, settings, futures)
-                            logger.warning(
-                                "summarize row %d transient failure on document %s (%d in a row)",
-                                i,
-                                job.document_id,
-                                run.consecutive_transient,
-                            )
-                            if decision == "stop":
-                                break
-                        else:
-                            run.record_permanent(exc, i, row)
-                            logger.warning(
-                                "summarize row %d permanent failure on document %s",
-                                i,
-                                job.document_id,
-                                exc_info=True,
-                            )
-                        continue
-                    # Success: persist immediately so a later failure never loses this row.
-                    session.add(_build_summary(job, i, row, output))
-                    session.commit()
-                    run.record_success(output)
-                    report("summarizing", run.done_count, total)
-                    if output.get("noticeOnly"):
-                        # The row IS delivered, carrying a notice - and the job still ends
-                        # needs_attention naming it. Two signals for two audiences: the banner asks
-                        # the reviewer to re-run text recognition or exclude the row before
-                        # delivering, the notice tells the reader what happened if it ships anyway.
-                        # Dropping the banner would remove their last chance to recover a transient
-                        # OCR failure, since it is the only thing today that says a page was lost.
-                        #
-                        # Recorded AFTER the summary is committed, so a notice row is both persisted
-                        # and reported; `run.attention_rows` carries no PHI, only idx, pages and reason.
-                        run.attention_rows.append(
-                            {
-                                "idx": i,
-                                "pages": f"{row['start']}-{row['end']}",
-                                "reason": (
-                                    "The text recognizer could not read "
-                                    f"{page_phrase(output['unreadablePages'])}, so this "
-                                    "sub-document was delivered with a note in place of a summary. "
-                                    "Re-run it to try again, or exclude it."
-                                ),
-                            }
-                        )
-            except PoolTimeout as pt:
-                # A stalled pool near the wall-clock wall: pause and let the outstanding rows retry
-                # on the next resume (pending is recomputed by row identity), never hang.
-                #
-                # BOTH flags, and they are NOT interchangeable. For the final outcome the check is
-                # `should_pause or transient_left`, so setting `should_pause` here changes nothing
-                # observable - breaking it leaves every test green, verified 2026-09-11. But
-                # `should_pause` is NOT redundant inside the loop, where it gates whether pending
-                # rows get cancelled. Collapsing these two looks safe and is not.
-                run.transient_left = True
-                run.should_pause = True
-                logger.warning(
-                    "summarize pool timed out after %ss on document %s; %d row(s) will retry",
-                    pool_timeout,
-                    job.document_id,
-                    len(pt.unfinished),
-                )
-
-        run.finish(settings)
-
-    _run(job_id, work)
+    _run(job_id, _summarize_work)
