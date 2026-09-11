@@ -1180,6 +1180,81 @@ class _SummarizeRun:
             self.generated += 1
         self.consecutive_transient = 0
 
+    def record_transient(self, exc, i, row, settings, futures) -> str:
+        """A row failed transiently. Update the tallies, stop SUBMITTING when a threshold is
+        reached, and return "stop" only when the loop must stop DRAINING as well.
+
+        Returns "continue" in every other case, including after a give-up - see below, that is the
+        whole point of it.
+        """
+        self.transient_left = True
+        self.consecutive_transient += 1
+        self.transient_failures += 1
+        self.refused_rows.append(
+            {"idx": i, "pages": f"{row['start']}-{row['end']}", "reason": reason_for(exc)}
+        )
+        # Checked BEFORE the pause below, and the order is the whole point: both dials ship at 3, so
+        # whichever runs first decides between ending the job and auto-resuming into the same refusal
+        # until RQ's cap kills it.
+        if (
+            self.generated == 0
+            and self.transient_failures >= settings.summarize_giveup_after_failures
+            and self.giveup_candidate is None
+        ):
+            self.giveup_candidate = exc
+            for pending_future in futures:
+                pending_future.cancel()  # skip not-yet-started rows
+            # DELIBERATELY NOT "stop". Every row is submitted up front, so rows are already RUNNING
+            # here and cancel() cannot stop them. Ending on the spot threw their results away unread,
+            # which made the choice between ENDING the job and PAUSING it depend on whether the
+            # failures happened to complete before a success. Measured at 5 lanes: the same test
+            # passed on 3 of 6 runs and failed on the other 3. So stop submitting, keep draining what
+            # already started, and decide after the loop - deterministic at any lane count.
+            #
+            # This does NOT bound the number of model calls a refusing document costs, and neither
+            # did the break it replaced. Because every row is submitted up front, stopping only
+            # stopped READING results; the calls were already queued either way. cancel() skips a row
+            # only if it has not STARTED, so how much is saved depends entirely on how slowly the
+            # model fails. Bounding the spend needs bounded SUBMISSION (waves, or a stop flag checked
+            # inside the work item), which changes the worker's shape and is not this fix.
+            return "continue"
+        if self.consecutive_transient >= settings.summarize_pause_after:
+            # Reachable IMMEDIATELY AFTER the give-up above. Once giveup_candidate is set that guard
+            # can never fire again, and it returns without resetting consecutive_transient - which is
+            # already at the threshold, because both dials ship at 3. So the very next transient
+            # failure lands here.
+            #
+            # Stopping the drain here abandoned every row still RUNNING. A success among them was
+            # never read, so `generated` stayed 0, the post-loop promotion fired, and `giveup_exc` is
+            # checked BEFORE `should_pause` - so a document where a row did summarize ended as
+            # needs_attention instead of pausing. That is the same completion-order dependence,
+            # arriving by the sibling path.
+            #
+            # SCOPED to the case where a candidate is pending, and deliberately so. With no candidate
+            # the outcome is a pause either way, and a discarded success only costs a re-summarize on
+            # resume - waste, not a wrong answer. Draining unconditionally also CHANGED behaviour
+            # where summarize_pause_after is set below summarize_giveup_after_failures: reading the
+            # extra failures can then reach the give-up threshold and end a job that used to pause,
+            # which test_summarize_pauses_and_schedules_resume_on_transient caught. Both dials ship
+            # at 3 so that ordering does not arise in production, but this fix has no business
+            # changing it.
+            if not self.should_pause:
+                for pending_future in futures:
+                    pending_future.cancel()  # skip not-yet-started rows
+            self.should_pause = True
+            if self.giveup_candidate is None:
+                return "stop"
+        return "continue"
+
+    def record_permanent(self, exc, i, row) -> None:
+        """A row failed permanently (blank OCR, auth, per-day quota). Name it for the reviewer.
+
+        Carries no PHI - idx, page range and reason only.
+        """
+        self.attention_rows.append(
+            {"idx": i, "pages": f"{row['start']}-{row['end']}", "reason": reason_for(exc)}
+        )
+
 
 def summarize_document(job_id) -> None:
     """RQ entry: summarize the included ReviewRows -> Summary rows, RESUMABLY (item 7).
@@ -1268,105 +1343,17 @@ def summarize_document(job_id) -> None:
                         output = future.result()
                     except Exception as exc:
                         if classify_failure(exc) == "transient":
-                            run.transient_left = True
-                            run.consecutive_transient += 1
+                            decision = run.record_transient(exc, i, row, settings, futures)
                             logger.warning(
                                 "summarize row %d transient failure on document %s (%d in a row)",
                                 i,
                                 job.document_id,
                                 run.consecutive_transient,
                             )
-                            run.transient_failures += 1
-                            run.refused_rows.append(
-                                {
-                                    "idx": i,
-                                    "pages": f"{row['start']}-{row['end']}",
-                                    "reason": reason_for(exc),
-                                }
-                            )
-                            # Checked BEFORE the pause below, and the order is the whole point: both
-                            # dials ship at 3, so whichever runs first decides between ending the job
-                            # and auto-resuming into the same refusal until RQ's cap kills it.
-                            if (
-                                run.generated == 0
-                                and run.transient_failures >= settings.summarize_giveup_after_failures
-                                and run.giveup_candidate is None
-                            ):
-                                run.giveup_candidate = exc
-                                for pending_future in futures:
-                                    pending_future.cancel()  # skip not-yet-started rows
-                                # DELIBERATELY NOT `break`. Every row is submitted up front, so rows
-                                # are already RUNNING here and `cancel()` cannot stop them. Ending on
-                                # the spot threw their results away unread, which made the choice
-                                # between ENDING the job and PAUSING it depend on whether the
-                                # failures happened to complete before a success. Measured at 5
-                                # lanes: the same test passed on 3 of 6 runs and failed on the other
-                                # 3. So stop submitting, keep draining what already started, and
-                                # decide after the loop - deterministic at any lane count.
-                                #
-                                # This does NOT bound the number of model calls a refusing document
-                                # costs, and neither did the `break` it replaced. Because every row
-                                # is submitted up front, `break` only stopped READING results; the
-                                # calls were already in the pool's queue either way. `cancel()` skips
-                                # a row only if it has not STARTED, so how much is saved depends
-                                # entirely on how slowly the model fails. When it refuses fast - a
-                                # bare 429 with no retry budget left - the pool can drain every row
-                                # before the threshold is even observed, and nothing here can stop
-                                # it. Bounding the spend needs bounded SUBMISSION (waves, or a stop
-                                # flag checked inside the work item), which changes the worker's
-                                # shape and is not this fix.
-                                continue
-                            if run.consecutive_transient >= settings.summarize_pause_after:
-                                # NOT `break`, for the same reason as the give-up branch above, and
-                                # this one is reachable IMMEDIATELY AFTER it. Once `run.giveup_candidate`
-                                # is set the guard above can never fire again, and it `continue`s
-                                # without resetting `run.consecutive_transient` - which is already at the
-                                # threshold, because both dials ship at 3. So the very next transient
-                                # failure lands here.
-                                #
-                                # Breaking then abandoned every row still RUNNING. A success among
-                                # them was never read, so `run.generated` stayed 0, the post-loop
-                                # promotion fired, and `run.giveup_exc` is checked BEFORE `run.should_pause` -
-                                # so a document where a row did summarize ended as needs_attention
-                                # instead of pausing. That is the exact completion-order dependence
-                                # the comment above was written to remove, arriving by the sibling
-                                # path.
-                                #
-                                # Latent at the shipped `pipeline_workers=2`: after the give-up only
-                                # one other row is in flight, so the failure that trips this branch is
-                                # itself that row and there is nothing left to discard. It becomes
-                                # reachable as soon as the lane count is raised, which is what
-                                # `config.py`'s throughput note proposes.
-                                #
-                                # `run.should_pause` was ALREADY a post-loop decision, so draining first
-                                # only adds information: successes get committed and counted, and the
-                                # pause still happens.
-                                #
-                                # SCOPED to the case where a candidate is pending, and deliberately
-                                # so. With no candidate the outcome is a pause either way, and a
-                                # discarded success only costs a re-summarize on resume - waste, not a
-                                # wrong answer. Draining unconditionally also CHANGED behaviour where
-                                # `summarize_pause_after` is set below `summarize_giveup_after_failures`:
-                                # reading the extra failures can then reach the give-up threshold and
-                                # end a job that used to pause, which
-                                # `test_summarize_pauses_and_schedules_resume_on_transient` caught. Both
-                                # dials ship at 3 so that ordering does not arise in production, but
-                                # this fix has no business changing it.
-                                if not run.should_pause:
-                                    for pending_future in futures:
-                                        pending_future.cancel()  # skip not-yet-started rows
-                                run.should_pause = True
-                                if run.giveup_candidate is None:
-                                    break
-                                continue
+                            if decision == "stop":
+                                break
                         else:
-                            run.attention_rows.append(
-                                {
-                                    "idx": i,
-                                    "pages": f"{row['start']}-{row['end']}",
-                                    "reason": reason_for(exc),
-                                }
-                            )
+                            run.record_permanent(exc, i, row)
                             logger.warning(
                                 "summarize row %d permanent failure on document %s",
                                 i,
