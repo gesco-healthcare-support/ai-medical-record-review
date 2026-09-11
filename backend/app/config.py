@@ -6,14 +6,64 @@ instantiation fails fast if they are missing. Postgres + Redis + Vertex-only per
 """
 
 from functools import lru_cache
+from urllib.parse import urlparse
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 # The pinned Gemini flash model: the Vertex default, and the step-down for the title and
 # audit calls. Named once so a version bump is a single edit.
 _GEMINI_FLASH_MODEL = "gemini-2.5-flash"
+
+# The stages that can be routed to a backend independently. Named once so an override naming a stage
+# that does not exist fails at startup instead of silently leaving that stage where it was.
+#
+# "summarize" covers the body, title and audit calls together: all three cross the same seam and all
+# three take summary_thinking_budget today, so splitting them here would invent a distinction the
+# code does not make.
+_LLM_STAGES = (
+    "summarize",
+    "segment",
+    "extract",
+    "dedup",
+    "classify",
+    "verify",
+    "doi",
+    "deposition",
+)
+_LLM_BACKENDS = ("gemini", "openai", "vllm")
+
+# Destinations approved to receive PHI in production, as ORIGINS (scheme + host + port).
+#
+# WHAT THIS ACTUALLY PROVES, and it is less than it looks. The SSH tunnel terminates INSIDE the pod,
+# so the app dials loopback and this origin is the same for every pod we will ever rent - pod IPs and
+# SSH ports are assigned at creation and change every time, which is the reason the tunnel exists.
+# So this check proves the app dialled the TUNNEL. It cannot prove where the tunnel went; whoever
+# controls the tunnel controls that. Adrian chose an origin list on 2026-09-11 knowing this.
+#
+# The PATH is deliberately not compared: "/v1" against "/v1/" is not a difference in where PHI goes,
+# and refusing a production boot over a trailing slash would be a self-inflicted outage. A different
+# host or port IS a different destination, and a new pod on a new port SHOULD require an edit here.
+_APPROVED_VLLM_ORIGINS = ("http://127.0.0.1:8000", "http://localhost:8000")
+
+
+def _origin(url: str) -> str:
+    """``scheme://host:port`` for a URL, or "" when it does not parse as one.
+
+    The default port is filled in so that ``http://host`` and ``http://host:80`` compare equal -
+    otherwise the same destination written two ways would be approved in one spelling and refused in
+    the other, which teaches operators to widen the allowlist rather than to fix the URL.
+    """
+    parsed = urlparse((url or "").strip())
+    if not parsed.scheme or not parsed.hostname:
+        return ""
+    try:
+        port = parsed.port
+    except ValueError:  # a non-numeric port; treat as unparseable rather than guessing
+        return ""
+    port = port or (443 if parsed.scheme == "https" else 80)
+    return f"{parsed.scheme}://{parsed.hostname}:{port}"
 
 
 class Settings(BaseSettings):
@@ -130,6 +180,73 @@ class Settings(BaseSettings):
     # step this down" a tempting cleanup. Do not, without re-scoring: two silent thinking_budget=0
     # bugs have already shipped in this codebase.
     summary_thinking_budget: int = -1
+
+    # Which BACKEND answers a model call: "gemini", "openai" or "vllm".
+    #
+    # This supersedes summary_provider, which selected a vendor for the SUMMARIZE STAGE ONLY. Seven
+    # other services call google-genai directly and never consulted it, so "point the app at another
+    # model" was not expressible at all - setting GENAI_MODEL to a non-Gemini name also silently
+    # retargets the verify pass, because verify_model derives from it below.
+    #
+    # A separate key rather than a third value of summary_provider, because the two answer different
+    # questions: that one scoped a vendor to one stage, this one scopes a backend to the pipeline.
+    llm_backend: str = "gemini"
+    # Per-stage overrides as comma-separated "stage=backend" pairs, e.g. "segment=gemini,classify=gemini".
+    # Empty means every stage follows llm_backend.
+    #
+    # A single global flag would make the only available move all-or-nothing, and a SPLIT outcome is
+    # the likely one rather than the exotic one. Measured on the 2026-09-11 gate: Qwen3.6-35B-A3B-FP8
+    # scored level with Gemini on segmentation (B 0.690 vs 0.670, inside a 19.1% noise floor) but
+    # inverted the error DIRECTION - under-segmenting 0.85:1 where Gemini over-segments 1.93:1 and
+    # production runs 92:8 toward over-segmentation - and trailed on categorization, 77.9% against
+    # Gemini's 82.9% (McNemar exact p = 0.0884 on 176 paired rows, not significant). Being unable to
+    # hold one stage on Gemini while moving the rest would turn a per-stage judgement into one bet.
+    #
+    # Parsed and VALIDATED in _derive: an unknown stage name or backend refuses startup rather than
+    # being ignored. A typo that silently leaves a stage on the old backend is exactly the failure
+    # this key exists to prevent.
+    llm_backend_overrides: str = ""
+
+    # Self-hosted vLLM. Its own settings rather than reusing the openai_* ones, even though the wire
+    # dialect is OpenAI's: sharing them would put one key in charge of choosing between a public API
+    # and our own box, and the guard that matters differs (ZDR approval for OpenAI, an approved
+    # destination for vLLM).
+    vllm_base_url: str = ""
+    vllm_api_key: str = ""
+    # NO DEFAULT, for the same reason the three OpenAI model keys have none. A vLLM server serves
+    # exactly ONE model and the name must match what is loaded, so a default here 404s against any pod
+    # serving anything else. `_derive` refuses to start when a resolved backend is vllm and this is
+    # unset. The served name IS stable across pods because we set it explicitly - see .env.example.
+    vllm_model: str = ""
+    # Read deadline in SECONDS, and much longer than the Gemini path's 120s because it is a different
+    # kind of limit. genai_http_timeout_ms is forwarded to Vertex as a SERVER-side deadline; this one
+    # is purely client-side, and the pod has no proxy in front of it since the SSH tunnel replaced
+    # RunPod's Cloudflare-fronted HTTP proxy and its hard 100-second ceiling. Uncapped segmentation
+    # windows were measured at 179s, so 120 here would cut real work off mid-call.
+    vllm_read_timeout_s: float = 600.0
+    # Pacer ceilings, DISABLED (0) deliberately until a trustworthy number exists.
+    #
+    # Both meters at 0 makes pacing.acquire admit immediately. That is the honest state: vLLM QUEUES
+    # instead of returning 429, so the AIMD controller never sees a rejection and can never lower the
+    # rate - which leaves the ceiling as the SOLE control, and a wrong ceiling worse than none. Every
+    # throughput figure we hold describes an unconstrained sweep (it sent no response_format) with
+    # prefix caching active at a 13.0% hit rate, so none of them can set this yet. Derive from the
+    # corrected sweep, then set both.
+    vllm_max_rpm: int = 0
+    vllm_max_tpm: int = 0
+    # CVE floor for the served vLLM. Recorded here so the requirement is visible and overridable; it
+    # is ENFORCED by a live probe of the server's GET /version during startup, NOT in _derive -
+    # Settings is constructed by pytest, alembic and every eval script, none of which can reach a pod.
+    # GET /version is unauthenticated and returns {"version": "..."} (verified on the 0.28.0 build).
+    vllm_min_version: str = "0.24.0"
+    # Comma-separated approved destination origins, honoured ONLY outside production - see
+    # _approved_vllm_origins for why prod ignores rather than rejects it.
+    vllm_approved_origins: str = ""
+    # Parsed form of llm_backend_overrides, filled by _derive. A PrivateAttr rather than a field so
+    # it cannot be set directly from the environment: the string is the contract with ops, and this
+    # is derived from it under validation.
+    _backend_overrides_map: dict[str, str] = PrivateAttr(default_factory=dict)
+
     # Which vendor answers the summarize stage's calls (body, title, audit). "gemini" is the current
     # behaviour and stays the default: the provider abstraction landed first specifically so it could
     # ship without changing which model runs. Switching this to "openai" additionally requires the
@@ -574,20 +691,30 @@ class Settings(BaseSettings):
                 "BAA-covered Vertex endpoint, never the Developer API."
             )
         self.summary_provider = (self.summary_provider or "gemini").strip().lower()
-        # Order matters: the provider name is normalised directly above, and BOTH helpers below
-        # branch on it. Neither may run before that normalisation.
+        self.llm_backend = (self.llm_backend or "gemini").strip().lower()
+        # Order matters, and it is stricter than before. The two vendor names are normalised directly
+        # above and the override string is parsed next; all THREE helpers below branch on the result,
+        # so none may run before that.
+        self._parse_backend_overrides()
         self._apply_gemini_call_defaults()
         self._validate_openai_provider()
+        self._validate_vllm_backend()
         return self
 
     def _apply_gemini_call_defaults(self) -> None:
-        """Per-call-type model defaults for every provider that is NOT OpenAI.
+        """Per-call-type model defaults, for a summarize stage that is actually answered by Gemini.
 
-        Named for Gemini because that is the only other provider today, but the guard is
-        deliberately "not openai" rather than "is gemini": a third provider added later inherits
-        these defaults instead of starting with empty model keys and failing at the first call.
+        The guard used to read "not openai", and its docstring argued that a third provider SHOULD
+        inherit these rather than start with empty keys. That reasoning does not survive a third
+        provider arriving: a vLLM server serves exactly ONE model, so inheriting three Gemini names
+        would produce three 404s on the first call rather than a working default. Inheriting is only
+        safe for a vendor that serves the whole Gemini catalogue, which is to say for Gemini.
+
+        NOTE for the stages that follow: when the summarize stage resolves to vllm these keys stay
+        empty on purpose, and `_validate_vllm_backend` is what guarantees VLLM_MODEL is set instead.
+        Wiring that model into the summarize call sites is T5/T6; no call site routes to vllm yet.
         """
-        if self.summary_provider == "openai":
+        if self.summary_provider == "openai" or self.backend_for("summarize") != "gemini":
             return
         # Gemini per-call-type defaults. The body call reads page images and applies a long
         # format spec, so it keeps summary_model. The title is extraction from OCR text and the
@@ -609,8 +736,18 @@ class Settings(BaseSettings):
         )
 
     def _validate_openai_provider(self) -> None:
-        """Refuse to start an OpenAI-backed deployment that is missing a key, a model, or ZDR."""
-        if self.summary_provider != "openai":
+        """Refuse to start an OpenAI-backed deployment that is missing a key, a model, or ZDR.
+
+        KEYED ON BOTH SELECTORS, and that is the point of the change rather than tidiness. This used
+        to read `summary_provider != "openai"` alone. Once llm_backend can also select OpenAI, that
+        test leaves a hole with PHI on the other side of it: LLM_BACKEND=openai with SUMMARY_PROVIDER
+        left at its default "gemini" would return here immediately, so the ZDR acknowledgement below
+        is never checked and production starts happily sending medical records to OpenAI.
+
+        A per-stage override opens the same hole, which is why this asks `resolved_backends()` rather
+        than reading the global value. The condition only ever widens what is checked.
+        """
+        if self.summary_provider != "openai" and "openai" not in self.resolved_backends():
             return
         # Fail at startup, not on the first summary. A worker that boots and then errors per row
         # burns a job and leaves the reviewer with a half-processed document.
@@ -636,6 +773,132 @@ class Settings(BaseSettings):
                 "signed BAA is not sufficient on its own - Zero Data Retention (or Modified "
                 "Abuse Monitoring / Eyes Off) must also be approved on the organization. Check "
                 "Settings > Organization > Data controls > Data retention before setting this."
+            )
+
+    def _parse_backend_overrides(self) -> None:
+        """Parse LLM_BACKEND_OVERRIDES into a stage -> backend map, refusing anything unrecognised.
+
+        Fails at startup on a typo rather than ignoring it. An ignored override leaves that stage on
+        the backend it was already using while the operator believes it moved - which looks exactly
+        like the change having worked, until somebody reads a provenance column weeks later and
+        cannot tell whether the setting was wrong or the code was.
+        """
+        if self.llm_backend not in _LLM_BACKENDS:
+            raise RuntimeError(
+                f"LLM_BACKEND={self.llm_backend!r} is not a known backend; "
+                f"expected one of {list(_LLM_BACKENDS)}."
+            )
+        overrides: dict[str, str] = {}
+        for item in (self.llm_backend_overrides or "").split(","):
+            item = item.strip()
+            if not item:
+                continue
+            stage, sep, backend = item.partition("=")
+            stage, backend = stage.strip().lower(), backend.strip().lower()
+            if not sep or stage not in _LLM_STAGES:
+                raise RuntimeError(
+                    f"LLM_BACKEND_OVERRIDES entry {item!r} does not name a known stage; "
+                    f"expected 'stage=backend' with stage one of {list(_LLM_STAGES)}."
+                )
+            if backend not in _LLM_BACKENDS:
+                raise RuntimeError(
+                    f"LLM_BACKEND_OVERRIDES sets stage {stage!r} to unknown backend {backend!r}; "
+                    f"expected one of {list(_LLM_BACKENDS)}."
+                )
+            overrides[stage] = backend
+        self._backend_overrides_map = overrides
+
+    def resolved_backends(self) -> set[str]:
+        """Every backend some stage can actually reach: the global default plus every override.
+
+        Guards key on THIS rather than on llm_backend alone. A single per-stage override is enough to
+        send PHI to a vendor the global setting never mentions, so a guard reading only the global
+        value would pass while the traffic went elsewhere.
+        """
+        return {self.llm_backend, *self._backend_overrides_map.values()}
+
+    def backend_for(self, stage: str) -> str:
+        """The backend that answers one stage's calls.
+
+        Mirrors ``model_for``: resolved from config, read ONCE where the caller can persist it, and
+        never re-read mid-job. Record it alongside the model - with per-stage overrides a single job
+        can legitimately span two backends, and a row that does not say which one answered it cannot
+        be attributed afterwards.
+        """
+        if stage not in _LLM_STAGES:
+            raise KeyError(f"unknown stage {stage!r}; expected one of {list(_LLM_STAGES)}")
+        return self._backend_overrides_map.get(stage, self.llm_backend)
+
+    def thinking_for(self, stage: str) -> int:
+        """The Gemini thinking budget for one stage, preserving exactly today's per-stage values.
+
+        Three budgets exist because each was set for its own reason and none of them generalises.
+        Segmentation keeps dynamic thinking because an A/B showed thinking-OFF regresses strict
+        doc-F1 by over-segmenting. The summarize family keeps it because the 2026-08-14 arm that
+        selected 3.5-flash ran at -1, so the quality measurement only holds at that value. Everything
+        else inherits 0, because thinking is pure overhead on a structured extraction call.
+
+        GEMINI ONLY. The vLLM path sends thinking explicitly off and never sends a budget: a budgeted
+        vLLM call spends its output allowance on reasoning and returns an EMPTY summary. Measured
+        2026-09-11 on a 1,314-page record - 25 of 476 rows, 5.3%, every one finish_reason=length at
+        exactly the 8,192 cap with 23,878 to 30,891 characters of reasoning and no summary at all.
+        """
+        if stage not in _LLM_STAGES:
+            raise KeyError(f"unknown stage {stage!r}; expected one of {list(_LLM_STAGES)}")
+        if stage == "segment":
+            return self.segment_thinking_budget
+        if stage in ("summarize", "doi", "deposition"):
+            return self.summary_thinking_budget
+        return self.gemini_thinking_budget
+
+    def _approved_vllm_origins(self) -> tuple[str, ...]:
+        """The destination origins approved to receive PHI.
+
+        In production this is the CODE constant and nothing else. An env override is IGNORED rather
+        than rejected, so a stale value left in a dev .env cannot brick a production deploy over a
+        setting that is not even meant to apply there. Outside production the override does apply, so
+        pointing a local stack at a scratch endpoint needs no code edit - which is what stops someone
+        commenting the guard out instead, a far worse end state than an override that was designed.
+
+        Env-editability in production would buy very little. The response to a dead pod is
+        LLM_BACKEND=gemini plus a redeploy, which needs no allowlist change at all, so the usual
+        incident-operability argument for a tunable does not apply here.
+        """
+        if self.environment == "prod" or not self.vllm_approved_origins.strip():
+            return _APPROVED_VLLM_ORIGINS
+        parsed = tuple(_origin(item) for item in self.vllm_approved_origins.split(","))
+        return tuple(item for item in parsed if item)
+
+    def _validate_vllm_backend(self) -> None:
+        """Refuse to start a vLLM deployment that is missing config or aimed somewhere unapproved."""
+        if "vllm" not in self.resolved_backends():
+            return
+        missing = [
+            name
+            for name, value in (
+                ("VLLM_BASE_URL", self.vllm_base_url),
+                ("VLLM_MODEL", self.vllm_model),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "a vllm backend requires " + ", ".join(missing) + ". A vLLM server serves exactly "
+                "one model and there is no catalogue to fall back on, so an unset model would "
+                "inherit a Gemini name and 404 on the first call."
+            )
+        if self.environment != "prod":
+            return
+        # Keyed on the DESTINATION, not the backend name. `llm_backend == "vllm"` asserts only which
+        # wire dialect we speak; VLLM_BASE_URL is what decides where the record actually goes.
+        origin = _origin(self.vllm_base_url)
+        approved = self._approved_vllm_origins()
+        if origin not in approved:
+            raise RuntimeError(
+                f"VLLM_BASE_URL resolves to origin {origin or '(unparseable)'}, which is not "
+                f"approved to receive PHI in production. Approved: {list(approved)}. This is a "
+                "compliance control rather than a misconfiguration - widen it deliberately in "
+                "app/config.py, where the change is visible in a diff and needs a deploy."
             )
 
     def model_for(self, kind: str) -> str:

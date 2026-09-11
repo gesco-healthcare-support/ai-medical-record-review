@@ -67,7 +67,10 @@ _DECREASE_COOLDOWN_S = 2.0
 # exactly the spike that guidance warns against, and the token bucket would still report the average
 # as fine. OpenAI publishes fixed per-project limits and says nothing about burst shape, so a small
 # burst there is harmless and avoids stalling on jitter.
-_BURST_SECONDS = {"gemini": 1.0, "openai": 4.0}
+# vLLM gets the same 4 seconds as OpenAI, for a different reason. It does not rate-limit at all: it
+# QUEUES, so a burst is absorbed as latency rather than punished as a rejection, and the DSQ
+# burst-shape guidance that makes Vertex 1.0 has no equivalent here.
+_BURST_SECONDS = {"gemini": 1.0, "openai": 4.0, "vllm": 4.0}
 _BURST_SECONDS_DEFAULT = 1.0
 MAX_ACQUIRE_WAIT_S = 300.0
 _MIN_SLEEP_S = 0.05
@@ -119,10 +122,23 @@ def ceilings(provider: str) -> tuple[float, float]:
     These are SAFETY BOUNDS, not tuning knobs: the controller finds the working rate on its own and
     can only ever sit at or below these. OpenAI's are its published per-project limits; Vertex's
     request ceiling reuses vertex_max_rpm so an operator keeps a hard cap.
+
+    vLLM IS THE EXCEPTION, and it needs its own branch rather than the fallthrough. Two reasons.
+    The first is simply that the fallthrough would hand it VERTEX's numbers - 60 rpm against
+    4,000,000 tpm - which describe Google's shared quota and mean nothing about a GPU we rent.
+
+    The second matters more: on this provider the ceiling is the ONLY control. vLLM queues instead
+    of returning 429, so `record_rejection` (gated on that status) never fires, and it publishes no
+    `x-ratelimit-*` headers, so `observe_limits` never fires either. The AIMD controller seeds at
+    the ceiling and has no signal that could ever lower it. A wrong ceiling is therefore permanent,
+    which is why both vLLM settings default to 0 - `acquire` admits immediately when both meters are
+    off, and no pacing is more honest than pacing against a number nothing can correct.
     """
     settings = get_settings()
     if provider == "openai":
         return float(settings.openai_max_rpm), float(settings.openai_max_tpm)
+    if provider == "vllm":
+        return float(settings.vllm_max_rpm), float(settings.vllm_max_tpm)
     return float(settings.vertex_max_rpm), float(settings.vertex_max_tpm)
 
 

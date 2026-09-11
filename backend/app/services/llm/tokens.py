@@ -52,6 +52,21 @@ _CHARS_PER_TOKEN = 4.0
 _IMAGE_TOKENS = {
     "openai": 2200,  # mid-range of the measured 767 (4.1/4o) .. 3,319 (4.1-nano); 5.x is 1,624
     "gemini": 1300,  # not directly measured; Gemini bills images near its 258-token page unit x tiles
+    # MEASURED on the pod 2026-09-11 against Qwen3.6-35B-A3B-FP8, and identical to the token for the
+    # 3.5-Int4 arm before it - so it is a property of the render size rather than of the model.
+    #
+    # WHAT IT ASSUMES, because it is not a constant in the way the two above are. 827 holds for a
+    # page rendered to a 1024px long edge, which is what summarize sends. `verify_pass` does NOT:
+    # it renders at a bare dpi=120 with NO pixel cap, and two thirds of the benchmark corpus declares
+    # its page box equal to its pixel count, so a boundary check on those scans sends images several
+    # times this size. Nothing here can tell the difference, because an ImagePart carries bytes and a
+    # MIME type and no dimensions, and decoding every image to price a pre-flight estimate would cost
+    # more than the estimate is worth.
+    #
+    # Left as a measured constant rather than dressed up as a derivation, because nothing consumes it
+    # yet: `vllm_max_tpm` ships at 0, so the token meter is off and this number decides nothing. Give
+    # `verify_pass` a pixel cap, or derive from real dimensions, BEFORE setting that ceiling.
+    "vllm": 827,
 }
 _IMAGE_TOKENS_DEFAULT = 2200
 

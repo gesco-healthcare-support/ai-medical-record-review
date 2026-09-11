@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Refuse to serve against a model server we have not verified. DELIBERATELY NOT inside the try
+    # below, and the distinction is the whole point: that block swallows so a Redis outage cannot
+    # stop the web app serving, which is right for orphan recovery and wrong here. A PHI destination
+    # that fails its check must stop the boot, not log a warning and carry on.
+    from app.services.llm.preflight import assert_backends_ready
+
+    assert_backends_ready()
     # Heartbeat-aware orphan recovery: interrupt jobs whose worker died, but never a live job.
     # Guarded so a Redis outage at boot cannot block the web app from starting.
     try:

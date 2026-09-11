@@ -249,6 +249,15 @@ class Job(Base):
     model = Column(String(64), nullable=False)
     title_model = Column(String(64))
     audit_model = Column(String(64))
+    # WHICH BACKEND answered, beside which model did. A model name stopped being sufficient once a
+    # second backend could serve one: the served name is the same for every pod we stand up, so it
+    # says nothing about where the record actually went.
+    #
+    # ONE column, deliberately, where the models above are three. Body, title and audit all resolve
+    # from the same `summarize` stage, so a backend triple would hold one value three times - and a
+    # per-call backend is recoverable from this plus the model columns, which already say whether
+    # each call ran. NULL means the row predates the column, which is a different fact from "Gemini".
+    backend = Column(String(16))
     # `prompt_version` is a HAND-MAINTAINED constant and went unbumped through a dozen prompt PRs.
     # `prompt_fingerprint` hashes the prompt text AS RESOLVED (DB-first, code fallback), so it moves
     # on its own. Prefer the fingerprint; prompt_version stays readable for historical rows.
@@ -419,6 +428,11 @@ class Summary(Base):
     model = Column(String(64))
     title_model = Column(String(64))
     audit_model = Column(String(64))
+    # Which backend answered this row. Per ROW as well as per job, because a job records what it
+    # STARTED with and this records what actually answered. One column rather than three: the calls
+    # above can differ in MODEL but all resolve their backend from the same `summarize` stage.
+    # NULL means the row predates the column, never "Gemini".
+    backend = Column(String(16))
     prompt_fingerprint = Column(String(16))
     audit_fingerprint = Column(String(16))
     # At least one of this row's pages could not be READ - extraction FAILED, as distinct from a page

@@ -481,6 +481,9 @@ def _build_summary(job, idx, row, output) -> Summary:
         model=output.get("model"),
         title_model=output.get("titleModel"),
         audit_model=output.get("auditModel"),
+        # And WHICH BACKEND served them, which the model name alone no longer answers: the served
+        # name is identical on every pod we stand up, so it says nothing about where the row went.
+        backend=output.get("backend"),
         prompt_fingerprint=output.get("promptFingerprint"),
         audit_fingerprint=output.get("auditFingerprint"),
         # At least one page of this row could not be READ, so its body carries a notice naming those

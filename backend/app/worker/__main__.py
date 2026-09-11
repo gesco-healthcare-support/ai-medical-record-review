@@ -65,6 +65,14 @@ def main(argv: list[str] | None = None) -> None:
     if invalid:
         raise SystemExit(f"unknown queue(s) {invalid}; choose from {list(QUEUE_NAMES)}")
 
+    # Before this process takes a single job. NOT wrapped in a try: _user_ids() below deliberately
+    # swallows so that a database blip cannot stop a worker serving the base queues, and copying that
+    # shape here would let a worker start against an unverified PHI destination and fail rows one by
+    # one instead. See services/llm/preflight.
+    from app.services.llm.preflight import assert_backends_ready
+
+    assert_backends_ready()
+
     if "segment" in bases:
         # Segment workers run the classifier; reset its per-process catalog cache at startup so a
         # stale category set / embedding matrix can never outlive an edit made before this worker.
