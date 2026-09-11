@@ -10,6 +10,7 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select, update
@@ -981,6 +982,83 @@ def dedup_document(job_id) -> None:
     _run(job_id, work)
 
 
+@dataclass
+class _SummarizeRun:
+    """Everything one summarize attempt accumulates as its rows complete.
+
+    These were separate locals inside `summarize_document`'s `work()`. They are grouped because they
+    are READ TOGETHER to decide how the job ends, and that decision encodes two fixed incidents: a
+    refusing model that must end the job rather than pause into the same refusal, and an outcome that
+    used to depend on which rows happened to finish first. The comments at the give-up and pause
+    branches carry the detail; keeping the values in one place is what stops a later reader treating
+    them as independent dials.
+
+    Mutable by design - matching `Classification` rather than the frozen dataclasses under
+    `services/llm`, because accumulating as futures complete is the entire purpose.
+    """
+
+    total: int
+    done_count: int = 0
+    # Permanent per-row failures, surfaced to the reviewer as {idx, pages, reason}. Non-PHI.
+    attention_rows: list[dict] = field(default_factory=list)
+    # Transient per-row failures. Reported only when the run gives up on the document entirely.
+    refused_rows: list[dict] = field(default_factory=list)
+    # At least one row failed transiently -> retry the rest on resume.
+    transient_left: bool = False
+    # Consecutive transient failures. A SUCCESS RESETS THIS; losing that reset makes the pause fire
+    # earlier, which cancels rows that had not started and leaves them unsummarized.
+    consecutive_transient: int = 0
+    transient_failures: int = 0
+    should_pause: bool = False
+    # Successes in THIS attempt, not the document's total: a resumed job carries earlier rows in
+    # `done_count`, and the question here is whether the model is answering NOW. A notice-only row
+    # does not count - no model call was made for it.
+    generated: int = 0
+    # Set when the give-up threshold is reached; promoted to `giveup_exc` after the loop only if
+    # nothing succeeded in the meantime, so rows already running still get to answer.
+    giveup_candidate: Exception | None = None
+    giveup_exc: Exception | None = None
+
+    def finish(self, settings) -> None:
+        """Decide how this attempt ends and raise the signal that says so. Returns only when every
+        row was summarized, which `_run` then marks done.
+
+        Retryable rows outstanding -> pause + auto-resume (transient wins over permanent this cycle;
+        permanents resurface once transient pressure clears). Otherwise, if only permanent failures
+        remain -> needs attention. Otherwise every row is summarized -> done.
+
+        Promote the candidate first, now that every row which actually STARTED has reported. A
+        success arriving after the threshold is proof the model answers, so the job pauses and
+        retries the rows that were skipped instead of ending - which is what the give-up guard was
+        always for.
+
+        **The give-up check MUST precede the pause check.** `transient_left` was set by the very
+        failures that triggered the give-up, so the pause branch would otherwise win and we would be
+        back to job 1000173 grinding for 96 minutes. A model that admitted nothing ends the job
+        rather than pausing, because a resume replays the same refusal.
+        """
+        if self.giveup_candidate is not None and self.generated == 0:
+            self.giveup_exc = self.giveup_candidate
+
+        if self.giveup_exc is not None:
+            raise JobNeedsAttention(
+                f"{user_facing_message(self.giveup_exc)} No sub-documents could be summarized, so "
+                "the job stopped rather than retrying.",
+                self.attention_rows + self.refused_rows,
+            )
+        if self.should_pause or self.transient_left:
+            raise JobPaused(
+                delay=settings.summarize_resume_delay, done=self.done_count, total=self.total
+            )
+        if self.attention_rows:
+            n = len(self.attention_rows)
+            raise JobNeedsAttention(
+                f"{n} of {self.total} document{'s' if n != 1 else ''} could not be summarized. "
+                "Review, correct, or exclude them, then summarize again.",
+                self.attention_rows,
+            )
+
+
 def summarize_document(job_id) -> None:
     """RQ entry: summarize the included ReviewRows -> Summary rows, RESUMABLY (item 7).
 
@@ -1093,8 +1171,8 @@ def summarize_document(job_id) -> None:
             pending.append((i, row))
         session.commit()
 
-        done_count = total - len(pending)
-        report("summarizing", done_count, total)
+        run = _SummarizeRun(total=total, done_count=total - len(pending))
+        report("summarizing", run.done_count, run.total)
         if not pending:
             return  # everything already summarized -> _run marks done
 
@@ -1112,21 +1190,6 @@ def summarize_document(job_id) -> None:
         # three calls, and their new columns are NULL rather than back-filled with a guess.
         title_model = job.title_model or job.model
         audit_model = job.audit_model or job.model
-        attention_rows: list[dict] = []  # permanent per-row failures {idx, pages, reason}
-        transient_left = False  # >=1 row failed transiently -> retry on resume
-        consecutive_transient = 0
-        should_pause = False
-        # Give-up state. `generated` counts successes in THIS attempt, not the document's total: a
-        # resumed job carries earlier rows in `done_count`, and the question here is whether the model
-        # is answering NOW. Zero of it, with failures accumulating, is what a refused model looks like.
-        generated = 0
-        transient_failures = 0
-        giveup_exc: Exception | None = None
-        # Set when the give-up threshold is reached, PROMOTED to `giveup_exc` after the loop only if
-        # nothing succeeded in the meantime. Two variables rather than one because the rows already
-        # running still get to answer.
-        giveup_candidate: Exception | None = None
-        refused_rows: list[dict] = []
 
         pool_timeout = settings.pool_timeout(document.page_count)
         with ThreadPoolExecutor(max_workers=settings.pipeline_workers) as pool:
@@ -1159,16 +1222,16 @@ def summarize_document(job_id) -> None:
                         output = future.result()
                     except Exception as exc:
                         if classify_failure(exc) == "transient":
-                            transient_left = True
-                            consecutive_transient += 1
+                            run.transient_left = True
+                            run.consecutive_transient += 1
                             logger.warning(
                                 "summarize row %d transient failure on document %s (%d in a row)",
                                 i,
                                 job.document_id,
-                                consecutive_transient,
+                                run.consecutive_transient,
                             )
-                            transient_failures += 1
-                            refused_rows.append(
+                            run.transient_failures += 1
+                            run.refused_rows.append(
                                 {
                                     "idx": i,
                                     "pages": f"{row['start']}-{row['end']}",
@@ -1179,11 +1242,11 @@ def summarize_document(job_id) -> None:
                             # dials ship at 3, so whichever runs first decides between ending the job
                             # and auto-resuming into the same refusal until RQ's cap kills it.
                             if (
-                                generated == 0
-                                and transient_failures >= settings.summarize_giveup_after_failures
-                                and giveup_candidate is None
+                                run.generated == 0
+                                and run.transient_failures >= settings.summarize_giveup_after_failures
+                                and run.giveup_candidate is None
                             ):
-                                giveup_candidate = exc
+                                run.giveup_candidate = exc
                                 for pending_future in futures:
                                     pending_future.cancel()  # skip not-yet-started rows
                                 # DELIBERATELY NOT `break`. Every row is submitted up front, so rows
@@ -1207,17 +1270,17 @@ def summarize_document(job_id) -> None:
                                 # flag checked inside the work item), which changes the worker's
                                 # shape and is not this fix.
                                 continue
-                            if consecutive_transient >= settings.summarize_pause_after:
+                            if run.consecutive_transient >= settings.summarize_pause_after:
                                 # NOT `break`, for the same reason as the give-up branch above, and
-                                # this one is reachable IMMEDIATELY AFTER it. Once `giveup_candidate`
+                                # this one is reachable IMMEDIATELY AFTER it. Once `run.giveup_candidate`
                                 # is set the guard above can never fire again, and it `continue`s
-                                # without resetting `consecutive_transient` - which is already at the
+                                # without resetting `run.consecutive_transient` - which is already at the
                                 # threshold, because both dials ship at 3. So the very next transient
                                 # failure lands here.
                                 #
                                 # Breaking then abandoned every row still RUNNING. A success among
-                                # them was never read, so `generated` stayed 0, the post-loop
-                                # promotion fired, and `giveup_exc` is checked BEFORE `should_pause` -
+                                # them was never read, so `run.generated` stayed 0, the post-loop
+                                # promotion fired, and `run.giveup_exc` is checked BEFORE `run.should_pause` -
                                 # so a document where a row did summarize ended as needs_attention
                                 # instead of pausing. That is the exact completion-order dependence
                                 # the comment above was written to remove, arriving by the sibling
@@ -1229,7 +1292,7 @@ def summarize_document(job_id) -> None:
                                 # reachable as soon as the lane count is raised, which is what
                                 # `config.py`'s throughput note proposes.
                                 #
-                                # `should_pause` was ALREADY a post-loop decision, so draining first
+                                # `run.should_pause` was ALREADY a post-loop decision, so draining first
                                 # only adds information: successes get committed and counted, and the
                                 # pause still happens.
                                 #
@@ -1243,15 +1306,15 @@ def summarize_document(job_id) -> None:
                                 # `test_summarize_pauses_and_schedules_resume_on_transient` caught. Both
                                 # dials ship at 3 so that ordering does not arise in production, but
                                 # this fix has no business changing it.
-                                if not should_pause:
+                                if not run.should_pause:
                                     for pending_future in futures:
                                         pending_future.cancel()  # skip not-yet-started rows
-                                should_pause = True
-                                if giveup_candidate is None:
+                                run.should_pause = True
+                                if run.giveup_candidate is None:
                                     break
                                 continue
                         else:
-                            attention_rows.append(
+                            run.attention_rows.append(
                                 {
                                     "idx": i,
                                     "pages": f"{row['start']}-{row['end']}",
@@ -1268,16 +1331,16 @@ def summarize_document(job_id) -> None:
                     # Success: persist immediately so a later failure never loses this row.
                     session.add(_build_summary(job, i, row, output))
                     session.commit()
-                    done_count += 1
+                    run.done_count += 1
                     # One success is proof the model answers -> never give up early. A NOTICE row is
                     # not that proof: no model call was made for it, so counting it would satisfy the
-                    # `generated == 0` give-up guard on a document whose every real row is being
+                    # `run.generated == 0` give-up guard on a document whose every real row is being
                     # refused, and the job would pause and auto-resume into the same refusal instead
                     # of ending - the 96-minute grind that guard exists to prevent.
                     if not output.get("noticeOnly"):
-                        generated += 1
-                    consecutive_transient = 0
-                    report("summarizing", done_count, total)
+                        run.generated += 1
+                    run.consecutive_transient = 0
+                    report("summarizing", run.done_count, total)
                     if output.get("noticeOnly"):
                         # The row IS delivered, carrying a notice - and the job still ends
                         # needs_attention naming it. Two signals for two audiences: the banner asks
@@ -1287,8 +1350,8 @@ def summarize_document(job_id) -> None:
                         # OCR failure, since it is the only thing today that says a page was lost.
                         #
                         # Recorded AFTER the summary is committed, so a notice row is both persisted
-                        # and reported; `attention_rows` carries no PHI, only idx, pages and reason.
-                        attention_rows.append(
+                        # and reported; `run.attention_rows` carries no PHI, only idx, pages and reason.
+                        run.attention_rows.append(
                             {
                                 "idx": i,
                                 "pages": f"{row['start']}-{row['end']}",
@@ -1303,8 +1366,8 @@ def summarize_document(job_id) -> None:
             except PoolTimeout as pt:
                 # A stalled pool near the wall-clock wall: pause and let the outstanding rows retry
                 # on the next resume (pending is recomputed by row identity), never hang.
-                transient_left = True
-                should_pause = True
+                run.transient_left = True
+                run.should_pause = True
                 logger.warning(
                     "summarize pool timed out after %ss on document %s; %d row(s) will retry",
                     pool_timeout,
@@ -1312,33 +1375,6 @@ def summarize_document(job_id) -> None:
                     len(pt.unfinished),
                 )
 
-        # Retryable rows outstanding -> pause + auto-resume (transient wins over permanent this
-        # cycle; permanents resurface once transient pressure clears). Otherwise, if only permanent
-        # failures remain -> needs attention. Otherwise every row is summarized -> done.
-        # A model that admitted nothing: end the job instead of pausing, because a resume replays the
-        # same refusal. This MUST precede the pause check - `transient_left` was set by the very
-        # failures that triggered the give-up, so the pause branch would otherwise win and we would be
-        # back to job 1000173 grinding for 96 minutes.
-        # Promote the candidate now that every row which actually STARTED has reported. A success
-        # arriving after the threshold is proof the model answers, so the job pauses and retries the
-        # rows we skipped instead of ending - which is what the give-up guard was always for.
-        if giveup_candidate is not None and generated == 0:
-            giveup_exc = giveup_candidate
-
-        if giveup_exc is not None:
-            raise JobNeedsAttention(
-                f"{user_facing_message(giveup_exc)} No sub-documents could be summarized, so the "
-                "job stopped rather than retrying.",
-                attention_rows + refused_rows,
-            )
-        if should_pause or transient_left:
-            raise JobPaused(delay=settings.summarize_resume_delay, done=done_count, total=total)
-        if attention_rows:
-            n = len(attention_rows)
-            raise JobNeedsAttention(
-                f"{n} of {total} document{'s' if n != 1 else ''} could not be summarized. "
-                "Review, correct, or exclude them, then summarize again.",
-                attention_rows,
-            )
+        run.finish(settings)
 
     _run(job_id, work)

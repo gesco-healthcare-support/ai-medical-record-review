@@ -888,6 +888,49 @@ def test_summarize_does_not_give_up_once_a_row_has_succeeded(monkeypatch):
     assert scheduled["delay"] == get_settings().summarize_resume_delay
 
 
+def test_a_success_between_failures_resets_the_pause_streak(monkeypatch):
+    """The pause fires on CONSECUTIVE transient failures, so a success in between must clear the
+    count.
+
+    Nothing asserted this before: breaking the reset left all six summarize outcome tests green,
+    because the job pauses either way. What changes is WHEN it pauses, and therefore how many rows
+    are cancelled before they ever run - so the cost of losing the reset is records that are not
+    summarized, which no existing assertion could see.
+
+    One lane, so completion order is submission order; with the shipped five the streak is a race.
+    """
+    import app.services.summarize_engine as se
+    from google.genai import errors
+
+    from app.worker import tasks as tasks_mod
+
+    def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
+        if int(row["start"]) % 2 == 0:
+            return _ok_output(row)
+        raise errors.ClientError(429, {"error": {"code": 429, "message": "rate limited, retry"}})
+
+    class _FakeQueue:
+        def enqueue_in(self, td, fn, arg, job_timeout=None, on_stopped=None, on_failure=None):
+            return type("_J", (), {"id": "rq-resume-streak"})()
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    monkeypatch.setattr(tasks_mod, "queue_for", lambda kind, user_id=None: _FakeQueue())
+    monkeypatch.setattr(get_settings(), "pipeline_workers", 1)
+    monkeypatch.setattr(get_settings(), "summarize_pause_after", 2)
+    # High, so the give-up path cannot be what ends this job.
+    monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 99)
+
+    doc_id, job_id = _doc_with_summarize_rows(4)
+    summarize_document(job_id)
+
+    with get_sessionmaker()() as session:
+        summaries = session.scalars(select(Summary).where(Summary.document_id == doc_id)).all()
+        # Rows 2 and 4 succeed, rows 1 and 3 fail transiently. WITH the reset the failures never
+        # form a streak of two, so row 4 is never cancelled and both summaries persist. WITHOUT it
+        # the streak reaches two at row 3, the remaining rows are cancelled, and row 4 is lost.
+        assert {s.row_start for s in summaries} == {2, 4}
+
+
 def test_giving_up_stops_submitting_the_remaining_rows(monkeypatch):
     """Giving up must stop WORK, not just relabel the outcome: the point is to spend three calls
     finding out the model is refusing, not a whole document's worth."""
