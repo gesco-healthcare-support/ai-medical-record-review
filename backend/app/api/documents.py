@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from rq.command import send_stop_job_command
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_owned_document
 from app.auth.deps import current_active_user
@@ -478,7 +478,25 @@ def list_documents(
     user: User = Depends(current_active_user),
 ):
     documents = session.scalars(
-        select(Document).where(Document.user_id == user.id).order_by(Document.created_at.desc())
+        select(Document)
+        .where(Document.user_id == user.id)
+        .order_by(Document.created_at.desc())
+        # `listing()` reads `active_job`, which iterates `self.jobs` - a lazy relationship, so
+        # without this the comprehension below fires ONE query per document. Measured by counting
+        # SELECTs: 1 document -> 3, 5 -> 7, 20 -> 22, 45 -> 47. Exactly linear, and 45 documents is
+        # a real account on the box today. With the option it is 3 at any size.
+        #
+        # The sibling problem two lines down was already solved in this spirit - the grouped
+        # `counts` query exists so the loop does not touch `review_rows` per document - and the
+        # jobs relationship was simply missed.
+        #
+        # Loads ALL of a document's jobs rather than only the active one, DELIBERATELY. SQLAlchemy
+        # can filter a loader option (`Document.jobs.and_(...)`) and that would load less, but then
+        # `document.jobs` silently holds a partial collection on these instances and the next
+        # reader to iterate it gets a wrong answer with nothing to say so. `active_job` is the only
+        # consumer (models.py) and it re-filters, so the honest collection costs one query and no
+        # ambiguity.
+        .options(selectinload(Document.jobs))
     ).all()
     # One grouped count for the landing table (touching each document's rows would load every
     # full row set per request).

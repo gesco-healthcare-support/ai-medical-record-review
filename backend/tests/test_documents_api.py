@@ -9,7 +9,7 @@ response, without a live model call. Uploads are redirected to a tmp dir so no f
 import io
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
@@ -3671,3 +3671,116 @@ async def test_the_summarize_job_itself_is_unchanged_when_it_is_newest(authed):
     assert job["state"] == "needs_attention"
     assert job["error"] == "2 could not be read"
     assert job["attention"]["rows"][0]["idx"] == 2
+
+
+def _seed_documents_with_jobs(user_id, n_documents, jobs_each=3):
+    """`n_documents` documents for `user_id`, each carrying `jobs_each` finished jobs."""
+    with get_sessionmaker()() as session:
+        for i in range(n_documents):
+            document = Document(
+                user_id=user_id,
+                original_filename=f"n1-{n_documents}-{i}.pdf",
+                stored_path="/x",
+                sha256=f"{n_documents:04d}{i:060d}",
+                page_count=1,
+            )
+            session.add(document)
+            session.flush()
+            for _ in range(jobs_each):
+                session.add(
+                    Job(
+                        document_id=document.id,
+                        kind="segment",
+                        state="done",
+                        stage="segmenting",
+                        model="m",
+                        prompt_version=1,
+                    )
+                )
+        session.commit()
+
+
+async def _selects_listing(authed, n_documents):
+    """SELECTs issued by GET /api/documents once `n_documents` documents exist."""
+    client, user_id = authed
+    _seed_documents_with_jobs(user_id, n_documents)
+    # Local import, matching the two other local `app.db` imports in this file.
+    from app.db import get_engine
+
+    statements: list[str] = []
+    engine = get_engine()
+
+    def record(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        resp = await client.get("/api/documents")
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert resp.status_code == 200
+    assert len(resp.json()) >= n_documents
+    return len([s for s in statements if s.lstrip().upper().startswith("SELECT")])
+
+
+async def test_the_landing_list_does_not_query_once_per_document(authed):
+    """WHEN the landing list is fetched, THE SYSTEM SHALL NOT issue a query per document.
+
+    `Document.listing()` reads `active_job`, which iterates the lazily-loaded `jobs` relationship,
+    so the list comprehension fired one SELECT per document. Counted before the fix: 1 document ->
+    3 SELECTs, 5 -> 7, 20 -> 22, 45 -> 47. Exactly linear, and 45 documents is a real account on the
+    box today; the volume target is 500k pages a month, so it only grows.
+
+    Asserts the COUNT rather than a duration - a timing assertion moves when the machine is busy
+    (two of these were thrown away for that in #155), while the query count is a property of the
+    query plan and is the thing that was actually wrong.
+
+    The grouped `counts` query beside it exists for exactly this reason on `review_rows`; the jobs
+    relationship was the one that was missed, which is why the endpoint looked like it had already
+    been thought about.
+    """
+    few = await _selects_listing(authed, 3)
+    many = await _selects_listing(authed, 30)
+    assert many == few, f"query count grew with the document count: {few} -> {many}"
+
+
+async def test_the_landing_list_still_reports_the_active_job(authed):
+    """A GUARD, and the reason the loader option is not filtered.
+
+    Eager-loading must not change the ANSWER. A document with a running job still reports it, and
+    one whose jobs are all finished still reports None - `active_job` re-filters the collection
+    either way, which is what makes loading the honest full relationship safe.
+    """
+    client, user_id = authed
+    # TWO documents: one gets a running job below, the other must still report None.
+    _seed_documents_with_jobs(user_id, 2, jobs_each=2)
+    with get_sessionmaker()() as session:
+        document = session.scalars(
+            select(Document).where(Document.user_id == user_id).order_by(Document.id.desc())
+        ).first()
+        session.add(
+            Job(
+                document_id=document.id,
+                kind="summarize",
+                state="running",
+                stage="summarizing",
+                model="m",
+                prompt_version=1,
+            )
+        )
+        session.commit()
+        target = document.id
+
+    resp = await client.get("/api/documents")
+    assert resp.status_code == 200
+    listed = {row["id"]: row for row in resp.json()}
+    assert listed[target]["active_job"] is not None
+    assert listed[target]["active_job"]["kind"] == "summarize"
+    # ...and a document whose jobs all finished reports no active job, from the same eager load.
+    quiet = [
+        row
+        for row in resp.json()
+        if row["id"] != target and row["original_filename"].startswith("n1-")
+    ]
+    assert quiet, "expected at least one seeded document with only finished jobs"
+    assert all(row["active_job"] is None for row in quiet)
