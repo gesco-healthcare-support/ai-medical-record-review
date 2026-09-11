@@ -116,22 +116,27 @@ def _set_deadline(config, timeout_ms: int) -> bool:
     return True
 
 
-def _deadline_for_retry(config, deadline_ms: int, escalated: bool) -> int | None:
-    """The longer deadline ONE retry gets after a 504, or None when this 504 is final.
+def _note_deadline(config, deadline_ms: int, escalated: bool, model) -> int:
+    """The longer deadline ONE retry gets after a 504. RAISES when this 504 is final.
 
-    A multiple of the deadline THIS call actually had, not of the flat floor: a large request that
-    exceeds its already-scaled deadline is the case with the least margin left, and measuring the
-    retry from the floor would hand it barely more time than a small one gets - which is how a
-    size-aware limit quietly stops being size-aware.
+    Shaped like `_note_client_error` below, and for the same two reasons: the bare ``raise``
+    re-raises the exception the caller is handling with its traceback intact, and putting the
+    decision here keeps three exits - already retried, a multiplier that buys nothing, or no config
+    to carry a deadline - out of the retry loop, which is already three levels deep.
 
-    None on all three exits - already retried, a multiplier that buys nothing, or no config to carry
-    a deadline - so the caller has one condition to test rather than the loop growing three.
+    The multiple is of the deadline THIS call actually had, not of the flat floor: a large request
+    that exceeds its already-scaled deadline has the least margin left, and measuring the retry from
+    the floor would hand it barely more time than a small one gets - which is how a size-aware limit
+    quietly stops being size-aware.
     """
     if escalated:
-        return None
+        raise
     longer = int(deadline_ms * get_settings().genai_deadline_retry_multiplier)
     if longer <= deadline_ms or not _set_deadline(config, longer):
-        return None
+        raise
+    logger.warning(
+        "deadline 504 on %s after %sms; retrying once at %sms", model, deadline_ms, longer
+    )
     return longer
 
 
@@ -254,16 +259,12 @@ def generate_with_retry(client, **kwargs):
                 # See errors.is_deadline_exceeded; worker.failures.classify_failure mirrors this or
                 # the two disagree.
                 if is_deadline_exceeded(exc):
-                    longer = _deadline_for_retry(kwargs.get("config"), deadline_ms, escalated)
-                    if longer is None:
-                        raise
-                    logger.warning(
-                        "deadline 504 on %s after %sms; retrying once at %sms",
-                        model,
-                        deadline_ms,
-                        longer,
+                    # Raises out of the loop when the retry is spent or cannot be applied; see the
+                    # helper, which is the same shape as _note_client_error for the 429 path.
+                    deadline_ms = _note_deadline(
+                        kwargs.get("config"), deadline_ms, escalated, model
                     )
-                    escalated, deadline_ms = True, longer
+                    escalated = True
                 last = exc
             except errors.ClientError as exc:  # retry only transient 429 rate limiting
                 # Raises out of the loop for a non-429 and for a spent daily quota; see the helper.
