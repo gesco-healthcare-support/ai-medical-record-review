@@ -982,6 +982,110 @@ def dedup_document(job_id) -> None:
     _run(job_id, work)
 
 
+def _seed_row_text(session, document_id: str, rows) -> None:
+    """Give each row its `unreadable_pages`, and its `source_text` where the page-text store covers
+    the row completely and read every page cleanly.
+
+    Without the seeding, summarize was the ONE stage of the four that store exists for that still
+    re-OCR'd from the PDF - segmentation, classify and dedup all read it - so a record summarized
+    without a duplicate check first paid a SECOND full OCR pass over pages already extracted. That is
+    the normal path, not an edge case (issue #125). The module's own estimate of the duplication is
+    ~45 minutes on a 1500-page record.
+
+    Three rules that look like details and are not:
+
+    - **Partial cover must NOT be reused.** A row with one errored page re-extracts, because
+      summarizing from some of a row's pages with nothing saying so is the failure this pipeline
+      treats as unrecoverable - and re-extracting also preserves the retry that turns a transient
+      Tesseract timeout into a readable page.
+    - **Category 9 (depositions) is skipped deliberately.** summarize_row re-reads them through the
+      marking extractor, because a transcript model handed concatenated text cannot see where a page
+      ends, and the store holds unmarked text. It ignores `source_text` for category 9 anyway.
+    - `unreadable_pages` is a SEED, not the answer. A row that re-extracts in summarize_row overrides
+      it, which matters because an errored page is often a transient timeout a later attempt reads
+      fine. What the seed buys is the case that cannot re-ask: a row reusing the duplicate check's
+      stored text.
+
+    Byte-identical to what the fallback would produce: page_text._extract reads through the same
+    ocr.extract_pages_with_report, one page at a time, and both paths concatenate with no separator.
+    So this changes WHEN the OCR happens, never what the model is given.
+    """
+    stored_pages = {
+        page_text.page: page_text
+        for page_text in session.scalars(
+            select(PageText).where(PageText.document_id == document_id)
+        )
+    }
+    failed_pages = sorted(p for p, pt in stored_pages.items() if not pt.extract_ok)
+    for row in rows:
+        row["unreadable_pages"] = [
+            page for page in failed_pages if int(row["start"]) <= page <= int(row["end"])
+        ]
+    for row in rows:
+        if row.get("source_text") or str(row["category"]) == "9":
+            continue
+        pages = range(int(row["start"]), int(row["end"]) + 1)
+        covered = [stored_pages.get(page) for page in pages]
+        if covered and all(pt is not None and pt.extract_ok for pt in covered):
+            row["source_text"] = "".join(pt.text or "" for pt in covered)
+
+
+def _reconcile_summaries(session, document_id: str, wanted: set) -> dict[tuple, Summary]:
+    """Keep the first persisted Summary for each still-wanted row; delete the stale and duplicate.
+
+    Reconciled by ROW IDENTITY `(start, end, category)`, which is what makes a resume cheap: a row
+    whose summary survives is reused with its reviewer edits intact. Never touches summaries for rows
+    still in the set, so edits survive a resume or a re-run.
+
+    The caller commits - the transaction boundary is its business, not this helper's.
+    """
+    existing: dict[tuple, Summary] = {}
+    for summary in session.scalars(
+        select(Summary).where(Summary.document_id == document_id)
+    ).all():
+        key = (int(summary.row_start), int(summary.row_end), str(summary.row_category))
+        # A notice-only row is deleted rather than reused, so "summarize again" re-reads its pages
+        # instead of skipping them as done - see _is_retryable_notice.
+        if key in wanted and key not in existing and not _is_retryable_notice(summary):
+            existing[key] = summary
+        else:
+            session.delete(summary)
+    return existing
+
+
+def _pending_rows(rows, existing: dict[tuple, Summary]) -> list[tuple[int, dict]]:
+    """The rows still needing a summary, repositioning the reused ones to the current row order.
+
+    Reposition rather than rewrite: a reused summary keeps the reviewer's edits, and only its place
+    in the delivered order changes. Mutates `Summary.idx` on those rows - the CALLER commits, because
+    the transaction boundary belongs to the job, not to this helper.
+    """
+    pending: list[tuple[int, dict]] = []
+    for i, row in enumerate(rows):
+        key = (int(row["start"]), int(row["end"]), str(row["category"]))
+        reused = existing.get(key)
+        if reused is not None:
+            if reused.idx != i:
+                reused.idx = i
+            continue
+        pending.append((i, row))
+    return pending
+
+
+def _prompts_for_rows(session, pending) -> dict[str, str]:
+    """One prompt per distinct category, resolved UP FRONT.
+
+    The DB session is not thread-safe, so the catalog must never be read from inside the worker pool.
+    Resolving here is what keeps that true.
+    """
+    prompt_by_cat: dict[str, str] = {}
+    for _, row in pending:
+        cat = str(row["category"])
+        if cat not in prompt_by_cat:
+            prompt_by_cat[cat] = catalog.get_prompt(session, "summary", cat)
+    return prompt_by_cat
+
+
 @dataclass
 class _SummarizeRun:
     """Everything one summarize attempt accumulates as its rows complete.
@@ -1058,6 +1162,24 @@ class _SummarizeRun:
                 self.attention_rows,
             )
 
+    def record_success(self, output) -> None:
+        """One row summarized. The caller has already persisted it; this is the bookkeeping.
+
+        A NOTICE row does NOT count towards `generated`. No model call was made for it, so counting
+        it would satisfy the `generated == 0` give-up guard on a document whose every real row is
+        being refused, and the job would pause and auto-resume into the same refusal instead of
+        ending - the 96-minute grind that guard exists to prevent.
+
+        Resetting `consecutive_transient` is load-bearing, and until 2026-09-11 nothing asserted it:
+        the pause fires on CONSECUTIVE failures, so without this reset the streak reaches the
+        threshold earlier, cancels rows that had not started, and leaves them unsummarized. See
+        `test_a_success_between_failures_resets_the_pause_streak`.
+        """
+        self.done_count += 1
+        if not output.get("noticeOnly"):
+            self.generated += 1
+        self.consecutive_transient = 0
+
 
 def summarize_document(job_id) -> None:
     """RQ entry: summarize the included ReviewRows -> Summary rows, RESUMABLY (item 7).
@@ -1091,84 +1213,13 @@ def summarize_document(job_id) -> None:
         total = len(rows)
         wanted = {(int(r["start"]), int(r["end"]), str(r["category"])) for r in rows}
 
-        # Pages this document has already failed to EXTRACT (page_texts.extract_ok false), handed to
-        # summarize_row as row data because that module is deliberately DB-free and cannot ask. One
-        # query for the whole document, not one per row.
-        #
-        # A SEED, not the answer. A row that re-extracts in summarize_row overrides this with what
-        # that extraction actually did, which matters because an errored page is often a transient
-        # timeout a later attempt reads fine. What this seed buys is the case that cannot re-ask: a
-        # row reusing the duplicate check's stored `source_text`, where re-OCRing to find out would
-        # undo the reuse that saves ~45 minutes on a 1500-page record.
-        stored_pages = {
-            page_text.page: page_text
-            for page_text in session.scalars(
-                select(PageText).where(PageText.document_id == job.document_id)
-            )
-        }
-        failed_pages = sorted(p for p, pt in stored_pages.items() if not pt.extract_ok)
-        for row in rows:
-            row["unreadable_pages"] = [
-                page for page in failed_pages if int(row["start"]) <= page <= int(row["end"])
-            ]
-
-        # Serve the row's text from the page-text store when the duplicate check has not. Without
-        # this, summarize was the ONE stage of the four that store exists for that still re-OCR'd
-        # from the PDF - segmentation, classify and dedup all read it - so a record summarized
-        # without a duplicate check first paid a SECOND full OCR pass over pages already extracted
-        # and stored. That is the normal path, not an edge case: issue #125, and the four records in
-        # CLAUDE.md with zero dedup jobs and source_text NULL throughout. The module's own estimate
-        # of the duplication is ~45 minutes on a 1500-page record.
-        #
-        # Reuse ONLY when the store covers every page of the row and read all of them cleanly.
-        # Partial cover must fall through to the full extraction below, or a row would be summarized
-        # from some of its pages with nothing saying so - the failure this pipeline treats as
-        # unrecoverable. A row with one errored page therefore re-extracts, which also preserves the
-        # retry that turns a transient Tesseract timeout into a readable page.
-        #
-        # Depositions are skipped deliberately: summarize_row re-reads them through the marking
-        # extractor because a transcript model handed concatenated text cannot see where a page ends,
-        # and the store holds unmarked text. It ignores `source_text` for category 9 anyway; not
-        # seeding it just avoids carrying a large string that would be dropped.
-        #
-        # Byte-identical to what the fallback would produce: page_text._extract reads through the
-        # same ocr.extract_pages_with_report, one page at a time, and both paths concatenate with no
-        # separator. So this changes when the OCR happens, never what the model is given.
-        for row in rows:
-            if row.get("source_text") or str(row["category"]) == "9":
-                continue
-            pages = range(int(row["start"]), int(row["end"]) + 1)
-            covered = [stored_pages.get(page) for page in pages]
-            if covered and all(pt is not None and pt.extract_ok for pt in covered):
-                row["source_text"] = "".join(pt.text or "" for pt in covered)
+        _seed_row_text(session, job.document_id, rows)
         _seed_embedded_review_pages(session, job.document_id, rows)
 
-        # Reconcile persisted summaries by row identity: keep the first for each still-wanted row,
-        # drop any that are stale (row removed/edited) or duplicate. This never touches summaries
-        # for rows still in the set, so reviewer edits survive a resume/re-run.
-        existing: dict[tuple, Summary] = {}
-        for summary in session.scalars(
-            select(Summary).where(Summary.document_id == job.document_id)
-        ).all():
-            key = (int(summary.row_start), int(summary.row_end), str(summary.row_category))
-            # A notice-only row is deleted rather than reused, so "summarize again" re-reads its
-            # pages instead of skipping them as done - see _is_retryable_notice.
-            if key in wanted and key not in existing and not _is_retryable_notice(summary):
-                existing[key] = summary
-            else:
-                session.delete(summary)
+        existing = _reconcile_summaries(session, job.document_id, wanted)
         session.commit()
 
-        # Position reused summaries to the current row order; collect the rows still to generate.
-        pending: list[tuple[int, dict]] = []
-        for i, row in enumerate(rows):
-            key = (int(row["start"]), int(row["end"]), str(row["category"]))
-            reused = existing.get(key)
-            if reused is not None:
-                if reused.idx != i:
-                    reused.idx = i
-                continue
-            pending.append((i, row))
+        pending = _pending_rows(rows, existing)
         session.commit()
 
         run = _SummarizeRun(total=total, done_count=total - len(pending))
@@ -1176,12 +1227,7 @@ def summarize_document(job_id) -> None:
         if not pending:
             return  # everything already summarized -> _run marks done
 
-        # Resolve prompts up front (the DB session is not thread-safe; no catalog reads in the pool).
-        prompt_by_cat: dict[str, str] = {}
-        for _, row in pending:
-            cat = str(row["category"])
-            if cat not in prompt_by_cat:
-                prompt_by_cat[cat] = catalog.get_prompt(session, "summary", cat)
+        prompt_by_cat = _prompts_for_rows(session, pending)
 
         pdf_path, model = document.stored_path, job.model
         # The three models come from the JOB, resolved once when it was created, so a config change
@@ -1331,15 +1377,7 @@ def summarize_document(job_id) -> None:
                     # Success: persist immediately so a later failure never loses this row.
                     session.add(_build_summary(job, i, row, output))
                     session.commit()
-                    run.done_count += 1
-                    # One success is proof the model answers -> never give up early. A NOTICE row is
-                    # not that proof: no model call was made for it, so counting it would satisfy the
-                    # `run.generated == 0` give-up guard on a document whose every real row is being
-                    # refused, and the job would pause and auto-resume into the same refusal instead
-                    # of ending - the 96-minute grind that guard exists to prevent.
-                    if not output.get("noticeOnly"):
-                        run.generated += 1
-                    run.consecutive_transient = 0
+                    run.record_success(output)
                     report("summarizing", run.done_count, total)
                     if output.get("noticeOnly"):
                         # The row IS delivered, carrying a notice - and the job still ends
@@ -1366,6 +1404,12 @@ def summarize_document(job_id) -> None:
             except PoolTimeout as pt:
                 # A stalled pool near the wall-clock wall: pause and let the outstanding rows retry
                 # on the next resume (pending is recomputed by row identity), never hang.
+                #
+                # BOTH flags, and they are NOT interchangeable. For the final outcome the check is
+                # `should_pause or transient_left`, so setting `should_pause` here changes nothing
+                # observable - breaking it leaves every test green, verified 2026-09-11. But
+                # `should_pause` is NOT redundant inside the loop, where it gates whether pending
+                # rows get cancelled. Collapsing these two looks safe and is not.
                 run.transient_left = True
                 run.should_pause = True
                 logger.warning(
