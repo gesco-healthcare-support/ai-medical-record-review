@@ -85,6 +85,49 @@ describe("RowsTable", () => {
     expect(screen.getAllByRole("button", { name: /^Split$/ })).toHaveLength(1);
   });
 
+  it("wires each row action to its callback with that row's index", async () => {
+    // Which button RENDERS and which callback it FIRES are different guarantees, and the tests above
+    // only cover the first. A row action that renders correctly and calls the wrong index - or calls
+    // nothing - would pass every assertion above.
+    const user = userEvent.setup();
+    const onMergeUp = vi.fn();
+    const onSplitStart = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <RowsTable
+        rows={[
+          erow({ start: 1, end: 3 }),
+          erow({ start: 4, end: 8, suggest_merge: true }),
+        ]}
+        categories={categories}
+        totalPages={10}
+        errors={new Map<number, string>()}
+        selected={-1}
+        splitting={-1}
+        onSelect={vi.fn()}
+        onField={vi.fn()}
+        onMergeUp={onMergeUp}
+        onSplitStart={onSplitStart}
+        onSplitConfirm={vi.fn()}
+        onSplitCancel={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Likely same doc/i }));
+    expect(onMergeUp).toHaveBeenCalledWith(1);
+
+    onMergeUp.mockClear();
+    await user.click(screen.getAllByRole("button", { name: /^Merge up$/ })[0]);
+    expect(onMergeUp).toHaveBeenCalledWith(1);
+
+    await user.click(screen.getAllByRole("button", { name: /^Split$/ })[0]);
+    expect(onSplitStart).toHaveBeenCalledWith(0);
+
+    await user.click(screen.getAllByRole("button", { name: /^Delete$/ })[0]);
+    expect(onDelete).toHaveBeenCalledWith(0);
+  });
+
   it("marks only the invalid row's fields row with the invalid class", () => {
     const { container } = render(
       <RowsTable

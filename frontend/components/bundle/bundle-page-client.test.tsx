@@ -188,6 +188,32 @@ describe("BundlePageClient error handling", () => {
     expect(screen.queryByText("4 matching documents")).not.toBeInTheDocument();
   });
 
+  it("accepts an edit to every export header field", async () => {
+    // The four fields render from props and write back through onChange. Asserting only that they
+    // render leaves the write-back path - the half that actually carries the reviewer's typing into
+    // the export - unexercised.
+    const user = userEvent.setup();
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    const patient = await screen.findByLabelText("Patient name");
+    await user.type(patient, "Jane Roe");
+    expect(patient).toHaveValue("Jane Roe");
+
+    const dob = screen.getByLabelText("DOB");
+    await user.type(dob, "01/02/1990");
+    expect(dob).toHaveValue("01/02/1990");
+
+    const qme = screen.getByLabelText("Evaluation type (QME / AME)");
+    await user.clear(qme);
+    await user.type(qme, "AGREED MEDICAL EVALUATION");
+    expect(qme).toHaveValue("AGREED MEDICAL EVALUATION");
+
+    const firm = screen.getByLabelText("Attorney law firm");
+    await user.type(firm, "Acme LLP");
+    expect(firm).toHaveValue("Acme LLP");
+  });
+
   it("shows the empty state rather than the table when nothing matches the preset", async () => {
     // The empty-vs-table branch was INERT: rendering the table unconditionally left every other test
     // in this file green. Pinned here because the matches card is about to move into its own
