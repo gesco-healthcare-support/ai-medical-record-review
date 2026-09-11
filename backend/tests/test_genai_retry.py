@@ -16,6 +16,7 @@ from app.services.genai_retry import (
     _apply_thinking_default,
     _parse_duration,
     _retry_delay_seconds,
+    _set_deadline,
     _sleep_for,
     generate_with_retry,
 )
@@ -365,11 +366,11 @@ def test_the_escalated_deadline_reaches_the_request_as_http_options(quiet_seam):
     field that makes the retry a genuinely longer call rather than the same one.
     """
     config = _config()
-    assert genai_retry._set_deadline(config, 300000) is True
+    assert _set_deadline(config, 300000) is True
     assert isinstance(config.http_options, types.HttpOptions)
     assert config.http_options.timeout == 300000
-    assert genai_retry._set_deadline(None, 300000) is False
-    assert genai_retry._set_deadline(_config(), 0) is False
+    assert _set_deadline(None, 300000) is False
+    assert _set_deadline(_config(), 0) is False
 
 
 # --- the deadline scales with the request --------------------------------------------------------
