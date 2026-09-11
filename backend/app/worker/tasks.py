@@ -10,6 +10,7 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select, update
@@ -981,6 +982,278 @@ def dedup_document(job_id) -> None:
     _run(job_id, work)
 
 
+def _seed_row_text(session, document_id: str, rows) -> None:
+    """Give each row its `unreadable_pages`, and its `source_text` where the page-text store covers
+    the row completely and read every page cleanly.
+
+    Without the seeding, summarize was the ONE stage of the four that store exists for that still
+    re-OCR'd from the PDF - segmentation, classify and dedup all read it - so a record summarized
+    without a duplicate check first paid a SECOND full OCR pass over pages already extracted. That is
+    the normal path, not an edge case (issue #125). The module's own estimate of the duplication is
+    ~45 minutes on a 1500-page record.
+
+    Three rules that look like details and are not:
+
+    - **Partial cover must NOT be reused.** A row with one errored page re-extracts, because
+      summarizing from some of a row's pages with nothing saying so is the failure this pipeline
+      treats as unrecoverable - and re-extracting also preserves the retry that turns a transient
+      Tesseract timeout into a readable page.
+    - **Category 9 (depositions) is skipped deliberately.** summarize_row re-reads them through the
+      marking extractor, because a transcript model handed concatenated text cannot see where a page
+      ends, and the store holds unmarked text. It ignores `source_text` for category 9 anyway.
+    - `unreadable_pages` is a SEED, not the answer. A row that re-extracts in summarize_row overrides
+      it, which matters because an errored page is often a transient timeout a later attempt reads
+      fine. What the seed buys is the case that cannot re-ask: a row reusing the duplicate check's
+      stored text.
+
+    Byte-identical to what the fallback would produce: page_text._extract reads through the same
+    ocr.extract_pages_with_report, one page at a time, and both paths concatenate with no separator.
+    So this changes WHEN the OCR happens, never what the model is given.
+    """
+    stored_pages = {
+        page_text.page: page_text
+        for page_text in session.scalars(
+            select(PageText).where(PageText.document_id == document_id)
+        )
+    }
+    failed_pages = sorted(p for p, pt in stored_pages.items() if not pt.extract_ok)
+    for row in rows:
+        row["unreadable_pages"] = [
+            page for page in failed_pages if int(row["start"]) <= page <= int(row["end"])
+        ]
+    for row in rows:
+        if row.get("source_text") or str(row["category"]) == "9":
+            continue
+        pages = range(int(row["start"]), int(row["end"]) + 1)
+        covered = [stored_pages.get(page) for page in pages]
+        if covered and all(pt is not None and pt.extract_ok for pt in covered):
+            row["source_text"] = "".join(pt.text or "" for pt in covered)
+
+
+def _reconcile_summaries(session, document_id: str, wanted: set) -> dict[tuple, Summary]:
+    """Keep the first persisted Summary for each still-wanted row; delete the stale and duplicate.
+
+    Reconciled by ROW IDENTITY `(start, end, category)`, which is what makes a resume cheap: a row
+    whose summary survives is reused with its reviewer edits intact. Never touches summaries for rows
+    still in the set, so edits survive a resume or a re-run.
+
+    The caller commits - the transaction boundary is its business, not this helper's.
+    """
+    existing: dict[tuple, Summary] = {}
+    for summary in session.scalars(select(Summary).where(Summary.document_id == document_id)).all():
+        key = (int(summary.row_start), int(summary.row_end), str(summary.row_category))
+        # A notice-only row is deleted rather than reused, so "summarize again" re-reads its pages
+        # instead of skipping them as done - see _is_retryable_notice.
+        if key in wanted and key not in existing and not _is_retryable_notice(summary):
+            existing[key] = summary
+        else:
+            session.delete(summary)
+    return existing
+
+
+def _pending_rows(rows, existing: dict[tuple, Summary]) -> list[tuple[int, dict]]:
+    """The rows still needing a summary, repositioning the reused ones to the current row order.
+
+    Reposition rather than rewrite: a reused summary keeps the reviewer's edits, and only its place
+    in the delivered order changes. Mutates `Summary.idx` on those rows - the CALLER commits, because
+    the transaction boundary belongs to the job, not to this helper.
+    """
+    pending: list[tuple[int, dict]] = []
+    for i, row in enumerate(rows):
+        key = (int(row["start"]), int(row["end"]), str(row["category"]))
+        reused = existing.get(key)
+        if reused is not None:
+            if reused.idx != i:
+                reused.idx = i
+            continue
+        pending.append((i, row))
+    return pending
+
+
+def _prompts_for_rows(session, pending) -> dict[str, str]:
+    """One prompt per distinct category, resolved UP FRONT.
+
+    The DB session is not thread-safe, so the catalog must never be read from inside the worker pool.
+    Resolving here is what keeps that true.
+    """
+    prompt_by_cat: dict[str, str] = {}
+    for _, row in pending:
+        cat = str(row["category"])
+        if cat not in prompt_by_cat:
+            prompt_by_cat[cat] = catalog.get_prompt(session, "summary", cat)
+    return prompt_by_cat
+
+
+@dataclass
+class _SummarizeRun:
+    """Everything one summarize attempt accumulates as its rows complete.
+
+    These were separate locals inside `summarize_document`'s `work()`. They are grouped because they
+    are READ TOGETHER to decide how the job ends, and that decision encodes two fixed incidents: a
+    refusing model that must end the job rather than pause into the same refusal, and an outcome that
+    used to depend on which rows happened to finish first. The comments at the give-up and pause
+    branches carry the detail; keeping the values in one place is what stops a later reader treating
+    them as independent dials.
+
+    Mutable by design - matching `Classification` rather than the frozen dataclasses under
+    `services/llm`, because accumulating as futures complete is the entire purpose.
+    """
+
+    total: int
+    done_count: int = 0
+    # Permanent per-row failures, surfaced to the reviewer as {idx, pages, reason}. Non-PHI.
+    attention_rows: list[dict] = field(default_factory=list)
+    # Transient per-row failures. Reported only when the run gives up on the document entirely.
+    refused_rows: list[dict] = field(default_factory=list)
+    # At least one row failed transiently -> retry the rest on resume.
+    transient_left: bool = False
+    # Consecutive transient failures. A SUCCESS RESETS THIS; losing that reset makes the pause fire
+    # earlier, which cancels rows that had not started and leaves them unsummarized.
+    consecutive_transient: int = 0
+    transient_failures: int = 0
+    should_pause: bool = False
+    # Successes in THIS attempt, not the document's total: a resumed job carries earlier rows in
+    # `done_count`, and the question here is whether the model is answering NOW. A notice-only row
+    # does not count - no model call was made for it.
+    generated: int = 0
+    # Set when the give-up threshold is reached; promoted to `giveup_exc` after the loop only if
+    # nothing succeeded in the meantime, so rows already running still get to answer.
+    giveup_candidate: Exception | None = None
+    giveup_exc: Exception | None = None
+
+    def finish(self, settings) -> None:
+        """Decide how this attempt ends and raise the signal that says so. Returns only when every
+        row was summarized, which `_run` then marks done.
+
+        Retryable rows outstanding -> pause + auto-resume (transient wins over permanent this cycle;
+        permanents resurface once transient pressure clears). Otherwise, if only permanent failures
+        remain -> needs attention. Otherwise every row is summarized -> done.
+
+        Promote the candidate first, now that every row which actually STARTED has reported. A
+        success arriving after the threshold is proof the model answers, so the job pauses and
+        retries the rows that were skipped instead of ending - which is what the give-up guard was
+        always for.
+
+        **The give-up check MUST precede the pause check.** `transient_left` was set by the very
+        failures that triggered the give-up, so the pause branch would otherwise win and we would be
+        back to job 1000173 grinding for 96 minutes. A model that admitted nothing ends the job
+        rather than pausing, because a resume replays the same refusal.
+        """
+        if self.giveup_candidate is not None and self.generated == 0:
+            self.giveup_exc = self.giveup_candidate
+
+        if self.giveup_exc is not None:
+            raise JobNeedsAttention(
+                f"{user_facing_message(self.giveup_exc)} No sub-documents could be summarized, so "
+                "the job stopped rather than retrying.",
+                self.attention_rows + self.refused_rows,
+            )
+        if self.should_pause or self.transient_left:
+            raise JobPaused(
+                delay=settings.summarize_resume_delay, done=self.done_count, total=self.total
+            )
+        if self.attention_rows:
+            n = len(self.attention_rows)
+            raise JobNeedsAttention(
+                f"{n} of {self.total} document{'s' if n != 1 else ''} could not be summarized. "
+                "Review, correct, or exclude them, then summarize again.",
+                self.attention_rows,
+            )
+
+    def record_success(self, output) -> None:
+        """One row summarized. The caller has already persisted it; this is the bookkeeping.
+
+        A NOTICE row does NOT count towards `generated`. No model call was made for it, so counting
+        it would satisfy the `generated == 0` give-up guard on a document whose every real row is
+        being refused, and the job would pause and auto-resume into the same refusal instead of
+        ending - the 96-minute grind that guard exists to prevent.
+
+        Resetting `consecutive_transient` is load-bearing, and until 2026-09-11 nothing asserted it:
+        the pause fires on CONSECUTIVE failures, so without this reset the streak reaches the
+        threshold earlier, cancels rows that had not started, and leaves them unsummarized. See
+        `test_a_success_between_failures_resets_the_pause_streak`.
+        """
+        self.done_count += 1
+        if not output.get("noticeOnly"):
+            self.generated += 1
+        self.consecutive_transient = 0
+
+    def record_transient(self, exc, i, row, settings, futures) -> str:
+        """A row failed transiently. Update the tallies, stop SUBMITTING when a threshold is
+        reached, and return "stop" only when the loop must stop DRAINING as well.
+
+        Returns "continue" in every other case, including after a give-up - see below, that is the
+        whole point of it.
+        """
+        self.transient_left = True
+        self.consecutive_transient += 1
+        self.transient_failures += 1
+        self.refused_rows.append(
+            {"idx": i, "pages": f"{row['start']}-{row['end']}", "reason": reason_for(exc)}
+        )
+        # Checked BEFORE the pause below, and the order is the whole point: both dials ship at 3, so
+        # whichever runs first decides between ending the job and auto-resuming into the same refusal
+        # until RQ's cap kills it.
+        if (
+            self.generated == 0
+            and self.transient_failures >= settings.summarize_giveup_after_failures
+            and self.giveup_candidate is None
+        ):
+            self.giveup_candidate = exc
+            for pending_future in futures:
+                pending_future.cancel()  # skip not-yet-started rows
+            # DELIBERATELY NOT "stop". Every row is submitted up front, so rows are already RUNNING
+            # here and cancel() cannot stop them. Ending on the spot threw their results away unread,
+            # which made the choice between ENDING the job and PAUSING it depend on whether the
+            # failures happened to complete before a success. Measured at 5 lanes: the same test
+            # passed on 3 of 6 runs and failed on the other 3. So stop submitting, keep draining what
+            # already started, and decide after the loop - deterministic at any lane count.
+            #
+            # This does NOT bound the number of model calls a refusing document costs, and neither
+            # did the break it replaced. Because every row is submitted up front, stopping only
+            # stopped READING results; the calls were already queued either way. cancel() skips a row
+            # only if it has not STARTED, so how much is saved depends entirely on how slowly the
+            # model fails. Bounding the spend needs bounded SUBMISSION (waves, or a stop flag checked
+            # inside the work item), which changes the worker's shape and is not this fix.
+            return "continue"
+        if self.consecutive_transient >= settings.summarize_pause_after:
+            # Reachable IMMEDIATELY AFTER the give-up above. Once giveup_candidate is set that guard
+            # can never fire again, and it returns without resetting consecutive_transient - which is
+            # already at the threshold, because both dials ship at 3. So the very next transient
+            # failure lands here.
+            #
+            # Stopping the drain here abandoned every row still RUNNING. A success among them was
+            # never read, so `generated` stayed 0, the post-loop promotion fired, and `giveup_exc` is
+            # checked BEFORE `should_pause` - so a document where a row did summarize ended as
+            # needs_attention instead of pausing. That is the same completion-order dependence,
+            # arriving by the sibling path.
+            #
+            # SCOPED to the case where a candidate is pending, and deliberately so. With no candidate
+            # the outcome is a pause either way, and a discarded success only costs a re-summarize on
+            # resume - waste, not a wrong answer. Draining unconditionally also CHANGED behaviour
+            # where summarize_pause_after is set below summarize_giveup_after_failures: reading the
+            # extra failures can then reach the give-up threshold and end a job that used to pause,
+            # which test_summarize_pauses_and_schedules_resume_on_transient caught. Both dials ship
+            # at 3 so that ordering does not arise in production, but this fix has no business
+            # changing it.
+            if not self.should_pause:
+                for pending_future in futures:
+                    pending_future.cancel()  # skip not-yet-started rows
+            self.should_pause = True
+            if self.giveup_candidate is None:
+                return "stop"
+        return "continue"
+
+    def record_permanent(self, exc, i, row) -> None:
+        """A row failed permanently (blank OCR, auth, per-day quota). Name it for the reviewer.
+
+        Carries no PHI - idx, page range and reason only.
+        """
+        self.attention_rows.append(
+            {"idx": i, "pages": f"{row['start']}-{row['end']}", "reason": reason_for(exc)}
+        )
+
+
 def summarize_document(job_id) -> None:
     """RQ entry: summarize the included ReviewRows -> Summary rows, RESUMABLY (item 7).
 
@@ -1013,97 +1286,21 @@ def summarize_document(job_id) -> None:
         total = len(rows)
         wanted = {(int(r["start"]), int(r["end"]), str(r["category"])) for r in rows}
 
-        # Pages this document has already failed to EXTRACT (page_texts.extract_ok false), handed to
-        # summarize_row as row data because that module is deliberately DB-free and cannot ask. One
-        # query for the whole document, not one per row.
-        #
-        # A SEED, not the answer. A row that re-extracts in summarize_row overrides this with what
-        # that extraction actually did, which matters because an errored page is often a transient
-        # timeout a later attempt reads fine. What this seed buys is the case that cannot re-ask: a
-        # row reusing the duplicate check's stored `source_text`, where re-OCRing to find out would
-        # undo the reuse that saves ~45 minutes on a 1500-page record.
-        stored_pages = {
-            page_text.page: page_text
-            for page_text in session.scalars(
-                select(PageText).where(PageText.document_id == job.document_id)
-            )
-        }
-        failed_pages = sorted(p for p, pt in stored_pages.items() if not pt.extract_ok)
-        for row in rows:
-            row["unreadable_pages"] = [
-                page for page in failed_pages if int(row["start"]) <= page <= int(row["end"])
-            ]
-
-        # Serve the row's text from the page-text store when the duplicate check has not. Without
-        # this, summarize was the ONE stage of the four that store exists for that still re-OCR'd
-        # from the PDF - segmentation, classify and dedup all read it - so a record summarized
-        # without a duplicate check first paid a SECOND full OCR pass over pages already extracted
-        # and stored. That is the normal path, not an edge case: issue #125, and the four records in
-        # CLAUDE.md with zero dedup jobs and source_text NULL throughout. The module's own estimate
-        # of the duplication is ~45 minutes on a 1500-page record.
-        #
-        # Reuse ONLY when the store covers every page of the row and read all of them cleanly.
-        # Partial cover must fall through to the full extraction below, or a row would be summarized
-        # from some of its pages with nothing saying so - the failure this pipeline treats as
-        # unrecoverable. A row with one errored page therefore re-extracts, which also preserves the
-        # retry that turns a transient Tesseract timeout into a readable page.
-        #
-        # Depositions are skipped deliberately: summarize_row re-reads them through the marking
-        # extractor because a transcript model handed concatenated text cannot see where a page ends,
-        # and the store holds unmarked text. It ignores `source_text` for category 9 anyway; not
-        # seeding it just avoids carrying a large string that would be dropped.
-        #
-        # Byte-identical to what the fallback would produce: page_text._extract reads through the
-        # same ocr.extract_pages_with_report, one page at a time, and both paths concatenate with no
-        # separator. So this changes when the OCR happens, never what the model is given.
-        for row in rows:
-            if row.get("source_text") or str(row["category"]) == "9":
-                continue
-            pages = range(int(row["start"]), int(row["end"]) + 1)
-            covered = [stored_pages.get(page) for page in pages]
-            if covered and all(pt is not None and pt.extract_ok for pt in covered):
-                row["source_text"] = "".join(pt.text or "" for pt in covered)
+        _seed_row_text(session, job.document_id, rows)
         _seed_embedded_review_pages(session, job.document_id, rows)
 
-        # Reconcile persisted summaries by row identity: keep the first for each still-wanted row,
-        # drop any that are stale (row removed/edited) or duplicate. This never touches summaries
-        # for rows still in the set, so reviewer edits survive a resume/re-run.
-        existing: dict[tuple, Summary] = {}
-        for summary in session.scalars(
-            select(Summary).where(Summary.document_id == job.document_id)
-        ).all():
-            key = (int(summary.row_start), int(summary.row_end), str(summary.row_category))
-            # A notice-only row is deleted rather than reused, so "summarize again" re-reads its
-            # pages instead of skipping them as done - see _is_retryable_notice.
-            if key in wanted and key not in existing and not _is_retryable_notice(summary):
-                existing[key] = summary
-            else:
-                session.delete(summary)
+        existing = _reconcile_summaries(session, job.document_id, wanted)
         session.commit()
 
-        # Position reused summaries to the current row order; collect the rows still to generate.
-        pending: list[tuple[int, dict]] = []
-        for i, row in enumerate(rows):
-            key = (int(row["start"]), int(row["end"]), str(row["category"]))
-            reused = existing.get(key)
-            if reused is not None:
-                if reused.idx != i:
-                    reused.idx = i
-                continue
-            pending.append((i, row))
+        pending = _pending_rows(rows, existing)
         session.commit()
 
-        done_count = total - len(pending)
-        report("summarizing", done_count, total)
+        run = _SummarizeRun(total=total, done_count=total - len(pending))
+        report("summarizing", run.done_count, run.total)
         if not pending:
             return  # everything already summarized -> _run marks done
 
-        # Resolve prompts up front (the DB session is not thread-safe; no catalog reads in the pool).
-        prompt_by_cat: dict[str, str] = {}
-        for _, row in pending:
-            cat = str(row["category"])
-            if cat not in prompt_by_cat:
-                prompt_by_cat[cat] = catalog.get_prompt(session, "summary", cat)
+        prompt_by_cat = _prompts_for_rows(session, pending)
 
         pdf_path, model = document.stored_path, job.model
         # The three models come from the JOB, resolved once when it was created, so a config change
@@ -1112,21 +1309,6 @@ def summarize_document(job_id) -> None:
         # three calls, and their new columns are NULL rather than back-filled with a guess.
         title_model = job.title_model or job.model
         audit_model = job.audit_model or job.model
-        attention_rows: list[dict] = []  # permanent per-row failures {idx, pages, reason}
-        transient_left = False  # >=1 row failed transiently -> retry on resume
-        consecutive_transient = 0
-        should_pause = False
-        # Give-up state. `generated` counts successes in THIS attempt, not the document's total: a
-        # resumed job carries earlier rows in `done_count`, and the question here is whether the model
-        # is answering NOW. Zero of it, with failures accumulating, is what a refused model looks like.
-        generated = 0
-        transient_failures = 0
-        giveup_exc: Exception | None = None
-        # Set when the give-up threshold is reached, PROMOTED to `giveup_exc` after the loop only if
-        # nothing succeeded in the meantime. Two variables rather than one because the rows already
-        # running still get to answer.
-        giveup_candidate: Exception | None = None
-        refused_rows: list[dict] = []
 
         pool_timeout = settings.pool_timeout(document.page_count)
         with ThreadPoolExecutor(max_workers=settings.pipeline_workers) as pool:
@@ -1159,105 +1341,17 @@ def summarize_document(job_id) -> None:
                         output = future.result()
                     except Exception as exc:
                         if classify_failure(exc) == "transient":
-                            transient_left = True
-                            consecutive_transient += 1
+                            decision = run.record_transient(exc, i, row, settings, futures)
                             logger.warning(
                                 "summarize row %d transient failure on document %s (%d in a row)",
                                 i,
                                 job.document_id,
-                                consecutive_transient,
+                                run.consecutive_transient,
                             )
-                            transient_failures += 1
-                            refused_rows.append(
-                                {
-                                    "idx": i,
-                                    "pages": f"{row['start']}-{row['end']}",
-                                    "reason": reason_for(exc),
-                                }
-                            )
-                            # Checked BEFORE the pause below, and the order is the whole point: both
-                            # dials ship at 3, so whichever runs first decides between ending the job
-                            # and auto-resuming into the same refusal until RQ's cap kills it.
-                            if (
-                                generated == 0
-                                and transient_failures >= settings.summarize_giveup_after_failures
-                                and giveup_candidate is None
-                            ):
-                                giveup_candidate = exc
-                                for pending_future in futures:
-                                    pending_future.cancel()  # skip not-yet-started rows
-                                # DELIBERATELY NOT `break`. Every row is submitted up front, so rows
-                                # are already RUNNING here and `cancel()` cannot stop them. Ending on
-                                # the spot threw their results away unread, which made the choice
-                                # between ENDING the job and PAUSING it depend on whether the
-                                # failures happened to complete before a success. Measured at 5
-                                # lanes: the same test passed on 3 of 6 runs and failed on the other
-                                # 3. So stop submitting, keep draining what already started, and
-                                # decide after the loop - deterministic at any lane count.
-                                #
-                                # This does NOT bound the number of model calls a refusing document
-                                # costs, and neither did the `break` it replaced. Because every row
-                                # is submitted up front, `break` only stopped READING results; the
-                                # calls were already in the pool's queue either way. `cancel()` skips
-                                # a row only if it has not STARTED, so how much is saved depends
-                                # entirely on how slowly the model fails. When it refuses fast - a
-                                # bare 429 with no retry budget left - the pool can drain every row
-                                # before the threshold is even observed, and nothing here can stop
-                                # it. Bounding the spend needs bounded SUBMISSION (waves, or a stop
-                                # flag checked inside the work item), which changes the worker's
-                                # shape and is not this fix.
-                                continue
-                            if consecutive_transient >= settings.summarize_pause_after:
-                                # NOT `break`, for the same reason as the give-up branch above, and
-                                # this one is reachable IMMEDIATELY AFTER it. Once `giveup_candidate`
-                                # is set the guard above can never fire again, and it `continue`s
-                                # without resetting `consecutive_transient` - which is already at the
-                                # threshold, because both dials ship at 3. So the very next transient
-                                # failure lands here.
-                                #
-                                # Breaking then abandoned every row still RUNNING. A success among
-                                # them was never read, so `generated` stayed 0, the post-loop
-                                # promotion fired, and `giveup_exc` is checked BEFORE `should_pause` -
-                                # so a document where a row did summarize ended as needs_attention
-                                # instead of pausing. That is the exact completion-order dependence
-                                # the comment above was written to remove, arriving by the sibling
-                                # path.
-                                #
-                                # Latent at the shipped `pipeline_workers=2`: after the give-up only
-                                # one other row is in flight, so the failure that trips this branch is
-                                # itself that row and there is nothing left to discard. It becomes
-                                # reachable as soon as the lane count is raised, which is what
-                                # `config.py`'s throughput note proposes.
-                                #
-                                # `should_pause` was ALREADY a post-loop decision, so draining first
-                                # only adds information: successes get committed and counted, and the
-                                # pause still happens.
-                                #
-                                # SCOPED to the case where a candidate is pending, and deliberately
-                                # so. With no candidate the outcome is a pause either way, and a
-                                # discarded success only costs a re-summarize on resume - waste, not a
-                                # wrong answer. Draining unconditionally also CHANGED behaviour where
-                                # `summarize_pause_after` is set below `summarize_giveup_after_failures`:
-                                # reading the extra failures can then reach the give-up threshold and
-                                # end a job that used to pause, which
-                                # `test_summarize_pauses_and_schedules_resume_on_transient` caught. Both
-                                # dials ship at 3 so that ordering does not arise in production, but
-                                # this fix has no business changing it.
-                                if not should_pause:
-                                    for pending_future in futures:
-                                        pending_future.cancel()  # skip not-yet-started rows
-                                should_pause = True
-                                if giveup_candidate is None:
-                                    break
-                                continue
+                            if decision == "stop":
+                                break
                         else:
-                            attention_rows.append(
-                                {
-                                    "idx": i,
-                                    "pages": f"{row['start']}-{row['end']}",
-                                    "reason": reason_for(exc),
-                                }
-                            )
+                            run.record_permanent(exc, i, row)
                             logger.warning(
                                 "summarize row %d permanent failure on document %s",
                                 i,
@@ -1268,16 +1362,8 @@ def summarize_document(job_id) -> None:
                     # Success: persist immediately so a later failure never loses this row.
                     session.add(_build_summary(job, i, row, output))
                     session.commit()
-                    done_count += 1
-                    # One success is proof the model answers -> never give up early. A NOTICE row is
-                    # not that proof: no model call was made for it, so counting it would satisfy the
-                    # `generated == 0` give-up guard on a document whose every real row is being
-                    # refused, and the job would pause and auto-resume into the same refusal instead
-                    # of ending - the 96-minute grind that guard exists to prevent.
-                    if not output.get("noticeOnly"):
-                        generated += 1
-                    consecutive_transient = 0
-                    report("summarizing", done_count, total)
+                    run.record_success(output)
+                    report("summarizing", run.done_count, total)
                     if output.get("noticeOnly"):
                         # The row IS delivered, carrying a notice - and the job still ends
                         # needs_attention naming it. Two signals for two audiences: the banner asks
@@ -1287,8 +1373,8 @@ def summarize_document(job_id) -> None:
                         # OCR failure, since it is the only thing today that says a page was lost.
                         #
                         # Recorded AFTER the summary is committed, so a notice row is both persisted
-                        # and reported; `attention_rows` carries no PHI, only idx, pages and reason.
-                        attention_rows.append(
+                        # and reported; `run.attention_rows` carries no PHI, only idx, pages and reason.
+                        run.attention_rows.append(
                             {
                                 "idx": i,
                                 "pages": f"{row['start']}-{row['end']}",
@@ -1303,8 +1389,14 @@ def summarize_document(job_id) -> None:
             except PoolTimeout as pt:
                 # A stalled pool near the wall-clock wall: pause and let the outstanding rows retry
                 # on the next resume (pending is recomputed by row identity), never hang.
-                transient_left = True
-                should_pause = True
+                #
+                # BOTH flags, and they are NOT interchangeable. For the final outcome the check is
+                # `should_pause or transient_left`, so setting `should_pause` here changes nothing
+                # observable - breaking it leaves every test green, verified 2026-09-11. But
+                # `should_pause` is NOT redundant inside the loop, where it gates whether pending
+                # rows get cancelled. Collapsing these two looks safe and is not.
+                run.transient_left = True
+                run.should_pause = True
                 logger.warning(
                     "summarize pool timed out after %ss on document %s; %d row(s) will retry",
                     pool_timeout,
@@ -1312,33 +1404,6 @@ def summarize_document(job_id) -> None:
                     len(pt.unfinished),
                 )
 
-        # Retryable rows outstanding -> pause + auto-resume (transient wins over permanent this
-        # cycle; permanents resurface once transient pressure clears). Otherwise, if only permanent
-        # failures remain -> needs attention. Otherwise every row is summarized -> done.
-        # A model that admitted nothing: end the job instead of pausing, because a resume replays the
-        # same refusal. This MUST precede the pause check - `transient_left` was set by the very
-        # failures that triggered the give-up, so the pause branch would otherwise win and we would be
-        # back to job 1000173 grinding for 96 minutes.
-        # Promote the candidate now that every row which actually STARTED has reported. A success
-        # arriving after the threshold is proof the model answers, so the job pauses and retries the
-        # rows we skipped instead of ending - which is what the give-up guard was always for.
-        if giveup_candidate is not None and generated == 0:
-            giveup_exc = giveup_candidate
-
-        if giveup_exc is not None:
-            raise JobNeedsAttention(
-                f"{user_facing_message(giveup_exc)} No sub-documents could be summarized, so the "
-                "job stopped rather than retrying.",
-                attention_rows + refused_rows,
-            )
-        if should_pause or transient_left:
-            raise JobPaused(delay=settings.summarize_resume_delay, done=done_count, total=total)
-        if attention_rows:
-            n = len(attention_rows)
-            raise JobNeedsAttention(
-                f"{n} of {total} document{'s' if n != 1 else ''} could not be summarized. "
-                "Review, correct, or exclude them, then summarize again.",
-                attention_rows,
-            )
+        run.finish(settings)
 
     _run(job_id, work)
