@@ -116,6 +116,25 @@ def _set_deadline(config, timeout_ms: int) -> bool:
     return True
 
 
+def _deadline_for_retry(config, deadline_ms: int, escalated: bool) -> int | None:
+    """The longer deadline ONE retry gets after a 504, or None when this 504 is final.
+
+    A multiple of the deadline THIS call actually had, not of the flat floor: a large request that
+    exceeds its already-scaled deadline is the case with the least margin left, and measuring the
+    retry from the floor would hand it barely more time than a small one gets - which is how a
+    size-aware limit quietly stops being size-aware.
+
+    None on all three exits - already retried, a multiplier that buys nothing, or no config to carry
+    a deadline - so the caller has one condition to test rather than the loop growing three.
+    """
+    if escalated:
+        return None
+    longer = int(deadline_ms * get_settings().genai_deadline_retry_multiplier)
+    if longer <= deadline_ms or not _set_deadline(config, longer):
+        return None
+    return longer
+
+
 _CANCEL_POLL_SECONDS = 1.0
 
 
@@ -235,21 +254,16 @@ def generate_with_retry(client, **kwargs):
                 # See errors.is_deadline_exceeded; worker.failures.classify_failure mirrors this or
                 # the two disagree.
                 if is_deadline_exceeded(exc):
-                    longer = int(deadline_ms * settings.genai_deadline_retry_multiplier)
-                    if (
-                        escalated
-                        or longer <= deadline_ms
-                        or not _set_deadline(kwargs.get("config"), longer)
-                    ):
+                    longer = _deadline_for_retry(kwargs.get("config"), deadline_ms, escalated)
+                    if longer is None:
                         raise
-                    escalated = True
                     logger.warning(
                         "deadline 504 on %s after %sms; retrying once at %sms",
                         model,
                         deadline_ms,
                         longer,
                     )
-                    deadline_ms = longer
+                    escalated, deadline_ms = True, longer
                 last = exc
             except errors.ClientError as exc:  # retry only transient 429 rate limiting
                 # Raises out of the loop for a non-429 and for a spent daily quota; see the helper.

@@ -304,8 +304,9 @@ def test_a_row_that_exceeds_even_the_longer_deadline_still_fails(quiet_seam):
     large for both deadlines ends exactly where it does today, only after one more try.
     """
     client = _RecordingClient(_deadline_error())
+    config = _config()
     with pytest.raises(errors.ServerError):
-        generate_with_retry(client, model="gemini-2.5-flash", config=_config())
+        generate_with_retry(client, model="gemini-2.5-flash", config=config)
     assert client.calls == 2
     assert client.timeouts[1] == _expected_retry_deadline()
 
@@ -323,8 +324,9 @@ def test_the_escalation_can_be_turned_off(quiet_seam, monkeypatch):
     monkeypatch.setenv("GENAI_DEADLINE_RETRY_MULTIPLIER", "1")
     try:
         client = _RecordingClient(_deadline_error())
+        config = _config()
         with pytest.raises(errors.ServerError):
-            generate_with_retry(client, model="gemini-2.5-flash", config=_config())
+            generate_with_retry(client, model="gemini-2.5-flash", config=config)
         assert client.calls == 1
     finally:
         get_settings.cache_clear()
@@ -337,8 +339,9 @@ def test_a_deadline_is_not_backed_off_like_a_transient_error(quiet_seam, monkeyp
     re-entry into the 5xx backoff path, which is what the 17.5-minute measurement was about.
     """
     client = _RecordingClient(_deadline_error())
+    config = _config()
     with pytest.raises(errors.ServerError):
-        generate_with_retry(client, model="gemini-2.5-flash", config=_config())
+        generate_with_retry(client, model="gemini-2.5-flash", config=config)
     assert client.calls < get_settings().genai_max_retries
 
 
