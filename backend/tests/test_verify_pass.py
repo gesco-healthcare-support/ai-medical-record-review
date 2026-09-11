@@ -116,3 +116,117 @@ def test_verify_and_merge_can_pin_the_net_instead_of_inheriting_the_box(monkeypa
     checked.clear()
     verify_pass.verify_and_merge("x.pdf", _ROWS)
     assert sorted(checked) == [11, 41], "omitted still defers to the box - production's case"
+
+
+# --------------------------------------------------------------------------------------------
+# What happens to a REFUTED boundary.
+#
+# Every test above stops at which boundaries get checked. The spy at `test_verify_and_merge_can
+# _pin_the_net...` returns False unconditionally, so the block that acts on a verdict has never
+# been executed by any test in this suite - not one assertion covers a merge, a suggestion, or
+# either stats key. These pin it before it is refactored.
+# --------------------------------------------------------------------------------------------
+
+
+def _flagged(start, end, category="1", date="01/01/2026", flag="-"):
+    """A row carrying the ``flag`` key, which the auto-merge path reads and ``_row`` omits."""
+    row = _row(start, end, category, date)
+    row["flag"] = flag
+    return row
+
+
+def _refuting(*starts):
+    """A `_same_document` stand-in that refutes exactly the boundaries whose row starts at ``starts``."""
+
+    def spy(pdf_path, prev, row):
+        return int(row["start"]) in starts
+
+    return spy
+
+
+def test_a_refuted_boundary_becomes_a_suggestion_and_keeps_every_row(monkeypatch):
+    """WHEN auto is off, THE SYSTEM SHALL flag the refuted row and drop nothing.
+
+    This is production's default. The reviewer, not the model, decides whether the merge happens,
+    so a refuted boundary has to survive as a marked row rather than be applied.
+    """
+    rows = [_flagged(1, 10), _flagged(11, 20), _flagged(21, 30, "2", "02/01/2026")]
+    monkeypatch.setattr(verify_pass, "_same_document", _refuting(11))
+
+    out, stats = verify_pass.verify_and_merge("x.pdf", rows, auto=False, triggered_only=False)
+
+    assert len(out) == 3, "nothing is merged away when the reviewer has not asked for it"
+    assert out[1]["suggest_merge"] is True
+    assert "suggest_merge" not in out[0]
+    assert "suggest_merge" not in out[2]
+    assert stats == {"suspects": 2, "suggested": 1}
+    assert "suggest_merge" not in rows[1], "the caller's own rows must come back untouched"
+
+
+def test_auto_merge_absorbs_the_refuted_row_and_keeps_the_pages_tiled(monkeypatch):
+    """WHEN auto is on, THE SYSTEM SHALL extend the predecessor over the refuted row and drop it.
+
+    Tiling is the load-bearing property: the rows partition the document, so the survivor has to
+    take on the absorbed row's ``end`` or the pages between them belong to no row at all.
+    """
+    rows = [_flagged(1, 10), _flagged(11, 20), _flagged(21, 30, "2", "02/01/2026")]
+    monkeypatch.setattr(verify_pass, "_same_document", _refuting(11))
+
+    out, stats = verify_pass.verify_and_merge("x.pdf", rows, auto=True, triggered_only=False)
+
+    assert len(out) == 2, "the refuted row is absorbed, not marked"
+    assert (out[0]["start"], out[0]["end"]) == (1, 20), "the survivor covers the absorbed pages"
+    assert (out[1]["start"], out[1]["end"]) == (21, 30), "and the tiling continues unbroken"
+    assert stats == {"suspects": 2, "merged_away": 1}, (
+        "the stats key differs from the auto=False one"
+    )
+    assert rows[0]["end"] == 10, "the caller's own rows must come back untouched"
+
+
+def test_an_absorbed_row_promotes_its_flag_onto_the_survivor(monkeypatch):
+    """WHEN an absorbed row is flagged, THE SYSTEM SHALL carry that flag onto the survivor.
+
+    The flag marks a row for attention. Absorbing a flagged row into an unflagged one without
+    carrying the flag would silently discard the only signal that the row needed looking at.
+
+    Whitespace and case are normalised, so the comparison is pinned with a value that only matches
+    after both are applied.
+    """
+    rows = [_flagged(1, 10, flag="-"), _flagged(11, 20, flag=" X ")]
+    monkeypatch.setattr(verify_pass, "_same_document", _refuting(11))
+
+    out, _ = verify_pass.verify_and_merge("x.pdf", rows, auto=True, triggered_only=False)
+
+    assert out[0]["flag"] == "x", "' X ' is stripped and lowered before it is compared"
+
+
+def test_an_unflagged_absorbed_row_leaves_the_survivors_flag_alone(monkeypatch):
+    """WHEN an absorbed row is unflagged, THE SYSTEM SHALL NOT clear a flag the survivor already has.
+
+    The promotion is one-way. Copying the absorbed row's flag unconditionally would clear the
+    survivor's, which is the same silent loss as not promoting at all.
+    """
+    rows = [_flagged(1, 10, flag="-"), _flagged(11, 20, flag="x"), _flagged(21, 30, flag="-")]
+    monkeypatch.setattr(verify_pass, "_same_document", _refuting(21))
+
+    out, _ = verify_pass.verify_and_merge("x.pdf", rows, auto=True, triggered_only=False)
+
+    assert out[1]["flag"] == "x", "the survivor keeps its own flag"
+    assert out[1]["end"] == 30, "and still absorbs the row"
+
+
+def test_consecutive_refutations_all_collapse_into_one_survivor(monkeypatch):
+    """WHEN adjacent boundaries are all refuted, THE SYSTEM SHALL collapse them into a single row.
+
+    The survivor is re-read from the output as it grows, not indexed out of the input, which is what
+    makes a run of refuted fragments chain onto one row instead of each absorbing only its immediate
+    predecessor. Getting that wrong leaves the middle fragment as a row covering pages the survivor
+    now also claims - overlapping rows rather than a tiling.
+    """
+    rows = [_flagged(1, 5), _flagged(6, 6), _flagged(7, 7), _flagged(8, 20, "9", "-")]
+    monkeypatch.setattr(verify_pass, "_same_document", _refuting(6, 7))
+
+    out, stats = verify_pass.verify_and_merge("x.pdf", rows, auto=True, triggered_only=False)
+
+    assert [(r["start"], r["end"]) for r in out] == [(1, 7), (8, 20)]
+    assert stats == {"suspects": 3, "merged_away": 2}

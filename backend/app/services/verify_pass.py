@@ -156,6 +156,39 @@ def suspect_indices(rows, cap=None, triggered_only=None):
     return sorted(candidates[: max(cap, 0)])
 
 
+def _apply_verdicts(rows, same_doc, auto):
+    """Turn boundary verdicts into rows: absorb a refuted row when ``auto``, otherwise mark it.
+
+    ``same_doc`` maps a row's ``start`` to the oracle's verdict, and only refuted boundaries appear
+    with ``True``. An unverified boundary - one the pool never got to - is simply absent, so it keeps
+    its split. That is deliberate: never an auto-merge on missing evidence.
+
+    The survivor is re-read from ``out`` as it grows rather than indexed out of ``rows``, which is
+    what makes a run of consecutive refutations collapse into ONE row instead of each absorbing only
+    its immediate predecessor. Indexing the input instead would leave overlapping rows rather than a
+    tiling of the document.
+
+    Returns ``(rows, affected)``. The caller names ``affected`` differently per mode, because
+    "merged away" and "suggested" are not the same claim about what happened.
+    """
+    out, affected = [], 0
+    for row in rows:
+        refuted = bool(out) and same_doc.get(row["start"]) is True
+        if refuted and auto:
+            previous = out[-1]
+            previous["end"] = row["end"]
+            if str(row["flag"]).strip().lower() == "x":
+                previous["flag"] = "x"
+            affected += 1
+            continue
+        row = dict(row)
+        if refuted:
+            row["suggest_merge"] = True
+            affected += 1
+        out.append(row)
+    return out, affected
+
+
 def verify_and_merge(
     pdf_path,
     rows,
@@ -212,20 +245,6 @@ def verify_and_merge(
                     len(pt.unfinished),
                 )
 
-    out, affected = [], 0
-    for row in rows:
-        refuted = bool(out) and same_doc.get(row["start"]) is True
-        if refuted and auto:
-            previous = out[-1]
-            previous["end"] = row["end"]
-            if str(row["flag"]).strip().lower() == "x":
-                previous["flag"] = "x"
-            affected += 1
-            continue
-        row = dict(row)
-        if refuted:
-            row["suggest_merge"] = True
-            affected += 1
-        out.append(row)
+    out, affected = _apply_verdicts(rows, same_doc, auto)
     key = "merged_away" if auto else "suggested"
     return out, {"suspects": len(suspects), key: affected}
