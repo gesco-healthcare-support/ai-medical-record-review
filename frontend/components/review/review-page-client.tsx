@@ -62,8 +62,11 @@ function summarizeReason(
   return "Your latest changes aren't saved yet.";
 }
 
-/** The record header's count line, e.g. "3 documents · 12 pages". The separator is written as an
- *  escape so this file stays ASCII; it renders as the same middot it always did. */
+/** The record header's count line: the document count, a middle dot, then the page count.
+ *
+ *  The separator is a literal U+00B7, not an escape. That matches the three tab labels already in
+ *  this file, which have carried the same character since before this change - so this file is not
+ *  ASCII-clean, and nothing here claims otherwise. */
 function recordCountLabel(rowCount: number, totalPages: number) {
   const documents = rowCount === 1 ? "document" : "documents";
   const pages = totalPages === 1 ? "page" : "pages";
