@@ -15,24 +15,244 @@ import {
 } from "@/lib/bundle-api";
 import { StatusPill } from "@/components/documents/status-pill";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
-import type { CategoryOption } from "@/lib/types";
+import type { CategoryOption, Row } from "@/lib/types";
 
 const DEFAULT_QME = "PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)";
 
 // The two bundle entries share one screen; the SegmentedTabs navigate between their routes. The
 // tab value is the config slug so the active tab matches whichever page is mounted.
 const BUNDLE_TABS = [
-  { value: "diagnostic-operative", label: "Diagnostic & Operative", href: "/diagnostics" },
+  {
+    value: "diagnostic-operative",
+    label: "Diagnostic & Operative",
+    href: "/diagnostics",
+  },
   { value: "depositions", label: "Depositions", href: "/depositions" },
 ] as const;
 
 function errMessage(err: unknown, fallback: string) {
-  return humanizeError(err, { fallback, notFound: "That record is no longer available." });
+  return humanizeError(err, {
+    fallback,
+    notFound: "That record is no longer available.",
+  });
 }
 
 function categoryLabel(categories: CategoryOption[], id: string) {
   const found = categories.find((c) => String(c.id) === String(id));
   return found ? `${found.id} - ${found.name}` : String(id);
+}
+
+/** The breadcrumb's way back into Review & correct, offered only once the record has been
+ *  identified - before that there are no categories to fix. */
+function FixCategoriesLink({
+  identified,
+  documentId,
+}: Readonly<{ identified: boolean | undefined; documentId: string | null }>) {
+  if (!identified) return null;
+  return (
+    <>
+      <span className="bnd-crumb-sep">·</span>
+      <Link className="bnd-linkbtn" href={`/records/${documentId}`}>
+        Fix categories in Review &amp; correct{" "}
+        <ArrowRight width={14} height={14} aria-hidden />
+      </Link>
+    </>
+  );
+}
+
+/** The matched documents: a count line, then either the table or the empty state.
+ *
+ * The empty-vs-table branch was INERT before this moved - rendering the table unconditionally left
+ * every test in bundle-page-client.test.tsx green. It is covered now, because "no documents here" is
+ * the whole behaviour of this card on an unmatched record. */
+function MatchesCard({
+  matches,
+  categories,
+  label,
+}: Readonly<{ matches: Row[]; categories: CategoryOption[]; label: string }>) {
+  return (
+    <div className="hd-card">
+      <div className="bnd-card-head">
+        {matches.length} matching document{matches.length === 1 ? "" : "s"}
+      </div>
+      {matches.length === 0 ? (
+        <div className="bnd-empty" style={{ border: "none" }}>
+          <p className="bnd-empty-title">No {label} documents here</p>
+          <p>
+            That&apos;s normal - not every record has them. Check the categories
+            in Review &amp; correct if you expected some.
+          </p>
+        </div>
+      ) : (
+        <table className="hd-table">
+          <thead>
+            <tr>
+              <th className="hd-w-pages">Pages</th>
+              <th>Title</th>
+              <th className="hd-w-status">Category</th>
+              <th className="hd-w-uploaded">Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {matches.map((row) => (
+              <tr key={`${row.start}-${row.end}`}>
+                <td className="hd-muted">
+                  {row.start}
+                  {"–"}
+                  {row.end}
+                </td>
+                <td>
+                  <span className="hd-name">
+                    {row.title && row.title !== "-"
+                      ? row.title
+                      : "(untitled document)"}
+                  </span>
+                </td>
+                <td className="hd-muted">
+                  {categoryLabel(categories, row.category)}
+                </td>
+                <td className="hd-muted">
+                  {row.date && row.date !== "-" ? row.date : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/** The build panel: the export header fields and the two download actions.
+ *
+ * Takes the header state rather than owning it, because `autoFill` writes all four fields at once
+ * from the record and the parent is what holds that. */
+function BuildAside({
+  matchCount,
+  autoFill,
+  autoFilling,
+  patient,
+  setPatient,
+  dob,
+  setDob,
+  qme,
+  setQme,
+  firm,
+  setFirm,
+  downloadPdf,
+  summarize,
+  pdfBusy,
+  sumBusy,
+  result,
+}: Readonly<{
+  matchCount: number;
+  autoFill: () => void;
+  autoFilling: boolean;
+  patient: string;
+  setPatient: (v: string) => void;
+  dob: string;
+  setDob: (v: string) => void;
+  qme: string;
+  setQme: (v: string) => void;
+  firm: string;
+  setFirm: (v: string) => void;
+  downloadPdf: () => void;
+  summarize: () => void;
+  pdfBusy: boolean;
+  sumBusy: boolean;
+  result: BundleResult;
+}>) {
+  const busy = matchCount === 0 || pdfBusy || sumBusy;
+  return (
+    <aside className="hd-card bundle-card">
+      <div>
+        <h2>Build the bundle</h2>
+        <p className="muted" style={{ margin: "2px 0 0" }}>
+          Download the matched pages, or summarize just those documents to a
+          Word report.
+        </p>
+      </div>
+      <button
+        type="button"
+        className="ev-btn ev-btn-ghost ev-btn-sm"
+        style={{ alignSelf: "flex-start" }}
+        onClick={autoFill}
+        disabled={autoFilling}
+      >
+        {autoFilling ? "Reading..." : "Auto-fill header from record"}
+      </button>
+      <div className="bundle-fields">
+        <div className="ev-dialog-row">
+          <div className="ev-field-2">
+            <label className="ev-lbl" htmlFor="bundlePatient">
+              Patient name
+            </label>
+            <input
+              id="bundlePatient"
+              className="ev-inp"
+              placeholder="Full name"
+              value={patient}
+              onChange={(e) => setPatient(e.target.value)}
+            />
+          </div>
+          <div className="ev-field-1">
+            <label className="ev-lbl" htmlFor="bundleDob">
+              DOB
+            </label>
+            <input
+              id="bundleDob"
+              className="ev-inp"
+              placeholder="MM/DD/YYYY"
+              value={dob}
+              onChange={(e) => setDob(e.target.value)}
+            />
+          </div>
+        </div>
+        <div>
+          <label className="ev-lbl" htmlFor="bundleQme">
+            Evaluation type (QME / AME)
+          </label>
+          <input
+            id="bundleQme"
+            className="ev-inp"
+            value={qme}
+            onChange={(e) => setQme(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="ev-lbl" htmlFor="bundleFirm">
+            Attorney law firm
+          </label>
+          <input
+            id="bundleFirm"
+            className="ev-inp"
+            placeholder="Firm name"
+            value={firm}
+            onChange={(e) => setFirm(e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="bundle-buttons">
+        <button
+          type="button"
+          className="ev-btn ev-btn-outline"
+          onClick={downloadPdf}
+          disabled={busy}
+        >
+          {pdfBusy ? "Combining pages..." : "Download combined PDF"}
+        </button>
+        <button
+          type="button"
+          className="ev-btn ev-btn-primary"
+          onClick={summarize}
+          disabled={busy}
+        >
+          {sumBusy ? "Preparing report..." : "Summarize to Word"}
+        </button>
+      </div>
+      <div className={`bnd-result ${result.kind}`}>{result.msg}</div>
+    </aside>
+  );
 }
 
 /** Category-bundle workspace (DS §5): pick an already-identified record, see the documents whose
@@ -64,7 +284,9 @@ async function runBundleDownload(
   }
 }
 
-export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>) {
+export function BundlePageClient({
+  config,
+}: Readonly<{ config: BundleConfig }>) {
   const router = useRouter();
   const { data: docs = [] } = useDocuments();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -95,7 +317,8 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
   // bundle-local (DEFAULT_QME).
   useEffect(() => {
     if (!detail) return;
-    const full = `${detail.patient_first_name || ""} ${detail.patient_last_name || ""}`.trim();
+    const full =
+      `${detail.patient_first_name || ""} ${detail.patient_last_name || ""}`.trim();
     setPatient((p) => p || full);
     setDob((d) => d || detail.patient_dob || "");
     setFirm((f) => f || detail.law_firm || "");
@@ -116,12 +339,18 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
   // is the wrong filter (a migration unchecked whole categories, so it would empty the Depositions
   // preset for older records).
   const resolvedGroups = new Set(
-    rows.filter((row) => row.dupe_group != null && row.dupe_primary).map((row) => row.dupe_group),
+    rows
+      .filter((row) => row.dupe_group != null && row.dupe_primary)
+      .map((row) => row.dupe_group),
   );
   const matches = rows.filter(
     (row) =>
       config.categories.includes(String(row.category)) &&
-      !(resolvedGroups.has(row.dupe_group) && !row.dupe_primary && !row.dupe_dismissed),
+      !(
+        resolvedGroups.has(row.dupe_group) &&
+        !row.dupe_primary &&
+        !row.dupe_dismissed
+      ),
   );
   const identified = rows.length > 0;
 
@@ -142,7 +371,9 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
   else if (!identified) pane = "unidentified";
   else pane = "ready";
 
-  const pickerDocs = [...docs].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  const pickerDocs = [...docs].sort((a, b) =>
+    a.created_at < b.created_at ? 1 : -1,
+  );
 
   function chooseAnother() {
     setSelectedId(null);
@@ -158,13 +389,17 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
     setAutoFilling(true);
     try {
       const fields = await extractHeader(selectedId);
-      const full = `${fields.patient_first_name || ""} ${fields.patient_last_name || ""}`.trim();
+      const full =
+        `${fields.patient_first_name || ""} ${fields.patient_last_name || ""}`.trim();
       setPatient(full);
       setDob(fields.patient_dob || "");
       setFirm(fields.law_firm || "");
       setResult({ kind: "ok", msg: "Header details filled from the record." });
     } catch (err) {
-      setResult({ kind: "err", msg: errMessage(err, "Could not read the header.") });
+      setResult({
+        kind: "err",
+        msg: errMessage(err, "Could not read the header."),
+      });
     } finally {
       setAutoFilling(false);
     }
@@ -175,7 +410,11 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
       selectedId,
       setPdfBusy,
       setResult,
-      { pending: "Combining pages...", ok: "Combined PDF downloaded.", failure: "The download failed." },
+      {
+        pending: "Combining pages...",
+        ok: "Combined PDF downloaded.",
+        failure: "The download failed.",
+      },
       (id) => downloadBundlePdf(id, config),
     );
   }
@@ -185,7 +424,11 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
       selectedId,
       setSumBusy,
       setResult,
-      { pending: "Preparing report...", ok: "Word report downloaded.", failure: "The report failed." },
+      {
+        pending: "Preparing report...",
+        ok: "Word report downloaded.",
+        failure: "The report failed.",
+      },
       (id) =>
         downloadBundleSummary(id, config, {
           patientName: patient,
@@ -218,8 +461,9 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
               <div className="bnd-heading">
                 <h1>{config.label} builder</h1>
                 <p className="bnd-lead">
-                  Pick a record you have already identified. You will see the {config.label}{" "}
-                  documents in it, then download a combined PDF or summarize just those to Word.
+                  Pick a record you have already identified. You will see the{" "}
+                  {config.label} documents in it, then download a combined PDF
+                  or summarize just those to Word.
                 </p>
               </div>
               {tabs}
@@ -239,7 +483,9 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
                 <tbody>
                   {pickerDocs.length === 0 ? (
                     <tr className="hd-norows">
-                      <td colSpan={5}>No records yet. Upload one from My documents first.</td>
+                      <td colSpan={5}>
+                        No records yet. Upload one from My documents first.
+                      </td>
                     </tr>
                   ) : (
                     pickerDocs.map((doc) => (
@@ -247,7 +493,9 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
                         <td>
                           <span className="hd-doc">
                             <FileText width={15} height={15} aria-hidden />
-                            <span className="hd-name">{doc.original_filename}</span>
+                            <span className="hd-name">
+                              {doc.original_filename}
+                            </span>
                           </span>
                         </td>
                         <td className="hd-muted">{doc.page_count}</td>
@@ -257,7 +505,10 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
                         <td className="hd-muted">
                           {new Date(doc.created_at).toLocaleDateString()}
                         </td>
-                        <td className="bnd-selectcell" onClick={(e) => e.stopPropagation()}>
+                        <td
+                          className="bnd-selectcell"
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           <button
                             type="button"
                             className="ev-btn ev-btn-outline ev-btn-sm"
@@ -277,20 +528,22 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
           <>
             <div className="bnd-head">
               <div className="bnd-breadcrumb">
-                <button type="button" className="bnd-linkbtn" onClick={chooseAnother}>
-                  <ArrowLeft width={14} height={14} aria-hidden /> Choose another record
+                <button
+                  type="button"
+                  className="bnd-linkbtn"
+                  onClick={chooseAnother}
+                >
+                  <ArrowLeft width={14} height={14} aria-hidden /> Choose
+                  another record
                 </button>
                 <span className="bnd-crumb-sep">·</span>
-                <span className="bnd-crumb-name">{detail?.original_filename || "Record"}</span>
-                {identified ? (
-                  <>
-                    <span className="bnd-crumb-sep">·</span>
-                    <Link className="bnd-linkbtn" href={`/records/${selectedId}`}>
-                      Fix categories in Review &amp; correct{" "}
-                      <ArrowRight width={14} height={14} aria-hidden />
-                    </Link>
-                  </>
-                ) : null}
+                <span className="bnd-crumb-name">
+                  {detail?.original_filename || "Record"}
+                </span>
+                <FixCategoriesLink
+                  identified={identified}
+                  documentId={selectedId}
+                />
               </div>
               {tabs}
             </div>
@@ -298,9 +551,18 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
             {pane === "failed" ? (
               <div className="bnd-empty">
                 <p className="bnd-empty-title">Could not load this record</p>
-                <p>{errMessage(detailError, "Something went wrong reading it.")}</p>
-                <div className="bundle-buttons" style={{ justifyContent: "center", marginTop: 14 }}>
-                  <button type="button" className="ev-btn ev-btn-ghost" onClick={chooseAnother}>
+                <p>
+                  {errMessage(detailError, "Something went wrong reading it.")}
+                </p>
+                <div
+                  className="bundle-buttons"
+                  style={{ justifyContent: "center", marginTop: 14 }}
+                >
+                  <button
+                    type="button"
+                    className="ev-btn ev-btn-ghost"
+                    onClick={chooseAnother}
+                  >
                     Choose another record
                   </button>
                 </div>
@@ -308,16 +570,28 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
             ) : null}
             {pane === "unidentified" ? (
               <div className="bnd-empty">
-                <p className="bnd-empty-title">This record hasn&apos;t been identified yet</p>
-                <p>
-                  Identify its documents in Review &amp; correct first, then come back to build the{" "}
-                  {config.label} bundle.
+                <p className="bnd-empty-title">
+                  This record hasn&apos;t been identified yet
                 </p>
-                <div className="bundle-buttons" style={{ justifyContent: "center", marginTop: 14 }}>
-                  <button type="button" className="ev-btn ev-btn-ghost" onClick={chooseAnother}>
+                <p>
+                  Identify its documents in Review &amp; correct first, then
+                  come back to build the {config.label} bundle.
+                </p>
+                <div
+                  className="bundle-buttons"
+                  style={{ justifyContent: "center", marginTop: 14 }}
+                >
+                  <button
+                    type="button"
+                    className="ev-btn ev-btn-ghost"
+                    onClick={chooseAnother}
+                  >
                     Choose another record
                   </button>
-                  <Link className="ev-btn ev-btn-primary" href={`/records/${selectedId}`}>
+                  <Link
+                    className="ev-btn ev-btn-primary"
+                    href={`/records/${selectedId}`}
+                  >
                     Open in Review &amp; correct
                   </Link>
                 </div>
@@ -325,139 +599,30 @@ export function BundlePageClient({ config }: Readonly<{ config: BundleConfig }>)
             ) : null}
             {pane === "ready" ? (
               <div className="bnd-grid">
-                <div className="hd-card">
-                  <div className="bnd-card-head">
-                    {matches.length} matching document{matches.length === 1 ? "" : "s"}
-                  </div>
-                  {matches.length === 0 ? (
-                    <div className="bnd-empty" style={{ border: "none" }}>
-                      <p className="bnd-empty-title">No {config.label} documents here</p>
-                      <p>
-                        That&apos;s normal - not every record has them. Check the categories in
-                        Review &amp; correct if you expected some.
-                      </p>
-                    </div>
-                  ) : (
-                    <table className="hd-table">
-                      <thead>
-                        <tr>
-                          <th className="hd-w-pages">Pages</th>
-                          <th>Title</th>
-                          <th className="hd-w-status">Category</th>
-                          <th className="hd-w-uploaded">Date</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {matches.map((row) => (
-                          <tr key={`${row.start}-${row.end}`}>
-                            <td className="hd-muted">
-                              {row.start}
-                              {"–"}
-                              {row.end}
-                            </td>
-                            <td>
-                              <span className="hd-name">
-                                {row.title && row.title !== "-" ? row.title : "(untitled document)"}
-                              </span>
-                            </td>
-                            <td className="hd-muted">{categoryLabel(categories, row.category)}</td>
-                            <td className="hd-muted">
-                              {row.date && row.date !== "-" ? row.date : "—"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
+                <MatchesCard
+                  matches={matches}
+                  categories={categories}
+                  label={config.label}
+                />
 
-                <aside className="hd-card bundle-card">
-                  <div>
-                    <h2>Build the bundle</h2>
-                    <p className="muted" style={{ margin: "2px 0 0" }}>
-                      Download the matched pages, or summarize just those documents to a Word report.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    className="ev-btn ev-btn-ghost ev-btn-sm"
-                    style={{ alignSelf: "flex-start" }}
-                    onClick={autoFill}
-                    disabled={autoFilling}
-                  >
-                    {autoFilling ? "Reading..." : "Auto-fill header from record"}
-                  </button>
-                  <div className="bundle-fields">
-                    <div className="ev-dialog-row">
-                      <div className="ev-field-2">
-                        <label className="ev-lbl" htmlFor="bundlePatient">
-                          Patient name
-                        </label>
-                        <input
-                          id="bundlePatient"
-                          className="ev-inp"
-                          placeholder="Full name"
-                          value={patient}
-                          onChange={(e) => setPatient(e.target.value)}
-                        />
-                      </div>
-                      <div className="ev-field-1">
-                        <label className="ev-lbl" htmlFor="bundleDob">
-                          DOB
-                        </label>
-                        <input
-                          id="bundleDob"
-                          className="ev-inp"
-                          placeholder="MM/DD/YYYY"
-                          value={dob}
-                          onChange={(e) => setDob(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="ev-lbl" htmlFor="bundleQme">
-                        Evaluation type (QME / AME)
-                      </label>
-                      <input
-                        id="bundleQme"
-                        className="ev-inp"
-                        value={qme}
-                        onChange={(e) => setQme(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="ev-lbl" htmlFor="bundleFirm">
-                        Attorney law firm
-                      </label>
-                      <input
-                        id="bundleFirm"
-                        className="ev-inp"
-                        placeholder="Firm name"
-                        value={firm}
-                        onChange={(e) => setFirm(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                  <div className="bundle-buttons">
-                    <button
-                      type="button"
-                      className="ev-btn ev-btn-outline"
-                      onClick={downloadPdf}
-                      disabled={matches.length === 0 || pdfBusy || sumBusy}
-                    >
-                      {pdfBusy ? "Combining pages..." : "Download combined PDF"}
-                    </button>
-                    <button
-                      type="button"
-                      className="ev-btn ev-btn-primary"
-                      onClick={summarize}
-                      disabled={matches.length === 0 || pdfBusy || sumBusy}
-                    >
-                      {sumBusy ? "Preparing report..." : "Summarize to Word"}
-                    </button>
-                  </div>
-                  <div className={`bnd-result ${result.kind}`}>{result.msg}</div>
-                </aside>
+                <BuildAside
+                  matchCount={matches.length}
+                  autoFill={autoFill}
+                  autoFilling={autoFilling}
+                  patient={patient}
+                  setPatient={setPatient}
+                  dob={dob}
+                  setDob={setDob}
+                  qme={qme}
+                  setQme={setQme}
+                  firm={firm}
+                  setFirm={setFirm}
+                  downloadPdf={downloadPdf}
+                  summarize={summarize}
+                  pdfBusy={pdfBusy}
+                  sumBusy={sumBusy}
+                  result={result}
+                />
               </div>
             ) : null}
           </>

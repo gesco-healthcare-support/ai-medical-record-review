@@ -10,7 +10,9 @@ import type { EditorRow } from "@/lib/review-rows";
  *  for one field is how a reviewer ends up unable to see what a row is actually set to. */
 export function categoryOptions(categories: CategoryOption[], current: string) {
   const has = categories.some((c) => String(c.id) === String(current));
-  const opts = has ? categories : [{ id: String(current), name: String(current) }, ...categories];
+  const opts = has
+    ? categories
+    : [{ id: String(current), name: String(current) }, ...categories];
   return opts.map((c) => (
     <option key={c.id} value={c.id}>
       {c.id} - {c.name}
@@ -68,6 +70,81 @@ function RowChips({
           Category guessed
         </span>
       ) : null}
+    </>
+  );
+}
+
+/** The action buttons on a row that is NOT mid-split.
+ *
+ * All three of the conditions below were unpinned when this moved: rendering each button
+ * unconditionally left every existing rows-table test green. They are covered now, in
+ * rows-table.test.tsx, because "which buttons a row offers" is the whole behaviour of this component.
+ */
+function RowActions({
+  index,
+  row,
+  onMergeUp,
+  onSplitStart,
+  onDelete,
+}: Readonly<{
+  index: number;
+  row: EditorRow;
+  onMergeUp: (i: number) => void;
+  onSplitStart: (i: number) => void;
+  onDelete: (i: number) => void;
+}>) {
+  return (
+    <>
+      {row.suggest_merge && index > 0 ? (
+        <button
+          type="button"
+          className="ev-btn ev-btn-sm ev-btn-gold"
+          title="The AI double-checked this boundary and believes it continues the document above"
+          onClick={(e) => {
+            stop(e);
+            onMergeUp(index);
+          }}
+        >
+          Likely same doc {"—"} merge?
+        </button>
+      ) : null}
+      {index > 0 ? (
+        <button
+          type="button"
+          className="ev-btn ev-btn-sm ev-btn-outline"
+          title="Merge into the document above"
+          onClick={(e) => {
+            stop(e);
+            onMergeUp(index);
+          }}
+        >
+          Merge up
+        </button>
+      ) : null}
+      {Number(row.end) > Number(row.start) ? (
+        <button
+          type="button"
+          className="ev-btn ev-btn-sm ev-btn-outline"
+          title="Split this document into two"
+          onClick={(e) => {
+            stop(e);
+            onSplitStart(index);
+          }}
+        >
+          Split
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="ev-btn ev-btn-sm ev-btn-del"
+        title="Remove this row"
+        onClick={(e) => {
+          stop(e);
+          onDelete(index);
+        }}
+      >
+        Delete
+      </button>
     </>
   );
 }
@@ -134,7 +211,10 @@ export function RowsTable({
           <th className="col-check" title="Flag for manual review">
             Review
           </th>
-          <th className="col-check col-sum" title="Include this document in summarization">
+          <th
+            className="col-check col-sum"
+            title="Include this document in summarization"
+          >
             Summarize
           </th>
           <th className="col-actions" aria-label="Row actions" />
@@ -153,7 +233,8 @@ export function RowsTable({
           if (hiddenKeys?.has(row._key)) return null;
           const titleValue = row.title && row.title !== "-" ? row.title : "";
           // A sub-document a needs_attention summarize run could not process (matched by page range).
-          const failed = attentionPages?.has(`${row.start}-${row.end}`) ?? false;
+          const failed =
+            attentionPages?.has(`${row.start}-${row.end}`) ?? false;
           // A sub-document that landed in General with no rule putting it there.
           const unidentified = unidentifiedKeys?.has(row._key) ?? false;
           const guessed = guessedKeys?.has(row._key) ?? false;
@@ -163,7 +244,8 @@ export function RowsTable({
               {showGap && !filtering ? (
                 <tr className="gap-row">
                   <td colSpan={9}>
-                    pages {gapFrom}-{gapTo} not included (skipped at summarization)
+                    pages {gapFrom}-{gapTo} not included (skipped at
+                    summarization)
                   </td>
                 </tr>
               ) : null}
@@ -213,7 +295,10 @@ export function RowsTable({
                             className="ev-btn ev-btn-sm ev-btn-outline"
                             onClick={(e) => {
                               stop(e);
-                              onSplitConfirm(i, Number(splitRef.current?.value));
+                              onSplitConfirm(
+                                i,
+                                Number(splitRef.current?.value),
+                              );
                             }}
                           >
                             Split
@@ -230,58 +315,13 @@ export function RowsTable({
                           </button>
                         </>
                       ) : (
-                        <>
-                          {row.suggest_merge && i > 0 ? (
-                            <button
-                              type="button"
-                              className="ev-btn ev-btn-sm ev-btn-gold"
-                              title="The AI double-checked this boundary and believes it continues the document above"
-                              onClick={(e) => {
-                                stop(e);
-                                onMergeUp(i);
-                              }}
-                            >
-                              Likely same doc {"—"} merge?
-                            </button>
-                          ) : null}
-                          {i > 0 ? (
-                            <button
-                              type="button"
-                              className="ev-btn ev-btn-sm ev-btn-outline"
-                              title="Merge into the document above"
-                              onClick={(e) => {
-                                stop(e);
-                                onMergeUp(i);
-                              }}
-                            >
-                              Merge up
-                            </button>
-                          ) : null}
-                          {Number(row.end) > Number(row.start) ? (
-                            <button
-                              type="button"
-                              className="ev-btn ev-btn-sm ev-btn-outline"
-                              title="Split this document into two"
-                              onClick={(e) => {
-                                stop(e);
-                                onSplitStart(i);
-                              }}
-                            >
-                              Split
-                            </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            className="ev-btn ev-btn-sm ev-btn-del"
-                            title="Remove this row"
-                            onClick={(e) => {
-                              stop(e);
-                              onDelete(i);
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </>
+                        <RowActions
+                          index={i}
+                          row={row}
+                          onMergeUp={onMergeUp}
+                          onSplitStart={onSplitStart}
+                          onDelete={onDelete}
+                        />
                       )}
                     </span>
                   </div>
@@ -308,7 +348,9 @@ export function RowsTable({
                     max={totalPages}
                     aria-label="First page"
                     onClick={stop}
-                    onChange={(e) => onField(i, { start: Number(e.target.value) })}
+                    onChange={(e) =>
+                      onField(i, { start: Number(e.target.value) })
+                    }
                   />
                 </td>
                 <td>
@@ -320,7 +362,9 @@ export function RowsTable({
                     max={totalPages}
                     aria-label="Last page"
                     onClick={stop}
-                    onChange={(e) => onField(i, { end: Number(e.target.value) })}
+                    onChange={(e) =>
+                      onField(i, { end: Number(e.target.value) })
+                    }
                   />
                 </td>
                 <td>
@@ -353,7 +397,9 @@ export function RowsTable({
                     value={row.injury_date}
                     aria-label="Injury date"
                     onClick={stop}
-                    onChange={(e) => onField(i, { injury_date: e.target.value })}
+                    onChange={(e) =>
+                      onField(i, { injury_date: e.target.value })
+                    }
                   />
                 </td>
                 <td className="col-check">
@@ -363,7 +409,9 @@ export function RowsTable({
                     aria-label="Flag for manual review"
                     checked={String(row.flag).toLowerCase() === "x"}
                     onClick={stop}
-                    onChange={(e) => onField(i, { flag: e.target.checked ? "x" : "-" })}
+                    onChange={(e) =>
+                      onField(i, { flag: e.target.checked ? "x" : "-" })
+                    }
                   />
                 </td>
                 <td className="col-check col-sum">

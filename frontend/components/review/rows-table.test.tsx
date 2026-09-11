@@ -53,6 +53,81 @@ describe("RowsTable", () => {
     expect(screen.getByLabelText("Last page")).toHaveValue(5);
   });
 
+  // The three row-action buttons below are each conditional, and NOTHING covered those conditions
+  // before these tests: breaking all three - rendering each button unconditionally - left every
+  // existing test in this file green. They are pinned here because the row-actions block is about to
+  // move into its own component, and a green suite that cannot see the move is not a safety net.
+
+  it("offers the merge suggestion only on a suggested row that has a row above it", () => {
+    renderTable([
+      erow({ suggest_merge: true }), // suggested, but FIRST - nothing to merge into
+      erow({ start: 4, end: 6, suggest_merge: true }), // suggested and has a predecessor
+      erow({ start: 7, end: 9, suggest_merge: false }), // not suggested
+    ]);
+    expect(
+      screen.getAllByRole("button", { name: /Likely same doc/i }),
+    ).toHaveLength(1);
+  });
+
+  it("offers Merge up on every row except the first", () => {
+    renderTable([
+      erow(),
+      erow({ start: 4, end: 6 }),
+      erow({ start: 7, end: 9 }),
+    ]);
+    expect(screen.getAllByRole("button", { name: /^Merge up$/ })).toHaveLength(
+      2,
+    );
+  });
+
+  it("offers Split only on a row spanning more than one page", () => {
+    renderTable([erow({ start: 1, end: 3 }), erow({ start: 4, end: 4 })]);
+    expect(screen.getAllByRole("button", { name: /^Split$/ })).toHaveLength(1);
+  });
+
+  it("wires each row action to its callback with that row's index", async () => {
+    // Which button RENDERS and which callback it FIRES are different guarantees, and the tests above
+    // only cover the first. A row action that renders correctly and calls the wrong index - or calls
+    // nothing - would pass every assertion above.
+    const user = userEvent.setup();
+    const onMergeUp = vi.fn();
+    const onSplitStart = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <RowsTable
+        rows={[
+          erow({ start: 1, end: 3 }),
+          erow({ start: 4, end: 8, suggest_merge: true }),
+        ]}
+        categories={categories}
+        totalPages={10}
+        errors={new Map<number, string>()}
+        selected={-1}
+        splitting={-1}
+        onSelect={vi.fn()}
+        onField={vi.fn()}
+        onMergeUp={onMergeUp}
+        onSplitStart={onSplitStart}
+        onSplitConfirm={vi.fn()}
+        onSplitCancel={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Likely same doc/i }));
+    expect(onMergeUp).toHaveBeenCalledWith(1);
+
+    onMergeUp.mockClear();
+    await user.click(screen.getAllByRole("button", { name: /^Merge up$/ })[0]);
+    expect(onMergeUp).toHaveBeenCalledWith(1);
+
+    await user.click(screen.getAllByRole("button", { name: /^Split$/ })[0]);
+    expect(onSplitStart).toHaveBeenCalledWith(0);
+
+    await user.click(screen.getAllByRole("button", { name: /^Delete$/ })[0]);
+    expect(onDelete).toHaveBeenCalledWith(0);
+  });
+
   it("marks only the invalid row's fields row with the invalid class", () => {
     const { container } = render(
       <RowsTable
@@ -74,7 +149,9 @@ describe("RowsTable", () => {
     const invalidRows = container.querySelectorAll("tr.invalid");
     expect(invalidRows).toHaveLength(1);
     // ...and it is the SECOND document's fields row (start=3), not the first row or a title row.
-    expect(within(invalidRows[0] as HTMLElement).getByLabelText("First page")).toHaveValue(3);
+    expect(
+      within(invalidRows[0] as HTMLElement).getByLabelText("First page"),
+    ).toHaveValue(3);
   });
 
   it("reflects the include-in-summarization checkbox state", () => {
