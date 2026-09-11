@@ -1,4 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The heavy children + data hooks are stubbed so the test isolates the header's gating + banner
@@ -13,12 +19,22 @@ vi.mock("@/hooks/use-duplicates", () => ({
   useDuplicates: () => dupState,
   useStartDedup: () => ({ mutateAsync: startDedupMock, isPending: false }),
 }));
-vi.mock("@/components/review/review-editor", () => ({ ReviewEditor: () => <div data-testid="editor" /> }));
-vi.mock("@/components/review/summaries-view", () => ({ SummariesView: () => <div /> }));
-vi.mock("@/components/review/duplicates-view", () => ({ DuplicatesView: () => <div /> }));
+vi.mock("@/components/review/review-editor", () => ({
+  ReviewEditor: () => <div data-testid="editor" />,
+}));
+vi.mock("@/components/review/summaries-view", () => ({
+  SummariesView: () => <div data-testid="summaries-view" />,
+}));
+vi.mock("@/components/review/duplicates-view", () => ({
+  DuplicatesView: () => <div data-testid="duplicates-view" />,
+}));
 vi.mock("@/components/review/header-bar", () => ({ HeaderBar: () => <div /> }));
-vi.mock("@/components/review/start-panel", () => ({ StartPanel: () => <div /> }));
-vi.mock("@/components/review/progress-panel", () => ({ ProgressPanel: () => <div /> }));
+vi.mock("@/components/review/start-panel", () => ({
+  StartPanel: () => <div data-testid="start-panel" />,
+}));
+vi.mock("@/components/review/progress-panel", () => ({
+  ProgressPanel: () => <div data-testid="progress-panel" />,
+}));
 
 import { useReviewWorkflow } from "@/hooks/use-review-workflow";
 import { ReviewPageClient } from "@/components/review/review-page-client";
@@ -71,7 +87,8 @@ const summarize = () => button(/^Summarize/);
  *  button STARTS a dedup job, which would add a call these tests are not asking about - and it is
  *  disabled while a check runs, so a button-based helper could not reach the tab in the state one of
  *  these tests needs. Clicking the tab is also what a reviewer does on the way back. */
-const gotoDuplicates = () => fireEvent.click(screen.getByRole("tab", { name: /Duplicates/ }));
+const gotoDuplicates = () =>
+  fireEvent.click(screen.getByRole("tab", { name: /Duplicates/ }));
 
 beforeEach(() => {
   dupState.data = undefined;
@@ -97,58 +114,102 @@ describe("ReviewPageClient unidentified count", () => {
       ],
     });
     render(<ReviewPageClient documentId="d1" />);
-    expect(screen.getByRole("tab", { name: /Review & correct . 1/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: /Review & correct . 1/ }),
+    ).toBeInTheDocument();
   });
 
   it("shows the bare label when every document was identified", () => {
-    mockWf({ rows: [row({ category: "100", ruled_paperwork: true }), row({ category: "5" })] });
+    mockWf({
+      rows: [
+        row({ category: "100", ruled_paperwork: true }),
+        row({ category: "5" }),
+      ],
+    });
     render(<ReviewPageClient documentId="d1" />);
-    expect(screen.getByRole("tab", { name: "Review & correct" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "Review & correct" }),
+    ).toBeInTheDocument();
   });
 });
-
 
 describe("ReviewPageClient duplicate-check gate", () => {
   // #125: a record could complete upload -> segment -> summarize with the duplicate check never
   // running and nothing saying so - 14 of 44 summarized documents on the box. The server now
   // refuses, so the button has to explain rather than let the reviewer meet a 409.
-  const onDuplicatesTab = () => fireEvent.click(screen.getByRole("tab", { name: /Duplicates/ }));
+  const onDuplicatesTab = () =>
+    fireEvent.click(screen.getByRole("tab", { name: /Duplicates/ }));
 
   it("disables Summarize and says why when no check has ever run", () => {
-    dupState.data = { clusters: [], job: null, stale: false, unreadable: 0, checked: false };
+    dupState.data = {
+      clusters: [],
+      job: null,
+      stale: false,
+      unreadable: 0,
+      checked: false,
+    };
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
     onDuplicatesTab();
-    const button = screen.getByRole("button", { name: /^Summarize \d+ document/ });
+    const button = screen.getByRole("button", {
+      name: /^Summarize \d+ document/,
+    });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", expect.stringContaining("not been checked"));
+    expect(button).toHaveAttribute(
+      "title",
+      expect.stringContaining("not been checked"),
+    );
   });
 
   it("distinguishes a STALE check from one that never ran", () => {
-    dupState.data = { clusters: [], job: null, stale: true, unreadable: 0, checked: true };
+    dupState.data = {
+      clusters: [],
+      job: null,
+      stale: true,
+      unreadable: 0,
+      checked: true,
+    };
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
     onDuplicatesTab();
-    expect(screen.getByRole("button", { name: /^Summarize \d+ document/ })).toHaveAttribute(
+    expect(
+      screen.getByRole("button", { name: /^Summarize \d+ document/ }),
+    ).toHaveAttribute(
       "title",
       expect.stringContaining("changed since the last duplicate check"),
     );
   });
 
   it("enables Summarize once a current check covers the rows", () => {
-    dupState.data = { clusters: [], job: null, stale: false, unreadable: 0, checked: true };
+    dupState.data = {
+      clusters: [],
+      job: null,
+      stale: false,
+      unreadable: 0,
+      checked: true,
+    };
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
     onDuplicatesTab();
-    expect(screen.getByRole("button", { name: /^Summarize \d+ document/ })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: /without checking/ })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /^Summarize \d+ document/ }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: /without checking/ }),
+    ).toBeNull();
   });
 
   it("lets the reviewer proceed deliberately, behind a confirm", () => {
     // The gate is soft. Skipping must be possible, explicit, and recorded - which is why it is a
     // separate control rather than the disabled button quietly becoming enabled.
     const onSummarize = vi.fn();
-    dupState.data = { clusters: [], job: null, stale: false, unreadable: 0, checked: false };
+    dupState.data = {
+      clusters: [],
+      job: null,
+      stale: false,
+      unreadable: 0,
+      checked: false,
+    };
     mockWf({ onSummarize });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<ReviewPageClient documentId="d1" />);
@@ -159,11 +220,19 @@ describe("ReviewPageClient duplicate-check gate", () => {
 
   it("does not offer the skip while something ELSE is blocking summarize", () => {
     // Offering it with invalid rows would let a reviewer skip past a different problem entirely.
-    dupState.data = { clusters: [], job: null, stale: false, unreadable: 0, checked: false };
+    dupState.data = {
+      clusters: [],
+      job: null,
+      stale: false,
+      unreadable: 0,
+      checked: false,
+    };
     mockWf({ rows: [row({ start: 9, end: 2 })], totalPages: 10 });
     render(<ReviewPageClient documentId="d1" />);
     onDuplicatesTab();
-    expect(screen.queryByRole("button", { name: /without checking/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /without checking/ }),
+    ).toBeNull();
   });
 });
 
@@ -198,7 +267,10 @@ describe("ReviewPageClient step-flow actions", () => {
     render(<ReviewPageClient documentId="d1" />);
     const btn = button(/Check duplicates/);
     expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute("title", "Your latest changes aren't saved yet.");
+    expect(btn).toHaveAttribute(
+      "title",
+      "Your latest changes aren't saved yet.",
+    );
     fireEvent.click(btn);
     expect(startDedupMock).not.toHaveBeenCalled();
   });
@@ -209,7 +281,9 @@ describe("ReviewPageClient step-flow actions", () => {
     mockWf({ setBanner });
     render(<ReviewPageClient documentId="d1" />);
     fireEvent.click(button(/Check duplicates/));
-    await waitFor(() => expect(setBanner).toHaveBeenCalledWith(expect.stringMatching(/\S/)));
+    await waitFor(() =>
+      expect(setBanner).toHaveBeenCalledWith(expect.stringMatching(/\S/)),
+    );
     // Still on Review: the banner belongs where the reviewer is, not on a tab they never reached.
     expect(button(/Re-run segment/)).toBeInTheDocument();
     expect(maybeButton(/Re-check duplicates/)).not.toBeInTheDocument();
@@ -227,19 +301,29 @@ describe("ReviewPageClient step-flow actions", () => {
   it("warns before a re-check discards per-copy curation", async () => {
     // A re-check reclusters from scratch and only re-applies a dismissal to a cluster holding exactly
     // the same copies, so copies the reviewer removed one at a time come back.
-    dupState.data = { clusters: [{ group: 1, dismissed: false, rows: [] }], job: null, stale: false };
+    dupState.data = {
+      clusters: [{ group: 1, dismissed: false, rows: [] }],
+      job: null,
+      stale: false,
+    };
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
     gotoDuplicates();
     fireEvent.click(button(/Re-check duplicates/));
-    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/asked about again/i));
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringMatching(/asked about again/i),
+    );
     await waitFor(() => expect(startDedupMock).toHaveBeenCalledTimes(1));
     confirm.mockRestore();
   });
 
   it("does not re-check when the warning is declined", () => {
-    dupState.data = { clusters: [{ group: 1, dismissed: false, rows: [] }], job: null, stale: false };
+    dupState.data = {
+      clusters: [{ group: 1, dismissed: false, rows: [] }],
+      job: null,
+      stale: false,
+    };
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
@@ -250,13 +334,20 @@ describe("ReviewPageClient step-flow actions", () => {
   });
 
   it("disables both Duplicates actions while a check is running", () => {
-    dupState.data = { clusters: [], job: { state: "running", current: 1, total: 4 }, stale: false };
+    dupState.data = {
+      clusters: [],
+      job: { state: "running", current: 1, total: 4 },
+      stale: false,
+    };
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
     gotoDuplicates();
     expect(button(/Re-check duplicates/)).toBeDisabled();
     expect(summarize()).toBeDisabled();
-    expect(summarize()).toHaveAttribute("title", expect.stringMatching(/duplicate check/i));
+    expect(summarize()).toHaveAttribute(
+      "title",
+      expect.stringMatching(/duplicate check/i),
+    );
   });
 
   it("offers Re-summarize all on the Summaries step only", () => {
@@ -278,7 +369,10 @@ describe("ReviewPageClient step-flow actions", () => {
     fireEvent.click(screen.getByRole("tab", { name: /Summaries/ }));
 
     const control = button(/Re-summarize all/);
-    expect(control).toHaveAttribute("title", expect.stringMatching(/current prompts/i));
+    expect(control).toHaveAttribute(
+      "title",
+      expect.stringMatching(/current prompts/i),
+    );
     fireEvent.click(control);
 
     const message = confirm.mock.calls[0][0] as string;
@@ -306,14 +400,24 @@ describe("ReviewPageClient duplicate advisory count", () => {
   });
 
   it("advises a cluster while two copies would still be summarized", () => {
-    dupState.data = { clusters: [cluster([true, true])], job: null, stale: false };
+    dupState.data = {
+      clusters: [cluster([true, true])],
+      job: null,
+      stale: false,
+    };
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
-    expect(screen.getByText(/1 possible duplicate group to review/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 possible duplicate group to review/i),
+    ).toBeInTheDocument();
   });
 
   it("stops advising once only one copy is included", () => {
-    dupState.data = { clusters: [cluster([true, false])], job: null, stale: false };
+    dupState.data = {
+      clusters: [cluster([true, false])],
+      job: null,
+      stale: false,
+    };
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
     expect(screen.queryByText(/possible duplicate/i)).not.toBeInTheDocument();
@@ -324,8 +428,12 @@ describe("ReviewPageClient summarize gating", () => {
   it("lists each invalid row and disables Summarize", () => {
     mockWf({ rows: [row({ start: 1, end: 5 }), row({ start: 3, end: 7 })] }); // row 2 overlaps
     render(<ReviewPageClient documentId="d1" />);
-    expect(screen.getByText(/Fix these before summarizing/i)).toBeInTheDocument();
-    expect(screen.getByText(/Document 2: overlaps the previous document/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Fix these before summarizing/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Document 2: overlaps the previous document/i),
+    ).toBeInTheDocument();
     gotoDuplicates();
     expect(summarize()).toBeDisabled();
   });
@@ -335,14 +443,24 @@ describe("ReviewPageClient summarize gating", () => {
     render(<ReviewPageClient documentId="d1" />);
     gotoDuplicates();
     expect(summarize()).toBeDisabled();
-    expect(summarize()).toHaveAttribute("title", expect.stringMatching(/select at least one/i));
+    expect(summarize()).toHaveAttribute(
+      "title",
+      expect.stringMatching(/select at least one/i),
+    );
   });
 
   it("shows a persistent autosave-failure banner and blocks Summarize", () => {
-    mockWf({ saveState: { kind: "error", message: "Not saved: couldn't reach the server." } });
+    mockWf({
+      saveState: {
+        kind: "error",
+        message: "Not saved: couldn't reach the server.",
+      },
+    });
     render(<ReviewPageClient documentId="d1" />);
     // The persistent banner (role=alert) is the loud surface; the header chip repeats it.
-    expect(screen.getByRole("alert")).toHaveTextContent("Not saved: couldn't reach the server.");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Not saved: couldn't reach the server.",
+    );
     gotoDuplicates();
     expect(summarize()).toBeDisabled();
   });
@@ -361,55 +479,91 @@ describe("ReviewPageClient needs-attention notice", () => {
       rows: [row({ start: 5, end: 5, title: "Laboratory Report" })],
       attention: {
         message: "1 of 2 documents could not be summarized.",
-        rows: [{ idx: 0, pages: "5-5", reason: "No readable text was found in this document." }],
+        rows: [
+          {
+            idx: 0,
+            pages: "5-5",
+            reason: "No readable text was found in this document.",
+          },
+        ],
       },
     });
     render(<ReviewPageClient documentId="d1" />);
-    expect(screen.getByText(/1 of 2 documents could not be summarized/i)).toBeInTheDocument();
-    expect(screen.getByText(/Pages 5-5 - Laboratory Report:/i)).toBeInTheDocument();
-    expect(screen.getByText(/No readable text was found in this document\./i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 of 2 documents could not be summarized/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Pages 5-5 - Laboratory Report:/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/No readable text was found in this document\./i),
+    ).toBeInTheDocument();
   });
 });
 
 describe("ReviewPageClient blocking reasons follow the Summarize button", () => {
-  const gotoSummaries = () => fireEvent.click(screen.getByRole("tab", { name: /Summaries/ }));
+  const gotoSummaries = () =>
+    fireEvent.click(screen.getByRole("tab", { name: /Summaries/ }));
 
   it("lists the invalid page ranges on the step that holds Summarize", () => {
     mockWf({ rows: [row({ start: 1, end: 5 }), row({ start: 3, end: 7 })] }); // row 2 overlaps
     render(<ReviewPageClient documentId="d1" />);
     gotoDuplicates();
-    expect(screen.getByText(/Fix these before summarizing/i)).toBeInTheDocument();
-    expect(screen.getByText(/Document 2: overlaps the previous document/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Fix these before summarizing/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Document 2: overlaps the previous document/i),
+    ).toBeInTheDocument();
     expect(summarize()).toBeDisabled();
   });
 
   it("repeats an autosave failure on the step that holds Summarize", () => {
-    mockWf({ saveState: { kind: "error", message: "Not saved: couldn't reach the server." } });
+    mockWf({
+      saveState: {
+        kind: "error",
+        message: "Not saved: couldn't reach the server.",
+      },
+    });
     render(<ReviewPageClient documentId="d1" />);
     gotoDuplicates();
-    expect(screen.getByRole("alert")).toHaveTextContent("Not saved: couldn't reach the server.");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Not saved: couldn't reach the server.",
+    );
   });
 
   it("keeps both banners off Summaries, which has no Summarize button", () => {
     mockWf({
       rows: [row({ start: 1, end: 5 }), row({ start: 3, end: 7 })],
-      saveState: { kind: "error", message: "Not saved: couldn't reach the server." },
+      saveState: {
+        kind: "error",
+        message: "Not saved: couldn't reach the server.",
+      },
     });
     render(<ReviewPageClient documentId="d1" />);
     gotoSummaries();
-    expect(screen.queryByText(/Fix these before summarizing/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Fix these before summarizing/i),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
 
 describe("ReviewPageClient re-segment gating", () => {
   it("disables the segment button while a duplicate check runs", () => {
-    dupState.data = { clusters: [], job: { state: "running", current: 1, total: 4 }, stale: false };
+    dupState.data = {
+      clusters: [],
+      job: { state: "running", current: 1, total: 4 },
+      stale: false,
+    };
     mockWf({});
     render(<ReviewPageClient documentId="d1" />);
     const segment = button(/Re-run segment/);
     expect(segment).toBeDisabled();
-    expect(segment).toHaveAttribute("title", expect.stringMatching(/duplicate check/i));
+    expect(segment).toHaveAttribute(
+      "title",
+      expect.stringMatching(/duplicate check/i),
+    );
   });
 
   it("leaves the segment button available when no check is running", () => {
@@ -424,7 +578,8 @@ describe("ReviewPageClient re-segment gating", () => {
 // period. The escalation is a timer, and a timer that outlives its run is the failure mode worth
 // pinning - a force stop can land mid-transaction, so it must never be what the FIRST press does.
 describe("ReviewPageClient stop escalation", () => {
-  const stop = (c: HTMLElement) => c.querySelector(".rce-stop") as HTMLButtonElement;
+  const stop = (c: HTMLElement) =>
+    c.querySelector(".rce-stop") as HTMLButtonElement;
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -459,7 +614,9 @@ describe("ReviewPageClient stop escalation", () => {
     // so the reviewer's first press on the NEXT job is silently a hard kill.
     const cancelActiveJob = vi.fn().mockResolvedValue(10);
     mockWf({ watching: true, cancelActiveJob });
-    const { container, rerender } = render(<ReviewPageClient documentId="d1" />);
+    const { container, rerender } = render(
+      <ReviewPageClient documentId="d1" />,
+    );
 
     await act(async () => {
       fireEvent.click(stop(container));
@@ -469,7 +626,11 @@ describe("ReviewPageClient stop escalation", () => {
     await act(async () => {
       vi.advanceTimersByTime(4000);
     });
-    mockWf({ watching: false, cancelActiveJob, cancelledJob: { kind: "segment" } });
+    mockWf({
+      watching: false,
+      cancelActiveJob,
+      cancelledJob: { kind: "segment" },
+    });
     rerender(<ReviewPageClient documentId="d1" />);
 
     // The original deadline passes while nothing is running.
@@ -492,7 +653,9 @@ describe("ReviewPageClient stop escalation", () => {
     // been asked to stop cooperatively.
     const cancelActiveJob = vi.fn().mockResolvedValue(10);
     mockWf({ watching: true, activeJobId: 1, cancelActiveJob });
-    const { container, rerender } = render(<ReviewPageClient documentId="d1" />);
+    const { container, rerender } = render(
+      <ReviewPageClient documentId="d1" />,
+    );
 
     await act(async () => {
       fireEvent.click(stop(container));
@@ -514,5 +677,141 @@ describe("ReviewPageClient stop escalation", () => {
       fireEvent.click(stop(container));
     });
     expect(cancelActiveJob).toHaveBeenLastCalledWith(false);
+  });
+});
+
+// Everything below was added as CHARACTERIZATION cover before the page component is split into
+// sub-components. Each one was written because breaking the behaviour it describes left all 32
+// existing tests green: the suite asserted that buttons EXIST and are DISABLED, which never touches
+// the label text they render, the body panel that is chosen, or the handler body a press runs.
+// The middot separator is matched as `.` because this file is ASCII, matching the idiom above.
+
+describe("ReviewPageClient record header count", () => {
+  const count = (c: HTMLElement) =>
+    c.querySelector(".rce-count")?.textContent ?? "";
+
+  it("pluralises the document and page counts", () => {
+    mockWf({ rows: [row({}), row({ start: 4, end: 6 })], totalPages: 10 });
+    const { container } = render(<ReviewPageClient documentId="d1" />);
+    expect(count(container)).toMatch(/^2 documents . 10 pages$/);
+  });
+
+  it("uses the singular for a one-document, one-page record", () => {
+    mockWf({ rows: [row({ start: 1, end: 1 })], totalPages: 1 });
+    const { container } = render(<ReviewPageClient documentId="d1" />);
+    expect(count(container)).toMatch(/^1 document . 1 page$/);
+  });
+});
+
+describe("ReviewPageClient Summarize button label and press", () => {
+  const checked = {
+    clusters: [],
+    job: null,
+    stale: false,
+    unreadable: 0,
+    checked: true,
+  };
+
+  it("counts the selected documents in the button label", () => {
+    dupState.data = { ...checked };
+    mockWf({
+      rows: [row({}), row({ start: 4, end: 6 })],
+      saveState: { kind: "saved" },
+    });
+    render(<ReviewPageClient documentId="d1" />);
+    gotoDuplicates();
+    expect(button(/^Summarize 2 documents$/)).toBeInTheDocument();
+  });
+
+  it("uses the singular noun when exactly one document is selected", () => {
+    dupState.data = { ...checked };
+    mockWf({
+      rows: [row({}), row({ start: 4, end: 6, include: false })],
+      saveState: { kind: "saved" },
+    });
+    render(<ReviewPageClient documentId="d1" />);
+    gotoDuplicates();
+    expect(button(/^Summarize 1 document$/)).toBeInTheDocument();
+  });
+
+  it("starts a summarize run when pressed", () => {
+    // The press itself was unexercised: every existing test asserted the button's presence or its
+    // disabled state, so this handler body never ran.
+    const onSummarize = vi.fn();
+    dupState.data = { ...checked };
+    mockWf({ onSummarize, saveState: { kind: "saved" } });
+    render(<ReviewPageClient documentId="d1" />);
+    gotoDuplicates();
+    fireEvent.click(summarize());
+    expect(onSummarize).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ReviewPageClient disabled-button explanations", () => {
+  it("says a check is already running on the Review step", () => {
+    dupState.data = {
+      clusters: [],
+      job: { state: "running", current: 1, total: 4 },
+      stale: false,
+    };
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    const btn = button(/Check duplicates/);
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute(
+      "title",
+      "A duplicate check is already running.",
+    );
+  });
+
+  it("names invalid page ranges as the reason Summarize is blocked", () => {
+    dupState.data = {
+      clusters: [],
+      job: null,
+      stale: false,
+      unreadable: 0,
+      checked: true,
+    };
+    mockWf({ rows: [row({ start: 1, end: 5 }), row({ start: 3, end: 7 })] }); // row 2 overlaps
+    render(<ReviewPageClient documentId="d1" />);
+    gotoDuplicates();
+    expect(summarize()).toHaveAttribute(
+      "title",
+      "Fix the highlighted page ranges before summarizing.",
+    );
+  });
+});
+
+describe("ReviewPageClient body panel selection", () => {
+  it("shows the editor once the record has rows", () => {
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.getByTestId("editor")).toBeInTheDocument();
+    expect(screen.queryByTestId("start-panel")).toBeNull();
+  });
+
+  it("offers the start panel when there are no rows and nothing is running", () => {
+    mockWf({ rows: [] });
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.getByTestId("start-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("editor")).toBeNull();
+  });
+
+  it("shows progress rather than the start panel during a first segment run", () => {
+    mockWf({ rows: [], watching: true });
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.getByTestId("progress-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("start-panel")).toBeNull();
+  });
+
+  it("swaps the body for the tab the reviewer is on", () => {
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    gotoDuplicates();
+    expect(screen.getByTestId("duplicates-view")).toBeInTheDocument();
+    expect(screen.queryByTestId("editor")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /Summaries/ }));
+    expect(screen.getByTestId("summaries-view")).toBeInTheDocument();
+    expect(screen.queryByTestId("duplicates-view")).toBeNull();
   });
 });
