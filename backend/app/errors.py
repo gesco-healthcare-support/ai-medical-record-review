@@ -130,10 +130,19 @@ def is_deadline_exceeded(exc: Exception) -> bool:
     deadline, so a call needing longer returns a server 504 rather than stalling client-side.
     Proven 2026-08-12: an 8000ms client timeout produced a server 504 at 6.2s.
 
-    That makes it DETERMINISTIC, not transient - the same limit binds every attempt, so a retry
-    re-runs the same doomed call. Measured on job 1000174: eight identical 504s over 17.5 minutes.
-    Single source of truth for the seam's retry set, the worker's transient set, and the
-    user-facing message, so those three cannot drift apart.
+    This docstring used to call that DETERMINISTIC, not transient, on job 1000174's eight identical
+    504s over 17.5 minutes. The conclusion was too strong and cost a real row: job 1000308 lost an
+    18-page sub-document to a 504, and re-running that same row on 2026-09-11 took 51.7s, 50.1s and
+    77.5s against a 120s limit. It was never too large - a slow moment tipped it over a limit it
+    normally clears with ~1.5x to spare, and being classified deterministic meant it was discarded
+    rather than retried.
+
+    So a 504 is deterministic in its LIMIT and not in its LATENCY: repeating the call unchanged is
+    futile, which is why it is never backed off like a 5xx, but one retry at a longer deadline is a
+    different request and recovers the transient case. Still permanent by the time it reaches
+    `classify_failure`, because by then that retry has already happened and failed. Single source of
+    truth for the seam's retry set, the worker's transient set, and the user-facing message, so
+    those three cannot drift apart.
 
     Checked on the status code alone so callers need no google.genai import - this module stays
     light for the many callers that never touch genai.

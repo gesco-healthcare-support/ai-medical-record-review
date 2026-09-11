@@ -46,8 +46,9 @@ def classify_failure(exc: Exception) -> str:
     than retry forever.
     """
     if isinstance(exc, errors.ServerError):
-        # Mirrors generate_with_retry's carve-out: the deadline binds every attempt identically, so
-        # pausing and auto-resuming would replay the same doomed call indefinitely.
+        # Mirrors generate_with_retry's carve-out. A deadline that reaches HERE has already had its
+        # one retry at a longer limit inside the seam and failed again, so pausing and auto-resuming
+        # would replay a call that is now doomed at both deadlines it has been given.
         return "permanent" if is_deadline_exceeded(exc) else "transient"
     if isinstance(exc, errors.ClientError):
         if getattr(exc, "code", None) == 429 and not is_daily_quota(exc):

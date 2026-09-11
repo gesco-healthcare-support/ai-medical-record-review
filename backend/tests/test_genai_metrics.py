@@ -206,14 +206,15 @@ def test_exhausted_call_is_counted_and_still_raises(redis, no_sleep_no_limiter, 
 
 
 def _settings_with_retries(count):
+    """The real settings with ONE field overridden, rather than a hand-listed stand-in.
+
+    This was a `Stub` class naming the four fields the retry seam happened to read. That is a
+    partial double of a growing object, so it broke the moment the seam read a fifth - and it broke
+    with `AttributeError` from inside production code, which reads like a bug in the thing under
+    test rather than a gap in the double. `model_copy` keeps every field and every method, so the
+    next setting the seam reads needs no change here.
+    """
     from app.config import get_settings
 
-    real = get_settings()
-
-    class Stub:
-        genai_max_retries = count
-        genai_retry_base_delay = real.genai_retry_base_delay
-        genai_retry_max_delay = real.genai_retry_max_delay
-        gemini_thinking_budget = real.gemini_thinking_budget
-
-    return lambda: Stub()
+    stub = get_settings().model_copy(update={"genai_max_retries": count})
+    return lambda: stub

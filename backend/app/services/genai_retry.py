@@ -2,11 +2,13 @@
 
 Vertex gemini runs on dynamic shared quota: under load it returns 429 RESOURCE_EXHAUSTED / 503
 UNAVAILABLE, or drops the connection without a status. Ride those out with full-jitter
-exponential backoff. Re-raise immediately on non-429 client errors, per-day/free-tier quota
-exhaustion, and a deadline 504 (backoff cannot fix any of those inside a request). Retry knobs come
-from config.
+exponential backoff. Re-raise immediately on non-429 client errors and per-day/free-tier quota
+exhaustion (backoff cannot fix either inside a request). A deadline 504 is not backed off either -
+backoff does not buy a slow call more time - but it does get ONE retry at a longer deadline, which
+is a different request rather than a repeat. Retry knobs come from config.
 """
 
+import logging
 import random
 import time
 
@@ -19,6 +21,8 @@ from app.services import genai_metrics
 from app.services.llm import pacing
 from app.worker.cancel import current_job_cancelled
 from app.worker.failures import JobCancelled
+
+logger = logging.getLogger(__name__)
 
 
 def _backoff_delay(attempt: int) -> float:
@@ -91,6 +95,27 @@ def _apply_thinking_default(config) -> None:
         config.thinking_config = budget
 
 
+def _set_deadline(config, timeout_ms: int) -> bool:
+    """Give THIS request its own deadline. False when there is no config to carry one.
+
+    Per-request `HttpOptions` beat the client's: google-genai merges them field by field and a
+    non-None patch value wins (`_api_client.patch_http_options`), and the timeout becomes Vertex's
+    own `X-Server-Timeout`. So this changes the limit the SERVER enforces rather than only the
+    client's patience - without that it would be a no-op that reads like a fix.
+
+    Mutates the config in place, the same way `_apply_thinking_default` above does, because the
+    object belongs to the single logical call being made.
+    """
+    if config is None or timeout_ms <= 0:
+        return False
+    options = types.HttpOptions(timeout=timeout_ms)
+    if isinstance(config, dict):
+        config["http_options"] = options
+    else:
+        config.http_options = options
+    return True
+
+
 _CANCEL_POLL_SECONDS = 1.0
 
 
@@ -160,7 +185,15 @@ def generate_with_retry(client, **kwargs):
     _apply_thinking_default(kwargs.get("config"))
     model = kwargs.get("model")
     est_tokens = kwargs.pop("_est_tokens", 1)
+    # The deadline SCALES with the request. `est_tokens` is already here for the pacer, so the size
+    # signal costs nothing - and it is the whole fix for large records: a fixed limit is safe only
+    # while something bounds the request, which is true of segmentation (window_max_pages) and false
+    # of summarize, where a row is however many pages the segmenter drew. Below the floor this is
+    # exactly genai_http_timeout_ms, so ordinary calls are untouched.
+    deadline_ms = settings.effective_genai_timeout_ms(est_tokens)
+    _set_deadline(kwargs.get("config"), deadline_ms)
     last = None
+    escalated = False  # a deadline 504 gets ONE longer retry, then fails for good
     timer = genai_metrics.WaitTimer(model)
     # ONE pacer budget for the whole logical call, not a fresh one per attempt. acquire() defaults to
     # MAX_ACQUIRE_WAIT_S each time it is called, so at genai_max_retries=8 a single call could sit in
@@ -185,14 +218,38 @@ def generate_with_retry(client, **kwargs):
                 response = client.models.generate_content(**kwargs)
             except errors.ServerError as exc:  # 5xx incl. 503 high-demand
                 genai_metrics.record(model, genai_metrics.OUTCOME_SERVER_ERROR)
-                # A deadline 504 is OUR timeout (genai_http_timeout_ms, which google-genai forwards
-                # to Vertex as the server deadline) coming back as a server status. It binds every
-                # attempt identically, so retrying only burns the job's budget - measured on job
-                # 1000174: eight identical 504s over 17.5 minutes before the reviewer saw anything.
-                # Fail fast so the real cause surfaces in one attempt. See errors.is_deadline_exceeded;
-                # worker.failures.classify_failure mirrors this or the two disagree.
+                # A deadline 504 is OUR limit (the deadline above, which google-genai forwards to
+                # Vertex as its server deadline) coming back as a server status.
+                #
+                # It gets ONE retry at a multiple of that limit, then fails for good. Two attempts,
+                # never the eight that job 1000174 burned over 17.5 minutes - THAT is the
+                # measurement
+                # the old fail-fast rule rests on, and it is still respected here.
+                #
+                # What the old rule got wrong is calling a 504 purely deterministic. Job 1000308
+                # lost
+                # an 18-page row to one, and re-running that row on 2026-09-11 took 51.7s, 50.1s
+                # and 77.5s against a 120s limit - it was never too large, it hit a slow moment and
+                # was discarded permanently for it. A retry recovers that; the scaled deadline above
+                # covers the different case of a row that genuinely is too large.
+                # See errors.is_deadline_exceeded; worker.failures.classify_failure mirrors this or
+                # the two disagree.
                 if is_deadline_exceeded(exc):
-                    raise
+                    longer = int(deadline_ms * settings.genai_deadline_retry_multiplier)
+                    if (
+                        escalated
+                        or longer <= deadline_ms
+                        or not _set_deadline(kwargs.get("config"), longer)
+                    ):
+                        raise
+                    escalated = True
+                    logger.warning(
+                        "deadline 504 on %s after %sms; retrying once at %sms",
+                        model,
+                        deadline_ms,
+                        longer,
+                    )
+                    deadline_ms = longer
                 last = exc
             except errors.ClientError as exc:  # retry only transient 429 rate limiting
                 # Raises out of the loop for a non-429 and for a spent daily quota; see the helper.
