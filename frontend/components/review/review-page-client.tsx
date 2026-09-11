@@ -31,6 +31,347 @@ function stopButtonLabel(forceReady: boolean, stopping: boolean) {
   return "Stop";
 }
 
+/** Why "Check duplicates" is disabled, or undefined when it is not. */
+function checkDuplicatesReason(saveKind: string, dedupRunning: boolean) {
+  if (saveKind === "dirty") return "Your latest changes aren't saved yet.";
+  if (dedupRunning) return "A duplicate check is already running.";
+  return undefined;
+}
+
+/** Why Summarize is disabled, or undefined when it is not. An if-chain rather than nested ternaries,
+ *  per Sonar S3358 - the same shape this logic already had inline; only its home has changed. */
+function summarizeReason(
+  o: Readonly<{
+    disabled: boolean;
+    errorCount: number;
+    included: number;
+    dedupRunning: boolean;
+    needsDuplicateCheck: boolean;
+    hasChecked: boolean;
+  }>,
+) {
+  if (!o.disabled) return undefined;
+  if (o.errorCount > 0)
+    return "Fix the highlighted page ranges before summarizing.";
+  if (o.included === 0) return "Select at least one document to summarize.";
+  if (o.dedupRunning) return "Wait for the duplicate check to finish.";
+  if (o.needsDuplicateCheck && o.hasChecked)
+    return "The documents changed since the last duplicate check.";
+  if (o.needsDuplicateCheck)
+    return "This record has not been checked for duplicates yet.";
+  return "Your latest changes aren't saved yet.";
+}
+
+/** The record header's count line: the document count, a middle dot, then the page count.
+ *
+ *  The separator is a literal U+00B7, not an escape. That matches the three tab labels already in
+ *  this file, which have carried the same character since before this change - so this file is not
+ *  ASCII-clean, and nothing here claims otherwise. */
+function recordCountLabel(rowCount: number, totalPages: number) {
+  const documents = rowCount === 1 ? "document" : "documents";
+  const pages = totalPages === 1 ? "page" : "pages";
+  return `${rowCount} ${documents} · ${totalPages} ${pages}`;
+}
+
+/** The inline progress bar that replaces the header actions while a job runs. This and each step
+ *  component below own their own visibility guard and return null, so the page component holds no
+ *  conditional for them at all - that is the point of the split, not a side effect of it. */
+function RunningProgress({
+  watching,
+  progress,
+  paused,
+  stopping,
+  forceReady,
+  onStop,
+}: Readonly<{
+  watching: boolean;
+  progress: { title: string; pct: number; detail: string };
+  paused: boolean;
+  stopping: boolean;
+  forceReady: boolean;
+  onStop: () => void;
+}>) {
+  if (!watching) return null;
+  return (
+    <div
+      className={cn("rce-progress", paused && "paused")}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="rce-progress-label">{progress.detail}</span>
+      <div className="rce-progress-bar">
+        <div style={{ width: `${progress.pct}%` }} />
+      </div>
+      <span className="rce-progress-pct">{progress.pct}%</span>
+      {/* Stop lives HERE, not in ProgressPanel: that panel only renders on a first segment
+          run (no rows yet), so a Stop there would be invisible for exactly the long
+          summarize a reviewer most wants to kill. */}
+      <button
+        type="button"
+        className="ev-btn ev-btn-ghost ev-btn-sm rce-stop"
+        onClick={onStop}
+        title={
+          forceReady
+            ? "This run has not acknowledged the stop; force it to end now"
+            : "Ask this run to stop at its next safe point"
+        }
+      >
+        {stopButtonLabel(forceReady, stopping)}
+      </button>
+    </div>
+  );
+}
+
+/** The autosave chip. Review step only, and never while a job is running. */
+function SaveChip({
+  watching,
+  tab,
+  save,
+}: Readonly<{
+  watching: boolean;
+  tab: Tab;
+  save: { kind: string; message?: string };
+}>) {
+  if (watching || tab !== "review" || !save.kind) return null;
+  return (
+    <span className={cn("rc-save", save.kind)}>
+      {save.kind === "saved" ? (
+        <>
+          <Check width={14} height={14} aria-hidden /> Saved
+        </>
+      ) : (
+        save.message
+      )}
+    </span>
+  );
+}
+
+/** Step one: correct the documents, then start the duplicate check. */
+function ReviewStepActions({
+  watching,
+  tab,
+  rowCount,
+  dedupRunning,
+  recheckPending,
+  saveKind,
+  checkDuplicatesHint,
+  onStart,
+  onCheckDuplicates,
+}: Readonly<{
+  watching: boolean;
+  tab: Tab;
+  rowCount: number;
+  dedupRunning: boolean;
+  recheckPending: boolean;
+  saveKind: string;
+  checkDuplicatesHint: string | undefined;
+  onStart: () => void;
+  onCheckDuplicates: () => void;
+}>) {
+  if (watching || tab !== "review") return null;
+  return (
+    <>
+      {/* Re-segmenting discards every row correction AND /segment/start returns 409
+          while a dedup job holds the document lock - so it must not look clickable
+          mid-check. */}
+      <button
+        type="button"
+        className="ev-btn ev-btn-outline"
+        disabled={dedupRunning}
+        title={
+          dedupRunning ? "Wait for the duplicate check to finish." : undefined
+        }
+        onClick={onStart}
+      >
+        {rowCount ? "Re-run segment" : "Segment"}
+      </button>
+      {/* Starts the check, then shows the tab. Blocked on unsaved edits: dedup reads
+          include=True server-side, so scanning against unsaved checkbox changes would
+          check the wrong rows - the exact waste this gate exists to prevent. */}
+      <button
+        type="button"
+        className="ev-btn ev-btn-primary"
+        disabled={dedupRunning || recheckPending || saveKind === "dirty"}
+        title={checkDuplicatesHint}
+        onClick={onCheckDuplicates}
+      >
+        {recheckPending ? "Starting..." : "Check duplicates"}
+      </button>
+    </>
+  );
+}
+
+/** Step two: clear the duplicates, then summarize. The skip control's six-term condition is
+ *  computed HERE rather than passed in, so its cost sits in this component and not the page. */
+function DuplicatesStepActions({
+  watching,
+  tab,
+  recheckPending,
+  dedupRunning,
+  summarizeDisabled,
+  summarizeHint,
+  included,
+  documentNoun,
+  needsDuplicateCheck,
+  errorCount,
+  saveKind,
+  onRecheck,
+  onSummarize,
+  onSummarizeWithoutChecking,
+}: Readonly<{
+  watching: boolean;
+  tab: Tab;
+  recheckPending: boolean;
+  dedupRunning: boolean;
+  summarizeDisabled: boolean;
+  summarizeHint: string | undefined;
+  included: number;
+  documentNoun: string;
+  needsDuplicateCheck: boolean | undefined;
+  errorCount: number;
+  saveKind: string;
+  onRecheck: () => void;
+  onSummarize: () => void;
+  onSummarizeWithoutChecking: () => void;
+}>) {
+  if (watching || tab !== "duplicates") return null;
+  // Only when the duplicate gate is the ONLY thing in the way - offering it while rows are
+  // invalid or unsaved would let a reviewer skip past a different problem entirely.
+  const canSkipCheck =
+    needsDuplicateCheck &&
+    errorCount === 0 &&
+    included > 0 &&
+    !dedupRunning &&
+    saveKind !== "dirty" &&
+    saveKind !== "error";
+  return (
+    <>
+      <button
+        type="button"
+        className="ev-btn ev-btn-outline"
+        disabled={recheckPending || dedupRunning}
+        onClick={onRecheck}
+      >
+        {recheckPending ? "Starting..." : "Re-check duplicates"}
+      </button>
+      <button
+        type="button"
+        className="ev-btn ev-btn-primary"
+        disabled={summarizeDisabled}
+        title={summarizeHint}
+        onClick={onSummarize}
+      >
+        {included ? `Summarize ${included} ${documentNoun}` : "Summarize"}
+      </button>
+      {canSkipCheck ? (
+        <button
+          type="button"
+          className="ev-btn ev-btn-ghost"
+          title="Proceed without checking this record for duplicates"
+          onClick={onSummarizeWithoutChecking}
+        >
+          Summarize without checking
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+/** Step three: the full regeneration, offered only once summaries exist. */
+function SummariesStepActions({
+  watching,
+  tab,
+  summariesCount,
+  onReSummarizeAll,
+}: Readonly<{
+  watching: boolean;
+  tab: Tab;
+  summariesCount: number;
+  onReSummarizeAll: () => void;
+}>) {
+  if (watching || tab !== "summaries" || summariesCount === 0) return null;
+  return (
+    <button
+      type="button"
+      className="ev-btn ev-btn-ghost"
+      title="Regenerates every summary from scratch with the current prompts, discarding your edits. Use this after a prompt change."
+      onClick={onReSummarizeAll}
+    >
+      Re-summarize all from scratch
+    </button>
+  );
+}
+
+/** The tab body: the first-run progress panel, the start panel, the editor, or whichever of the
+ *  other two tabs is open. Extracted whole because its five conditionals only choose WHICH panel
+ *  to show - none of them is logic the page component needs to own. */
+function ReviewBody({
+  tab,
+  wf,
+  documentId,
+  attentionPages,
+  onGotoSummarizeStep,
+}: Readonly<{
+  tab: Tab;
+  wf: ReturnType<typeof useReviewWorkflow>;
+  documentId: string;
+  attentionPages: Set<string>;
+  onGotoSummarizeStep: () => void;
+}>) {
+  return (
+    <div className="rce-body">
+      {tab === "review" && wf.rows.length === 0 && wf.watching ? (
+        <ProgressPanel
+          title={wf.progress.title}
+          pct={wf.progress.pct}
+          detail={wf.progress.detail}
+        />
+      ) : null}
+      {tab === "review" && wf.rows.length === 0 && !wf.watching ? (
+        <StartPanel rerun={false} hint={wf.startHint} onStart={wf.onStart} />
+      ) : null}
+      {tab === "review" && wf.rows.length > 0 ? (
+        <>
+          <HeaderBar
+            documentId={documentId}
+            header={wf.header}
+            onSaved={(f) => wf.setHeader(f)}
+          />
+          <div className={cn("rce-editor", wf.watching && "busy")}>
+            <ReviewEditor
+              documentId={documentId}
+              filename={wf.filename}
+              rows={wf.rows}
+              categories={wf.categories}
+              totalPages={wf.totalPages}
+              onRowsChange={wf.onRowsChange}
+              attentionPages={attentionPages}
+            />
+          </div>
+        </>
+      ) : null}
+      {tab === "duplicates" ? (
+        <DuplicatesView
+          documentId={documentId}
+          filename={wf.filename}
+          onResolved={wf.reloadRows}
+        />
+      ) : null}
+      {tab === "summaries" ? (
+        <SummariesView
+          documentId={documentId}
+          filename={wf.filename}
+          categories={wf.categories}
+          header={wf.header}
+          onHeaderSaved={wf.setHeader}
+          onGotoSummarizeStep={onGotoSummarizeStep}
+          onRowsChanged={wf.reloadRows}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 /** Every banner the review page can show, in the order it shows them.
  *
  *  Extracted from the page component for one reason: six conditionals nested inside a 500-line
@@ -85,8 +426,9 @@ function ReviewBanners({
       ) : null}
       {unresolvedDupes > 0 && tab !== "duplicates" ? (
         <output className="banner">
-          {unresolvedDupes} possible duplicate {unresolvedDupes === 1 ? "group" : "groups"} to
-          review before summarizing.{" "}
+          {unresolvedDupes} possible duplicate{" "}
+          {unresolvedDupes === 1 ? "group" : "groups"} to review before
+          summarizing.{" "}
           <button
             type="button"
             className="ev-btn ev-btn-ghost ev-btn-sm"
@@ -138,7 +480,9 @@ function ReviewBanners({
   );
 }
 
-export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }>) {
+export function ReviewPageClient({
+  documentId,
+}: Readonly<{ documentId: string }>) {
   const wf = useReviewWorkflow(documentId);
   const { data: summaries = [] } = useSummaries(documentId);
   const { data: dupData } = useDuplicates(documentId);
@@ -147,11 +491,13 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
   // A cluster still needs the reviewer while 2+ of its copies would be summarized - the same rule the
   // API's advisory count and the cluster chip use, so every surface agrees.
   const unresolvedDupes = (dupData?.clusters ?? []).filter(
-    (c) => !c.dismissed && c.rows.filter((r) => r.include !== false).length >= 2,
+    (c) =>
+      !c.dismissed && c.rows.filter((r) => r.include !== false).length >= 2,
   ).length;
   // A dedup job blocks both /dedup/start and /summarize/start server-side (409), so disable rather
   // than surface the conflict.
-  const dedupRunning = dupData?.job?.state === "queued" || dupData?.job?.state === "running";
+  const dedupRunning =
+    dupData?.job?.state === "queued" || dupData?.job?.state === "running";
   // A per-copy removal leaves no trace in the response (the row simply has no group), so there is no
   // way to detect one. Gate the re-check warning on clusters existing at all: the first-ever check has
   // nothing to lose, and once groups are on screen the reviewer may have curated them.
@@ -161,7 +507,8 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
   // The hook lands on "summaries" after a summarize job finishes (or when a done record boots);
   // follow it to the Summaries tab, but leave manual tab switches alone afterward.
   useEffect(() => {
-    if (wf.section === "summaries" && lastSection.current !== "summaries") setTab("summaries");
+    if (wf.section === "summaries" && lastSection.current !== "summaries")
+      setTab("summaries");
     lastSection.current = wf.section;
   }, [wf.section]);
 
@@ -181,7 +528,10 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
   const failedRows = wf.attention?.rows ?? [];
   const attentionPages = new Set(failedRows.map((r) => r.pages));
   const titleByPages = new Map<string, string>(
-    wf.rows.map((r) => [`${r.start}-${r.end}`, r.title && r.title !== "-" ? r.title : ""]),
+    wf.rows.map((r) => [
+      `${r.start}-${r.end}`,
+      r.title && r.title !== "-" ? r.title : "",
+    ]),
   );
 
   // Surfaced on the tab so the size of the manual check the reviewers asked for is visible from
@@ -191,7 +541,9 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
   const tabs = [
     {
       value: "review" as const,
-      label: unidentified ? `Review & correct · ${unidentified}` : "Review & correct",
+      label: unidentified
+        ? `Review & correct · ${unidentified}`
+        : "Review & correct",
     },
     {
       value: "duplicates" as const,
@@ -205,7 +557,8 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
 
   const save = wf.saveState;
   // The paused stage label is stable (STAGE_LABELS.paused); style the bar distinctly while waiting.
-  const paused = wf.watching && wf.progress.detail.toLowerCase().startsWith("paused");
+  const paused =
+    wf.watching && wf.progress.detail.toLowerCase().startsWith("paused");
 
   // Stop is two-stage. The first press is cooperative and normally lands within a second; only if the
   // run has not acknowledged it after the SERVER's grace period does the button escalate to a hard
@@ -247,7 +600,10 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
     const graceSeconds = await wf.cancelActiveJob(false);
     if (graceSeconds > 0) {
       clearForceTimer(); // never stack two escalations from a double press
-      forceTimer.current = setTimeout(() => setForceReady(true), graceSeconds * 1000);
+      forceTimer.current = setTimeout(
+        () => setForceReady(true),
+        graceSeconds * 1000,
+      );
     }
   }
 
@@ -259,7 +615,10 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
   async function onRestart(fresh: boolean) {
     if (!fresh && wf.cancelledJob?.kind === "summarize") {
       const atRisk = (summaries ?? []).filter(
-        (s) => s.edited && s.rowCategoryLive !== null && s.rowCategoryLive !== s.row.category,
+        (s) =>
+          s.edited &&
+          s.rowCategoryLive !== null &&
+          s.rowCategoryLive !== s.row.category,
       ).length;
       if (
         atRisk > 0 &&
@@ -277,7 +636,9 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
   // have moved since the last one. The server refuses summarize in that state (#125) and the button
   // has to say so rather than let the reviewer meet a 409. Undefined while the payload is still
   // loading, and an unloaded payload must not disable the button - `?? false` keeps it enabled.
-  const needsDuplicateCheck = dupData ? !dupData.checked || dupData.stale : false;
+  const needsDuplicateCheck = dupData
+    ? !dupData.checked || dupData.stale
+    : false;
 
   // Block Summarize while any row is invalid, nothing is selected, a save failed/is pending, a
   // duplicate check is running, or none has covered these rows - so a user never summarizes stale
@@ -290,23 +651,15 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
     dedupRunning ||
     needsDuplicateCheck;
 
-  // Un-nested reason for the disabled "Check duplicates" button, same rule as summarizeHint below.
-  let checkDuplicatesHint: string | undefined;
-  if (save.kind === "dirty") checkDuplicatesHint = "Your latest changes aren't saved yet.";
-  else if (dedupRunning) checkDuplicatesHint = "A duplicate check is already running.";
-  else checkDuplicatesHint = undefined;
-
-  // Un-nested reason for the disabled Summarize button (Sonar S3358: no nested ternary in JSX).
-  let summarizeHint: string | undefined;
-  if (!summarizeDisabled) summarizeHint = undefined;
-  else if (errors.size > 0) summarizeHint = "Fix the highlighted page ranges before summarizing.";
-  else if (included === 0) summarizeHint = "Select at least one document to summarize.";
-  else if (dedupRunning) summarizeHint = "Wait for the duplicate check to finish.";
-  else if (needsDuplicateCheck && dupData?.checked)
-    summarizeHint = "The documents changed since the last duplicate check.";
-  else if (needsDuplicateCheck)
-    summarizeHint = "This record has not been checked for duplicates yet.";
-  else summarizeHint = "Your latest changes aren't saved yet.";
+  const checkDuplicatesHint = checkDuplicatesReason(save.kind, dedupRunning);
+  const summarizeHint = summarizeReason({
+    disabled: summarizeDisabled,
+    errorCount: errors.size,
+    included,
+    dedupRunning,
+    needsDuplicateCheck,
+    hasChecked: Boolean(dupData?.checked),
+  });
 
   // The gate is SOFT: a reviewer may have a good reason to skip on a short record. Skipping is a
   // decision, so it is a separate control behind a confirm, and the server audits it - an omission
@@ -346,7 +699,9 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
       await recheck.mutateAsync();
     } catch (err) {
       wf.setBanner(
-        humanizeError(err, { fallback: "Could not start the check - please try again." }),
+        humanizeError(err, {
+          fallback: "Could not start the check - please try again.",
+        }),
       );
     }
   };
@@ -360,7 +715,11 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
       setTab("duplicates");
     } catch (err) {
       // Stay on Review so the banner is where the reviewer is already looking.
-      wf.setBanner(humanizeError(err, { fallback: "Could not start the check - please try again." }));
+      wf.setBanner(
+        humanizeError(err, {
+          fallback: "Could not start the check - please try again.",
+        }),
+      );
     }
   };
 
@@ -385,132 +744,63 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
           <div className="rce-title">
             <span className="rce-name">{wf.filename || "Record"}</span>
             <span className="rce-count">
-              {wf.rows.length} document{wf.rows.length === 1 ? "" : "s"} · {wf.totalPages} page
-              {wf.totalPages === 1 ? "" : "s"}
+              {recordCountLabel(wf.rows.length, wf.totalPages)}
             </span>
           </div>
         </div>
 
-        <SegmentedTabs tabs={tabs} value={tab} onValueChange={setTab} ariaLabel="Editor view" />
+        <SegmentedTabs
+          tabs={tabs}
+          value={tab}
+          onValueChange={setTab}
+          ariaLabel="Editor view"
+        />
 
         <div className="rce-bar-actions">
-          {wf.watching ? (
-            <div className={cn("rce-progress", paused && "paused")} role="status" aria-live="polite">
-              <span className="rce-progress-label">{wf.progress.detail}</span>
-              <div className="rce-progress-bar">
-                <div style={{ width: `${wf.progress.pct}%` }} />
-              </div>
-              <span className="rce-progress-pct">{wf.progress.pct}%</span>
-              {/* Stop lives HERE, not in ProgressPanel: that panel only renders on a first segment
-                  run (no rows yet), so a Stop there would be invisible for exactly the long
-                  summarize a reviewer most wants to kill. */}
-              <button
-                type="button"
-                className="ev-btn ev-btn-ghost ev-btn-sm rce-stop"
-                onClick={onStop}
-                title={
-                  forceReady
-                    ? "This run has not acknowledged the stop; force it to end now"
-                    : "Ask this run to stop at its next safe point"
-                }
-              >
-                {stopButtonLabel(forceReady, stopping)}
-              </button>
-            </div>
-          ) : (
-            <>
-              {tab === "review" && save.kind ? (
-                <span className={cn("rc-save", save.kind)}>
-                  {save.kind === "saved" ? (
-                    <>
-                      <Check width={14} height={14} aria-hidden /> Saved
-                    </>
-                  ) : (
-                    save.message
-                  )}
-                </span>
-              ) : null}
-              {/* Each tab carries its own step's actions: correct the documents, then clear the
-                  duplicates, then summarize - so the reviewer passes the duplicates gate. */}
-              {tab === "review" ? (
-                <>
-                  {/* Re-segmenting discards every row correction AND /segment/start returns 409
-                      while a dedup job holds the document lock - so it must not look clickable
-                      mid-check. */}
-                  <button
-                    type="button"
-                    className="ev-btn ev-btn-outline"
-                    disabled={dedupRunning}
-                    title={dedupRunning ? "Wait for the duplicate check to finish." : undefined}
-                    onClick={wf.onStart}
-                  >
-                    {wf.rows.length ? "Re-run segment" : "Segment"}
-                  </button>
-                  {/* Starts the check, then shows the tab. Blocked on unsaved edits: dedup reads
-                      include=True server-side, so scanning against unsaved checkbox changes would
-                      check the wrong rows - the exact waste this gate exists to prevent. */}
-                  <button
-                    type="button"
-                    className="ev-btn ev-btn-primary"
-                    disabled={dedupRunning || recheck.isPending || save.kind === "dirty"}
-                    title={checkDuplicatesHint}
-                    onClick={onCheckDuplicates}
-                  >
-                    {recheck.isPending ? "Starting..." : "Check duplicates"}
-                  </button>
-                </>
-              ) : null}
-              {tab === "duplicates" ? (
-                <>
-                  <button
-                    type="button"
-                    className="ev-btn ev-btn-outline"
-                    disabled={recheck.isPending || dedupRunning}
-                    onClick={onRecheck}
-                  >
-                    {recheck.isPending ? "Starting..." : "Re-check duplicates"}
-                  </button>
-                  <button
-                    type="button"
-                    className="ev-btn ev-btn-primary"
-                    disabled={summarizeDisabled}
-                    title={summarizeHint}
-                    onClick={() => wf.onSummarize()}
-                  >
-                    {included ? `Summarize ${included} ${documentNoun}` : "Summarize"}
-                  </button>
-                  {/* Only when the duplicate gate is the ONLY thing in the way - offering it while
-                      rows are invalid or unsaved would let a reviewer skip past a different
-                      problem entirely. */}
-                  {needsDuplicateCheck &&
-                  errors.size === 0 &&
-                  included > 0 &&
-                  !dedupRunning &&
-                  save.kind !== "dirty" &&
-                  save.kind !== "error" ? (
-                    <button
-                      type="button"
-                      className="ev-btn ev-btn-ghost"
-                      title="Proceed without checking this record for duplicates"
-                      onClick={onSummarizeWithoutChecking}
-                    >
-                      Summarize without checking
-                    </button>
-                  ) : null}
-                </>
-              ) : null}
-              {tab === "summaries" && summaries.length > 0 ? (
-                <button
-                  type="button"
-                  className="ev-btn ev-btn-ghost"
-                  title="Regenerates every summary from scratch with the current prompts, discarding your edits. Use this after a prompt change."
-                  onClick={reSummarizeAll}
-                >
-                  Re-summarize all from scratch
-                </button>
-              ) : null}
-            </>
-          )}
+          <RunningProgress
+            watching={wf.watching}
+            progress={wf.progress}
+            paused={paused}
+            stopping={stopping}
+            forceReady={forceReady}
+            onStop={onStop}
+          />
+          <SaveChip watching={wf.watching} tab={tab} save={save} />
+          {/* Each tab carries its own step's actions: correct the documents, then clear the
+              duplicates, then summarize - so the reviewer passes the duplicates gate. */}
+          <ReviewStepActions
+            watching={wf.watching}
+            tab={tab}
+            rowCount={wf.rows.length}
+            dedupRunning={dedupRunning}
+            recheckPending={recheck.isPending}
+            saveKind={save.kind}
+            checkDuplicatesHint={checkDuplicatesHint}
+            onStart={wf.onStart}
+            onCheckDuplicates={onCheckDuplicates}
+          />
+          <DuplicatesStepActions
+            watching={wf.watching}
+            tab={tab}
+            recheckPending={recheck.isPending}
+            dedupRunning={dedupRunning}
+            summarizeDisabled={summarizeDisabled}
+            summarizeHint={summarizeHint}
+            included={included}
+            documentNoun={documentNoun}
+            needsDuplicateCheck={needsDuplicateCheck}
+            errorCount={errors.size}
+            saveKind={save.kind}
+            onRecheck={onRecheck}
+            onSummarize={() => wf.onSummarize()}
+            onSummarizeWithoutChecking={onSummarizeWithoutChecking}
+          />
+          <SummariesStepActions
+            watching={wf.watching}
+            tab={tab}
+            summariesCount={summaries.length}
+            onReSummarizeAll={reSummarizeAll}
+          />
         </div>
       </header>
 
@@ -527,53 +817,13 @@ export function ReviewPageClient({ documentId }: Readonly<{ documentId: string }
         onReviewDuplicates={() => setTab("duplicates")}
       />
 
-
-      <div className="rce-body">
-        {tab === "review" && wf.rows.length === 0 && wf.watching ? (
-          <ProgressPanel
-            title={wf.progress.title}
-            pct={wf.progress.pct}
-            detail={wf.progress.detail}
-          />
-        ) : null}
-        {tab === "review" && wf.rows.length === 0 && !wf.watching ? (
-          <StartPanel rerun={false} hint={wf.startHint} onStart={wf.onStart} />
-        ) : null}
-        {tab === "review" && wf.rows.length > 0 ? (
-          <>
-              <HeaderBar documentId={documentId} header={wf.header} onSaved={(f) => wf.setHeader(f)} />
-              <div className={cn("rce-editor", wf.watching && "busy")}>
-                <ReviewEditor
-                  documentId={documentId}
-                  filename={wf.filename}
-                  rows={wf.rows}
-                  categories={wf.categories}
-                  totalPages={wf.totalPages}
-                  onRowsChange={wf.onRowsChange}
-                  attentionPages={attentionPages}
-                />
-              </div>
-          </>
-        ) : null}
-        {tab === "duplicates" ? (
-          <DuplicatesView
-            documentId={documentId}
-            filename={wf.filename}
-            onResolved={wf.reloadRows}
-          />
-        ) : null}
-        {tab === "summaries" ? (
-          <SummariesView
-            documentId={documentId}
-            filename={wf.filename}
-            categories={wf.categories}
-            header={wf.header}
-            onHeaderSaved={wf.setHeader}
-            onGotoSummarizeStep={() => setTab("duplicates")}
-            onRowsChanged={wf.reloadRows}
-          />
-        ) : null}
-      </div>
+      <ReviewBody
+        tab={tab}
+        wf={wf}
+        documentId={documentId}
+        attentionPages={attentionPages}
+        onGotoSummarizeStep={() => setTab("duplicates")}
+      />
     </div>
   );
 }
