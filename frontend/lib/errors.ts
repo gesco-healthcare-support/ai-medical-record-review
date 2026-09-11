@@ -15,6 +15,21 @@ const NOT_FOUND =
 const SYNTHETIC_FALLBACK = /failed \(\d+\)$/;
 
 /**
+ * True when the request never reached the server - `apiFetch` and `downloadFile` both raise
+ * `ApiError("network", 0)` for a transport failure, which has no HTTP status.
+ *
+ * The auth forms need this on its own rather than through `humanizeError`, and that is not a
+ * shortcut. They can describe every OTHER failure better than it can, because status means
+ * something different on those pages: a 401 on the sign-in page is a wrong password, not
+ * `humanizeError`'s "your session has ended", and a 400 on the reset page is a spent link. So they
+ * write their own copy - and then said it for a dropped connection too, blaming the reader for a
+ * failure they could not see. This is the one case none of them can describe.
+ */
+export function isOffline(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 0;
+}
+
+/**
  * Turn any thrown error into a clear, user-facing sentence. Keyed on HTTP status so the terse,
  * IDOR-vague server 404 ("not found") becomes guidance, while genuinely actionable server details
  * (400/409/422 and the friendly AI/pipeline messages the server already sends on 500/503) are

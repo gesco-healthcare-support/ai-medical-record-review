@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { MailCheck } from "lucide-react";
 import { useForgotPassword } from "@/hooks/use-auth";
+import { humanizeError, isOffline } from "@/lib/errors";
+import { AuthError } from "./auth-error";
 import { AuthShell } from "./auth-shell";
 
 /** Always shows the confirmation view on submit (no account enumeration; the backend 202s). */
@@ -10,13 +12,24 @@ export function ForgotForm({ onSignIn }: Readonly<{ onSignIn: () => void }>) {
   const forgot = useForgotPassword();
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setError(null);
     try {
       await forgot.mutateAsync(email);
-    } catch {
-      // No enumeration: show success regardless of outcome.
+    } catch (err) {
+      // No enumeration: show success regardless of the SERVER's answer.
+      //
+      // A transport failure is not one of those answers, and reporting it reveals nothing: the
+      // request never reached the server, so it fails identically for an address that exists and
+      // one that does not. Leaving it in the silent branch is what costs something - the reader is
+      // told to check their email for a message nobody was ever asked to send, and waits.
+      if (isOffline(err)) {
+        setError(humanizeError(err));
+        return;
+      }
     }
     setSent(true);
   }
@@ -43,6 +56,7 @@ export function ForgotForm({ onSignIn }: Readonly<{ onSignIn: () => void }>) {
       title="Reset your password"
       subtitle="Enter your email and we'll send a link to set a new one."
     >
+      <AuthError message={error} />
       <form className="auth-form" onSubmit={onSubmit} noValidate>
         <div className="auth-field">
           <label className="ev-lbl" htmlFor="email">

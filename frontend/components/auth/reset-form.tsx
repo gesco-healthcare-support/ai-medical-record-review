@@ -4,6 +4,7 @@ import { useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useResetPassword } from "@/hooks/use-auth";
+import { humanizeError, isOffline } from "@/lib/errors";
 import { AuthShell } from "./auth-shell";
 import { AuthError } from "./auth-error";
 import { PasswordChecklist, passwordValid } from "./password-checklist";
@@ -27,8 +28,15 @@ export function ResetForm({ token, onSignIn }: Readonly<{ token: string; onSignI
     try {
       await reset.mutateAsync({ token, password });
       setDone(true);
-    } catch {
-      setError("This reset link is invalid or has expired. Request a new one.");
+    } catch (err) {
+      // A spent or forged token is a 400 and the message below is right for it. A dropped
+      // connection is not, and telling the reader their link expired sends them back to request
+      // another one - which will fail the same way, for a reason nothing has yet named.
+      setError(
+        isOffline(err)
+          ? humanizeError(err)
+          : "This reset link is invalid or has expired. Request a new one.",
+      );
     }
   }
 
