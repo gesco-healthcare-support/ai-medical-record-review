@@ -70,6 +70,28 @@ class Settings(BaseSettings):
     # headroom, well under 2.5-flash's 65k output ceiling. Env-overridable so a box can raise it
     # without a redeploy, and a reply that still hits the cap is flagged for manual check.
     summary_max_output_tokens: int = 8192
+    # Output budget for the AUDIT pass, when it should differ from the body's. None means the
+    # audit shares `summary_max_output_tokens` above, which is exactly the historical behaviour.
+    #
+    # The audit's reply has to hold a corrected copy of the WHOLE summary, and on a thinking model
+    # the reasoning is billed against the same budget - so the two compete, and the longer the
+    # summary the less is left for the answer. Measured on the box 2026-09-11 over the 1,155
+    # summaries that requested an audit, bucketed by the length of the text the reply had to
+    # reproduce (`verified_text` else `text`): 36 (3.1%) never got one, ALL 36 delivered, and the
+    # rate tracks that length - 0.6% below 1,000 characters, 2.6% at 1,000-2,000, 7.7% at
+    # 2,000-4,000, and 60.0% above 4,000. A truncated audit is not an exception, so nothing retries
+    # it; the summary ships unaudited and #290 is what puts that on the reviewer's screen.
+    #
+    # State the BASIS with the number. An earlier note put the top bucket at 69.2% off a different
+    # length column, which is the same data disagreeing with itself for want of one clause.
+    #
+    # `verify_summary` has taken an override since #285 and the benchmark harness passes one. This
+    # is the app side of that knob: without it the one production caller cannot opt in, so the
+    # tuning experiment cannot be run here at all. Deliberately NOT given a value - which way it
+    # should move is an open question with real evidence on both sides (the benchmark lowered its
+    # cap to bound what a runaway costs; the failure curve above suggests long summaries are
+    # starved rather than extravagant), and that call wants a measurement, not a default.
+    audit_max_output_tokens: int | None = None
     # Summary faithfulness verify pass: a second temp-0 call rewrites each summary to drop
     # statements unsupported by / contradicting its OCR source (problem #3), keeping the raw output
     # too. On by default; a regression reverts via env with no redeploy. Distinct from the

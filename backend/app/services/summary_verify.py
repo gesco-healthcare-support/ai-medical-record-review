@@ -226,6 +226,23 @@ def verify_summary(
     if title:
         prompt += f"TITLE:\n{title}\n\n"
     prompt += f"SUMMARY:\n{summary_text}"
+    # Resolved ONCE, because two things need the same number: the call below, and the warning that
+    # reports a cap being hit. Those read different values until now - the warning named the SETTING
+    # while the call used the override - so a caller that passed one and then truncated was told it
+    # had hit a cap that was never in force. The benchmark harness passes an override on every
+    # audit, so that line was wrong in exactly the place audit truncation was being diagnosed.
+    #
+    # Three tiers, narrowest first: an explicit argument (a caller that knows its own distribution,
+    # which is what #285 added), then `audit_max_output_tokens` (an operator deciding it for the
+    # deployment), then the body's budget (what the audit has always shared). The setting is read
+    # HERE rather than passed by the one production caller on purpose: `summarize_row` stubs are the
+    # single most monkeypatched seam in the suite, so widening its call widened thirty test doubles
+    # that had pinned the old signature - churn that buys nothing, since this function is the only
+    # place the number is used.
+    settings = get_settings()
+    effective_cap = (
+        max_output_tokens or settings.audit_max_output_tokens or settings.summary_max_output_tokens
+    )
     try:
         response = get_provider().generate_structured(
             model=model,
@@ -248,9 +265,11 @@ def verify_summary(
             # stopped it. That was 93 percent of the stage's model-time producing nothing.
             #
             # The cap does not prevent a runaway; it bounds what one costs. Callers that know their
-            # own distribution should pass it. None keeps the historical behaviour exactly, so
-            # nothing that does not opt in can change.
-            max_output_tokens=(max_output_tokens or get_settings().summary_max_output_tokens),
+            # own distribution should pass it. Passing nothing AND leaving `audit_max_output_tokens`
+            # unset keeps the historical behaviour exactly, so nothing that does not opt in can
+            # change - the resolution is above, and this sentence said "None" alone until that grew
+            # a second tier.
+            max_output_tokens=effective_cap,
         )
         if response.truncated:
             # Checked BEFORE the parse, because parsing a cut-off reply reports the symptom and hides
@@ -262,7 +281,7 @@ def verify_summary(
             logger.warning(
                 "summary verify reply hit the %s-token cap after %s output token(s); "
                 "keeping original (unverified)",
-                get_settings().summary_max_output_tokens,
+                effective_cap,
                 response.output_tokens,
             )
             # The response is passed on now. Without it this branch asserted the cap was hit and

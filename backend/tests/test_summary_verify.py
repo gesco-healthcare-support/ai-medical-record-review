@@ -6,9 +6,11 @@ goes through the provider abstraction - so these tests also cover that translati
 """
 
 import json
+import logging
 
 import pytest
 
+from app.config import get_settings
 from app.services import summary_verify as sv
 from app.services.llm import gemini as gm
 
@@ -291,3 +293,113 @@ def test_blank_fixed_title_falls_back_to_the_original(monkeypatch):
     )
     result = sv.verify_summary("m", "src", "Body.", title="KEEP THIS TITLE")
     assert result["fixed_title"] == "KEEP THIS TITLE"
+
+
+# --- the audit's own output cap: reachable from the app, and reported honestly -------------------
+#
+# `verify_summary` has taken a `max_output_tokens` override since #285 so a caller that knows its
+# own reply distribution can bound what a runaway costs. Two halves of that were unfinished: the
+# truncation warning still read the SETTING rather than the override actually in force, and the
+# app's one production caller had no setting to pass, so it could not opt in at all.
+
+
+def _cap_seen(monkeypatch, **kwargs):
+    """Run one audit and return the max_output_tokens the provider was actually called with."""
+    seen = {}
+
+    def gen(client, *, model, contents, config, **_kw):
+        seen["cap"] = config.max_output_tokens
+        return _Resp(json.dumps({"fixed_text": "Body.", "fixed_title": "T", "issues": []}))
+
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", gen)
+    sv.verify_summary("m", "src", "Body.", title="T", **kwargs)
+    return seen["cap"]
+
+
+def test_the_audit_shares_the_body_budget_when_nothing_overrides_it(monkeypatch):
+    """WHEN neither the argument nor the setting is given, THE SYSTEM SHALL use the body's budget.
+
+    A GUARD, not a demonstration: it passes on main too. It is here because leaving the default
+    alone EXACTLY is the property that lets this knob ship dark - if the resolution ever started
+    landing somewhere else, every deployed box would change audit behaviour on upgrade with nothing
+    said.
+    """
+    get_settings.cache_clear()
+    monkeypatch.delenv("AUDIT_MAX_OUTPUT_TOKENS", raising=False)
+    try:
+        assert _cap_seen(monkeypatch) == get_settings().summary_max_output_tokens
+    finally:
+        get_settings.cache_clear()
+
+
+def test_an_override_is_the_cap_the_audit_actually_runs_under(monkeypatch):
+    """WHEN a caller passes an override, THE SYSTEM SHALL call the model with it.
+
+    A GUARD: this is #285's behaviour and it passes on main. It is worth pinning anyway because the
+    resolution below it grew two more tiers, and the argument staying authoritative through that is
+    the property the benchmark harness depends on.
+    """
+    assert _cap_seen(monkeypatch, max_output_tokens=2048) == 2048
+
+
+def test_the_audit_cap_setting_is_reachable_without_a_code_change(monkeypatch):
+    """WHEN `audit_max_output_tokens` is set, THE SYSTEM SHALL run the audit under it.
+
+    `verify_summary` has taken the argument since #285 and the benchmark harness passes one, but the
+    app's single production caller passed nothing and there was no setting to pass - so on a
+    deployed box the knob existed and could not be reached. Which way the cap should move is an open
+    question (see config.py); this pins the wiring, not a policy.
+    """
+    get_settings.cache_clear()
+    monkeypatch.setenv("AUDIT_MAX_OUTPUT_TOKENS", "2048")
+    try:
+        assert _cap_seen(monkeypatch) == 2048
+    finally:
+        get_settings.cache_clear()
+
+
+def test_an_explicit_argument_still_beats_the_setting(monkeypatch):
+    """WHEN both are given, THE SYSTEM SHALL prefer the argument.
+
+    The order matters and is not arbitrary: the setting is an operator's decision for the whole
+    deployment, the argument is a caller that knows its own reply distribution. A caller that has
+    measured itself is the narrower claim, so it wins - and the benchmark harness, which is exactly
+    such a caller, keeps behaving the same whatever a box sets.
+
+    Passes on main, but only VACUOUSLY - there is no setting there for the argument to beat, so the
+    assertion is not exercising a precedence rule until this change exists. Read it as a guard over
+    the new middle tier rather than as a demonstration.
+    """
+    get_settings.cache_clear()
+    monkeypatch.setenv("AUDIT_MAX_OUTPUT_TOKENS", "2048")
+    try:
+        assert _cap_seen(monkeypatch, max_output_tokens=777) == 777
+    finally:
+        get_settings.cache_clear()
+
+
+def test_a_truncated_audit_names_the_cap_that_was_in_force(monkeypatch, caplog):
+    """WHEN an overridden audit hits its cap, THE SYSTEM SHALL name THAT cap, not the setting.
+
+    The warning read `get_settings().summary_max_output_tokens` while the call used the override, so
+    the two disagreed for exactly the callers that opt in. The benchmark harness passes an override
+    on every audit, which put the wrong number in the log in the one place audit truncation was
+    being diagnosed - a diagnostic that contradicts the run it is describing is worse than none.
+
+    2048 is deliberately not the default here, so a warning that still quoted the setting would
+    print 8192 and fail on the value rather than on the wording.
+    """
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(
+        gm,
+        "generate_with_retry",
+        lambda client, **_kw: _TruncatedResp('{\n  "fixed_text": "The claimant rep'),
+    )
+    with caplog.at_level(logging.WARNING):
+        result = sv.verify_summary("m", "src", "Body.", title="T", max_output_tokens=2048)
+
+    assert result["ok"] is False  # still fail-safe
+    warning = "".join(r.getMessage() for r in caplog.records)
+    assert "2048-token cap" in warning
+    assert str(get_settings().summary_max_output_tokens) not in warning
