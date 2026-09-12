@@ -3,7 +3,8 @@ which failures the retry loop rides out versus re-raises immediately.
 
 Pure-Python (no Vertex, no DB, no Redis - the pacer, metrics and backoff sleep are patched out).
 Proves the thinking default is applied centrally, that an explicit per-call thinking_config always
-wins, and that a deterministic deadline 504 costs ONE attempt instead of the whole retry budget.
+wins, that a request's deadline SCALES with its size, and that a deadline 504 costs TWO attempts -
+one at that deadline and one at a multiple of it - rather than the whole budget it once burned.
 """
 
 import pytest
@@ -15,6 +16,7 @@ from app.services.genai_retry import (
     _apply_thinking_default,
     _parse_duration,
     _retry_delay_seconds,
+    _set_deadline,
     _sleep_for,
     generate_with_retry,
 )
@@ -166,16 +168,6 @@ def quiet_seam(monkeypatch):
     monkeypatch.setattr(genai_retry, "_cancellable_sleep", lambda total: None)
 
 
-def test_deadline_504_is_not_retried(quiet_seam):
-    """The deadline is OURS and binds every attempt identically, so a retry re-runs the same doomed
-    call. Measured on the server 2026-08-12: eight identical 504s over 17.5 minutes before the
-    reviewer saw anything. One attempt is the entire point of the carve-out."""
-    client = _FakeClient(_deadline_error())
-    with pytest.raises(errors.ServerError):
-        generate_with_retry(client, model="gemini-2.5-flash")
-    assert client.calls == 1
-
-
 def test_other_5xx_still_rides_out_the_full_budget(quiet_seam):
     # A 503 really is transient high demand, so the carve-out must not swallow the rest of the 5xx.
     client = _FakeClient(errors.ServerError(503, {"error": {"code": 503, "message": "overloaded"}}))
@@ -249,3 +241,209 @@ def test_the_seam_and_classify_failure_agree_on_a_429(quiet_seam, message, retri
     attempts = get_settings().genai_max_retries if retried else 1
     assert client.calls == attempts
     assert classify_failure(exc) == outcome
+
+
+# --- a deadline gets ONE longer retry ------------------------------------------------------------
+#
+# Retrying a 504 at the SAME deadline is futile and the suite still pins that (job 1000174 burned
+# eight identical 504s over 17.5 minutes). Retrying at a LONGER one is a different request, and
+# without it the row is simply lost - job 1000308, an 18-page row carrying 33,058 characters plus
+# the 15-image cap, while the other 19 rows of the same document succeeded.
+
+
+class _RecordingClient:
+    """Raises ``exc`` until ``succeed_on`` attempts, recording each call's config."""
+
+    def __init__(self, exc, succeed_on=None):
+        outer = self
+        self.calls = 0
+        self.timeouts = []
+
+        class _Models:
+            def generate_content(self, **kwargs):
+                outer.calls += 1
+                config = kwargs.get("config")
+                options = getattr(config, "http_options", None)
+                outer.timeouts.append(getattr(options, "timeout", None))
+                if succeed_on is not None and outer.calls >= succeed_on:
+                    return "ok"
+                raise exc
+
+        self.models = _Models()
+
+
+def _expected_retry_deadline() -> int:
+    """The deadline the ONE retry runs under: this call's own deadline times the multiplier."""
+    s = get_settings()
+    return int(s.effective_genai_timeout_ms(1) * s.genai_deadline_retry_multiplier)
+
+
+def _config():
+    return types.GenerateContentConfig(temperature=0.0)
+
+
+def test_a_deadline_504_is_retried_once_at_a_longer_deadline(quiet_seam):
+    """WHEN a call exceeds its deadline, THE SYSTEM SHALL retry it once with a longer one.
+
+    This REPLACES an earlier pin asserting exactly one attempt. That pin was right about its own
+    reason - a retry at the same limit re-runs a doomed call - and wrong as a general rule, which is
+    the distinction the escalation turns on. The first attempt carries the client's deadline (None
+    here, since the seam does not set one), the second carries the escalation.
+    """
+    client = _RecordingClient(_deadline_error(), succeed_on=2)
+    assert generate_with_retry(client, model="gemini-2.5-flash", config=_config()) == "ok"
+    assert client.calls == 2
+    assert client.timeouts[0] == get_settings().effective_genai_timeout_ms(1)  # the scaled floor
+    assert client.timeouts[1] == _expected_retry_deadline()
+
+
+def test_a_row_that_exceeds_even_the_longer_deadline_still_fails(quiet_seam):
+    """WHEN the escalated attempt also times out, THE SYSTEM SHALL fail rather than escalate again.
+
+    The bound is what keeps the old measurement from coming back: two attempts, not eight. A row too
+    large for both deadlines ends exactly where it does today, only after one more try.
+    """
+    client = _RecordingClient(_deadline_error())
+    config = _config()
+    with pytest.raises(errors.ServerError):
+        generate_with_retry(client, model="gemini-2.5-flash", config=config)
+    assert client.calls == 2
+    assert client.timeouts[1] == _expected_retry_deadline()
+
+
+def test_the_escalation_can_be_turned_off(quiet_seam, monkeypatch):
+    """WHEN the escalation is 0, THE SYSTEM SHALL fail on the first deadline.
+
+    This is the pre-2026-09-11 behaviour exactly, kept reachable so a box can get it back without a
+    deploy if a longer deadline ever turns out to cost more than the lost row.
+
+    Passes on main, but VACUOUSLY - there a deadline fails on the first attempt whatever the setting
+    says, so the assertion is not exercising the off switch until the switch exists.
+    """
+    get_settings.cache_clear()
+    monkeypatch.setenv("GENAI_DEADLINE_RETRY_MULTIPLIER", "1")
+    try:
+        client = _RecordingClient(_deadline_error())
+        config = _config()
+        with pytest.raises(errors.ServerError):
+            generate_with_retry(client, model="gemini-2.5-flash", config=config)
+        assert client.calls == 1
+    finally:
+        get_settings.cache_clear()
+
+
+def test_a_deadline_is_not_backed_off_like_a_transient_error(quiet_seam, monkeypatch):
+    """WHEN a deadline is retried, THE SYSTEM SHALL NOT ride out the full retry budget.
+
+    A GUARD on the half of the old rule that survives: the escalation is one extra attempt, not a
+    re-entry into the 5xx backoff path, which is what the 17.5-minute measurement was about.
+    """
+    client = _RecordingClient(_deadline_error())
+    config = _config()
+    with pytest.raises(errors.ServerError):
+        generate_with_retry(client, model="gemini-2.5-flash", config=config)
+    assert client.calls < get_settings().genai_max_retries
+
+
+def test_a_config_the_seam_cannot_patch_still_fails_fast(quiet_seam):
+    """WHEN there is no config to carry a deadline, THE SYSTEM SHALL fail on the first attempt.
+
+    Every production caller passes one, so this is the defensive path rather than an observed one -
+    but silently doing nothing and then riding out eight attempts is precisely the old behaviour the
+    carve-out existed to prevent.
+
+    Passes on main VACUOUSLY, for the same reason as the off-switch test above: it pins that the
+    no-config path did not gain a retry it cannot use, not that it ever had one.
+    """
+    client = _RecordingClient(_deadline_error())
+    with pytest.raises(errors.ServerError):
+        generate_with_retry(client, model="gemini-2.5-flash")
+    assert client.calls == 1
+
+
+def test_the_escalated_deadline_reaches_the_request_as_http_options(quiet_seam):
+    """The escalation must land where google-genai reads it, not merely on our own object.
+
+    `_api_client.patch_http_options` merges per-request HttpOptions over the client's field by field
+    and a non-None patch wins, and the timeout becomes Vertex's `X-Server-Timeout` - so this is the
+    field that makes the retry a genuinely longer call rather than the same one.
+    """
+    config = _config()
+    assert _set_deadline(config, 300000) is True
+    assert isinstance(config.http_options, types.HttpOptions)
+    assert config.http_options.timeout == 300000
+    assert _set_deadline(None, 300000) is False
+    assert _set_deadline(_config(), 0) is False
+
+
+# --- the deadline scales with the request --------------------------------------------------------
+#
+# The half that makes this hold for records larger than any we have seen. A fixed deadline is safe
+# only while something bounds the request: segmentation has `window_max_pages`, summarize has
+# nothing, so a row is however many pages the segmenter drew.
+
+
+def _ok_client():
+    """Records the deadline each attempt ran under and succeeds immediately."""
+
+    class _C:
+        def __init__(self):
+            outer = self
+            self.timeouts = []
+
+            class _Models:
+                def generate_content(self, **kwargs):
+                    options = getattr(kwargs.get("config"), "http_options", None)
+                    outer.timeouts.append(getattr(options, "timeout", None))
+                    return "ok"
+
+            self.models = _Models()
+
+    return _C()
+
+
+def test_an_ordinary_request_keeps_the_flat_deadline(quiet_seam):
+    """WHEN a request is small, THE SYSTEM SHALL use `genai_http_timeout_ms` unchanged.
+
+    The floor is what makes this change invisible to everything that works today - a title call, a
+    classify call and a normal summarize row all sit far below it.
+    """
+    client = _ok_client()
+    generate_with_retry(client, model="m", config=_config(), _est_tokens=1000)
+    assert client.timeouts[0] == get_settings().genai_http_timeout_ms
+
+
+def test_a_large_request_gets_a_proportionally_longer_deadline(quiet_seam):
+    """WHEN a request is large, THE SYSTEM SHALL scale its deadline with its size.
+
+    This is the durable half: the wall moves with the request instead of staying where a bounded
+    path put it. Twice the tokens, twice the allowance - so a record larger than anything measured
+    so far does not need a new constant, which is exactly what a fixed ceiling would have required.
+    """
+    settings = get_settings()
+    # Comfortably past the floor, so the scaling rather than the floor is what is being asserted.
+    big = int(settings.genai_http_timeout_ms / settings.genai_timeout_per_1k_tokens_ms * 1000) * 4
+    client = _ok_client()
+    generate_with_retry(client, model="m", config=_config(), _est_tokens=big)
+    assert client.timeouts[0] == settings.effective_genai_timeout_ms(big)
+    assert client.timeouts[0] > settings.genai_http_timeout_ms
+
+    doubled = _ok_client()
+    generate_with_retry(doubled, model="m", config=_config(), _est_tokens=big * 2)
+    assert doubled.timeouts[0] == pytest.approx(client.timeouts[0] * 2, rel=0.01)
+
+
+def test_the_retry_multiplies_the_deadline_that_call_actually_had(quiet_seam):
+    """WHEN a large request times out, THE SYSTEM SHALL retry at a multiple of ITS OWN deadline.
+
+    Not of the flat floor. A big row that exceeds its already-scaled deadline is the case with the
+    least margin left, so taking the multiplier off the floor instead would hand it barely more time
+    than a small row gets - the mistake that makes a size-aware limit stop being size-aware.
+    """
+    settings = get_settings()
+    big = int(settings.genai_http_timeout_ms / settings.genai_timeout_per_1k_tokens_ms * 1000) * 4
+    scaled = settings.effective_genai_timeout_ms(big)
+    client = _RecordingClient(_deadline_error(), succeed_on=2)
+    generate_with_retry(client, model="m", config=_config(), _est_tokens=big)
+    assert client.timeouts[0] == scaled
+    assert client.timeouts[1] == int(scaled * settings.genai_deadline_retry_multiplier)

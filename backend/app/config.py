@@ -439,6 +439,41 @@ class Settings(BaseSettings):
     # measured call is 54.5s. A deadline above 120s IS honoured (the 179s call completed under a
     # 600s deadline), so raising this remains available if a capped window ever runs long.
     genai_http_timeout_ms: int = 120000
+    # Per-1,000-estimated-input-tokens allowance that SCALES the deadline above, in ms. The pair
+    # works exactly like `effective_job_timeout` below - a flat floor for ordinary requests, scaling
+    # for large ones - and for the same reason: a fixed limit is only safe when something else
+    # bounds the request, and on this path nothing does.
+    #
+    # That is the whole defect. 120s was set on evidence, but the evidence is about SEGMENTATION,
+    # where `window_max_pages` caps a window at 160 pages and the slowest measured call is 54.5s.
+    # A SUMMARIZE row is however many pages the segmenter drew, and nothing bounds it - so the
+    # larger the record, the likelier a row exceeds a limit chosen for a bounded request.
+    #
+    # 3800 is calibrated, not guessed. Job 1000308's lost row measured 31,394 estimated tokens
+    # (33,058 OCR characters, a 14,520-character system prompt, and 15 images at 1,300 each), and
+    # 120s over that is 3,822 ms per 1k. So this value REPRODUCES today's deadline at the largest
+    # size we have measured and scales from there: twice the row, twice the allowance. Nothing that
+    # fits today gets a shorter deadline, because the floor above still applies.
+    #
+    # Deliberately NOT capped. A ceiling is the wall this removes, and one already exists a level
+    # up: `pool_timeout` abandons a stalled pool just under the RQ job timeout, so a pathological
+    # request is bounded there rather than by a number guessed here.
+    genai_timeout_per_1k_tokens_ms: int = 3800
+    # What ONE retry gets after a 504, as a multiple of that call's own deadline. 0 disables the
+    # retry, which is the behaviour before 2026-09-11: a deadline failed the row outright.
+    #
+    # Scaling alone does not cover this. Job 1000308's row was NOT too large for its deadline -
+    # re-run
+    # three times on 2026-09-11 it took 51.7s, 50.1s and 77.5s against a 120s limit. It went
+    # over 120s
+    # once, transiently, and was lost permanently for it. So a 504 is not the purely deterministic
+    # event `errors.is_deadline_exceeded` described; at ~1.5x headroom a slow moment tips a normal
+    # row over, and the retry is what recovers it.
+    #
+    # The two settings answer two different causes and neither substitutes for the other: scaling
+    # gives a genuinely large request enough time on the FIRST attempt, the retry recovers a normal
+    # request that hit a slow moment.
+    genai_deadline_retry_multiplier: float = 2.5
 
     # Per-call OCR (Tesseract) wall-clock cap (seconds). A hung/oversized page is killed and
     # skipped rather than blocking a worker thread forever (the concurrent-OCR deadlock backstop;
@@ -693,6 +728,20 @@ class Settings(BaseSettings):
         would otherwise orphan the job) yet a legitimately long pool on a large record is not cut
         short. Floored at 1 so a tiny job_timeout in a test never yields a non-positive timeout."""
         return max(1, self.effective_job_timeout(pages) - self.future_timeout_margin_seconds)
+
+    def effective_genai_timeout_ms(self, est_tokens: int) -> int:
+        """The size-aware per-request deadline (ms) for a call of ``est_tokens`` input tokens.
+
+        Deliberately the same shape as `effective_job_timeout` above - a flat floor, scaling
+        past it -
+        because it answers the same question one level down. The floor keeps small calls exactly
+        where they are; only a request larger than the floor already covers is given more.
+
+        Sits here rather than in the retry seam so the formula has ONE home, the way the job-timeout
+        pair does: `genai_retry` applies it and nothing else computes a deadline.
+        """
+        scaled = int(est_tokens * self.genai_timeout_per_1k_tokens_ms / 1000)
+        return max(self.genai_http_timeout_ms, scaled)
 
     @model_validator(mode="after")
     def _derive(self) -> "Settings":
