@@ -13,7 +13,7 @@ from google.genai import types
 from app.config import get_settings
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
-from app.services.llm.base import _DEFAULT_STAGE, LLMResponse
+from app.services.llm.base import _DEFAULT_STAGE, DelegatingProvider, LLMResponse
 from app.services.llm.parts import DocumentPart, ImagePart, Part, TextPart
 from app.services.llm.tokens import estimate_tokens
 
@@ -119,8 +119,12 @@ def _usage(response) -> tuple[int | None, int | None]:
     )
 
 
-class GeminiProvider:
-    """LLMProvider over google-genai."""
+class GeminiProvider(DelegatingProvider):
+    """LLMProvider over google-genai.
+
+    The three public methods come from DelegatingProvider - they were identical forwarding here, in
+    openai.py and in vllm.py, which is what tripped the duplication gate.
+    """
 
     name = "gemini"
 
@@ -183,65 +187,4 @@ class GeminiProvider:
             truncated=_hit_token_cap(response),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-        )
-
-    def generate_text(
-        self,
-        *,
-        model,
-        system,
-        parts,
-        temperature,
-        stage=_DEFAULT_STAGE,
-        max_output_tokens=None,
-    ):
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            stage=stage,
-            max_output_tokens=max_output_tokens,
-        )
-
-    def generate_structured(
-        self,
-        *,
-        model,
-        system,
-        parts,
-        schema,
-        temperature,
-        stage=_DEFAULT_STAGE,
-        max_output_tokens=None,
-    ):
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            stage=stage,
-            max_output_tokens=max_output_tokens,
-            schema=schema,
-        )
-
-    def generate_choice(
-        self,
-        *,
-        model,
-        system,
-        parts,
-        choices,
-        temperature,
-        stage=_DEFAULT_STAGE,
-        max_output_tokens=None,
-    ):
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            stage=stage,
-            max_output_tokens=max_output_tokens,
-            choices=choices,
         )

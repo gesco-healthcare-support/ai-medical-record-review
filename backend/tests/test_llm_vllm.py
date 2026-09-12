@@ -14,6 +14,7 @@ key, which is what demonstrates these tests would notice if vLLM started sending
 import pytest
 
 from app.services.llm import pacing
+from app.services.llm.base import DelegatingProvider
 from app.services.llm.openai import OpenAIProvider
 from app.services.llm.parts import DocumentPart, ImagePart, TextPart
 from app.services.llm.vllm import VLLMProvider, _backoff, _retryable
@@ -242,8 +243,10 @@ def test_the_openai_provider_still_retries_a_timeout():
     from app.services.llm.openai import _retryable as openai_retryable
 
     timeout = openai.APITimeoutError.__new__(openai.APITimeoutError)
+    # Note the shapes differ, and deliberately: OpenAI returns (retry, advised_delay) because it
+    # really does send Retry-After, while vLLM returns a plain bool because it never does.
     assert openai_retryable(timeout)[0] is True
-    assert _retryable(timeout)[0] is False
+    assert _retryable(timeout) is False
 
 
 def test_a_connection_error_is_still_retried(monkeypatch):
@@ -267,10 +270,10 @@ def test_server_errors_are_retried_and_client_errors_are_not():
         exc.response = None
         return exc
 
-    assert _retryable(_status(500))[0] is True
-    assert _retryable(_status(503))[0] is True
+    assert _retryable(_status(500)) is True
+    assert _retryable(_status(503)) is True
     for code in (400, 401, 404):
-        assert _retryable(_status(code))[0] is False
+        assert _retryable(_status(code)) is False
 
 
 def test_backoff_is_bounded_by_the_configured_maximum(monkeypatch):
@@ -298,14 +301,48 @@ def test_a_token_cap_is_passed_through_when_given(sent):
 def test_a_pdf_part_is_refused_rather_than_silently_dropped(sent):
     # Chat completions has no inline-PDF part on either backend. Rasterising for the vLLM path is
     # PR 3; until then a document must fail loudly rather than arrive as an empty request.
+    #
+    # The provider and the parts are built OUTSIDE the raises block deliberately (python:S5778).
+    # With the constructor inside it, a TypeError raised while BUILDING the provider would satisfy
+    # this assertion just as well as the one the test is actually about.
+    provider = VLLMProvider()
+    parts = [DocumentPart(b"%PDF-1.4")]
     with pytest.raises(TypeError, match="inline PDF"):
-        VLLMProvider().generate_text(
-            model="m",
-            system=None,
-            parts=[DocumentPart(b"%PDF-1.4")],
-            temperature=0.0,
-            max_output_tokens=64,
+        provider.generate_text(
+            model="m", system=None, parts=parts, temperature=0.0, max_output_tokens=64
         )
+
+
+# --- the shared base --------------------------------------------------------------------------------
+
+
+def test_the_shared_base_refuses_to_be_used_without_a_call_implementation():
+    """DelegatingProvider carries the three public methods for all three backends.
+
+    It is not usable on its own, and that has to fail loudly: a subclass that forgot `_call` would
+    otherwise return None from every method, and None has a `.text` nowhere - so the failure would
+    surface several frames away from the class that caused it.
+    """
+    base = DelegatingProvider()
+    with pytest.raises(NotImplementedError):
+        base.generate_text(model="m", system=None, parts=[TextPart("hi")], temperature=0.0)
+
+
+def test_every_provider_shares_one_implementation_of_the_public_methods():
+    # The duplication fix, asserted rather than assumed: if someone re-adds a forwarding copy to a
+    # provider, this notices. Three near-identical copies are what tripped the SonarCloud
+    # new-code duplication gate at 3.8% against a 3% threshold.
+    from app.services.llm.gemini import GeminiProvider
+    from app.services.llm.openai import OpenAIProvider
+
+    for method in ("generate_text", "generate_structured"):
+        assert getattr(VLLMProvider, method) is getattr(DelegatingProvider, method)
+        assert getattr(GeminiProvider, method) is getattr(DelegatingProvider, method)
+        assert getattr(OpenAIProvider, method) is getattr(DelegatingProvider, method)
+    # generate_choice is the documented exception: OpenAI has no bare-enum mode and must unwrap.
+    assert VLLMProvider.generate_choice is DelegatingProvider.generate_choice
+    assert GeminiProvider.generate_choice is DelegatingProvider.generate_choice
+    assert OpenAIProvider.generate_choice is not DelegatingProvider.generate_choice
 
 
 def test_part_order_survives_into_one_user_message(sent):

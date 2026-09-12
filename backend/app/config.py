@@ -8,7 +8,7 @@ instantiation fails fast if they are missing. Postgres + Redis + Vertex-only per
 from functools import lru_cache
 from urllib.parse import urlparse
 
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,6 +64,45 @@ def _origin(url: str) -> str:
         return ""
     port = port or (443 if parsed.scheme == "https" else 80)
     return f"{parsed.scheme}://{parsed.hostname}:{port}"
+
+
+@lru_cache(maxsize=16)
+def _parsed_overrides(raw: str) -> tuple[tuple[str, str], ...]:
+    """``LLM_BACKEND_OVERRIDES`` -> validated ``(stage, backend)`` pairs. Raises on anything unknown.
+
+    A CACHED MODULE FUNCTION rather than state on ``Settings``, and the reason is worth recording.
+    This was a ``PrivateAttr`` assigned during validation, which SonarCloud flagged as python:S5890 -
+    the annotation said ``dict[str, str]`` while the value assigned at class creation is a
+    ``ModelPrivateAttr``. Pydantic rewrites that, so the code behaved correctly and the complaint was
+    still fair. Deriving on demand removes the mutable attribute as well as the warning, and a
+    settings object with no derived mutable state is easier to reason about besides.
+
+    Returns a TUPLE of pairs rather than a dict: an lru_cache hands every caller the same object, and
+    a dict would let one of them mutate what the next receives.
+
+    Cached on the raw string, which is short and changes only when the environment does. An entry
+    that raises is not cached - the exception is simply re-raised on the next call, which is what we
+    want for a validator.
+    """
+    overrides: list[tuple[str, str]] = []
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        stage, separator, backend = entry.partition("=")
+        stage, backend = stage.strip().lower(), backend.strip().lower()
+        if not separator or stage not in _LLM_STAGES:
+            raise RuntimeError(
+                f"LLM_BACKEND_OVERRIDES entry {entry!r} does not name a known stage; "
+                f"expected 'stage=backend' with stage one of {list(_LLM_STAGES)}."
+            )
+        if backend not in _LLM_BACKENDS:
+            raise RuntimeError(
+                f"LLM_BACKEND_OVERRIDES sets stage {stage!r} to unknown backend {backend!r}; "
+                f"expected one of {list(_LLM_BACKENDS)}."
+            )
+        overrides.append((stage, backend))
+    return tuple(overrides)
 
 
 class Settings(BaseSettings):
@@ -242,10 +281,6 @@ class Settings(BaseSettings):
     # Comma-separated approved destination origins, honoured ONLY outside production - see
     # _approved_vllm_origins for why prod ignores rather than rejects it.
     vllm_approved_origins: str = ""
-    # Parsed form of llm_backend_overrides, filled by _derive. A PrivateAttr rather than a field so
-    # it cannot be set directly from the environment: the string is the contract with ops, and this
-    # is derived from it under validation.
-    _backend_overrides_map: dict[str, str] = PrivateAttr(default_factory=dict)
 
     # Which vendor answers the summarize stage's calls (body, title, audit). "gemini" is the current
     # behaviour and stays the default: the provider abstraction landed first specifically so it could
@@ -695,7 +730,7 @@ class Settings(BaseSettings):
         # Order matters, and it is stricter than before. The two vendor names are normalised directly
         # above and the override string is parsed next; all THREE helpers below branch on the result,
         # so none may run before that.
-        self._parse_backend_overrides()
+        self._validate_backend_selection()
         self._apply_gemini_call_defaults()
         self._validate_openai_provider()
         self._validate_vllm_backend()
@@ -775,8 +810,8 @@ class Settings(BaseSettings):
                 "Settings > Organization > Data controls > Data retention before setting this."
             )
 
-    def _parse_backend_overrides(self) -> None:
-        """Parse LLM_BACKEND_OVERRIDES into a stage -> backend map, refusing anything unrecognised.
+    def _validate_backend_selection(self) -> None:
+        """Refuse to start on a backend name or an override entry nobody can act on.
 
         Fails at startup on a typo rather than ignoring it. An ignored override leaves that stage on
         the backend it was already using while the operator believes it moved - which looks exactly
@@ -788,25 +823,9 @@ class Settings(BaseSettings):
                 f"LLM_BACKEND={self.llm_backend!r} is not a known backend; "
                 f"expected one of {list(_LLM_BACKENDS)}."
             )
-        overrides: dict[str, str] = {}
-        for item in (self.llm_backend_overrides or "").split(","):
-            item = item.strip()
-            if not item:
-                continue
-            stage, sep, backend = item.partition("=")
-            stage, backend = stage.strip().lower(), backend.strip().lower()
-            if not sep or stage not in _LLM_STAGES:
-                raise RuntimeError(
-                    f"LLM_BACKEND_OVERRIDES entry {item!r} does not name a known stage; "
-                    f"expected 'stage=backend' with stage one of {list(_LLM_STAGES)}."
-                )
-            if backend not in _LLM_BACKENDS:
-                raise RuntimeError(
-                    f"LLM_BACKEND_OVERRIDES sets stage {stage!r} to unknown backend {backend!r}; "
-                    f"expected one of {list(_LLM_BACKENDS)}."
-                )
-            overrides[stage] = backend
-        self._backend_overrides_map = overrides
+        # Called for its exceptions. The parsed result is cached, so every later backend_for on this
+        # process reuses it rather than re-validating.
+        _parsed_overrides(self.llm_backend_overrides)
 
     def resolved_backends(self) -> set[str]:
         """Every backend some stage can actually reach: the global default plus every override.
@@ -815,7 +834,8 @@ class Settings(BaseSettings):
         send PHI to a vendor the global setting never mentions, so a guard reading only the global
         value would pass while the traffic went elsewhere.
         """
-        return {self.llm_backend, *self._backend_overrides_map.values()}
+        overridden = (backend for _, backend in _parsed_overrides(self.llm_backend_overrides))
+        return {self.llm_backend, *overridden}
 
     def backend_for(self, stage: str) -> str:
         """The backend that answers one stage's calls.
@@ -827,7 +847,10 @@ class Settings(BaseSettings):
         """
         if stage not in _LLM_STAGES:
             raise KeyError(f"unknown stage {stage!r}; expected one of {list(_LLM_STAGES)}")
-        return self._backend_overrides_map.get(stage, self.llm_backend)
+        for overridden_stage, backend in _parsed_overrides(self.llm_backend_overrides):
+            if overridden_stage == stage:
+                return backend
+        return self.llm_backend
 
     def thinking_for(self, stage: str) -> int:
         """The Gemini thinking budget for one stage, preserving exactly today's per-stage values.

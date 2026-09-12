@@ -128,3 +128,97 @@ class LLMProvider(Protocol):
         `text` as the chosen string keeps callers identical across all three.
         """
         ...
+
+
+class DelegatingProvider:
+    """The three public methods, written ONCE, for providers whose only real difference is `_call`.
+
+    WHY THIS EXISTS, because it is not an abstraction someone reached for. Each provider had all
+    three methods spelled out, forwarding the same arguments in the same order to its own `_call`,
+    and SonarCloud measured the result on this change as 43.8% duplicated lines in `gemini.py` and
+    35.4% in `openai.py` - over the 3% new-code threshold and blocking the gate.
+
+    The duplication IS the shape rather than sloppy copying, which is why deleting lines could not
+    have fixed it: three vendors genuinely do expose the same three operations. So the shape moves
+    here and each provider keeps only what actually differs - how it builds and sends one request.
+
+    Subclasses implement `_call` and set `name`. A subclass may still override a public method where
+    the vendor needs more than forwarding: `OpenAIProvider.generate_choice` does, because chat
+    completions has no bare-enum mode and the reply has to be unwrapped.
+    """
+
+    def _call(
+        self,
+        *,
+        model: str,
+        system: str | None,
+        parts: list[Part],
+        temperature: float,
+        stage: str = _DEFAULT_STAGE,
+        max_output_tokens: int | None = None,
+        schema: dict[str, Any] | None = None,
+        choices: list[str] | None = None,
+    ) -> LLMResponse:
+        """Build and send one request. `schema` and `choices` are mutually exclusive."""
+        raise NotImplementedError
+
+    def generate_text(
+        self,
+        *,
+        model: str,
+        system: str | None,
+        parts: list[Part],
+        temperature: float,
+        stage: str = _DEFAULT_STAGE,
+        max_output_tokens: int | None = None,
+    ) -> LLMResponse:
+        return self._call(
+            model=model,
+            system=system,
+            parts=parts,
+            temperature=temperature,
+            stage=stage,
+            max_output_tokens=max_output_tokens,
+        )
+
+    def generate_structured(
+        self,
+        *,
+        model: str,
+        system: str | None,
+        parts: list[Part],
+        schema: dict[str, Any],
+        temperature: float,
+        stage: str = _DEFAULT_STAGE,
+        max_output_tokens: int | None = None,
+    ) -> LLMResponse:
+        return self._call(
+            model=model,
+            system=system,
+            parts=parts,
+            temperature=temperature,
+            stage=stage,
+            max_output_tokens=max_output_tokens,
+            schema=schema,
+        )
+
+    def generate_choice(
+        self,
+        *,
+        model: str,
+        system: str | None,
+        parts: list[Part],
+        choices: list[str],
+        temperature: float,
+        stage: str = _DEFAULT_STAGE,
+        max_output_tokens: int | None = None,
+    ) -> LLMResponse:
+        return self._call(
+            model=model,
+            system=system,
+            parts=parts,
+            temperature=temperature,
+            stage=stage,
+            max_output_tokens=max_output_tokens,
+            choices=choices,
+        )

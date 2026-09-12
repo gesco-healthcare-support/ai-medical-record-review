@@ -28,7 +28,7 @@ from typing import Any
 from app.config import get_settings
 from app.services import genai_metrics
 from app.services.llm import pacing
-from app.services.llm.base import _DEFAULT_STAGE, LLMResponse
+from app.services.llm.base import _DEFAULT_STAGE, DelegatingProvider, LLMResponse
 from app.services.llm.parts import DocumentPart, ImagePart, Part, TextPart
 from app.services.llm.tokens import estimate_tokens
 from app.worker.cancel import current_job_cancelled
@@ -211,8 +211,12 @@ def _record_attempt_failure(model: str, exc: Exception) -> None:
         pacing.record_rejection(_PROVIDER, model)
 
 
-class OpenAIProvider:
-    """LLMProvider over the OpenAI chat completions API."""
+class OpenAIProvider(DelegatingProvider):
+    """LLMProvider over the OpenAI chat completions API.
+
+    `generate_text` and `generate_structured` come from DelegatingProvider. `generate_choice` is
+    overridden below, because this is the one backend that cannot express a bare enum.
+    """
 
     name = "openai"
 
@@ -286,46 +290,6 @@ class OpenAIProvider:
             return _to_response(raw.parse())
         genai_metrics.record(model, genai_metrics.OUTCOME_EXHAUSTED)
         raise last
-
-    def generate_text(
-        self,
-        *,
-        model,
-        system,
-        parts,
-        temperature,
-        stage=_DEFAULT_STAGE,
-        max_output_tokens=None,
-    ):
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            stage=stage,
-            max_output_tokens=max_output_tokens,
-        )
-
-    def generate_structured(
-        self,
-        *,
-        model,
-        system,
-        parts,
-        schema,
-        temperature,
-        stage=_DEFAULT_STAGE,
-        max_output_tokens=None,
-    ):
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            stage=stage,
-            max_output_tokens=max_output_tokens,
-            schema=schema,
-        )
 
     def generate_choice(
         self,

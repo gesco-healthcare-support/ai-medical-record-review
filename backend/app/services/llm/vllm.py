@@ -43,9 +43,8 @@ from typing import Any
 from app.config import get_settings
 from app.services import genai_metrics
 from app.services.llm import pacing
-from app.services.llm.base import _DEFAULT_STAGE, LLMResponse
+from app.services.llm.base import _DEFAULT_STAGE, DelegatingProvider
 from app.services.llm.openai import _strict_schema, _to_messages, _to_response
-from app.services.llm.parts import Part
 from app.services.llm.tokens import estimate_tokens
 from app.worker.cancel import current_job_cancelled
 from app.worker.failures import JobCancelled
@@ -107,16 +106,22 @@ def _cached_client(api_key: str, base_url: str, read_s: float, connect_s: float)
     return _CLIENTS[key]
 
 
-def _retryable(exc) -> tuple[bool, float | None]:
-    """(should_retry, server_advised_delay_seconds).
+def _retryable(exc) -> bool:
+    """Whether this failure is worth another attempt.
 
-    THE DEADLINE CARVE-OUT is the difference from the OpenAI provider, and it is about money rather
-    than correctness. That module returns ``(True, None)`` for ``APITimeoutError``, which is right
-    against an API that has probably dropped the request. It is wrong against a GPU we are renting:
-    vLLM keeps generating after our client gives up, so retrying starts a SECOND generation while
-    the first still occupies the card. At ``genai_max_retries`` of 8 that is eight concurrent
-    generations of the same prompt, roughly sixteen minutes of rented GPU, and no answer at the end
-    of it. A read timeout means the deadline was wrong, and no amount of retrying fixes a deadline.
+    A PLAIN BOOL, unlike the OpenAI provider's ``(bool, delay)`` pair, and that is a correction. This
+    returned the pair too, for symmetry - but every one of its branches set the delay to None,
+    because vLLM sends no ``Retry-After`` (see ``_backoff``: the condition that header describes is
+    not how vLLM sheds load). So the caller's ``advised if advised is not None else _backoff(...)``
+    could never take its first arm. Symmetry with a sibling is not worth an unreachable branch.
+
+    THE DEADLINE CARVE-OUT is the real difference from the OpenAI provider, and it is about money
+    rather than correctness. That module retries ``APITimeoutError``, which is right against an API
+    that has probably dropped the request. It is wrong against a GPU we are renting: vLLM keeps
+    generating after our client gives up, so a retry starts a SECOND generation while the first still
+    occupies the card. At ``genai_max_retries`` of 8 that is eight concurrent generations of one
+    prompt, roughly sixteen minutes of rented GPU, and no answer at the end of it. A read timeout
+    means the deadline was wrong, and no amount of retrying fixes a deadline.
 
     A CONNECTION error is different and stays retryable: nothing was ever generating, and a tunnel
     that blinked during a pod restart is exactly what a retry is for.
@@ -124,17 +129,15 @@ def _retryable(exc) -> tuple[bool, float | None]:
     import openai
 
     if isinstance(exc, openai.APITimeoutError):
-        return False, None
+        return False
     if isinstance(exc, openai.APIConnectionError):
-        return True, None
+        return True
     status = getattr(exc, "status_code", None)
     # vLLM queues rather than rate-limiting, so a 429 should not arrive at all. Handled anyway in
     # case something sits in front of the endpoint, since treating it as fatal would be worse.
     if status == 429:
-        return True, None
-    if status is not None and 500 <= status < 600:
-        return True, None
-    return False, None
+        return True
+    return status is not None and 500 <= status < 600
 
 
 def _cancellable_sleep(total: float) -> None:
@@ -163,8 +166,56 @@ def _backoff(attempt: int) -> float:
     return random.uniform(0.0, ceiling)
 
 
-class VLLMProvider:
-    """LLMProvider over a self-hosted vLLM chat-completions endpoint."""
+def _request_kwargs(
+    *,
+    model,
+    system,
+    parts,
+    temperature,
+    max_output_tokens=None,
+    schema=None,
+    choices=None,
+) -> dict[str, Any]:
+    """The request body for one call.
+
+    Lifted out of ``_call``, which SonarCloud measured at cognitive complexity 16 against a ceiling
+    of 15 (python:S3776). The branches below were most of that, and they are a different concern
+    from the retry loop that stays behind - what to ASK for, rather than how many times to ask.
+    """
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": _to_messages(system, parts),
+        "temperature": temperature,
+        # Thinking off on every call. See the module docstring: with it on, 5.3% of rows on a long
+        # record returned nothing at all.
+        "extra_body": dict(_THINKING_OFF),
+    }
+    # Optional, unlike the OpenAI provider. Four of the seven services that will route here set no
+    # cap today, and a seam that demands one forces callers to invent a number - a bug this repo has
+    # already shipped twice.
+    if max_output_tokens is not None:
+        kwargs["max_completion_tokens"] = max_output_tokens
+    if choices is not None:
+        # vLLM's native constrained choice, and a direct replacement for Gemini's enum mode - so the
+        # two services that need it are a parameter swap rather than a rewrite. It rides in
+        # extra_body beside the thinking flag; `guided_choice` was the old spelling and was REMOVED
+        # in v0.12.0, well below the version we serve.
+        kwargs["extra_body"]["structured_outputs"] = {"choice": list(choices)}
+    elif schema is not None:
+        # No "strict" key: vLLM drops it (see the module docstring). _strict_schema is what actually
+        # enforces the shape, by writing the constraint into the schema itself.
+        kwargs["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "structured_output", "schema": _strict_schema(schema)},
+        }
+    return kwargs
+
+
+class VLLMProvider(DelegatingProvider):
+    """LLMProvider over a self-hosted vLLM chat-completions endpoint.
+
+    The three public methods come from DelegatingProvider; only ``_call`` differs between backends.
+    """
 
     name = "vllm"
 
@@ -186,36 +237,15 @@ class VLLMProvider:
         # backend would reintroduce exactly the failure the module docstring records.
         del stage
         settings = get_settings()
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": _to_messages(system, parts),
-            "temperature": temperature,
-            # Thinking off on every call. See the module docstring: with it on, 5.3% of rows on a
-            # long record returned nothing at all.
-            "extra_body": dict(_THINKING_OFF),
-        }
-        # Optional, unlike the OpenAI provider. Four of the seven services that will route here set
-        # no cap today, and a seam that demands one forces callers to invent a number - a bug this
-        # repo has already shipped twice.
-        if max_output_tokens is not None:
-            kwargs["max_completion_tokens"] = max_output_tokens
-        if choices is not None:
-            # vLLM's native constrained choice, and a direct replacement for Gemini's enum mode - so
-            # the two services that need it are a parameter swap rather than a rewrite. It rides in
-            # extra_body beside the thinking flag; `guided_choice` was the old spelling and was
-            # REMOVED in v0.12.0, well below the version we serve.
-            kwargs["extra_body"]["structured_outputs"] = {"choice": list(choices)}
-        elif schema is not None:
-            # No "strict" key: vLLM drops it (see the module docstring). _strict_schema is what
-            # actually enforces the shape, by writing the constraint into the schema itself.
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "structured_output",
-                    "schema": _strict_schema(schema),
-                },
-            }
-
+        kwargs = _request_kwargs(
+            model=model,
+            system=system,
+            parts=parts,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            schema=schema,
+            choices=choices,
+        )
         est_tokens = estimate_tokens(parts, system, _PROVIDER)
         client = _client()
         last = None
@@ -232,13 +262,12 @@ class VLLMProvider:
             try:
                 completion = client.chat.completions.create(**kwargs)
             except Exception as exc:  # noqa: BLE001 - classified immediately below
-                retry, advised = _retryable(exc)
                 genai_metrics.record(model, genai_metrics.OUTCOME_SERVER_ERROR)
-                if not retry:
+                if not _retryable(exc):
                     raise
                 last = exc
                 if attempt < settings.genai_max_retries - 1:
-                    _cancellable_sleep(advised if advised is not None else _backoff(attempt))
+                    _cancellable_sleep(_backoff(attempt))
                 continue
             genai_metrics.record(model, genai_metrics.OUTCOME_ACCEPTED)
             # Recorded for symmetry with the other providers, though it can only ever raise the rate
@@ -247,65 +276,3 @@ class VLLMProvider:
             return _to_response(completion)
         genai_metrics.record(model, genai_metrics.OUTCOME_EXHAUSTED)
         raise last
-
-    def generate_text(
-        self,
-        *,
-        model: str,
-        system: str | None,
-        parts: list[Part],
-        temperature: float,
-        stage: str = _DEFAULT_STAGE,
-        max_output_tokens: int | None = None,
-    ) -> LLMResponse:
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            stage=stage,
-            max_output_tokens=max_output_tokens,
-        )
-
-    def generate_structured(
-        self,
-        *,
-        model: str,
-        system: str | None,
-        parts: list[Part],
-        schema: dict[str, Any],
-        temperature: float,
-        stage: str = _DEFAULT_STAGE,
-        max_output_tokens: int | None = None,
-    ) -> LLMResponse:
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            stage=stage,
-            max_output_tokens=max_output_tokens,
-            schema=schema,
-        )
-
-    def generate_choice(
-        self,
-        *,
-        model: str,
-        system: str | None,
-        parts: list[Part],
-        choices: list[str],
-        temperature: float,
-        stage: str = _DEFAULT_STAGE,
-        max_output_tokens: int | None = None,
-    ) -> LLMResponse:
-        """One value from a fixed list, returned bare - no unwrapping, unlike the OpenAI path."""
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            stage=stage,
-            max_output_tokens=max_output_tokens,
-            choices=choices,
-        )
