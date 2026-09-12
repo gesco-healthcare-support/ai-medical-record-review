@@ -230,7 +230,24 @@ class OpenAIProvider(DelegatingProvider):
         stage=_DEFAULT_STAGE,
         max_output_tokens=None,
         schema=None,
+        choices=None,
     ):
+        # `choices` is accepted to match the base class, and MUST be None here. That is a real
+        # coupling rather than a formality, and it was latent until the shared base landed:
+        # DelegatingProvider.generate_choice forwards choices= to self._call, and this backend
+        # survives only because it ALSO overrides generate_choice (below) and turns the choice into a
+        # schema first. Delete that override - and the hierarchy invites it, since "the base handles
+        # it now" is exactly what it looks like - and the base calls this with choices= and raises an
+        # opaque TypeError several frames from the class that caused it.
+        #
+        # Rejected rather than quietly ignored, because a parameter that looks load-bearing and does
+        # nothing is the same trap as sending `store` to vLLM. A raise rather than an assert, because
+        # assertions vanish under python -O and this is the frame where the message is useful.
+        if choices is not None:
+            raise TypeError(
+                "OpenAI has no bare-enum mode, so a choice travels as a one-property schema. "
+                "Call generate_choice, which wraps it and unwraps the reply."
+            )
         # `stage` is accepted and deliberately unused here. It exists so callers can name what they
         # are doing without knowing which backend answers; on Gemini it selects a thinking budget and
         # on vLLM it does not need to, because thinking is off unconditionally. OpenAI has its own

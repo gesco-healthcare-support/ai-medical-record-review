@@ -203,6 +203,65 @@ def test_an_empty_choice_list_does_not_crash():
     assert _to_response(empty).text == ""
 
 
+# --- constrained choice -----------------------------------------------------------------------------
+#
+# This backend is the odd one out. Gemini has a native enum mode and vLLM has structured_outputs
+# choice; chat completions has neither, so the value travels as a one-property object and is
+# unwrapped here. Callers must not be able to tell - if the unwrapping leaked upward, every caller
+# would need to know which vendor answered, which is what the seam exists to hide.
+
+
+def test_generate_choice_returns_the_bare_value_rather_than_the_wrapper(monkeypatch):
+    from app.services.llm import openai as provider
+
+    sent = {}
+
+    class _WithRawResponse:
+        def create(self, **kwargs):
+            sent.update(kwargs)
+            return _Raw(_Completion('{"choice": "category_03"}'))
+
+    class _Completions:
+        with_raw_response = _WithRawResponse()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    monkeypatch.setattr(provider, "_client", lambda: _Client())
+    monkeypatch.setattr(provider.pacing, "acquire", lambda *a, **k: True)
+    monkeypatch.setattr(provider.pacing, "record_success", lambda *a, **k: None)
+    monkeypatch.setattr(provider.pacing, "observe_limits", lambda *a, **k: None)
+
+    result = OpenAIProvider().generate_choice(
+        model="m",
+        system=None,
+        parts=[TextPart("hi")],
+        choices=["category_03", "category_04"],
+        temperature=0.0,
+    )
+    assert result.text == "category_03"
+    # And the request really did constrain the model to those two values, rather than asking politely.
+    schema = sent["response_format"]["json_schema"]["schema"]
+    assert schema["properties"]["choice"]["enum"] == ["category_03", "category_04"]
+
+
+def test_an_unparseable_choice_raises_rather_than_returning_empty():
+    """The failure mode that matters, and the reason this raises instead of degrading.
+
+    An empty string would look exactly like a legitimate answer of "no category" to the
+    categorization caller. A silent wrong label is worse than a visible failure, which is the whole
+    reason this path is schema-constrained in the first place.
+    """
+    from app.services.llm.openai import _unwrap_choice
+
+    for reply in ("not json at all", '{"something_else": 1}', "[]"):
+        with pytest.raises(ValueError, match="expected a JSON object"):
+            _unwrap_choice(reply)
+
+
 # --- retry policy ---------------------------------------------------------------------------------
 
 
