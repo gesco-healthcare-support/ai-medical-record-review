@@ -324,8 +324,32 @@ def test_the_shared_base_refuses_to_be_used_without_a_call_implementation():
     surface several frames away from the class that caused it.
     """
     base = DelegatingProvider()
+    # Parts built outside the block, for the same reason as the PDF test above (python:S5778): with
+    # the TextPart construction inside it, anything IT raised would satisfy the assertion too. I
+    # introduced this one in the same push that fixed its twin, which is its own small lesson.
+    parts = [TextPart("hi")]
     with pytest.raises(NotImplementedError):
-        base.generate_text(model="m", system=None, parts=[TextPart("hi")], temperature=0.0)
+        base.generate_text(model="m", system=None, parts=parts, temperature=0.0)
+
+
+def test_the_openai_call_rejects_a_choices_argument_it_cannot_honour():
+    """The coupling the shared base created, pinned so a later reader cannot walk into it.
+
+    DelegatingProvider.generate_choice forwards choices= to self._call. OpenAI survives that only
+    because it ALSO overrides generate_choice and converts the choice into a one-property schema
+    first. Delete the override - and the hierarchy invites exactly that, since "the base handles it
+    now" is what it looks like - and the base reaches _call with choices= set.
+
+    Before this guard that was an opaque TypeError about an unexpected keyword argument, raised
+    several frames from the class responsible. Now it names the actual rule.
+    """
+    from app.services.llm.openai import OpenAIProvider
+
+    parts = [TextPart("hi")]
+    with pytest.raises(TypeError, match="no bare-enum mode"):
+        OpenAIProvider()._call(
+            model="m", system=None, parts=parts, temperature=0.0, choices=["a", "b"]
+        )
 
 
 def test_every_provider_shares_one_implementation_of_the_public_methods():
