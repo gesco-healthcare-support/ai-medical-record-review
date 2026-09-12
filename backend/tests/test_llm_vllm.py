@@ -345,11 +345,14 @@ def test_the_openai_call_rejects_a_choices_argument_it_cannot_honour():
     """
     from app.services.llm.openai import OpenAIProvider
 
+    # BOTH the provider and the parts are built outside the block, not just the data (python:S5778
+    # counts a constructor as an invocation). I got this wrong here while fixing the same rule twice
+    # elsewhere in this file, which says my model of it was "hoist the data" when the rule is
+    # actually "hoist everything except the single call under test".
+    provider = OpenAIProvider()
     parts = [TextPart("hi")]
     with pytest.raises(TypeError, match="no bare-enum mode"):
-        OpenAIProvider()._call(
-            model="m", system=None, parts=parts, temperature=0.0, choices=["a", "b"]
-        )
+        provider._call(model="m", system=None, parts=parts, temperature=0.0, choices=["a", "b"])
 
 
 def test_every_provider_shares_one_implementation_of_the_public_methods():
