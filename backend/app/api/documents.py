@@ -1481,12 +1481,14 @@ def resummarize(
     # the column's own definition, where that combination means "summarized off the readable pages,
     # with a notice appended".
     #
-    # The other four are attribution: `summaries.model` is the column the pro-versus-flash quality
-    # work groups by, and the fingerprints are how a summary is traced to the prompt text that wrote
-    # it. A re-draft left all five describing a body that no longer exists.
+    # The other five are attribution: `summaries.model` is the column the pro-versus-flash quality
+    # work groups by, `backend` says which vendor served the calls, and the fingerprints are how a
+    # summary is traced to the prompt text that wrote it. A re-draft left all six describing a body
+    # that no longer exists.
     summary.model = output.get("model")
     summary.title_model = output.get("titleModel")
     summary.audit_model = output.get("auditModel")
+    summary.backend = output.get("backend")
     summary.prompt_fingerprint = output.get("promptFingerprint")
     summary.audit_fingerprint = output.get("auditFingerprint")
     # Fresh model output supersedes the prior hand-edits for this row.

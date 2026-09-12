@@ -178,15 +178,26 @@ def create_job(
     from app.services.provenance import job_prompt_fingerprint
 
     settings = get_settings()
+    backend = None
     if kind == "summarize":
         title_model = title_model or settings.model_for("title")
         audit_model = audit_model or settings.model_for("audit")
+        # Resolved ONCE here, for exactly the reason the models are: a job resumed after a config
+        # change must keep the backend it started with, or one delivered document ends up written by
+        # two vendors with no record of which wrote what.
+        #
+        # ONLY the summarize kind is stamped. The other kinds still call google-genai directly and do
+        # not cross the provider seam until PR 2 and PR 3, so stamping them here would record an
+        # intention rather than an observation - and a column that says "vllm" about a call that went
+        # to Gemini is worse than one that says nothing.
+        backend = settings.backend_for("summarize")
     job = Job(
         document_id=document_id,
         kind=kind,
         model=model,
         title_model=title_model,
         audit_model=audit_model,
+        backend=backend,
         prompt_version=prompt_version,
         prompt_fingerprint=job_prompt_fingerprint(session, kind),
         build_sha=settings.build_sha,

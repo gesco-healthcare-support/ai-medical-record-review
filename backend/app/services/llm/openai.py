@@ -18,15 +18,17 @@ PHI CONSTRAINTS - these are not style choices:
 """
 
 import base64
+import json
 import logging
 import random
 import time
+from dataclasses import replace
 from typing import Any
 
 from app.config import get_settings
 from app.services import genai_metrics
 from app.services.llm import pacing
-from app.services.llm.base import LLMResponse
+from app.services.llm.base import _DEFAULT_STAGE, DelegatingProvider, LLMResponse
 from app.services.llm.parts import DocumentPart, ImagePart, Part, TextPart
 from app.services.llm.tokens import estimate_tokens
 from app.worker.cancel import current_job_cancelled
@@ -209,22 +211,44 @@ def _record_attempt_failure(model: str, exc: Exception) -> None:
         pacing.record_rejection(_PROVIDER, model)
 
 
-class OpenAIProvider:
-    """LLMProvider over the OpenAI chat completions API."""
+class OpenAIProvider(DelegatingProvider):
+    """LLMProvider over the OpenAI chat completions API.
+
+    `generate_text` and `generate_structured` come from DelegatingProvider. `generate_choice` is
+    overridden below, because this is the one backend that cannot express a bare enum.
+    """
 
     name = "openai"
 
-    def _call(self, *, model, system, parts, temperature, max_output_tokens, schema=None):
+    def _call(
+        self,
+        *,
+        model,
+        system,
+        parts,
+        temperature,
+        stage=_DEFAULT_STAGE,
+        max_output_tokens=None,
+        schema=None,
+    ):
+        # `stage` is accepted and deliberately unused here. It exists so callers can name what they
+        # are doing without knowing which backend answers; on Gemini it selects a thinking budget and
+        # on vLLM it does not need to, because thinking is off unconditionally. OpenAI has its own
+        # notion (`reasoning_effort`) that this pipeline has never set, and wiring one in silently
+        # from a stage name would change what the models do with no measurement behind it.
+        del stage
         settings = get_settings()
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": _to_messages(system, parts),
             "temperature": temperature,
-            "max_completion_tokens": max_output_tokens,
             # PHI: never retain. ZDR forces this server-side; sending it means a misconfigured org
             # fails safe rather than silently storing a medical record.
             "store": False,
         }
+        # Optional, matching the seam: four of the services that cross it set no cap today.
+        if max_output_tokens is not None:
+            kwargs["max_completion_tokens"] = max_output_tokens
         if schema is not None:
             kwargs["response_format"] = {
                 "type": "json_schema",
@@ -267,24 +291,37 @@ class OpenAIProvider:
         genai_metrics.record(model, genai_metrics.OUTCOME_EXHAUSTED)
         raise last
 
-    def generate_text(self, *, model, system, parts, temperature, max_output_tokens):
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-        )
+    def generate_choice(
+        self,
+        *,
+        model,
+        system,
+        parts,
+        choices,
+        temperature,
+        stage=_DEFAULT_STAGE,
+        max_output_tokens=None,
+    ):
+        """One value from a fixed list.
 
-    def generate_structured(self, *, model, system, parts, schema, temperature, max_output_tokens):
-        return self._call(
+        Chat completions has no bare-enum mode, so the choice travels as a one-property object and is
+        unwrapped here. Callers get the same bare string every backend returns - if the unwrapping
+        lived in the callers instead, each would have to know which vendor answered, which is the
+        thing this seam exists to hide.
+        """
+        response = self._call(
             model=model,
             system=system,
             parts=parts,
             temperature=temperature,
+            stage=stage,
             max_output_tokens=max_output_tokens,
-            schema=schema,
+            schema={
+                "type": "object",
+                "properties": {_CHOICE_KEY: {"type": "string", "enum": list(choices)}},
+            },
         )
+        return replace(response, text=_unwrap_choice(response.text))
 
 
 def _backoff(attempt: int, advised: float | None) -> float:
@@ -294,6 +331,24 @@ def _backoff(attempt: int, advised: float | None) -> float:
         return min(advised + random.uniform(0.0, 1.0), settings.genai_retry_max_delay)
     ceiling = min(settings.genai_retry_max_delay, settings.genai_retry_base_delay * (2**attempt))
     return random.uniform(0.0, ceiling)
+
+
+# The property a choice is wrapped in on this backend. Arbitrary, and never seen by a caller.
+_CHOICE_KEY = "choice"
+
+
+def _unwrap_choice(text: str) -> str:
+    """Pull the chosen value out of the one-property object OpenAI returns for an enum.
+
+    Raises rather than returning "" on a reply that will not parse. An empty string here would look
+    exactly like a legitimate answer of "no category" to the categorization caller, and the whole
+    reason this path is schema-constrained is that a silent wrong label is worse than a failure.
+    """
+    try:
+        payload = json.loads(text)
+        return str(payload[_CHOICE_KEY])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"expected a JSON object holding {_CHOICE_KEY!r}, got {text!r}") from exc
 
 
 def _to_response(completion) -> LLMResponse:

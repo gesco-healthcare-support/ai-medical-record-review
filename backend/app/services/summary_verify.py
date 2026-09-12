@@ -250,6 +250,9 @@ def verify_summary(
             parts=[TextPart(prompt)],
             schema=_RESPONSE_SCHEMA,
             temperature=0.0,
+            # The audit runs inside the summarize stage and has always shared its thinking budget;
+            # naming the stage keeps that true rather than leaving it to the seam's default.
+            stage="summarize",
             # The reply must hold a corrected copy of the whole summary AND (on a thinking model)
             # the reasoning tokens, which are billed against this same budget. At 4096 a long
             # category-1 or diagnostic summary came back as truncated JSON, which the parse then

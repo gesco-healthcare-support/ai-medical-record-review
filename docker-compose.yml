@@ -90,10 +90,34 @@ x-backend-env: &backend-env
   # example because the drift is the point, and because this comment outlived the bug it
   # described and has since been read as live by two people writing PRs against this file.
   PAGE_TEXT_WORKERS: ${PAGE_TEXT_WORKERS:-6}
-  # Which vendor answers the summarize stage (body, title, audit). Named here now, while the only
-  # valid value is "gemini", so the key is live the day a second provider exists - rather than being
-  # added later and silently doing nothing, which is what happened to VERTEX_MAX_RPM and
-  # PIPELINE_WORKERS. Fallback mirrors app/config.py.
+  # Which backend answers model calls across the WHOLE pipeline: gemini, openai or vllm. This is the
+  # switch; SUMMARY_PROVIDER below is the older, summarize-only one it supersedes. Both are named
+  # here for the reason every block in this file repeats: an unreferenced key never reaches a
+  # container. Fallbacks mirror app/config.py, so an unset key behaves exactly as before.
+  LLM_BACKEND: ${LLM_BACKEND:-gemini}
+  # Per-stage routing, "stage=backend" pairs. A typo refuses startup rather than being ignored.
+  LLM_BACKEND_OVERRIDES: ${LLM_BACKEND_OVERRIDES:-}
+  # Self-hosted vLLM. Read only when some stage resolves to that backend, at which point the app
+  # refuses to start without a base URL and a model - and in production refuses a base URL whose
+  # origin is not approved in app/config.py.
+  VLLM_BASE_URL: ${VLLM_BASE_URL:-}
+  VLLM_API_KEY: ${VLLM_API_KEY:-}
+  VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}
+  VLLM_READ_TIMEOUT_S: ${VLLM_READ_TIMEOUT_S:-600.0}
+  # 0 = pacing OFF, which is where these ship. vLLM queues rather than returning 429, so the AIMD
+  # controller gets no feedback and the ceiling becomes the only control; every throughput number we
+  # have came from a sweep that sent no schema, so none can set these honestly yet.
+  VLLM_MAX_RPM: ${VLLM_MAX_RPM:-0}
+  VLLM_MAX_TPM: ${VLLM_MAX_TPM:-0}
+  # CVE floor, checked at startup against the server's own GET /version.
+  VLLM_MIN_VERSION: ${VLLM_MIN_VERSION:-0.24.0}
+  # Extra approved PHI destinations. IGNORED in production by design - there the list in
+  # app/config.py is the only one, so widening it is a reviewed diff and a deploy.
+  VLLM_APPROVED_ORIGINS: ${VLLM_APPROVED_ORIGINS:-}
+  # Which vendor answers the summarize stage (body, title, audit) - the older, narrower switch, kept
+  # because deployments set it today. It never moved the rest of the pipeline: seven services call
+  # google-genai directly and never consulted it. Prefer LLM_BACKEND above. While both exist this one
+  # still wins for the summarize stage, so an upgrade cannot silently move live traffic.
   SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-gemini}
   # Read ONLY when SUMMARY_PROVIDER=openai. No fallbacks: the app refuses to start if the provider
   # is openai and any of these is unset, because a silent default model is how something unvalidated

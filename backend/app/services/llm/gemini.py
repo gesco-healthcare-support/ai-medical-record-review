@@ -13,7 +13,7 @@ from google.genai import types
 from app.config import get_settings
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
-from app.services.llm.base import LLMResponse
+from app.services.llm.base import _DEFAULT_STAGE, DelegatingProvider, LLMResponse
 from app.services.llm.parts import DocumentPart, ImagePart, Part, TextPart
 from app.services.llm.tokens import estimate_tokens
 
@@ -119,26 +119,56 @@ def _usage(response) -> tuple[int | None, int | None]:
     )
 
 
-class GeminiProvider:
-    """LLMProvider over google-genai."""
+class GeminiProvider(DelegatingProvider):
+    """LLMProvider over google-genai.
+
+    The three public methods come from DelegatingProvider - they were identical forwarding here, in
+    openai.py and in vllm.py, which is what tripped the duplication gate.
+    """
 
     name = "gemini"
 
-    def _call(self, *, model, system, parts, temperature, max_output_tokens, schema=None):
+    def _call(
+        self,
+        *,
+        model,
+        system,
+        parts,
+        temperature,
+        stage=_DEFAULT_STAGE,
+        max_output_tokens=None,
+        schema=None,
+        choices=None,
+    ):
         settings = get_settings()
         config_kwargs: dict[str, Any] = {
             "temperature": temperature,
-            "max_output_tokens": max_output_tokens,
-            # summary_model is a thinking model (2.5-pro) that rejects the retry seam's default
-            # budget of 0 with a 400. Setting it explicitly here is what stopped that rejection
-            # being silent - see summary_doi, where the same omission made every call return "-".
-            "thinking_config": types.ThinkingConfig(
-                thinking_budget=settings.summary_thinking_budget
-            ),
+            # Resolved PER STAGE now instead of always taking summary_thinking_budget. NO VALUE
+            # CHANGES for the two call sites that predate this: both are the summarize stage, and
+            # thinking_for("summarize") returns exactly that setting. What it fixes is the seven
+            # services routed through here by PR 2 and PR 3, each of which needs its own budget and
+            # would otherwise have silently inherited the summarize one.
+            #
+            # Sent explicitly rather than omitted, which is the older lesson and still holds:
+            # 2.5-pro rejects the retry seam's default budget of 0 with a 400, and omitting this
+            # made every summary_doi call return "-" without saying why.
+            "thinking_config": types.ThinkingConfig(thinking_budget=settings.thinking_for(stage)),
         }
+        # Optional: four of the services crossing this seam set no cap at all, and demanding one
+        # forces the caller to invent a number.
+        if max_output_tokens is not None:
+            config_kwargs["max_output_tokens"] = max_output_tokens
         if system:
             config_kwargs["system_instruction"] = system
-        if schema is not None:
+        if choices is not None:
+            # Gemini's native enum mode: the reply is one of these strings verbatim, not a JSON
+            # object wrapping one. This is the capability the seam could not express, which is why
+            # classification and the verify pass called google-genai directly instead.
+            config_kwargs["response_mime_type"] = "text/x.enum"
+            config_kwargs["response_schema"] = to_gemini_schema(
+                {"type": "string", "enum": list(choices)}
+            )
+        elif schema is not None:
             config_kwargs["response_mime_type"] = "application/json"
             config_kwargs["response_schema"] = to_gemini_schema(schema)
         response = generate_with_retry(
@@ -157,23 +187,4 @@ class GeminiProvider:
             truncated=_hit_token_cap(response),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-        )
-
-    def generate_text(self, *, model, system, parts, temperature, max_output_tokens):
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-        )
-
-    def generate_structured(self, *, model, system, parts, schema, temperature, max_output_tokens):
-        return self._call(
-            model=model,
-            system=system,
-            parts=parts,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            schema=schema,
         )

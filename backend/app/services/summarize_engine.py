@@ -557,9 +557,24 @@ def _generate(model, system_msg, contents, temperature, max_output_tokens=None):
         system=system_msg,
         parts=parts,
         temperature=temperature,
+        # Named explicitly even though it is the seam's default, because the default exists to keep
+        # thirty-odd monkeypatched test seams working rather than to express intent. On Gemini this
+        # selects summary_thinking_budget, which is the value this call already took.
+        stage="summarize",
         max_output_tokens=max_output_tokens,
     )
     return response.text, response.truncated
+
+
+def _backend_name() -> str:
+    """Which backend is answering the summarize stage's calls right now.
+
+    Read off the PROVIDER rather than out of config, so a row records what answered rather than what
+    the settings happened to say when somebody reads them afterwards. The two can differ: config is
+    what the process booted with, and this is the object the call actually went through.
+    `get_provider` is cached, so this costs a dict lookup.
+    """
+    return get_provider().name
 
 
 def _page_dpi(reader, page, settings):
@@ -901,6 +916,9 @@ def _unreadable_output(row, unreadable_pages) -> dict:
         "bodyFallbackFrom": None,
         "titleModel": None,
         "auditModel": None,
+        # Nothing ran, so no backend answered. NULL here means the same as NULL in the model fields
+        # beside it - not "Gemini by default".
+        "backend": None,
         "promptFingerprint": None,
         "auditFingerprint": None,
         "unreadablePages": pages,
@@ -1435,6 +1453,14 @@ def summarize_row(
         "bodyFallbackFrom": body_fallback_from,
         "titleModel": title_model,
         "auditModel": audit_model_used,
+        # WHICH BACKEND answered, beside which model did. Read from the provider that actually served
+        # the call rather than from config, so a row records what happened rather than what was
+        # configured at the moment somebody later reads the settings.
+        #
+        # One value covers all three calls: body, title and audit are all the summarize stage, so
+        # they resolve to the same backend. Whether each call RAN is already answered by its model
+        # field being NULL or not, so a per-call backend would add no fact.
+        "backend": _backend_name(),
         "promptFingerprint": prompt_fingerprint,
         "auditFingerprint": audit_fingerprint,
         # Pages the recognizer could not read. Non-empty here means this row WAS summarized, off the
