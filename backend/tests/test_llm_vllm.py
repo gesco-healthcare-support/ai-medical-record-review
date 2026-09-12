@@ -364,3 +364,69 @@ def test_truncation_and_usage_come_back_normalised(sent):
     result = _run_vllm()
     assert result.truncated is False
     assert (result.input_tokens, result.output_tokens) == (11, 22)
+
+
+# --- registry, cancellation and exhaustion ----------------------------------------------------------
+
+
+def test_the_registry_returns_the_vllm_provider_by_name():
+    # get_provider is how every call site reaches a backend, and "vllm" was a name it rejected until
+    # this change. Requested BY NAME it must answer literally, whatever llm_backend says - the
+    # benchmark harness depends on that, since a judge following config would score its own arm.
+    from app.services.llm import get_provider
+
+    get_provider.cache_clear()
+    try:
+        assert get_provider("vllm").name == "vllm"
+        assert get_provider("gemini").name == "gemini"
+    finally:
+        get_provider.cache_clear()
+
+
+def test_an_unknown_backend_name_is_rejected_rather_than_defaulted():
+    # Falling back to Gemini on a typo would send records to a vendor nobody selected.
+    from app.services.llm import get_provider
+
+    get_provider.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="unknown LLM provider"):
+            get_provider("qwen")
+    finally:
+        get_provider.cache_clear()
+
+
+def test_backoff_is_abandoned_when_the_job_is_cancelled(monkeypatch):
+    # Without this, a job wedged in backoff cannot notice the stop button until the whole wait is
+    # served - which is exactly the case a reviewer wants to kill. The vLLM path needs its own
+    # cancellable sleep because it runs its own retry loop.
+    from app.services.llm import vllm as provider
+    from app.worker.failures import JobCancelled
+
+    monkeypatch.setattr(provider, "current_job_cancelled", lambda: True)
+    with pytest.raises(JobCancelled):
+        provider._cancellable_sleep(30.0)
+
+
+def test_a_sleep_completes_when_the_job_is_not_cancelled(monkeypatch):
+    # The control for the test above: proving it raises is only half the guarantee, since a version
+    # that raised unconditionally would also pass that one.
+    from app.services.llm import vllm as provider
+
+    monkeypatch.setattr(provider, "current_job_cancelled", lambda: False)
+    monkeypatch.setattr(provider.time, "sleep", lambda _s: None)
+    provider._cancellable_sleep(3.0)
+
+
+def test_the_retry_budget_is_exhausted_and_the_last_error_is_raised(monkeypatch):
+    # A sustained outage must end as the real error rather than as None, which is what a bare
+    # `raise last` produces if the loop never recorded one.
+    import openai
+
+    from app.config import get_settings
+
+    attempts = get_settings().genai_max_retries
+    conn = openai.APIConnectionError.__new__(openai.APIConnectionError)
+    state = _provider_with(monkeypatch, [conn for _ in range(attempts)])
+    with pytest.raises(openai.APIConnectionError):
+        _run_vllm()
+    assert state["i"] == attempts
