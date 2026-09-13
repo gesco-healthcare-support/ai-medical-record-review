@@ -1687,10 +1687,14 @@ def test_a_laboratory_discharge_summary_stays_a_laboratory_result():
 def test_an_emergency_patient_record_is_a_visit(title):
     """Answered 2026-09-13 on the form itself: "the first one can be treated like a visit".
 
-    It had to move OUT of the administrative alternation to get here. That alternation is checked
-    before the document-type rules, so while the phrase sat there this answer was unreachable no
-    matter what the emergency-department rule said - which is the same precedence trap #222 records
-    from the other direction.
+    It also left the administrative alternation. An earlier version of this docstring said that
+    removal was what made the answer reachable; that is FALSE, and the correction is the useful
+    part. Measured with the phrase restored to the alternation AND present in the
+    emergency-department rule, `match_rules` still answers 1 - because a document-type rule
+    outranks an administrative hit, which `match_rules`' own docstring states and
+    `test_a_wrapper_naming_a_real_document_still_answers_the_document` already pins.
+
+    So the removal buys the two lists agreeing about what this document is, not reachability.
 
     The phrase reached that list from a human exclusion list naming it verbatim (#134), so this is
     the second time on this PR that exclusion-list evidence has been overturned by asking. The

@@ -139,8 +139,14 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         + r"|\b(er|emergency room) registration\b|\bconditions of admission\b"
         # `emergency patient record` was HERE until 2026-09-13, when the reviewer was shown the
         # actual form and answered "the first one can be treated like a visit". It now has its own
-        # answer beside the emergency-department rule. Removing it from this alternation is what
-        # lets that rule reach it: an administrative hit would otherwise claim it first.
+        # answer beside the emergency-department rule.
+        #
+        # Removing it here was NOT what made that answer reachable - measured, because the first
+        # version of this note claimed it was. A document-type rule already outranks an
+        # administrative hit (`match_rules` returns the first non-evaluator `_RULES` match even
+        # when the title is administrative), so the rule alone answers 1 with the phrase still
+        # sitting here. What the removal buys is that the two lists stop disagreeing about what
+        # this document IS - which matters the next time somebody edits either one.
         + r"|\b(admission|inpatient) record\b|\bmedication administration\b"
         + r"|\bed care timeline\b",
         # EXCERPTED / REVIEWED RECORDS, and the anchors are the whole point (#222).
@@ -580,9 +586,12 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # three-page form rather than the phrase and answered "the first one can be treated like a
         # visit" - so this is a decision about a document he read, not about a title.
         #
-        # It moved OUT of the administrative alternation to get here, and that is the whole change:
-        # an administrative hit outranks nothing, but it is checked first, so leaving the phrase
-        # there would have made this alternative unreachable.
+        # It also left the administrative alternation, and the first version of this note said
+        # that was required to make this alternative reachable. That is FALSE and the correction
+        # is worth keeping: a document-type rule already beats an administrative hit, so this
+        # rule answers 1 either way. The removal is about the two lists agreeing, not about
+        # precedence. `match_rules`' own docstring is the authority - read it before assuming
+        # the administrative list wins.
         (
             r"emergency department\s+(?:record|report|visit)"
             + r"|\bed visit record\b"
