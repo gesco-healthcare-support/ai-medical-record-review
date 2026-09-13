@@ -585,8 +585,8 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # there would have made this alternative unreachable.
         (
             r"emergency department\s+(?:record|report|visit)"
-            r"|\bed visit record\b"
-            r"|\bemergency patient record\b",
+            + r"|\bed visit record\b"
+            + r"|\bemergency patient record\b",
             "1",
         ),
         # The emergency NURSING assessment form is NOT summarized, from the same reading: "the third
