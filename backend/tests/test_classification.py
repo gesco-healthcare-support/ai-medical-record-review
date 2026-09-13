@@ -400,14 +400,29 @@ def test_recurring_paperwork_is_answered_by_a_rule(title):
         "ED Care Timeline",
         # named in the excluded-pages list of the 229-page record
         #
-        # "Patient Referral" was HERE and was removed 2026-09-01. It is the one entry in this list
-        # whose evidence turned out to be the weak kind the list's own caveat warned about: named on
-        # ONE record's excluded pages, which establishes that it was excluded THERE. Asked directly,
-        # the answer was "Referral should be categorized as an authorization request", so it is now
-        # pinned at 10 by `test_a_referral_is_an_authorization_request`. Everything else here stands.
+        # "Patient Referral" was HERE and was removed 2026-09-01, then answered a third way on
+        # 2026-09-13. The full history, because this entry is the cautionary one:
+        #
+        #   #134   administrative, because this record's excluded-pages list named it
+        #   #233   10, on "Referral should be categorized as an authorization request"
+        #   now    100, on "Just leave it out. Referrals are not important."
+        #
+        # So the reading this list encoded was RIGHT, the direct answer that overturned it was
+        # the outlier, and the type is General again - pinned by `test_a_referral_is_not
+        # _summarized` rather than restored here, because the rule needs a start-anchor this
+        # alternation cannot give it. Everything else in this list stands.
         "Patient Signature Page",
-        "Emergency Patient Record",
-        # same family, and the type a facesheet arrives attached to
+        #
+        # "Emergency Patient Record" was HERE and was removed 2026-09-13 - the second entry
+        # to leave this list, and for the same reason as the first. The reviewer was sent the
+        # form itself rather than the phrase and answered "the first one can be treated like a
+        # visit", so it is now pinned at 1 by `test_an_emergency_patient_record_is_a_visit`.
+        #
+        # Twice now the caveat this list carries about its own evidence - named on ONE record's
+        # excluded pages establishes that it was excluded THERE, not that the type always is -
+        # has been the thing that decided. Everything remaining here stands.
+        #
+        # the same admission family, and the type a facesheet arrives attached to
         "Admission Record",
         "Inpatient Record",
     ],
@@ -478,7 +493,13 @@ def test_the_administrative_list_claims_nothing_clinical():
     """GUARDS the blast radius. Every transition measured was None -> 100; nothing that already
     reached a shipping category may start answering General."""
     for title, expected in [
-        ("Patient Referral", "10"),  # answered 2026-09-01, eight days before this list
+        # ("Patient Referral", "10") was HERE and was removed 2026-09-13. It is the single
+        # case where this guard's invariant was broken DELIBERATELY: asked a third time, the
+        # reviewer answered "Just leave it out. Referrals are not important", which moves the
+        # type out of a shipping category and into General - the direction this guard exists to
+        # catch. It fired on the change, which is the guard working rather than the guard being
+        # weakened. The rule's own note carries the full three-answer history and says plainly
+        # that the direction is the unsafe one. Every other entry below still stands.
         ("Progress Report", "1"),
         ("MRI of the Lumbar Spine", "3"),
         ("Operative Report", "8"),
@@ -508,28 +529,27 @@ def test_a_wrapper_naming_a_real_document_still_answers_the_document():
     assert classification.match_rules("Subpoena for Deposition Transcript") == "9"
 
 
-def test_medical_referral_still_answers_10_because_two_answers_disagree():
+def test_a_referral_is_left_out_because_the_third_answer_settled_it():
     # Raw, because the docstring quotes a regex: a bare `\s` in a docstring is an invalid
     # escape sequence and warned on every collection of this file.
-    r"""PINS AN UNRESOLVED CONFLICT rather than picking a side.
+    r"""THE CONFLICT THIS USED TO PIN IS RESOLVED, and the history is why it was worth asking.
 
-    "medical referral" was on the administrative list answered 2026-09-08 with "I wouldn't summarize
-    any of those documents". But #233 shipped `^\s*(?:patient|medical)?\s*referrals?\b -> 10` on
-    2026-09-01, from an equally direct answer: "Referral should be categorized as an authorization
-    request." That pattern names `medical` explicitly, so the two answers contradict each other
-    eight days apart.
+    This test asserted 10 and was named `..._still_answers_10_because_two_answers_disagree`. Three
+    readings, in order:
 
-    I first thought this was moot because no title on the box says "medical referral" - true of the
-    DATA, and irrelevant to the RULE, which claims the phrase regardless. This test is what caught
-    that.
+      #134        administrative, because one record's excluded-pages list named `patient referral`
+      #233        10, on "Referral should be categorized as an authorization request" (2026-09-01)
+      this        100, on "Just leave it out. Referrals are not important." (2026-09-13)
 
-    So the administrative alternation deliberately omits it and the shipped rule stands, because
-    reversing a decision from eight days earlier on an ambiguous later answer is the worse error:
-    it would move a document OUT of a category that ships, and that direction loses content
-    invisibly. Escalated for the reviewer to settle.
+    The second and third came from the same reviewer eight days apart and disagreed, so #233's rule
+    was left standing and the question was put a third time rather than guessed at. The third answer
+    is unambiguous, and it agrees with the exclusion-list reading #233 overturned.
+
+    What that records: the exclusion-list evidence was RIGHT here, the direct answer that overturned
+    it was the outlier, and asking again cost less than either guess would have.
     """
-    assert classification.match_rules("Patient Referral") == "10"
-    assert classification.match_rules("Medical Referral") == "10"
+    assert classification.match_rules("Patient Referral") == "100"
+    assert classification.match_rules("Medical Referral") == "100"
 
 
 # The other half of the same split. When this was written all three were blocked by `_DOCUMENT_NOUN`
@@ -1561,11 +1581,14 @@ def test_an_order_summary_is_administrative_and_is_not_over_claimed():
     "title",
     ["Referral", "Patient Referral", "Medical Referral", "Referral for Authorization", "referrals"],
 )
-def test_a_referral_is_an_authorization_request(title):
-    """REVERSES the earlier reading, and that is the point. `patient referral` was administrative on
-    the strength of one record's excluded-pages list naming it; #134 wrote the caveat beside that
-    evidence itself. 23 rows / 46 pages move out of General, unchecked, into a category that ships."""
-    assert classification.match_rules(title) == "10"
+def test_a_referral_is_not_summarized(title):
+    """Answered directly 2026-09-13: "Just leave it out. Referrals are not important."
+
+    This is the UNSAFE direction and the PR says so rather than burying it: rows move out of a
+    category that ships and into General, where a reviewer cannot see what was dropped. Shipped
+    only because the instruction is explicit, recent, and the third answer on the same question.
+    """
+    assert classification.match_rules(title) == "100"
 
 
 # The referral rule is LAST in `_RULES` and anchored at the start. Both properties are load-bearing
@@ -1645,3 +1668,79 @@ def test_a_laboratory_discharge_summary_stays_a_laboratory_result():
     assert classification.match_rules("Hospital Discharge Summary") == "16"
     # A pathology rule further up already claimed the third such title on the box; still does.
     assert classification.match_rules("Surgical Pathology Lab Discharge Summary Report") == "8"
+
+
+# --- the two ED forms the reviewer actually read, 2026-09-13 -------------------------------------
+#
+# Three forms were sent as PDFs rather than as phrases, which is why these two are decisions about
+# documents rather than about titles. The third is deliberately absent - see the test below it.
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Emergency Patient Record",
+        "EMERGENCY PATIENT RECORD",
+        "Emergency Patient Record - Continued",
+    ],
+)
+def test_an_emergency_patient_record_is_a_visit(title):
+    """Answered 2026-09-13 on the form itself: "the first one can be treated like a visit".
+
+    It had to move OUT of the administrative alternation to get here. That alternation is checked
+    before the document-type rules, so while the phrase sat there this answer was unreachable no
+    matter what the emergency-department rule said - which is the same precedence trap #222 records
+    from the other direction.
+
+    The phrase reached that list from a human exclusion list naming it verbatim (#134), so this is
+    the second time on this PR that exclusion-list evidence has been overturned by asking. The
+    caveat #134 wrote beside its own evidence - named on ONE list is not named on all - keeps
+    being the thing that matters.
+    """
+    assert classification.match_rules(title) == "1"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Emergency Nursing Initial Assessment Form",
+        "Emergency Nursing Continuing Assessment Form",
+        "Nursing Assessment Form",
+    ],
+)
+def test_the_emergency_nursing_assessment_form_is_not_summarized(title):
+    """Answered 2026-09-13: "the third one doesn't need to be summarized".
+
+    It had NO rule before, so the cascade re-decided it on every record and the same form was
+    answered differently in different ones. This buys determinism on a document the reviewer has
+    now read and ruled on.
+    """
+    assert classification.match_rules(title) == "100"
+
+
+def test_a_non_nursing_assessment_form_is_not_claimed():
+    """`\\bnursing\\b` is REQUIRED in that pattern, and this is why.
+
+    Without it the rule claims any "assessment form", and a functional or psychological assessment
+    is a clinical document that ships. The reviewer answered about a nursing intake form, so the
+    rule may only reach a nursing intake form.
+    """
+    assert classification.match_rules("Functional Assessment Form") is None
+    assert classification.match_rules("Functional Capacity Assessment Form") is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["ED NSG Rapid Triage", "Rapid Triage", "ED Nursing Rapid Triage Form"],
+)
+def test_the_rapid_triage_sheet_is_deliberately_still_unruled(title):
+    """THE ANSWER WAS "not sure since it's hard to read", AND THAT IS NOT AN INSTRUCTION.
+
+    A GUARD, and it passes on main - nothing changed for this form. It is here because the other
+    two forms in the same attachment DID get rules on the same day, so the obvious next edit is to
+    complete the set. Writing one would be our guess wearing the reviewer's authority.
+
+    `triage` already fails the emergency-department rule on purpose (the intake carve-out), so it
+    keeps reaching the cascade exactly as it does today and the question stays open.
+    """
+    assert classification.match_rules(title) is None
