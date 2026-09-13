@@ -55,7 +55,11 @@ from app.services.jobs import (
 )
 from app.services.linked_pdf import build_linked_pdf
 from app.services.pdf import get_pdf_page_count
-from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
+from app.services.reporting import (
+    DOCX_MIMETYPE,
+    build_mrr_document,
+    record_accounting,
+)
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
     presentable_title,
@@ -1626,6 +1630,21 @@ def _matched_rows(session: Session, document: Document, categories):
     return matched
 
 
+def _record_accounting(session: Session, document: Document):
+    """The page accounting for the closing sentences, or None when there are no rows.
+
+    Loaded here rather than from `document.review_rows` so the read is one explicit query on
+    the export path rather than a lazy relationship walked per attribute - the shape #293 had
+    to fix on the listing endpoint.
+    """
+    rows = session.scalars(
+        select(ReviewRow).where(ReviewRow.document_id == document.id).order_by(ReviewRow.idx)
+    ).all()
+    if not rows:
+        return None
+    return record_accounting(rows, document.page_count)
+
+
 @router.post(
     "/{document_id}/export",
     responses={409: {"description": "There are no summaries to export yet."}},
@@ -1648,6 +1667,7 @@ def export_document(
         payload.patientdob,
         payload.QMEorAME,
         payload.lawfirm,
+        accounting=_record_accounting(session, document),
     )
     buffer = io.BytesIO()
     docx.save(buffer)
@@ -1677,6 +1697,7 @@ def export_document_pdf(
     if not included:
         raise HTTPException(status_code=409, detail="no summaries to export yet")
     entries = [_pdf_entry(s, with_pages=payload.includePageNumbers) for s in included]
+    pdf_accounting = _record_accounting(session, document)
     pdf_bytes = build_linked_pdf(
         document.stored_path,
         entries,
@@ -1685,6 +1706,7 @@ def export_document_pdf(
         payload.patientdob,
         payload.QMEorAME,
         payload.lawfirm,
+        accounting=pdf_accounting,
     )
     audit(session, "export_pdf", user.id, document.id)
     return StreamingResponse(

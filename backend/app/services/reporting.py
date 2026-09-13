@@ -6,6 +6,7 @@ Document. The classic CSV/on-disk export routes are dropped.
 """
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 
 from docx import Document
@@ -74,6 +75,121 @@ def intro_sentence(num_pages, lawfirm) -> str:
         "I have reviewed all of the pages received and my opinion is based upon such "
         "received records."
     )
+
+
+@dataclass(frozen=True)
+class RecordAccounting:
+    """What the tail of the letter says about the pages that were received.
+
+    Both reference documents the reviewers sent (the outside MRR and its covering memo) close
+    with the same three facts, and ours closed with none of them. They are also the sentences
+    this project has spent months PARSING out of human deliverables to score itself against -
+    "Of the N pages received, exactly M pages were remarked upon" is the exclusion sentence
+    every categorization rule since #134 rests on. Generating it is the same arithmetic read
+    the other way round.
+
+    THE THREE BUCKETS ARE DISJOINT, and that is not a stylistic choice. On the one record whose
+    sentence reconciles exactly, remarked + other + duplicates equals the total received, which
+    is only true if a duplicated page is counted ONCE - in the duplicate bucket - rather than
+    also appearing under other documents. So a non-primary duplicate row is removed from the
+    excluded set rather than counted twice, and `duplicate_pages` counts pages BEYOND the first
+    copy rather than every page in the group.
+    """
+
+    pages_received: int
+    pages_remarked: int
+    excluded_types: tuple[str, ...]
+    duplicate_pages: int
+
+    @property
+    def pages_other(self) -> int:
+        """Pages that are neither remarked upon nor a duplicate copy. Never negative: the
+        three counts come from one partition of the same rows, but `pages_received` is the
+        PDF's own page count and a row set that does not cover the document would otherwise
+        produce a negative remainder in the delivered sentence."""
+        return max(0, self.pages_received - self.pages_remarked - self.duplicate_pages)
+
+
+def _row_pages(row) -> int:
+    """Pages a row spans, inclusive of both ends, and never negative."""
+    return max(0, (row.end or 0) - (row.start or 0) + 1)
+
+
+def record_accounting(rows, pages_received: int) -> RecordAccounting:
+    """Partition the reviewer's rows into remarked / other / duplicate.
+
+    Takes ORM rows rather than `as_row()` dicts deliberately: `ROW_FIELDS` carries neither
+    `include` nor the duplicate columns, which is the same omission #258 had to work around,
+    so a dict would not carry the two fields this needs.
+
+    A non-primary member of a confirmed duplicate group is a duplicate FIRST, whatever its
+    include flag says - `resolve_duplicate` leaves those rows excluded, so counting them as
+    "other documents" as well is exactly the double count the disjoint arithmetic forbids.
+    """
+    remarked = duplicate = 0
+    excluded: list[str] = []
+    for row in rows:
+        pages = _row_pages(row)
+        if row.dupe_group is not None and not row.dupe_primary:
+            duplicate += pages
+            continue
+        if row.include:
+            remarked += pages
+            continue
+        title = (row.title or "").strip()
+        if title:
+            excluded.append(title)
+    seen: dict[str, None] = {}
+    for title in excluded:
+        # Case-folded for de-duplication only; the FIRST spelling is what ships, because the
+        # reference list is lower case prose and a title may legitimately carry an acronym.
+        seen.setdefault(title.casefold(), None)
+        seen[title.casefold()] = seen[title.casefold()] or title
+    ordered = tuple(dict.fromkeys(v for v in seen.values() if v))
+    return RecordAccounting(
+        pages_received=max(0, pages_received or 0),
+        pages_remarked=remarked,
+        excluded_types=ordered,
+        duplicate_pages=duplicate,
+    )
+
+
+def accounting_sentences(accounting: RecordAccounting | None) -> tuple[str, str]:
+    """The two bold sentences that close the letter, or "" for one that does not apply.
+
+    CONDITIONAL, and that is observed rather than assumed: the reference MRR carries a
+    duplicates sentence and the two supplemental reports for another patient carry none at all,
+    so a count of zero means the sentence is absent, not that it reads "0 pages".
+
+    Returned as text and rendered by each caller, so the Word and PDF renderers cannot drift
+    apart on the WORDS the way they twice drifted on formatting (#158, #268).
+    """
+    if accounting is None or not accounting.pages_received:
+        return "", ""
+    exclusion = (
+        f"Of the {accounting.pages_received} pages received, exactly "
+        f"{accounting.pages_remarked} pages were remarked upon, as the remaining "
+        f"{accounting.pages_other} pages are other documents such as:"
+    )
+    duplicates = (
+        f"In addition, the records included {accounting.duplicate_pages} pages of duplicate "
+        "copies of records already counted above."
+        if accounting.duplicate_pages
+        else ""
+    )
+    return exclusion, duplicates
+
+
+def summary_intro(lawfirm=None) -> str:
+    """The line that introduces the entries.
+
+    The reference document names the sending firm - "The following is a summary of records from
+    <firm>:" - where ours said only "those records". The firm is OPTIONAL free text a reviewer
+    often has no value for, so the clause is DROPPED rather than rendered empty, which is the
+    convention `intro_sentence` already applies after #115 shipped "records from ." to a client.
+    """
+    firm = (lawfirm or "").strip()
+    return f"The following is a summary of records from {firm}:" if firm else SUMMARY_INTRO
 
 
 # Inline emphasis the summarizer emits: **bold**, *italic*, _italic_. Rendered as real runs so no
@@ -194,8 +310,16 @@ def date_label(entry) -> str:
     return (entry.get("summaryDate") or "").strip()
 
 
-def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm):
-    """Assemble the MRR Word document from summary ``entries`` (sorted chronologically)."""
+def build_mrr_document(
+    entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm, accounting=None
+):
+    """Assemble the MRR Word document from summary ``entries`` (sorted chronologically).
+
+    ``accounting`` is OPTIONAL and defaults to the previous behaviour - no closing
+    page-accounting sentences. The bundle export builds a letter from rows it selected by
+    category rather than from a whole record, where a sentence about the pages RECEIVED
+    would be answering a question nobody asked, so it passes nothing and is unchanged.
+    """
 
     # Undated entries sort LAST, per the reviewers 2026-08-21: "if it is something important we will
     # still summarize it, it can go at the end of the Review as Undated". This was datetime.min -
@@ -239,7 +363,7 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
     second_title_format.font.name = _REPORT_FONT
 
     intro_text = intro_sentence(num_pages, lawfirm)
-    second_intro_text = SUMMARY_INTRO
+    second_intro_text = summary_intro(lawfirm)
     this_concludes_text = CONCLUSION
 
     third_title = doc.add_paragraph(intro_text)
@@ -277,6 +401,24 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
         _add_inline_runs(body, entry["summaryTitle"], bold=True)
         _run(body, TITLE_SEPARATOR)
         _add_inline_runs(body, entry["summaryText"])
+
+    # THE PAGE ACCOUNTING, between the entries and the conclusion - the position both
+    # reference documents put it in. Bold, because they bold all three of these sentences
+    # while leaving the type list beneath plain; that contrast is the whole of the house
+    # style here and rendering the list bold too would lose it.
+    exclusion_text, duplicates_text = accounting_sentences(accounting)
+    if exclusion_text:
+        exclusion = doc.add_paragraph()
+        exclusion.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+        _run(exclusion, exclusion_text, bold=True, size=Pt(12))
+        for document_type in accounting.excluded_types:
+            item = doc.add_paragraph()
+            item.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+            _run(item, document_type, size=Pt(12))
+    if duplicates_text:
+        duplicates = doc.add_paragraph()
+        duplicates.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+        _run(duplicates, duplicates_text, bold=True, size=Pt(12))
 
     # `nine_title_format` read `fourth_title.runs[0]` - the SUMMARY_INTRO paragraph's run, not this
     # one. Two visible defects in the delivered .docx from one wrong name: the conclusion got no

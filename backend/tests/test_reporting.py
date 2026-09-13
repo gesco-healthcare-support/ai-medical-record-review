@@ -15,9 +15,12 @@ from app.services.reporting import (
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
     UNDATED_LABEL,
+    accounting_sentences,
     build_mrr_document,
     date_label,
     intro_sentence,
+    record_accounting,
+    summary_intro,
 )
 
 
@@ -195,7 +198,7 @@ def test_both_renderers_share_the_other_two_sentences():
     )
     paragraphs = [p.text for p in doc.paragraphs]
     letter = _pdf_letter(8, "Firm")
-    for sentence in (SUMMARY_INTRO, CONCLUSION):
+    for sentence in (summary_intro("Firm"), CONCLUSION):
         assert sentence in paragraphs
         assert html.escape(sentence) in letter
 
@@ -272,7 +275,7 @@ def test_the_summary_intro_stays_bold_in_the_word_document():
         qme_or_ame="QME",
         lawfirm="Firm",
     )
-    runs = _paragraph_named(doc, SUMMARY_INTRO).runs
+    runs = _paragraph_named(doc, summary_intro("Firm")).runs
     assert runs, "the summary-intro paragraph has no runs"
     assert all(r.bold for r in runs), "the summary intro is not bold in the Word document"
 
@@ -312,7 +315,7 @@ def test_paragraph_alignment_is_set_on_paragraphs_not_runs():
         qme_or_ame="QME",
         lawfirm="Firm",
     )
-    for sentence in (SUMMARY_INTRO, CONCLUSION):
+    for sentence in (summary_intro("Firm"), CONCLUSION):
         paragraph = _paragraph_named(doc, sentence)
         assert paragraph.alignment == WD_PARAGRAPH_ALIGNMENT.LEFT, (
             f"alignment never reached the paragraph for: {sentence!r}"
@@ -334,17 +337,17 @@ def test_both_renderers_agree_that_the_summary_intro_is_bold():
         qme_or_ame="QME",
         lawfirm="Firm",
     )
-    word_is_bold = all(r.bold for r in _paragraph_named(doc, SUMMARY_INTRO).runs)
+    word_is_bold = all(r.bold for r in _paragraph_named(doc, summary_intro("Firm")).runs)
 
     letter = _pdf_letter(8, "Firm")
-    escaped = html.escape(SUMMARY_INTRO)
+    escaped = html.escape(summary_intro("Firm"))
     paragraph = next(
         block for block in re.findall(r"<p[^>]*>.*?</p>", letter, re.S) if escaped in block
     )
     pdf_is_bold = "font-weight:bold" in paragraph.replace(" ", "")
 
     assert word_is_bold == pdf_is_bold, (
-        f"the delivered .docx and .pdf disagree on whether {SUMMARY_INTRO!r} is bold "
+        "the delivered .docx and .pdf disagree on whether the summary intro is bold "
         f"(word={word_is_bold}, pdf={pdf_is_bold})"
     )
     assert word_is_bold, "both renderers agree, but on NOT bold - the intended style is bold"
@@ -695,3 +698,117 @@ def test_the_two_renderers_emphasise_the_same_spans():
     assert word_emphasised == pdf_emphasised == ["real bold", "and italic"]
     # The bullets survive as literal text in both, rather than becoming one italic block.
     assert "<i>one\n* two\n" not in html_out
+
+
+# ---------------------------------------------------------------------------------------------
+# THE PAGE ACCOUNTING that closes the letter. Both documents the reviewers sent as the house
+# standard end with these sentences and ours ended with none of them - see RecordAccounting.
+
+
+class _Row:
+    """The two fields `as_row()` does not carry are exactly the two this needs, so the accounting
+    reads ORM rows. This stands in for one."""
+
+    def __init__(self, start, end, include, title, dupe_group=None, dupe_primary=False):
+        self.start = start
+        self.end = end
+        self.include = include
+        self.title = title
+        self.dupe_group = dupe_group
+        self.dupe_primary = dupe_primary
+
+
+def test_the_three_buckets_partition_every_page_received():
+    """The arithmetic has to CLOSE, because theirs does: on the one reference record whose
+    sentence reconciles exactly, remarked + other + duplicates equals the total received."""
+    rows = [
+        _Row(1, 10, True, "MRI of the Lumbar Spine"),
+        _Row(11, 14, False, "Cover Letter"),
+        _Row(15, 20, False, "Duplicate copy", dupe_group=1),
+        _Row(21, 26, True, "Original report", dupe_group=1, dupe_primary=True),
+    ]
+    acc = record_accounting(rows, 30)
+    assert acc.pages_remarked == 16
+    assert acc.duplicate_pages == 6
+    assert acc.pages_other == 8
+    assert acc.pages_remarked + acc.duplicate_pages + acc.pages_other == acc.pages_received
+
+
+def test_a_duplicate_copy_is_not_also_counted_as_another_document():
+    """DEMONSTRATES the double count the disjoint reading forbids. `resolve_duplicate` leaves a
+    non-primary member `include=False`, so counting it by its include flag would put the same
+    pages in both buckets and the delivered sentence would not add up."""
+    rows = [_Row(1, 5, False, "Duplicate copy", dupe_group=1)]
+    acc = record_accounting(rows, 5)
+    assert acc.duplicate_pages == 5
+    assert acc.excluded_types == ()
+    assert acc.pages_other == 0
+
+
+def test_the_excluded_types_are_deduplicated_but_keep_their_first_spelling():
+    rows = [
+        _Row(1, 1, False, "Cover Letter"),
+        _Row(2, 2, False, "cover letter"),
+        _Row(3, 3, False, "Proof of Service"),
+    ]
+    acc = record_accounting(rows, 3)
+    assert acc.excluded_types == ("Cover Letter", "Proof of Service")
+
+
+def test_the_remainder_never_goes_negative():
+    """GUARDS a delivered sentence. `pages_received` is the PDF's own count while the other two
+    come from rows, so a row set covering more than the document would otherwise ship
+    "the remaining -4 pages" to a client."""
+    acc = record_accounting([_Row(1, 10, True, "A")], 6)
+    assert acc.pages_other == 0
+
+
+def test_the_duplicates_sentence_is_absent_when_there_are_none():
+    """OBSERVED, not assumed: the reference MRR carries a duplicates sentence and the two
+    supplemental reports for another patient carry none, so zero means absent rather than "0"."""
+    exclusion, duplicates = accounting_sentences(record_accounting([_Row(1, 5, True, "A")], 5))
+    assert exclusion.startswith("Of the 5 pages received")
+    assert duplicates == ""
+
+
+def test_a_record_with_no_accounting_renders_exactly_as_before():
+    """GUARDS the bundle export, which builds a letter from rows chosen by CATEGORY - a sentence
+    about the pages RECEIVED would answer a question nobody asked of it, so it passes nothing."""
+    doc = build_mrr_document([], 10, "P", "01/01/1990", "PQME", "Firm")
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "pages were remarked upon" not in text
+    assert CONCLUSION in text
+
+
+def test_both_renderers_close_the_letter_with_the_same_sentences():
+    """The test that matters. Each renderer was individually self-consistent when the Word and
+    PDF letters disagreed in #158 and #268; only comparing them catches the drift."""
+    linked_pdf = pytest.importorskip("app.services.linked_pdf")
+    acc = record_accounting(
+        [
+            _Row(1, 10, True, "MRI"),
+            _Row(11, 14, False, "Cover Letter"),
+            _Row(15, 18, False, "Dup", dupe_group=1),
+        ],
+        20,
+    )
+    doc = build_mrr_document([], 20, "P", "01/01/1990", "PQME", "Firm", accounting=acc)
+    word = "\n".join(p.text for p in doc.paragraphs)
+    markup = linked_pdf._summary_html([], 20, "PQME", "Firm", acc)
+    plain = html.unescape(re.sub(r"<[^>]+>", "\n", markup))
+
+    exclusion, duplicates = accounting_sentences(acc)
+    for sentence in (exclusion, duplicates):
+        assert sentence in word
+        assert sentence in plain
+    # and the excluded type appears beneath it in both
+    assert "Cover Letter" in word
+    assert "Cover Letter" in plain
+
+
+def test_the_summary_line_names_the_firm_and_drops_it_when_absent():
+    """The reference document names the sending firm. The clause is DROPPED rather than rendered
+    empty for the same reason #115 fixed: "records from ." shipped to a client."""
+    assert summary_intro("Smith & Co") == "The following is a summary of records from Smith & Co:"
+    assert summary_intro("   ") == SUMMARY_INTRO
+    assert summary_intro(None) == SUMMARY_INTRO
