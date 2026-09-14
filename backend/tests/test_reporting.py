@@ -1527,3 +1527,29 @@ def test_the_memo_opening_drops_the_sender_it_cannot_name():
     assert memo_opening(accounting, MemoDetails(lawfirm="Acme LLP")) == (
         "We have received 191 pages of medical records from Acme LLP."
     )
+
+
+def test_the_memo_and_the_letter_open_with_the_same_two_clauses():
+    """Their memo and their report state the covering letter and the sender identically - only
+    the pronoun differs. Both run through `_letter_clause` and `_sender_clause`, so this pins
+    that the memo cannot name either one differently from the report stapled to it."""
+    details = MemoDetails(
+        attorney_name="Mitchell Garrett",
+        lawfirm="Acme LLP",
+        letter_type="advocacy",
+        letter_date="07/31/26",
+    )
+    memo = memo_opening(_memo_accounting(), details)
+    letter = intro_sentence(
+        191,
+        "Acme LLP",
+        attorney_name="Mitchell Garrett",
+        letter_type="advocacy",
+        letter_date="07/31/26",
+    )
+    clauses = (
+        "a defense advocacy letter dated 07/31/26 along with 191 pages of medical "
+        "records from Mitchell Garrett, of Acme LLP"
+    )
+    assert memo == f"We have received {clauses}."
+    assert letter.startswith(f"I have received {clauses}.")

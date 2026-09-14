@@ -406,6 +406,8 @@ class MemoDetails:
     patient_name: str = ""
     attorney_name: str = ""
     lawfirm: str = ""
+    letter_type: str = ""
+    letter_date: str = ""
     reviewer_name: str = ""
     memo_date: str = ""
     # The two counts the memo exists to compare. `pages_stated` is the reviewer-entered cover
@@ -463,18 +465,20 @@ def page_count_note(details: MemoDetails) -> str:
 def memo_opening(accounting, details: MemoDetails) -> str:
     """The memo's first sentence: what arrived and from whom.
 
-    The letter says `I have received ...` and the memo says `We have received ...` - one is
-    the evaluator writing, the other the office - so they are two sentences in the reviewers'
-    own documents and two here. The FACTS are shared: the page count comes from the same
-    `RecordAccounting` the letter closes with, and the sender from the same `_sender_clause`
-    the letter's opening paragraph uses, so the two cannot name the firm differently. Only
-    the wording around them differs, which is what theirs do.
+    Their memo and their report open with the same sentence in different voices - "I have
+    received a defense advocacy letter dated 07/31/26 along with 191 pages of medical records
+    from ..." on the report, `We have received ...` on the memo, because one is the evaluator
+    writing and the other the office. So the WORDS differ by one pronoun and nothing else, and
+    both halves that carry a fact are the letter's own: `_letter_clause` and `_sender_clause`.
+    A memo naming the firm or the covering letter differently from the report stapled to it is
+    the drift that cost #158 and #162, and reusing both is what stops it.
 
-    The sender clause is dropped when neither field is set, so this reads correctly on a
-    record where only the page count is known."""
+    Every clause is dropped when its field is empty, so this reads correctly on a record where
+    only the page count is known."""
     pages = accounting.pages_received if accounting else 0
+    letter = _letter_clause(details.letter_type, details.letter_date)
     sender = _sender_clause(details.attorney_name, details.lawfirm)
-    return f"We have received {pages} pages of medical records{sender}."
+    return f"We have received {letter}{pages} pages of medical records{sender}."
 
 
 def memo_header_lines(details: MemoDetails) -> list[tuple[str, str]]:

@@ -1939,6 +1939,8 @@ def export_document_memo(
             patient_name=payload.patientName,
             attorney_name=document.attorney_name or "",
             lawfirm=payload.lawfirm,
+            letter_type=document.letter_type or "",
+            letter_date=document.letter_date or "",
             reviewer_name=(user.name or "").strip(),
             # Today, in the format their own memo prints. The reviewer is writing it now, and
             # nothing on the record records when a memo was sent.
