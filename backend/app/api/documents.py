@@ -15,6 +15,7 @@ import os
 import re
 import uuid
 import zipfile
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -61,7 +62,9 @@ from app.services.reporting import (
     DOCTORS,
     DOCX_MIMETYPE,
     LETTER_TYPES,
+    MemoDetails,
     ReportDetails,
+    build_memo_document,
     build_mrr_document,
     record_accounting,
 )
@@ -1806,6 +1809,22 @@ def _bundle_members(session: Session, document: Document, specs) -> list[tuple[s
     return members
 
 
+def _memo_filename(document: Document) -> str:
+    """Lastname_Firstname_Medical_Records_memo.docx, matching the two exports beside it."""
+    parts = [
+        p.strip()
+        for p in (document.patient_last_name, document.patient_first_name)
+        if (p or "").strip()
+    ]
+    if parts:
+        base = "_".join([*parts, "Medical_Records_memo"])
+    else:
+        stem = os.path.splitext(os.path.basename(document.original_filename or "record"))[0]
+        base = f"{stem}_memo"
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_") or "memo"
+    return f"{safe}.docx"
+
+
 def _matched_rows(session: Session, document: Document, categories):
     """The current review rows whose category is in the requested set, or raise: empty/invalid
     categories -> 400; a set that matches nothing in this record -> 409.
@@ -1830,6 +1849,14 @@ def _matched_rows(session: Session, document: Document, categories):
 def _record_accounting(session: Session, document: Document):
     """The page accounting for the closing sentences, or None when there are no rows.
 
+    THE PAGE COUNT FOLLOWS THE COVER SHEET where a reviewer has entered one. The reviewers
+    were explicit that the file's own length is the wrong number - "we should get the actual
+    page count from the cover sheet since there are sometimes additional pages attached by us
+    on the pdf" - and the gap is measurable rather than theoretical: against four human
+    deliverables the file ran 311/309, 293/290, 244/241 and 229/226. `pages_received` is
+    NULL until somebody says, and then this falls back to the file exactly as it did before
+    that field existed.
+
     Loaded here rather than from `document.review_rows` so the read is one explicit query on
     the export path rather than a lazy relationship walked per attribute - the shape #293 had
     to fix on the listing endpoint.
@@ -1839,7 +1866,7 @@ def _record_accounting(session: Session, document: Document):
     ).all()
     if not rows:
         return None
-    return record_accounting(rows, document.page_count)
+    return record_accounting(rows, document.pages_received or document.page_count)
 
 
 @router.post(
@@ -1881,6 +1908,53 @@ def export_document_pdf(
         io.BytesIO(pdf_bytes),
         media_type=_PDF_MEDIA_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{_linked_filename(document)}"'},
+    )
+
+
+@router.post("/{document_id}/export/memo")
+def export_document_memo(
+    payload: ExportPayload | None = None,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """The covering memo that goes to the doctor's office with the review.
+
+    IT ASKS FOR NOTHING THE RECORD ALREADY HOLDS. The doctor comes from the review page's
+    dropdown, the sender from the report header, and the reviewer signing it from the session -
+    the same source the letter's own Labor Code sentence uses. `payload` is here only because
+    the export dialog posts one body to all three endpoints; the patient name and firm are
+    taken from it for the same reason the two exports do, so a reviewer correcting a name in
+    the dialog sees it on every document that download produces.
+
+    NO 409 when the record has no summaries, unlike the two exports. The memo reports what
+    ARRIVED - how many pages, how many were remarked upon, what the rest were - and that is
+    answerable from the reviewer's rows alone. A record still being worked has a memo; it does
+    not yet have a report."""
+    payload = payload or ExportPayload()
+    docx = build_memo_document(
+        _record_accounting(session, document),
+        MemoDetails(
+            doctor=document.doctor or "",
+            patient_name=payload.patientName,
+            attorney_name=document.attorney_name or "",
+            lawfirm=payload.lawfirm,
+            reviewer_name=(user.name or "").strip(),
+            # Today, in the format their own memo prints. The reviewer is writing it now, and
+            # nothing on the record records when a memo was sent.
+            memo_date=datetime.now(UTC).strftime("%B %d, %Y"),
+            pages_stated=document.pages_received or 0,
+            pages_on_file=document.page_count or 0,
+        ),
+    )
+    buffer = io.BytesIO()
+    docx.save(buffer)
+    buffer.seek(0)
+    audit(session, "export_memo", user.id, document.id)
+    return StreamingResponse(
+        buffer,
+        media_type=DOCX_MIMETYPE,
+        headers={"Content-Disposition": f'attachment; filename="{_memo_filename(document)}"'},
     )
 
 

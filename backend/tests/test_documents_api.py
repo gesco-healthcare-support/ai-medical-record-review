@@ -4339,3 +4339,137 @@ async def test_a_record_with_nothing_to_list_gets_no_empty_table(authed):
     )
     assert resp.status_code == 200, resp.text
     assert _COVER_HEADING not in _pdf_text(resp.content)
+
+
+async def _one_summary(doc_id, user_id=None, name=None):
+    """A record with one delivered summary, so the letter has something to close."""
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=0,
+                title="A REPORT",
+                text="text",
+                date="03/14/2026",
+                row_start=1,
+                row_end=1,
+                row_category="1",
+            )
+        )
+        if user_id is not None:
+            session.query(User).filter(User.id == user_id).update({"name": name or ""})
+        session.commit()
+
+
+async def _rows(client, doc_id, rows):
+    resp = await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    assert resp.status_code == 200, resp.text
+
+
+async def test_the_memo_asks_for_nothing_the_record_already_holds(authed):
+    """DEMONSTRATES the correction the reviewers' answer forced.
+
+    A first version put a "Doctor (memo only)" box and a "Documents received on" box in the
+    export dialog. Both were wrong: the doctor is already a dropdown on the review page (it
+    picks the report's typeface) and the reviewer is already signed in. This posts a body
+    carrying NEITHER and still gets an addressed, signed memo.
+    """
+    import docx as docxlib
+
+    client, user_id = authed
+    doc_id = await _upload(client, pages=8)
+    await _put_header(client, doc_id, doctor="Pelton", attorney_name="Mitchell Garrett")
+    await _one_summary(doc_id, user_id, "Jane Roe")
+    await _rows(client, doc_id, [{"start": 1, "end": 8, "category": "1", "include": True}])
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export/memo",
+        json={"patientName": "Pat", "lawfirm": "Acme LLP"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "_memo.docx" in resp.headers["content-disposition"]
+
+    text = [p.text for p in docxlib.Document(io.BytesIO(resp.content)).paragraphs if p.text.strip()]
+    assert text[0] == "TO:\tDR. PELTON\u2019S OFFICE"
+    assert text[1] == "FROM:\tJane Roe"
+    assert any("from Mitchell Garrett, of Acme LLP" in t for t in text)
+    assert text[-2] == "Jane Roe"
+
+
+async def test_the_memo_reports_the_cover_sheet_against_the_file(authed):
+    """DEMONSTRATES what the reviewers called the main thing, through the route.
+
+    The header field holds 6 while the PDF is 8 pages long, which is the shape they described -
+    "there are sometimes additional pages attached by us on the pdf".
+    """
+    import docx as docxlib
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=8)
+    await _put_header(client, doc_id, pages_received="6")
+    await _rows(client, doc_id, [{"start": 1, "end": 8, "category": "1", "include": True}])
+
+    resp = await client.post(f"/api/documents/{doc_id}/export/memo", json={})
+    assert resp.status_code == 200, resp.text
+    text = [p.text for p in docxlib.Document(io.BytesIO(resp.content)).paragraphs if p.text.strip()]
+    assert any(
+        t.startswith(
+            "The cover sheet states 6 pages and the file received contains 8 pages - 2 more"
+        )
+        for t in text
+    )
+
+
+async def test_the_letter_counts_the_pages_the_cover_sheet_states(authed):
+    """`pages_received` was STORED by the header work and read by nothing. The accounting is
+    its first consumer, and it is the right one: the reviewers said the file's own length is
+    the wrong number because pages are attached to it downstream. Measured against four human
+    deliverables the file ran 311/309, 293/290, 244/241 and 229/226.
+    """
+    import docx as docxlib
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=8)
+    await _put_header(client, doc_id, pages_received="6")
+    await _one_summary(doc_id)
+    # The rows FIT inside the cover-sheet count on purpose. Marking up 8 pages of a record whose
+    # cover sheet says 6 makes the closing sentence contradict itself, and `accounting_sentences`
+    # now ships nothing at all rather than "exactly 8 pages were remarked upon" of 6 received.
+    await _rows(client, doc_id, [{"start": 1, "end": 6, "category": "1", "include": True}])
+
+    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    assert resp.status_code == 200, resp.text
+    text = [p.text for p in docxlib.Document(io.BytesIO(resp.content)).paragraphs if p.text.strip()]
+    assert any(t.startswith("Of the 6 pages received") for t in text)
+
+
+async def test_with_no_cover_sheet_figure_the_letter_falls_back_to_the_file(authed):
+    """GUARD. `pages_received` is NULL until somebody types it, and on a record where nobody
+    has the accounting must read exactly as it did before that field existed."""
+    import docx as docxlib
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=8)
+    await _one_summary(doc_id)
+    await _rows(client, doc_id, [{"start": 1, "end": 8, "category": "1", "include": True}])
+
+    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    assert resp.status_code == 200, resp.text
+    text = [p.text for p in docxlib.Document(io.BytesIO(resp.content)).paragraphs if p.text.strip()]
+    assert any(t.startswith("Of the 8 pages received") for t in text)
+
+
+async def test_a_record_with_no_report_yet_still_has_a_memo(authed):
+    """The two exports 409 without summaries; the memo does not. It reports what ARRIVED,
+    which is answerable from the reviewer's rows alone - a record still being worked has a
+    memo, it just does not have a report yet."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=8)
+    await _rows(client, doc_id, [{"start": 1, "end": 8, "category": "1", "include": True}])
+
+    assert (await client.post(f"/api/documents/{doc_id}/export", json={})).status_code == 409
+    assert (await client.post(f"/api/documents/{doc_id}/export/memo", json={})).status_code == 200
