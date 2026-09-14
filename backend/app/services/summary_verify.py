@@ -199,6 +199,39 @@ def _unverified(summary_text, title, response=None, truncated=False):
     }
 
 
+def _verified_reply(data, summary_text, title, response):
+    """The audit's parsed answer, as the caller's dict.
+
+    Split out of `verify_summary` when adding the JobCancelled handler took that function over
+    the cognitive-complexity limit. Worth splitting on its own terms rather than only to please
+    the gate: turning the model's reply into the caller's shape is a different job from running
+    the audit, and it is the half with all the fallbacks in it.
+    """
+    fixed = (data.get("fixed_text") or "").strip()
+    if not fixed:
+        # A blank fixed_text means the model gave nothing usable - keep the original. ok stays
+        # True: the audit ran and answered, so the summary HAS been checked; that is a different
+        # event from the audit failing, and conflating the two is what kept this invisible.
+        return {
+            "fixed_text": summary_text,
+            "fixed_title": title,
+            "issues": [],
+            "ok": True,
+            "truncated": False,
+            **_usage_fields(response),
+        }
+    return {
+        "fixed_text": fixed,
+        # A blank fixed_title falls back to the original: the schema does not require the
+        # field, and a title is never replaced by nothing.
+        "fixed_title": (data.get("fixed_title") or "").strip() or title,
+        "issues": data.get("issues") or [],
+        "ok": True,
+        "truncated": False,
+        **_usage_fields(response),
+    }
+
+
 def verify_summary(
     model, source_text, summary_text, title=None, document_date=None, max_output_tokens=None
 ):
@@ -294,31 +327,7 @@ def verify_summary(
             # 46 percent of a record's wall clock.
             return _unverified(summary_text, title, response, truncated=True)
         data = json.loads((response.text or "").strip())
-        fixed = (data.get("fixed_text") or "").strip()
-        issues = data.get("issues") or []
-        # A blank fixed_text means the model gave nothing usable - keep the original. ok stays True:
-        # the audit ran and answered, so the summary HAS been checked; that is a different event from
-        # the audit failing, and conflating the two is what kept this invisible.
-        if not fixed:
-            return {
-                "fixed_text": summary_text,
-                "fixed_title": title,
-                "issues": [],
-                "ok": True,
-                "truncated": False,
-                **_usage_fields(response),
-            }
-        # A blank fixed_title falls back to the original: the schema does not require the field, and
-        # a title is never replaced by nothing.
-        fixed_title = (data.get("fixed_title") or "").strip() or title
-        return {
-            "fixed_text": fixed,
-            "fixed_title": fixed_title,
-            "issues": issues,
-            "ok": True,
-            "truncated": False,
-            **_usage_fields(response),
-        }
+        return _verified_reply(data, summary_text, title, response)
     except JobCancelled:
         # NOT a model failure - the reviewer pressed Stop. The PROVIDER raises this from its
         # own cancellable sleep (llm/openai.py, llm/vllm.py) just as genai_retry does from its
