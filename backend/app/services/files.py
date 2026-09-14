@@ -1,4 +1,4 @@
-"""Filesystem-safe filename helper + small date utils.
+"""Filesystem-safe filename helper for the upload path.
 
 The FastAPI backend does not depend on werkzeug (that is Flask's WSGI layer), so the upload
 path's sanitizer is reimplemented here, reproducing `werkzeug.secure_filename`: NFKD-normalize
@@ -10,9 +10,6 @@ builds a filesystem path.
 import os
 import re
 import unicodedata
-from datetime import datetime
-
-ALLOWED_EXTENSIONS = {"pdf"}
 
 _FILENAME_ASCII_STRIP_RE = re.compile(r"[^A-Za-z0-9_.-]")
 _WINDOWS_DEVICE_FILES = {
@@ -40,24 +37,3 @@ def _secure_filename(filename: str) -> str:
 def safe_name(filename: str | None, fallback: str = "upload") -> str:
     """A filesystem-safe basename for a user-supplied filename; falls back when empty."""
     return _secure_filename(filename or "") or fallback
-
-
-def allowed_file(filename: str) -> bool:
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
-def parse_date(date_str: str) -> datetime:
-    try:
-        return datetime.strptime(date_str, "%m/%d/%Y")
-    except ValueError:
-        return datetime.min  # sort invalid dates first
-
-
-def is_valid_date(date_str: str, date_format: str = "%m/%d/%Y") -> bool:
-    try:
-        if date_str.strip() == "-":
-            return True  # "-" is the intentional "unavailable" sentinel
-        datetime.strptime(date_str, date_format)
-        return True
-    except ValueError:
-        return False
