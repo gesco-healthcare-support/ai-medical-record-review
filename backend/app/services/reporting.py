@@ -42,6 +42,56 @@ REVIEW_HEADING = "MEDICAL RECORD REVIEW"
 TITLE_SEPARATOR = ". "
 _REPORT_FONT = "Times New Roman"
 
+# Each evaluator reads their reports in their own typeface, so the Word document is written
+# in theirs. Supplied by the reviewers 2026-09-14, verbatim except that `Amasis MT Pro medium`
+# is spelled with the capital the font itself carries.
+#
+# WORD ONLY, and that is the reviewers' own decision: python-docx writes the font NAME and the
+# reader's Word resolves it, so nothing has to be installed here. The linked PDF is rendered
+# by us and would need the real font files - five of these are licensed - and they answered
+# that the PDF "does not need the font on that one, the rest of the files are for internal
+# use". So `build_linked_pdf` deliberately does not take a doctor.
+#
+# The single source of truth for BOTH halves: the API serves `DOCTORS` to the dropdown and
+# this module reads the font. Two lists would drift, which is the failure this repo keeps
+# finding.
+DOCTOR_FONTS: dict[str, str] = {
+    "Falkinstein": "Times New Roman",
+    "Pelton": "Tahoma",
+    "Longacre": "Calibri",
+    "Mikhael": "Century Gothic",
+    "Hekmat": "Arial",
+    "Andersen": "Georgia",
+    "Nguyen": "Amasis MT Pro Medium",
+    "Ziv": "Aptos Serif",
+    "Grossman": "Aptos",
+    "Perez": "Abadi",
+    "Ahdoot": "Bierstadt Display",
+}
+
+DOCTORS: tuple[str, ...] = tuple(DOCTOR_FONTS)
+
+
+def report_font(doctor: str | None) -> str:
+    """The typeface for ``doctor``, or the house default for an unknown or absent one.
+
+    Falls back rather than raising: the field is free-form on the way in, a doctor could be
+    removed from the list while records still name them, and a delivered document in the
+    wrong font is a smaller failure than an export that refuses."""
+    return DOCTOR_FONTS.get((doctor or "").strip(), _REPORT_FONT)
+
+
+# The covering letter that arrived WITH the records. `advocacy` is the initial request and
+# `interrogatory` the supplemental one - the reviewers' own distinction, 2026-09-14. `none`
+# is a real answer rather than a missing value: plenty of records arrive with no letter, and
+# the opening paragraph then omits the clause entirely.
+LETTER_TYPES: tuple[str, ...] = ("advocacy", "interrogatory", "none")
+
+LETTER_LABELS: dict[str, str] = {
+    "advocacy": "defense advocacy letter",
+    "interrogatory": "interrogatory letter",
+}
+
 
 def header_lines(patient_name, patient_dob) -> tuple[str, str]:
     """The two identifying lines both renderers put at the top of every page.

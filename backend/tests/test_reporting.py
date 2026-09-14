@@ -10,7 +10,11 @@ from docx.shared import Pt
 
 from app.services.reporting import (
     CONCLUSION,
+    DOCTOR_FONTS,
+    DOCTORS,
     DOCX_MIMETYPE,
+    LETTER_LABELS,
+    LETTER_TYPES,
     REVIEW_HEADING,
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
@@ -18,6 +22,7 @@ from app.services.reporting import (
     build_mrr_document,
     date_label,
     intro_sentence,
+    report_font,
 )
 
 
@@ -695,3 +700,43 @@ def test_the_two_renderers_emphasise_the_same_spans():
     assert word_emphasised == pdf_emphasised == ["real bold", "and italic"]
     # The bullets survive as literal text in both, rather than becoming one italic block.
     assert "<i>one\n* two\n" not in html_out
+
+
+def test_each_doctor_gets_their_own_typeface():
+    """The reviewers gave a font per evaluator and the Word document is written in theirs.
+
+    Word only, and that is their decision rather than a limitation we settled for: python-docx
+    writes the font NAME and the reader's Word resolves it, so nothing is installed here. They were
+    asked about the linked PDF - which we render ourselves and which would need the licensed files -
+    and answered that it does not need the font.
+    """
+    assert report_font("Falkinstein") == "Times New Roman"
+    assert report_font("Pelton") == "Tahoma"
+    assert report_font("Ahdoot") == "Bierstadt Display"
+    assert len(DOCTOR_FONTS) == 11
+    assert tuple(DOCTOR_FONTS) == DOCTORS
+
+
+def test_an_unknown_doctor_falls_back_rather_than_failing():
+    """GUARD on a delivered document. The field is free-form on the way in and a name could be
+    retired while records still carry it. A report in the house font is a smaller failure than an
+    export that refuses, so this never raises."""
+    assert report_font(None) == "Times New Roman"
+    assert report_font("") == "Times New Roman"
+    assert report_font("   ") == "Times New Roman"
+    assert report_font("Nobody In The List") == "Times New Roman"
+
+
+def test_a_doctor_name_is_matched_after_trimming():
+    """A value typed with a stray space still finds its font."""
+    assert report_font("  Hekmat  ") == "Arial"
+
+
+def test_the_letter_vocabulary_is_what_the_reviewers_named():
+    """`interrogatory` is the SUPPLEMENTAL request letter and `advocacy` the initial one - their
+    distinction, 2026-09-14. `none` is a real answer: many records arrive with no letter and the
+    opening paragraph then omits the clause rather than leaving a gap."""
+    assert LETTER_TYPES == ("advocacy", "interrogatory", "none")
+    assert LETTER_LABELS["advocacy"] == "defense advocacy letter"
+    assert LETTER_LABELS["interrogatory"] == "interrogatory letter"
+    assert "none" not in LETTER_LABELS

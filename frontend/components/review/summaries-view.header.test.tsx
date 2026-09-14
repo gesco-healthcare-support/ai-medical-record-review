@@ -47,6 +47,11 @@ describe("SummariesView header", () => {
       patient_last_name: "Roe",
       patient_dob: "01/02/1990",
       law_firm: "Acme LLP",
+      attorney_name: "",
+      doctor: "",
+      letter_type: "",
+      letter_date: "",
+      pages_received: "",
     };
     vi.mocked(extractHeader).mockResolvedValue(detected);
     withClient(

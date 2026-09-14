@@ -45,6 +45,11 @@ describe("HeaderBar persistence", () => {
     patient_last_name: "Roe",
     patient_dob: "01/02/1990",
     law_firm: "Acme LLP",
+    attorney_name: "",
+    doctor: "",
+    letter_type: "",
+    letter_date: "",
+    pages_received: "",
   };
 
   it("persists on Auto-fill: reports the detected header via onSaved without a separate Save", async () => {
@@ -70,5 +75,84 @@ describe("HeaderBar persistence", () => {
     );
     expect(screen.getByRole("button", { name: "Re-detect" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Auto-fill" })).toBeNull();
+  });
+});
+
+describe("HeaderBar doctor selection", () => {
+  const FILLED = {
+    patient_first_name: "Jane",
+    patient_last_name: "Roe",
+    patient_dob: "01/02/1990",
+    law_firm: "Acme LLP",
+    attorney_name: "",
+    doctor: "",
+    letter_type: "",
+    letter_date: "",
+    pages_received: "",
+  };
+
+  it("offers the served doctors", () => {
+    render(
+      <HeaderBar
+        documentId="d1"
+        header={FILLED}
+        doctors={["Falkinstein", "Pelton"]}
+        onSaved={vi.fn()}
+      />,
+    );
+    const select = screen.getByLabelText("Doctor") as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toEqual(["", "Falkinstein", "Pelton"]);
+  });
+
+  it("keeps showing a stored doctor the served list does not contain", () => {
+    // DEMONSTRATES the trap. The list arrives with the record, so it is empty on first paint - and
+    // a <select> whose value is absent from its options renders the FIRST option instead. The next
+    // save would then write the record's doctor away without anyone touching the field.
+    render(
+      <HeaderBar
+        documentId="d1"
+        header={{ ...FILLED, doctor: "Retired Doctor" }}
+        doctors={[]}
+        onSaved={vi.fn()}
+      />,
+    );
+    const select = screen.getByLabelText("Doctor") as HTMLSelectElement;
+    expect(select.value).toBe("Retired Doctor");
+  });
+
+  it("saves the doctor the reviewer picked", async () => {
+    const user = userEvent.setup();
+    vi.mocked(saveHeader).mockResolvedValue(undefined);
+    render(
+      <HeaderBar
+        documentId="d1"
+        header={FILLED}
+        doctors={["Falkinstein", "Pelton"]}
+        onSaved={vi.fn()}
+      />,
+    );
+    await user.selectOptions(screen.getByLabelText("Doctor"), "Pelton");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(saveHeader).toHaveBeenCalledWith(
+        "d1",
+        expect.objectContaining({ doctor: "Pelton" }),
+      ),
+    );
+  });
+
+  it("sends the cover-sheet page count as typed, for the server to coerce", async () => {
+    const user = userEvent.setup();
+    vi.mocked(saveHeader).mockResolvedValue(undefined);
+    render(<HeaderBar documentId="d1" header={FILLED} onSaved={vi.fn()} />);
+    await user.type(screen.getByPlaceholderText("From cover sheet"), "418");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(saveHeader).toHaveBeenCalledWith(
+        "d1",
+        expect.objectContaining({ pages_received: "418" }),
+      ),
+    );
   });
 });

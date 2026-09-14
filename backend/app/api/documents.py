@@ -55,7 +55,12 @@ from app.services.jobs import (
 )
 from app.services.linked_pdf import build_linked_pdf
 from app.services.pdf import get_pdf_page_count
-from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
+from app.services.reporting import (
+    DOCTORS,
+    DOCX_MIMETYPE,
+    LETTER_TYPES,
+    build_mrr_document,
+)
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
     presentable_title,
@@ -545,6 +550,11 @@ def get_document(
     payload = document.listing()
     payload["rows"] = [_editor_row(row) for row in document.review_rows]
     payload["categories"] = catalog.get_category_options(session)
+    # Served with the record for the same reason `categories` is: the dropdown needs the
+    # names and the Word renderer needs the fonts, and one list in the backend is what stops
+    # the two drifting. The frontend never holds its own copy.
+    payload["doctors"] = list(DOCTORS)
+    payload["letter_types"] = list(LETTER_TYPES)
     return payload
 
 
@@ -599,6 +609,25 @@ def extract_header_route(
     return shape
 
 
+def _pages_received(raw: str) -> int | None:
+    """The cover sheet's page count, or None when the box is empty or unusable.
+
+    None rather than 0, and the two are different answers: None means nobody has said, and
+    the export then falls back to the PDF's own count exactly as it did before this field
+    existed. A stored 0 would instead assert that zero pages were received.
+
+    A negative is discarded for the same reason a typo is - there is no page -5, and the
+    number lands in a sentence a client reads."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 @router.put("/{document_id}/header")
 def put_header(
     payload: HeaderPayload,
@@ -610,6 +639,15 @@ def put_header(
     document.patient_last_name = payload.patient_last_name
     document.patient_dob = payload.patient_dob
     document.law_firm = payload.law_firm
+    document.attorney_name = payload.attorney_name
+    document.doctor = payload.doctor
+    # An unrecognised letter type is stored as empty rather than rejected. The value only
+    # selects a phrase in the opening paragraph, and `reporting.LETTER_LABELS` already omits
+    # the clause for anything it does not know - so a bad value degrades to today's sentence
+    # instead of costing the reviewer the rest of the header they just typed.
+    document.letter_type = payload.letter_type if payload.letter_type in LETTER_TYPES else ""
+    document.letter_date = payload.letter_date
+    document.pages_received = _pages_received(payload.pages_received)
     session.commit()
     return document.listing()
 

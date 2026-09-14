@@ -83,6 +83,7 @@ export function useReviewWorkflow(
     setRows(next);
   };
   const [categories, setCategories] = useState<CategoryOption[]>([]);
+  const [doctors, setDoctors] = useState<string[]>([]);
   const [totalPages, setTotalPages] = useState(0);
   // Mirrored for the same reason as `rows` and `saveState`: the unmount flush below validates
   // against it, and the boot effect's cleanup closure was created BEFORE boot set it - so
@@ -313,6 +314,11 @@ export function useReviewWorkflow(
         patient_last_name: detail.patient_last_name || "",
         patient_dob: detail.patient_dob || "",
         law_firm: detail.law_firm || "",
+        attorney_name: detail.attorney_name || "",
+        doctor: detail.doctor || "",
+        letter_type: detail.letter_type || "",
+        letter_date: detail.letter_date || "",
+        pages_received: String(detail.pages_received ?? ""),
       });
       setWatching(false);
       enterEditor();
@@ -423,6 +429,7 @@ export function useReviewWorkflow(
       if (cancelled) return;
       applyTotalPages(detail.page_count);
       setCategories(detail.categories || []);
+      setDoctors(detail.doctors || []);
       // The document switch. Whatever the previous document left in the touched set describes rows
       // that are gone; carrying it into this one is the leak.
       replaceRows(detail.rows || []);
@@ -432,6 +439,11 @@ export function useReviewWorkflow(
         patient_last_name: detail.patient_last_name || "",
         patient_dob: detail.patient_dob || "",
         law_firm: detail.law_firm || "",
+        attorney_name: detail.attorney_name || "",
+        doctor: detail.doctor || "",
+        letter_type: detail.letter_type || "",
+        letter_date: detail.letter_date || "",
+        pages_received: String(detail.pages_received ?? ""),
       });
 
       const job = detail.active_job;
@@ -576,6 +588,7 @@ export function useReviewWorkflow(
     activeStep,
     rows,
     categories,
+    doctors,
     totalPages,
     filename,
     banner,

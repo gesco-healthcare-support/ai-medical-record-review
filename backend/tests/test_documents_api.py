@@ -11,11 +11,13 @@ import io
 import pytest
 from sqlalchemy import event, select
 
+from app.api.documents import _pages_received
 from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.errors import OcrUnavailableError
 from app.models import AuditLog, Document, Job, ReviewRow, Summary, User
+from app.services.reporting import DOCTORS, LETTER_TYPES
 from app.services.seed_catalog import constants_categories
 from tests.conftest import unique_test_email
 
@@ -2324,6 +2326,11 @@ async def _put_header(client, doc_id, **fields):
         "patient_last_name": "",
         "patient_dob": "",
         "law_firm": "",
+        "attorney_name": "",
+        "doctor": "",
+        "letter_type": "",
+        "letter_date": "",
+        "pages_received": "",
         **fields,
     }
     resp = await client.put(f"/api/documents/{doc_id}/header", json=body)
@@ -3784,3 +3791,83 @@ async def test_the_landing_list_still_reports_the_active_job(authed):
     ]
     assert quiet, "expected at least one seeded document with only finished jobs"
     assert all(row["active_job"] is None for row in quiet)
+
+
+def test_the_cover_sheet_page_count_is_coerced_rather_than_rejected():
+    """The form sends what was typed, so the route decides what an unusable value means.
+
+    None, not 0, and they are different answers: None means nobody has said and the export falls
+    back to the PDF's own count exactly as it did before this field existed. A stored 0 would
+    instead assert that zero pages arrived - a claim that would ship in a sentence a client reads.
+
+    A 422 was the alternative and is worse: it would throw away the rest of the header the reviewer
+    had just filled in, over a typo in one box.
+    """
+    assert _pages_received("418") == 418
+    assert _pages_received("  418  ") == 418
+    assert _pages_received("") is None
+    assert _pages_received("   ") is None
+    assert _pages_received("four hundred") is None
+    assert _pages_received("0") is None
+    assert _pages_received("-5") is None
+
+
+async def test_the_header_round_trips_the_letter_the_doctor_and_the_page_count(authed):
+    """DEMONSTRATES the new fields end to end - saved through the route a reviewer uses, read back
+    off the document detail the screen loads."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    await _put_header(
+        client,
+        doc_id,
+        attorney_name="Mitchell Garrett",
+        law_firm="Blitstein, Young & Blinder",
+        doctor="Pelton",
+        letter_type="interrogatory",
+        letter_date="08/12/2026",
+        pages_received="418",
+    )
+
+    detail = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert detail["attorney_name"] == "Mitchell Garrett"
+    assert detail["law_firm"] == "Blitstein, Young & Blinder"
+    assert detail["doctor"] == "Pelton"
+    assert detail["letter_type"] == "interrogatory"
+    assert detail["letter_date"] == "08/12/2026"
+    assert detail["pages_received"] == 418
+
+
+async def test_an_unset_page_count_reads_back_as_empty_not_zero(authed):
+    """GUARDS the difference the coercion exists to keep. The screen renders this straight into a
+    text box, and a 0 there would read as a real answer of zero pages received."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    await _put_header(client, doc_id, patient_first_name="Jane")
+
+    detail = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert detail["pages_received"] == ""
+
+
+async def test_an_unrecognised_letter_type_is_dropped_not_refused(authed):
+    """DEMONSTRATES. The value only selects a phrase in the opening paragraph, and an unknown one
+    already degrades to today's sentence. Refusing the whole PUT would cost the reviewer the rest of
+    the header they had just typed, for a field that cannot break anything."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    await _put_header(client, doc_id, patient_first_name="Jane", letter_type="something-else")
+
+    detail = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert detail["letter_type"] == ""
+    assert detail["patient_first_name"] == "Jane"  # the rest of the header survived
+
+
+async def test_the_record_serves_the_doctor_list_so_nothing_keeps_a_second_copy(authed):
+    """The dropdown needs the names and the Word renderer needs the fonts. One list in the backend
+    is what stops the two drifting, so the record ships it the way it already ships categories."""
+    client, _ = authed
+    doc_id = await _upload(client)
+
+    detail = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert detail["doctors"] == list(DOCTORS)
+    assert "Falkinstein" in detail["doctors"]
+    assert detail["letter_types"] == list(LETTER_TYPES)
