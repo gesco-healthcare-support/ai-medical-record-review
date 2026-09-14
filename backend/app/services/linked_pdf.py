@@ -23,11 +23,11 @@ import pymupdf
 
 from app.services.reporting import (
     CONCLUSION,
-    entry_body_segments,
     REVIEW_HEADING,
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
     date_label,
+    entry_body_segments,
     header_lines,
     intro_sentence,
     parsed_date,
