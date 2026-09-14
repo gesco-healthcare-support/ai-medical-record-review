@@ -16,6 +16,7 @@ from app.services.reporting import (
     LETTER_LABELS,
     LETTER_TYPES,
     REVIEW_HEADING,
+    ReportDetails,
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
     UNDATED_LABEL,
@@ -51,12 +52,17 @@ def _intro(doc) -> str:
 
 
 def test_intro_names_the_law_firm_when_there_is_one():
+    """The closing words moved from "such received records" to "such records" on 2026-09-14.
+
+    Not a tidy-up: the reviewers supplied the paragraph verbatim and asked us to fit it, and
+    theirs reads "such records". Recorded here rather than quietly swapped, because this is a
+    pinned wording in a delivered document and the pin is being overruled on their say-so."""
     doc = build_mrr_document(
         [], num_pages=8, patient_name="", patient_dob="", qme_or_ame="", lawfirm="Example Law Firm"
     )
     assert _intro(doc) == (
         "I have received 8 pages of medical records from Example Law Firm. I have reviewed all "
-        "of the pages received and my opinion is based upon such received records."
+        "of the pages received and my opinion is based upon such records."
     )
 
 
@@ -78,7 +84,7 @@ def test_intro_drops_the_clause_when_the_law_firm_is_blank():
         text = _intro(doc)
         assert text == (
             "I have received 8 pages of medical records. I have reviewed all of the pages "
-            "received and my opinion is based upon such received records."
+            "received and my opinion is based upon such records."
         )
         assert "from ." not in text
         assert "records from" not in text
@@ -737,6 +743,147 @@ def test_the_letter_vocabulary_is_what_the_reviewers_named():
     distinction, 2026-09-14. `none` is a real answer: many records arrive with no letter and the
     opening paragraph then omits the clause rather than leaving a gap."""
     assert LETTER_TYPES == ("advocacy", "interrogatory", "none")
-    assert LETTER_LABELS["advocacy"] == "defense advocacy letter"
-    assert LETTER_LABELS["interrogatory"] == "interrogatory letter"
+    # The article is part of the label: `a defense advocacy letter` but `an interrogatory
+    # letter`. Deriving it would be a rule that happens to work on two values.
+    assert LETTER_LABELS["advocacy"] == "a defense advocacy letter"
+    assert LETTER_LABELS["interrogatory"] == "an interrogatory letter"
     assert "none" not in LETTER_LABELS
+
+
+def test_the_opening_paragraph_follows_the_format_the_reviewers_supplied():
+    """DEMONSTRATES the whole of request 1, assembled from the fields the header now carries.
+
+    The expected text is their format with the placeholders filled, so this fails if any clause is
+    dropped, reordered or reworded.
+    """
+    text = intro_sentence(
+        241,
+        "Blitstein, Young & Blinder",
+        attorney_name="Mitchell Garrett",
+        letter_type="advocacy",
+        letter_date="08/12/2026",
+        reviewer_name="Jane Roe",
+    )
+    assert text == (
+        "I have received a defense advocacy letter dated 08/12/2026 along with 241 pages of "
+        "medical records from Mitchell Garrett, of Blitstein, Young & Blinder. I have reviewed "
+        "all of the pages received and my opinion is based upon such records. The initial "
+        "organization, outlining, and excerpting of medical records were performed by Jane Roe, "
+        "Trained Medical Record Processor. I personally reviewed the excerpts, the entire "
+        "outline, and the pages that were received, making additional inquiries and examinations "
+        "as necessary to determine the relevant medical issues. "
+        "(California Labor Code \u00a7 4628(b)(c))"
+    )
+
+
+def test_an_interrogatory_letter_takes_the_other_article():
+    """`a defense advocacy letter` but `an interrogatory letter`. The article travels with the label
+    rather than being computed, so a third type added later cannot inherit a wrong rule."""
+    text = intro_sentence(50, "Acme LLP", letter_type="interrogatory")
+    assert "I have received an interrogatory letter along with 50 pages" in text
+
+
+def test_a_letter_with_no_date_still_says_which_letter():
+    """The TYPE is the fact worth stating, and "dated" with nothing after it reads worse
+    than no date at all."""
+    text = intro_sentence(50, "Acme LLP", letter_type="advocacy")
+    assert "a defense advocacy letter along with 50 pages" in text
+    assert "dated" not in text
+
+
+def test_no_letter_is_a_real_answer_and_prints_nothing():
+    """ "none" is how a reviewer says they checked and there was no letter - different from not
+    having been asked, and the paragraph reads as it always did."""
+    text = intro_sentence(50, "Acme LLP", letter_type="none")
+    assert text.startswith("I have received 50 pages of medical records from Acme LLP.")
+    assert "letter" not in text
+
+
+def test_the_attorney_needs_the_firm_to_read_as_intended():
+    """ "from <person>, of <firm>" only works with both. A person alone is named alone rather than
+    shipped with a dangling "of"."""
+    assert "from Mitchell Garrett. " in intro_sentence(8, "", attorney_name="Mitchell Garrett")
+    assert "from Acme LLP. " in intro_sentence(8, "Acme LLP")
+    # The dangling form specifically. A bare `of` check is useless here: the sentence already
+    # says "pages of medical records".
+    assert ", of" not in intro_sentence(8, "", attorney_name="Mitchell Garrett")
+    assert ", of" in intro_sentence(8, "Acme LLP", attorney_name="Mitchell Garrett")
+
+
+def test_the_labor_code_sentences_need_a_named_reviewer():
+    """GUARDS a legal assertion. Those sentences state who performed the record work; emitting them
+    with a blank name is not a guess to make, so no name means no claim."""
+    without = intro_sentence(8, "Acme LLP", letter_type="advocacy")
+    assert "4628" not in without
+    assert "Trained Medical Record Processor" not in without
+
+    with_name = intro_sentence(8, "Acme LLP", reviewer_name="Jane Roe")
+    assert "4628" in with_name
+    assert "performed by Jane Roe, Trained Medical Record Processor." in with_name
+
+
+def test_the_paragraph_is_unchanged_when_no_new_field_is_supplied():
+    """GUARD. Every added clause is conditional, so a record that predates the header fields renders
+    the sentence it always did - apart from the requested wording change above."""
+    assert intro_sentence(241, "Acme LLP") == (
+        "I have received 241 pages of medical records from Acme LLP. I have reviewed all of the "
+        "pages received and my opinion is based upon such records."
+    )
+
+
+def _all_fonts(doc):
+    """Every font name the document actually sets, body and table and page header alike."""
+    names = {r.font.name for p in doc.paragraphs for r in p.runs if r.font.name}
+    names |= {
+        r.font.name
+        for t in doc.tables
+        for row in t.rows
+        for cell in row.cells
+        for p in cell.paragraphs
+        for r in p.runs
+        if r.font.name
+    }
+    names |= {
+        r.font.name
+        for s in doc.sections
+        for hdr in (s.header, s.first_page_header)
+        for p in hdr.paragraphs
+        for r in p.runs
+        if r.font.name
+    }
+    return names
+
+
+_ENTRY = [
+    {
+        "summaryDate": "03/14/2026",
+        "summaryTitle": "A REPORT",
+        "summaryText": "**Diagnoses**: Lumbar strain.",
+    }
+]
+
+
+def test_the_word_document_is_written_in_the_doctors_typeface():
+    """DEMONSTRATES request 2. EVERY run, not just the letter: the page header, the date column and
+    the summary text all have to move together or the document is two typefaces."""
+    doc = build_mrr_document(
+        _ENTRY, 8, "Pat", "01/01/1980", "AME", "Acme LLP", details=ReportDetails(doctor="Pelton")
+    )
+    assert _all_fonts(doc) == {"Tahoma"}
+
+
+def test_an_absent_or_unknown_doctor_keeps_the_house_typeface():
+    """GUARD. Every record that predates the field, and any name not in the eleven."""
+    for doctor in (None, "", "Nobody In The List"):
+        doc = build_mrr_document(
+            _ENTRY,
+            8,
+            "Pat",
+            "01/01/1980",
+            "AME",
+            "Acme LLP",
+            # Straight through rather than coerced: the export route does the `or ""`, and
+            # `report_font` defends against None anyway, so all three values stay distinct.
+            details=ReportDetails(doctor=doctor),
+        )
+        assert _all_fonts(doc) == {"Times New Roman"}, doctor

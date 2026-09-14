@@ -59,6 +59,7 @@ from app.services.reporting import (
     DOCTORS,
     DOCX_MIMETYPE,
     LETTER_TYPES,
+    ReportDetails,
     build_mrr_document,
 )
 from app.services.rows import validate_rows
@@ -1686,6 +1687,17 @@ def export_document(
         payload.patientdob,
         payload.QMEorAME,
         payload.lawfirm,
+        details=ReportDetails(
+            doctor=document.doctor or "",
+            attorney_name=document.attorney_name or "",
+            letter_type=document.letter_type or "",
+            letter_date=document.letter_date or "",
+            # The reviewer running the export is the one who did the record work, so the
+            # name is taken from the session rather than asked for again. An account with
+            # no display name leaves it empty, which drops the Labor Code sentences
+            # entirely - see `intro_sentence`.
+            reviewer_name=(user.name or "").strip(),
+        ),
     )
     buffer = io.BytesIO()
     docx.save(buffer)

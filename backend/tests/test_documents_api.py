@@ -3871,3 +3871,102 @@ async def test_the_record_serves_the_doctor_list_so_nothing_keeps_a_second_copy(
     assert detail["doctors"] == list(DOCTORS)
     assert "Falkinstein" in detail["doctors"]
     assert detail["letter_types"] == list(LETTER_TYPES)
+
+
+async def test_the_export_writes_the_letter_paragraph_and_the_doctors_typeface(authed, monkeypatch):
+    """DEMONSTRATES requests 1 and 2 through the route a reviewer actually clicks.
+
+    The letter fields and the doctor come from the RECORD, not the export dialog - they are facts
+    about the record rather than choices made at export time. The reviewer name is whoever is signed
+    in, and it is the only thing standing between this and the Labor Code sentences.
+    """
+    import docx as docxlib
+
+    client, user_id = authed
+    doc_id = await _upload(client)
+    await _put_header(
+        client,
+        doc_id,
+        attorney_name="Mitchell Garrett",
+        law_firm="Blitstein, Young & Blinder",
+        doctor="Pelton",
+        letter_type="advocacy",
+        letter_date="08/12/2026",
+    )
+
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=0,
+                title="A REPORT",
+                text="**Diagnoses**: Lumbar strain.",
+                date="03/14/2026",
+                row_start=1,
+                row_end=1,
+                row_category="1",
+            )
+        )
+        session.query(User).filter(User.id == user_id).update({"name": "Jane Roe"})
+        session.commit()
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export",
+        json={
+            "patientName": "Pat",
+            "patientdob": "",
+            "QMEorAME": "",
+            "lawfirm": "Blitstein, Young & Blinder",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    built = docxlib.Document(io.BytesIO(resp.content))
+    intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
+    assert "a defense advocacy letter dated 08/12/2026 along with" in intro
+    assert "from Mitchell Garrett, of Blitstein, Young & Blinder" in intro
+    assert "performed by Jane Roe, Trained Medical Record Processor" in intro
+    assert "4628" in intro
+
+    fonts = {r.font.name for p in built.paragraphs for r in p.runs if r.font.name}
+    assert fonts == {"Tahoma"}
+
+
+async def test_an_account_with_no_display_name_omits_the_labor_code_claim(authed):
+    """GUARDS the legal assertion. Those sentences name who performed the record work - with no name
+    to put in them the paragraph stops before them rather than asserting a blank."""
+    import docx as docxlib
+
+    client, user_id = authed
+    doc_id = await _upload(client)
+
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=0,
+                title="A REPORT",
+                text="text",
+                date="03/14/2026",
+                row_start=1,
+                row_end=1,
+                row_category="1",
+            )
+        )
+        session.query(User).filter(User.id == user_id).update({"name": ""})
+        session.commit()
+
+    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    assert resp.status_code == 200, resp.text
+    built = docxlib.Document(io.BytesIO(resp.content))
+    intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
+    assert "4628" not in intro
+    assert "Trained Medical Record Processor" not in intro
