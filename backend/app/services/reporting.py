@@ -116,11 +116,17 @@ KEY_ENTRY_LABELS: frozenset[str] = frozenset(
 
 
 def _label_key(label: str) -> str:
-    """A bold span reduced to the form KEY_ENTRY_LABELS is written in.
+    r"""A bold span reduced to the form KEY_ENTRY_LABELS is written in.
 
     Ours are not spelled consistently - `Diagnosis` beside `Diagnoses`, `Physical Exam`
-    beside `Physical Examination` - and a trailing colon is optional."""
-    return re.sub(r"[\s:.\-]+$", "", (label or "").strip().lower())
+    beside `Physical Examination` - and a trailing colon is optional.
+
+    `str.strip` rather than a regex. `re.sub(r"[\s:.\-]+$", ...)` does the same job and is
+    super-linear: a repeated character class anchored at the end makes the engine retry from
+    every position on a label that does not end in one of those characters, which is most of
+    them. Sonar refused it as python:S8786, and it is the same shape as the leading `\s*` in
+    a substitution pattern that #162 had to bound. `strip` is one linear pass."""
+    return (label or "").lower().strip(" \t\r\n:.-")
 
 
 def entry_body_segments(text: str) -> list[tuple[str, bool, bool, bool]]:
