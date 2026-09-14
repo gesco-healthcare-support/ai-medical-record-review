@@ -4,6 +4,8 @@ import html
 import io
 import re
 
+from dataclasses import dataclass
+
 import pytest
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.shared import Pt
@@ -705,17 +707,22 @@ def test_the_two_renderers_emphasise_the_same_spans():
 # standard end with these sentences and ours ended with none of them - see RecordAccounting.
 
 
+@dataclass
 class _Row:
     """The two fields `as_row()` does not carry are exactly the two this needs, so the accounting
-    reads ORM rows. This stands in for one."""
+    reads ORM rows. This stands in for one.
 
-    def __init__(self, start, end, include, title, dupe_group=None, dupe_primary=False):
-        self.start = start
-        self.end = end
-        self.include = include
-        self.title = title
-        self.dupe_group = dupe_group
-        self.dupe_primary = dupe_primary
+    A dataclass rather than a hand-written __init__ because the duplicate states need a third
+    field and seven positional parameters is where both ruff and Sonar start objecting. Field
+    order is unchanged, so the positional calls below still read the same."""
+
+    start: int
+    end: int
+    include: bool
+    title: str
+    dupe_group: int | None = None
+    dupe_primary: bool = False
+    dupe_dismissed: bool = False
 
 
 def test_the_three_buckets_partition_every_page_received():
@@ -737,12 +744,67 @@ def test_the_three_buckets_partition_every_page_received():
 def test_a_duplicate_copy_is_not_also_counted_as_another_document():
     """DEMONSTRATES the double count the disjoint reading forbids. `resolve_duplicate` leaves a
     non-primary member `include=False`, so counting it by its include flag would put the same
-    pages in both buckets and the delivered sentence would not add up."""
-    rows = [_Row(1, 5, False, "Duplicate copy", dupe_group=1)]
-    acc = record_accounting(rows, 5)
+    pages in both buckets and the delivered sentence would not add up.
+
+    The group carries a PRIMARY, which is what makes it a resolved one. An earlier version of
+    this fixture had no primary and still asserted the pages were counted - encoding the very
+    bug the three tests below now cover.
+    """
+    rows = [
+        _Row(1, 5, False, "Duplicate copy", dupe_group=1),
+        _Row(6, 10, True, "Original report", dupe_group=1, dupe_primary=True),
+    ]
+    acc = record_accounting(rows, 10)
     assert acc.duplicate_pages == 5
     assert acc.excluded_types == ()
     assert acc.pages_other == 0
+
+
+def test_an_unresolved_duplicate_group_is_not_announced_to_the_client():
+    """DEMONSTRATES. Detection alone is a SUGGESTION - `resolve_duplicate` is what decides,
+    and until it runs no member is primary. Reading `not dupe_primary` alone counted every
+    page of every such group: measured on the box, 102 of 147 groups have no primary at all,
+    which turned 171 surplus pages into 1,140.
+
+    The copies are still being remarked upon while nobody has resolved them, so they belong in
+    the remarked bucket and the duplicates sentence stays off."""
+    rows = [
+        _Row(1, 5, True, "Report", dupe_group=1),
+        _Row(6, 10, True, "Report", dupe_group=1),
+    ]
+    acc = record_accounting(rows, 10)
+    assert acc.duplicate_pages == 0
+    assert acc.pages_remarked == 10
+
+
+def test_a_dismissed_group_is_never_called_a_duplicate():
+    """DEMONSTRATES, and it is the worst of the three states: `dismiss` is the reviewer saying
+    these are NOT duplicates. Counting them anyway inverts that decision inside a document the
+    client reads.
+
+    The mechanism is the primary check rather than a `dupe_dismissed` test - dismiss clears
+    every primary - but the behaviour is what matters and it is what this pins."""
+    rows = [
+        _Row(1, 5, True, "Report", dupe_group=1, dupe_dismissed=True),
+        _Row(6, 10, True, "Report", dupe_group=1, dupe_dismissed=True),
+    ]
+    acc = record_accounting(rows, 10)
+    assert acc.duplicate_pages == 0
+    assert acc.pages_remarked == 10
+
+
+def test_only_the_surplus_copies_of_a_resolved_group_are_counted():
+    """GUARD. With one primary kept, the count is the pages BEYOND the first copy - which is
+    what the class docstring promises and what the reference sentence's arithmetic needs.
+    Three copies of a five-page report are ten surplus pages, not fifteen."""
+    rows = [
+        _Row(1, 5, True, "Report", dupe_group=1, dupe_primary=True),
+        _Row(6, 10, False, "Report", dupe_group=1),
+        _Row(11, 15, False, "Report", dupe_group=1),
+    ]
+    acc = record_accounting(rows, 15)
+    assert acc.duplicate_pages == 10
+    assert acc.pages_remarked == 5
 
 
 def test_the_excluded_types_are_deduplicated_but_keep_their_first_spelling():
@@ -812,3 +874,48 @@ def test_the_summary_line_names_the_firm_and_drops_it_when_absent():
     assert summary_intro("Smith & Co") == "The following is a summary of records from Smith & Co:"
     assert summary_intro("   ") == SUMMARY_INTRO
     assert summary_intro(None) == SUMMARY_INTRO
+
+
+def test_the_two_readings_of_a_resolved_duplicate_agree():
+    """GUARD across two modules, which is where this kind of predicate actually goes wrong.
+
+    `bundles.is_resolved_duplicate` and `record_accounting` both have to decide 'is this row a
+    surplus copy'. They cannot share code - one reads `as_row()` dicts, the other reads ORM rows
+    for the two fields `ROW_FIELDS` omits - so this asserts they answer the same for every state
+    a row can be in. #306 shipped with the two disagreeing on the unresolved and dismissed
+    states, which is the pair this exists to catch.
+    """
+    from app.services.bundles import is_resolved_duplicate, resolved_clusters
+
+    states = [
+        # (dupe_group, dupe_primary, dupe_dismissed, what it represents)
+        (None, False, False, "not in any group"),
+        (1, False, False, "unresolved - nobody has acted"),
+        (1, True, False, "the kept copy of a resolved group"),
+        (1, False, True, "dismissed - the reviewer said NOT duplicates"),
+    ]
+    for group, primary, dismissed, label in states:
+        # the group is resolved only when SOME member is primary, so a lone non-primary row
+        # stands for an unresolved group and a primary sibling is added where one is resolved
+        rows = [
+            _Row(
+                1,
+                5,
+                True,
+                "Report",
+                dupe_group=group,
+                dupe_primary=primary,
+                dupe_dismissed=dismissed,
+            )
+        ]
+        dicts = [
+            {
+                "dupe_group": r.dupe_group,
+                "dupe_primary": r.dupe_primary,
+                "dupe_dismissed": r.dupe_dismissed,
+            }
+            for r in rows
+        ]
+        theirs = is_resolved_duplicate(dicts[0], resolved_clusters(dicts))
+        ours = record_accounting(rows, 5).duplicate_pages > 0
+        assert ours == theirs, f"{label}: reporting says surplus={ours}, bundles says {theirs}"

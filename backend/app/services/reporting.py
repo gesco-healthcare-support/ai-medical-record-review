@@ -94,6 +94,10 @@ class RecordAccounting:
     also appearing under other documents. So a non-primary duplicate row is removed from the
     excluded set rather than counted twice, and `duplicate_pages` counts pages BEYOND the first
     copy rather than every page in the group.
+
+    That last sentence holds only for a group a reviewer has RESOLVED - see `record_accounting`.
+    Until then the copies are still being remarked upon, and the letter says so rather than
+    announcing a duplicate nobody has confirmed.
     """
 
     pages_received: int
@@ -128,9 +132,28 @@ def record_accounting(rows, pages_received: int) -> RecordAccounting:
     """
     remarked = duplicate = 0
     excluded: list[str] = []
+    # A group counts only once a reviewer has actually RESOLVED it, which is what setting a
+    # primary means. `resolve_duplicate` has three outcomes and only one of them makes a
+    # surplus copy: keep_one marks exactly one member primary and excludes the rest; dismiss
+    # sets `dupe_dismissed` and clears every primary, because the reviewer has said these are
+    # NOT duplicates; and an untouched group is a suggestion nobody has acted on. Reading
+    # `not dupe_primary` alone treats all three alike - measured on the box, 102 of 147 groups
+    # have no primary at all, so that reading counted 1,140 pages where 171 are surplus copies,
+    # and it would announce a reviewer's DISMISSED group to the client as duplicate copies.
+    #
+    # Dismissal needs no separate test here: dismiss clears every primary and keep_one clears
+    # every dismissal, so a dismissed group can never appear in this set.
+    #
+    # `bundles.resolved_clusters` / `is_resolved_duplicate` already draw this exact distinction
+    # for the bundle deliverable, and that docstring records @adrian-g catching the row-in-
+    # isolation reading on review. They read `as_row()` DICTS and this reads ORM rows - the two
+    # fields it needs are the two `ROW_FIELDS` omits - so the predicate is stated twice rather
+    # than shared. `test_the_two_readings_of_a_resolved_duplicate_agree` pins them together, so
+    # editing one without the other fails rather than drifting.
+    resolved = {row.dupe_group for row in rows if row.dupe_group is not None and row.dupe_primary}
     for row in rows:
         pages = _row_pages(row)
-        if row.dupe_group is not None and not row.dupe_primary:
+        if row.dupe_group in resolved and not row.dupe_primary:
             duplicate += pages
             continue
         if row.include:
