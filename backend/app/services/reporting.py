@@ -136,6 +136,40 @@ def header_lines(patient_name, patient_dob) -> tuple[str, str]:
     return f"RE: {patient_name}", f"DOB: {patient_dob}"
 
 
+def _sender_clause(attorney_name, lawfirm) -> str:
+    """The sender: ` from <person>, of <firm>`, or whichever of the two is known, or nothing.
+
+    Both are optional free text on the review page, and the clause is DROPPED rather than
+    rendered empty: concatenating the firm unconditionally shipped "medical records from ."
+    into a real export on 2026-08-17, dangling preposition and orphan full stop.
+
+    `from <person>, of <firm>` only reads as intended with BOTH, so a person with no firm
+    is named alone rather than shipped with a dangling "of"."""
+    person = (attorney_name or "").strip()
+    firm = (lawfirm or "").strip()
+    if person and firm:
+        return f" from {person}, of {firm}"
+    if person or firm:
+        return f" from {person or firm}"
+    return ""
+
+
+def _letter_clause(letter_type, letter_date) -> str:
+    """The covering letter: `a defense advocacy letter dated 08/12/2026 along with `, or nothing.
+
+    A letter with no date still gets its clause, because the TYPE is the fact worth stating
+    and "dated" with nothing after it is worse than no date at all.
+
+    A type with no label prints nothing at all. That covers `none`, which is a real answer
+    rather than a missing value - it is how a reviewer says they checked and there was no
+    letter, which is different from not having been asked."""
+    label = LETTER_LABELS.get((letter_type or "").strip())
+    if not label:
+        return ""
+    date = (letter_date or "").strip()
+    return f"{label} dated {date} along with " if date else f"{label} along with "
+
+
 def intro_sentence(
     num_pages,
     lawfirm,
@@ -151,22 +185,11 @@ def intro_sentence(
     CONDITIONAL - with no keyword arguments this returns what it always returned, so a record
     that predates the new header fields is unchanged.
 
-    Each clause is dropped rather than rendered empty, which is the convention this function
-    already followed for the firm: concatenating it unconditionally shipped "medical records
-    from ." into a real export on 2026-08-17, dangling preposition and orphan full stop.
-    ""/whitespace/None all count as absent, which is how these arrive from the form.
+    Each clause is dropped rather than rendered empty; `""`/whitespace/None all count as absent,
+    which is how these arrive from the form.
 
-    Four things follow from that:
-
-    A letter with no date still gets its clause - `a defense advocacy letter along with 241
-    pages` - because the TYPE is the fact worth stating and "dated" with nothing after it is
-    worse than no date at all.
-
-    `letter_type="none"` is a real answer and prints nothing. It is how a reviewer says they
-    checked and there was no letter, which is different from not having been asked.
-
-    The attorney needs the firm: `from <person>, of <firm>` reads as intended only when both
-    are present, so a person with no firm falls back to naming the person alone.
+    The two optional clauses are assembled by `_sender_clause` and `_letter_clause`, which
+    carry the rules for dropping each one.
 
     The Labor Code sentences appear ONLY with a reviewer name. They are a legal assertion about
     who performed the record work, and emitting one with a blank name in it is not a guess to
@@ -175,22 +198,8 @@ def intro_sentence(
     Returns plain text. The PDF renderer escapes the ASSEMBLED string for HTML rather than
     escaping the fields before they get here, so the escape still covers any field added later.
     """
-    firm = (lawfirm or "").strip()
-    person = (attorney_name or "").strip()
-    if person and firm:
-        received_from = f" from {person}, of {firm}"
-    elif person or firm:
-        received_from = f" from {person or firm}"
-    else:
-        received_from = ""
-
-    label = LETTER_LABELS.get((letter_type or "").strip())
-    date = (letter_date or "").strip()
-    if label:
-        dated = f" dated {date}" if date else ""
-        letter = f"{label}{dated} along with "
-    else:
-        letter = ""
+    received_from = _sender_clause(attorney_name, lawfirm)
+    letter = _letter_clause(letter_type, letter_date)
 
     opening = (
         f"I have received {letter}{num_pages} pages of medical records{received_from}. "
