@@ -11,6 +11,7 @@ import logging
 
 from app.config import get_settings
 from app.services.llm import TextPart, get_provider
+from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +319,17 @@ def verify_summary(
             "truncated": False,
             **_usage_fields(response),
         }
+    except JobCancelled:
+        # NOT a model failure - the reviewer pressed Stop. The PROVIDER raises this from its
+        # own cancellable sleep (llm/openai.py, llm/vllm.py) just as genai_retry does from its
+        # backoff, and JobCancelled subclasses Exception, so the broad catch below swallowed
+        # it: the audit was recorded as having failed and the unverified summary was kept, on
+        # a call the reviewer had already stopped.
+        #
+        # This site was MISSED by the first pass of the audit that found the other four,
+        # because that pass followed `generate_with_retry` and this call goes through the
+        # provider abstraction instead. Three places raise the signal, not one.
+        raise
     except Exception as exc:
         logger.warning("summary verify failed; keeping original: %s", exc)
         return _unverified(summary_text, title)

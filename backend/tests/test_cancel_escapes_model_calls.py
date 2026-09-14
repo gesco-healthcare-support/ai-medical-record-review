@@ -16,7 +16,7 @@ function returns its fallback instead of raising.
 
 import pytest
 
-from app.services import dedup, deposition_pages, summary_doi, verify_pass
+from app.services import dedup, deposition_pages, summary_doi, summary_verify, verify_pass
 from app.worker.failures import JobCancelled
 
 
@@ -73,6 +73,23 @@ def test_a_stop_escapes_the_boundary_verification(monkeypatch):
             {"start": 1, "end": 2, "category": "1", "date": "01/01/2020", "title": "A"},
             {"start": 3, "end": 4, "category": "1", "date": "01/01/2020", "title": "B"},
         )
+
+
+def test_a_stop_escapes_the_summary_audit(monkeypatch):
+    """The site the first audit MISSED. It calls the provider rather than
+    `generate_with_retry`, and the provider raises the signal from its own cancellable sleep -
+    so following one route into JobCancelled found four of five.
+
+    Swallowed, this returned `_unverified(...)`: the audit recorded as failed and the
+    unverified summary kept, on a call the reviewer had already stopped."""
+
+    class _Provider:
+        def generate_structured(self, *_a, **_k):
+            raise JobCancelled(3, 170)
+
+    monkeypatch.setattr(summary_verify, "get_provider", lambda *_a, **_k: _Provider())
+    with pytest.raises(JobCancelled):
+        summary_verify.verify_summary("m", "source text", "summary text")
 
 
 class _FakePage:
