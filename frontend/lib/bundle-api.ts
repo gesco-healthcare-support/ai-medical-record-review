@@ -5,6 +5,25 @@ import { downloadFile } from "@/lib/download";
 
 export type BundleConfig = { label: string; slug: string; categories: string[] };
 
+/** The two bundles the app offers, defined ONCE.
+ *
+ *  Each page used to inline its own copy, and the export zip would have made a third - so the
+ *  category lists would have had to be kept in step by hand across three files. The backend has
+ *  no copy at all: /export/zip is handed these, which is why the taxonomy lives on this side. */
+export const DIAGNOSTIC_OPERATIVE: BundleConfig = {
+  label: "Diagnostic & Operative",
+  slug: "diagnostic-operative",
+  categories: ["3", "8"],
+};
+
+export const DEPOSITIONS: BundleConfig = {
+  label: "Depositions",
+  slug: "depositions",
+  categories: ["9"],
+};
+
+export const BUNDLES: BundleConfig[] = [DIAGNOSTIC_OPERATIVE, DEPOSITIONS];
+
 export type BundleHeaderFields = {
   patientName: string;
   patientdob: string;

@@ -147,4 +147,27 @@ describe("ExportDialog page numbers", () => {
     expect(fetchSpy.mock.calls[0][0]).toContain("/export/pdf");
     expect(body(fetchSpy).includePageNumbers).toBe(true);
   });
+  it("downloads every deliverable in one archive, with both bundles named", async () => {
+    // The whole point of the third button: one hand-over instead of four separate clicks. The
+    // bundle list comes from `lib/bundle-api`, so this also pins that the dialog does not carry
+    // its own copy of the category taxonomy.
+    const user = userEvent.setup();
+    const fetchSpy = mockFetch();
+    open();
+    await user.click(screen.getByRole("button", { name: "Download all (.zip)" }));
+    expect(fetchSpy.mock.calls[0][0]).toContain("/export/zip");
+    expect(body(fetchSpy).bundles).toEqual([
+      { label: "diagnostic-operative", categories: ["3", "8"] },
+      { label: "depositions", categories: ["9"] },
+    ]);
+  });
+
+  it("puts the header fields on the archive too, not just the single-file exports", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetch();
+    open();
+    await user.click(screen.getByLabelText(/include page numbers/i));
+    await user.click(screen.getByRole("button", { name: "Download all (.zip)" }));
+    expect(body(fetchSpy).includePageNumbers).toBe(true);
+  });
 });
