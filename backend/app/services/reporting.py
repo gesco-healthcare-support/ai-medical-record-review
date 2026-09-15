@@ -277,13 +277,11 @@ def _row_pages(row) -> int:
     return max(0, (row.end or 0) - (row.start or 0) + 1)
 
 
-def record_accounting(
-    rows, pages_received: int, pages_on_file: int | None = None
-) -> RecordAccounting:
-    """Partition the reviewer's rows into remarked / other / duplicate.
+def _pages_received(stated: int, on_file: int | None, covered: int) -> int:
+    """The denominator the closing sentences count against: the cover sheet, or the file.
 
-    ``pages_on_file`` is the PDF's own length, and it is here to tell a DATA-ENTRY SLIP apart
-    from an arithmetic impossibility - @adrian-g, on review, and he is right that the two deserve
+    Its own function so the two failures it separates can be stated once - a DATA-ENTRY SLIP
+    and an arithmetic impossibility - @adrian-g, on review, and he is right that they deserve
     different treatment.
 
     `pages_received` became a typed field the moment the letter started counting against it, and
@@ -293,13 +291,32 @@ def record_accounting(
 
     A stated figure SMALLER than the pages the reviewer marked up cannot be right, and the file's
     own length is not in doubt - so when the rows fit inside the file but not inside the typed
-    number, the typed number is the suspect and the accounting counts the file instead. Rows
-    covering more than the FILE is the genuine impossibility #306 added the guard for, and that
-    still goes quiet.
+    number, the typed number is the suspect and the file's count is used instead. Rows covering
+    more than the FILE is the genuine impossibility #306 added the guard for, and that still goes
+    quiet.
 
-    Nothing is hidden by this: the memo's own sentence still reports the cover sheet against the
-    file, so a transposed digit now reads "states 24 pages and the file received contains 244 -
+    A figure too LARGE is deliberately left alone. It prints "Of the 2410 pages received", which a
+    reviewer notices; clamping it to the file would hide the same transposition the unreadable
+    direction makes invisible.
+
+    Nothing is hidden either way: the memo's own sentence still reports the cover sheet against
+    the file, so a transposed digit reads "states 24 pages and the file received contains 244 -
     220 fewer than stated" instead of blanking three documents.
+    """
+    received = max(0, stated or 0)
+    file_pages = max(0, on_file or 0)
+    if file_pages and received < covered <= file_pages:
+        return file_pages
+    return received
+
+
+def record_accounting(
+    rows, pages_received: int, pages_on_file: int | None = None
+) -> RecordAccounting:
+    """Partition the reviewer's rows into remarked / other / duplicate.
+
+    ``pages_on_file`` is the PDF's own length, and it only reaches `_pages_received`, which is
+    where the cover sheet and the file are weighed against each other.
 
     Takes ORM rows rather than `as_row()` dicts deliberately: `ROW_FIELDS` carries neither
     `include` nor the duplicate columns, which is the same omission #258 had to work around,
@@ -348,12 +365,7 @@ def record_accounting(
         seen.setdefault(title.casefold(), None)
         seen[title.casefold()] = seen[title.casefold()] or title
     ordered = tuple(dict.fromkeys(v for v in seen.values() if v))
-    received = max(0, pages_received or 0)
-    on_file = max(0, pages_on_file or 0)
-    if on_file and received < remarked + duplicate <= on_file:
-        # The typed figure is smaller than the pages that were marked up, and the file is not -
-        # so the figure is a slip, not the arithmetic. See the note above.
-        received = on_file
+    received = _pages_received(pages_received, pages_on_file, remarked + duplicate)
     return RecordAccounting(
         pages_received=received,
         pages_remarked=remarked,
