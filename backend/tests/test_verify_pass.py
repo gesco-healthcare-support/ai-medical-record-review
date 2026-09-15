@@ -9,6 +9,8 @@ narrow net is for: every boundary gives 57.4% precision at 49.0% recall, the tri
 gives 60.2% at 45.6% from 31% fewer calls.
 """
 
+from types import SimpleNamespace
+
 from app.config import get_settings
 from app.services import verify_pass
 from app.services.verify_pass import SHORT_ROW_PAGES, suspect_indices
@@ -230,3 +232,72 @@ def test_consecutive_refutations_all_collapse_into_one_survivor(monkeypatch):
 
     assert [(r["start"], r["end"]) for r in out] == [(1, 7), (8, 20)]
     assert stats == {"suspects": 3, "merged_away": 2}
+
+
+# ---------------------------------------------------------------------------------------------
+# WHAT THE ORACLE ACTUALLY SENDS.
+#
+# Every test above replaces `_same_document` wholesale, so the request that function BUILDS has
+# never been pinned by anything in this repo. That is why these come first and on their own commit:
+# without a pinned _before_, "the routing change preserves the request" would be an assertion with
+# nothing to check it against.
+
+
+def _stub_the_genai_call(monkeypatch, captured, reply="YES"):
+    """Record the google-genai request `_same_document` builds, and answer with ``reply``.
+
+    Stubs the two rasterizing helpers as well, so no PDF is needed: `_page_image` and `_png_bytes`
+    are the only reason this function touches the filesystem at all.
+    """
+
+    def _capture(_client, **kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return SimpleNamespace(text=reply)
+
+    monkeypatch.setattr(verify_pass, "generate_with_retry", _capture)
+    monkeypatch.setattr(verify_pass, "get_genai_client", object)
+    monkeypatch.setattr(verify_pass, "_page_image", lambda _path, page, **_k: f"image-{page}")
+    monkeypatch.setattr(verify_pass, "_png_bytes", lambda image: str(image).encode())
+    monkeypatch.setattr(verify_pass, "_boundary_text", lambda *_a, **_k: "")
+    return captured
+
+
+def test_the_oracle_sends_the_yes_no_enum_the_verify_system_and_one_part_per_image(monkeypatch):
+    """WHEN `_same_document` runs, THE SYSTEM SHALL send exactly the YES/NO enum, `_VERIFY_SYSTEM`,
+    temperature 0.0, the verify model, and one part per boundary image beside the prompt.
+
+    The part COUNT is pinned rather than the ordering, because the ordering is the one thing the
+    routing change is meant to alter - pinning it here and flipping it there is what makes that
+    change visible in a diff instead of silent.
+    """
+    captured = {}
+    _stub_the_genai_call(monkeypatch, captured)
+
+    assert verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4)) is True
+
+    config = captured["config"]
+    assert config.temperature == 0.0
+    assert config.response_mime_type == "text/x.enum"
+    assert config.response_schema == {"type": "STRING", "enum": ["YES", "NO"]}
+    assert config.system_instruction == verify_pass._VERIFY_SYSTEM
+    assert captured["model"] == get_settings().verify_model
+
+    # One image for document A's last page, then one per fragment page - FRAGMENT_PAGE_CAP bounds
+    # the fragment at 2 - beside the single prompt. Four parts in total.
+    contents = captured["contents"]
+    assert len(contents) == 1 + 1 + verify_pass.FRAGMENT_PAGE_CAP
+    assert contents[0].startswith("Document A: pages 1-2")
+    assert "Segment B: pages 3-4" in contents[0]
+
+
+def test_the_oracle_answers_true_only_on_an_exact_YES(monkeypatch):
+    """WHEN the reply is anything but YES, THE SYSTEM SHALL keep the boundary.
+
+    Pinned because the fail-safe direction matters: a wrong True merges two documents into one and
+    hides the second, which is the worst error class this pass can produce.
+    """
+    for reply, expected in (("YES", True), (" YES ", True), ("NO", False), ("", False)):
+        captured = {}
+        _stub_the_genai_call(monkeypatch, captured, reply=reply)
+        assert verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4)) is expected, reply
