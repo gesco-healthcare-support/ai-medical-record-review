@@ -3,7 +3,15 @@
 
 import { downloadFile } from "@/lib/download";
 
-export type BundleConfig = { label: string; slug: string; categories: string[] };
+export type BundleConfig = {
+  label: string;
+  slug: string;
+  categories: string[];
+  // The heading of the list page that goes in front of the combined PDF. The reviewers
+  // asked for one on Diagnostics and sent their own as the example; depositions has none,
+  // so that bundle sends no heading and gets no cover page.
+  coverHeading?: string;
+};
 
 /** The two bundles the app offers, defined ONCE.
  *
@@ -14,6 +22,7 @@ export const DIAGNOSTIC_OPERATIVE: BundleConfig = {
   label: "Diagnostic & Operative",
   slug: "diagnostic-operative",
   categories: ["3", "8"],
+  coverHeading: "LIST OF DIAGNOSTIC AND OPERATIVE REPORTS",
 };
 
 export const DEPOSITIONS: BundleConfig = {
@@ -45,7 +54,7 @@ export function downloadBundlePdf(documentId: string, config: BundleConfig) {
   return downloadBundle(
     documentId,
     "pdf",
-    { categories: config.categories, label: config.slug },
+    { categories: config.categories, label: config.slug, coverHeading: config.coverHeading },
     `${config.slug}.pdf`,
   );
 }

@@ -77,6 +77,7 @@ class ExportPayload(BaseModel):
 class BundlePayload(BaseModel):
     categories: list[Any] = []  # non-empty check lives in the route (-> 400), matching Flask
     label: str | None = None
+    coverHeading: str | None = None  # see ZipBundle
     model: str | None = None
     patientName: str = ""
     patientdob: str = ""
@@ -102,6 +103,10 @@ class ZipBundle(BaseModel):
 
     label: str | None = None
     categories: list[Any] = []
+    # The heading of the list page that goes in FRONT of the documents, e.g. "LIST OF
+    # DIAGNOSTIC AND OPERATIVE REPORTS". Absent means no cover page, which is what the
+    # depositions bundle sends - the reviewers asked for one on diagnostics only.
+    coverHeading: str | None = None
 
 
 class ExportZipPayload(ExportPayload):

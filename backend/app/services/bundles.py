@@ -5,15 +5,22 @@ pages into one PDF (no LLM) or summarize just those records into a filtered repo
 per-document and stay in memory - no ~/MRRs artifacts (HIPAA); ids-only logging lives in caller.
 """
 
+import html
 import io
 import logging
+import re
 
+import pymupdf
 from pypdf import PdfReader, PdfWriter
 
 from app.errors import EmptyExtractionError
 from app.services import summarize_engine
 
 logger = logging.getLogger(__name__)
+
+# Letter, with the same margins the linked PDF uses for its own letter pages.
+_COVER_PAGE = pymupdf.paper_rect("letter")
+_COVER_CONTENT = pymupdf.Rect(54, 54, _COVER_PAGE.width - 54, _COVER_PAGE.height - 54)
 
 
 def resolved_clusters(rows) -> set:
@@ -112,12 +119,156 @@ def pages_for_rows(rows):
     return pages
 
 
-def build_bundle_pdf(pdf_path, rows):
+# --------------------------------------------------------------------------------------------
+# THE COVER PAGE.
+#
+# Asked whether the folder should carry the combined PDF or a written report for Diagnostics,
+# the reviewers answered: "for the diagnostics we just want a PDF with the documents together.
+# Preferably with a cover page that includes a list of reports", and sent one of their own.
+#
+# Theirs is a bordered three-column table - Date | PROVIDER | REPORT TITLE - under the heading
+# LIST OF DIAGNOSTIC AND OPERATIVE REPORTS, running onto a second page when the list is long.
+# That is what this reproduces. Rendered through Story like the linked PDF, so pagination is
+# the library's problem rather than ours.
+
+_CREDENTIALS = re.compile(
+    r"\b(?:M\.D|D\.O|D\.C|P\.T|R\.N|P\.A|N\.P|PSY\.D|L\.V\.N|O\.D|D\.D\.S|PH\.D|D\.P\.M)\b",
+    re.IGNORECASE,
+)
+
+COVER_COLUMNS = ("Date", "PROVIDER", "REPORT TITLE")
+
+# `_store_rows` writes "-" for an empty row field, so a delivered page has to read it as absent
+# rather than print it. Same sentinel `reporting.date_label` already special-cases.
+_EMPTY_FIELD = {"", "-"}
+
+
+def _value(field) -> str:
+    """A row field as text, with the field spec's "no value" sentinel read as no value."""
+    text = (field or "").strip()
+    return "" if text in _EMPTY_FIELD else text
+
+
+def split_deliverable_title(title) -> tuple[str, str]:
+    """A delivered header line -> (provider, report title) for the two right-hand columns.
+
+    `TITLE_PROMPT` specifies one shape - ``AUTHOR, CREDENTIALS. FACILITY. DOCUMENT TYPE.`` - and
+    says an absent element is omitted ALONG WITH ITS SEPARATOR. So the document type is the last
+    element whenever there is one, whatever else survived, and everything before it identifies
+    who produced the document. That is the contract this splits on, rather than trying to
+    recognise a study by name: measured over the diagnostic summaries on one server, a modality
+    regex found the study in the last element on far fewer rows than the shape itself holds,
+    because document types are worded far more freely than any list can enumerate.
+
+    WHAT IT WILL NOT DO IS GUESS WHICH PART IS THE AUTHOR. Their column reads facility first,
+    and ours states the author first, so the two are reordered ONLY when the leading element
+    carries a credential - which is the one unambiguous signal that it is a person. On the same
+    measurement that held for 117 of 183 three-part titles; the other 66 keep our own order,
+    which may read facility-last but never puts a clinic where a doctor's name belongs.
+
+    A title with nothing to split - 72 of 268 on that server arrive as a single element - puts
+    everything under REPORT TITLE and leaves PROVIDER empty, rather than splitting on a guess.
+    """
+    parts = [part.strip(" .") for part in re.split(r"\.\s+", (title or "").strip())]
+    parts = [part for part in parts if part]
+    if not parts:
+        return "", ""
+    provider, report = parts[:-1], parts[-1]
+    if len(provider) >= 2 and _CREDENTIALS.search(provider[0]):
+        provider = provider[1:] + provider[:1]
+    # `M.D.` ends with the very character the separator is, so the split eats it and a client
+    # would read `JANE SMITH, M.D`. Put the period back on any element ending in a lone capital,
+    # which is a credential and essentially nothing else - a facility name ends in a word.
+    provider = [re.sub(r"\b([A-Z])$", r"\1.", part) for part in provider]
+    return " \u2013 ".join(provider), report
+
+
+def cover_entries(rows, delivered=None) -> list[tuple[str, str, str]]:
+    """(date, provider, report title) per row, in the order the rows appear in the record.
+
+    ``delivered`` maps a row's start page to the ``(date, title)`` the DELIVERABLE states, which
+    is not what the row carries. The row holds what segmentation read off the page - a ~31
+    character title, and a date the reviewer never has to fill in - while the summary holds the
+    formatted header line the summarizer writes (~87 characters) and the date the MRR itself
+    prints. Only the second pair splits into their columns and agrees with the report the client
+    reads beside it, which is the whole point: a list page contradicting its own report is the
+    drift this export path keeps rediscovering.
+
+    It falls back to the row for a record whose rows have not been summarized - a cover page
+    naming the documents roughly still beats no cover page.
+
+    `_store_rows` writes the literal string ``"-"`` for a row field the reviewer left empty, so
+    that is what an absent title or date arrives as rather than None. Read naively it is content,
+    and a record with no titles produced a bordered table of dashes in front of the documents.
+    `reporting.date_label` special-cases the same sentinel for the same reason.
+    """
+    delivered = delivered or {}
+    entries = []
+    for row in rows:
+        date, title = delivered.get(row.get("start")) or ("", "")
+        title = _value(title) or _value(row.get("title"))
+        provider, report = split_deliverable_title(title)
+        entries.append((_value(date) or _value(row.get("date")), provider, report))
+    return entries
+
+
+_COVER_CSS = """
+  body { font-family: 'Times New Roman', serif; font-size: 11pt; }
+  h1 { font-size: 12pt; font-weight: bold; text-align: center; margin: 0 0 12pt 0; }
+  table { width: 100%; border: 1px solid #000; }
+  th { font-weight: bold; text-align: left; border: 1px solid #000; padding: 3pt; }
+  td { text-align: left; border: 1px solid #000; padding: 3pt; vertical-align: top; }
+  td.d { width: 15%; }
+  td.p { width: 45%; }
+"""
+
+
+def build_cover_pdf(heading: str, entries) -> bytes:
+    """The list, as its own one-or-more-page PDF.
+
+    Story paginates a table across pages by itself, which is why the list is one table rather
+    than a hand-placed grid - theirs runs onto a second page and any record with enough imaging
+    will too.
+    """
+    body = "".join(
+        "<tr><td class='d'>{}</td><td class='p'>{}</td><td>{}</td></tr>".format(
+            html.escape(date), html.escape(provider), html.escape(report)
+        )
+        for date, provider, report in entries
+    )
+    header = "".join(f"<th>{html.escape(column)}</th>" for column in COVER_COLUMNS)
+    doc = (
+        f"<html><head><style>{_COVER_CSS}</style></head><body>"
+        f"<h1>{html.escape(heading)}</h1>"
+        f"<table><tr>{header}</tr>{body}</table>"
+        "</body></html>"
+    )
+    story = pymupdf.Story(html=doc)
+    buffer = io.BytesIO()
+    writer = pymupdf.DocumentWriter(buffer)
+    more = 1
+    while more:
+        device = writer.begin_page(_COVER_PAGE)
+        more, _ = story.place(_COVER_CONTENT)
+        story.draw(device)
+        writer.end_page()
+    writer.close()
+    return buffer.getvalue()
+
+
+def build_bundle_pdf(pdf_path, rows, cover=None):
     """Concatenate the pages of ``rows`` into an in-memory PDF buffer. Out-of-range pages are
-    skipped rather than raising: one bad row must not sink the whole bundle."""
+    skipped rather than raising: one bad row must not sink the whole bundle.
+
+    ``cover`` is the optional list page, already rendered, which goes in FRONT of the documents.
+    Optional because the depositions bundle was not asked for one, and a record whose rows carry
+    no dates or titles would produce an empty table rather than a useful page."""
     reader = PdfReader(pdf_path)
     last = len(reader.pages)
     writer = PdfWriter()
+    if cover:
+        for page in PdfReader(io.BytesIO(cover)).pages:
+            writer.add_page(page)
     for page in pages_for_rows(rows):
         if 1 <= page <= last:
             writer.add_page(reader.pages[page - 1])

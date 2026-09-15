@@ -1655,6 +1655,43 @@ def _linked_pdf_bytes(document: Document, payload: ExportPayload) -> bytes:
     )
 
 
+def _delivered_entries(session: Session, document: Document) -> dict[int, tuple[str, str]]:
+    """Start page -> the (date, title) a DELIVERED document states, for the bundle cover page.
+
+    Not `row['title']`: that is what segmentation read off the page, and the cover list wants the
+    formatted header line the summarizer writes - the one that carries the author, the facility
+    and the study, which is what splits into their PROVIDER and REPORT TITLE columns. Measured on
+    one server, the two strings differ on every row and the row's version is about a third as
+    long.
+
+    Through `presentable_title` for the reason #162 exists: the stored title carries the internal
+    review markers, and this is a page a client reads.
+    """
+    return {
+        summary.row_start: (summary.effective_date(), presentable_title(summary.effective_title()))
+        for summary in session.scalars(
+            select(Summary).where(
+                Summary.document_id == document.id,
+                Summary.excluded.is_(False),
+            )
+        ).all()
+        if summary.row_start is not None
+    }
+
+
+def _bundle_cover(session: Session, document: Document, spec, rows) -> bytes | None:
+    """The list page for one bundle, or None when it was not asked for or has nothing to say."""
+    heading = (getattr(spec, "coverHeading", None) or "").strip()
+    if not heading:
+        return None
+    entries = bundles.cover_entries(rows, _delivered_entries(session, document))
+    if not any(any(field for field in entry) for entry in entries):
+        # Every cell empty - an unsummarized record with untitled, undated rows. A bordered
+        # table of blanks in front of the documents is worse than no cover page.
+        return None
+    return bundles.build_cover_pdf(heading, entries)
+
+
 def _bundle_members(session: Session, document: Document, specs) -> list[tuple[str, bytes]]:
     """One combined PDF per bundle that matches something in this record.
 
@@ -1674,7 +1711,9 @@ def _bundle_members(session: Session, document: Document, specs) -> list[tuple[s
         matched = bundles.matched_rows(rows, spec.categories) if spec.categories else []
         if not matched:
             continue
-        pdf = bundles.build_bundle_pdf(document.stored_path, matched)
+        pdf = bundles.build_bundle_pdf(
+            document.stored_path, matched, cover=_bundle_cover(session, document, spec, matched)
+        )
         members.append((_download_name(spec.label, "pdf"), pdf.getvalue()))
     return members
 
@@ -1806,10 +1845,15 @@ def bundle_pdf(
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
-    """Combine the category-matched documents' pages into one downloadable PDF (no LLM)."""
+    """Combine the category-matched documents' pages into one downloadable PDF (no LLM).
+
+    Carries the same cover page the archive's copy does, from the same builder, so the file this
+    button hands over and the one inside the folder are not two different documents."""
     payload = payload or BundlePayload()
     matched = _matched_rows(session, document, payload.categories)
-    buffer = bundles.build_bundle_pdf(document.stored_path, matched)
+    buffer = bundles.build_bundle_pdf(
+        document.stored_path, matched, cover=_bundle_cover(session, document, payload, matched)
+    )
     audit(session, "bundle_pdf", user.id, document.id)
     return StreamingResponse(
         buffer,
