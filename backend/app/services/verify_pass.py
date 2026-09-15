@@ -10,12 +10,10 @@ import io
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-from google.genai import types
 from pdf2image import convert_from_path
 
 from app.config import get_settings
-from app.services.genai_client import get_genai_client
-from app.services.genai_retry import generate_with_retry
+from app.services.llm import ImagePart, TextPart, provider_for_stage
 from app.services.ocr import extract_text_from_image
 from app.services.pools import PoolTimeout, drain_pool
 from app.worker.failures import JobCancelled
@@ -109,21 +107,41 @@ def _same_document(pdf_path, prev_row, row):
         )
         if settings.verify_use_text:
             prompt += _boundary_text(a_last, fragment_images[0])
-        contents = [prompt, types.Part.from_bytes(data=_png_bytes(a_last), mime_type="image/png")]
+        # IMAGES FIRST, prompt LAST - a deliberate change of order, not a preservation. The prompt
+        # refers to the images positionally ("The first image is the LAST page of document A"), and
+        # a reader that has already seen them resolves those references against something instead
+        # of forward into nothing.
+        #
+        # CONSEQUENCE, and it must not be quoted past this line: the oracle's measured 57.4%
+        # precision / 49.0% recall were taken PROMPT-FIRST. This change invalidates them. Re-measure
+        # before citing either number again.
+        parts = [ImagePart(data=_png_bytes(a_last), mime_type="image/png")]
         for image in fragment_images:
-            contents.append(types.Part.from_bytes(data=_png_bytes(image), mime_type="image/png"))
-        config = types.GenerateContentConfig(
+            parts.append(ImagePart(data=_png_bytes(image), mime_type="image/png"))
+        parts.append(TextPart(prompt))
+        # BOTH halves resolve through `verify`. A bare `get_provider()` resolves the TRANSPORT
+        # through backend_for("summarize") while the model below resolves through
+        # backend_for("verify") - so moving only `verify` would send the pod's model name over the
+        # Gemini transport, and moving only summarize would do the reverse.
+        response = provider_for_stage("verify").generate_choice(
+            # Resolved for the backend answering this stage, not read from verify_model - which
+            # derives from genai_model, the setting four other stages still read.
+            model=settings.model_for_stage("verify"),
+            system=_VERIFY_SYSTEM,
+            parts=parts,
+            # The seam emits Gemini's native enum mode for `choices` - the same `text/x.enum` plus
+            # the uppercased {"type": "STRING", "enum": [...]} this hand-rolled - so the constraint
+            # is unchanged on Gemini and is finally expressible on every other backend.
+            choices=["YES", "NO"],
             temperature=0.0,
-            response_mime_type="text/x.enum",
-            response_schema={"type": "STRING", "enum": ["YES", "NO"]},
-            system_instruction=_VERIFY_SYSTEM,
-        )
-        response = generate_with_retry(
-            get_genai_client(), model=settings.verify_model, contents=contents, config=config
+            # No max_output_tokens: this call has never had one, and the seam sends the field only
+            # when it is set, so omitting it keeps the call uncapped exactly as before.
+            stage="verify",
         )
     except JobCancelled:
-        # NOT a model failure - the reviewer pressed Stop. `generate_with_retry` raises this
-        # out of its backoff sleep as a cooperative signal meant to unwind to _run's handler,
+        # NOT a model failure - the reviewer pressed Stop. The provider raises this out of its own
+        # cancellable sleep as a cooperative signal meant to unwind to _run's handler - Gemini via
+        # the `generate_with_retry` it wraps, vLLM directly -
         # and JobCancelled subclasses Exception, so the broad catch below swallowed it: the
         # log blamed the model for a deliberate user action, in exactly the place an operator
         # looks to ask whether Vertex was rejecting calls, and this boundary silently went

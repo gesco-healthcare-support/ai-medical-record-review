@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from app.config import get_settings
 from app.services import verify_pass
+from app.services.llm import ImagePart, TextPart
 from app.services.verify_pass import SHORT_ROW_PAGES, suspect_indices
 
 
@@ -243,52 +244,91 @@ def test_consecutive_refutations_all_collapse_into_one_survivor(monkeypatch):
 # nothing to check it against.
 
 
-def _stub_the_genai_call(monkeypatch, captured, reply="YES"):
-    """Record the google-genai request `_same_document` builds, and answer with ``reply``.
+def _stub_provider(monkeypatch, captured, reply="YES"):
+    """Route `verify_pass.provider_for_stage` to a stub whose `generate_choice` records kwargs.
 
     Stubs the two rasterizing helpers as well, so no PDF is needed: `_page_image` and `_png_bytes`
     are the only reason this function touches the filesystem at all.
+
+    Returns a dict recording the stage the SERVICE asked the resolver for. A resolver stub that
+    accepts anything swallows a wrong stage silently, and resolving the transport through the wrong
+    stage is the defect that reached main in #318.
     """
+    asked = {}
 
-    def _capture(_client, **kwargs):
-        captured.clear()
-        captured.update(kwargs)
-        return SimpleNamespace(text=reply)
+    class _Provider:
+        def generate_choice(self, **kwargs):
+            captured.clear()
+            captured.update(kwargs)
+            return SimpleNamespace(text=reply)
 
-    monkeypatch.setattr(verify_pass, "generate_with_retry", _capture)
-    monkeypatch.setattr(verify_pass, "get_genai_client", object)
+    def _resolver(stage, *_a, **_k):
+        asked["stage"] = stage
+        return _Provider()
+
+    monkeypatch.setattr(verify_pass, "provider_for_stage", _resolver)
     monkeypatch.setattr(verify_pass, "_page_image", lambda _path, page, **_k: f"image-{page}")
     monkeypatch.setattr(verify_pass, "_png_bytes", lambda image: str(image).encode())
     monkeypatch.setattr(verify_pass, "_boundary_text", lambda *_a, **_k: "")
-    return captured
+    return asked
 
 
 def test_the_oracle_sends_the_yes_no_enum_the_verify_system_and_one_part_per_image(monkeypatch):
     """WHEN `_same_document` runs, THE SYSTEM SHALL send exactly the YES/NO enum, `_VERIFY_SYSTEM`,
-    temperature 0.0, the verify model, and one part per boundary image beside the prompt.
+    temperature 0.0, the verify-stage model, and one part per boundary image beside the prompt.
 
-    The part COUNT is pinned rather than the ordering, because the ordering is the one thing the
-    routing change is meant to alter - pinning it here and flipping it there is what makes that
-    change visible in a diff instead of silent.
+    THE ORDERING ASSERTION IS THE ONE DELIBERATE BEHAVIOUR CHANGE IN THIS PR. The previous commit
+    pinned this call PROMPT-FIRST, as google-genai received it; it is IMAGES-FIRST now. The prompt
+    refers to the images positionally ("the first image is the LAST page of document A"), so a
+    reader that has already seen them resolves those references backwards rather than forwards.
+
+    That flip invalidates the oracle's measured 57.4% precision / 49.0% recall, which were taken
+    prompt-first. Re-measure before quoting either number again.
     """
     captured = {}
-    _stub_the_genai_call(monkeypatch, captured)
+    asked = _stub_provider(monkeypatch, captured)
 
     assert verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4)) is True
 
-    config = captured["config"]
-    assert config.temperature == 0.0
-    assert config.response_mime_type == "text/x.enum"
-    assert config.response_schema == {"type": "STRING", "enum": ["YES", "NO"]}
-    assert config.system_instruction == verify_pass._VERIFY_SYSTEM
+    # WHICH BACKEND ANSWERS, asserted separately from `stage=` below. `stage=` only selects a
+    # thinking budget - gemini.py reads it for thinking_for(), and vllm.py and openai.py both
+    # `del stage` - so `asked["stage"]` is what says the TRANSPORT resolved through verify too.
+    assert asked["stage"] == "verify"
+    assert captured["stage"] == "verify"
+    assert captured["choices"] == ["YES", "NO"]
+    assert captured["system"] == verify_pass._VERIFY_SYSTEM
+    assert captured["temperature"] == 0.0
     assert captured["model"] == get_settings().verify_model
+    # This call has never carried a cap, and the seam sends the field only when it is set.
+    assert "max_output_tokens" not in captured
 
-    # One image for document A's last page, then one per fragment page - FRAGMENT_PAGE_CAP bounds
-    # the fragment at 2 - beside the single prompt. Four parts in total.
-    contents = captured["contents"]
-    assert len(contents) == 1 + 1 + verify_pass.FRAGMENT_PAGE_CAP
-    assert contents[0].startswith("Document A: pages 1-2")
-    assert "Segment B: pages 3-4" in contents[0]
+    parts = captured["parts"]
+    assert len(parts) == 1 + verify_pass.FRAGMENT_PAGE_CAP + 1
+    assert all(isinstance(part, ImagePart) for part in parts[:-1])
+    assert all(part.mime_type == "image/png" for part in parts[:-1])
+    assert isinstance(parts[-1], TextPart), "the prompt is LAST now, not first"
+    assert parts[-1].text.startswith("Document A: pages 1-2")
+    assert "Segment B: pages 3-4" in parts[-1].text
+
+
+def test_the_model_is_resolved_for_the_backend_not_read_from_verify_model(monkeypatch):
+    """WHEN `verify` resolves to vllm, THE SYSTEM SHALL send VLLM_MODEL, not verify_model.
+
+    Only the vllm case can catch it. On Gemini `model_for_stage("verify")` returns verify_model by
+    construction, so a service reading the raw setting is indistinguishable from one asking the
+    resolver until a stage actually moves.
+    """
+    captured = {}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "llm_backend", "vllm")
+    monkeypatch.setattr(settings, "vllm_model", "served-by-the-pod/model")
+    _stub_provider(monkeypatch, captured)
+
+    verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4))
+
+    assert captured["model"] == "served-by-the-pod/model"
+    # Control: the two genuinely differ here, or the assertion above passes trivially.
+    assert settings.verify_model != "served-by-the-pod/model"
 
 
 def test_the_oracle_answers_true_only_on_an_exact_YES(monkeypatch):
@@ -299,5 +339,5 @@ def test_the_oracle_answers_true_only_on_an_exact_YES(monkeypatch):
     """
     for reply, expected in (("YES", True), (" YES ", True), ("NO", False), ("", False)):
         captured = {}
-        _stub_the_genai_call(monkeypatch, captured, reply=reply)
+        _stub_provider(monkeypatch, captured, reply=reply)
         assert verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4)) is expected, reply
