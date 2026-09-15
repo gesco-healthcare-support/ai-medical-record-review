@@ -10,8 +10,9 @@ WHICH LAYER RAISES IT DEPENDS ON THE CALL SITE, which is why the stubs below are
 site still calling google-genai directly gets the signal from `generate_with_retry`; a site routed
 through the provider seam gets it from the provider - on Gemini via the `generate_with_retry` it
 wraps, on vLLM from its own sleep. Both unwind identically, so moving a service across the seam
-changes what these tests STUB and not what they assert. The duplicate confirmation and the summary
-audit are on the seam; the other three are not, yet.
+changes what these tests STUB and not what they assert. The duplicate confirmation, the boundary
+verification and the summary audit are on the seam; the deposition page offset and the injury-date
+read are not, yet.
 
 `llm_classify` was fixed for this and pinned in test_classification.py. These are the other four
 call sites with the same shape, found by walking the AST for model calls inside a broad catch
@@ -75,8 +76,14 @@ def test_a_stop_escapes_the_injury_date_read(monkeypatch):
 def test_a_stop_escapes_the_boundary_verification(monkeypatch):
     """Swallowed, this returned False - "these are different documents", so a real merge
     suggestion was dropped on the strength of a call that never happened."""
-    monkeypatch.setattr(verify_pass, "generate_with_retry", _cancels)
-    monkeypatch.setattr(verify_pass, "get_genai_client", object)
+
+    # Routed through the provider seam now, so the signal arrives from the provider's own
+    # cancellable sleep rather than from `generate_with_retry` directly.
+    class _Provider:
+        def generate_choice(self, *_a, **_k):
+            raise JobCancelled(3, 170)
+
+    monkeypatch.setattr(verify_pass, "provider_for_stage", lambda *_a, **_k: _Provider())
     monkeypatch.setattr(verify_pass, "_page_image", lambda *_a, **_k: object())
     monkeypatch.setattr(verify_pass, "_png_bytes", lambda *_a, **_k: b"png")
     monkeypatch.setattr(verify_pass, "_boundary_text", lambda *_a, **_k: "")
