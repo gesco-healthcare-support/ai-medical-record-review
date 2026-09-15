@@ -190,14 +190,74 @@ def redis_port_is_shared() -> bool:
     return '"6379:6379"' not in dev.read_text(encoding="utf-8", errors="replace")
 
 
-def pytest_sessionstart(session) -> None:  # noqa: ARG001 - pytest hook signature
-    """Say which Redis answered before the queue tests fail against it.
+def _alembic_head() -> str | None:
+    """The revision `alembic upgrade head` would move to, read from the migration scripts.
 
-    A WARNING and never an error: most of the suite does not touch Redis, and failing collection for
-    everyone because a queue dependency is missing would be a worse trade than the confusing failure
-    this replaces. The queue tests still fail on their own if Redis is absent - they just now fail
-    after a line that says why.
+    Alembic's own ScriptDirectory rather than a scan of the versions folder, so a branched
+    or merged history answers here exactly as it would to the upgrade command.
     """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    backend = Path(__file__).resolve().parents[1]
+    cfg = Config(str(backend / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend / "alembic"))
+    return ScriptDirectory.from_config(cfg).get_current_head()
+
+
+def warn_if_the_schema_is_behind() -> None:
+    """Say the test database needs migrating, instead of letting the suite fail cryptically.
+
+    This module's own docstring has always required `alembic upgrade head` to have run, and
+    nothing checked it. The failure when it has not is the confusing kind: not a missing
+    TABLE, which would be obvious, but a missing COLUMN. Every DB-touching test dies on
+    `UndefinedColumn` naming a column rather than a migration, so it reads as a regression
+    in the code under test. Measured 2026-09-13 on a database one migration behind: ~200
+    failures across a dozen files, none of which named the cause.
+
+    A WARNING and never an error, for the same reason the Redis check below is one: most of
+    the suite does not touch the database, and failing collection for everyone is a worse
+    trade than the confusing failure this replaces. Diagnostics only - any exception here is
+    swallowed, because a broken check must never be able to fail a run.
+    """
+    try:
+        from sqlalchemy import create_engine, text
+
+        head = _alembic_head()
+        if head is None:
+            return
+        engine = create_engine(os.environ["DATABASE_URL"], connect_args={"connect_timeout": 5})
+        with engine.connect() as conn:
+            rows = conn.execute(text("select version_num from alembic_version")).scalars().all()
+        engine.dispose()
+    except Exception:  # noqa: BLE001 - diagnostics only, never fatal
+        return
+    if head in rows:
+        return
+    at = ", ".join(rows) if rows else "nothing"
+    print(
+        f"\n[conftest] The test database is at {at}, but the migrations head is {head}. "
+        f"Every test that touches the database will fail, most of them naming a missing "
+        f"column rather than the migration.\n"
+        f"[conftest] Bring it up to date with:  "
+        f"DATABASE_URL=$DATABASE_URL SECRET_KEY=x SECURITY_PASSWORD_SALT=x "
+        f"python -m alembic upgrade head\n"
+    )
+
+
+def pytest_sessionstart(session) -> None:  # noqa: ARG001 - pytest hook signature
+    """Say what is wrong with the environment before the tests fail against it.
+
+    Two checks, each carrying its own reasoning where it is defined: the schema version in
+    `warn_if_the_schema_is_behind` above, and which Redis answered, below.
+
+    Both are WARNINGS and never errors: most of the suite touches neither dependency, and failing
+    collection for everyone because one is missing would be a worse trade than the confusing
+    failure each replaces. The queue tests still fail on their own if Redis is absent - they just
+    now fail after a line that says why.
+    """
+    warn_if_the_schema_is_behind()
+
     from app.config import get_settings
 
     url = get_settings().redis_url
