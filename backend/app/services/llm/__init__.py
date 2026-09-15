@@ -1,7 +1,11 @@
 """Provider registry.
 
-`get_provider()` with no argument returns the provider the summarize stage is configured to use, so
-call sites do not each re-read config and cannot drift apart on which vendor they picked.
+TWO ENTRY POINTS, AND PICKING THE WRONG ONE FAILS SILENTLY. `get_provider()` with no argument
+resolves through `backend_for("summarize")`, so it is correct ONLY for the summarize stage - which
+was every caller that existed until the non-PDF services began crossing this seam. Any other stage
+asks `provider_for_stage(stage)`. A stage that takes its model from `model_for_stage(stage)` and its
+transport from a bare `get_provider()` resolves the two through DIFFERENT stages, and they agree
+only while nothing is routed independently.
 
 Cached per name because a provider is a stateless translator over a cached client; building one per
 call would rebuild nothing useful.
@@ -21,6 +25,7 @@ __all__ = [
     "Part",
     "TextPart",
     "get_provider",
+    "provider_for_stage",
 ]
 
 
@@ -60,3 +65,30 @@ def get_provider(name: str | None = None) -> LLMProvider:
 
         return VLLMProvider()
     raise ValueError(f"unknown LLM provider: {name!r} (expected 'gemini', 'openai' or 'vllm')")
+
+
+def provider_for_stage(stage: str) -> LLMProvider:
+    """The provider answering ONE stage's calls, resolved for the backend that stage selects.
+
+    PAIRS WITH `Settings.model_for_stage`, and the pairing is the point. A caller taking its model
+    from `model_for_stage(stage)` and its transport from a bare `get_provider()` resolves the two
+    through different stages - its own for the model, summarize for the transport. They agree only
+    while nothing is routed independently, which is exactly the condition this seam exists to end.
+    That is not hypothetical: it shipped in #318 and was found in review, not by a test.
+
+    `stage=` on the generate_* methods does NOT do this. `gemini.py` uses it only for
+    `thinking_for(stage)`, and `vllm.py` and `openai.py` both `del stage` - it picks a thinking
+    budget, never a transport.
+
+    SUMMARIZE IS REFUSED, and asymmetrically with the rest on purpose. Bare `get_provider()` also
+    honours `summary_provider == "openai"`, a selector deployments set today and one this function
+    cannot see; routing summarize through here would drop it silently. Summarize keeps
+    `get_provider()`, which is correct for it and only for it.
+
+    Unknown stages raise from `backend_for`, so there is no second list to keep in step.
+    """
+    if stage == "summarize":
+        raise KeyError(
+            "summarize keeps get_provider(): it also honours summary_provider, which this cannot see"
+        )
+    return get_provider(get_settings().backend_for(stage))

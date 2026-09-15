@@ -14,7 +14,7 @@ import json
 import logging
 
 from app.config import get_settings
-from app.services.llm import TextPart, get_provider
+from app.services.llm import TextPart, provider_for_stage
 from app.services.ocr import extract_pages_with_report
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,11 @@ def extract_header(pdf_path, pages) -> dict:
     if not text.strip():
         return dict(_BLANK)
 
-    response = get_provider().generate_structured(
+    # BOTH halves resolve through `extract`. A bare `get_provider()` would resolve the TRANSPORT
+    # through backend_for("summarize") while the model below resolved through backend_for("extract")
+    # - so a run with only `extract` moved would send the pod's model name over the Gemini
+    # transport. Shipped that way in #318 and caught in review; the pairing is the fix.
+    response = provider_for_stage("extract").generate_structured(
         # Resolved for the backend that will answer this stage, not read from genai_model directly.
         # That setting is shared by four stages (segment, extract, doi, deposition), so reading it
         # here would pin this call to whatever Gemini name they share even when `extract` has been
