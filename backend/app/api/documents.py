@@ -1783,6 +1783,41 @@ def _bundle_cover(session: Session, document: Document, spec, rows) -> bytes | N
     return bundles.build_cover_pdf(heading, entries)
 
 
+def _memo_docx_bytes(
+    session: Session, document: Document, payload: ExportPayload, user: User
+) -> bytes:
+    """The covering memo. ONE definition, shared by /export/memo and /export/zip.
+
+    Same reason as the two builders above: the archive has to hand over the file the button hands
+    over, not a second rendering of it.
+
+    Unlike them it does NOT go through `_included_summaries`, because the memo reports what
+    ARRIVED rather than what was written - a record still being worked has a memo and does not yet
+    have a report. Inside the archive that distinction is invisible: the zip has already refused
+    with 409 before this runs, because the Word document it also carries needs summaries.
+    """
+    docx = build_memo_document(
+        _record_accounting(session, document),
+        MemoDetails(
+            doctor=document.doctor or "",
+            patient_name=payload.patientName,
+            attorney_name=document.attorney_name or "",
+            lawfirm=payload.lawfirm,
+            letter_type=document.letter_type or "",
+            letter_date=document.letter_date or "",
+            reviewer_name=(user.name or "").strip(),
+            # Today, in the format their own memo prints. The reviewer is writing it now, and
+            # nothing on the record records when a memo was sent.
+            memo_date=datetime.now(UTC).strftime("%B %d, %Y"),
+            pages_stated=document.pages_received or 0,
+            pages_on_file=document.page_count or 0,
+        ),
+    )
+    buffer = io.BytesIO()
+    docx.save(buffer)
+    return buffer.getvalue()
+
+
 def _bundle_members(session: Session, document: Document, specs) -> list[tuple[str, bytes]]:
     """One combined PDF per bundle that matches something in this record.
 
@@ -1932,26 +1967,7 @@ def export_document_memo(
     answerable from the reviewer's rows alone. A record still being worked has a memo; it does
     not yet have a report."""
     payload = payload or ExportPayload()
-    docx = build_memo_document(
-        _record_accounting(session, document),
-        MemoDetails(
-            doctor=document.doctor or "",
-            patient_name=payload.patientName,
-            attorney_name=document.attorney_name or "",
-            lawfirm=payload.lawfirm,
-            letter_type=document.letter_type or "",
-            letter_date=document.letter_date or "",
-            reviewer_name=(user.name or "").strip(),
-            # Today, in the format their own memo prints. The reviewer is writing it now, and
-            # nothing on the record records when a memo was sent.
-            memo_date=datetime.now(UTC).strftime("%B %d, %Y"),
-            pages_stated=document.pages_received or 0,
-            pages_on_file=document.page_count or 0,
-        ),
-    )
-    buffer = io.BytesIO()
-    docx.save(buffer)
-    buffer.seek(0)
+    buffer = io.BytesIO(_memo_docx_bytes(session, document, payload, user))
     audit(session, "export_memo", user.id, document.id)
     return StreamingResponse(
         buffer,
@@ -1971,7 +1987,7 @@ def export_document_zip(
     user: User = Depends(current_active_user),
 ):
     """Every deliverable for this record in one archive: the MRR Word document, the linked
-    PDF, and one combined PDF per requested category bundle.
+    PDF, the covering memo, and one combined PDF per requested category bundle.
 
     The reviewers asked for a single download instead of four. Each member is produced by
     the same function its own route uses, so the archive cannot drift from what those
@@ -1991,6 +2007,7 @@ def export_document_zip(
     members: list[tuple[str, bytes]] = [
         (_summary_filename(document), _mrr_docx_bytes(session, document, payload, user)),
         (_linked_filename(document), _linked_pdf_bytes(session, document, payload, user)),
+        (_memo_filename(document), _memo_docx_bytes(session, document, payload, user)),
     ]
     members.extend(_bundle_members(session, document, payload.bundles))
 

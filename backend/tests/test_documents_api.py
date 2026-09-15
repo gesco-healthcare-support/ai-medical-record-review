@@ -3894,6 +3894,12 @@ async def test_the_zip_carries_the_same_word_document_the_export_button_does(aut
     assert any(n.endswith(".pdf") for n in names)
 
 
+# The three record-level deliverables every archive carries, whatever bundles were asked
+# for. Named rather than counted: a count reports "4 == 3" and says nothing about which
+# member arrived or went missing.
+_ZIP_ALWAYS = {"scan_summary.docx", "scan_linked.pdf", "scan_memo.docx"}
+
+
 async def test_a_bundle_that_matches_nothing_is_left_out_rather_than_failing_the_zip(authed):
     """The one behaviour that differs from /bundle/pdf, which answers 409 on an empty match.
 
@@ -3919,7 +3925,7 @@ async def test_a_bundle_that_matches_nothing_is_left_out_rather_than_failing_the
     with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
         names = archive.namelist()
     assert not any("deposition" in n.lower() for n in names)
-    assert len(names) == 2  # the two record-level deliverables, and nothing else
+    assert set(names) == _ZIP_ALWAYS  # the record-level deliverables, and nothing else
 
 
 async def test_a_matching_bundle_rides_in_the_zip_under_its_own_label(authed):
@@ -3943,7 +3949,7 @@ async def test_a_matching_bundle_rides_in_the_zip_under_its_own_label(authed):
         names = archive.namelist()
         assert "diagnostic-operative.pdf" in names
         assert archive.read("diagnostic-operative.pdf").startswith(b"%PDF")
-    assert len(names) == 3
+    assert set(names) == _ZIP_ALWAYS | {"diagnostic-operative.pdf"}
 
 
 async def test_the_zip_refuses_a_record_with_no_summaries(authed):
@@ -4473,3 +4479,53 @@ async def test_a_record_with_no_report_yet_still_has_a_memo(authed):
 
     assert (await client.post(f"/api/documents/{doc_id}/export", json={})).status_code == 409
     assert (await client.post(f"/api/documents/{doc_id}/export/memo", json={})).status_code == 200
+
+
+async def test_the_zip_carries_the_same_memo_the_button_does(authed):
+    """The memo joins the archive under the rule the other two follow: ONE builder, so the file in
+    the folder is the file the button hands over rather than a second rendering.
+
+    Compares `word/document.xml` - the document's CONTENT - not the two files byte for byte. A
+    .docx is itself a zip and python-docx stamps each member with the current time to 2-second
+    resolution, so whole-file equality holds only when both requests land in the same bucket; it
+    passes alone and fails under load, which is a property of the machine rather than the code.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _one_summary(doc_id)
+    await _rows(client, doc_id, [{"start": 1, "end": 4, "category": "1", "include": True}])
+    fields = {"patientName": "Synthetic Patient", "lawfirm": "Example Law Firm"}
+
+    single = await client.post(f"/api/documents/{doc_id}/export/memo", json=fields)
+    assert single.status_code == 200, single.text
+    zipped = await client.post(f"/api/documents/{doc_id}/export/zip", json=fields)
+    assert zipped.status_code == 200, zipped.text
+
+    with zipfile.ZipFile(io.BytesIO(zipped.content)) as archive:
+        from_zip = archive.read("scan_memo.docx")
+    with (
+        zipfile.ZipFile(io.BytesIO(single.content)) as a,
+        zipfile.ZipFile(io.BytesIO(from_zip)) as b,
+    ):
+        assert a.read("word/document.xml") == b.read("word/document.xml")
+
+
+async def test_the_archive_reports_the_page_count_the_memo_was_asked_for(authed):
+    """DEMONSTRATES the point of folding the memo in: one download now carries the cover-sheet
+    check the reviewers called the main thing, instead of it being a fourth click somebody
+    forgets."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=8)
+    await _put_header(client, doc_id, pages_received="6")
+    await _one_summary(doc_id)
+    await _rows(client, doc_id, [{"start": 1, "end": 6, "category": "1", "include": True}])
+
+    resp = await client.post(f"/api/documents/{doc_id}/export/zip", json={})
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        memo = archive.read("scan_memo.docx")
+
+    import docx as docxlib
+
+    text = [p.text for p in docxlib.Document(io.BytesIO(memo)).paragraphs if p.text.strip()]
+    assert any("The cover sheet states 6 pages" in t for t in text)
