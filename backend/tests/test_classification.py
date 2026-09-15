@@ -2,7 +2,7 @@
 
 An A/B showed Flash-Lite matches full Flash on the labeled taxonomy examples (identical accuracy,
 100% agreement), so classification runs on the cheaper tier. These tests pin the model selection;
-the Vertex call itself is stubbed.
+the model call itself is stubbed at the provider seam.
 """
 
 from types import SimpleNamespace
@@ -13,28 +13,103 @@ from app.config import get_settings
 from app.services import classification
 
 
-def _stub_generate(captured):
-    def fake(client, **kwargs):
-        captured["model"] = kwargs.get("model")
-        return SimpleNamespace(text="1")  # a valid category id
+def _capturing(captured):
+    """A `generate_choice` stand-in that records its kwargs and answers with a valid category id."""
+
+    def fake(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(text="1")
 
     return fake
 
 
+def _stub_provider(monkeypatch, fake):
+    """Route `classification.provider_for_stage` to a stub whose `generate_choice` calls `fake`.
+
+    `llm_classify` asks the provider seam now, not google-genai, so stubbing `generate_with_retry`
+    by name would leave the real call in place.
+
+    Returns a dict recording the stage the SERVICE asked the resolver for. A resolver stub that
+    accepts anything swallows a wrong stage silently, and resolving the transport through the wrong
+    stage is the defect that reached main in #318.
+    """
+    asked = {}
+
+    class _Provider:
+        def generate_choice(self, **kwargs):
+            return fake(**kwargs)
+
+    def _resolver(stage, *_a, **_k):
+        asked["stage"] = stage
+        return _Provider()
+
+    monkeypatch.setattr(classification, "provider_for_stage", _resolver)
+    return asked
+
+
 def test_llm_classify_defaults_to_classify_model(monkeypatch):
     captured = {}
-    monkeypatch.setattr(classification, "get_genai_client", object)
-    monkeypatch.setattr(classification, "generate_with_retry", _stub_generate(captured))
+    _stub_provider(monkeypatch, _capturing(captured))
     assert classification.llm_classify("Progress Report") == "1"
     assert captured["model"] == get_settings().classify_model
 
 
 def test_llm_classify_honors_model_override(monkeypatch):
     captured = {}
-    monkeypatch.setattr(classification, "get_genai_client", object)
-    monkeypatch.setattr(classification, "generate_with_retry", _stub_generate(captured))
+    _stub_provider(monkeypatch, _capturing(captured))
     classification.llm_classify("anything", model="gemini-2.5-flash")
     assert captured["model"] == "gemini-2.5-flash"
+
+
+def test_the_model_is_resolved_for_the_backend_not_read_from_classify_model(monkeypatch):
+    """WHEN `classify` resolves to vllm, THE SYSTEM SHALL send VLLM_MODEL, not classify_model.
+
+    NOTE THE MISSING `model=` ARGUMENT. The override test above supplies one, so it never reaches
+    the default at all - the resolver goes unexercised without this.
+
+    Only the vllm case can catch it. On Gemini `model_for_stage("classify")` returns classify_model
+    by construction, so a service reading the raw setting is indistinguishable from one asking the
+    resolver until a stage actually moves.
+    """
+    captured = {}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "llm_backend", "vllm")
+    monkeypatch.setattr(settings, "vllm_model", "served-by-the-pod/model")
+    _stub_provider(monkeypatch, _capturing(captured))
+
+    classification.llm_classify("Progress Report")
+
+    assert captured["model"] == "served-by-the-pod/model"
+    # Control: the two genuinely differ here, or the assertion above passes trivially.
+    assert settings.classify_model != "served-by-the-pod/model"
+
+
+def test_the_classify_request_carries_the_choices_and_the_classify_stage(monkeypatch):
+    """WHEN llm_classify runs, THE SYSTEM SHALL constrain the reply to the allowed ids and resolve
+    BOTH the transport and the model through `classify`.
+
+    `asked["stage"]` is the half no config-level test can see. `stage=` selects only a thinking
+    budget - gemini.py reads it for thinking_for(), and vllm.py and openai.py both `del stage` - so
+    what says the TRANSPORT resolved through classify is which stage the SERVICE handed the
+    resolver. That is exactly the half that was wrong in #318.
+
+    The ABSENT cap is asserted rather than assumed: this call has never had one, the seam sends
+    `max_output_tokens` only when it is set, and a stray cap would truncate an enum reply into an
+    id that no longer matches the allowed set - which this module answers with None.
+    """
+    captured = {}
+    asked = _stub_provider(monkeypatch, _capturing(captured))
+
+    classification.llm_classify("Progress Report", model="m")
+
+    assert asked["stage"] == "classify"
+    assert captured["stage"] == "classify"
+    assert captured["choices"] == classification._allowed_ids()
+    assert captured["temperature"] == 0.0
+    assert "exactly one category id" in captured["system"]
+    assert "max_output_tokens" not in captured
+    # The prompt travels as a part now, not as bare `contents`.
+    assert captured["parts"][0].text.startswith("Classify the medical-record document below")
 
 
 # Administrative paperwork that leads a record: it accompanies the evaluation rather than being one,
@@ -1370,18 +1445,17 @@ def test_a_follow_up_visit_is_still_a_treating_report(title):
 
 
 def test_stopping_a_run_is_not_reported_as_an_llm_failure(monkeypatch):
-    """DEMONSTRATES the bug. `generate_with_retry` raises JobCancelled out of its backoff sleep as a
-    cooperative control-flow signal, meant to unwind through the categorize pool to _run. The bare
-    `except Exception` caught it, logged "LLM classification failed", and returned None - so
-    classify() answered from the embedding alone, and the job log blamed the model for a deliberate
-    user action."""
+    """DEMONSTRATES the bug. The provider raises JobCancelled out of its own cancellable sleep as a
+    cooperative control-flow signal - Gemini via the `generate_with_retry` it wraps, vLLM directly -
+    meant to unwind through the categorize pool to _run. The bare `except Exception` caught it,
+    logged "LLM classification failed", and returned None - so classify() answered from the
+    embedding alone, and the job log blamed the model for a deliberate user action."""
     from app.worker.failures import JobCancelled
 
     def cancelled(*a, **k):
         raise JobCancelled(3, 170)
 
-    monkeypatch.setattr(classification, "generate_with_retry", cancelled)
-    monkeypatch.setattr(classification, "get_genai_client", object)
+    _stub_provider(monkeypatch, cancelled)
 
     with pytest.raises(JobCancelled):
         classification.llm_classify("Progress Report")
@@ -1392,10 +1466,9 @@ def test_a_real_llm_failure_is_still_swallowed(monkeypatch):
     to the embedding with needs_review set. Only the cancel signal escapes."""
 
     def boom(*a, **k):
-        raise RuntimeError("vertex is unhappy")
+        raise RuntimeError("the backend is unhappy")
 
-    monkeypatch.setattr(classification, "generate_with_retry", boom)
-    monkeypatch.setattr(classification, "get_genai_client", object)
+    _stub_provider(monkeypatch, boom)
 
     assert classification.llm_classify("Progress Report") is None
 

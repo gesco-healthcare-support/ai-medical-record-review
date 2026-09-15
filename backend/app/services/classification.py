@@ -1,4 +1,4 @@
-"""B5 categorization cascade: deterministic rules -> local embeddings -> Gemini enum (ported).
+"""B5 categorization cascade: deterministic rules -> local embeddings -> constrained enum (ported).
 
 A sub-document title (and, on low confidence, its first-page OCR text) is classified into a
 category id. Conflicting or weak results are flagged for manual review rather than silently
@@ -17,13 +17,11 @@ import threading
 from dataclasses import dataclass
 
 import numpy as np
-from google.genai import types
 
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.services import catalog
-from app.services.genai_client import get_genai_client
-from app.services.genai_retry import generate_with_retry
+from app.services.llm import TextPart, provider_for_stage
 from app.services.taxonomy import CATEGORIES, DEFAULT_ID
 from app.worker.failures import JobCancelled
 
@@ -896,9 +894,10 @@ def embed_classify(text):
 
 
 def llm_classify(text, model=None):
-    """Classify via Gemini constrained-enum output; returns a valid id or None on failure.
+    """Classify via a constrained-enum model call; returns a valid id or None on failure.
 
-    Defaults to settings.classify_model (the cheapest tier - this is a short, structured enum task).
+    Defaults to whatever the `classify` stage resolves to - classify_model on Gemini (the cheapest
+    tier; this is a short, structured enum task), VLLM_MODEL once that stage is routed to the pod.
     ``model`` is overridable so an A/B can compare tiers on identical inputs.
     """
     allowed = _allowed_ids()
@@ -911,25 +910,36 @@ def llm_classify(text, model=None):
         "that document rather than being it.\n\n"
         f"{_catalog_text()}\n\nDocument:\n{text}\n\nReturn only the category id."
     )
-    config = types.GenerateContentConfig(
-        temperature=0.0,
-        response_mime_type="text/x.enum",
-        response_schema={"type": "STRING", "enum": list(allowed)},
-        system_instruction=(
-            "You classify California workers'-compensation medical-record document types. "
-            "Return exactly one category id from the allowed set."
-        ),
-    )
+    # Resolved for the backend that answers THIS stage rather than read from classify_model, which
+    # classification shares with dedup. A caller-supplied model still wins, as before.
+    model = model or get_settings().model_for_stage("classify")
     try:
-        response = generate_with_retry(
-            get_genai_client(),
-            model=model or get_settings().classify_model,
-            contents=prompt,
-            config=config,
+        # BOTH halves resolve through `classify`. A bare `get_provider()` resolves the TRANSPORT
+        # through backend_for("summarize") while the model above resolves through
+        # backend_for("classify") - so moving only `classify` would send the pod's model name over
+        # the Gemini transport, and moving only summarize would do the reverse.
+        response = provider_for_stage("classify").generate_choice(
+            model=model,
+            system=(
+                "You classify California workers'-compensation medical-record document types. "
+                "Return exactly one category id from the allowed set."
+            ),
+            parts=[TextPart(prompt)],
+            # The seam emits Gemini's native enum mode for `choices` - response_mime_type
+            # "text/x.enum" plus to_gemini_schema({"type": "string", "enum": [...]}), which
+            # translates to the {"type": "STRING", ...} spelling hand-rolled here until now - so the
+            # Gemini request is byte-identical, and any other backend finally gets a constraint it
+            # can honour instead of a free-text reply nothing bounds.
+            choices=list(allowed),
+            temperature=0.0,
+            # No max_output_tokens: this call has never had one, and the seam sends the field only
+            # when it is set, so omitting it keeps the call uncapped exactly as before.
+            stage="classify",
         )
     except JobCancelled:
-        # NOT a model failure - the reviewer pressed Stop. `generate_with_retry` raises this out of
-        # its backoff sleep as a cooperative control-flow signal, meant to unwind through the pool to
+        # NOT a model failure - the reviewer pressed Stop. The provider raises this out of its own
+        # cancellable sleep as a cooperative control-flow signal - Gemini via the
+        # `generate_with_retry` it wraps, vLLM directly - meant to unwind through the pool to
         # _run's handler. Catching it here logged a deliberate user action as an LLM error, which is
         # misleading in exactly the place an operator looks to ask whether Vertex was rejecting
         # calls, and returned None - so classify() took the llm_category-is-None branch and answered
