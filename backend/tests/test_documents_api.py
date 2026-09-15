@@ -7,6 +7,7 @@ response, without a live model call. Uploads are redirected to a tmp dir so no f
 """
 
 import io
+import zipfile
 
 import pytest
 from sqlalchemy import event, select
@@ -3784,3 +3785,142 @@ async def test_the_landing_list_still_reports_the_active_job(authed):
     ]
     assert quiet, "expected at least one seeded document with only finished jobs"
     assert all(row["active_job"] is None for row in quiet)
+
+
+async def _seed_one_summary(doc_id, *, row_start=1, row_end=1):
+    """One stored summary, so an export has something to ship."""
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=0,
+                title="Progress Report",
+                text="summary body text",
+                row_start=row_start,
+                row_end=row_end,
+                row_category=_VALID_CATEGORY,
+            )
+        )
+        session.commit()
+
+
+async def test_the_zip_carries_the_same_word_document_the_export_button_does(authed):
+    """DEMONSTRATES the point of the shared builder: the archive is not a second rendering.
+
+    Compares `word/document.xml`, which is the Word document's CONTENT, rather than the two
+    files byte for byte. A .docx is itself a zip and python-docx stamps each member with the
+    current time to 2-second resolution, so whole-file equality holds only when both requests
+    land in the same bucket - it passed alone and failed under load, which is a property of
+    the machine rather than of the code.
+
+    A zip whose Word document drifts from the one the button hands over is the defect this
+    endpoint was written to avoid, and it is what happened when the bundle export grew its
+    own title handling."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _seed_one_summary(doc_id)
+    fields = {"patientName": "Synthetic Patient", "lawfirm": "Example Law Firm"}
+
+    single = await client.post(f"/api/documents/{doc_id}/export", json=fields)
+    assert single.status_code == 200, single.text
+
+    zipped = await client.post(f"/api/documents/{doc_id}/export/zip", json=fields)
+    assert zipped.status_code == 200, zipped.text
+    assert zipped.headers["content-type"] == "application/zip"
+
+    with zipfile.ZipFile(io.BytesIO(zipped.content)) as archive:
+        names = archive.namelist()
+        docx_name = next(n for n in names if n.endswith(".docx"))
+        zipped_docx = archive.read(docx_name)
+    part = "word/document.xml"
+    with (
+        zipfile.ZipFile(io.BytesIO(zipped_docx)) as a,
+        zipfile.ZipFile(io.BytesIO(single.content)) as b,
+    ):
+        assert a.read(part) == b.read(part)
+    # and the linked PDF rides along, so one download really is the whole hand-over
+    assert any(n.endswith(".pdf") for n in names)
+
+
+async def test_a_bundle_that_matches_nothing_is_left_out_rather_than_failing_the_zip(authed):
+    """The one behaviour that differs from /bundle/pdf, which answers 409 on an empty match.
+
+    A record with no depositions still has an MRR and a linked PDF worth downloading, so an
+    unmatched bundle drops out of the archive instead of taking the whole request down.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _seed_one_summary(doc_id)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY}]},
+    )
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export/zip",
+        json={
+            "patientName": "Synthetic Patient",
+            "bundles": [{"label": "Depositions", "categories": [_OTHER_CATEGORY]}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        names = archive.namelist()
+    assert not any("deposition" in n.lower() for n in names)
+    assert len(names) == 2  # the two record-level deliverables, and nothing else
+
+
+async def test_a_matching_bundle_rides_in_the_zip_under_its_own_label(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _seed_one_summary(doc_id)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY}]},
+    )
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export/zip",
+        json={
+            "patientName": "Synthetic Patient",
+            "bundles": [{"label": "Diagnostic & Operative", "categories": [_VALID_CATEGORY]}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        names = archive.namelist()
+        assert "diagnostic-operative.pdf" in names
+        assert archive.read("diagnostic-operative.pdf").startswith(b"%PDF")
+    assert len(names) == 3
+
+
+async def test_the_zip_refuses_a_record_with_no_summaries(authed):
+    """GUARD: the same 409 the two single-file exports answer, so one download cannot quietly
+    hand over an archive holding nothing worth sending."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export/zip", json={"patientName": "Synthetic Patient"}
+    )
+    assert resp.status_code == 409
+
+
+async def test_the_archive_is_named_after_the_patient_like_its_members(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    await _seed_one_summary(doc_id)
+    with get_sessionmaker()() as session:
+        doc = session.get(Document, doc_id)
+        doc.patient_first_name = "Ada"
+        doc.patient_last_name = "Lovelace"
+        session.commit()
+
+    resp = await client.post(f"/api/documents/{doc_id}/export/zip", json={})
+    assert resp.status_code == 200, resp.text
+    assert "Lovelace_Ada_Medical_Records.zip" in resp.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        assert "Lovelace_Ada_Medical_Records_summary.docx" in archive.namelist()

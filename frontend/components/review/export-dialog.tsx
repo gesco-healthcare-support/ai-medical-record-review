@@ -9,15 +9,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { BUNDLES } from "@/lib/bundle-api";
 import type { HeaderFields } from "@/lib/review-api";
 import { downloadFile } from "@/lib/download";
 import { humanizeError } from "@/lib/errors";
 
 const DEFAULT_QME = "PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)";
 
-/** Export dialog: the four report-header fields feed two outputs. "Export to Word" (POST /export
- *  -> .docx) is the summary letter alone; "Export to linked PDF" (POST /export/pdf) is the summary
- *  letter followed by the full source record, each summary title linking to its source page.
+/** Export dialog: the four report-header fields feed three outputs. "Export to Word" (POST
+ *  /export -> .docx) is the summary letter alone; "Export to linked PDF" (POST /export/pdf) is the
+ *  summary letter followed by the full source record, each summary title linking to its source
+ *  page; "Download all" (POST /export/zip) is both of those plus a combined PDF for each category
+ *  bundle that matches something in this record, which is the single hand-over the reviewers asked
+ *  for instead of four separate clicks.
  *  Patient name / DOB / law firm prefill from the record's Auto-fill header when it has been run. */
 export function ExportDialog({
   open,
@@ -56,8 +60,13 @@ export function ExportDialog({
     setFirm(defaults.law_firm || "");
   }, [open, defaults]);
 
-  // Both export buttons share the header fields; only the endpoint + fallback filename differ.
-  async function runExport(endpoint: string, fallbackName: string) {
+  // All three export buttons share the header fields; the endpoint, the fallback filename and
+  // (for the zip) the bundles to include are what differ.
+  async function runExport(
+    endpoint: string,
+    fallbackName: string,
+    extra: Record<string, unknown> = {},
+  ) {
     setBusy(true);
     setError("");
     try {
@@ -73,6 +82,7 @@ export function ExportDialog({
           QMEorAME: qme,
           lawfirm: firm,
           includePageNumbers: withPages,
+          ...extra,
         },
         fallbackName,
       );
@@ -177,11 +187,25 @@ export function ExportDialog({
           </button>
           <button
             type="button"
-            className="ev-btn ev-btn-primary"
+            className="ev-btn ev-btn-ghost"
             onClick={() => runExport("export/pdf", "record_linked.pdf")}
             disabled={busy}
           >
             {busy ? "Preparing..." : "Export to linked PDF"}
+          </button>
+          <button
+            type="button"
+            className="ev-btn ev-btn-primary"
+            onClick={() =>
+              runExport("export/zip", "record.zip", {
+                // `label` carries the SLUG, matching what the bundle page itself sends, so a
+                // member of the archive is named exactly as its standalone download would be.
+                bundles: BUNDLES.map((b) => ({ label: b.slug, categories: b.categories })),
+              })
+            }
+            disabled={busy}
+          >
+            {busy ? "Preparing..." : "Download all (.zip)"}
           </button>
         </DialogFooter>
       </DialogContent>

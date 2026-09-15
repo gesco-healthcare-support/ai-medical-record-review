@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import uuid
+import zipfile
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -33,6 +34,7 @@ from app.schemas.documents import (
     DedupStartPayload,
     DuplicateResolvePayload,
     ExportPayload,
+    ExportZipPayload,
     HeaderPayload,
     ResummarizePayload,
     RowsPayload,
@@ -1571,38 +1573,110 @@ def _download_name(label: str | None, ext: str) -> str:
     return f"{slug}.{ext}"
 
 
-def _summary_filename(document: Document) -> str:
-    """Lastname_Firstname_Medical_Records_summary.docx from the persisted header; falls back to
-    <original-filename>_summary.docx when no patient name was extracted."""
+def _deliverable_filename(document: Document, suffix: str, ext: str, *, fallback: str) -> str:
+    """`Lastname_Firstname_Medical_Records_<suffix>.<ext>` from the persisted header, falling
+    back to `<original-filename>_<suffix>.<ext>` when no patient name was extracted.
+
+    One rule for all three deliverables. It was two copies of the same nine lines differing
+    only in the suffix and the extension, and the zip would have made a third."""
     parts = [
         p.strip()
         for p in (document.patient_last_name, document.patient_first_name)
         if (p or "").strip()
     ]
+    tail = [suffix] if suffix else []
     if parts:
-        base = "_".join([*parts, "Medical_Records_summary"])
+        base = "_".join([*parts, "Medical_Records", *tail])
     else:
-        stem = os.path.splitext(os.path.basename(document.original_filename or "summaries"))[0]
-        base = f"{stem}_summary"
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_") or "summaries"
-    return f"{safe}.docx"
+        stem = os.path.splitext(os.path.basename(document.original_filename or fallback))[0]
+        base = "_".join([stem, *tail])
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_") or fallback
+    return f"{safe}.{ext}"
+
+
+def _summary_filename(document: Document) -> str:
+    return _deliverable_filename(document, "summary", "docx", fallback="summaries")
 
 
 def _linked_filename(document: Document) -> str:
-    """Lastname_Firstname_Medical_Records_linked.pdf from the persisted header; falls back to
-    <original-filename>_linked.pdf when no patient name was extracted."""
-    parts = [
-        p.strip()
-        for p in (document.patient_last_name, document.patient_first_name)
-        if (p or "").strip()
+    return _deliverable_filename(document, "linked", "pdf", fallback="record")
+
+
+def _zip_filename(document: Document) -> str:
+    return _deliverable_filename(document, "", "zip", fallback="record")
+
+
+def _included_summaries(document: Document) -> list[Summary]:
+    """The summaries an export ships, or 409 when the record has none yet."""
+    included = [s for s in document.summaries if not s.excluded]
+    if not included:
+        raise HTTPException(status_code=409, detail="no summaries to export yet")
+    return included
+
+
+def _mrr_docx_bytes(document: Document, payload: ExportPayload) -> bytes:
+    """The MRR Word document. ONE definition, shared by /export and /export/zip.
+
+    Two call sites each building their own `build_mrr_document(...)` is how a delivered
+    document drifts from itself: the bundle export shipped internal review markers to a
+    client for exactly that reason, and the Word and PDF renderers disagreed about a
+    heading and a separator for the same one. The zip has to hand over the same file the
+    button does, so there is one definition and both callers take it."""
+    entries = [
+        _export_entry(s, with_pages=payload.includePageNumbers)
+        for s in _included_summaries(document)
     ]
-    if parts:
-        base = "_".join([*parts, "Medical_Records_linked"])
-    else:
-        stem = os.path.splitext(os.path.basename(document.original_filename or "record"))[0]
-        base = f"{stem}_linked"
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_") or "record"
-    return f"{safe}.pdf"
+    docx = build_mrr_document(
+        entries,
+        document.page_count,
+        payload.patientName,
+        payload.patientdob,
+        payload.QMEorAME,
+        payload.lawfirm,
+    )
+    buffer = io.BytesIO()
+    docx.save(buffer)
+    return buffer.getvalue()
+
+
+def _linked_pdf_bytes(document: Document, payload: ExportPayload) -> bytes:
+    """The combined linked PDF. ONE definition, shared by /export/pdf and /export/zip."""
+    entries = [
+        _pdf_entry(s, with_pages=payload.includePageNumbers) for s in _included_summaries(document)
+    ]
+    return build_linked_pdf(
+        document.stored_path,
+        entries,
+        document.page_count,
+        payload.patientName,
+        payload.patientdob,
+        payload.QMEorAME,
+        payload.lawfirm,
+    )
+
+
+def _bundle_members(session: Session, document: Document, specs) -> list[tuple[str, bytes]]:
+    """One combined PDF per bundle that matches something in this record.
+
+    Reads `bundles.matched_rows` directly rather than `_matched_rows`, because an empty
+    match SKIPS that bundle instead of failing the whole download: a record with no
+    depositions still has an MRR and a linked PDF worth handing over."""
+    if not specs:
+        return []
+    rows = [
+        row.as_row()
+        for row in session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == document.id).order_by(ReviewRow.idx)
+        ).all()
+    ]
+    members: list[tuple[str, bytes]] = []
+    for spec in specs:
+        matched = bundles.matched_rows(rows, spec.categories) if spec.categories else []
+        if not matched:
+            continue
+        pdf = bundles.build_bundle_pdf(document.stored_path, matched)
+        members.append((_download_name(spec.label, "pdf"), pdf.getvalue()))
+    return members
 
 
 def _matched_rows(session: Session, document: Document, categories):
@@ -1637,21 +1711,7 @@ def export_document(
     user: User = Depends(current_active_user),
 ):
     payload = payload or ExportPayload()
-    included = [s for s in document.summaries if not s.excluded]
-    if not included:
-        raise HTTPException(status_code=409, detail="no summaries to export yet")
-    entries = [_export_entry(s, with_pages=payload.includePageNumbers) for s in included]
-    docx = build_mrr_document(
-        entries,
-        document.page_count,
-        payload.patientName,
-        payload.patientdob,
-        payload.QMEorAME,
-        payload.lawfirm,
-    )
-    buffer = io.BytesIO()
-    docx.save(buffer)
-    buffer.seek(0)
+    buffer = io.BytesIO(_mrr_docx_bytes(document, payload))
     audit(session, "export", user.id, document.id)
     return StreamingResponse(
         buffer,
@@ -1673,24 +1733,62 @@ def export_document_pdf(
     """Combined linked PDF: the summary letter (two-column, blue linked titles) followed by the
     full source record, each title linking to that sub-document's first source page."""
     payload = payload or ExportPayload()
-    included = [s for s in document.summaries if not s.excluded]
-    if not included:
-        raise HTTPException(status_code=409, detail="no summaries to export yet")
-    entries = [_pdf_entry(s, with_pages=payload.includePageNumbers) for s in included]
-    pdf_bytes = build_linked_pdf(
-        document.stored_path,
-        entries,
-        document.page_count,
-        payload.patientName,
-        payload.patientdob,
-        payload.QMEorAME,
-        payload.lawfirm,
-    )
+    pdf_bytes = _linked_pdf_bytes(document, payload)
     audit(session, "export_pdf", user.id, document.id)
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type=_PDF_MEDIA_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{_linked_filename(document)}"'},
+    )
+
+
+@router.post(
+    "/{document_id}/export/zip",
+    responses={409: {"description": "There are no summaries to export yet."}},
+)
+def export_document_zip(
+    payload: ExportZipPayload | None = None,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Every deliverable for this record in one archive: the MRR Word document, the linked
+    PDF, and one combined PDF per requested category bundle.
+
+    The reviewers asked for a single download instead of four. Each member is produced by
+    the same function its own route uses, so the archive cannot drift from what those
+    buttons hand over.
+
+    NOT included: the bundle SUMMARIZE report. That route generates fresh summaries - three
+    model calls per matched row - so folding it in would turn one click into minutes of
+    billed work inside a request that would outlive its own timeout. It stays a deliberate
+    second click on the bundle page.
+
+    COST: the linked PDF embeds the whole source record, and this holds it once as bytes and
+    again inside the archive, so peak memory is roughly twice what /export/pdf already uses
+    on the same record. That is acceptable at the sizes here and it is the pattern both
+    single-file routes already set; if a 2,600-page record ever makes it bite, the fix is to
+    build the archive into a SpooledTemporaryFile so it spills to disk instead of RAM."""
+    payload = payload or ExportZipPayload()
+    members: list[tuple[str, bytes]] = [
+        (_summary_filename(document), _mrr_docx_bytes(document, payload)),
+        (_linked_filename(document), _linked_pdf_bytes(document, payload)),
+    ]
+    members.extend(_bundle_members(session, document, payload.bundles))
+
+    buffer = io.BytesIO()
+    # ZIP_STORED, not DEFLATED: every member is already a compressed container - a .docx IS
+    # a zip, and PDF content streams are deflated - so compressing again costs CPU
+    # proportional to a whole source record and saves close to nothing.
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        for name, blob in members:
+            archive.writestr(name, blob)
+    buffer.seek(0)
+    audit(session, "export_zip", user.id, document.id)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{_zip_filename(document)}"'},
     )
 
 
