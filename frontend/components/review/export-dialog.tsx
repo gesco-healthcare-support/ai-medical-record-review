@@ -16,12 +16,19 @@ import { humanizeError } from "@/lib/errors";
 
 const DEFAULT_QME = "PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)";
 
-/** Export dialog: the four report-header fields feed three outputs. "Export to Word" (POST
- *  /export -> .docx) is the summary letter alone; "Export to linked PDF" (POST /export/pdf) is the
- *  summary letter followed by the full source record, each summary title linking to its source
- *  page; "Download all" (POST /export/zip) is both of those plus a combined PDF for each category
- *  bundle that matches something in this record, which is the single hand-over the reviewers asked
- *  for instead of four separate clicks.
+/** Export dialog: the report-header fields feed four outputs. "Export to Word" (POST /export
+ *  -> .docx) is the summary letter alone; "Export to linked PDF" (POST /export/pdf) is the summary
+ *  letter followed by the full source record, each summary title linking to its source page;
+ *  "Download memo" (POST /export/memo) is the covering note to the doctor's office, which leads
+ *  with the cover sheet's page count against the file's own and then repeats the SAME page
+ *  accounting the letter closes with; and "Download all" (POST /export/zip) is every one of those
+ *  in one archive plus a combined PDF for each category bundle that matches this record, which is
+ *  the single hand-over the reviewers asked for instead of four separate clicks.
+ *
+ *  The memo asks for NOTHING extra here. Its doctor comes from the review page's dropdown and the
+ *  reviewer signing it from the account - a first version added a "Doctor (memo only)" box and a
+ *  "Documents received on" box to this dialog, which duplicated a field that already exists and
+ *  let the memo disagree with the report downloaded beside it.
  *  Patient name / DOB / law firm prefill from the record's Auto-fill header when it has been run. */
 export function ExportDialog({
   open,
@@ -188,6 +195,14 @@ export function ExportDialog({
           <button
             type="button"
             className="ev-btn ev-btn-ghost"
+            onClick={() => runExport("export/memo", "memo.docx")}
+            disabled={busy}
+          >
+            {busy ? "Preparing..." : "Download memo"}
+          </button>
+          <button
+            type="button"
+            className="ev-btn ev-btn-primary"
             onClick={() => runExport("export/pdf", "record_linked.pdf")}
             disabled={busy}
           >

@@ -16,15 +16,23 @@ from app.services.reporting import (
     DOCX_MIMETYPE,
     LETTER_LABELS,
     LETTER_TYPES,
+    MEMO_GREETING,
+    MEMO_SOURCES_LEAD,
+    MEMO_VERIFIED_BY,
     REVIEW_HEADING,
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
     UNDATED_LABEL,
+    MemoDetails,
+    RecordAccounting,
     ReportDetails,
     accounting_sentences,
+    build_memo_document,
     build_mrr_document,
     date_label,
     intro_sentence,
+    memo_opening,
+    page_count_note,
     record_accounting,
     report_font,
     summary_intro,
@@ -1339,3 +1347,267 @@ def test_rows_that_overrun_the_record_ship_no_sentence_at_all():
     )
     assert acc.pages_remarked > acc.pages_received
     assert accounting_sentences(acc) == ("", "")
+
+
+def _memo_accounting(**kw):
+    """A RecordAccounting shaped like the record their reference memo describes."""
+    fields = {
+        "pages_received": 191,
+        "pages_remarked": 88,
+        "excluded_types": ("cover letter", "declaration", "proof of service"),
+        "duplicate_pages": 24,
+    }
+    fields.update(kw)
+    return RecordAccounting(**fields)
+
+
+def _memo_text(doc):
+    return [p.text for p in doc.paragraphs if p.text.strip()]
+
+
+def test_the_memo_leads_with_the_page_count_the_reviewers_called_the_main_thing():
+    """DEMONSTRATES the sentence the memo exists for. Asked what this document needed they
+    answered that the header "is not too important" and "the main thing would be the actual
+    page count vs declared page count" - so both counts are named, the difference is spelled
+    out, and it comes BEFORE the sentences the letter already carries."""
+    text = _memo_text(
+        build_memo_document(
+            _memo_accounting(pages_received=309),
+            MemoDetails(pages_stated=309, pages_on_file=311),
+        )
+    )
+    note = (
+        "The cover sheet states 309 pages and the file received contains 311 pages - "
+        "2 more than stated. The page count above follows the cover sheet."
+    )
+    assert note in text
+    assert text.index(note) < text.index(MEMO_SOURCES_LEAD)
+
+
+def test_the_memo_states_both_counts_even_when_they_agree():
+    """A memo that went silent when the counts matched would leave the reader unable to tell a
+    check that passed from a check nobody ran - which is the defect #133 fixed on the
+    duplicates tab and #290 on the summary card."""
+    note = page_count_note(MemoDetails(pages_stated=241, pages_on_file=241))
+    assert note == (
+        "The cover sheet states 241 pages and the file received contains 241 pages. The two agree."
+    )
+
+
+def test_a_file_shorter_than_the_cover_sheet_is_reported_the_other_way_round():
+    """The measured cases all run the same way - the file is longer, because pages are attached
+    to it downstream - but a short file is the direction that means pages are MISSING, so the
+    sentence must not hard-code "more"."""
+    assert "3 fewer than stated" in page_count_note(
+        MemoDetails(pages_stated=244, pages_on_file=241)
+    )
+
+
+def test_no_cover_sheet_figure_means_no_page_count_sentence():
+    """GUARD, and the reason it is a guard rather than a nicety: with `pages_stated` defaulted
+    to the file's own count the memo would print "the two agree" on every record, which is the
+    memo agreeing with itself. Nobody has said, so it says nothing.
+
+    Reading the figure out of the declaration instead was measured on the box and does not
+    work - 21 of 245 declaration rows state a page count at all - so it is typed or absent."""
+    assert page_count_note(MemoDetails(pages_on_file=311)) == ""
+    assert not any(
+        "cover sheet" in t
+        for t in _memo_text(build_memo_document(_memo_accounting(), MemoDetails(pages_on_file=311)))
+    )
+
+
+def test_the_memo_follows_the_shape_the_reviewers_sent():
+    """DEMONSTRATES the memo end to end against the structure of their own covering memo:
+    an addressed block, a greeting, what arrived, the accounting, and a signature."""
+    doc = build_memo_document(
+        _memo_accounting(),
+        MemoDetails(
+            doctor="Falkinstein",
+            patient_name="Synthetic Patient",
+            attorney_name="Mitchell Garrett",
+            lawfirm="Acme LLP",
+            reviewer_name="Jane Roe",
+            memo_date="August 25, 2026",
+        ),
+    )
+    text = _memo_text(doc)
+    assert text[0] == "TO:\tDR. FALKINSTEIN\u2019S OFFICE"
+    assert text[1] == "FROM:\tJane Roe"
+    assert text[2] == "RE:\tReview of Synthetic Patient"
+    assert text[3] == "DATE:\tAugust 25, 2026"
+    assert MEMO_GREETING in text
+    assert (
+        "We have received 191 pages of medical records from Mitchell Garrett, of Acme LLP." in text
+    )
+    assert text[-3:] == [MEMO_VERIFIED_BY, "Jane Roe", "August 25, 2026"]
+
+
+def test_the_memo_and_the_letter_report_the_same_page_accounting():
+    """The invariant worth having: a memo that disagrees with its own letter about how many
+    pages arrived is the first thing a client would notice. Both read the SAME
+    `RecordAccounting` rather than recomputing, so this compares the sentences they emit."""
+    accounting = _memo_accounting()
+    exclusion, duplicates = accounting_sentences(accounting)
+
+    memo = _memo_text(build_memo_document(accounting, MemoDetails()))
+    letter = build_mrr_document(
+        [],
+        191,
+        "Pat",
+        "01/01/1980",
+        "AME",
+        details=ReportDetails(lawfirm="Acme LLP", accounting=accounting),
+    )
+    letter_text = [p.text for p in letter.paragraphs if p.text.strip()]
+
+    assert exclusion in memo
+    assert exclusion in letter_text
+    assert duplicates in memo
+    assert duplicates in letter_text
+
+
+def test_the_memo_and_the_letter_name_the_sender_the_same_way():
+    """Both openings run through `_sender_clause`, so "from <person>, of <firm>" cannot come
+    out one way on the report and another on the note stapled to it. This is the drift that
+    cost #158 (two renderers) and #162 (three export paths) - one function, checked here
+    across the two sentences that use it."""
+    details = MemoDetails(attorney_name="Mitchell Garrett", lawfirm="Acme LLP")
+    sender = "from Mitchell Garrett, of Acme LLP"
+    assert sender in memo_opening(_memo_accounting(), details)
+    assert sender in intro_sentence(191, "Acme LLP", attorney_name="Mitchell Garrett")
+
+
+def test_the_excluded_types_are_listed_plain_under_their_bold_sentence():
+    """Their list is plain even though the sentence introducing it is bold; that contrast is
+    the whole of the house style here."""
+    doc = build_memo_document(_memo_accounting(), MemoDetails())
+    bold = {p.text for p in doc.paragraphs if p.runs and all(r.bold for r in p.runs if r.text)}
+    assert any(t.startswith("Of the 191 pages received") for t in bold)
+    for kind in ("cover letter", "declaration", "proof of service"):
+        assert kind in _memo_text(doc)
+        assert kind not in bold
+
+
+def test_a_memo_with_no_duplicates_omits_that_sentence():
+    """CONDITIONAL, like the letter's: a count of zero means the sentence is absent rather than
+    reading "0 pages" - observed in their two supplemental reports, which carry none."""
+    doc = build_memo_document(_memo_accounting(duplicate_pages=0), MemoDetails())
+    assert not any("duplicate copies" in t for t in _memo_text(doc))
+
+
+def test_a_header_line_with_nothing_to_say_is_dropped():
+    """GUARD. A memo on a record with no doctor recorded must not address the reader as
+    `DR. \u2019S OFFICE`, which is what filling the template unconditionally would print."""
+    text = _memo_text(
+        build_memo_document(_memo_accounting(), MemoDetails(reviewer_name="Jane Roe"))
+    )
+    assert not any(t.startswith("TO:") for t in text)
+    assert not any(t.startswith("RE:") for t in text)
+    assert not any(t.startswith("DATE:") for t in text)
+    assert text[0] == "FROM:\tJane Roe"
+
+
+def test_the_memo_renders_with_no_details_at_all():
+    """GUARD: the whole header is optional, so a memo is still a document when nothing but the
+    page accounting is known."""
+    text = _memo_text(build_memo_document(_memo_accounting(), None))
+    assert MEMO_GREETING in text
+    assert text[-1] == MEMO_VERIFIED_BY
+    assert any(t.startswith("We have received 191 pages") for t in text)
+
+
+def test_the_memo_opening_drops_the_sender_it_cannot_name():
+    """The same convention `intro_sentence` follows: an absent field removes its clause rather
+    than leaving a dangling preposition. #115 shipped "medical records from ." to a client."""
+    accounting = _memo_accounting()
+    assert (
+        memo_opening(accounting, MemoDetails()) == "We have received 191 pages of medical records."
+    )
+    assert memo_opening(accounting, MemoDetails(lawfirm="Acme LLP")) == (
+        "We have received 191 pages of medical records from Acme LLP."
+    )
+
+
+def test_the_memo_and_the_letter_open_with_the_same_two_clauses():
+    """Their memo and their report state the covering letter and the sender identically - only
+    the pronoun differs. Both run through `_letter_clause` and `_sender_clause`, so this pins
+    that the memo cannot name either one differently from the report stapled to it."""
+    details = MemoDetails(
+        attorney_name="Mitchell Garrett",
+        lawfirm="Acme LLP",
+        letter_type="advocacy",
+        letter_date="07/31/26",
+    )
+    memo = memo_opening(_memo_accounting(), details)
+    letter = intro_sentence(
+        191,
+        "Acme LLP",
+        attorney_name="Mitchell Garrett",
+        letter_type="advocacy",
+        letter_date="07/31/26",
+    )
+    clauses = (
+        "a defense advocacy letter dated 07/31/26 along with 191 pages of medical "
+        "records from Mitchell Garrett, of Acme LLP"
+    )
+    assert memo == f"We have received {clauses}."
+    assert letter.startswith(f"I have received {clauses}.")
+
+
+def _typo_rows():
+    """185 pages marked up, 59 excluded, in a file of 244."""
+    return [_Row(1, 185, True, "x"), _Row(186, 244, False, "cover letter")]
+
+
+def test_a_mistyped_cover_sheet_figure_does_not_blank_the_closing_sentences():
+    """DEMONSTRATES the defect @adrian-g found. `pages_received` became the accounting
+    denominator in this PR, and #306's guard goes silent when the rows cover more than it states -
+    so `24` typed for `241` removed the closing accounting from the Word letter, the linked PDF
+    AND the memo, with nothing on screen saying why.
+
+    A figure smaller than the pages that were marked up cannot be right and the file's own length
+    is not in doubt, so the accounting counts the file instead."""
+    for typo in (24, 2, 1):
+        exclusion, _ = accounting_sentences(
+            record_accounting(_typo_rows(), typo, pages_on_file=244)
+        )
+        assert exclusion.startswith("Of the 244 pages received, exactly 185"), typo
+
+
+def test_rows_covering_more_than_the_file_still_ship_nothing():
+    """GUARD, and the distinction the fix rests on: rows exceeding the typed figure is a data
+    entry slip, rows exceeding the FILE is the arithmetic impossibility #306 added the guard for.
+    That one still goes quiet."""
+    assert accounting_sentences(
+        record_accounting([_Row(1, 300, True, "x")], 241, pages_on_file=244)
+    ) == ("", "")
+
+
+def test_a_cover_sheet_figure_larger_than_the_file_is_left_visible():
+    """Deliberately NOT clamped. A figure too LARGE prints "Of the 2410 pages received", which a
+    reviewer notices; clamping it to the file's length would hide the same typo the other
+    direction makes invisible. The memo's own sentence reports the gap either way."""
+    exclusion, _ = accounting_sentences(record_accounting(_typo_rows(), 2410, pages_on_file=244))
+    assert exclusion.startswith("Of the 2410 pages received")
+
+
+def test_the_memo_never_claims_zero_pages():
+    """DEMONSTRATES the second finding. `_record_accounting` returns None for a record with no
+    rows, and the memo route reaches that BY DESIGN - it has no 409 because a record still being
+    worked has a memo. The opening read `0` and could sit three lines above "The cover sheet
+    states 241 pages", two sentences contradicting each other on one page."""
+    assert memo_opening(None, MemoDetails(lawfirm="Acme LLP", pages_stated=241)) == (
+        "We have received 241 pages of medical records from Acme LLP."
+    )
+    assert memo_opening(None, MemoDetails(lawfirm="Acme LLP", pages_on_file=244)) == (
+        "We have received 244 pages of medical records from Acme LLP."
+    )
+
+
+def test_with_no_count_at_all_the_memo_drops_the_clause():
+    """GUARD: rather than printing a number nobody supplied. The same convention every other
+    clause in this sentence follows."""
+    assert memo_opening(None, MemoDetails(lawfirm="Acme LLP")) == (
+        "We have received medical records from Acme LLP."
+    )

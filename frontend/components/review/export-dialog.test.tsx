@@ -138,6 +138,33 @@ describe("ExportDialog page numbers", () => {
     expect(screen.getByLabelText(/include page numbers/i)).not.toBeChecked();
   });
 
+  it("downloads the memo from the same header fields, asking for nothing extra", async () => {
+    // The memo's doctor comes from the review page's dropdown and its signature from the
+    // account, so this dialog has no memo-only inputs. A first version added a "Doctor (memo
+    // only)" box and a "Documents received on" box here, which duplicated a field the record
+    // already carries and let the memo disagree with the report downloaded beside it.
+    const user = userEvent.setup();
+    const fetchSpy = mockFetch();
+    open();
+    await user.click(screen.getByRole("button", { name: "Download memo" }));
+    expect(fetchSpy.mock.calls[0][0]).toContain("/export/memo");
+    expect(Object.keys(body(fetchSpy)).sort()).toEqual([
+      "QMEorAME",
+      "includePageNumbers",
+      "lawfirm",
+      "patientName",
+      "patientdob",
+    ]);
+  });
+
+  it("offers no memo-only fields", () => {
+    // GUARD against re-adding them. The dialog is where they were, and the reviewers' answer -
+    // the header "is not too important, we can ignore that for now" - is why they went.
+    open();
+    expect(screen.queryByLabelText(/doctor/i)).toBeNull();
+    expect(screen.queryByLabelText(/documents received on/i)).toBeNull();
+  });
+
   it("sends the flag on the linked PDF too once checked", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetch();

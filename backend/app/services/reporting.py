@@ -277,8 +277,29 @@ def _row_pages(row) -> int:
     return max(0, (row.end or 0) - (row.start or 0) + 1)
 
 
-def record_accounting(rows, pages_received: int) -> RecordAccounting:
+def record_accounting(
+    rows, pages_received: int, pages_on_file: int | None = None
+) -> RecordAccounting:
     """Partition the reviewer's rows into remarked / other / duplicate.
+
+    ``pages_on_file`` is the PDF's own length, and it is here to tell a DATA-ENTRY SLIP apart
+    from an arithmetic impossibility - @adrian-g, on review, and he is right that the two deserve
+    different treatment.
+
+    `pages_received` became a typed field the moment the letter started counting against it, and
+    `accounting_sentences` goes silent when the rows cover more than it states. So `24` typed for
+    `241` removed the closing accounting from the Word letter, the linked PDF AND the memo, with
+    nothing on screen saying why.
+
+    A stated figure SMALLER than the pages the reviewer marked up cannot be right, and the file's
+    own length is not in doubt - so when the rows fit inside the file but not inside the typed
+    number, the typed number is the suspect and the accounting counts the file instead. Rows
+    covering more than the FILE is the genuine impossibility #306 added the guard for, and that
+    still goes quiet.
+
+    Nothing is hidden by this: the memo's own sentence still reports the cover sheet against the
+    file, so a transposed digit now reads "states 24 pages and the file received contains 244 -
+    220 fewer than stated" instead of blanking three documents.
 
     Takes ORM rows rather than `as_row()` dicts deliberately: `ROW_FIELDS` carries neither
     `include` nor the duplicate columns, which is the same omission #258 had to work around,
@@ -327,8 +348,14 @@ def record_accounting(rows, pages_received: int) -> RecordAccounting:
         seen.setdefault(title.casefold(), None)
         seen[title.casefold()] = seen[title.casefold()] or title
     ordered = tuple(dict.fromkeys(v for v in seen.values() if v))
+    received = max(0, pages_received or 0)
+    on_file = max(0, pages_on_file or 0)
+    if on_file and received < remarked + duplicate <= on_file:
+        # The typed figure is smaller than the pages that were marked up, and the file is not -
+        # so the figure is a slip, not the arithmetic. See the note above.
+        received = on_file
     return RecordAccounting(
-        pages_received=max(0, pages_received or 0),
+        pages_received=received,
         pages_remarked=remarked,
         excluded_types=ordered,
         duplicate_pages=duplicate,
@@ -386,6 +413,211 @@ def accounting_sentences(accounting: RecordAccounting | None) -> tuple[str, str]
         else ""
     )
     return exclusion, duplicates
+
+
+@dataclass(frozen=True)
+class MemoDetails:
+    """Who the covering memo is addressed to, about what, and from whom.
+
+    EVERY FIELD COMES OFF THE RECORD OR THE SESSION - none of it is asked for again. A first
+    version put a doctor box and a received-on box in the export dialog, which was wrong twice
+    over: the doctor is already a dropdown on the review page (it picks the report's typeface),
+    and the reviewer running the export is already known from their account. Asking for either
+    at download time is friction that also lets the memo disagree with the report beside it.
+
+    Empty means ABSENT rather than blank throughout - the memo drops a line it cannot fill
+    rather than printing a dangling label, which is the convention `intro_sentence` already
+    follows for the law firm."""
+
+    doctor: str = ""
+    patient_name: str = ""
+    attorney_name: str = ""
+    lawfirm: str = ""
+    letter_type: str = ""
+    letter_date: str = ""
+    reviewer_name: str = ""
+    memo_date: str = ""
+    # The two counts the memo exists to compare. `pages_stated` is the reviewer-entered cover
+    # sheet figure and 0 means NOBODY HAS SAID, which is why it is not defaulted to the file's
+    # own count: a confirmation that the two agree would then be the memo agreeing with itself.
+    pages_stated: int = 0
+    pages_on_file: int = 0
+
+
+MEMO_GREETING = "Greetings."
+MEMO_THANKS = "Thank you."
+MEMO_VERIFIED_BY = "Verified by:"
+MEMO_SOURCES_LEAD = "records from various sources:"
+
+
+def page_count_note(details: MemoDetails) -> str:
+    """The sentence the memo exists for, or "" when there is nothing to compare.
+
+    Asked what the covering memo needed, the reviewers answered: the header "is not too
+    important, we can ignore that for now. The main thing would be the actual page count vs
+    declared page count. Important to note: we should get the actual page count from the cover
+    sheet since there are sometimes additional pages attached by us on the pdf."
+
+    So the two numbers are the cover sheet's figure and the PDF's own page count, and the
+    cover sheet is the one that is right. The file is reliably the longer of the two because
+    pages are attached to it downstream - measured against four human deliverables, 311/309,
+    293/290, 244/241 and 229/226 - so a difference is the normal case rather than an alarm,
+    and the memo states it rather than letting the doctor's office find it.
+
+    ABSENT when no cover-sheet figure has been entered. Reading the declaration instead was
+    measured and does not work: of 245 declaration and cover-sheet rows on the box, 94 have no
+    stored page text at all, 130 have text that states no page count, and only 21 (8.6%) give
+    a figure - so the number has to be typed, and the report header is where it is typed.
+
+    Both counts are stated even when they agree, because "we checked and they match" answers
+    the question as much as a discrepancy does."""
+    stated = max(0, details.pages_stated or 0)
+    on_file = max(0, details.pages_on_file or 0)
+    if not stated:
+        return ""
+    if stated == on_file:
+        return (
+            f"The cover sheet states {stated} pages and the file received contains "
+            f"{on_file} pages. The two agree."
+        )
+    difference = abs(on_file - stated)
+    direction = "more" if on_file > stated else "fewer"
+    return (
+        f"The cover sheet states {stated} pages and the file received contains {on_file} "
+        f"pages - {difference} {direction} than stated. The page count above follows the "
+        "cover sheet."
+    )
+
+
+def memo_opening(accounting, details: MemoDetails) -> str:
+    """The memo's first sentence: what arrived and from whom.
+
+    Their memo and their report open with the same sentence in different voices - "I have
+    received a defense advocacy letter dated 07/31/26 along with 191 pages of medical records
+    from ..." on the report, `We have received ...` on the memo, because one is the evaluator
+    writing and the other the office. So the WORDS differ by one pronoun and nothing else, and
+    both halves that carry a fact are the letter's own: `_letter_clause` and `_sender_clause`.
+    A memo naming the firm or the covering letter differently from the report stapled to it is
+    the drift that cost #158 and #162, and reusing both is what stops it.
+
+    Every clause is dropped when its field is empty, so this reads correctly on a record where
+    only the page count is known.
+
+    THE COUNT CLAUSE IS ONE OF THOSE CLAUSES, and it was not - @adrian-g, on review. This read
+    `accounting.pages_received if accounting else 0`, and `_record_accounting` returns None for a
+    record with no rows, which the memo route reaches BY DESIGN: it has no 409 because a record
+    still being worked has a memo. So a memo could open "We have received 0 pages of medical
+    records." and then, three lines down, "The cover sheet states 241 pages" - two sentences on
+    one page contradicting each other.
+
+    So the count falls back the way everything else here does: the accounting, then the cover
+    sheet, then the file, and with none of the three the clause is dropped rather than printing a
+    number nobody supplied."""
+    pages = (accounting.pages_received if accounting else 0) or details.pages_stated
+    pages = pages or details.pages_on_file
+    letter = _letter_clause(details.letter_type, details.letter_date)
+    sender = _sender_clause(details.attorney_name, details.lawfirm)
+    counted = f"{pages} pages of " if pages else ""
+    return f"We have received {letter}{counted}medical records{sender}."
+
+
+def memo_header_lines(details: MemoDetails) -> list[tuple[str, str]]:
+    """The addressed block, minus any line whose field is empty.
+
+    DELIBERATELY THIN. Asked what this memo needed, the reviewers said the header "is not too
+    important, we can ignore that for now" - so it carries only what the record already knows
+    and asks for nothing. An earlier version added a doctor box and a received-on box to the
+    export dialog to fill it, which spent UI friction on the half they told us to ignore and
+    left out the page count they called the main thing.
+
+    `TO: DR. <NAME>\u2019S OFFICE` is how theirs is addressed. A memo on a record with no
+    doctor recorded drops the line rather than addressing the reader as `DR. \u2019S OFFICE`,
+    which is the same reason the letter drops its law-firm clause."""
+    rows: list[tuple[str, str]] = []
+    doctor = (details.doctor or "").strip()
+    if doctor:
+        rows.append(("TO:", f"DR. {doctor.upper()}\u2019S OFFICE"))
+    reviewer = (details.reviewer_name or "").strip()
+    if reviewer:
+        rows.append(("FROM:", reviewer))
+    patient = (details.patient_name or "").strip()
+    if patient:
+        rows.append(("RE:", f"Review of {patient}"))
+    memo_date = (details.memo_date or "").strip()
+    if memo_date:
+        rows.append(("DATE:", memo_date))
+    return rows
+
+
+def _memo_body(doc, accounting, details: MemoDetails) -> None:
+    """The accounting paragraphs, each present only when it applies.
+
+    The page-count comparison goes FIRST because it is what the memo is for; the exclusion and
+    duplicate sentences are the same two the letter closes with and follow it."""
+    page_note = page_count_note(details)
+    if page_note:
+        doc.add_paragraph("")
+        _run(doc.add_paragraph(), page_note, bold=True)
+    exclusion_text, duplicates_text = accounting_sentences(accounting)
+    if exclusion_text:
+        doc.add_paragraph("")
+        _run(doc.add_paragraph(), exclusion_text, bold=True)
+        doc.add_paragraph("")
+        _run(doc.add_paragraph(), MEMO_SOURCES_LEAD)
+        doc.add_paragraph("")
+        for excluded in accounting.excluded_types:
+            # Plain, one per line. The list is not bold in theirs even though the sentence
+            # introducing it is.
+            _run(doc.add_paragraph(), excluded)
+    if duplicates_text:
+        doc.add_paragraph("")
+        _run(doc.add_paragraph(), duplicates_text, bold=True)
+
+
+def build_memo_document(accounting, details: MemoDetails | None = None):
+    """The covering memo, as a Word document.
+
+    Its middle sentences are the SAME page accounting the letter closes with, read from the
+    same `RecordAccounting` rather than recomputed. A memo disagreeing with its own letter
+    about how many pages arrived is the defect this file keeps finding in other forms, and it
+    would be the one a client noticed first.
+
+    TWO SENTENCES OF THEIRS ARE DELIBERATELY ABSENT.
+
+    `Because of this, we are submitting a 7-page report, 5 pages of which comprise the record
+    review` counts the pages of OUR OWN deliverable, and python-docx does not paginate - Word
+    decides that when it opens the file. Inventing the number in a document a client reads is
+    worse than leaving the sentence out.
+
+    `Also, a total of N pages of previously reviewed reports ... were received` needs a record
+    of what an earlier review covered, and nothing in this system stores one. That is its own
+    piece of work rather than a formatting one."""
+    details = details or MemoDetails()
+    doc = Document()
+
+    for label, value in memo_header_lines(details):
+        paragraph = doc.add_paragraph()
+        _run(paragraph, f"{label}\t")
+        _run(paragraph, value)
+
+    doc.add_paragraph("")
+    _run(doc.add_paragraph(), MEMO_GREETING)
+    doc.add_paragraph("")
+    _run(doc.add_paragraph(), memo_opening(accounting, details))
+
+    _memo_body(doc, accounting, details)
+
+    doc.add_paragraph("")
+    _run(doc.add_paragraph(), MEMO_THANKS)
+    doc.add_paragraph("")
+    _run(doc.add_paragraph(), MEMO_VERIFIED_BY)
+    reviewer = (details.reviewer_name or "").strip()
+    if reviewer:
+        _run(doc.add_paragraph(), reviewer)
+    memo_date = (details.memo_date or "").strip()
+    if memo_date:
+        _run(doc.add_paragraph(), memo_date)
+    return doc
 
 
 def summary_intro(lawfirm=None) -> str:
