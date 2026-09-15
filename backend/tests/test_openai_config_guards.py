@@ -457,3 +457,67 @@ def test_summarize_held_on_gemini_keeps_the_gemini_tiering(monkeypatch):
     assert settings.model_for("body") == "gemini-3.5-flash"
     assert settings.model_for("title") == "gemini-2.5-flash"
     assert settings.model_for("audit") == "gemini-2.5-flash"
+
+
+# --- which model a NON-summarize stage resolves to ---------------------------------------------------
+#
+# `model_for_stage` is a METHOD rather than a field rewrite, because `genai_model` is read by FOUR
+# stages: segment, extract, doi and deposition. The test below that moves ONE of them and asserts the
+# other three are unchanged is what would catch a later "simplification" into a field default.
+
+
+def test_each_gemini_stage_keeps_the_setting_it_has_always_used(monkeypatch):
+    # The regression guard: this must be inert on Gemini. Asserting against the NAMED settings pins
+    # the mapping itself - that dedup and classify read classify_model while extract and segment read
+    # genai_model - which is the part a refactor could quietly get wrong.
+    s = _settings(monkeypatch, LLM_BACKEND="gemini")
+    assert s.model_for_stage("segment") == s.genai_model
+    assert s.model_for_stage("extract") == s.genai_model
+    assert s.model_for_stage("doi") == s.genai_model
+    assert s.model_for_stage("deposition") == s.genai_model
+    assert s.model_for_stage("dedup") == s.classify_model
+    assert s.model_for_stage("classify") == s.classify_model
+    assert s.model_for_stage("verify") == s.verify_model
+    # Control: the two tiers must actually differ, or every assertion above passes trivially.
+    assert s.classify_model != s.genai_model
+
+
+def test_every_non_summarize_stage_on_vllm_resolves_to_the_served_model(monkeypatch):
+    # One process serves one model, so there is no per-stage tiering left to express.
+    s = _settings(monkeypatch, LLM_BACKEND="vllm", **_VLLM)
+    for stage in ("segment", "extract", "dedup", "classify", "verify", "doi", "deposition"):
+        assert s.model_for_stage(stage) == _SERVED, stage
+
+
+def test_moving_one_stage_to_the_pod_leaves_the_stages_sharing_its_setting_alone(monkeypatch):
+    # THE test for this design. extract, segment, doi and deposition all read genai_model, so a
+    # resolver implemented by REWRITING that field would move all four when only extract was asked
+    # for - silently, and three of those do not cross the provider seam at all yet.
+    s = _settings(monkeypatch, LLM_BACKEND="gemini", LLM_BACKEND_OVERRIDES="extract=vllm", **_VLLM)
+    assert s.model_for_stage("extract") == _SERVED
+    assert s.model_for_stage("segment") == s.genai_model
+    assert s.model_for_stage("doi") == s.genai_model
+    assert s.model_for_stage("deposition") == s.genai_model
+
+
+def test_a_stage_held_on_gemini_keeps_its_own_model_while_the_rest_move(monkeypatch):
+    # The mirror: an over-broad fix keyed on resolved_backends() rather than per stage passes the
+    # test above and fails this one, having sent a Gemini-served stage the pod's model name.
+    s = _settings(monkeypatch, LLM_BACKEND="vllm", LLM_BACKEND_OVERRIDES="classify=gemini", **_VLLM)
+    assert s.model_for_stage("classify") == s.classify_model
+    assert s.model_for_stage("dedup") == _SERVED
+
+
+def test_summarize_is_refused_because_it_resolves_three_models(monkeypatch):
+    # Returning one of body/title/audit from a per-stage resolver would invite a caller to use it for
+    # all three and collapse the tiering with nothing surfacing it.
+    s = _settings(monkeypatch, LLM_BACKEND="gemini")
+    with pytest.raises(KeyError, match="three models"):
+        s.model_for_stage("summarize")
+
+
+def test_an_unknown_stage_is_refused_rather_than_answered(monkeypatch):
+    # Mirrors backend_for and thinking_for: a typo must fail loudly, not resolve to something.
+    s = _settings(monkeypatch, LLM_BACKEND="gemini")
+    with pytest.raises(KeyError, match="unknown stage"):
+        s.model_for_stage("sumarize")
