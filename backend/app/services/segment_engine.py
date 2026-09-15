@@ -14,8 +14,7 @@ from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
-from app.errors import OcrUnavailableError
-from app.errors import PipelineTimeoutError
+from app.errors import OcrUnavailableError, PipelineTimeoutError
 from app.services.classification import classify
 from app.services.gemini import (
     SEGMENT_RESPONSE_SCHEMA,

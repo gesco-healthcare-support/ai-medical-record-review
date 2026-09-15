@@ -178,6 +178,7 @@ export function SummariesView({
   documentId,
   filename,
   categories,
+  doctors,
   header,
   onHeaderSaved,
   onGotoSummarizeStep,
@@ -186,6 +187,7 @@ export function SummariesView({
   documentId: string;
   filename?: string;
   categories: CategoryOption[];
+  doctors?: readonly string[];
   header?: HeaderFields | null;
   onHeaderSaved?: (fields: HeaderFields) => void;
   /** Opens the step that owns the Summarize button, for the empty state to send the reviewer there. */
@@ -306,6 +308,7 @@ export function SummariesView({
       <div className="sum-column">
         <HeaderBar
           documentId={documentId}
+          doctors={doctors}
           header={header ?? null}
           onSaved={(f) => onHeaderSaved?.(f)}
         />

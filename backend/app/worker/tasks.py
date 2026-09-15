@@ -16,9 +16,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select, update
 
 from app.config import get_settings
-from app.errors import OcrUnavailableError
 from app.db import get_engine, get_sessionmaker
-from app.errors import user_facing_message
+from app.errors import OcrUnavailableError, user_facing_message
 from app.models import Document, Job, PageText, ReviewRow, SegmentRow, Summary
 from app.services import catalog
 from app.services.audit import audit

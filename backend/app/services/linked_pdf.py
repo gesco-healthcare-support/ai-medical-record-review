@@ -26,6 +26,7 @@ from app.services.reporting import (
     REVIEW_HEADING,
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
+    ReportDetails,
     date_label,
     entry_body_segments,
     header_lines,
@@ -65,7 +66,7 @@ def _sort_key(entry: dict):
     return parsed_date(entry) or datetime.max
 
 
-def _summary_html(entries, num_pages, qme_or_ame, lawfirm) -> str:
+def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
     """Render the summary letter's body. The patient identity is deliberately NOT a parameter: it
     goes on the running header, which `_draw_running_header` paints onto the rendered pages."""
     rows = []
@@ -97,7 +98,18 @@ def _summary_html(entries, num_pages, qme_or_ame, lawfirm) -> str:
     </style></head><body>
       <p class='ttl'>{html.escape(qme_or_ame or " ")}</p>
       <p class='h2'>{html.escape(REVIEW_HEADING)}</p>
-      <p>{html.escape(intro_sentence(num_pages, lawfirm))}</p>
+      <p>{
+        html.escape(
+            intro_sentence(
+                num_pages,
+                details.lawfirm,
+                attorney_name=details.attorney_name,
+                letter_type=details.letter_type,
+                letter_date=details.letter_date,
+                reviewer_name=details.reviewer_name,
+            )
+        )
+    }</p>
       <p style='font-weight:bold;'>{html.escape(SUMMARY_INTRO)}</p>
       <table>{"".join(rows)}</table>
       <p>{html.escape(CONCLUSION)}</p>
@@ -162,7 +174,14 @@ def _draw_running_header(summary_doc, patient_name, patient_dob):
 
 
 def build_linked_pdf(
-    source_path, entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm
+    source_path,
+    entries,
+    num_pages,
+    patient_name,
+    patient_dob,
+    qme_or_ame,
+    *,
+    details: ReportDetails | None = None,
 ) -> bytes:
     """Build the combined linked PDF as bytes.
 
@@ -174,7 +193,7 @@ def build_linked_pdf(
     entries = sorted(entries, key=_sort_key)
 
     summary_doc, title_rects = _render_summary_pdf(
-        _summary_html(entries, num_pages, qme_or_ame, lawfirm)
+        _summary_html(entries, num_pages, qme_or_ame, details or ReportDetails())
     )
     _draw_running_header(summary_doc, patient_name, patient_dob)
     summ_n = (

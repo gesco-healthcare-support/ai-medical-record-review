@@ -57,7 +57,13 @@ from app.services.jobs import (
 )
 from app.services.linked_pdf import build_linked_pdf
 from app.services.pdf import get_pdf_page_count
-from app.services.reporting import DOCX_MIMETYPE, build_mrr_document
+from app.services.reporting import (
+    DOCTORS,
+    DOCX_MIMETYPE,
+    LETTER_TYPES,
+    ReportDetails,
+    build_mrr_document,
+)
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
     presentable_title,
@@ -547,6 +553,11 @@ def get_document(
     payload = document.listing()
     payload["rows"] = [_editor_row(row) for row in document.review_rows]
     payload["categories"] = catalog.get_category_options(session)
+    # Served with the record for the same reason `categories` is: the dropdown needs the
+    # names and the Word renderer needs the fonts, and one list in the backend is what stops
+    # the two drifting. The frontend never holds its own copy.
+    payload["doctors"] = list(DOCTORS)
+    payload["letter_types"] = list(LETTER_TYPES)
     return payload
 
 
@@ -601,6 +612,25 @@ def extract_header_route(
     return shape
 
 
+def _pages_received(raw: str) -> int | None:
+    """The cover sheet's page count, or None when the box is empty or unusable.
+
+    None rather than 0, and the two are different answers: None means nobody has said, and
+    the export then falls back to the PDF's own count exactly as it did before this field
+    existed. A stored 0 would instead assert that zero pages were received.
+
+    A negative is discarded for the same reason a typo is - there is no page -5, and the
+    number lands in a sentence a client reads."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 @router.put("/{document_id}/header")
 def put_header(
     payload: HeaderPayload,
@@ -612,6 +642,15 @@ def put_header(
     document.patient_last_name = payload.patient_last_name
     document.patient_dob = payload.patient_dob
     document.law_firm = payload.law_firm
+    document.attorney_name = payload.attorney_name
+    document.doctor = payload.doctor
+    # An unrecognised letter type is stored as empty rather than rejected. The value only
+    # selects a phrase in the opening paragraph, and `reporting.LETTER_LABELS` already omits
+    # the clause for anything it does not know - so a bad value degrades to today's sentence
+    # instead of costing the reviewer the rest of the header they just typed.
+    document.letter_type = payload.letter_type if payload.letter_type in LETTER_TYPES else ""
+    document.letter_date = payload.letter_date
+    document.pages_received = _pages_received(payload.pages_received)
     session.commit()
     return document.listing()
 
@@ -1573,6 +1612,20 @@ def _download_name(label: str | None, ext: str) -> str:
     return f"{slug}.{ext}"
 
 
+def _letter_pages(document: Document) -> int:
+    """How many pages the letter says arrived: the cover sheet's count where one was entered.
+
+    `page_count` is the PDF's own length and is reliably the LONGER of the two, because pages
+    are attached to the file downstream - measured against four human deliverables, 311/309,
+    293/290, 244/241 and 229/226. The reviewers were explicit that the cover sheet carries the
+    real figure, which is what `pages_received` exists to hold.
+
+    NULL until somebody types it, and then this is the count the letter always used, so a record
+    nobody has filled in reads exactly as it did before that field existed.
+    """
+    return document.pages_received or document.page_count
+
+
 def _deliverable_filename(document: Document, suffix: str, ext: str, *, fallback: str) -> str:
     """`Lastname_Firstname_Medical_Records_<suffix>.<ext>` from the persisted header, falling
     back to `<original-filename>_<suffix>.<ext>` when no patient name was extracted.
@@ -1614,7 +1667,7 @@ def _included_summaries(document: Document) -> list[Summary]:
     return included
 
 
-def _mrr_docx_bytes(document: Document, payload: ExportPayload) -> bytes:
+def _mrr_docx_bytes(document: Document, payload: ExportPayload, user: User) -> bytes:
     """The MRR Word document. ONE definition, shared by /export and /export/zip.
 
     Two call sites each building their own `build_mrr_document(...)` is how a delivered
@@ -1628,30 +1681,54 @@ def _mrr_docx_bytes(document: Document, payload: ExportPayload) -> bytes:
     ]
     docx = build_mrr_document(
         entries,
-        document.page_count,
+        _letter_pages(document),
         payload.patientName,
         payload.patientdob,
         payload.QMEorAME,
-        payload.lawfirm,
+        details=ReportDetails(
+            doctor=document.doctor or "",
+            attorney_name=document.attorney_name or "",
+            lawfirm=payload.lawfirm,
+            letter_type=document.letter_type or "",
+            letter_date=document.letter_date or "",
+            # The reviewer running the export is the one who did the record work, so the name is
+            # taken from the session rather than asked for again. An account with no display name
+            # leaves it empty, which drops the Labor Code sentences - see `intro_sentence`.
+            reviewer_name=(user.name or "").strip(),
+        ),
     )
     buffer = io.BytesIO()
     docx.save(buffer)
     return buffer.getvalue()
 
 
-def _linked_pdf_bytes(document: Document, payload: ExportPayload) -> bytes:
-    """The combined linked PDF. ONE definition, shared by /export/pdf and /export/zip."""
+def _linked_pdf_bytes(document: Document, payload: ExportPayload, user: User) -> bytes:
+    """The combined linked PDF. ONE definition, shared by /export/pdf and /export/zip.
+
+    It takes the SAME opening paragraph the Word document does. Only the FONT is Word-only,
+    which is the reviewers' own answer ("does not need the font on that one"); the covering
+    letter, the sender and the Labor Code sentences are facts about the record, and the PDF
+    having none of them is what the review caught."""
     entries = [
         _pdf_entry(s, with_pages=payload.includePageNumbers) for s in _included_summaries(document)
     ]
     return build_linked_pdf(
         document.stored_path,
         entries,
-        document.page_count,
+        _letter_pages(document),
         payload.patientName,
         payload.patientdob,
         payload.QMEorAME,
-        payload.lawfirm,
+        details=ReportDetails(
+            attorney_name=document.attorney_name or "",
+            lawfirm=payload.lawfirm,
+            letter_type=document.letter_type or "",
+            letter_date=document.letter_date or "",
+            # The reviewer running the export is the one who did the record work, so the name is
+            # taken from the session rather than asked for again. An account with no display name
+            # leaves it empty, which drops the Labor Code sentences - see `intro_sentence`.
+            reviewer_name=(user.name or "").strip(),
+        ),
     )
 
 
@@ -1750,7 +1827,7 @@ def export_document(
     user: User = Depends(current_active_user),
 ):
     payload = payload or ExportPayload()
-    buffer = io.BytesIO(_mrr_docx_bytes(document, payload))
+    buffer = io.BytesIO(_mrr_docx_bytes(document, payload, user))
     audit(session, "export", user.id, document.id)
     return StreamingResponse(
         buffer,
@@ -1772,7 +1849,7 @@ def export_document_pdf(
     """Combined linked PDF: the summary letter (two-column, blue linked titles) followed by the
     full source record, each title linking to that sub-document's first source page."""
     payload = payload or ExportPayload()
-    pdf_bytes = _linked_pdf_bytes(document, payload)
+    pdf_bytes = _linked_pdf_bytes(document, payload, user)
     audit(session, "export_pdf", user.id, document.id)
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
@@ -1810,8 +1887,8 @@ def export_document_zip(
     build the archive into a SpooledTemporaryFile so it spills to disk instead of RAM."""
     payload = payload or ExportZipPayload()
     members: list[tuple[str, bytes]] = [
-        (_summary_filename(document), _mrr_docx_bytes(document, payload)),
-        (_linked_filename(document), _linked_pdf_bytes(document, payload)),
+        (_summary_filename(document), _mrr_docx_bytes(document, payload, user)),
+        (_linked_filename(document), _linked_pdf_bytes(document, payload, user)),
     ]
     members.extend(_bundle_members(session, document, payload.bundles))
 
@@ -1917,11 +1994,11 @@ def bundle_summarize(
         return _pipeline_error_response(document.id, exc)
     docx = build_mrr_document(
         entries,
-        document.page_count,
+        _letter_pages(document),
         payload.patientName,
         payload.patientdob,
         payload.QMEorAME,
-        payload.lawfirm,
+        details=ReportDetails(lawfirm=payload.lawfirm),
     )
     buffer = io.BytesIO()
     docx.save(buffer)

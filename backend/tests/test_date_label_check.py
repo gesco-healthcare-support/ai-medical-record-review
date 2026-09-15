@@ -27,7 +27,6 @@ from date_label_check import (  # noqa: E402
     recoverable,
 )
 
-
 # --- normalising ---------------------------------------------------------------------------------
 
 

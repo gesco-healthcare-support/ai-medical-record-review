@@ -171,3 +171,57 @@ def test_the_field_specs_empty_sentinel_is_read_as_empty():
     special-cases the same sentinel."""
     rows = [{"start": 1, "end": 2, "date": "-", "title": "-"}]
     assert cover_entries(rows, {}) == [("", "", "")]
+
+
+@pytest.mark.parametrize(
+    ("title", "provider"),
+    [
+        ("JANE SMITH, M.D. ST. MARY'S HOSPITAL. MRI OF THE KNEE.", "ST. MARY'S HOSPITAL"),
+        ("JOHN DOE, D.O. MT. SINAI MEDICAL CENTER. CT HEAD.", "MT. SINAI MEDICAL CENTER"),
+        ("A B, M.D. U.S. HEALTHWORKS. X-RAY.", "U.S. HEALTHWORKS"),
+    ],
+)
+def test_an_abbreviated_facility_name_is_not_torn_in_half(title, provider):
+    r"""DEMONSTRATES a defect a client would have read. `re.split(r"\.\s+")` cannot tell an
+    element separator from an abbreviation's own period, so the PROVIDER column said
+    `ST – MARY'S HOSPITAL` - the facility split across the dash that is supposed to separate
+    it from the doctor. `ST.`, `MT.` and `U.S.` are ordinary facility names."""
+    assert split_deliverable_title(title)[0].startswith(provider)
+
+
+def test_a_reviewer_edited_lowercase_title_keeps_its_credential_period():
+    """GUARDS the fix against the case it originally missed. `_CREDENTIALS` is case-insensitive
+    so a lowercase credential triggers the reorder, while the restoration was uppercase-only -
+    which left the very `M.D` typo this exists to prevent, in lower case.
+
+    Reachable: `Summary.effective_title()` returns `edited_title` FIRST, above the verified and
+    the raw model title, and a reviewer editing a title in the UI is not governed by the prompt's
+    ALL CAPS instruction."""
+    assert split_deliverable_title("r chase, m.d. valley imaging. ct abdomen.")[0] == (
+        "valley imaging – r chase, m.d."
+    )
+
+
+def test_a_facility_ending_in_a_lone_letter_gains_no_period():
+    """The restoration fires on an abbreviation - a lone letter with a period in FRONT of it -
+    not on any trailing capital. `IMAGING CENTER A`, `SUITE B` and `BUILDING C` are not
+    abbreviations, and the earlier rule's justification ("a facility name ends in a word") was
+    simply untrue of them."""
+    assert split_deliverable_title("JANE SMITH, M.D. IMAGING CENTER A. MRI KNEE.")[0] == (
+        "IMAGING CENTER A – JANE SMITH, M.D."
+    )
+
+
+def test_a_short_final_element_stays_the_report_title():
+    """GUARD. The rejoin only fires when a short fragment has something AFTER it, so a genuinely
+    two-character document type is not swallowed into the provider."""
+    assert split_deliverable_title("JANE SMITH, M.D. ACME IMAGING. CT.") == (
+        "ACME IMAGING – JANE SMITH, M.D.",
+        "CT",
+    )
+
+
+def test_the_provider_parts_are_joined_with_their_own_en_dash():
+    """Not a mistyped hyphen: U+2013 appears 19 times in the reference list they sent, in exactly
+    this position, and matching their document is the point of the page."""
+    assert "–" in split_deliverable_title(_FULL)[0]

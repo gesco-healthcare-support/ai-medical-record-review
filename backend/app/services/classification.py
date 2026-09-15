@@ -137,7 +137,17 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         r"\bfacesheet\b|\bflowsheets?\b|\bafter visit summary\b|\bcoding summary\b"
         + r"|\bpatient (signature page|information sheet)\b"
         + r"|\b(er|emergency room) registration\b|\bconditions of admission\b"
-        + r"|\b(admission|inpatient|emergency patient) record\b|\bmedication administration\b"
+        # `emergency patient record` was HERE until 2026-09-13, when the reviewer was shown the
+        # actual form and answered "the first one can be treated like a visit". It now has its own
+        # answer beside the emergency-department rule.
+        #
+        # Removing it here was NOT what made that answer reachable - measured, because the first
+        # version of this note claimed it was. A document-type rule already outranks an
+        # administrative hit (`match_rules` returns the first non-evaluator `_RULES` match even
+        # when the title is administrative), so the rule alone answers 1 with the phrase still
+        # sitting here. What the removal buys is that the two lists stop disagreeing about what
+        # this document IS - which matters the next time somebody edits either one.
+        + r"|\b(admission|inpatient) record\b|\bmedication administration\b"
         + r"|\bed care timeline\b",
         # EXCERPTED / REVIEWED RECORDS, and the anchors are the whole point (#222).
         #
@@ -572,7 +582,39 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # that." So `sign in`, `triage` and `registration` deliberately do not match, and neither
         # does "Emergency Department Encounter Note", which already reaches a shipping category with
         # its content delivered - moving that would be a change with no measured benefit.
-        (r"emergency department\s+(?:record|report|visit)|\bed visit record\b", "1"),
+        # `emergency patient record` joins this rule 2026-09-13. The reviewer was sent the actual
+        # three-page form rather than the phrase and answered "the first one can be treated like a
+        # visit" - so this is a decision about a document he read, not about a title.
+        #
+        # It also left the administrative alternation, and the first version of this note said
+        # that was required to make this alternative reachable. That is FALSE and the correction
+        # is worth keeping: a document-type rule already beats an administrative hit, so this
+        # rule answers 1 either way. The removal is about the two lists agreeing, not about
+        # precedence. `match_rules`' own docstring is the authority - read it before assuming
+        # the administrative list wins.
+        (
+            r"emergency department\s+(?:record|report|visit)"
+            + r"|\bed visit record\b"
+            + r"|\bemergency patient record\b",
+            "1",
+        ),
+        # The emergency NURSING assessment form is NOT summarized, from the same reading: "the third
+        # one doesn't need to be summarized". It had no rule at all, so the cascade decided it and
+        # the same form was answered differently in different records.
+        #
+        # `\bnursing\b` is REQUIRED in the pattern. Without it this claims any "assessment form",
+        # and a functional or psychological assessment is a clinical document that ships. The
+        # reviewer answered about a nursing intake form specifically.
+        #
+        # The middle form of the three - the rapid-triage sheet - is deliberately NOT ruled here.
+        # The answer was "not sure since it's hard to read", which is not an instruction, and a rule
+        # written on it would be our guess wearing his authority. `triage` already fails to match
+        # the emergency-department rule above, so it keeps reaching the cascade exactly as it does
+        # today, and the question stays open.
+        (
+            r"\bemergency\b.*\bnursing\b.*\bassessment form\b|\bnursing assessment form\b",
+            DEFAULT_ID,
+        ),
         # History & Physical -> a treating report (#161). A pre-operative H&P is the treating
         # physician's own document, `summarize_default` is true for category 1, and 46 of the 53 rows
         # on the box already land there - so the destination is where this form mostly goes already
@@ -590,15 +632,26 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # `history` is not matched on its own: it appears in "History of Injury", "Past Medical
         # History" and similar, none of which are this document.
         (r"\bhistory (?:and|&) physical\b|\bh ?& ?p\b", "1"),
-        # A referral is an authorization request, answered directly 2026-09-01: "Referral should be
-        # categorized as an authorization request."
+        # A referral is NOT summarized, answered directly 2026-09-13: "Just leave it out. Referrals
+        # are not important."
         #
-        # This REVERSES an earlier reading rather than filling a gap. `patient referral` was
-        # administrative paperwork because one record's excluded-pages list named it, and #134 wrote
-        # the caveat beside that evidence itself. The direct answer is the better evidence, and the
-        # direction of the correction is the safer one: 23 rows / 46 pages move OUT of General and
-        # into a category that ships, and over-inclusion is visible to a reviewer while a document
-        # dropped to General is not.
+        # This settles a contradiction rather than making a fresh call, and the escalation note that
+        # used to sit here is the reason it was worth asking. #134 read `patient referral` as
+        # administrative because one record's excluded-pages list named it. #233 then shipped this
+        # rule at 10 on "Referral should be categorized as an authorization request" (2026-09-01).
+        # Eight days later the same reviewer answered "I wouldn't summarize any of those" to a list
+        # that named `medical referral`, which this pattern claims explicitly - so the two answers
+        # disagreed and the shipped rule was left standing while the question was put a third time.
+        #
+        # The third answer is unambiguous and it is the one that decides. It agrees with #134's
+        # original reading, so the record is: exclusion-list evidence was right here, the direct
+        # answer that overturned it was the outlier, and asking again cost less than either guess.
+        #
+        # THE DIRECTION IS THE UNSAFE ONE, and that is stated rather than buried. This moves
+        # rows OUT of a category that ships and into General, where a reviewer cannot see what
+        # was dropped -
+        # the asymmetry #134 and #233 both cite, now pointing the other way. It is shipped only
+        # because the instruction is explicit and recent.
         #
         # ANCHORED AT THE START, and that is not tidiness. Unanchored, `\breferrals?\b` claimed
         # "Email and Referral Flyer" - an email, which is administrative however it is titled (#220)
@@ -617,7 +670,13 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # LAST in `_RULES`, so every document-type rule above still wins: "Acupuncture Referral"
         # stays 5, "Referral for MRI Lumbar Spine" stays 3, and a referral naming an evaluator
         # stays 13. This only answers a title nothing more specific already did.
-        (r"^\s*(?:patient|medical)?\s*referrals?\b", "10"),
+        #
+        # Kept HERE at 100 rather than moved back into the administrative alternation, deliberately.
+        # Both routes reach the same answer, but the alternation would lose the start-anchor,
+        # and the anchor is load-bearing: unanchored, `\breferrals?\b` claims
+        # "Email and Referral Flyer" and
+        # every other title that merely MENTIONS a referral.
+        (r"^\s*(?:patient|medical)?\s*referrals?\b", DEFAULT_ID),
         # Discharge summary -> its own category 16, answered directly 2026-09-08: "Make a new
         # category summarize two things, patient condition, and any comment on work status if
         # there."

@@ -138,6 +138,44 @@ _CREDENTIALS = re.compile(
 
 COVER_COLUMNS = ("Date", "PROVIDER", "REPORT TITLE")
 
+# A short all-letters token before a period is an ABBREVIATION, not the end of an element:
+# `ST. MARY'S`, `MT. SINAI`, `U.S. HEALTHWORKS` are ordinary facility names. Splitting on ". "
+# alone tore them in half and the PROVIDER column read `ST - MARY'S HOSPITAL`, in a page a client
+# reads. Bounded at three characters because that is what the real cases need and a longer bound
+# starts swallowing genuine one-word elements.
+_ABBREVIATION = re.compile(r"^[A-Za-z][A-Za-z.]{0,2}$")
+
+# The separator and an abbreviation's own final period are the same character, so the split eats
+# it and a client read `JANE SMITH, M.D`. Restored only after an actual abbreviation - a lone
+# letter with a period in front of it. Anchoring on "ends in a capital" instead was wrong twice:
+# it missed a reviewer-edited lowercase title (`m.d` -> still `m.d`, since `Summary
+# .effective_title` returns `edited_title` first and nothing normalises its case), and it added a
+# period to `IMAGING CENTER A`, on a docstring's claim that "a facility name ends in a word".
+_ABBREVIATION_TAIL = re.compile(r"(?<=\.)([A-Za-z])$")
+
+
+def _elements(title: str) -> list[str]:
+    """The title's elements, with abbreviations kept whole."""
+    raw = [part.strip(" .") for part in re.split(r"\.\s+", title)]
+    elements: list[str] = []
+    for part in raw:
+        if not part:
+            continue
+        # A fragment this short followed by more text is the front half of an abbreviated name,
+        # so it rejoins what the split separated. The `elements` guard keeps a genuinely short
+        # LAST element - a document type of "CT" - from being merged into nothing.
+        if elements and _ABBREVIATION.match(elements[-1]):
+            elements[-1] = f"{elements[-1]}. {part}"
+        else:
+            elements.append(part)
+    return elements
+
+
+def _restore_abbreviation(part: str) -> str:
+    """`JANE SMITH, M.D` -> `JANE SMITH, M.D.`, in either case, and nothing else touched."""
+    return _ABBREVIATION_TAIL.sub(r"\1.", part)
+
+
 # `_store_rows` writes "-" for an empty row field, so a delivered page has to read it as absent
 # rather than print it. Same sentinel `reporting.date_label` already special-cases.
 _EMPTY_FIELD = {"", "-"}
@@ -168,18 +206,20 @@ def split_deliverable_title(title) -> tuple[str, str]:
 
     A title with nothing to split - 72 of 268 on that server arrive as a single element - puts
     everything under REPORT TITLE and leaves PROVIDER empty, rather than splitting on a guess.
+
+    Splitting on ". " alone is NOT enough, and `_elements` is why: the separator and an
+    abbreviation's own period are the same character, so `ST. MARY'S HOSPITAL` came apart into two
+    elements and the column read `ST - MARY'S HOSPITAL`.
     """
-    parts = [part.strip(" .") for part in re.split(r"\.\s+", (title or "").strip())]
-    parts = [part for part in parts if part]
+    parts = _elements((title or "").strip())
     if not parts:
         return "", ""
     provider, report = parts[:-1], parts[-1]
     if len(provider) >= 2 and _CREDENTIALS.search(provider[0]):
         provider = provider[1:] + provider[:1]
-    # `M.D.` ends with the very character the separator is, so the split eats it and a client
-    # would read `JANE SMITH, M.D`. Put the period back on any element ending in a lone capital,
-    # which is a credential and essentially nothing else - a facility name ends in a word.
-    provider = [re.sub(r"\b([A-Z])$", r"\1.", part) for part in provider]
+    provider = [_restore_abbreviation(part) for part in provider]
+    # EN DASH, and deliberately - U+2013 appears 19 times in the reference list they sent, in
+    # exactly this position. It is not a mistyped hyphen.
     return " \u2013 ".join(provider), report
 
 
