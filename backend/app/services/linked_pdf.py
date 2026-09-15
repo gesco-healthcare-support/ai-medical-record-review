@@ -23,10 +23,10 @@ import pymupdf
 
 from app.services.reporting import (
     CONCLUSION,
-    INLINE_EMPHASIS_RE,
     REVIEW_HEADING,
     TITLE_SEPARATOR,
     date_label,
+    entry_body_segments,
     header_lines,
     accounting_sentences,
     intro_sentence,
@@ -40,18 +40,22 @@ _CONTENT = pymupdf.Rect(72, 90, _LETTER.width - 72, _LETTER.height - 72)
 
 
 def _inline_html(text: str) -> str:
-    """Escape ``text`` then turn **bold** / *italic* / _italic_ markers into <b>/<i>."""
-    out, pos, esc = [], 0, html.escape(text or "")
-    for m in INLINE_EMPHASIS_RE.finditer(esc):
-        if m.start() > pos:
-            out.append(esc[pos : m.start()])
-        out.append(
-            f"<b>{m.group(1)}</b>"
-            if m.group(1) is not None
-            else f"<i>{m.group(2) or m.group(3)}</i>"
-        )
-        pos = m.end()
-    out.append(esc[pos:])
+    """One entry body as HTML, in the same two tiers the Word renderer uses.
+
+    `entry_body_segments` makes every emphasis decision; this only chooses the tags. The
+    two renderers producing the same deliverable in two formats and disagreeing about its
+    formatting is a defect this module has already shipped three times (#115, #158, #268),
+    so the classification is not repeated here."""
+    out = []
+    for chunk, bold, italic, underline in entry_body_segments(text):
+        esc = html.escape(chunk)
+        if underline:
+            esc = f"<u>{esc}</u>"
+        if italic:
+            esc = f"<i>{esc}</i>"
+        if bold:
+            esc = f"<b>{esc}</b>"
+        out.append(esc)
     return "".join(out)
 
 

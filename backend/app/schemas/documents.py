@@ -93,6 +93,27 @@ class HeaderPayload(BaseModel):
     law_firm: str = ""
 
 
+class ZipBundle(BaseModel):
+    """One category bundle to include in the export zip.
+
+    The category lists live in the FRONTEND (`lib/bundles.ts`), which is where both bundle
+    pages already read them from, so the zip asks for them rather than keeping a second
+    copy of the taxonomy on this side."""
+
+    label: str | None = None
+    categories: list[Any] = []
+
+
+class ExportZipPayload(ExportPayload):
+    """POST /documents/{id}/export/zip - the export-dialog fields plus the bundles to add.
+
+    A bundle that matches nothing in this record is OMITTED from the zip rather than
+    failing the request, which is the one behaviour that differs from /bundle/pdf: a record
+    with no depositions still has an MRR and a linked PDF worth downloading."""
+
+    bundles: list[ZipBundle] = []
+
+
 class DuplicateResolvePayload(BaseModel):
     """Resolve one duplicate cluster (POST /documents/{id}/duplicates/{group}/resolve).
 
