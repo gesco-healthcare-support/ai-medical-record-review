@@ -13,6 +13,7 @@ match the source schema.
 
 from datetime import UTC, datetime
 
+from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyBaseAccessTokenTable
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -28,7 +29,6 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyBaseAccessTokenTable
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from app.db import Base
@@ -175,6 +175,21 @@ class Document(Base):
     patient_last_name = Column(String(255))
     patient_dob = Column(String(32))
     law_firm = Column(String(512))
+    # The PERSON the records came from. `law_firm` is the company, and the delivered sentence
+    # wants both - "from <person>, of <firm>". One free-text box held both until now, so an
+    # existing value stays in `law_firm` and this is simply empty, which renders as it always did.
+    attorney_name = Column(String(255))
+    # Which evaluator the report is for. Drives the Word font; see reporting.DOCTOR_FONTS.
+    doctor = Column(String(255))
+    # The covering letter that came with the records: reporting.LETTER_TYPES.
+    letter_type = Column(String(32))
+    letter_date = Column(String(32))
+    # Pages RECEIVED, which is not `page_count`. The reviewers attach their own pages to the
+    # PDF before it reaches us, so the file is reliably 2-3 pages longer than what arrived -
+    # measured against four human deliverables: 311/309, 293/290, 244/241, 229/226. Their own
+    # cover sheet carries the real figure and this is where it goes. NULL means nobody has
+    # said, and every consumer falls back to `page_count` exactly as before.
+    pages_received = Column(Integer)
 
     jobs = relationship(
         "Job", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Job.id"
@@ -213,6 +228,13 @@ class Document(Base):
             "patient_name": (first + " " + last).strip(),
             "patient_dob": self.patient_dob or "",
             "law_firm": self.law_firm or "",
+            "attorney_name": self.attorney_name or "",
+            "doctor": self.doctor or "",
+            "letter_type": self.letter_type or "",
+            "letter_date": self.letter_date or "",
+            # Empty string rather than 0 for an unset count: the field is a text input and 0
+            # would read as a real answer of zero pages.
+            "pages_received": "" if self.pages_received is None else self.pages_received,
         }
 
 

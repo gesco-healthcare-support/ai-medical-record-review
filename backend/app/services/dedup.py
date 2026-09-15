@@ -20,6 +20,7 @@ from google.genai import types
 from app.config import get_settings
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
+from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +388,14 @@ def confirm_cluster(members, model=None):
         )
         confirmed = [members[i - 1] for i in idxs]
         return confirmed if len(confirmed) >= 2 else []
+    except JobCancelled:
+        # NOT a model failure - the reviewer pressed Stop. `generate_with_retry` raises this
+        # out of its backoff sleep as a cooperative signal meant to unwind to _run's handler,
+        # and JobCancelled subclasses Exception, so the broad catch below swallowed it: the
+        # log blamed the model for a deliberate user action, in exactly the place an operator
+        # looks to ask whether Vertex was rejecting calls, and this unit of work silently took
+        # its fallback. Same fix as `llm_classify`, which is where the shape was first found.
+        raise
     except Exception as exc:
         logger.warning("dedup confirm failed; trusting the algorithmic candidate: %s", exc)
         return list(members)

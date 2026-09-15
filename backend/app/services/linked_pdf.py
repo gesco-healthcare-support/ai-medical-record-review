@@ -25,13 +25,14 @@ from app.services.reporting import (
     CONCLUSION,
     REVIEW_HEADING,
     TITLE_SEPARATOR,
+    ReportDetails,
+    accounting_sentences,
     date_label,
     entry_body_segments,
     header_lines,
-    accounting_sentences,
     intro_sentence,
-    summary_intro,
     parsed_date,
+    summary_intro,
 )
 
 _TITLE_COLOR = "#0000EE"  # link-blue for the clickable titles (CSS)
@@ -66,7 +67,7 @@ def _sort_key(entry: dict):
     return parsed_date(entry) or datetime.max
 
 
-def _summary_html(entries, num_pages, qme_or_ame, lawfirm, accounting=None) -> str:
+def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
     """Render the summary letter's body. The patient identity is deliberately NOT a parameter: it
     goes on the running header, which `_draw_running_header` paints onto the rendered pages."""
     rows = []
@@ -83,12 +84,13 @@ def _summary_html(entries, num_pages, qme_or_ame, lawfirm, accounting=None) -> s
     # reference documents carry. Built here rather than inline because an f-string cannot
     # hold a loop, and the two renderers drifting on this letter is a thing that has
     # happened three times (#115, #158, #268).
-    exclusion_text, duplicates_text = accounting_sentences(accounting)
+    exclusion_text, duplicates_text = accounting_sentences(details.accounting)
     tail_parts = []
     if exclusion_text:
         tail_parts.append(f"<p style='font-weight:bold;'>{html.escape(exclusion_text)}</p>")
         tail_parts += [
-            f"<p>{html.escape(document_type)}</p>" for document_type in accounting.excluded_types
+            f"<p>{html.escape(document_type)}</p>"
+            for document_type in details.accounting.excluded_types
         ]
     if duplicates_text:
         tail_parts.append(f"<p style='font-weight:bold;'>{html.escape(duplicates_text)}</p>")
@@ -113,8 +115,19 @@ def _summary_html(entries, num_pages, qme_or_ame, lawfirm, accounting=None) -> s
     </style></head><body>
       <p class='ttl'>{html.escape(qme_or_ame or " ")}</p>
       <p class='h2'>{html.escape(REVIEW_HEADING)}</p>
-      <p>{html.escape(intro_sentence(num_pages, lawfirm))}</p>
-      <p style='font-weight:bold;'>{html.escape(summary_intro(lawfirm))}</p>
+      <p>{
+        html.escape(
+            intro_sentence(
+                num_pages,
+                details.lawfirm,
+                attorney_name=details.attorney_name,
+                letter_type=details.letter_type,
+                letter_date=details.letter_date,
+                reviewer_name=details.reviewer_name,
+            )
+        )
+    }</p>
+      <p style='font-weight:bold;'>{html.escape(summary_intro(details.lawfirm))}</p>
       <table>{"".join(rows)}</table>
       {tail}
       <p>{html.escape(CONCLUSION)}</p>
@@ -185,8 +198,8 @@ def build_linked_pdf(
     patient_name,
     patient_dob,
     qme_or_ame,
-    lawfirm,
-    accounting=None,
+    *,
+    details: ReportDetails | None = None,
 ) -> bytes:
     """Build the combined linked PDF as bytes.
 
@@ -198,7 +211,7 @@ def build_linked_pdf(
     entries = sorted(entries, key=_sort_key)
 
     summary_doc, title_rects = _render_summary_pdf(
-        _summary_html(entries, num_pages, qme_or_ame, lawfirm, accounting)
+        _summary_html(entries, num_pages, qme_or_ame, details or ReportDetails())
     )
     _draw_running_header(summary_doc, patient_name, patient_dob)
     summ_n = (

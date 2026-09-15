@@ -12,11 +12,13 @@ import zipfile
 import pytest
 from sqlalchemy import event, select
 
+from app.api.documents import _pages_received
 from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.errors import OcrUnavailableError
 from app.models import AuditLog, Document, Job, ReviewRow, Summary, User
+from app.services.reporting import DOCTORS, LETTER_TYPES
 from app.services.seed_catalog import constants_categories
 from tests.conftest import unique_test_email
 
@@ -1901,8 +1903,8 @@ async def test_redraft_after_a_category_change_uses_the_new_categorys_prompt(aut
     correctly while the prompt lookup still used the old id, and every assertion would still pass. So
     capture the prompt actually handed to summarize_row and prove it is the new category's.
     """
-    from app.services import catalog
     from app.db import get_sessionmaker as _sm
+    from app.services import catalog
 
     client, _ = authed
     doc_id = await _upload(client, pages=2)
@@ -2325,6 +2327,11 @@ async def _put_header(client, doc_id, **fields):
         "patient_last_name": "",
         "patient_dob": "",
         "law_firm": "",
+        "attorney_name": "",
+        "doctor": "",
+        "letter_type": "",
+        "letter_date": "",
+        "pages_received": "",
         **fields,
     }
     resp = await client.put(f"/api/documents/{doc_id}/header", json=body)
@@ -3787,7 +3794,7 @@ async def test_the_landing_list_still_reports_the_active_job(authed):
     assert all(row["active_job"] is None for row in quiet)
 
 
-async def _seed_one_summary(doc_id, *, row_start=1, row_end=1):
+async def _seed_one_summary(doc_id):
     """One stored summary, so an export has something to ship."""
     with get_sessionmaker()() as session:
         job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
@@ -3798,11 +3805,12 @@ async def _seed_one_summary(doc_id, *, row_start=1, row_end=1):
                 document_id=doc_id,
                 job_id=job.id,
                 idx=0,
-                title="Progress Report",
-                text="summary body text",
-                row_start=row_start,
-                row_end=row_end,
-                row_category=_VALID_CATEGORY,
+                title="A REPORT",
+                text="body",
+                date="03/14/2026",
+                row_start=1,
+                row_end=1,
+                row_category="1",
             )
         )
         session.commit()
@@ -3924,3 +3932,235 @@ async def test_the_archive_is_named_after_the_patient_like_its_members(authed):
     assert "Lovelace_Ada_Medical_Records.zip" in resp.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
         assert "Lovelace_Ada_Medical_Records_summary.docx" in archive.namelist()
+
+
+def test_the_cover_sheet_page_count_is_coerced_rather_than_rejected():
+    """The form sends what was typed, so the route decides what an unusable value means.
+
+    None, not 0, and they are different answers: None means nobody has said and the export falls
+    back to the PDF's own count exactly as it did before this field existed. A stored 0 would
+    instead assert that zero pages arrived - a claim that would ship in a sentence a client reads.
+
+    A 422 was the alternative and is worse: it would throw away the rest of the header the reviewer
+    had just filled in, over a typo in one box.
+    """
+    assert _pages_received("418") == 418
+    assert _pages_received("  418  ") == 418
+    assert _pages_received("") is None
+    assert _pages_received("   ") is None
+    assert _pages_received("four hundred") is None
+    assert _pages_received("0") is None
+    assert _pages_received("-5") is None
+
+
+async def test_the_header_round_trips_the_letter_the_doctor_and_the_page_count(authed):
+    """DEMONSTRATES the new fields end to end - saved through the route a reviewer uses, read back
+    off the document detail the screen loads."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    await _put_header(
+        client,
+        doc_id,
+        attorney_name="Mitchell Garrett",
+        law_firm="Blitstein, Young & Blinder",
+        doctor="Pelton",
+        letter_type="interrogatory",
+        letter_date="08/12/2026",
+        pages_received="418",
+    )
+
+    detail = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert detail["attorney_name"] == "Mitchell Garrett"
+    assert detail["law_firm"] == "Blitstein, Young & Blinder"
+    assert detail["doctor"] == "Pelton"
+    assert detail["letter_type"] == "interrogatory"
+    assert detail["letter_date"] == "08/12/2026"
+    assert detail["pages_received"] == 418
+
+
+async def test_an_unset_page_count_reads_back_as_empty_not_zero(authed):
+    """GUARDS the difference the coercion exists to keep. The screen renders this straight into a
+    text box, and a 0 there would read as a real answer of zero pages received."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    await _put_header(client, doc_id, patient_first_name="Jane")
+
+    detail = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert detail["pages_received"] == ""
+
+
+async def test_an_unrecognised_letter_type_is_dropped_not_refused(authed):
+    """DEMONSTRATES. The value only selects a phrase in the opening paragraph, and an unknown one
+    already degrades to today's sentence. Refusing the whole PUT would cost the reviewer the rest of
+    the header they had just typed, for a field that cannot break anything."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    await _put_header(client, doc_id, patient_first_name="Jane", letter_type="something-else")
+
+    detail = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert detail["letter_type"] == ""
+    assert detail["patient_first_name"] == "Jane"  # the rest of the header survived
+
+
+async def test_the_record_serves_the_doctor_list_so_nothing_keeps_a_second_copy(authed):
+    """The dropdown needs the names and the Word renderer needs the fonts. One list in the backend
+    is what stops the two drifting, so the record ships it the way it already ships categories."""
+    client, _ = authed
+    doc_id = await _upload(client)
+
+    detail = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert detail["doctors"] == list(DOCTORS)
+    assert "Falkinstein" in detail["doctors"]
+    assert detail["letter_types"] == list(LETTER_TYPES)
+
+
+async def test_the_export_writes_the_letter_paragraph_and_the_doctors_typeface(authed, monkeypatch):
+    """DEMONSTRATES requests 1 and 2 through the route a reviewer actually clicks.
+
+    The letter fields and the doctor come from the RECORD, not the export dialog - they are facts
+    about the record rather than choices made at export time. The reviewer name is whoever is signed
+    in, and it is the only thing standing between this and the Labor Code sentences.
+    """
+    import docx as docxlib
+
+    client, user_id = authed
+    doc_id = await _upload(client)
+    await _put_header(
+        client,
+        doc_id,
+        attorney_name="Mitchell Garrett",
+        law_firm="Blitstein, Young & Blinder",
+        doctor="Pelton",
+        letter_type="advocacy",
+        letter_date="08/12/2026",
+    )
+
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=0,
+                title="A REPORT",
+                text="**Diagnoses**: Lumbar strain.",
+                date="03/14/2026",
+                row_start=1,
+                row_end=1,
+                row_category="1",
+            )
+        )
+        session.query(User).filter(User.id == user_id).update({"name": "Jane Roe"})
+        session.commit()
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export",
+        json={
+            "patientName": "Pat",
+            "patientdob": "",
+            "QMEorAME": "",
+            "lawfirm": "Blitstein, Young & Blinder",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    built = docxlib.Document(io.BytesIO(resp.content))
+    intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
+    assert "a defense advocacy letter dated 08/12/2026 along with" in intro
+    assert "from Mitchell Garrett, of Blitstein, Young & Blinder" in intro
+    assert "performed by Jane Roe, Trained Medical Record Processor" in intro
+    assert "4628" in intro
+
+    fonts = {r.font.name for p in built.paragraphs for r in p.runs if r.font.name}
+    assert fonts == {"Tahoma"}
+
+
+async def test_an_account_with_no_display_name_omits_the_labor_code_claim(authed):
+    """GUARDS the legal assertion. Those sentences name who performed the record work - with no name
+    to put in them the paragraph stops before them rather than asserting a blank."""
+    import docx as docxlib
+
+    client, user_id = authed
+    doc_id = await _upload(client)
+
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=0,
+                title="A REPORT",
+                text="text",
+                date="03/14/2026",
+                row_start=1,
+                row_end=1,
+                row_category="1",
+            )
+        )
+        session.query(User).filter(User.id == user_id).update({"name": ""})
+        session.commit()
+
+    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    assert resp.status_code == 200, resp.text
+    built = docxlib.Document(io.BytesIO(resp.content))
+    intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
+    assert "4628" not in intro
+    assert "Trained Medical Record Processor" not in intro
+
+
+def _pdf_text(blob):
+    """Every page's text, whitespace collapsed, so an assertion does not depend on where the
+    layout engine happened to break a line."""
+    import pymupdf
+
+    doc = pymupdf.open(stream=blob, filetype="pdf")
+    return " ".join(" ".join(page.get_text().split()) for page in doc)
+
+
+async def test_the_letter_states_the_cover_sheet_count_not_the_files_length(authed):
+    """DEMONSTRATES the defect the review found: `pages_received` was captured, stored and never
+    read, so the delivered sentence still counted the PDF.
+
+    The seven parser tests and the header round-trip all passed because none of them RENDERS the
+    sentence. This one does, and it does it through both artifacts - the reviewers were explicit
+    that the file's own length is the wrong number, and against four human deliverables it ran
+    311/309, 293/290, 244/241 and 229/226.
+    """
+    import docx as docxlib
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=244)
+    await _put_header(client, doc_id, pages_received="241")
+    await _seed_one_summary(doc_id)
+
+    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    assert resp.status_code == 200, resp.text
+    built = docxlib.Document(io.BytesIO(resp.content))
+    intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
+    assert "241 pages of medical records" in intro
+    assert "244" not in intro
+
+    pdf = await client.post(f"/api/documents/{doc_id}/export/pdf", json={})
+    assert pdf.status_code == 200, pdf.text
+    assert "241 pages of medical records" in _pdf_text(pdf.content)
+
+
+async def test_with_no_cover_sheet_count_the_letter_falls_back_to_the_file(authed):
+    """GUARD. `pages_received` is NULL until somebody types it, and a record nobody has filled in
+    must read exactly as it did before the field existed."""
+    import docx as docxlib
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=244)
+    await _seed_one_summary(doc_id)
+
+    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    assert resp.status_code == 200, resp.text
+    built = docxlib.Document(io.BytesIO(resp.content))
+    intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
+    assert "244 pages of medical records" in intro

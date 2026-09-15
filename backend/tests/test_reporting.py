@@ -3,7 +3,6 @@
 import html
 import io
 import re
-
 from dataclasses import dataclass
 
 import pytest
@@ -12,16 +11,22 @@ from docx.shared import Pt
 
 from app.services.reporting import (
     CONCLUSION,
+    DOCTOR_FONTS,
+    DOCTORS,
     DOCX_MIMETYPE,
+    LETTER_LABELS,
+    LETTER_TYPES,
     REVIEW_HEADING,
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
     UNDATED_LABEL,
+    ReportDetails,
     accounting_sentences,
     build_mrr_document,
     date_label,
     intro_sentence,
     record_accounting,
+    report_font,
     summary_intro,
 )
 
@@ -37,7 +42,7 @@ def test_build_mrr_document_saves():
         patient_name="Synthetic Patient",
         patient_dob="-",
         qme_or_ame="QME",
-        lawfirm="Example Law Firm",
+        details=ReportDetails(lawfirm="Example Law Firm"),
     )
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -51,12 +56,22 @@ def _intro(doc) -> str:
 
 
 def test_intro_names_the_law_firm_when_there_is_one():
+    """The closing words moved from "such received records" to "such records" on 2026-09-14.
+
+    Not a tidy-up: the reviewers supplied the paragraph verbatim and asked us to fit it, and
+    theirs reads "such records". Recorded here rather than quietly swapped, because this is a
+    pinned wording in a delivered document and the pin is being overruled on their say-so."""
     doc = build_mrr_document(
-        [], num_pages=8, patient_name="", patient_dob="", qme_or_ame="", lawfirm="Example Law Firm"
+        [],
+        num_pages=8,
+        patient_name="",
+        patient_dob="",
+        qme_or_ame="",
+        details=ReportDetails(lawfirm="Example Law Firm"),
     )
     assert _intro(doc) == (
         "I have received 8 pages of medical records from Example Law Firm. I have reviewed all "
-        "of the pages received and my opinion is based upon such received records."
+        "of the pages received and my opinion is based upon such records."
     )
 
 
@@ -73,12 +88,17 @@ def test_intro_drops_the_clause_when_the_law_firm_is_blank():
     """
     for blank in ("", "   ", None):
         doc = build_mrr_document(
-            [], num_pages=8, patient_name="", patient_dob="", qme_or_ame="", lawfirm=blank
+            [],
+            num_pages=8,
+            patient_name="",
+            patient_dob="",
+            qme_or_ame="",
+            details=ReportDetails(lawfirm=blank),
         )
         text = _intro(doc)
         assert text == (
             "I have received 8 pages of medical records. I have reviewed all of the pages "
-            "received and my opinion is based upon such received records."
+            "received and my opinion is based upon such records."
         )
         assert "from ." not in text
         assert "records from" not in text
@@ -87,7 +107,12 @@ def test_intro_drops_the_clause_when_the_law_firm_is_blank():
 def test_intro_has_no_double_space():
     """ "all of the pages  received" carried a double space in the shipped template."""
     doc = build_mrr_document(
-        [], num_pages=1, patient_name="", patient_dob="", qme_or_ame="", lawfirm="Firm"
+        [],
+        num_pages=1,
+        patient_name="",
+        patient_dob="",
+        qme_or_ame="",
+        details=ReportDetails(lawfirm="Firm"),
     )
     assert "  " not in _intro(doc)
 
@@ -95,7 +120,12 @@ def test_intro_has_no_double_space():
 def test_build_mrr_document_blank_qme_ame_does_not_crash():
     # A blank QME/AME field must not crash (an empty paragraph has no runs -> guarded with " ").
     doc = build_mrr_document(
-        [], num_pages=1, patient_name="", patient_dob="", qme_or_ame="", lawfirm=""
+        [],
+        num_pages=1,
+        patient_name="",
+        patient_dob="",
+        qme_or_ame="",
+        details=ReportDetails(lawfirm=""),
     )
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -114,7 +144,7 @@ def test_build_mrr_document_renders_two_column_table():
         patient_name="Synthetic Patient",
         patient_dob="-",
         qme_or_ame="QME",
-        lawfirm="Example Law Firm",
+        details=ReportDetails(lawfirm="Example Law Firm"),
     )
     assert len(doc.tables) == 1
     table = doc.tables[0]
@@ -138,7 +168,7 @@ def test_summary_body_is_justified():
         patient_name="Synthetic Patient",
         patient_dob="-",
         qme_or_ame="QME",
-        lawfirm="Example Law Firm",
+        details=ReportDetails(lawfirm="Example Law Firm"),
     )
     for row in doc.tables[0].rows:
         assert row.cells[1].paragraphs[0].alignment == WD_PARAGRAPH_ALIGNMENT.JUSTIFY
@@ -157,7 +187,7 @@ def test_summary_body_is_justified():
 def _pdf_letter(num_pages, lawfirm) -> str:
     """The linked-PDF letter HTML. Imported lazily so a missing pymupdf skips instead of erroring."""
     linked_pdf = pytest.importorskip("app.services.linked_pdf")
-    return linked_pdf._summary_html([], num_pages, "QME", lawfirm)
+    return linked_pdf._summary_html([], num_pages, "QME", ReportDetails(lawfirm=lawfirm))
 
 
 @pytest.mark.parametrize("lawfirm", ["Example Law Firm", "Smith & Jones, LLP", "", "   ", None])
@@ -170,7 +200,12 @@ def test_both_renderers_emit_the_same_intro_sentence(lawfirm):
     """
     expected = intro_sentence(8, lawfirm)
     doc = build_mrr_document(
-        [], num_pages=8, patient_name="", patient_dob="", qme_or_ame="", lawfirm=lawfirm
+        [],
+        num_pages=8,
+        patient_name="",
+        patient_dob="",
+        qme_or_ame="",
+        details=ReportDetails(lawfirm=lawfirm),
     )
     assert _intro(doc) == expected
     assert html.escape(expected) in _pdf_letter(8, lawfirm)
@@ -185,7 +220,12 @@ def test_neither_renderer_ships_the_orphan_clause(lawfirm):
     actually spotted in - still emitting it.
     """
     doc = build_mrr_document(
-        [], num_pages=8, patient_name="", patient_dob="", qme_or_ame="", lawfirm=lawfirm
+        [],
+        num_pages=8,
+        patient_name="",
+        patient_dob="",
+        qme_or_ame="",
+        details=ReportDetails(lawfirm=lawfirm),
     )
     letter = _pdf_letter(8, lawfirm)
     for text in (_intro(doc), letter):
@@ -196,7 +236,12 @@ def test_neither_renderer_ships_the_orphan_clause(lawfirm):
 def test_both_renderers_share_the_other_two_sentences():
     """The intro was the one with the bug; these two are the remaining copies of the mechanism."""
     doc = build_mrr_document(
-        [], num_pages=8, patient_name="", patient_dob="", qme_or_ame="", lawfirm="Firm"
+        [],
+        num_pages=8,
+        patient_name="",
+        patient_dob="",
+        qme_or_ame="",
+        details=ReportDetails(lawfirm="Firm"),
     )
     paragraphs = [p.text for p in doc.paragraphs]
     letter = _pdf_letter(8, "Firm")
@@ -217,7 +262,9 @@ def _entry(date, title="A REPORT", text="body text"):
 @pytest.mark.parametrize("undated", ["-", "", "n/a", "   "])
 def test_undated_entries_sort_last_in_the_word_document(undated):
     entries = [_entry(undated, "UNDATED"), _entry("01/02/2020", "EARLIEST"), _entry("03/04/2021")]
-    doc = build_mrr_document(entries, 10, "A B", "01/01/1980", "QME", "Firm")
+    doc = build_mrr_document(
+        entries, 10, "A B", "01/01/1980", "QME", details=ReportDetails(lawfirm="Firm")
+    )
     # One borderless table, one row per entry, NO header row - see
     # test_build_mrr_document_renders_two_column_table. Indexing from row 1 silently skips the
     # first entry, which is how the first version of this test passed for the wrong reason.
@@ -275,7 +322,7 @@ def test_the_summary_intro_stays_bold_in_the_word_document():
         patient_name="A B",
         patient_dob="01/01/1980",
         qme_or_ame="QME",
-        lawfirm="Firm",
+        details=ReportDetails(lawfirm="Firm"),
     )
     runs = _paragraph_named(doc, summary_intro("Firm")).runs
     assert runs, "the summary-intro paragraph has no runs"
@@ -291,7 +338,7 @@ def test_the_conclusion_is_formatted_like_the_rest_of_the_letter():
         patient_name="A B",
         patient_dob="01/01/1980",
         qme_or_ame="QME",
-        lawfirm="Firm",
+        details=ReportDetails(lawfirm="Firm"),
     )
     runs = _paragraph_named(doc, CONCLUSION).runs
     assert runs, "the conclusion paragraph has no runs"
@@ -315,7 +362,7 @@ def test_paragraph_alignment_is_set_on_paragraphs_not_runs():
         patient_name="A B",
         patient_dob="01/01/1980",
         qme_or_ame="QME",
-        lawfirm="Firm",
+        details=ReportDetails(lawfirm="Firm"),
     )
     for sentence in (summary_intro("Firm"), CONCLUSION):
         paragraph = _paragraph_named(doc, sentence)
@@ -337,7 +384,7 @@ def test_both_renderers_agree_that_the_summary_intro_is_bold():
         patient_name="A B",
         patient_dob="01/01/1980",
         qme_or_ame="QME",
-        lawfirm="Firm",
+        details=ReportDetails(lawfirm="Firm"),
     )
     word_is_bold = all(r.bold for r in _paragraph_named(doc, summary_intro("Firm")).runs)
 
@@ -389,7 +436,7 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
         patient_name="Synthetic Patient",
         patient_dob="01/01/1980",
         qme_or_ame="QME",
-        lawfirm="Example Law Firm",
+        details=ReportDetails(lawfirm="Example Law Firm"),
     )
     word_letter = _paragraph_named(doc, intro).alignment
     word_body = doc.tables[0].rows[0].cells[1].paragraphs[0].alignment
@@ -398,7 +445,7 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
 
     # PDF: same distinction, read off the rendered page.
     rendered, _ = linked_pdf._render_summary_pdf(
-        linked_pdf._summary_html(entries, 259, "QME", "Example Law Firm")
+        linked_pdf._summary_html(entries, 259, "QME", ReportDetails(lawfirm="Example Law Firm"))
     )
     # Read the two COLUMNS off the page rather than matching on text: a wrapped body line starts
     # mid-sentence, so a text prefix is luck. The letter sits at the page margin and the table
@@ -445,7 +492,7 @@ def test_the_review_heading_is_the_form_the_human_deliverables_use():
         patient_name="A B",
         patient_dob="01/01/1980",
         qme_or_ame="QME",
-        lawfirm="Firm",
+        details=ReportDetails(lawfirm="Firm"),
     )
     paragraphs = [p.text for p in doc.paragraphs]
     assert REVIEW_HEADING in paragraphs
@@ -459,7 +506,7 @@ def test_both_renderers_use_the_same_review_heading():
         patient_name="A B",
         patient_dob="01/01/1980",
         qme_or_ame="QME",
-        lawfirm="Firm",
+        details=ReportDetails(lawfirm="Firm"),
     )
     assert REVIEW_HEADING in [p.text for p in doc.paragraphs]
     assert html.escape(REVIEW_HEADING) in _pdf_letter(8, "Firm")
@@ -469,7 +516,12 @@ def test_the_title_is_separated_from_the_body_by_a_period_not_a_colon():
     """329 of 329 date-anchored human entries use a period. The Word renderer emitted ": "."""
     assert TITLE_SEPARATOR == ". "
     doc = build_mrr_document(
-        [_entry("01/02/2020", "A REPORT", "body text")], 10, "A B", "01/01/1980", "QME", "Firm"
+        [_entry("01/02/2020", "A REPORT", "body text")],
+        10,
+        "A B",
+        "01/01/1980",
+        "QME",
+        details=ReportDetails(lawfirm="Firm"),
     )
     cell = doc.tables[0].rows[0].cells[1].text
     assert cell.startswith(f"A REPORT{TITLE_SEPARATOR}"), cell
@@ -478,17 +530,25 @@ def test_the_title_is_separated_from_the_body_by_a_period_not_a_colon():
 
 def test_both_renderers_use_the_same_title_separator():
     entries = [_entry("01/02/2020", "A REPORT", "body text")]
-    doc = build_mrr_document(entries, 10, "A B", "01/01/1980", "QME", "Firm")
+    doc = build_mrr_document(
+        entries, 10, "A B", "01/01/1980", "QME", details=ReportDetails(lawfirm="Firm")
+    )
     word_cell = doc.tables[0].rows[0].cells[1].text
     linked_pdf = pytest.importorskip("app.services.linked_pdf")
-    letter = linked_pdf._summary_html(entries, 10, "QME", "Firm")
+    letter = linked_pdf._summary_html(entries, 10, "QME", ReportDetails(lawfirm="Firm"))
     assert word_cell.startswith(f"A REPORT{TITLE_SEPARATOR}")
     assert f"</a>{html.escape(TITLE_SEPARATOR)}" in letter
 
 
 # One entry and one call, so the header tests below read as assertions about the header rather than
 # as six copies of the same six-argument call.
-_ENTRY = [{"summaryDate": "01/02/2026", "summaryTitle": "Report A", "summaryText": "text A"}]
+_ENTRY = [
+    {
+        "summaryDate": "03/14/2026",
+        "summaryTitle": "A REPORT",
+        "summaryText": "**Diagnoses**: Lumbar strain.",
+    }
+]
 
 
 def _build(entries):
@@ -498,7 +558,7 @@ def _build(entries):
         patient_name="Doe, Jane",
         patient_dob="01/10/1961",
         qme_or_ame="QME",
-        lawfirm="Example Law Firm",
+        details=ReportDetails(lawfirm="Example Law Firm"),
     )
 
 
@@ -780,7 +840,7 @@ def test_the_entry_header_is_no_longer_bold_in_the_word_document():
         "Pat",
         "01/01/1980",
         "AME",
-        "Acme LLP",
+        details=ReportDetails(lawfirm="Acme LLP"),
     )
     cells = doc.tables[0].rows[0].cells
     title_runs = [r for r in cells[1].paragraphs[0].runs if "DR. SMITH" in r.text]
@@ -803,7 +863,7 @@ def test_the_delivered_entry_carries_both_tiers():
         "Pat",
         "01/01/1980",
         "AME",
-        "Acme LLP",
+        details=ReportDetails(lawfirm="Acme LLP"),
     )
     runs = doc.tables[0].rows[0].cells[1].paragraphs[0].runs
     by_text = {r.text: (bool(r.bold), bool(r.underline)) for r in runs}
@@ -812,9 +872,217 @@ def test_the_delivered_entry_carries_both_tiers():
     assert by_text[": modified duty."] == (True, False)
 
 
-# ---------------------------------------------------------------------------------------------
-# THE PAGE ACCOUNTING that closes the letter. Both documents the reviewers sent as the house
-# standard end with these sentences and ours ended with none of them - see RecordAccounting.
+def test_each_doctor_gets_their_own_typeface():
+    """The reviewers gave a font per evaluator and the Word document is written in theirs.
+
+    Word only, and that is their decision rather than a limitation we settled for: python-docx
+    writes the font NAME and the reader's Word resolves it, so nothing is installed here. They were
+    asked about the linked PDF - which we render ourselves and which would need the licensed files -
+    and answered that it does not need the font.
+    """
+    assert report_font("Falkinstein") == "Times New Roman"
+    assert report_font("Pelton") == "Tahoma"
+    assert report_font("Ahdoot") == "Bierstadt Display"
+    assert len(DOCTOR_FONTS) == 11
+    assert tuple(DOCTOR_FONTS) == DOCTORS
+
+
+def test_an_unknown_doctor_falls_back_rather_than_failing():
+    """GUARD on a delivered document. The field is free-form on the way in and a name could be
+    retired while records still carry it. A report in the house font is a smaller failure than an
+    export that refuses, so this never raises."""
+    assert report_font(None) == "Times New Roman"
+    assert report_font("") == "Times New Roman"
+    assert report_font("   ") == "Times New Roman"
+    assert report_font("Nobody In The List") == "Times New Roman"
+
+
+def test_a_doctor_name_is_matched_after_trimming():
+    """A value typed with a stray space still finds its font."""
+    assert report_font("  Hekmat  ") == "Arial"
+
+
+def test_the_letter_vocabulary_is_what_the_reviewers_named():
+    """`interrogatory` is the SUPPLEMENTAL request letter and `advocacy` the initial one - their
+    distinction, 2026-09-14. `none` is a real answer: many records arrive with no letter and the
+    opening paragraph then omits the clause rather than leaving a gap."""
+    assert LETTER_TYPES == ("advocacy", "interrogatory", "none")
+    # The article is part of the label: `a defense advocacy letter` but `an interrogatory
+    # letter`. Deriving it would be a rule that happens to work on two values.
+    assert LETTER_LABELS["advocacy"] == "a defense advocacy letter"
+    assert LETTER_LABELS["interrogatory"] == "an interrogatory letter"
+    assert "none" not in LETTER_LABELS
+
+
+def test_the_opening_paragraph_follows_the_format_the_reviewers_supplied():
+    """DEMONSTRATES the whole of request 1, assembled from the fields the header now carries.
+
+    The expected text is their format with the placeholders filled, so this fails if any clause is
+    dropped, reordered or reworded.
+    """
+    text = intro_sentence(
+        241,
+        "Blitstein, Young & Blinder",
+        attorney_name="Mitchell Garrett",
+        letter_type="advocacy",
+        letter_date="08/12/2026",
+        reviewer_name="Jane Roe",
+    )
+    assert text == (
+        "I have received a defense advocacy letter dated 08/12/2026 along with 241 pages of "
+        "medical records from Mitchell Garrett, of Blitstein, Young & Blinder. I have reviewed "
+        "all of the pages received and my opinion is based upon such records. The initial "
+        "organization, outlining, and excerpting of medical records were performed by Jane Roe, "
+        "Trained Medical Record Processor. I personally reviewed the excerpts, the entire "
+        "outline, and the pages that were received, making additional inquiries and examinations "
+        "as necessary to determine the relevant medical issues. "
+        "(California Labor Code \u00a7 4628(b)(c))"
+    )
+
+
+def test_an_interrogatory_letter_takes_the_other_article():
+    """`a defense advocacy letter` but `an interrogatory letter`. The article travels with the label
+    rather than being computed, so a third type added later cannot inherit a wrong rule."""
+    text = intro_sentence(50, "Acme LLP", letter_type="interrogatory")
+    assert "I have received an interrogatory letter along with 50 pages" in text
+
+
+def test_a_letter_with_no_date_still_says_which_letter():
+    """The TYPE is the fact worth stating, and "dated" with nothing after it reads worse
+    than no date at all."""
+    text = intro_sentence(50, "Acme LLP", letter_type="advocacy")
+    assert "a defense advocacy letter along with 50 pages" in text
+    assert "dated" not in text
+
+
+def test_no_letter_is_a_real_answer_and_prints_nothing():
+    """ "none" is how a reviewer says they checked and there was no letter - different from not
+    having been asked, and the paragraph reads as it always did."""
+    text = intro_sentence(50, "Acme LLP", letter_type="none")
+    assert text.startswith("I have received 50 pages of medical records from Acme LLP.")
+    assert "letter" not in text
+
+
+def test_the_attorney_needs_the_firm_to_read_as_intended():
+    """ "from <person>, of <firm>" only works with both. A person alone is named alone rather than
+    shipped with a dangling "of"."""
+    assert "from Mitchell Garrett. " in intro_sentence(8, "", attorney_name="Mitchell Garrett")
+    assert "from Acme LLP. " in intro_sentence(8, "Acme LLP")
+    # The dangling form specifically. A bare `of` check is useless here: the sentence already
+    # says "pages of medical records".
+    assert ", of" not in intro_sentence(8, "", attorney_name="Mitchell Garrett")
+    assert ", of" in intro_sentence(8, "Acme LLP", attorney_name="Mitchell Garrett")
+
+
+def test_the_labor_code_sentences_need_a_named_reviewer():
+    """GUARDS a legal assertion. Those sentences state who performed the record work; emitting them
+    with a blank name is not a guess to make, so no name means no claim."""
+    without = intro_sentence(8, "Acme LLP", letter_type="advocacy")
+    assert "4628" not in without
+    assert "Trained Medical Record Processor" not in without
+
+    with_name = intro_sentence(8, "Acme LLP", reviewer_name="Jane Roe")
+    assert "4628" in with_name
+    assert "performed by Jane Roe, Trained Medical Record Processor." in with_name
+
+
+def test_the_paragraph_is_unchanged_when_no_new_field_is_supplied():
+    """GUARD. Every added clause is conditional, so a record that predates the header fields renders
+    the sentence it always did - apart from the requested wording change above."""
+    assert intro_sentence(241, "Acme LLP") == (
+        "I have received 241 pages of medical records from Acme LLP. I have reviewed all of the "
+        "pages received and my opinion is based upon such records."
+    )
+
+
+def _all_fonts(doc):
+    """Every font name the document actually sets, body and table and page header alike."""
+    names = {r.font.name for p in doc.paragraphs for r in p.runs if r.font.name}
+    names |= {
+        r.font.name
+        for t in doc.tables
+        for row in t.rows
+        for cell in row.cells
+        for p in cell.paragraphs
+        for r in p.runs
+        if r.font.name
+    }
+    names |= {
+        r.font.name
+        for s in doc.sections
+        for hdr in (s.header, s.first_page_header)
+        for p in hdr.paragraphs
+        for r in p.runs
+        if r.font.name
+    }
+    return names
+
+
+def test_the_word_document_is_written_in_the_doctors_typeface():
+    """DEMONSTRATES request 2. EVERY run, not just the letter: the page header, the date column and
+    the summary text all have to move together or the document is two typefaces."""
+    doc = build_mrr_document(
+        _ENTRY,
+        8,
+        "Pat",
+        "01/01/1980",
+        "AME",
+        details=ReportDetails(lawfirm="Acme LLP", doctor="Pelton"),
+    )
+    assert _all_fonts(doc) == {"Tahoma"}
+
+
+def test_an_absent_or_unknown_doctor_keeps_the_house_typeface():
+    """GUARD. Every record that predates the field, and any name not in the eleven."""
+    for doctor in (None, "", "Nobody In The List"):
+        doc = build_mrr_document(
+            _ENTRY,
+            8,
+            "Pat",
+            "01/01/1980",
+            "AME",
+            # Straight through rather than coerced: the export route does the `or ""`, and
+            # `report_font` defends against None anyway, so all three values stay distinct.
+            details=ReportDetails(lawfirm="Acme LLP", doctor=doctor),
+        )
+        assert _all_fonts(doc) == {"Times New Roman"}, doctor
+
+
+def test_both_renderers_open_with_the_same_paragraph():
+    """The letter clause, the sender and the Labor Code sentences are facts about the RECORD, so
+    both artifacts state them. The linked PDF took none of them - it passed no details at all and
+    `build_linked_pdf` had no parameter to take them - so the two deliverables opened differently
+    on every record that named a covering letter. Found on review by @adrian-g.
+
+    Only the FONT is Word-only, and that is the reviewers' own answer ("does not need the font on
+    that one"); this pins the paragraph, which is the half that was never theirs to differ on.
+    """
+    details = ReportDetails(
+        attorney_name="Mitchell Garrett",
+        lawfirm="Acme LLP",
+        letter_type="advocacy",
+        letter_date="08/12/2026",
+        reviewer_name="Jane Roe",
+    )
+    doc = build_mrr_document(
+        [], num_pages=241, patient_name="P", patient_dob="", qme_or_ame="QME", details=details
+    )
+    linked_pdf = pytest.importorskip("app.services.linked_pdf")
+    letter = linked_pdf._summary_html([], 241, "QME", details)
+
+    expected = intro_sentence(
+        241,
+        "Acme LLP",
+        attorney_name="Mitchell Garrett",
+        letter_type="advocacy",
+        letter_date="08/12/2026",
+        reviewer_name="Jane Roe",
+    )
+    assert _intro(doc) == expected
+    assert html.escape(expected) in letter
+    for fragment in ("a defense advocacy letter dated 08/12/2026", "Mitchell Garrett", "4628"):
+        assert fragment in _intro(doc)
+        assert html.escape(fragment) in letter
 
 
 @dataclass
@@ -946,7 +1214,9 @@ def test_the_duplicates_sentence_is_absent_when_there_are_none():
 def test_a_record_with_no_accounting_renders_exactly_as_before():
     """GUARDS the bundle export, which builds a letter from rows chosen by CATEGORY - a sentence
     about the pages RECEIVED would answer a question nobody asked of it, so it passes nothing."""
-    doc = build_mrr_document([], 10, "P", "01/01/1990", "PQME", "Firm")
+    doc = build_mrr_document(
+        [], 10, "P", "01/01/1990", "PQME", details=ReportDetails(lawfirm="Firm")
+    )
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "pages were remarked upon" not in text
     assert CONCLUSION in text
@@ -964,9 +1234,11 @@ def test_both_renderers_close_the_letter_with_the_same_sentences():
         ],
         20,
     )
-    doc = build_mrr_document([], 20, "P", "01/01/1990", "PQME", "Firm", accounting=acc)
+    doc = build_mrr_document(
+        [], 20, "P", "01/01/1990", "PQME", details=ReportDetails(lawfirm="Firm", accounting=acc)
+    )
     word = "\n".join(p.text for p in doc.paragraphs)
-    markup = linked_pdf._summary_html([], 20, "PQME", "Firm", acc)
+    markup = linked_pdf._summary_html([], 20, "PQME", ReportDetails(lawfirm="Firm", accounting=acc))
     plain = html.unescape(re.sub(r"<[^>]+>", "\n", markup))
 
     exclusion, duplicates = accounting_sentences(acc)

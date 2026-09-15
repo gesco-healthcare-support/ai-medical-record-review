@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 # The pinned Gemini flash model: the Vertex default, and the step-down for the title and
 # audit calls. Named once so a version bump is a single edit.
 _GEMINI_FLASH_MODEL = "gemini-2.5-flash"

@@ -18,6 +18,7 @@ from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
 from app.services.ocr import extract_text_from_image
 from app.services.pools import PoolTimeout, drain_pool
+from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,14 @@ def _same_document(pdf_path, prev_row, row):
         response = generate_with_retry(
             get_genai_client(), model=settings.verify_model, contents=contents, config=config
         )
+    except JobCancelled:
+        # NOT a model failure - the reviewer pressed Stop. `generate_with_retry` raises this
+        # out of its backoff sleep as a cooperative signal meant to unwind to _run's handler,
+        # and JobCancelled subclasses Exception, so the broad catch below swallowed it: the
+        # log blamed the model for a deliberate user action, in exactly the place an operator
+        # looks to ask whether Vertex was rejecting calls, and this boundary silently went
+        # unverified. Same fix as `llm_classify`, which is where the shape was first found.
+        raise
     except Exception as exc:
         logger.warning("verify oracle failed at page %s: %s", row["start"], exc)
         return False

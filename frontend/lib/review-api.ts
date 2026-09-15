@@ -106,6 +106,18 @@ export type HeaderFields = {
   patient_last_name: string;
   patient_dob: string;
   law_firm: string;
+  /** The PERSON the records came from; `law_firm` is the company. The delivered sentence
+   *  reads "from <attorney_name>, of <law_firm>" and falls back to the firm alone. */
+  attorney_name: string;
+  /** One of the names the record detail serves in `doctors`. Selects the Word font. */
+  doctor: string;
+  /** "advocacy" | "interrogatory" | "none" - served in `letter_types`. */
+  letter_type: string;
+  letter_date: string;
+  /** The count from the COVER SHEET, which is not the PDF's page count - the reviewers
+   *  attach their own pages before it reaches us. A string because the box can be empty,
+   *  and empty has to mean "nobody said" rather than zero. */
+  pages_received: string;
 };
 
 /** POST /api/documents/{id}/extract-header - re-extract the header from the record (Vertex). Does

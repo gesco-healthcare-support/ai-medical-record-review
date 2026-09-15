@@ -34,6 +34,23 @@ def get_engine() -> Engine:
 
 @lru_cache
 def get_sessionmaker() -> sessionmaker[Session]:
+    """The session factory. Both flags are load-bearing, so neither is a default to tidy away.
+
+    ``expire_on_commit=False`` is what makes the segmentation pools SAFE. A Session is not
+    thread-safe, and the pooled callables are careful about that - `_stored_page_text` opens its
+    own short-lived session inside the worker, and `summarize_row` is handed plain values with
+    the prompts resolved up front. But `_stored_page_text` also CLOSES OVER `document`, an ORM
+    object belonging to the caller's session, and reads `document.id` and `document.stored_path`
+    from the worker thread.
+
+    With expiry on, every commit in the outer thread - and `report()` commits throughout
+    segmentation - would mark those attributes stale, so the next read inside a worker would
+    emit a SELECT on the OUTER session from another thread. That is precisely the concurrent use
+    the pools are written to avoid, and it would appear as an intermittent fault under load
+    rather than as an error anyone could attribute.
+
+    ``autoflush=False`` keeps a read from flushing a half-built object mid-transaction.
+    """
     return sessionmaker(bind=get_engine(), autoflush=False, expire_on_commit=False)
 
 

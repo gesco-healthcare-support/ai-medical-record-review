@@ -43,6 +43,96 @@ REVIEW_HEADING = "MEDICAL RECORD REVIEW"
 TITLE_SEPARATOR = ". "
 _REPORT_FONT = "Times New Roman"
 
+# Each evaluator reads their reports in their own typeface, so the Word document is written
+# in theirs. Supplied by the reviewers 2026-09-14, verbatim except that `Amasis MT Pro medium`
+# is spelled with the capital the font itself carries.
+#
+# WORD ONLY, and that is the reviewers' own decision: python-docx writes the font NAME and the
+# reader's Word resolves it, so nothing has to be installed here. The linked PDF is rendered
+# by us and would need the real font files - five of these are licensed - and they answered
+# that the PDF "does not need the font on that one, the rest of the files are for internal
+# use". So `build_linked_pdf` deliberately does not take a doctor.
+#
+# The single source of truth for BOTH halves: the API serves `DOCTORS` to the dropdown and
+# this module reads the font. Two lists would drift, which is the failure this repo keeps
+# finding.
+DOCTOR_FONTS: dict[str, str] = {
+    "Falkinstein": "Times New Roman",
+    "Pelton": "Tahoma",
+    "Longacre": "Calibri",
+    "Mikhael": "Century Gothic",
+    "Hekmat": "Arial",
+    "Andersen": "Georgia",
+    "Nguyen": "Amasis MT Pro Medium",
+    "Ziv": "Aptos Serif",
+    "Grossman": "Aptos",
+    "Perez": "Abadi",
+    "Ahdoot": "Bierstadt Display",
+}
+
+DOCTORS: tuple[str, ...] = tuple(DOCTOR_FONTS)
+
+
+def report_font(doctor: str | None) -> str:
+    """The typeface for ``doctor``, or the house default for an unknown or absent one.
+
+    Falls back rather than raising: the field is free-form on the way in, a doctor could be
+    removed from the list while records still name them, and a delivered document in the
+    wrong font is a smaller failure than an export that refuses."""
+    return DOCTOR_FONTS.get((doctor or "").strip(), _REPORT_FONT)
+
+
+# The covering letter that arrived WITH the records. `advocacy` is the initial request and
+# `interrogatory` the supplemental one - the reviewers' own distinction, 2026-09-14. `none`
+# is a real answer rather than a missing value: plenty of records arrive with no letter, and
+# the opening paragraph then omits the clause entirely.
+LETTER_TYPES: tuple[str, ...] = ("advocacy", "interrogatory", "none")
+
+# The article travels WITH the label because it changes: `a defense advocacy letter` but
+# `an interrogatory letter`. Computing it from the first letter would be a rule that happens
+# to work on two values and breaks on the third someone adds.
+LETTER_LABELS: dict[str, str] = {
+    "advocacy": "a defense advocacy letter",
+    "interrogatory": "an interrogatory letter",
+}
+
+# The disclosure the reviewers' own reports carry, verbatim from the format they sent. Fixed
+# text: they were asked what goes in the credential slot and answered "Trained Medical Record
+# Processor" - one string for everyone rather than a qualification per person.
+#
+# It names who did the record work, and it cites the statute that requires saying so. The
+# reviewers flagged that this part may still need Patrick and Richard, so it is emitted ONLY
+# when a reviewer name is supplied and is absent by default - a legal assertion with a blank
+# name in it is not something to ship on a guess.
+REVIEWER_CREDENTIAL = "Trained Medical Record Processor"
+
+LABOR_CODE_CITE = "(California Labor Code \u00a7 4628(b)(c))"
+
+
+@dataclass(frozen=True)
+class ReportDetails:
+    """The record-level facts the opening paragraph and the typeface need.
+
+    One object rather than five more parameters because they travel together, arrive from one
+    place - the header a reviewer fills in - and are read by one caller. Every field is
+    optional and empty means absent, so the default instance renders the document exactly as
+    it rendered before any of this existed."""
+
+    doctor: str = ""
+    attorney_name: str = ""
+    # The firm rides here rather than staying a separate parameter, because `_sender_clause`
+    # reads it and `attorney_name` as ONE fact - "from <person>, of <firm>" - and because both
+    # builders are at Sonar's seven-parameter ceiling, which is what blocked the linked PDF from
+    # taking `details` at all.
+    lawfirm: str = ""
+    # The page accounting rides here too, and for the same reason the firm does: S107 caps the
+    # builder at seven parameters. It is the one field NOT typed by a reviewer - it is computed
+    # from their rows - but it is a record-level fact the letter needs, which is what this is for.
+    accounting: "RecordAccounting | None" = None
+    letter_type: str = ""
+    letter_date: str = ""
+    reviewer_name: str = ""
+
 
 def header_lines(patient_name, patient_dob) -> tuple[str, str]:
     """The two identifying lines both renderers put at the top of every page.
@@ -55,25 +145,85 @@ def header_lines(patient_name, patient_dob) -> tuple[str, str]:
     return f"RE: {patient_name}", f"DOB: {patient_dob}"
 
 
-def intro_sentence(num_pages, lawfirm) -> str:
-    """The letter's opening sentence, shared by the Word and linked-PDF renderers.
+def _sender_clause(attorney_name, lawfirm) -> str:
+    """The sender: ` from <person>, of <firm>`, or whichever of the two is known, or nothing.
 
-    The law firm is OPTIONAL - free text on the review page that a reviewer often has no value for.
-    Concatenating it unconditionally shipped "medical records from ." into the delivered document,
-    dangling preposition and orphan full stop, every time the field was blank; seen in a real export
-    on 2026-08-17. So the clause is DROPPED rather than rendered empty - an absent element is left
-    out, the convention the title prompt already applies to a missing author. ""/whitespace/None all
-    count as absent, which is how the value actually arrives from the form.
+    Both are optional free text on the review page, and the clause is DROPPED rather than
+    rendered empty: concatenating the firm unconditionally shipped "medical records from ."
+    into a real export on 2026-08-17, dangling preposition and orphan full stop.
 
-    Returns plain text. The PDF renderer escapes the ASSEMBLED sentence for HTML rather than
-    escaping `lawfirm` before it gets here, so the escape still covers any field added later.
-    """
+    `from <person>, of <firm>` only reads as intended with BOTH, so a person with no firm
+    is named alone rather than shipped with a dangling "of"."""
+    person = (attorney_name or "").strip()
     firm = (lawfirm or "").strip()
-    received_from = f" from {firm}" if firm else ""
+    if person and firm:
+        return f" from {person}, of {firm}"
+    if person or firm:
+        return f" from {person or firm}"
+    return ""
+
+
+def _letter_clause(letter_type, letter_date) -> str:
+    """The covering letter: `a defense advocacy letter dated 08/12/2026 along with `, or nothing.
+
+    A letter with no date still gets its clause, because the TYPE is the fact worth stating
+    and "dated" with nothing after it is worse than no date at all.
+
+    A type with no label prints nothing at all. That covers `none`, which is a real answer
+    rather than a missing value - it is how a reviewer says they checked and there was no
+    letter, which is different from not having been asked."""
+    label = LETTER_LABELS.get((letter_type or "").strip())
+    if not label:
+        return ""
+    date = (letter_date or "").strip()
+    return f"{label} dated {date} along with " if date else f"{label} along with "
+
+
+def intro_sentence(
+    num_pages,
+    lawfirm,
+    *,
+    attorney_name="",
+    letter_type="",
+    letter_date="",
+    reviewer_name="",
+) -> str:
+    """The letter's opening paragraph, shared by the Word and linked-PDF renderers.
+
+    Follows the format the reviewers supplied on 2026-09-14, and every added element is
+    CONDITIONAL - with no keyword arguments this returns what it always returned, so a record
+    that predates the new header fields is unchanged.
+
+    Each clause is dropped rather than rendered empty; `""`/whitespace/None all count as absent,
+    which is how these arrive from the form.
+
+    The two optional clauses are assembled by `_sender_clause` and `_letter_clause`, which
+    carry the rules for dropping each one.
+
+    The Labor Code sentences appear ONLY with a reviewer name. They are a legal assertion about
+    who performed the record work, and emitting one with a blank name in it is not a guess to
+    make - the reviewers flagged that this part may still need Patrick and Richard.
+
+    Returns plain text. The PDF renderer escapes the ASSEMBLED string for HTML rather than
+    escaping the fields before they get here, so the escape still covers any field added later.
+    """
+    received_from = _sender_clause(attorney_name, lawfirm)
+    letter = _letter_clause(letter_type, letter_date)
+
+    opening = (
+        f"I have received {letter}{num_pages} pages of medical records{received_from}. "
+        "I have reviewed all of the pages received and my opinion is based upon such records."
+    )
+
+    reviewer = (reviewer_name or "").strip()
+    if not reviewer:
+        return opening
     return (
-        f"I have received {num_pages} pages of medical records{received_from}. "
-        "I have reviewed all of the pages received and my opinion is based upon such "
-        "received records."
+        f"{opening} The initial organization, outlining, and excerpting of medical records "
+        f"were performed by {reviewer}, {REVIEWER_CREDENTIAL}. I personally reviewed the "
+        "excerpts, the entire outline, and the pages that were received, making additional "
+        "inquiries and examinations as necessary to determine the relevant medical issues. "
+        f"{LABOR_CODE_CITE}"
     )
 
 
@@ -330,30 +480,30 @@ def entry_body_segments(text: str) -> list[tuple[str, bool, bool, bool]]:
     return [s for s in segments if s[0]]
 
 
-def _run(paragraph, s, *, bold=False, italic=False, size=None, underline=False):
+def _run(paragraph, s, *, bold=False, italic=False, size=None, underline=False, font=None):
     run = paragraph.add_run(s)
     run.bold = bold
     run.italic = italic
     run.underline = underline
-    run.font.name = _REPORT_FONT
+    run.font.name = font or _REPORT_FONT
     run.font.size = size or Pt(11)
     return run
 
 
-def _add_inline_runs(paragraph, text, *, bold=False, italic=False):
+def _add_inline_runs(paragraph, text, *, bold=False, italic=False, font=None):
     """Append runs to ``paragraph``, turning **bold** / *italic* / _italic_ markers into real
     formatting; ``bold``/``italic`` set the baseline for the plain segments."""
     pos = 0
     for m in INLINE_EMPHASIS_RE.finditer(text):
         if m.start() > pos:
-            _run(paragraph, text[pos : m.start()], bold=bold, italic=italic)
+            _run(paragraph, text[pos : m.start()], bold=bold, italic=italic, font=font)
         if m.group(1) is not None:
-            _run(paragraph, m.group(1), bold=True, italic=italic)
+            _run(paragraph, m.group(1), bold=True, italic=italic, font=font)
         else:
-            _run(paragraph, m.group(2) or m.group(3), bold=bold, italic=True)
+            _run(paragraph, m.group(2) or m.group(3), bold=bold, italic=True, font=font)
         pos = m.end()
     if pos < len(text):
-        _run(paragraph, text[pos:], bold=bold, italic=italic)
+        _run(paragraph, text[pos:], bold=bold, italic=italic, font=font)
 
 
 def _page_number_field(paragraph) -> None:
@@ -378,7 +528,31 @@ def _page_number_field(paragraph) -> None:
     paragraph._p.append(field)
 
 
-def _fill_header(header, re_line, dob_line, *, numbered: bool) -> None:
+def _letter_paragraph(doc, text, *, bold=False, underline=False, centered=False, font=None):
+    """One styled paragraph of the letter: its whole run formatting decided in one place.
+
+    Five paragraphs each styled their own run with the same six lines, and the copies had
+    already drifted. `nine_title_format = fourth_title.runs[0]` read the WRONG paragraph's
+    run, which cost two visible defects in one name: the conclusion got no formatting at all
+    and shipped in python-docx's default Calibri 11 while every other paragraph is Times New
+    Roman 12, and its `bold = False` UNDID the `bold = True` set on SUMMARY_INTRO thirty lines
+    above - so the .docx and the .pdf disagreed on the formatting of a sentence the client
+    reads. ruff had already found it (F841, a local assigned and never used, which IS the bug)
+    and it was silenced with a noqa rather than fixed. One helper is what stops the sixth
+    paragraph being written by hand.
+
+    `alignment` is a PARAGRAPH property, so it is set on the paragraph and not on the run;
+    assigning it to a run is silently a no-op. Both were done at the two call sites that
+    wanted LEFT, which is also the default - so nothing was visible, but the CENTER one would
+    have failed the same way."""
+    paragraph = doc.add_paragraph("")
+    run = _run(paragraph, text, bold=bold, size=Pt(12), font=font)
+    run.underline = underline
+    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER if centered else WD_PARAGRAPH_ALIGNMENT.LEFT
+    return paragraph
+
+
+def _fill_header(header, re_line, dob_line, *, numbered: bool, font=None) -> None:
     """Write the identifying lines into ``header``, optionally followed by ``Page <n>``.
 
     Writes into the header's EXISTING first paragraph rather than adding one. A new Word header
@@ -392,7 +566,12 @@ def _fill_header(header, re_line, dob_line, *, numbered: bool) -> None:
     # this is already a snapshot and the copy that used to wrap it added nothing.
     for run in paragraph.runs:
         run._element.getparent().remove(run._element)
-    _run(paragraph, f"{re_line}\n{dob_line}" + ("\nPage " if numbered else ""), size=Pt(10))
+    _run(
+        paragraph,
+        f"{re_line}\n{dob_line}" + ("\nPage " if numbered else ""),
+        size=Pt(10),
+        font=font,
+    )
     if numbered:
         _page_number_field(paragraph)
 
@@ -431,15 +610,23 @@ def date_label(entry) -> str:
 
 
 def build_mrr_document(
-    entries, num_pages, patient_name, patient_dob, qme_or_ame, lawfirm, accounting=None
+    entries,
+    num_pages,
+    patient_name,
+    patient_dob,
+    qme_or_ame,
+    *,
+    details: ReportDetails | None = None,
 ):
     """Assemble the MRR Word document from summary ``entries`` (sorted chronologically).
 
-    ``accounting`` is OPTIONAL and defaults to the previous behaviour - no closing
-    page-accounting sentences. The bundle export builds a letter from rows it selected by
-    category rather than from a whole record, where a sentence about the pages RECEIVED
-    would be answering a question nobody asked, so it passes nothing and is unchanged.
-    """
+    ``details`` carries the doctor, the covering letter and the page accounting. Omitted, the
+    document renders exactly as it did before any of those existed - which is what the bundle
+    export wants: it builds a letter from rows selected by CATEGORY rather than from a whole
+    record, where a sentence about the pages RECEIVED would answer a question nobody asked."""
+    details = details or ReportDetails()
+    font = report_font(details.doctor)
+    lawfirm = details.lawfirm
 
     # Undated entries sort LAST, per the reviewers 2026-08-21: "if it is something important we will
     # still summarize it, it can go at the end of the Review as Undated". This was datetime.min -
@@ -457,50 +644,34 @@ def build_mrr_document(
     # same deliverable in two formats and a reviewer reads them side by side.
     section.different_first_page_header_footer = True
     re_line, dob_line = header_lines(patient_name, patient_dob)
-    _fill_header(section.first_page_header, re_line, dob_line, numbered=False)
-    _fill_header(section.header, re_line, dob_line, numbered=True)
+    _fill_header(section.first_page_header, re_line, dob_line, numbered=False, font=font)
+    _fill_header(section.header, re_line, dob_line, numbered=True, font=font)
 
     doc.add_paragraph("")
 
-    # TITLE. An empty paragraph has no runs, so runs[0] below would crash on a blank
-    # QME/AME field (the form allows leaving it empty).
-    title = doc.add_paragraph(qme_or_ame or " ")
-    title_format = title.runs[0]
-    title_format.bold = True
-    title_format.underline = True
-    title_format.font.size = Pt(12)
-    title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-    title_format.font.name = _REPORT_FONT
+    # TITLE. The form allows an empty QME/AME field, and this used to guard a crash:
+    # `title.runs[0]` on a paragraph built from an empty string raises, because an empty
+    # paragraph has no runs. `_letter_paragraph` ADDS the run itself, so that is gone -
+    # measured, not assumed. The fallback is kept only so the emitted document does not
+    # change: both render as a blank line, but one writes a space and one writes nothing.
+    _letter_paragraph(doc, qme_or_ame or " ", bold=True, underline=True, centered=True, font=font)
 
     doc.add_paragraph("")
 
-    second_title = doc.add_paragraph(REVIEW_HEADING)
-    second_title_format = second_title.runs[0]
-    second_title_format.bold = True
-    second_title_format.underline = True
-    second_title_format.font.size = Pt(12)
-    second_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
-    second_title_format.font.name = _REPORT_FONT
-
-    intro_text = intro_sentence(num_pages, lawfirm)
-    second_intro_text = summary_intro(lawfirm)
-    this_concludes_text = CONCLUSION
-
-    third_title = doc.add_paragraph(intro_text)
-    third_title_format = third_title.runs[0]
-    third_title_format.bold = False
-    third_title_format.underline = False
-    third_title_format.font.size = Pt(12)
-    third_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
-    third_title_format.font.name = _REPORT_FONT
-
-    fourth_title = doc.add_paragraph(second_intro_text)
-    fourth_title_format = fourth_title.runs[0]
-    fourth_title_format.bold = True
-    fourth_title_format.underline = False
-    fourth_title_format.font.size = Pt(12)
-    fourth_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
-    fourth_title_format.font.name = _REPORT_FONT
+    _letter_paragraph(doc, REVIEW_HEADING, bold=True, underline=True, font=font)
+    _letter_paragraph(
+        doc,
+        intro_sentence(
+            num_pages,
+            lawfirm,
+            attorney_name=details.attorney_name,
+            letter_type=details.letter_type,
+            letter_date=details.letter_date,
+            reviewer_name=details.reviewer_name,
+        ),
+        font=font,
+    )
+    _letter_paragraph(doc, summary_intro(lawfirm), bold=True, font=font)
 
     # Two-column borderless table: date | title + body. The default "Table Normal" style has no
     # cell borders, matching the canonical MRR summary layout (date sits in its own left column,
@@ -513,56 +684,32 @@ def build_mrr_document(
         cells[1].width = Inches(5.6)
         cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         cells[1].vertical_alignment = WD_ALIGN_VERTICAL.TOP
-        _run(cells[0].paragraphs[0], date_label(entry))
+        _run(cells[0].paragraphs[0], date_label(entry), font=font)
         body = cells[1].paragraphs[0]
         # Justified: the report is read as a finished document, and a ragged right edge on every
         # record is what made the export look like a draft.
         body.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
         # The entry header is PLAIN in the reviewers' own reports - date, author, facility
         # and type read as a sentence rather than a heading. Ours bolded it.
-        _add_inline_runs(body, entry["summaryTitle"])
-        _run(body, TITLE_SEPARATOR)
+        _add_inline_runs(body, entry["summaryTitle"], font=font)
+        _run(body, TITLE_SEPARATOR, font=font)
         for chunk, bold, italic, underline in entry_body_segments(entry["summaryText"]):
-            _run(body, chunk, bold=bold, italic=italic, underline=underline)
+            _run(body, chunk, bold=bold, italic=italic, underline=underline, font=font)
 
     # THE PAGE ACCOUNTING, between the entries and the conclusion - the position both
     # reference documents put it in. Bold, because they bold all three of these sentences
     # while leaving the type list beneath plain; that contrast is the whole of the house
     # style here and rendering the list bold too would lose it.
-    exclusion_text, duplicates_text = accounting_sentences(accounting)
+    exclusion_text, duplicates_text = accounting_sentences(details.accounting)
     if exclusion_text:
-        exclusion = doc.add_paragraph()
-        exclusion.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
-        _run(exclusion, exclusion_text, bold=True, size=Pt(12))
-        for document_type in accounting.excluded_types:
-            item = doc.add_paragraph()
-            item.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
-            _run(item, document_type, size=Pt(12))
+        _letter_paragraph(doc, exclusion_text, bold=True, font=font)
+        for document_type in details.accounting.excluded_types:
+            _letter_paragraph(doc, document_type, font=font)
     if duplicates_text:
-        duplicates = doc.add_paragraph()
-        duplicates.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
-        _run(duplicates, duplicates_text, bold=True, size=Pt(12))
+        _letter_paragraph(doc, duplicates_text, bold=True, font=font)
 
-    # `nine_title_format` read `fourth_title.runs[0]` - the SUMMARY_INTRO paragraph's run, not this
-    # one. Two visible defects in the delivered .docx from one wrong name: the conclusion got no
-    # formatting at all and shipped in python-docx's default Calibri 11 while every other paragraph
-    # is Times New Roman 12, and `bold = False` here UNDID the `bold = True` set on SUMMARY_INTRO
-    # thirty lines above. `linked_pdf` renders that sentence with `font-weight:bold`, so the .docx and
-    # the .pdf disagreed on the formatting of a sentence the client reads - the same drift this
-    # module's docstring records for the sentence TEXT, one layer down.
-    #
-    # ruff had already found it: `nine_title` was assigned and never used (F841), which is exactly
-    # the bug, and the warning was silenced with a noqa rather than fixed.
-    #
-    # `alignment` is a PARAGRAPH property, so it is set on the paragraph here and on `fourth_title`
-    # above. Assigning it to a run is silently a no-op; both wanted LEFT, which is also the default,
-    # so nothing was visible - but the next paragraph wanting CENTER would fail the same way.
-    nine_title = doc.add_paragraph(this_concludes_text)
-    nine_title_format = nine_title.runs[0]
-    nine_title_format.bold = False
-    nine_title_format.underline = False
-    nine_title_format.font.size = Pt(12)
-    nine_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
-    nine_title_format.font.name = _REPORT_FONT
+    # This paragraph is why `_letter_paragraph` exists - it used to style the WRONG run, and
+    # the helper's docstring records what that cost.
+    _letter_paragraph(doc, CONCLUSION, font=font)
 
     return doc

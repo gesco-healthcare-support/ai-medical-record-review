@@ -79,6 +79,11 @@ export type DocumentListItem = {
   patient_name: string;
   patient_dob: string;
   law_firm: string;
+  attorney_name?: string;
+  doctor?: string;
+  letter_type?: string;
+  letter_date?: string;
+  pages_received?: number | string;
 };
 
 /** A sub-document row in the review editor (ReviewRow.as_row()). */
@@ -209,6 +214,15 @@ export type DocumentDetail = {
   patient_name: string;
   patient_dob: string;
   law_firm: string;
+  attorney_name?: string;
+  doctor?: string;
+  letter_type?: string;
+  letter_date?: string;
+  pages_received?: number | string;
   rows: Row[];
   categories: CategoryOption[];
+  /** Served with the record so the dropdown and the Word renderer read ONE list - the
+   *  backend owns it (reporting.DOCTOR_FONTS) and nothing here keeps a copy. */
+  doctors?: string[];
+  letter_types?: string[];
 };
