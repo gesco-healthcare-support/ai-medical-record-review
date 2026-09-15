@@ -1762,7 +1762,7 @@ def _bundle_cover(session: Session, document: Document, spec, rows) -> bytes | N
     if not heading:
         return None
     entries = bundles.cover_entries(rows, _delivered_entries(session, document))
-    if not any(any(field for field in entry) for entry in entries):
+    if not any(any(entry) for entry in entries):
         # Every cell empty - an unsummarized record with untitled, undated rows. A bordered
         # table of blanks in front of the documents is worse than no cover page.
         return None
