@@ -1020,6 +1020,43 @@ class Settings(BaseSettings):
             "audit": self.audit_model,
         }[kind]
 
+    def model_for_stage(self, stage: str) -> str:
+        """The model answering one NON-summarize stage, resolved for the backend that will answer.
+
+        A METHOD, not a field default, and that distinction is the whole design. `genai_model` is
+        read by FOUR stages - segment, extract, doi and deposition - so rewriting it because
+        `extract` moved to the pod would drag the other three there too, silently, and none of them
+        crosses the provider seam yet. `_apply_vllm_call_defaults` may rewrite the summarize triple
+        only because those three keys serve exactly one stage; nothing else here has that property.
+
+        SUMMARIZE IS DELIBERATELY REFUSED. It resolves THREE models - body, title and audit, via
+        `model_for(kind)`, read once and persisted on the Job. Returning one of them from a function
+        named "the model for this stage" would invite a caller to use it for all three and quietly
+        collapse the tiering.
+
+        Gemini keeps today's per-stage settings exactly, so that path cannot regress. OpenAI is not
+        expressible for these stages: `_validate_openai_provider` requires only the summarize triple,
+        so an override sending `classify` to OpenAI would fall through to a Gemini name below. That
+        is unreachable today - the sole OpenAI path is `summary_provider`, which is summarize-only -
+        and closing it needs per-stage keys, which is a change of its own rather than a line here.
+        """
+        if stage not in _LLM_STAGES:
+            raise KeyError(f"unknown stage {stage!r}; expected one of {list(_LLM_STAGES)}")
+        if stage == "summarize":
+            raise KeyError("summarize resolves three models; use model_for(kind)")
+        if self.backend_for(stage) == "vllm":
+            # One process serves one model, so every stage routed there asks for the same name.
+            return self.vllm_model
+        return {
+            "segment": self.genai_model,
+            "extract": self.genai_model,
+            "dedup": self.classify_model,
+            "classify": self.classify_model,
+            "verify": self.verify_model,
+            "doi": self.genai_model,
+            "deposition": self.genai_model,
+        }[stage]
+
 
 @lru_cache
 def get_settings() -> Settings:
