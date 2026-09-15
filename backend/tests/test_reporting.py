@@ -1553,3 +1553,61 @@ def test_the_memo_and_the_letter_open_with_the_same_two_clauses():
     )
     assert memo == f"We have received {clauses}."
     assert letter.startswith(f"I have received {clauses}.")
+
+
+def _typo_rows():
+    """185 pages marked up, 59 excluded, in a file of 244."""
+    return [_Row(1, 185, True, "x"), _Row(186, 244, False, "cover letter")]
+
+
+def test_a_mistyped_cover_sheet_figure_does_not_blank_the_closing_sentences():
+    """DEMONSTRATES the defect @adrian-g found. `pages_received` became the accounting
+    denominator in this PR, and #306's guard goes silent when the rows cover more than it states -
+    so `24` typed for `241` removed the closing accounting from the Word letter, the linked PDF
+    AND the memo, with nothing on screen saying why.
+
+    A figure smaller than the pages that were marked up cannot be right and the file's own length
+    is not in doubt, so the accounting counts the file instead."""
+    for typo in (24, 2, 1):
+        exclusion, _ = accounting_sentences(
+            record_accounting(_typo_rows(), typo, pages_on_file=244)
+        )
+        assert exclusion.startswith("Of the 244 pages received, exactly 185"), typo
+
+
+def test_rows_covering_more_than_the_file_still_ship_nothing():
+    """GUARD, and the distinction the fix rests on: rows exceeding the typed figure is a data
+    entry slip, rows exceeding the FILE is the arithmetic impossibility #306 added the guard for.
+    That one still goes quiet."""
+    assert accounting_sentences(
+        record_accounting([_Row(1, 300, True, "x")], 241, pages_on_file=244)
+    ) == ("", "")
+
+
+def test_a_cover_sheet_figure_larger_than_the_file_is_left_visible():
+    """Deliberately NOT clamped. A figure too LARGE prints "Of the 2410 pages received", which a
+    reviewer notices; clamping it to the file's length would hide the same typo the other
+    direction makes invisible. The memo's own sentence reports the gap either way."""
+    exclusion, _ = accounting_sentences(record_accounting(_typo_rows(), 2410, pages_on_file=244))
+    assert exclusion.startswith("Of the 2410 pages received")
+
+
+def test_the_memo_never_claims_zero_pages():
+    """DEMONSTRATES the second finding. `_record_accounting` returns None for a record with no
+    rows, and the memo route reaches that BY DESIGN - it has no 409 because a record still being
+    worked has a memo. The opening read `0` and could sit three lines above "The cover sheet
+    states 241 pages", two sentences contradicting each other on one page."""
+    assert memo_opening(None, MemoDetails(lawfirm="Acme LLP", pages_stated=241)) == (
+        "We have received 241 pages of medical records from Acme LLP."
+    )
+    assert memo_opening(None, MemoDetails(lawfirm="Acme LLP", pages_on_file=244)) == (
+        "We have received 244 pages of medical records from Acme LLP."
+    )
+
+
+def test_with_no_count_at_all_the_memo_drops_the_clause():
+    """GUARD: rather than printing a number nobody supplied. The same convention every other
+    clause in this sentence follows."""
+    assert memo_opening(None, MemoDetails(lawfirm="Acme LLP")) == (
+        "We have received medical records from Acme LLP."
+    )

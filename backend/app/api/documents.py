@@ -1845,19 +1845,11 @@ def _bundle_members(session: Session, document: Document, specs) -> list[tuple[s
 
 
 def _memo_filename(document: Document) -> str:
-    """Lastname_Firstname_Medical_Records_memo.docx, matching the two exports beside it."""
-    parts = [
-        p.strip()
-        for p in (document.patient_last_name, document.patient_first_name)
-        if (p or "").strip()
-    ]
-    if parts:
-        base = "_".join([*parts, "Medical_Records_memo"])
-    else:
-        stem = os.path.splitext(os.path.basename(document.original_filename or "record"))[0]
-        base = f"{stem}_memo"
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_") or "memo"
-    return f"{safe}.docx"
+    # Delegates like the other three. It wrote all nine lines out again, which is the very
+    # duplication `_deliverable_filename`'s docstring was added to stop - @adrian-g, on review.
+    # `fallback="memo"` preserves both REACHABLE behaviours exactly; the branch where they
+    # differ needs `original_filename` to be absent, and that column is NOT NULL.
+    return _deliverable_filename(document, "memo", "docx", fallback="memo")
 
 
 def _matched_rows(session: Session, document: Document, categories):
@@ -1901,7 +1893,13 @@ def _record_accounting(session: Session, document: Document):
     ).all()
     if not rows:
         return None
-    return record_accounting(rows, document.pages_received or document.page_count)
+    return record_accounting(
+        rows,
+        document.pages_received or document.page_count,
+        # The file's own length, so a mistyped cover-sheet figure cannot blank the closing
+        # sentences of three deliverables - see `record_accounting`.
+        pages_on_file=document.page_count,
+    )
 
 
 @router.post(

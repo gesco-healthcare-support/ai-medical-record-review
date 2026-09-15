@@ -277,8 +277,29 @@ def _row_pages(row) -> int:
     return max(0, (row.end or 0) - (row.start or 0) + 1)
 
 
-def record_accounting(rows, pages_received: int) -> RecordAccounting:
+def record_accounting(
+    rows, pages_received: int, pages_on_file: int | None = None
+) -> RecordAccounting:
     """Partition the reviewer's rows into remarked / other / duplicate.
+
+    ``pages_on_file`` is the PDF's own length, and it is here to tell a DATA-ENTRY SLIP apart
+    from an arithmetic impossibility - @adrian-g, on review, and he is right that the two deserve
+    different treatment.
+
+    `pages_received` became a typed field the moment the letter started counting against it, and
+    `accounting_sentences` goes silent when the rows cover more than it states. So `24` typed for
+    `241` removed the closing accounting from the Word letter, the linked PDF AND the memo, with
+    nothing on screen saying why.
+
+    A stated figure SMALLER than the pages the reviewer marked up cannot be right, and the file's
+    own length is not in doubt - so when the rows fit inside the file but not inside the typed
+    number, the typed number is the suspect and the accounting counts the file instead. Rows
+    covering more than the FILE is the genuine impossibility #306 added the guard for, and that
+    still goes quiet.
+
+    Nothing is hidden by this: the memo's own sentence still reports the cover sheet against the
+    file, so a transposed digit now reads "states 24 pages and the file received contains 244 -
+    220 fewer than stated" instead of blanking three documents.
 
     Takes ORM rows rather than `as_row()` dicts deliberately: `ROW_FIELDS` carries neither
     `include` nor the duplicate columns, which is the same omission #258 had to work around,
@@ -327,8 +348,14 @@ def record_accounting(rows, pages_received: int) -> RecordAccounting:
         seen.setdefault(title.casefold(), None)
         seen[title.casefold()] = seen[title.casefold()] or title
     ordered = tuple(dict.fromkeys(v for v in seen.values() if v))
+    received = max(0, pages_received or 0)
+    on_file = max(0, pages_on_file or 0)
+    if on_file and received < remarked + duplicate <= on_file:
+        # The typed figure is smaller than the pages that were marked up, and the file is not -
+        # so the figure is a slip, not the arithmetic. See the note above.
+        received = on_file
     return RecordAccounting(
-        pages_received=max(0, pages_received or 0),
+        pages_received=received,
         pages_remarked=remarked,
         excluded_types=ordered,
         duplicate_pages=duplicate,
@@ -474,11 +501,24 @@ def memo_opening(accounting, details: MemoDetails) -> str:
     the drift that cost #158 and #162, and reusing both is what stops it.
 
     Every clause is dropped when its field is empty, so this reads correctly on a record where
-    only the page count is known."""
-    pages = accounting.pages_received if accounting else 0
+    only the page count is known.
+
+    THE COUNT CLAUSE IS ONE OF THOSE CLAUSES, and it was not - @adrian-g, on review. This read
+    `accounting.pages_received if accounting else 0`, and `_record_accounting` returns None for a
+    record with no rows, which the memo route reaches BY DESIGN: it has no 409 because a record
+    still being worked has a memo. So a memo could open "We have received 0 pages of medical
+    records." and then, three lines down, "The cover sheet states 241 pages" - two sentences on
+    one page contradicting each other.
+
+    So the count falls back the way everything else here does: the accounting, then the cover
+    sheet, then the file, and with none of the three the clause is dropped rather than printing a
+    number nobody supplied."""
+    pages = (accounting.pages_received if accounting else 0) or details.pages_stated
+    pages = pages or details.pages_on_file
     letter = _letter_clause(details.letter_type, details.letter_date)
     sender = _sender_clause(details.attorney_name, details.lawfirm)
-    return f"We have received {letter}{pages} pages of medical records{sender}."
+    counted = f"{pages} pages of " if pages else ""
+    return f"We have received {letter}{counted}medical records{sender}."
 
 
 def memo_header_lines(details: MemoDetails) -> list[tuple[str, str]]:
