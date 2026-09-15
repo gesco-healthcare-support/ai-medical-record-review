@@ -406,6 +406,45 @@ async def test_summarize_proceeds_once_a_current_check_exists(authed):
     assert resp.status_code == 200, resp.text
 
 
+async def test_the_summarize_route_stamps_the_backend_resolved_model(authed, monkeypatch):
+    """WHEN a summarize job is enqueued, THE SYSTEM SHALL stamp the model resolved for the backend
+    that will answer it - `model_for("body")` - and never `summary_model`.
+
+    The two hold the SAME string on Gemini, which is why reverting this route would look harmless
+    locally and fail only against a pod. `config._derive` defaults `summary_model` to a Gemini name
+    for EVERY backend, so a route reading it sent that name to vLLM and 404'd on the first call.
+    The config tests pin the resolver; only a test driving the ROUTE sees a call site regress.
+
+    The sentinel is patched onto `summary_body_model` rather than flipping `llm_backend`, and that
+    is load-bearing: `_apply_vllm_call_defaults` runs in `_derive` at CONSTRUCTION, so setting the
+    backend on a built Settings re-resolves nothing and the triple keeps its Gemini names. Measured,
+    not assumed - a test written that way passes while exercising none of this.
+    """
+    from tests.conftest import lanes
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "summary_body_model", "served-by-the-pod/model")
+    # Control: the two must differ, or the assertion cannot tell which setting was read.
+    assert settings.summary_model != "served-by-the-pod/model"
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _rows_ready(client, doc_id)
+    _completed_dedup(doc_id)
+    queue = lanes("summarize")
+    queue.empty()
+    try:
+        resp = await client.post(f"/api/documents/{doc_id}/summarize/start", json={})
+        assert resp.status_code == 200, resp.text
+        with get_sessionmaker()() as session:
+            job = session.scalars(
+                select(Job).where(Job.document_id == doc_id, Job.kind == "summarize")
+            ).one()
+            assert job.model == "served-by-the-pod/model"
+    finally:
+        queue.empty()
+
+
 async def test_a_reviewer_can_skip_the_check_and_the_choice_is_recorded(authed):
     """The gate is SOFT by design: skipping is allowed, but it must be a decision with a trace.
 

@@ -391,3 +391,69 @@ def test_the_destination_check_is_production_only(monkeypatch):
         VLLM_MODEL="Qwen/Qwen3.6-35B-A3B-FP8",
     )
     assert settings.backend_for("summarize") == "vllm"
+
+
+# --- which model the summarize stage resolves to, per backend ---------------------------------------
+#
+# Until 2026-09-15 the vllm path left the summarize triple EMPTY, under a note crediting the wiring
+# to T5/T6 - but T5 grew the Protocol and T6 passed `stage`, so no task ever resolved a model here.
+# The name that actually reached the pod was `summary_model`, which `_derive` defaults to a Gemini
+# name for EVERY backend and which four call sites passed explicitly.
+
+
+_SERVED = "Qwen/Qwen3.6-35B-A3B-FP8"
+
+
+def test_a_vllm_summarize_stage_resolves_every_call_to_the_served_model(monkeypatch):
+    # WHEN summarize resolves to vllm, THE SYSTEM SHALL answer model_for with VLLM_MODEL for all
+    # three call types. A vLLM process serves exactly ONE model, so there is no tiering to express.
+    settings = _settings(monkeypatch, LLM_BACKEND="vllm", **_VLLM)
+    assert settings.model_for("body") == _SERVED
+    assert settings.model_for("title") == _SERVED
+    assert settings.model_for("audit") == _SERVED
+
+
+def test_no_resolved_summarize_model_is_a_gemini_name_on_the_vllm_path(monkeypatch):
+    # `summary_model` KEEPS its Gemini default here - it is set for every backend - so pinning it
+    # alongside records WHY the call sites had to stop reading it.
+    #
+    # NON-EMPTY IS ASSERTED TOO, and that is not belt-and-braces. Written as a bare "not a gemini
+    # name", this test PASSED with the resolver deleted: the triple then holds "", and
+    # "".startswith("gemini") is False - so it was satisfied by the very broken state it exists to
+    # catch. Found by mutating the resolver, never by reading it.
+    settings = _settings(monkeypatch, LLM_BACKEND="vllm", **_VLLM)
+    assert settings.summary_model.startswith("gemini"), "control: the Gemini default still exists"
+    resolved = {kind: settings.model_for(kind) for kind in ("body", "title", "audit")}
+    assert all(resolved.values()), f"a resolved summarize model is empty: {resolved}"
+    assert not [kind for kind, name in resolved.items() if name.startswith("gemini")], resolved
+
+
+def test_an_explicitly_configured_key_still_wins_on_the_vllm_path(monkeypatch):
+    # Matching the Gemini branch: an operator setting the key has said something deliberate, and a
+    # SECOND server can serve a second model even though one process cannot.
+    settings = _settings(
+        monkeypatch, LLM_BACKEND="vllm", SUMMARY_TITLE_MODEL="second-server/model", **_VLLM
+    )
+    assert settings.model_for("title") == "second-server/model"
+    assert settings.model_for("body") == _SERVED
+
+
+def test_a_stage_override_decides_the_summarize_models_not_the_global_backend(monkeypatch):
+    # One per-stage override is enough to move summarize to the pod while the global setting still
+    # reads gemini - the same fail-open shape resolved_backends() exists to close for the guards.
+    settings = _settings(
+        monkeypatch, LLM_BACKEND="gemini", LLM_BACKEND_OVERRIDES="summarize=vllm", **_VLLM
+    )
+    assert settings.model_for("body") == _SERVED
+
+
+def test_summarize_held_on_gemini_keeps_the_gemini_tiering(monkeypatch):
+    # The mirror, and the one that catches an OVER-broad fix: keying the resolver on
+    # resolved_backends() rather than backend_for("summarize") would pass every test above and fail
+    # this one, having pointed a Gemini-served stage at the pod's model.
+    settings = _settings(
+        monkeypatch, LLM_BACKEND="vllm", LLM_BACKEND_OVERRIDES="summarize=gemini", **_VLLM
+    )
+    assert settings.model_for("body") == "gemini-3.5-flash"
+    assert settings.model_for("title") == "gemini-2.5-flash"
+    assert settings.model_for("audit") == "gemini-2.5-flash"

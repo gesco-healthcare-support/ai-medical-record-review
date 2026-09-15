@@ -776,12 +776,16 @@ class Settings(BaseSettings):
         self.summary_provider = (self.summary_provider or "gemini").strip().lower()
         self.llm_backend = (self.llm_backend or "gemini").strip().lower()
         # Order matters, and it is stricter than before. The two vendor names are normalised directly
-        # above and the override string is parsed next; all THREE helpers below branch on the result,
+        # above and the override string is parsed next; all FOUR helpers below branch on the result,
         # so none may run before that.
         self._validate_backend_selection()
         self._apply_gemini_call_defaults()
         self._validate_openai_provider()
         self._validate_vllm_backend()
+        # LAST, and that is load-bearing: it reads `vllm_model`, which the validation directly above
+        # is what guarantees is non-empty. Run earlier it would happily pin the summarize triple to
+        # "" and turn a loud refusal-to-boot into three empty model names at call time.
+        self._apply_vllm_call_defaults()
         return self
 
     def _apply_gemini_call_defaults(self) -> None:
@@ -793,9 +797,11 @@ class Settings(BaseSettings):
         would produce three 404s on the first call rather than a working default. Inheriting is only
         safe for a vendor that serves the whole Gemini catalogue, which is to say for Gemini.
 
-        NOTE for the stages that follow: when the summarize stage resolves to vllm these keys stay
-        empty on purpose, and `_validate_vllm_backend` is what guarantees VLLM_MODEL is set instead.
-        Wiring that model into the summarize call sites is T5/T6; no call site routes to vllm yet.
+        The vllm path is resolved by `_apply_vllm_call_defaults` below rather than left empty. It WAS
+        left empty here, under a note crediting the wiring to "T5/T6" - but T5 grew the Protocol and
+        T6 passed `stage`, so neither resolved a model and no task ever did. The gap was not visible
+        from this function, because the name that leaked was `summary_model`, defaulted in `_derive`
+        OUTSIDE this Gemini-only branch.
         """
         if self.summary_provider == "openai" or self.backend_for("summarize") != "gemini":
             return
@@ -817,6 +823,30 @@ class Settings(BaseSettings):
         self.summary_body_fallback_model = (
             "" if _fb.lower() in ("none", "off") else (_fb or "gemini-3.5-flash")
         )
+
+    def _apply_vllm_call_defaults(self) -> None:
+        """Point the summarize triple at the one model a vLLM server actually serves.
+
+        No per-call-type tiering to express here, unlike Gemini: a vLLM process serves exactly ONE
+        model, so body, title and audit all resolve to the same name. That is the same fact that
+        makes inheriting the Gemini triple wrong rather than merely untidy.
+
+        WHY THIS EXISTS. Until 2026-09-15 these keys were left empty on the vllm path and nothing
+        filled them, so `LLM_BACKEND=vllm` reached the pod with a GEMINI model name and 404'd on the
+        first call. The name did not come from the empty keys - it came from `summary_model`, which
+        `_derive` defaults to "gemini-3.5-flash" for every backend, and which four call sites passed
+        explicitly (api/admin.py, api/documents.py x3). Those now ask `model_for("body")`, which is
+        what makes this function reachable at all; setting the triple alone would have fixed nothing.
+
+        An explicitly configured key still wins, matching the Gemini branch: an operator who sets
+        SUMMARY_TITLE_MODEL has said something deliberate, and a second server can serve a second
+        model even though one process cannot.
+        """
+        if self.backend_for("summarize") != "vllm":
+            return
+        self.summary_body_model = self.summary_body_model or self.vllm_model
+        self.summary_title_model = self.summary_title_model or self.vllm_model
+        self.audit_model = self.audit_model or self.vllm_model
 
     def _validate_openai_provider(self) -> None:
         """Refuse to start an OpenAI-backed deployment that is missing a key, a model, or ZDR.

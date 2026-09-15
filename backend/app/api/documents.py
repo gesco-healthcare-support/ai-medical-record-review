@@ -1243,7 +1243,9 @@ def summarize_start(
         # starts from a clean slate.
         session.execute(delete(Summary).where(Summary.document_id == document.id))
         session.commit()
-    model = payload.model or get_settings().summary_model
+    # `model_for("body")`, never `summary_model` - see config._apply_vllm_call_defaults. The two
+    # agree on Gemini and diverge on every other backend. A caller-supplied model still wins.
+    model = payload.model or get_settings().model_for("body")
     try:
         enqueue(
             session,
@@ -1446,7 +1448,9 @@ def resummarize(
         }
     )
 
-    model = (payload.model if payload else None) or get_settings().summary_model
+    # Same resolver as the summarize route, and this path needs it MORE: it calls summarize_row
+    # directly, so there is no Job carrying a model resolved at creation time.
+    model = (payload.model if payload else None) or get_settings().model_for("body")
     prompt = catalog.get_prompt(session, "summary", str(row["category"]))
     # E-08 document-set context: the record's OTHER standalone diagnostic studies, so a document
     # carrying a records review does not restate a study summarized in its own right elsewhere. Only
@@ -1938,7 +1942,9 @@ def bundle_summarize(
                 "use the main Summaries flow for a record this large"
             ),
         )
-    model = payload.model or get_settings().summary_model
+    # Same resolver again. `bundle_summary_entries` defaults `model=None`, which summarize_row
+    # would have resolved correctly on its own - passing `summary_model` is what defeated that.
+    model = payload.model or get_settings().model_for("body")
     try:
         entries = bundles.bundle_summary_entries(
             document.stored_path,
