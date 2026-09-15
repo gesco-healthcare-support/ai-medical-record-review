@@ -13,6 +13,7 @@ match the source schema.
 
 from datetime import UTC, datetime
 
+from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyBaseAccessTokenTable
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -28,7 +29,6 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyBaseAccessTokenTable
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from app.db import Base

@@ -16,10 +16,10 @@ from app.services.reporting import (
     LETTER_LABELS,
     LETTER_TYPES,
     REVIEW_HEADING,
-    ReportDetails,
     SUMMARY_INTRO,
     TITLE_SEPARATOR,
     UNDATED_LABEL,
+    ReportDetails,
     build_mrr_document,
     date_label,
     intro_sentence,
@@ -538,7 +538,13 @@ def test_both_renderers_use_the_same_title_separator():
 
 # One entry and one call, so the header tests below read as assertions about the header rather than
 # as six copies of the same six-argument call.
-_ENTRY = [{"summaryDate": "01/02/2026", "summaryTitle": "Report A", "summaryText": "text A"}]
+_ENTRY = [
+    {
+        "summaryDate": "03/14/2026",
+        "summaryTitle": "A REPORT",
+        "summaryText": "**Diagnoses**: Lumbar strain.",
+    }
+]
 
 
 def _build(entries):
@@ -715,41 +721,151 @@ def test_emphasis_does_not_cross_a_line_break():
 
 
 def test_both_document_renderers_read_one_definition():
-    """The Word and linked-PDF renderers share the pattern object rather than each compiling one.
+    """The Word and linked-PDF renderers share the emphasis DECISION, not merely a pattern.
 
-    They are the same file pair that diverged on the heading and separator (#158) and on the
-    letter's alignment (#268); a third private copy is how it would happen again. Identity, not
-    equality - two `re.compile` calls on the same source would satisfy an equality check and still
-    be two things to edit.
-    """
+    They are the same file pair that diverged on the heading and separator (#158) and on
+    the letter's alignment (#268); a third private copy is how it would happen again.
+    Identity, not equality - two definitions of the same rule would satisfy an equality
+    check and still be two things to edit.
+
+    This used to pin the shared regex. It now pins the whole parser, which is strictly
+    more: the pattern only said where the markers are, while `entry_body_segments` decides
+    which tier each one is in, and THAT is what the two renderers must not disagree on."""
     from app.services import linked_pdf, reporting
 
-    assert linked_pdf.INLINE_EMPHASIS_RE is reporting.INLINE_EMPHASIS_RE
+    assert linked_pdf.entry_body_segments is reporting.entry_body_segments
+
+
+def _pdf_tagged(html_out: str, tag: str) -> list[str]:
+    """The text inside every <tag> of `html_out`, with any nested tags stripped."""
+    inner = re.findall(rf"<{tag}>(.*?)</{tag}>", html_out, re.DOTALL)
+    return [re.sub(r"<[^>]+>", "", x) for x in inner]
 
 
 def test_the_two_renderers_emphasise_the_same_spans():
-    """Same input, same emphasised text out of both - the invariant the shared pattern exists for.
+    """Same input, same emphasis out of both - the invariant the shared parser exists for.
 
-    Compares what each renderer EMITS rather than the pattern they hold, so a future change to
-    either one's own parsing loop is caught too.
-    """
+    Compares what each renderer EMITS rather than the parser they hold, so a change to
+    either one's own loop is caught too. Now covers UNDERLINE as well, because that is the
+    tier distinction their own format turns on."""
     import docx
 
     from app.services.linked_pdf import _inline_html
-    from app.services.reporting import _add_inline_runs
+    from app.services.reporting import _run, entry_body_segments
 
     body = "* one\n* two\n**real bold** here\n_and italic_"
 
     paragraph = docx.Document().add_paragraph()
-    _add_inline_runs(paragraph, body)
-    word_emphasised = [r.text for r in paragraph.runs if r.bold or r.italic]
-
+    for chunk, bold, italic, underline in entry_body_segments(body):
+        _run(paragraph, chunk, bold=bold, italic=italic, underline=underline)
     html_out = _inline_html(body)
-    pdf_emphasised = re.findall(r"<[bi]>(.*?)</[bi]>", html_out, re.DOTALL)
 
-    assert word_emphasised == pdf_emphasised == ["real bold", "and italic"]
+    for flag, tag in (("bold", "b"), ("italic", "i"), ("underline", "u")):
+        word = [r.text for r in paragraph.runs if getattr(r, flag)]
+        assert word == _pdf_tagged(html_out, tag), flag
+
+    # `real bold` is not a KEY label, so it is underlined rather than bold.
+    assert [r.text for r in paragraph.runs if r.underline] == ["real bold"]
+    assert [r.text for r in paragraph.runs if r.italic] == ["and italic"]
     # The bullets survive as literal text in both, rather than becoming one italic block.
     assert "<i>one\n* two\n" not in html_out
+
+
+def test_a_key_label_is_bold_and_underlined_and_carries_its_text():
+    """DEMONSTRATES the reviewers' first tier: what was FOUND and what HAPPENS NEXT is emphasised
+    whole, so the label is bold + underlined and the sentence after it is bold too."""
+    from app.services.reporting import entry_body_segments
+
+    segs = entry_body_segments("**Diagnoses**: Lumbar strain. **Treatment Plan**: PT weekly.")
+    assert segs == [
+        ("Diagnoses", True, False, True),
+        (": Lumbar strain. ", True, False, False),
+        ("Treatment Plan", True, False, True),
+        (": PT weekly.", True, False, False),
+    ]
+
+
+def test_an_ordinary_label_is_underlined_only_and_its_text_stays_plain():
+    """DEMONSTRATES the second tier, and that the bold does not leak past the next label - which is
+    the whole reason the parser tracks a carry rather than a single flag."""
+    from app.services.reporting import entry_body_segments
+
+    segs = entry_body_segments(
+        "**Diagnoses**: strain. **Physical Examination**: tender. **DOI**: 03/14/2026"
+    )
+    assert segs == [
+        ("Diagnoses", True, False, True),
+        (": strain. ", True, False, False),
+        ("Physical Examination", False, False, True),
+        (": tender. ", False, False, False),
+        ("DOI", False, False, True),
+        (": 03/14/2026", False, False, False),
+    ]
+
+
+def test_a_label_is_matched_however_it_is_spelled():
+    """Ours are not spelled consistently - `Diagnosis` beside `Diagnoses`, a trailing colon
+    optional, case varying - and all of those are the same tier."""
+    from app.services.reporting import entry_body_segments
+
+    for written in ("Diagnosis", "DIAGNOSES", "  Treatment Plan:  ", "work status"):
+        segs = entry_body_segments(f"**{written}** x")
+        assert segs[0][1] is True, written
+
+
+def test_text_before_the_first_label_is_plain():
+    """GUARD: a body that opens with prose rather than a label must not inherit anything."""
+    from app.services.reporting import entry_body_segments
+
+    segs = entry_body_segments("Opening prose. **Diagnoses**: strain.")
+    assert segs[0] == ("Opening prose. ", False, False, False)
+
+
+def test_the_entry_header_is_no_longer_bold_in_the_word_document():
+    """DEMONSTRATES the third difference: the reviewers' entry header is PLAIN - date, author,
+    facility and type read as a sentence rather than a heading. Ours bolded it."""
+    doc = build_mrr_document(
+        [
+            {
+                "summaryDate": "03/14/2026",
+                "summaryTitle": "DR. SMITH. CLINIC. PROGRESS REPORT",
+                "summaryText": "**Diagnoses**: strain.",
+            }
+        ],
+        8,
+        "Pat",
+        "01/01/1980",
+        "AME",
+        details=ReportDetails(lawfirm="Acme LLP"),
+    )
+    cells = doc.tables[0].rows[0].cells
+    title_runs = [r for r in cells[1].paragraphs[0].runs if "DR. SMITH" in r.text]
+    assert title_runs, "the entry header should still be rendered"
+    assert not any(r.bold for r in title_runs)
+
+
+def test_the_delivered_entry_carries_both_tiers():
+    """End to end through the real Word renderer, because the parser being right is not the same
+    as the renderer asking it."""
+    doc = build_mrr_document(
+        [
+            {
+                "summaryDate": "03/14/2026",
+                "summaryTitle": "A REPORT",
+                "summaryText": "**DOI**: 03/14/2026. **Work Status**: modified duty.",
+            }
+        ],
+        8,
+        "Pat",
+        "01/01/1980",
+        "AME",
+        details=ReportDetails(lawfirm="Acme LLP"),
+    )
+    runs = doc.tables[0].rows[0].cells[1].paragraphs[0].runs
+    by_text = {r.text: (bool(r.bold), bool(r.underline)) for r in runs}
+    assert by_text["DOI"] == (False, True)
+    assert by_text["Work Status"] == (True, True)
+    assert by_text[": modified duty."] == (True, False)
 
 
 def test_each_doctor_gets_their_own_typeface():
@@ -896,15 +1012,6 @@ def _all_fonts(doc):
         if r.font.name
     }
     return names
-
-
-_ENTRY = [
-    {
-        "summaryDate": "03/14/2026",
-        "summaryTitle": "A REPORT",
-        "summaryText": "**Diagnoses**: Lumbar strain.",
-    }
-]
 
 
 def test_the_word_document_is_written_in_the_doctors_typeface():
