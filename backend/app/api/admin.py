@@ -407,7 +407,10 @@ def reprocess(
             session,
             document.id,
             "summarize",
-            model=get_settings().summary_model,
+            # Not `summary_model`: that is defaulted to a Gemini name on EVERY backend, so this
+            # line sent a Gemini name to a vLLM pod. Identical on Gemini, where the body key
+            # defaults from it (pinned by test_openai_config_guards).
+            model=get_settings().model_for("body"),
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
         )
