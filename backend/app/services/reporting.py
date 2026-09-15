@@ -125,6 +125,10 @@ class ReportDetails:
     # builders are at Sonar's seven-parameter ceiling, which is what blocked the linked PDF from
     # taking `details` at all.
     lawfirm: str = ""
+    # The page accounting rides here too, and for the same reason the firm does: S107 caps the
+    # builder at seven parameters. It is the one field NOT typed by a reviewer - it is computed
+    # from their rows - but it is a record-level fact the letter needs, which is what this is for.
+    accounting: "RecordAccounting | None" = None
     letter_type: str = ""
     letter_date: str = ""
     reviewer_name: str = ""
@@ -221,6 +225,179 @@ def intro_sentence(
         "inquiries and examinations as necessary to determine the relevant medical issues. "
         f"{LABOR_CODE_CITE}"
     )
+
+
+@dataclass(frozen=True)
+class RecordAccounting:
+    """What the tail of the letter says about the pages that were received.
+
+    Both reference documents the reviewers sent (the outside MRR and its covering memo) close
+    with the same three facts, and ours closed with none of them. They are also the sentences
+    this project has spent months PARSING out of human deliverables to score itself against -
+    "Of the N pages received, exactly M pages were remarked upon" is the exclusion sentence
+    every categorization rule since #134 rests on. Generating it is the same arithmetic read
+    the other way round.
+
+    THE THREE BUCKETS ARE DISJOINT, and that is not a stylistic choice. A non-primary duplicate
+    row is removed from the excluded set rather than counted twice, and `duplicate_pages` counts
+    pages BEYOND the first copy rather than every page in the group. Both change what the letter
+    SAYS: without them a duplicated page is announced as a duplicate and listed among the other
+    documents, and the type list carries a title the reviewer already resolved away.
+
+    THAT REASONING USED TO CITE THE ARITHMETIC AND THE CITATION WAS WRONG - @adrian-g, on review.
+    It said remarked + other + duplicates equals the total received "only if a duplicated page is
+    counted ONCE". But `pages_other` is a derived REMAINDER, not a counted bucket, so the sum
+    holds by construction however the first two are split - and fails outright when the clamp
+    below fires (remarked 260 + other 0 + duplicates 61 = 321, against 191 received). The
+    reconciliation against their own reference record is still what showed the buckets are meant
+    to be disjoint; it is just not evidence that this code makes them so. A wrong reason in a
+    comment is the thing this file keeps being caught by.
+
+    That last sentence holds only for a group a reviewer has RESOLVED - see `record_accounting`.
+    Until then the copies are still being remarked upon, and the letter says so rather than
+    announcing a duplicate nobody has confirmed.
+    """
+
+    pages_received: int
+    pages_remarked: int
+    excluded_types: tuple[str, ...]
+    duplicate_pages: int
+
+    @property
+    def pages_other(self) -> int:
+        """Pages that are neither remarked upon nor a duplicate copy. Never negative: the
+        three counts come from one partition of the same rows, but `pages_received` is the
+        PDF's own page count and a row set that does not cover the document would otherwise
+        produce a negative remainder in the delivered sentence."""
+        return max(0, self.pages_received - self.pages_remarked - self.duplicate_pages)
+
+
+def _row_pages(row) -> int:
+    """Pages a row spans, inclusive of both ends, and never negative."""
+    return max(0, (row.end or 0) - (row.start or 0) + 1)
+
+
+def record_accounting(rows, pages_received: int) -> RecordAccounting:
+    """Partition the reviewer's rows into remarked / other / duplicate.
+
+    Takes ORM rows rather than `as_row()` dicts deliberately: `ROW_FIELDS` carries neither
+    `include` nor the duplicate columns, which is the same omission #258 had to work around,
+    so a dict would not carry the two fields this needs.
+
+    A non-primary member of a confirmed duplicate group is a duplicate FIRST, whatever its
+    include flag says - `resolve_duplicate` leaves those rows excluded, so counting them as
+    "other documents" as well is exactly the double count the disjoint arithmetic forbids.
+    """
+    remarked = duplicate = 0
+    excluded: list[str] = []
+    # A group counts only once a reviewer has actually RESOLVED it, which is what setting a
+    # primary means. `resolve_duplicate` has three outcomes and only one of them makes a
+    # surplus copy: keep_one marks exactly one member primary and excludes the rest; dismiss
+    # sets `dupe_dismissed` and clears every primary, because the reviewer has said these are
+    # NOT duplicates; and an untouched group is a suggestion nobody has acted on. Reading
+    # `not dupe_primary` alone treats all three alike - measured on the box, 102 of 147 groups
+    # have no primary at all, so that reading counted 1,140 pages where 171 are surplus copies,
+    # and it would announce a reviewer's DISMISSED group to the client as duplicate copies.
+    #
+    # Dismissal needs no separate test here: dismiss clears every primary and keep_one clears
+    # every dismissal, so a dismissed group can never appear in this set.
+    #
+    # `bundles.resolved_clusters` / `is_resolved_duplicate` already draw this exact distinction
+    # for the bundle deliverable, and that docstring records @adrian-g catching the row-in-
+    # isolation reading on review. They read `as_row()` DICTS and this reads ORM rows - the two
+    # fields it needs are the two `ROW_FIELDS` omits - so the predicate is stated twice rather
+    # than shared. `test_the_two_readings_of_a_resolved_duplicate_agree` pins them together, so
+    # editing one without the other fails rather than drifting.
+    resolved = {row.dupe_group for row in rows if row.dupe_group is not None and row.dupe_primary}
+    for row in rows:
+        pages = _row_pages(row)
+        if row.dupe_group in resolved and not row.dupe_primary:
+            duplicate += pages
+            continue
+        if row.include:
+            remarked += pages
+            continue
+        title = (row.title or "").strip()
+        if title:
+            excluded.append(title)
+    seen: dict[str, None] = {}
+    for title in excluded:
+        # Case-folded for de-duplication only; the FIRST spelling is what ships, because the
+        # reference list is lower case prose and a title may legitimately carry an acronym.
+        seen.setdefault(title.casefold(), None)
+        seen[title.casefold()] = seen[title.casefold()] or title
+    ordered = tuple(dict.fromkeys(v for v in seen.values() if v))
+    return RecordAccounting(
+        pages_received=max(0, pages_received or 0),
+        pages_remarked=remarked,
+        excluded_types=ordered,
+        duplicate_pages=duplicate,
+    )
+
+
+def accounting_sentences(accounting: RecordAccounting | None) -> tuple[str, str]:
+    """The two bold sentences that close the letter, or "" for one that does not apply.
+
+    CONDITIONAL, and that is observed rather than assumed: the reference MRR carries a
+    duplicates sentence and the two supplemental reports for another patient carry none at all,
+    so a count of zero means the sentence is absent, not that it reads "0 pages".
+
+    Returned as text and rendered by each caller, so the Word and PDF renderers cannot drift
+    apart on the WORDS the way they twice drifted on formatting (#158, #268).
+
+    THREE SHAPES, because a template built for the usual record contradicts itself on the others
+    - all three found on review by @adrian-g, each reproduced by calling this function:
+
+    * The list is introduced with `such as:` ONLY when there is a list. Every excluded row can
+      carry a blank title, which leaves `excluded_types` empty, and the sentence then ended on a
+      dangling colon in front of a client - the shape of #115's "medical records from ." that
+      `intro_sentence` and `summary_intro` both already guard against.
+    * With nothing left over, the remainder clause goes entirely rather than reading "0 pages
+      are other documents". Reachable whenever the only excluded rows are duplicate copies.
+    * NOTHING is emitted when the rows cover more than the record. `pages_other` clamps at zero,
+      so the sentence otherwise said "exactly 200 pages were remarked upon" of 191 received and
+      then "0 pages are other documents such as:" above a list of two. The duplicates sentence
+      goes with it: it opens "In addition", so it cannot be the only thing that ships, and a row
+      set this broken does not support its count either.
+    """
+    if accounting is None or not accounting.pages_received:
+        return "", ""
+    if accounting.pages_remarked + accounting.duplicate_pages > accounting.pages_received:
+        return "", ""
+    counted = (
+        f"Of the {accounting.pages_received} pages received, exactly "
+        f"{accounting.pages_remarked} pages were remarked upon"
+    )
+    if not accounting.pages_other:
+        exclusion = f"{counted}."
+    elif accounting.excluded_types:
+        exclusion = (
+            f"{counted}, as the remaining {accounting.pages_other} pages are other "
+            "documents such as:"
+        )
+    else:
+        exclusion = (
+            f"{counted}, as the remaining {accounting.pages_other} pages are other documents."
+        )
+    duplicates = (
+        f"In addition, the records included {accounting.duplicate_pages} pages of duplicate "
+        "copies of records already counted above."
+        if accounting.duplicate_pages
+        else ""
+    )
+    return exclusion, duplicates
+
+
+def summary_intro(lawfirm=None) -> str:
+    """The line that introduces the entries.
+
+    The reference document names the sending firm - "The following is a summary of records from
+    <firm>:" - where ours said only "those records". The firm is OPTIONAL free text a reviewer
+    often has no value for, so the clause is DROPPED rather than rendered empty, which is the
+    convention `intro_sentence` already applies after #115 shipped "records from ." to a client.
+    """
+    firm = (lawfirm or "").strip()
+    return f"The following is a summary of records from {firm}:" if firm else SUMMARY_INTRO
 
 
 # Inline emphasis the summarizer emits: **bold**, *italic*, _italic_. Rendered as real runs so no
@@ -443,8 +620,10 @@ def build_mrr_document(
 ):
     """Assemble the MRR Word document from summary ``entries`` (sorted chronologically).
 
-    ``details`` carries the doctor and the covering letter. Omitted, the document renders
-    exactly as it did before those fields existed."""
+    ``details`` carries the doctor, the covering letter and the page accounting. Omitted, the
+    document renders exactly as it did before any of those existed - which is what the bundle
+    export wants: it builds a letter from rows selected by CATEGORY rather than from a whole
+    record, where a sentence about the pages RECEIVED would answer a question nobody asked."""
     details = details or ReportDetails()
     font = report_font(details.doctor)
     lawfirm = details.lawfirm
@@ -492,7 +671,7 @@ def build_mrr_document(
         ),
         font=font,
     )
-    _letter_paragraph(doc, SUMMARY_INTRO, bold=True, font=font)
+    _letter_paragraph(doc, summary_intro(lawfirm), bold=True, font=font)
 
     # Two-column borderless table: date | title + body. The default "Table Normal" style has no
     # cell borders, matching the canonical MRR summary layout (date sits in its own left column,
@@ -516,6 +695,18 @@ def build_mrr_document(
         _run(body, TITLE_SEPARATOR, font=font)
         for chunk, bold, italic, underline in entry_body_segments(entry["summaryText"]):
             _run(body, chunk, bold=bold, italic=italic, underline=underline, font=font)
+
+    # THE PAGE ACCOUNTING, between the entries and the conclusion - the position both
+    # reference documents put it in. Bold, because they bold all three of these sentences
+    # while leaving the type list beneath plain; that contrast is the whole of the house
+    # style here and rendering the list bold too would lose it.
+    exclusion_text, duplicates_text = accounting_sentences(details.accounting)
+    if exclusion_text:
+        _letter_paragraph(doc, exclusion_text, bold=True, font=font)
+        for document_type in details.accounting.excluded_types:
+            _letter_paragraph(doc, document_type, font=font)
+    if duplicates_text:
+        _letter_paragraph(doc, duplicates_text, bold=True, font=font)
 
     # This paragraph is why `_letter_paragraph` exists - it used to style the WRONG run, and
     # the helper's docstring records what that cost.

@@ -16,9 +16,9 @@ from pdf2image import convert_from_path
 from app.config import get_settings
 from app.services.genai_client import get_genai_client
 from app.services.genai_retry import generate_with_retry
-from app.worker.failures import JobCancelled
 from app.services.ocr import extract_text_from_image
 from app.services.pools import PoolTimeout, drain_pool
+from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
 

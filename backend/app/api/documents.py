@@ -63,6 +63,7 @@ from app.services.reporting import (
     LETTER_TYPES,
     ReportDetails,
     build_mrr_document,
+    record_accounting,
 )
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
@@ -1671,7 +1672,9 @@ def _included_summaries(document: Document) -> list[Summary]:
     return included
 
 
-def _mrr_docx_bytes(document: Document, payload: ExportPayload, user: User) -> bytes:
+def _mrr_docx_bytes(
+    session: Session, document: Document, payload: ExportPayload, user: User
+) -> bytes:
     """The MRR Word document. ONE definition, shared by /export and /export/zip.
 
     Two call sites each building their own `build_mrr_document(...)` is how a delivered
@@ -1699,6 +1702,7 @@ def _mrr_docx_bytes(document: Document, payload: ExportPayload, user: User) -> b
             # taken from the session rather than asked for again. An account with no display name
             # leaves it empty, which drops the Labor Code sentences - see `intro_sentence`.
             reviewer_name=(user.name or "").strip(),
+            accounting=_record_accounting(session, document),
         ),
     )
     buffer = io.BytesIO()
@@ -1706,7 +1710,9 @@ def _mrr_docx_bytes(document: Document, payload: ExportPayload, user: User) -> b
     return buffer.getvalue()
 
 
-def _linked_pdf_bytes(document: Document, payload: ExportPayload, user: User) -> bytes:
+def _linked_pdf_bytes(
+    session: Session, document: Document, payload: ExportPayload, user: User
+) -> bytes:
     """The combined linked PDF. ONE definition, shared by /export/pdf and /export/zip.
 
     It takes the SAME opening paragraph the Word document does. Only the FONT is Word-only,
@@ -1732,6 +1738,7 @@ def _linked_pdf_bytes(document: Document, payload: ExportPayload, user: User) ->
             # taken from the session rather than asked for again. An account with no display name
             # leaves it empty, which drops the Labor Code sentences - see `intro_sentence`.
             reviewer_name=(user.name or "").strip(),
+            accounting=_record_accounting(session, document),
         ),
     )
 
@@ -1781,6 +1788,21 @@ def _matched_rows(session: Session, document: Document, categories):
     return matched
 
 
+def _record_accounting(session: Session, document: Document):
+    """The page accounting for the closing sentences, or None when there are no rows.
+
+    Loaded here rather than from `document.review_rows` so the read is one explicit query on
+    the export path rather than a lazy relationship walked per attribute - the shape #293 had
+    to fix on the listing endpoint.
+    """
+    rows = session.scalars(
+        select(ReviewRow).where(ReviewRow.document_id == document.id).order_by(ReviewRow.idx)
+    ).all()
+    if not rows:
+        return None
+    return record_accounting(rows, document.page_count)
+
+
 @router.post(
     "/{document_id}/export",
     responses={409: {"description": "There are no summaries to export yet."}},
@@ -1792,7 +1814,7 @@ def export_document(
     user: User = Depends(current_active_user),
 ):
     payload = payload or ExportPayload()
-    buffer = io.BytesIO(_mrr_docx_bytes(document, payload, user))
+    buffer = io.BytesIO(_mrr_docx_bytes(session, document, payload, user))
     audit(session, "export", user.id, document.id)
     return StreamingResponse(
         buffer,
@@ -1814,7 +1836,7 @@ def export_document_pdf(
     """Combined linked PDF: the summary letter (two-column, blue linked titles) followed by the
     full source record, each title linking to that sub-document's first source page."""
     payload = payload or ExportPayload()
-    pdf_bytes = _linked_pdf_bytes(document, payload, user)
+    pdf_bytes = _linked_pdf_bytes(session, document, payload, user)
     audit(session, "export_pdf", user.id, document.id)
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
@@ -1852,8 +1874,8 @@ def export_document_zip(
     build the archive into a SpooledTemporaryFile so it spills to disk instead of RAM."""
     payload = payload or ExportZipPayload()
     members: list[tuple[str, bytes]] = [
-        (_summary_filename(document), _mrr_docx_bytes(document, payload, user)),
-        (_linked_filename(document), _linked_pdf_bytes(document, payload, user)),
+        (_summary_filename(document), _mrr_docx_bytes(session, document, payload, user)),
+        (_linked_filename(document), _linked_pdf_bytes(session, document, payload, user)),
     ]
     members.extend(_bundle_members(session, document, payload.bundles))
 

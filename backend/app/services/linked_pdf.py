@@ -24,14 +24,15 @@ import pymupdf
 from app.services.reporting import (
     CONCLUSION,
     REVIEW_HEADING,
-    SUMMARY_INTRO,
     TITLE_SEPARATOR,
     ReportDetails,
+    accounting_sentences,
     date_label,
     entry_body_segments,
     header_lines,
     intro_sentence,
     parsed_date,
+    summary_intro,
 )
 
 _TITLE_COLOR = "#0000EE"  # link-blue for the clickable titles (CSS)
@@ -78,6 +79,22 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
             f"{html.escape(TITLE_SEPARATOR)}"
             f"{_inline_html(e['summaryText'])}</td></tr>"
         )
+    # The same two sentences the Word renderer emits, from the same builder, bold to match
+    # it - and the excluded-type list left PLAIN beneath them, which is the contrast the
+    # reference documents carry. Built here rather than inline because an f-string cannot
+    # hold a loop, and the two renderers drifting on this letter is a thing that has
+    # happened three times (#115, #158, #268).
+    exclusion_text, duplicates_text = accounting_sentences(details.accounting)
+    tail_parts = []
+    if exclusion_text:
+        tail_parts.append(f"<p style='font-weight:bold;'>{html.escape(exclusion_text)}</p>")
+        tail_parts += [
+            f"<p>{html.escape(document_type)}</p>"
+            for document_type in details.accounting.excluded_types
+        ]
+    if duplicates_text:
+        tail_parts.append(f"<p style='font-weight:bold;'>{html.escape(duplicates_text)}</p>")
+    tail = "".join(tail_parts)
     return f"""<html><head><style>
       body {{ font-family: 'Times New Roman', serif; font-size: 11pt; }}
       .ttl {{ text-align: center; font-weight: bold; text-decoration: underline; font-size: 12pt; margin: 10pt 0; }}
@@ -110,8 +127,9 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
             )
         )
     }</p>
-      <p style='font-weight:bold;'>{html.escape(SUMMARY_INTRO)}</p>
+      <p style='font-weight:bold;'>{html.escape(summary_intro(details.lawfirm))}</p>
       <table>{"".join(rows)}</table>
+      {tail}
       <p>{html.escape(CONCLUSION)}</p>
     </body></html>"""
 
