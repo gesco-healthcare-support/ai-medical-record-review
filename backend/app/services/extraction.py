@@ -1,18 +1,20 @@
-"""Extract the report-header fields (patient name/DOB, law firm) from a record via Vertex.
+"""Extract the report-header fields (patient name/DOB, law firm) from a record.
 
 Replaces the classic OpenAI extraction (extraction.py getpatientnameanddob + getlawfirm). OCRs the
-first pages, then asks Gemini for a single structured JSON object so the modern flow can prefill the
-export/bundle header in one call. Vertex-only (BAA path); PHI OCR text stays on the BAA endpoint.
+first pages, then asks for a single structured JSON object so the modern flow can prefill the
+export/bundle header in one call.
+
+WHERE THE PHI GOES IS NOW A CONFIG VALUE, not a property of this file. This used to read
+"Vertex-only (BAA path)", which stopped being true the moment `extract` could resolve to another
+backend: the destination is whatever `backend_for("extract")` selects, and the production guard on
+that is `_validate_vllm_backend`'s approved-origin check rather than anything here.
 """
 
 import json
 import logging
 
-from google.genai import types
-
 from app.config import get_settings
-from app.services.genai_client import get_genai_client
-from app.services.genai_retry import generate_with_retry
+from app.services.llm import TextPart, get_provider
 from app.services.ocr import extract_pages_with_report
 
 logger = logging.getLogger(__name__)
@@ -24,19 +26,23 @@ _HEADER_SYSTEM = (
     "is NOT the treating doctor)."
 )
 
+# Ordinary JSON Schema, lowercase. The seam translates per backend - `gemini.py`'s
+# `to_gemini_schema` rewrites these type names into google-genai's uppercase dialect - so writing
+# one vendor's spelling here would silently make that vendor the default and the other the special
+# case. The shape is otherwise unchanged from the uppercase version this replaced.
 _HEADER_SCHEMA = {
-    "type": "OBJECT",
+    "type": "object",
     "properties": {
         "first_name": {
-            "type": "STRING",
+            "type": "string",
             "description": "Patient first (given) name, or '' if not found",
         },
         "last_name": {
-            "type": "STRING",
+            "type": "string",
             "description": "Patient last (family) name, or '' if not found",
         },
-        "dob": {"type": "STRING", "description": "Patient date of birth mm/dd/yyyy, or ''"},
-        "lawfirm": {"type": "STRING", "description": "Sending attorney + law firm, or ''"},
+        "dob": {"type": "string", "description": "Patient date of birth mm/dd/yyyy, or ''"},
+        "lawfirm": {"type": "string", "description": "Sending attorney + law firm, or ''"},
     },
     "required": ["first_name", "last_name", "dob", "lawfirm"],
 }
@@ -76,20 +82,25 @@ def extract_header(pdf_path, pages) -> dict:
     if not text.strip():
         return dict(_BLANK)
 
-    response = generate_with_retry(
-        get_genai_client(),
-        model=get_settings().genai_model,
-        contents=(
-            "Extract the patient's first name and last name (separately), the patient's date of "
-            "birth (mm/dd/yyyy), and the attorney/law firm that sent the record from this text:"
-            "\n\n" + text
-        ),
-        config=types.GenerateContentConfig(
-            temperature=0.0,
-            response_mime_type="application/json",
-            response_schema=_HEADER_SCHEMA,
-            system_instruction=_HEADER_SYSTEM,
-        ),
+    response = get_provider().generate_structured(
+        # Resolved for the backend that will answer this stage, not read from genai_model directly.
+        # That setting is shared by four stages (segment, extract, doi, deposition), so reading it
+        # here would pin this call to whatever Gemini name they share even when `extract` has been
+        # routed elsewhere.
+        model=get_settings().model_for_stage("extract"),
+        system=_HEADER_SYSTEM,
+        parts=[
+            TextPart(
+                "Extract the patient's first name and last name (separately), the patient's date of "
+                "birth (mm/dd/yyyy), and the attorney/law firm that sent the record from this text:"
+                "\n\n" + text
+            )
+        ],
+        schema=_HEADER_SCHEMA,
+        temperature=0.0,
+        # No max_output_tokens: this call has never had one, and the seam sends the field only when
+        # it is set, so omitting it keeps the call uncapped exactly as before.
+        stage="extract",
     )
     try:
         data = json.loads(response.text or "{}")
