@@ -120,6 +120,11 @@ class ReportDetails:
 
     doctor: str = ""
     attorney_name: str = ""
+    # The firm rides here rather than staying a separate parameter, because `_sender_clause`
+    # reads it and `attorney_name` as ONE fact - "from <person>, of <firm>" - and because both
+    # builders are at Sonar's seven-parameter ceiling, which is what blocked the linked PDF from
+    # taking `details` at all.
+    lawfirm: str = ""
     letter_type: str = ""
     letter_date: str = ""
     reviewer_name: str = ""
@@ -371,7 +376,6 @@ def build_mrr_document(
     patient_name,
     patient_dob,
     qme_or_ame,
-    lawfirm,
     *,
     details: ReportDetails | None = None,
 ):
@@ -381,6 +385,7 @@ def build_mrr_document(
     exactly as it did before those fields existed."""
     details = details or ReportDetails()
     font = report_font(details.doctor)
+    lawfirm = details.lawfirm
 
     # Undated entries sort LAST, per the reviewers 2026-08-21: "if it is something important we will
     # still summarize it, it can go at the end of the Review as Undated". This was datetime.min -

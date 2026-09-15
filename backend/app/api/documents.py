@@ -1610,6 +1610,20 @@ def _download_name(label: str | None, ext: str) -> str:
     return f"{slug}.{ext}"
 
 
+def _letter_pages(document: Document) -> int:
+    """How many pages the letter says arrived: the cover sheet's count where one was entered.
+
+    `page_count` is the PDF's own length and is reliably the LONGER of the two, because pages
+    are attached to the file downstream - measured against four human deliverables, 311/309,
+    293/290, 244/241 and 229/226. The reviewers were explicit that the cover sheet carries the
+    real figure, which is what `pages_received` exists to hold.
+
+    NULL until somebody types it, and then this is the count the letter always used, so a record
+    nobody has filled in reads exactly as it did before that field existed.
+    """
+    return document.pages_received or document.page_count
+
+
 def _summary_filename(document: Document) -> str:
     """Lastname_Firstname_Medical_Records_summary.docx from the persisted header; falls back to
     <original-filename>_summary.docx when no patient name was extracted."""
@@ -1682,14 +1696,14 @@ def export_document(
     entries = [_export_entry(s, with_pages=payload.includePageNumbers) for s in included]
     docx = build_mrr_document(
         entries,
-        document.page_count,
+        _letter_pages(document),
         payload.patientName,
         payload.patientdob,
         payload.QMEorAME,
-        payload.lawfirm,
         details=ReportDetails(
             doctor=document.doctor or "",
             attorney_name=document.attorney_name or "",
+            lawfirm=payload.lawfirm,
             letter_type=document.letter_type or "",
             letter_date=document.letter_date or "",
             # The reviewer running the export is the one who did the record work, so the
@@ -1730,11 +1744,20 @@ def export_document_pdf(
     pdf_bytes = build_linked_pdf(
         document.stored_path,
         entries,
-        document.page_count,
+        _letter_pages(document),
         payload.patientName,
         payload.patientdob,
         payload.QMEorAME,
-        payload.lawfirm,
+        # The SAME opening paragraph the Word document gets. Only the FONT is Word-only, which is
+        # the reviewers' own answer ("does not need the font on that one"); the letter clause, the
+        # sender and the Labor Code sentences are facts about the record and belong in both.
+        details=ReportDetails(
+            attorney_name=document.attorney_name or "",
+            lawfirm=payload.lawfirm,
+            letter_type=document.letter_type or "",
+            letter_date=document.letter_date or "",
+            reviewer_name=(user.name or "").strip(),
+        ),
     )
     audit(session, "export_pdf", user.id, document.id)
     return StreamingResponse(
@@ -1825,11 +1848,11 @@ def bundle_summarize(
         return _pipeline_error_response(document.id, exc)
     docx = build_mrr_document(
         entries,
-        document.page_count,
+        _letter_pages(document),
         payload.patientName,
         payload.patientdob,
         payload.QMEorAME,
-        payload.lawfirm,
+        details=ReportDetails(lawfirm=payload.lawfirm),
     )
     buffer = io.BytesIO()
     docx.save(buffer)

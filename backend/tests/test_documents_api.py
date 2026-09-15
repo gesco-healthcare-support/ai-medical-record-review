@@ -3970,3 +3970,78 @@ async def test_an_account_with_no_display_name_omits_the_labor_code_claim(authed
     intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
     assert "4628" not in intro
     assert "Trained Medical Record Processor" not in intro
+
+
+async def _seed_one_summary(doc_id):
+    """One stored summary, so an export has something to ship."""
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=0,
+                title="A REPORT",
+                text="body",
+                date="03/14/2026",
+                row_start=1,
+                row_end=1,
+                row_category="1",
+            )
+        )
+        session.commit()
+
+
+def _pdf_text(blob):
+    """Every page's text, whitespace collapsed, so an assertion does not depend on where the
+    layout engine happened to break a line."""
+    import pymupdf
+
+    doc = pymupdf.open(stream=blob, filetype="pdf")
+    return " ".join(" ".join(page.get_text().split()) for page in doc)
+
+
+async def test_the_letter_states_the_cover_sheet_count_not_the_files_length(authed):
+    """DEMONSTRATES the defect the review found: `pages_received` was captured, stored and never
+    read, so the delivered sentence still counted the PDF.
+
+    The seven parser tests and the header round-trip all passed because none of them RENDERS the
+    sentence. This one does, and it does it through both artifacts - the reviewers were explicit
+    that the file's own length is the wrong number, and against four human deliverables it ran
+    311/309, 293/290, 244/241 and 229/226.
+    """
+    import docx as docxlib
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=244)
+    await _put_header(client, doc_id, pages_received="241")
+    await _seed_one_summary(doc_id)
+
+    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    assert resp.status_code == 200, resp.text
+    built = docxlib.Document(io.BytesIO(resp.content))
+    intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
+    assert "241 pages of medical records" in intro
+    assert "244" not in intro
+
+    pdf = await client.post(f"/api/documents/{doc_id}/export/pdf", json={})
+    assert pdf.status_code == 200, pdf.text
+    assert "241 pages of medical records" in _pdf_text(pdf.content)
+
+
+async def test_with_no_cover_sheet_count_the_letter_falls_back_to_the_file(authed):
+    """GUARD. `pages_received` is NULL until somebody types it, and a record nobody has filled in
+    must read exactly as it did before the field existed."""
+    import docx as docxlib
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=244)
+    await _seed_one_summary(doc_id)
+
+    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    assert resp.status_code == 200, resp.text
+    built = docxlib.Document(io.BytesIO(resp.content))
+    intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
+    assert "244 pages of medical records" in intro
