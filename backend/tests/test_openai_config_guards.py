@@ -459,6 +459,85 @@ def test_summarize_held_on_gemini_keeps_the_gemini_tiering(monkeypatch):
     assert settings.model_for("audit") == "gemini-2.5-flash"
 
 
+# --- which PROVIDER a stage resolves to -------------------------------------------------------------
+#
+# THE MODEL WAS PER-STAGE AND THE TRANSPORT WAS NOT. `get_provider()` with no argument resolves
+# through backend_for("summarize"), so a non-summarize caller pairing it with model_for_stage(stage)
+# resolved its model through one stage and its transport through another. Shipped in #318 and found
+# in review - the stage-independence test above could not see it, because it only ever inspects
+# model_for_stage values and never asks which provider answers.
+#
+# Asserted on `.name`, never on object identity: get_provider is lru_cache'd per NAME, so two stages
+# resolving to the same backend hand back the SAME object and an identity check would pass for the
+# wrong reason.
+
+
+def _provider_name(monkeypatch, stage, **env):
+    from app.services.llm import provider_for_stage
+
+    settings = _settings(monkeypatch, **env)
+    monkeypatch.setattr("app.services.llm.get_settings", lambda: settings)
+    return provider_for_stage(stage).name
+
+
+def test_moving_one_stage_moves_its_provider_and_no_other(monkeypatch):
+    # WHEN one stage is routed to vllm, THE SYSTEM SHALL answer provider_for_stage with vllm for
+    # THAT stage and gemini for the rest. The model-side mirror of this already exists; without this
+    # one, a caller can resolve the pod's model over the Gemini transport.
+    env = {"LLM_BACKEND": "gemini", "LLM_BACKEND_OVERRIDES": "extract=vllm", **_VLLM}
+    assert _provider_name(monkeypatch, "extract", **env) == "vllm"
+    for untouched in ("dedup", "classify", "verify", "segment"):
+        assert _provider_name(monkeypatch, untouched, **env) == "gemini", untouched
+
+
+def test_a_stage_held_on_gemini_keeps_a_gemini_provider_while_the_rest_move(monkeypatch):
+    # The mirror. A fix keyed on resolved_backends() rather than on THIS stage passes the test above
+    # and fails here, having handed a Gemini-served stage the pod's transport.
+    env = {"LLM_BACKEND": "vllm", "LLM_BACKEND_OVERRIDES": "classify=gemini", **_VLLM}
+    assert _provider_name(monkeypatch, "classify", **env) == "gemini"
+    assert _provider_name(monkeypatch, "dedup", **env) == "vllm"
+
+
+def test_the_provider_and_the_model_resolve_through_the_SAME_stage(monkeypatch):
+    # THE TEST THAT WOULD HAVE CAUGHT #318, stated as the invariant rather than as two facts. The
+    # defect was not a wrong value on either side - each half was individually correct - it was the
+    # two halves resolving through different stages. Both configurations below are ones where a bare
+    # get_provider() disagrees with model_for_stage.
+    from app.services.llm import provider_for_stage
+
+    for overrides in ("extract=vllm", "summarize=vllm"):
+        settings = _settings(
+            monkeypatch, LLM_BACKEND="gemini", LLM_BACKEND_OVERRIDES=overrides, **_VLLM
+        )
+        monkeypatch.setattr("app.services.llm.get_settings", lambda: settings)
+        provider = provider_for_stage("extract").name
+        model_is_served = settings.model_for_stage("extract") == _SERVED
+        assert (provider == "vllm") is model_is_served, (
+            f"transport={provider} disagrees with the model under {overrides!r}"
+        )
+
+
+def test_summarize_is_refused_because_it_also_honours_summary_provider(monkeypatch):
+    # Bare get_provider() honours summary_provider == "openai", which this resolver cannot see.
+    # Routing summarize through here would drop a selector deployments set today, silently.
+    from app.services.llm import provider_for_stage
+
+    settings = _settings(monkeypatch, LLM_BACKEND="gemini")
+    monkeypatch.setattr("app.services.llm.get_settings", lambda: settings)
+    with pytest.raises(KeyError, match="summary_provider"):
+        provider_for_stage("summarize")
+
+
+def test_an_unknown_stage_is_refused_by_the_provider_resolver_too(monkeypatch):
+    # Raised by backend_for, so there is no second stage list to drift out of step.
+    from app.services.llm import provider_for_stage
+
+    settings = _settings(monkeypatch, LLM_BACKEND="gemini")
+    monkeypatch.setattr("app.services.llm.get_settings", lambda: settings)
+    with pytest.raises(KeyError, match="unknown stage"):
+        provider_for_stage("sumarize")
+
+
 # --- which model a NON-summarize stage resolves to ---------------------------------------------------
 #
 # `model_for_stage` is a METHOD rather than a field rewrite, because `genai_model` is read by FOUR

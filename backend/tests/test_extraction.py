@@ -24,13 +24,13 @@ from app.services import extraction
 def _stub_provider(
     monkeypatch, payload='{"first_name": "A", "last_name": "B", "dob": "", "lawfirm": ""}'
 ):
-    """Stub the seam, not google-genai. `extract_header` asks `get_provider()` now."""
+    """Stub the seam, not google-genai. `extract_header` asks `provider_for_stage("extract")`."""
 
     class _Provider:
         def generate_structured(self, **_kwargs):
             return SimpleNamespace(text=payload)
 
-    monkeypatch.setattr(extraction, "get_provider", lambda *_a, **_k: _Provider())
+    monkeypatch.setattr(extraction, "provider_for_stage", lambda *_a, **_k: _Provider())
 
 
 def _stub_ocr(monkeypatch, text, errored, pages=(1, 2, 3)):
@@ -80,13 +80,13 @@ def test_a_total_failure_returns_blanks_without_calling_the_model(monkeypatch):
             return SimpleNamespace(text="{}")
 
     def _provider(*_a, **_k):
-        # Recorded separately from the call itself: `get_provider()` and `generate_structured` are
-        # one expression now, so asking for a provider at all already means the guard above let a
-        # blank read through. Both entries must stay absent, not just the second.
+        # Recorded separately from the call itself: asking for a provider and calling it are one
+        # expression, so reaching the resolver at all already means the guard above let a blank read
+        # through. Both entries must stay absent, not just the second.
         called.append("provider")
         return _Provider()
 
-    monkeypatch.setattr(extraction, "get_provider", _provider)
+    monkeypatch.setattr(extraction, "provider_for_stage", _provider)
     _stub_ocr(monkeypatch, "   ", errored=[1, 2, 3])
 
     header = extraction.extract_header("x.pdf", [1, 2, 3])
@@ -134,7 +134,12 @@ def test_the_log_line_carries_page_numbers_and_nothing_else(monkeypatch, caplog)
 def _capture(
     monkeypatch, payload='{"first_name": "A", "last_name": "B", "dob": "", "lawfirm": ""}'
 ):
-    """Stub the provider and hand back the kwargs it was called with."""
+    """Stub the provider and hand back the kwargs it was called with.
+
+    `seen["_resolved_for"]` records the stage the SERVICE asked the resolver for. Without it the
+    stub swallows a wrong stage silently - and resolving the transport through the wrong stage is
+    precisely the defect that reached main in #318.
+    """
     seen = {}
 
     class _Provider:
@@ -142,7 +147,11 @@ def _capture(
             seen.update(kwargs)
             return SimpleNamespace(text=payload)
 
-    monkeypatch.setattr(extraction, "get_provider", lambda *_a, **_k: _Provider())
+    def _resolver(stage, *_a, **_k):
+        seen["_resolved_for"] = stage
+        return _Provider()
+
+    monkeypatch.setattr(extraction, "provider_for_stage", _resolver)
     return seen
 
 
@@ -160,6 +169,9 @@ def test_the_request_carries_the_lowercase_schema_and_the_extract_stage(monkeypa
 
     extraction.extract_header("x.pdf", [1])
 
+    # The TRANSPORT and the model must resolve through the same stage. `stage=` below only selects a
+    # thinking budget; `_resolved_for` is what says which backend actually answers.
+    assert seen["_resolved_for"] == "extract"
     assert seen["stage"] == "extract"
     assert seen["system"] == extraction._HEADER_SYSTEM
     assert seen["temperature"] == 0.0

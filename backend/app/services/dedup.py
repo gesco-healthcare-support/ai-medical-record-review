@@ -16,7 +16,7 @@ import logging
 import re
 
 from app.config import get_settings
-from app.services.llm import TextPart, get_provider
+from app.services.llm import TextPart, provider_for_stage
 from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
@@ -368,7 +368,11 @@ def confirm_cluster(members, model=None):
             f"[{i}] title: {m.get('title') or '-'} | date: {m.get('date') or '-'}\n{excerpt}"
         )
     try:
-        response = get_provider().generate_structured(
+        # BOTH halves resolve through `dedup`. A bare `get_provider()` resolves the TRANSPORT
+        # through backend_for("summarize") while the model above resolves through
+        # backend_for("dedup") - so moving only `dedup` would send the pod's model name over the
+        # Gemini transport, and moving only summarize would do the reverse.
+        response = provider_for_stage("dedup").generate_structured(
             model=model,
             system=CONFIRM_PROMPT,
             parts=[TextPart("\n\n---\n\n".join(blocks))],

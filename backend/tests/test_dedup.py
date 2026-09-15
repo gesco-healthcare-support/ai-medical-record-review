@@ -15,17 +15,27 @@ class _Resp:
 
 
 def _stub_provider(monkeypatch, fake):
-    """Route `dedup.get_provider` to a stub whose `generate_structured` calls `fake(**kwargs)`.
+    """Route `dedup.provider_for_stage` to a stub whose `generate_structured` calls `fake(**kwargs)`.
 
     `confirm_cluster` asks the provider seam now, not google-genai, so stubbing
     `generate_with_retry` by name would leave the real call in place.
+
+    Returns a dict recording the stage the SERVICE asked the resolver for. A stub accepting anything
+    swallows a wrong stage silently, and resolving the transport through the wrong stage is the
+    defect that reached main in #318.
     """
+    asked = {}
 
     class _Provider:
         def generate_structured(self, **kwargs):
             return fake(**kwargs)
 
-    monkeypatch.setattr(dedup, "get_provider", lambda *_a, **_k: _Provider())
+    def _resolver(stage, *_a, **_k):
+        asked["stage"] = stage
+        return _Provider()
+
+    monkeypatch.setattr(dedup, "provider_for_stage", _resolver)
+    return asked
 
 
 def test_cluster_rows_groups_near_identical_and_excludes_distinct():

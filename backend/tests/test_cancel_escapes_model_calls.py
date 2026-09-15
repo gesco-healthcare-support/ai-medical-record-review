@@ -41,7 +41,7 @@ def test_a_stop_escapes_the_duplicate_confirmation(monkeypatch):
         def generate_structured(self, *_a, **_k):
             raise JobCancelled(3, 170)
 
-    monkeypatch.setattr(dedup, "get_provider", lambda *_a, **_k: _Provider())
+    monkeypatch.setattr(dedup, "provider_for_stage", lambda *_a, **_k: _Provider())
     members = [
         {"idx": 1, "title": "A", "date": "01/01/2020", "source_text": "x" * 50},
         {"idx": 2, "title": "A", "date": "01/01/2020", "source_text": "x" * 50},
