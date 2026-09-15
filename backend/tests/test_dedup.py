@@ -171,10 +171,15 @@ def test_the_confirm_request_carries_the_cap_the_schema_and_the_dedup_stage(monk
         seen.update(kwargs)
         return _Resp({"duplicate_indices": [1, 2]})
 
-    _stub_provider(monkeypatch, _capture)
+    asked = _stub_provider(monkeypatch, _capture)
     members = [{"title": "A", "date": "1", "text": "x"}, {"title": "B", "date": "2", "text": "y"}]
     dedup.confirm_cluster(members, model="m")
 
+    # WHICH BACKEND ANSWERS, asserted separately from `stage=` below. `stage=` only selects a
+    # thinking budget - gemini.py reads it for thinking_for(), and vllm.py and openai.py both
+    # `del stage`. `asked["stage"]` is what says the TRANSPORT resolved through dedup too, which is
+    # the half that was wrong in #318 and that the config-level tests cannot see from here.
+    assert asked["stage"] == "dedup"
     assert seen["stage"] == "dedup"
     assert seen["max_output_tokens"] == 256
     assert seen["temperature"] == 0.0
