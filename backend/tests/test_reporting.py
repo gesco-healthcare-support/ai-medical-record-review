@@ -919,3 +919,41 @@ def test_the_two_readings_of_a_resolved_duplicate_agree():
         theirs = is_resolved_duplicate(dicts[0], resolved_clusters(dicts))
         ours = record_accounting(rows, 5).duplicate_pages > 0
         assert ours == theirs, f"{label}: reporting says surplus={ours}, bundles says {theirs}"
+
+
+def test_the_list_is_introduced_only_when_there_is_a_list():
+    """Every excluded row can carry a blank title, which leaves `excluded_types` empty and ended
+    the delivered sentence on a dangling colon - #115's "medical records from ." in a new place.
+    The counts are still true, so they are still stated; only the introduction goes."""
+    acc = record_accounting(
+        [_Row(1, 130, True, "x"), _Row(131, 191, False, "   ")],
+        191,
+    )
+    assert acc.excluded_types == ()
+    exclusion, _ = accounting_sentences(acc)
+    assert exclusion.endswith("61 pages are other documents.")
+    assert "such as" not in exclusion
+
+
+def test_with_nothing_left_over_the_remainder_clause_goes_entirely():
+    """Reachable whenever the only excluded rows are duplicate copies. "0 pages are other
+    documents" is true and reads like a defect."""
+    exclusion, _ = accounting_sentences(record_accounting([_Row(1, 191, True, "x")], 191))
+    assert exclusion == "Of the 191 pages received, exactly 191 pages were remarked upon."
+
+
+def test_rows_that_overrun_the_record_ship_no_sentence_at_all():
+    """DEMONSTRATES the defect `test_the_remainder_never_goes_negative` could not see: that test
+    asserts `pages_other == 0` and never renders, so the clamp passed while the sentence said
+    "exactly 200 pages were remarked upon" of 191 received, then "0 pages are other documents
+    such as:" above a list of two. The duplicates sentence goes too - it opens "In addition"."""
+    acc = record_accounting(
+        [
+            _Row(1, 200, True, "x"),
+            _Row(201, 250, False, "cover letter"),
+            _Row(251, 260, False, "proof of service"),
+        ],
+        191,
+    )
+    assert acc.pages_remarked > acc.pages_received
+    assert accounting_sentences(acc) == ("", "")

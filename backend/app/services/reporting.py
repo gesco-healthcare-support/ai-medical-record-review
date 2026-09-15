@@ -88,12 +88,20 @@ class RecordAccounting:
     every categorization rule since #134 rests on. Generating it is the same arithmetic read
     the other way round.
 
-    THE THREE BUCKETS ARE DISJOINT, and that is not a stylistic choice. On the one record whose
-    sentence reconciles exactly, remarked + other + duplicates equals the total received, which
-    is only true if a duplicated page is counted ONCE - in the duplicate bucket - rather than
-    also appearing under other documents. So a non-primary duplicate row is removed from the
-    excluded set rather than counted twice, and `duplicate_pages` counts pages BEYOND the first
-    copy rather than every page in the group.
+    THE THREE BUCKETS ARE DISJOINT, and that is not a stylistic choice. A non-primary duplicate
+    row is removed from the excluded set rather than counted twice, and `duplicate_pages` counts
+    pages BEYOND the first copy rather than every page in the group. Both change what the letter
+    SAYS: without them a duplicated page is announced as a duplicate and listed among the other
+    documents, and the type list carries a title the reviewer already resolved away.
+
+    THAT REASONING USED TO CITE THE ARITHMETIC AND THE CITATION WAS WRONG - @adrian-g, on review.
+    It said remarked + other + duplicates equals the total received "only if a duplicated page is
+    counted ONCE". But `pages_other` is a derived REMAINDER, not a counted bucket, so the sum
+    holds by construction however the first two are split - and fails outright when the clamp
+    below fires (remarked 260 + other 0 + duplicates 61 = 321, against 191 received). The
+    reconciliation against their own reference record is still what showed the buckets are meant
+    to be disjoint; it is just not evidence that this code makes them so. A wrong reason in a
+    comment is the thing this file keeps being caught by.
 
     That last sentence holds only for a group a reviewer has RESOLVED - see `record_accounting`.
     Until then the copies are still being remarked upon, and the letter says so rather than
@@ -186,14 +194,41 @@ def accounting_sentences(accounting: RecordAccounting | None) -> tuple[str, str]
 
     Returned as text and rendered by each caller, so the Word and PDF renderers cannot drift
     apart on the WORDS the way they twice drifted on formatting (#158, #268).
+
+    THREE SHAPES, because a template built for the usual record contradicts itself on the others
+    - all three found on review by @adrian-g, each reproduced by calling this function:
+
+    * The list is introduced with `such as:` ONLY when there is a list. Every excluded row can
+      carry a blank title, which leaves `excluded_types` empty, and the sentence then ended on a
+      dangling colon in front of a client - the shape of #115's "medical records from ." that
+      `intro_sentence` and `summary_intro` both already guard against.
+    * With nothing left over, the remainder clause goes entirely rather than reading "0 pages
+      are other documents". Reachable whenever the only excluded rows are duplicate copies.
+    * NOTHING is emitted when the rows cover more than the record. `pages_other` clamps at zero,
+      so the sentence otherwise said "exactly 200 pages were remarked upon" of 191 received and
+      then "0 pages are other documents such as:" above a list of two. The duplicates sentence
+      goes with it: it opens "In addition", so it cannot be the only thing that ships, and a row
+      set this broken does not support its count either.
     """
     if accounting is None or not accounting.pages_received:
         return "", ""
-    exclusion = (
+    if accounting.pages_remarked + accounting.duplicate_pages > accounting.pages_received:
+        return "", ""
+    counted = (
         f"Of the {accounting.pages_received} pages received, exactly "
-        f"{accounting.pages_remarked} pages were remarked upon, as the remaining "
-        f"{accounting.pages_other} pages are other documents such as:"
+        f"{accounting.pages_remarked} pages were remarked upon"
     )
+    if not accounting.pages_other:
+        exclusion = f"{counted}."
+    elif accounting.excluded_types:
+        exclusion = (
+            f"{counted}, as the remaining {accounting.pages_other} pages are other "
+            "documents such as:"
+        )
+    else:
+        exclusion = (
+            f"{counted}, as the remaining {accounting.pages_other} pages are other documents."
+        )
     duplicates = (
         f"In addition, the records included {accounting.duplicate_pages} pages of duplicate "
         "copies of records already counted above."
