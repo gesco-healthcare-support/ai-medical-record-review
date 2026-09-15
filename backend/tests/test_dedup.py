@@ -14,6 +14,20 @@ class _Resp:
         self.text = json.dumps(payload)
 
 
+def _stub_provider(monkeypatch, fake):
+    """Route `dedup.get_provider` to a stub whose `generate_structured` calls `fake(**kwargs)`.
+
+    `confirm_cluster` asks the provider seam now, not google-genai, so stubbing
+    `generate_with_retry` by name would leave the real call in place.
+    """
+
+    class _Provider:
+        def generate_structured(self, **kwargs):
+            return fake(**kwargs)
+
+    monkeypatch.setattr(dedup, "get_provider", lambda *_a, **_k: _Provider())
+
+
 def test_cluster_rows_groups_near_identical_and_excludes_distinct():
     items = [
         {"idx": 0, "text": "patient reports lower back pain lumbar tenderness physical therapy"},
@@ -77,19 +91,13 @@ def test_confirm_cluster_returns_confirmed_subset(monkeypatch):
         {"title": "B", "date": "2", "text": "y"},
         {"title": "C", "date": "3", "text": "z"},
     ]
-    monkeypatch.setattr(dedup, "get_genai_client", lambda: None)
-    monkeypatch.setattr(
-        dedup, "generate_with_retry", lambda *a, **k: _Resp({"duplicate_indices": [1, 3]})
-    )
+    _stub_provider(monkeypatch, lambda **_k: _Resp({"duplicate_indices": [1, 3]}))
     assert dedup.confirm_cluster(members, model="m") == [members[0], members[2]]
 
 
 def test_confirm_cluster_empty_when_model_finds_no_duplicates(monkeypatch):
     members = [{"title": "A", "date": "1", "text": "x"}, {"title": "B", "date": "2", "text": "y"}]
-    monkeypatch.setattr(dedup, "get_genai_client", lambda: None)
-    monkeypatch.setattr(
-        dedup, "generate_with_retry", lambda *a, **k: _Resp({"duplicate_indices": [1]})
-    )
+    _stub_provider(monkeypatch, lambda **_k: _Resp({"duplicate_indices": [1]}))
     assert dedup.confirm_cluster(members, model="m") == []
 
 
@@ -99,13 +107,70 @@ def test_confirm_cluster_failsafe_trusts_candidate_on_error(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("vertex down")
 
-    monkeypatch.setattr(dedup, "get_genai_client", lambda: None)
-    monkeypatch.setattr(dedup, "generate_with_retry", boom)
+    _stub_provider(monkeypatch, boom)
     assert dedup.confirm_cluster(members, model="m") == members
 
 
 def test_confirm_cluster_single_member_returns_empty():
     assert dedup.confirm_cluster([{"text": "x"}]) == []
+
+
+def test_the_model_is_resolved_for_the_backend_not_read_from_classify_model(monkeypatch):
+    """WHEN `dedup` resolves to vllm, THE SYSTEM SHALL send VLLM_MODEL, not classify_model.
+
+    NOTE THE MISSING `model=` ARGUMENT. Every other test in this file passes `model="m"`, so none
+    of them reaches the default at all - the resolver was entirely unexercised before this.
+
+    Only the vllm case can catch it. On Gemini `model_for_stage("dedup")` returns classify_model by
+    construction, so a service reading the raw setting is indistinguishable from one asking the
+    resolver until a stage actually moves.
+    """
+    from app.config import get_settings
+
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return _Resp({"duplicate_indices": [1, 2]})
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "llm_backend", "vllm")
+    monkeypatch.setattr(settings, "vllm_model", "served-by-the-pod/model")
+    _stub_provider(monkeypatch, _capture)
+
+    members = [{"title": "A", "date": "1", "text": "x"}, {"title": "B", "date": "2", "text": "y"}]
+    dedup.confirm_cluster(members)
+
+    assert seen["model"] == "served-by-the-pod/model"
+    # Control: the two genuinely differ here, or the assertion above passes trivially.
+    assert settings.classify_model != "served-by-the-pod/model"
+
+
+def test_the_confirm_request_carries_the_cap_the_schema_and_the_dedup_stage(monkeypatch):
+    """WHEN confirm_cluster runs, THE SYSTEM SHALL send the 256-token cap, the lowercase schema and
+    the `dedup` stage.
+
+    The cap is asserted because the seam sends `max_output_tokens` only when it is set - dropping
+    it would uncap a call that has been bounded since it was written, and nothing else here would
+    notice. The schema is asserted lowercase because the uppercase spelling still works on Gemini
+    and silently fails to constrain any other backend.
+    """
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return _Resp({"duplicate_indices": [1, 2]})
+
+    _stub_provider(monkeypatch, _capture)
+    members = [{"title": "A", "date": "1", "text": "x"}, {"title": "B", "date": "2", "text": "y"}]
+    dedup.confirm_cluster(members, model="m")
+
+    assert seen["stage"] == "dedup"
+    assert seen["max_output_tokens"] == 256
+    assert seen["temperature"] == 0.0
+    assert seen["system"] == dedup.CONFIRM_PROMPT
+    assert seen["schema"]["type"] == "object"
+    assert seen["schema"]["properties"]["duplicate_indices"]["type"] == "array"
 
 
 def _members(*pairs, category=None):
@@ -590,8 +655,7 @@ class TestConfirmGroups:
             calls.append(payload)
             return _Resp({"duplicate_indices": payload})
 
-        monkeypatch.setattr(dedup, "get_genai_client", lambda: None)
-        monkeypatch.setattr(dedup, "generate_with_retry", fake)
+        _stub_provider(monkeypatch, fake)
         return calls
 
     def test_a_second_pair_in_one_candidate_is_found_instead_of_dropped(self, monkeypatch):
@@ -640,8 +704,7 @@ class TestConfirmGroups:
             calls.append(1)
             raise RuntimeError("vertex down")
 
-        monkeypatch.setattr(dedup, "get_genai_client", lambda: None)
-        monkeypatch.setattr(dedup, "generate_with_retry", boom)
+        _stub_provider(monkeypatch, boom)
 
         assert dedup.confirm_groups(members, model="m") == [members]
         assert len(calls) == 1

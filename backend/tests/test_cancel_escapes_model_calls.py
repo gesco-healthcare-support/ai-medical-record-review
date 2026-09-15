@@ -1,10 +1,17 @@
 """A reviewer's Stop is a signal, not a model failure.
 
-`generate_with_retry` raises JobCancelled out of its backoff sleep as a cooperative control-flow
-signal, meant to unwind through the worker pool to `_run`'s handler. JobCancelled subclasses
-Exception, so any call site that wraps the model call in a broad `except Exception` swallows it:
-the job keeps running until the next cancel check, the log blames the model for a deliberate user
-action, and that unit of work silently takes its fallback.
+JobCancelled is raised out of a cancellable sleep as a cooperative control-flow signal, meant to
+unwind through the worker pool to `_run`'s handler. It subclasses Exception, so any call site that
+wraps the model call in a broad `except Exception` swallows it: the job keeps running until the
+next cancel check, the log blames the model for a deliberate user action, and that unit of work
+silently takes its fallback.
+
+WHICH LAYER RAISES IT DEPENDS ON THE CALL SITE, which is why the stubs below are not uniform. A
+site still calling google-genai directly gets the signal from `generate_with_retry`; a site routed
+through the provider seam gets it from the provider - on Gemini via the `generate_with_retry` it
+wraps, on vLLM from its own sleep. Both unwind identically, so moving a service across the seam
+changes what these tests STUB and not what they assert. The duplicate confirmation and the summary
+audit are on the seam; the other three are not, yet.
 
 `llm_classify` was fixed for this and pinned in test_classification.py. These are the other four
 call sites with the same shape, found by walking the AST for model calls inside a broad catch
@@ -27,8 +34,14 @@ def _cancels(*_args, **_kwargs):
 def test_a_stop_escapes_the_duplicate_confirmation(monkeypatch):
     """Swallowed, this returned `list(members)` - every candidate confirmed as a duplicate on the
     strength of a call that never happened."""
-    monkeypatch.setattr(dedup, "generate_with_retry", _cancels)
-    monkeypatch.setattr(dedup, "get_genai_client", object)
+
+    # Routed through the provider seam now, like the summary audit below - so the signal comes from
+    # the provider's own cancellable sleep rather than from `generate_with_retry` directly.
+    class _Provider:
+        def generate_structured(self, *_a, **_k):
+            raise JobCancelled(3, 170)
+
+    monkeypatch.setattr(dedup, "get_provider", lambda *_a, **_k: _Provider())
     members = [
         {"idx": 1, "title": "A", "date": "01/01/2020", "source_text": "x" * 50},
         {"idx": 2, "title": "A", "date": "01/01/2020", "source_text": "x" * 50},

@@ -15,11 +15,8 @@ import json
 import logging
 import re
 
-from google.genai import types
-
 from app.config import get_settings
-from app.services.genai_client import get_genai_client
-from app.services.genai_retry import generate_with_retry
+from app.services.llm import TextPart, get_provider
 from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
@@ -35,9 +32,12 @@ CONFIRM_PROMPT = (
     "same document. If they are all distinct documents, return an empty list."
 )
 
+# Ordinary JSON Schema, lowercase. `gemini.py`'s `to_gemini_schema` rewrites these type names into
+# google-genai's uppercase dialect, so writing one vendor's spelling here would make that vendor the
+# default and every other one the special case. Shape unchanged from the uppercase version.
 _CONFIRM_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {"duplicate_indices": {"type": "ARRAY", "items": {"type": "INTEGER"}}},
+    "type": "object",
+    "properties": {"duplicate_indices": {"type": "array", "items": {"type": "integer"}}},
     "required": ["duplicate_indices"],
 }
 
@@ -358,7 +358,9 @@ def confirm_cluster(members, model=None):
     """
     if len(members) < 2:
         return []
-    model = model or get_settings().classify_model
+    # Resolved for the backend that answers THIS stage rather than read from classify_model, which
+    # dedup shares with categorization. A caller-supplied model still wins, as before.
+    model = model or get_settings().model_for_stage("dedup")
     blocks = []
     for i, m in enumerate(members, 1):
         excerpt = (m.get("text") or "")[:_EXCERPT_CHARS]
@@ -366,17 +368,17 @@ def confirm_cluster(members, model=None):
             f"[{i}] title: {m.get('title') or '-'} | date: {m.get('date') or '-'}\n{excerpt}"
         )
     try:
-        response = generate_with_retry(
-            get_genai_client(),
+        response = get_provider().generate_structured(
             model=model,
-            contents="\n\n---\n\n".join(blocks),
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                max_output_tokens=256,
-                response_mime_type="application/json",
-                response_schema=_CONFIRM_SCHEMA,
-                system_instruction=CONFIRM_PROMPT,
-            ),
+            system=CONFIRM_PROMPT,
+            parts=[TextPart("\n\n---\n\n".join(blocks))],
+            schema=_CONFIRM_SCHEMA,
+            temperature=0.0,
+            # Kept at 256: the reply is a short list of indices, and the cap has bounded this call
+            # since it was written. The seam sends the field only when set, so it must be passed
+            # explicitly rather than inherited.
+            max_output_tokens=256,
+            stage="dedup",
         )
         data = json.loads((response.text or "").strip())
         idxs = sorted(
@@ -389,9 +391,10 @@ def confirm_cluster(members, model=None):
         confirmed = [members[i - 1] for i in idxs]
         return confirmed if len(confirmed) >= 2 else []
     except JobCancelled:
-        # NOT a model failure - the reviewer pressed Stop. `generate_with_retry` raises this
-        # out of its backoff sleep as a cooperative signal meant to unwind to _run's handler,
-        # and JobCancelled subclasses Exception, so the broad catch below swallowed it: the
+        # NOT a model failure - the reviewer pressed Stop. The provider raises this out of its own
+        # cancellable sleep as a cooperative signal meant to unwind to _run's handler - Gemini via
+        # the `generate_with_retry` it wraps, vLLM directly - and JobCancelled subclasses Exception,
+        # so the broad catch below swallowed it: the
         # log blamed the model for a deliberate user action, in exactly the place an operator
         # looks to ask whether Vertex was rejecting calls, and this unit of work silently took
         # its fallback. Same fix as `llm_classify`, which is where the shape was first found.
