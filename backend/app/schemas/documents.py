@@ -85,12 +85,25 @@ class BundlePayload(BaseModel):
 
 
 class HeaderPayload(BaseModel):
-    """Reviewer-edited report header (PUT /documents/{id}/header)."""
+    """Reviewer-edited report header (PUT /documents/{id}/header).
+
+    Every field defaults to empty, so a client that predates one of them clears it rather
+    than failing - the same contract the original four already had.
+
+    `pages_received` is a STRING on the wire even though the column is an integer. The form
+    sends what was typed, an empty box has to mean 'unset' rather than zero, and rejecting a
+    typo with a 422 would lose the rest of the header the reviewer had just filled in. The
+    route coerces; anything unparseable clears the field."""
 
     patient_first_name: str = ""
     patient_last_name: str = ""
     patient_dob: str = ""
     law_firm: str = ""
+    attorney_name: str = ""
+    doctor: str = ""
+    letter_type: str = ""
+    letter_date: str = ""
+    pages_received: str = ""
 
 
 class ZipBundle(BaseModel):

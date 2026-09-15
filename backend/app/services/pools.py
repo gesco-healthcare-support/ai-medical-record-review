@@ -9,7 +9,8 @@ unfinished item means for its pool (keep a boundary split, fail the job, degrade
 """
 
 from collections.abc import Iterator
-from concurrent.futures import Future, TimeoutError as FuturesTimeoutError, as_completed
+from concurrent.futures import Future, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 
 class PoolTimeout(Exception):

@@ -767,9 +767,9 @@ def test_summarize_persists_per_row_and_reuses_done_on_rerun(monkeypatch):
 def test_summarize_pauses_and_schedules_resume_on_transient(monkeypatch):
     """Sustained transient 429 -> stop, keep progress, schedule a delayed resume, state=paused
     (NOT error); the document stays in-flight ('summarizing')."""
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
@@ -822,9 +822,9 @@ def test_summarize_gives_up_when_no_row_ever_succeeds(monkeypatch):
     """A model that admits nothing ends the job in ONE pass instead of pausing into an endless
     resume cycle. Zero successes is the discriminator: it is what 0/8 admission looks like, and it
     is what a transient blip with some rows getting through does not."""
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.errors import GENERIC_USER_MESSAGE
     from app.worker import tasks as tasks_mod
 
@@ -853,9 +853,9 @@ def test_summarize_gives_up_when_no_row_ever_succeeds(monkeypatch):
 def test_summarize_does_not_give_up_once_a_row_has_succeeded(monkeypatch):
     """WHILE at least one row has succeeded, sustained transient failures stay a PAUSE: rows are
     getting through, so the model is not refusing everything and the rest deserve their retry."""
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
@@ -899,9 +899,9 @@ def test_a_success_between_failures_resets_the_pause_streak(monkeypatch):
 
     One lane, so completion order is submission order; with the shipped five the streak is a race.
     """
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
@@ -934,9 +934,9 @@ def test_a_success_between_failures_resets_the_pause_streak(monkeypatch):
 def test_giving_up_stops_submitting_the_remaining_rows(monkeypatch):
     """Giving up must stop WORK, not just relabel the outcome: the point is to spend three calls
     finding out the model is refusing, not a whole document's worth."""
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     calls = {"n": 0}
@@ -966,9 +966,9 @@ def test_giving_up_stops_submitting_the_remaining_rows(monkeypatch):
 def test_giving_up_wins_over_pausing_at_the_default_thresholds(monkeypatch):
     """Both dials ship at 3, so a total refusal satisfies each at the same moment. Ending the job
     must win: pausing would auto-resume into the same wall, which IS the 96-minute failure."""
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     settings = get_settings()
@@ -1016,9 +1016,9 @@ def test_a_success_still_running_when_the_pause_trips_is_not_thrown_away(monkeyp
     """
     import threading
 
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     monkeypatch.setattr(get_settings(), "summarize_giveup_after_failures", 1)
@@ -1119,7 +1119,6 @@ def test_summarize_pauses_when_pool_times_out(monkeypatch):
     import time
 
     import app.services.summarize_engine as se
-
     from app.worker import tasks as tasks_mod
 
     monkeypatch.setattr(
@@ -2617,9 +2616,9 @@ def test_a_notice_row_is_not_counted_as_proof_the_model_answers(monkeypatch):
     """`generated` gates the give-up guard, and a notice involves no model call at all. Counting it
     would break `generated == 0` on a document whose every real row is being refused, so the job
     would pause and auto-resume into the same refusal - the 96-minute grind the guard prevents."""
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
@@ -2649,7 +2648,6 @@ def test_the_worker_seeds_each_row_with_the_pages_that_failed_extraction(monkeyp
     """summarize_engine is DB-free, so the pages `page_texts` records as failed reach it as row data.
     One query for the whole document, sliced to each row's own range."""
     import app.services.summarize_engine as se
-
     from app.models import PageText
 
     seen: dict[int, list] = {}
@@ -2723,9 +2721,9 @@ def test_pipeline_workers_agrees_between_config_and_compose():
 def test_one_success_keeps_the_job_paused_at_any_concurrency(monkeypatch, lanes):
     """WHILE at least one row has succeeded, THE SYSTEM SHALL pause rather than end - whatever the
     lane count, and whatever order the results land in."""
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
@@ -2760,9 +2758,9 @@ def test_one_success_keeps_the_job_paused_at_any_concurrency(monkeypatch, lanes)
 def test_a_model_refusing_everything_still_ends_the_job(monkeypatch, lanes):
     """The other direction, so the fix does not simply make give-up unreachable: with NO row
     succeeding, the job must still END rather than pause into a resume loop."""
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
@@ -2803,9 +2801,9 @@ def test_giving_up_does_not_report_the_skipped_rows_as_failures(monkeypatch, lan
     What IS guaranteed: a row that never ran is never reported as a failure. So every reported reason
     must be the real refusal, never a CancelledError leaking through `.result()`.
     """
-    import app.services.summarize_engine as se
     from google.genai import errors
 
+    import app.services.summarize_engine as se
     from app.worker import tasks as tasks_mod
 
     def fake(pdf_path, row, model=None, prompt=None, standalone_studies=None, **_kw):
@@ -3492,7 +3490,6 @@ def test_a_row_reusing_the_duplicate_checks_text_still_names_its_unreadable_page
     single fresh extraction - which is what makes this the reuse case and not a re-read in disguise.
     """
     import app.services.summarize_engine as se
-
     from app.models import PageText
 
     def boom(*_a, **_kw):

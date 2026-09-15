@@ -8,12 +8,11 @@ and are removed before and after every test, so runs are idempotent and never to
 
 import asyncio
 import os
+import re
+import socket
 import sys
 import uuid
 from collections.abc import AsyncIterator, Iterator
-
-import re
-import socket
 from pathlib import Path
 
 import pytest

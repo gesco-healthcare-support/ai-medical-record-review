@@ -334,6 +334,7 @@ function ReviewBody({
         <>
           <HeaderBar
             documentId={documentId}
+            doctors={wf.doctors}
             header={wf.header}
             onSaved={(f) => wf.setHeader(f)}
           />
@@ -362,6 +363,7 @@ function ReviewBody({
           documentId={documentId}
           filename={wf.filename}
           categories={wf.categories}
+          doctors={wf.doctors}
           header={wf.header}
           onHeaderSaved={wf.setHeader}
           onGotoSummarizeStep={onGotoSummarizeStep}

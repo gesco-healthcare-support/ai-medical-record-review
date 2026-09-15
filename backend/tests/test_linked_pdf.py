@@ -3,6 +3,7 @@
 import pymupdf
 
 from app.services.linked_pdf import build_linked_pdf
+from app.services.reporting import ReportDetails
 
 
 def _make_source(tmp_path, pages: int) -> str:
@@ -38,7 +39,7 @@ def test_build_linked_pdf_structure_and_links(tmp_path):
         patient_name="Synthetic Patient",
         patient_dob="01/01/1990",
         qme_or_ame="QME",
-        lawfirm="Example Firm",
+        details=ReportDetails(lawfirm="Example Firm"),
     )
 
     doc = pymupdf.open(stream=data, filetype="pdf")
@@ -88,7 +89,7 @@ def test_build_linked_pdf_links_every_title_in_a_multipage_letter(tmp_path):
         patient_name="Synthetic Patient",
         patient_dob="01/01/1990",
         qme_or_ame="QME",
-        lawfirm="Example Firm",
+        details=ReportDetails(lawfirm="Example Firm"),
     )
     doc = pymupdf.open(stream=data, filetype="pdf")
     summ = doc.page_count - (n + 5)
@@ -109,7 +110,13 @@ def test_build_linked_pdf_links_every_title_in_a_multipage_letter(tmp_path):
 def test_build_linked_pdf_empty_entries_is_summary_only(tmp_path):
     source = _make_source(tmp_path, pages=2)
     data = build_linked_pdf(
-        source, [], num_pages=2, patient_name="P", patient_dob="-", qme_or_ame="", lawfirm="Firm"
+        source,
+        [],
+        num_pages=2,
+        patient_name="P",
+        patient_dob="-",
+        qme_or_ame="",
+        details=ReportDetails(lawfirm="Firm"),
     )
     doc = pymupdf.open(stream=data, filetype="pdf")
     assert doc.page_count >= 2  # letter (>=1 page) + 2 source pages
@@ -145,7 +152,7 @@ def test_the_running_header_carries_the_patient_name_and_dob(tmp_path):
         patient_name="Synthetic Patient",
         patient_dob="01/01/1990",
         qme_or_ame="QME",
-        lawfirm="Example Firm",
+        details=ReportDetails(lawfirm="Example Firm"),
     )
     doc = pymupdf.open(stream=data, filetype="pdf")
     summary_text = doc[0].get_text()

@@ -15,15 +15,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "eval")
 
 from date_in_source import (  # noqa: E402
     ABSENT,
+    DAY_DIFFERS,
     ELSEWHERE,
     IN_ROW,
     NO_DATE,
     NOT_DELIVERED,
-    DAY_DIFFERS,
     WITHIN_MARGIN,
     classify_date,
-    one_copy_per_pdf,
     date_patterns,
+    one_copy_per_pdf,
     summarise,
 )
 
