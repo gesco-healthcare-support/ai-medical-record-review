@@ -710,6 +710,9 @@ class Settings(BaseSettings):
     # from 31% fewer calls. So it trades 8 of 117 correct suggestions for 759 fewer model calls, and
     # precision goes UP because the boundaries it drops are the ones the oracle was worst on.
     #
+    # THOSE FIGURES PRE-DATE the images-first reordering in `verify_pass._same_document` and have
+    # not been re-measured. The SHAPE of the trade still holds; the levels are unverified.
+    #
     # Defaults FALSE, which is today's behaviour. It is a live change to what a reviewer is shown,
     # so it ships as a capability and gets turned on deliberately rather than by upgrading.
     verify_triggered_only: bool = False

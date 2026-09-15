@@ -7,6 +7,9 @@ the bound on a net it never bounds: at roughly 88 boundaries per record the cap 
 Measured on 28 reviewer-corrected records (2,456 boundaries, 239 reviewer merges), which is what the
 narrow net is for: every boundary gives 57.4% precision at 49.0% recall, the triggered set alone
 gives 60.2% at 45.6% from 31% fewer calls.
+
+Those figures pre-date the images-first reordering in `_same_document` and have not been re-measured.
+They describe the shape of the trade, not the current levels.
 """
 
 from types import SimpleNamespace

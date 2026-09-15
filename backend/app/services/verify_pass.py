@@ -163,6 +163,11 @@ def suspect_indices(rows, cap=None, triggered_only=None):
     record never binds - so ``triggered_only`` is what actually expresses "the triggered set,
     whatever size it is". Measured on 28 reviewer-corrected records: the wide net scores 57.4%
     precision at 49.0% recall, the narrow one 60.2% at 45.6% from 31% fewer calls.
+
+    THOSE FOUR FIGURES PRE-DATE THE IMAGES-FIRST REORDERING in `_same_document` above and have not
+    been re-measured since. What survives is the SHAPE of the trade - the narrow net buys precision
+    by giving up recall, on 31% fewer calls - not the levels. Re-measure before quoting any of them
+    as current.
     """
     settings = get_settings()
     if cap is None:
