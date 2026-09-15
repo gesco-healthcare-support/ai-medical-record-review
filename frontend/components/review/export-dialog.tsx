@@ -200,7 +200,11 @@ export function ExportDialog({
               runExport("export/zip", "record.zip", {
                 // `label` carries the SLUG, matching what the bundle page itself sends, so a
                 // member of the archive is named exactly as its standalone download would be.
-                bundles: BUNDLES.map((b) => ({ label: b.slug, categories: b.categories })),
+                bundles: BUNDLES.map((b) => ({
+                  label: b.slug,
+                  categories: b.categories,
+                  coverHeading: b.coverHeading,
+                })),
               })
             }
             disabled={busy}

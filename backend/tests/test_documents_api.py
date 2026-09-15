@@ -10,6 +10,7 @@ import io
 import zipfile
 
 import pytest
+from pypdf import PdfReader
 from sqlalchemy import event, select
 
 from app.api.documents import _pages_received
@@ -4153,8 +4154,12 @@ async def test_an_account_with_no_display_name_omits_the_labor_code_claim(authed
 
 
 def _pdf_text(blob):
-    """Every page's text, whitespace collapsed, so an assertion does not depend on where the
-    layout engine happened to break a line."""
+    """Every page's text with whitespace collapsed.
+
+    Collapsed because a table cell WRAPS: "ACME IMAGING CENTER" comes back as three lines when
+    it lands in the narrow PROVIDER column, so a substring match on the raw extraction asserts
+    where the layout engine happened to break a line rather than what the page says.
+    """
     import pymupdf
 
     doc = pymupdf.open(stream=blob, filetype="pdf")
@@ -4203,3 +4208,134 @@ async def test_with_no_cover_sheet_count_the_letter_falls_back_to_the_file(authe
     built = docxlib.Document(io.BytesIO(resp.content))
     intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
     assert "244 pages of medical records" in intro
+
+
+_COVER_HEADING = "LIST OF DIAGNOSTIC AND OPERATIVE REPORTS"
+
+
+async def _seed_titled_summary(doc_id, title, *, date="05/16/11", row_start=1, row_end=2):
+    """A summary carrying the DELIVERED header line, which is what the cover list splits."""
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        session.add(
+            Summary(
+                document_id=doc_id,
+                job_id=job.id,
+                idx=0,
+                title=title,
+                text="body",
+                date=date,
+                row_start=row_start,
+                row_end=row_end,
+                row_category=_VALID_CATEGORY,
+            )
+        )
+        session.commit()
+
+
+async def test_the_diagnostics_download_opens_on_a_list_of_the_reports(authed):
+    """DEMONSTRATES what the reviewers asked for: "for the diagnostics we just want a PDF with
+    the documents together. Preferably with a cover page that includes a list of reports".
+
+    The list is built from the DELIVERED title, so it carries the provider and the study rather
+    than whatever segmentation read off the page."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _seed_titled_summary(
+        doc_id, "JANE SMITH, M.D. ACME IMAGING CENTER. MRI OF THE CERVICAL SPINE."
+    )
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
+    )
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={
+            "categories": [_VALID_CATEGORY],
+            "label": "diagnostic-operative",
+            "coverHeading": _COVER_HEADING,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    text = _pdf_text(resp.content)
+    assert _COVER_HEADING in text
+    assert "ACME IMAGING CENTER" in text
+    assert "MRI OF THE CERVICAL SPINE" in text
+    assert "05/16/11" in text
+
+
+async def test_a_bundle_asking_for_no_cover_page_does_not_get_one(authed):
+    """GUARD. Depositions was not asked for a list page, so it sends no heading and the download
+    stays exactly the documents."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _seed_titled_summary(doc_id, "A DOE, M.D. SOME FACILITY. DEPOSITION TRANSCRIPT.")
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
+    )
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "label": "depositions"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "LIST OF" not in _pdf_text(resp.content)
+    assert len(PdfReader(io.BytesIO(resp.content)).pages) == 2
+
+
+async def test_the_copy_in_the_folder_carries_the_same_cover_page(authed):
+    """The archive must hand over the file the button hands over - the defect this whole export
+    path keeps rediscovering. One builder, so the cover cannot be on one and not the other."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _seed_titled_summary(
+        doc_id, "JANE SMITH, M.D. ACME IMAGING CENTER. MRI OF THE CERVICAL SPINE."
+    )
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
+    )
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export/zip",
+        json={
+            "patientName": "Synthetic Patient",
+            "bundles": [
+                {
+                    "label": "diagnostic-operative",
+                    "categories": [_VALID_CATEGORY],
+                    "coverHeading": _COVER_HEADING,
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        member = archive.read("diagnostic-operative.pdf")
+    assert _COVER_HEADING in _pdf_text(member)
+
+
+async def test_a_record_with_nothing_to_list_gets_no_empty_table(authed):
+    """GUARD. A bordered table of blank cells in front of the documents is worse than no cover
+    page, so a record whose rows carry no dates and no titles skips it."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
+    )
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={
+            "categories": [_VALID_CATEGORY],
+            "label": "diagnostic-operative",
+            "coverHeading": _COVER_HEADING,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert _COVER_HEADING not in _pdf_text(resp.content)
