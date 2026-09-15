@@ -95,10 +95,72 @@ def intro_sentence(num_pages, lawfirm) -> str:
 INLINE_EMPHASIS_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_")
 
 
-def _run(paragraph, s, *, bold=False, italic=False, size=None):
+# The two tiers the reviewers' own reports use, read off the reference MRR they supplied
+# on 2026-09-14 - at run level, over its thirteen entries:
+#
+#   KEY       Diagnoses, Work Status, Treatment Plan, Return to Clinic.
+#             The label is BOLD + UNDERLINED and the text that follows it is bold too.
+#   ORDINARY  every other label - DOI, Physical Examination, Complaints, Treatment
+#             Progress. The label is UNDERLINED only and its text is plain.
+#
+# The rule underneath is semantic rather than a list: what was FOUND and what HAPPENS NEXT
+# is emphasised whole, while descriptive context gets an underlined label and a plain body.
+#
+# Measured against 3,133 delivered summaries before adopting it: `diagnoses` 1,034,
+# `treatment plan` 1,031, `work status` 802 and the singular `diagnosis` 557, so 54.3% of
+# summaries carry at least one. `return to clinic` is theirs and appears in NONE of ours -
+# carried anyway, so their wording is already answered if it starts.
+KEY_ENTRY_LABELS: frozenset[str] = frozenset(
+    {"diagnoses", "diagnosis", "work status", "treatment plan", "return to clinic"}
+)
+
+
+def _label_key(label: str) -> str:
+    r"""A bold span reduced to the form KEY_ENTRY_LABELS is written in.
+
+    Ours are not spelled consistently - `Diagnosis` beside `Diagnoses`, `Physical Exam`
+    beside `Physical Examination` - and a trailing colon is optional.
+
+    `str.strip` rather than a regex. `re.sub(r"[\s:.\-]+$", ...)` does the same job and is
+    super-linear: a repeated character class anchored at the end makes the engine retry from
+    every position on a label that does not end in one of those characters, which is most of
+    them. Sonar refused it as python:S8786, and it is the same shape as the leading `\s*` in
+    a substitution pattern that #162 had to bound. `strip` is one linear pass."""
+    return (label or "").lower().strip(" \t\r\n:.-")
+
+
+def entry_body_segments(text: str) -> list[tuple[str, bool, bool, bool]]:
+    """One entry body as ``(text, bold, italic, underline)`` runs, in the two tiers above.
+
+    ONE parser, two emitters: `build_mrr_document` turns these into Word runs and
+    `linked_pdf` into <b>/<i>/<u> spans. Three separate copies of an emphasis walk is what
+    #284 had to undo, so the classification is made once and both renderers read it.
+
+    Every `**span**` is treated as a LABEL, because in the reviewers' document the
+    underlined runs ARE the labels. A model that bolds something mid-sentence therefore
+    gets it underlined rather than bold - visible and harmless, and the alternative is
+    guessing which bold spans are headings."""
+    segments: list[tuple[str, bool, bool, bool]] = []
+    pos, carry_bold = 0, False
+    for m in INLINE_EMPHASIS_RE.finditer(text or ""):
+        if m.start() > pos:
+            segments.append((text[pos : m.start()], carry_bold, False, False))
+        if m.group(1) is not None:
+            carry_bold = _label_key(m.group(1)) in KEY_ENTRY_LABELS
+            segments.append((m.group(1), carry_bold, False, True))
+        else:
+            segments.append((m.group(2) or m.group(3), carry_bold, True, False))
+        pos = m.end()
+    if pos < len(text or ""):
+        segments.append((text[pos:], carry_bold, False, False))
+    return [s for s in segments if s[0]]
+
+
+def _run(paragraph, s, *, bold=False, italic=False, size=None, underline=False):
     run = paragraph.add_run(s)
     run.bold = bold
     run.italic = italic
+    run.underline = underline
     run.font.name = _REPORT_FONT
     run.font.size = size or Pt(11)
     return run
@@ -274,9 +336,12 @@ def build_mrr_document(entries, num_pages, patient_name, patient_dob, qme_or_ame
         # Justified: the report is read as a finished document, and a ragged right edge on every
         # record is what made the export look like a draft.
         body.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
-        _add_inline_runs(body, entry["summaryTitle"], bold=True)
+        # The entry header is PLAIN in the reviewers' own reports - date, author, facility
+        # and type read as a sentence rather than a heading. Ours bolded it.
+        _add_inline_runs(body, entry["summaryTitle"])
         _run(body, TITLE_SEPARATOR)
-        _add_inline_runs(body, entry["summaryText"])
+        for chunk, bold, italic, underline in entry_body_segments(entry["summaryText"]):
+            _run(body, chunk, bold=bold, italic=italic, underline=underline)
 
     # `nine_title_format` read `fourth_title.runs[0]` - the SUMMARY_INTRO paragraph's run, not this
     # one. Two visible defects in the delivered .docx from one wrong name: the conclusion got no
