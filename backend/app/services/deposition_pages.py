@@ -21,12 +21,12 @@ import io
 import json
 import logging
 
-from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
-from app.services.genai_client import get_genai_client
-from app.services.genai_retry import generate_with_retry
+from app.errors import TranscriptPagesUnreadableError
+from app.services.llm import DocumentPart, TextPart, provider_for_stage
+from app.services.rasterise import page_image_parts
 from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
@@ -58,19 +58,24 @@ _PROMPT = (
     '"printed": <the printed number, or 0>}]}'
 )
 
+# ORDINARY JSON Schema, lowercase. It was written in google-genai's uppercase dialect when this
+# called that SDK directly; the provider seam takes the neutral spelling and each backend translates
+# to its own (`llm/gemini.py::to_gemini_schema` puts the uppercase back, so the Gemini request is
+# byte-identical to what it has always sent). Writing it in one vendor's dialect would silently make
+# that vendor the default and the other the special case.
 _SCHEMA = {
-    "type": "OBJECT",
+    "type": "object",
     "properties": {
         "pages": {
-            "type": "ARRAY",
+            "type": "array",
             "items": {
-                "type": "OBJECT",
+                "type": "object",
                 "properties": {
                     "i": {
-                        "type": "INTEGER",
+                        "type": "integer",
                         "description": "1-based position among attached pages",
                     },
-                    "printed": {"type": "INTEGER", "description": "Printed page number, or 0"},
+                    "printed": {"type": "integer", "description": "Printed page number, or 0"},
                 },
                 "required": ["i", "printed"],
             },
@@ -80,6 +85,31 @@ _SCHEMA = {
 }
 
 
+def _isolated_parts(pdf_path, start, last, settings):
+    """This transcript's first pages, whose SHAPE differs per backend rather than its content.
+
+    vLLM cannot carry an inline PDF at all: `llm/vllm.py` converts parts through
+    `llm/openai.py::_to_messages`, which raises TypeError on a `DocumentPart` because chat
+    completions has no such part. So the pages are rasterised there - and at
+    `deposition_image_long_edge_px`, NOT the summarize target, because a printed page number sits in
+    a corner in small type and 1024 was measured on SEGMENTATION, which judges page layout. Gemini
+    keeps the exact PDF bytes it has always been sent and rasterises nothing.
+
+    Takes `last` already bounded by the caller, so both paths send exactly the same pages.
+    """
+    if settings.backend_for("deposition") == "vllm":
+        return page_image_parts(
+            pdf_path, start, last, _MAX_PAGES, settings.deposition_image_long_edge_px
+        )
+    reader = PdfReader(pdf_path)
+    writer = PdfWriter()
+    for page in range(int(start) - 1, int(last)):
+        writer.add_page(reader.pages[page])
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return [DocumentPart(data=buffer.getvalue(), mime_type="application/pdf")]
+
+
 def transcript_page_offset(pdf_path, start, end, model=None) -> int | None:
     """The offset to ADD to a record page number to get this transcript's printed page number.
 
@@ -87,45 +117,62 @@ def transcript_page_offset(pdf_path, start, end, model=None) -> int | None:
     caller must treat as "produce no page citations" rather than falling back to record numbers - a
     citation that looks like a transcript page but is not one is the failure this exists to prevent.
 
-    Requires ``_MIN_AGREEING`` pages to agree on the same offset. Never raises.
+    Requires ``_MIN_AGREEING`` pages to agree on the same offset.
+
+    RAISES ``TranscriptPagesUnreadableError`` on a TRUNCATED reply, and only then. Every other
+    failure still returns None, so a transcript whose pagination genuinely cannot be established
+    behaves exactly as it always has. Adrian's call on 2026-09-16, taken over the recommendation to
+    keep the unconditional "never raises": a truncated reply and "no offset could be established"
+    were the same value, so nothing downstream could tell a failed read from a factual one.
     """
     settings = get_settings()
-    model = model or settings.genai_model
+    model = model or settings.model_for_stage("deposition")
     try:
         start, end = int(start), int(end)
-        reader = PdfReader(pdf_path)
         last = min(end, start + _MAX_PAGES - 1)
-        writer = PdfWriter()
-        for page in range(start - 1, last):
-            writer.add_page(reader.pages[page])
-        buffer = io.BytesIO()
-        writer.write(buffer)
-        part = types.Part.from_bytes(data=buffer.getvalue(), mime_type="application/pdf")
-        response = generate_with_retry(
-            get_genai_client(),
+        parts = _isolated_parts(pdf_path, start, last, settings)
+        parts.append(TextPart(_PROMPT))
+        # BOTH halves resolve through `deposition`. A bare `get_provider()` resolves the TRANSPORT
+        # through backend_for("summarize") while the model above resolves through
+        # backend_for("deposition"), so moving only this stage would send the pod's model name over
+        # the Gemini transport.
+        response = provider_for_stage("deposition").generate_structured(
             model=model,
-            contents=[part, _PROMPT],
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                max_output_tokens=400,
-                response_mime_type="application/json",
-                response_schema=_SCHEMA,
-                # Explicit, as summary_doi does: the retry seam defaults thinking_budget to 0, which a
-                # thinking model rejects with a 400 - and because this function is fail-safe, that
-                # rejection would be SILENT and every transcript would lose its citations.
-                thinking_config=types.ThinkingConfig(
-                    thinking_budget=settings.summary_thinking_budget
-                ),
-            ),
+            # No system instruction: this call never had one, and the seam sends the field only
+            # when it is set, so passing None keeps the Gemini request identical.
+            system=None,
+            parts=parts,
+            schema=_SCHEMA,
+            temperature=0.0,
+            max_output_tokens=settings.deposition_max_output_tokens,
+            # The stage selects thinking_for("deposition") = summary_thinking_budget, which is what
+            # this call passed explicitly before. The seam's default is 0, which a thinking model
+            # rejects with a 400 - and because this function is fail-safe, that rejection would be
+            # SILENT and every transcript would lose its citations.
+            stage="deposition",
         )
+        if response.truncated:
+            # The seam reports this; the direct google-genai call could not see it at all. A
+            # truncated reply is normally invalid JSON, so `json.loads` below would raise and the
+            # fail-safe would return None - indistinguishable from "this transcript has no
+            # establishable pagination". Raised INSIDE the try so it reaches the clause below.
+            raise TranscriptPagesUnreadableError(
+                f"the transcript page-number reply was truncated at "
+                f"{settings.deposition_max_output_tokens} output tokens for pages {start}-{last}"
+            )
         return _offset_from(json.loads((response.text or "").strip()), start, last)
-    except JobCancelled:
-        # NOT a model failure - the reviewer pressed Stop. `generate_with_retry` raises this
-        # out of its backoff sleep as a cooperative signal meant to unwind to _run's handler,
-        # and JobCancelled subclasses Exception, so the broad catch below swallowed it: the
-        # log blamed the model for a deliberate user action, in exactly the place an operator
-        # looks to ask whether Vertex was rejecting calls, and this unit of work silently took
-        # its fallback. Same fix as `llm_classify`, which is where the shape was first found.
+    except (JobCancelled, TranscriptPagesUnreadableError):
+        # NEITHER is a model failure the fail-safe should absorb, and both subclass Exception, so
+        # the broad catch below would swallow them without this clause.
+        #
+        # JobCancelled: the reviewer pressed Stop. The provider raises it out of its cancellable
+        # sleep as a cooperative signal meant to unwind to _run's handler. Swallowed, the log blamed
+        # the model for a deliberate user action, in exactly the place an operator looks to ask
+        # whether Vertex was rejecting calls. Same fix as `llm_classify`, where the shape was found.
+        #
+        # TranscriptPagesUnreadableError: raised three lines above, and swallowing it here would
+        # make the raise a no-op that still reads like a guard - the whole point is that a truncated
+        # read stops being reported as "no page numbers on this transcript".
         raise
     except Exception:
         logger.warning(

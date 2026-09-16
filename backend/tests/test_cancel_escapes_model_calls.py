@@ -6,13 +6,12 @@ wraps the model call in a broad `except Exception` swallows it: the job keeps ru
 next cancel check, the log blames the model for a deliberate user action, and that unit of work
 silently takes its fallback.
 
-WHICH LAYER RAISES IT DEPENDS ON THE CALL SITE, which is why the stubs below are not uniform. A
-site still calling google-genai directly gets the signal from `generate_with_retry`; a site routed
-through the provider seam gets it from the provider - on Gemini via the `generate_with_retry` it
-wraps, on vLLM from its own sleep. Both unwind identically, so moving a service across the seam
-changes what these tests STUB and not what they assert. The duplicate confirmation, the boundary
-verification, the summary audit and the injury-date read are on the seam; only the deposition page
-offset is not, yet.
+EVERY SITE BELOW IS NOW ON THE PROVIDER SEAM, so the stubs are uniform again. They were not while
+the migration was in flight: a site still calling google-genai directly got the signal from
+`generate_with_retry`, while a routed one gets it from the provider - on Gemini via the
+`generate_with_retry` it wraps, on vLLM from its own sleep. Both unwind identically, which is why
+moving a service across the seam changed what these tests STUB and not what they assert. The
+deposition page offset was the last one still calling the SDK directly, and it moved with T17.
 
 `llm_classify` was fixed for this and pinned in test_classification.py. These are the other four
 call sites with the same shape, found by walking the AST for model calls inside a broad catch
@@ -26,10 +25,6 @@ import pytest
 
 from app.services import dedup, deposition_pages, summary_doi, summary_verify, verify_pass
 from app.worker.failures import JobCancelled
-
-
-def _cancels(*_args, **_kwargs):
-    raise JobCancelled(3, 170)
 
 
 def test_a_stop_escapes_the_duplicate_confirmation(monkeypatch):
@@ -53,9 +48,21 @@ def test_a_stop_escapes_the_duplicate_confirmation(monkeypatch):
 
 def test_a_stop_escapes_the_transcript_page_read(monkeypatch):
     """Swallowed, this returned None - the deposition shipped with no page citations at all, and
-    the log said the page-number read had failed."""
-    monkeypatch.setattr(deposition_pages, "generate_with_retry", _cancels)
-    monkeypatch.setattr(deposition_pages, "get_genai_client", object)
+    the log said the page-number read had failed.
+
+    The re-raise clause here names TWO types now, so this test is load-bearing in a second way: a
+    clause narrowed to `TranscriptPagesUnreadableError` alone would leave a Stop swallowed again,
+    and nothing else would notice.
+    """
+
+    class _Provider:
+        def generate_structured(self, **_kwargs):
+            # JobCancelled carries progress, not a message - `JobCancelled("stopped")` raises
+            # TypeError, which this fail-safe absorbs, and the test then passes for the wrong reason
+            # by never constructing the signal at all. Caught while writing this.
+            raise JobCancelled(3, 170)
+
+    monkeypatch.setattr(deposition_pages, "provider_for_stage", lambda *_a, **_k: _Provider())
     monkeypatch.setattr(deposition_pages, "PdfReader", lambda *_a, **_k: _FakeReader())
     monkeypatch.setattr(deposition_pages, "PdfWriter", _FakeWriter)
     with pytest.raises(JobCancelled):

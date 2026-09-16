@@ -15,6 +15,7 @@ from app.errors import (
     AI_REJECTED_MESSAGE,
     GENERIC_USER_MESSAGE,
     EmptyExtractionError,
+    TranscriptPagesUnreadableError,
     user_facing_message,
 )
 from app.worker.failures import (
@@ -87,6 +88,24 @@ def test_empty_extraction_is_permanent():
 
 def test_unknown_exception_is_permanent():
     assert classify_failure(ValueError("unexpected")) == "permanent"
+
+
+def test_unreadable_transcript_pages_are_permanent_and_that_costs_the_whole_row():
+    """WHEN a transcript page-number read is truncated, THE SYSTEM SHALL classify it permanent.
+
+    PINNED BECAUSE THE CONSEQUENCE IS EASY TO MISS, and it was not priced when the raise was chosen.
+    On the WORKER path this is not "the summary ships without citations" - a permanent per-row
+    failure means that deposition gets NO summary and is reported to the reviewer as needing
+    attention. Before T17 the same truncation produced a complete summary with no page numbers.
+
+    That follows from the decision rather than contradicting it: refusing to answer beats asserting
+    a page number nobody can verify, and the reviewer is TOLD rather than handed a quiet gap. It is
+    recorded here so the trade is a choice on the record, not an accident of which base class the
+    new error happened to inherit.
+    """
+    assert classify_failure(TranscriptPagesUnreadableError("truncated at 2048")) == "permanent"
+    # And the reviewer sees the class's own wording, not the technical detail or a generic message.
+    assert "page numbers printed" in reason_for(TranscriptPagesUnreadableError("truncated")).lower()
 
 
 # --- reason_for -------------------------------------------------------------------------------
