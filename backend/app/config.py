@@ -301,8 +301,9 @@ class Settings(BaseSettings):
     # `_STAGE_RENDER_TARGETS` is what gives it the same boot guard.
     #
     # NOT MEASURED on our own pages. 1300 is transferred reasoning, not a reading of whether a
-    # transcript's printed corner number is legible at that render - see docs/backlog.md and the
-    # harness repo's pod checklist, where this is queued for the next rented pod.
+    # transcript's printed corner number is legible at that render. ISSUE #333 carries what to run
+    # and is to be resolved on the next rented pod. `_MIN_AGREEING` is 2, so a partial legibility
+    # failure surfaces as None - no citations - rather than as a wrong page number.
     deposition_image_long_edge_px: int = 1300
 
     # Which BACKEND answers a model call: "gemini", "openai" or "vllm".
