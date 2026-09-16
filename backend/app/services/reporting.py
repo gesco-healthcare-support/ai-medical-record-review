@@ -299,9 +299,11 @@ def _pages_received(stated: int, on_file: int | None, covered: int) -> int:
     reviewer notices; clamping it to the file would hide the same transposition the unreadable
     direction makes invisible.
 
-    Nothing is hidden either way: the memo's own sentence still reports the cover sheet against
-    the file, so a transposed digit reads "states 24 pages and the file received contains 244 -
-    220 fewer than stated" instead of blanking three documents.
+    THIS IS NOW THE ONLY PROTECTION, where it used to be the second of two. The memo carried a
+    sentence reporting the cover sheet against the file, so a transposed digit read "states 24
+    pages and the file received contains 244 - 220 fewer than stated" and a reader saw it; the
+    reviewers asked for that paragraph to come out (see `_memo_body`). The accounting still
+    refuses to be blanked by a slip, but nothing surfaces the slip itself any more.
     """
     received = max(0, stated or 0)
     file_pages = max(0, on_file or 0)
@@ -462,45 +464,6 @@ MEMO_VERIFIED_BY = "Verified by:"
 MEMO_SOURCES_LEAD = "records from various sources:"
 
 
-def page_count_note(details: MemoDetails) -> str:
-    """The sentence the memo exists for, or "" when there is nothing to compare.
-
-    Asked what the covering memo needed, the reviewers answered: the header "is not too
-    important, we can ignore that for now. The main thing would be the actual page count vs
-    declared page count. Important to note: we should get the actual page count from the cover
-    sheet since there are sometimes additional pages attached by us on the pdf."
-
-    So the two numbers are the cover sheet's figure and the PDF's own page count, and the
-    cover sheet is the one that is right. The file is reliably the longer of the two because
-    pages are attached to it downstream - measured against four human deliverables, 311/309,
-    293/290, 244/241 and 229/226 - so a difference is the normal case rather than an alarm,
-    and the memo states it rather than letting the doctor's office find it.
-
-    ABSENT when no cover-sheet figure has been entered. Reading the declaration instead was
-    measured and does not work: of 245 declaration and cover-sheet rows on the box, 94 have no
-    stored page text at all, 130 have text that states no page count, and only 21 (8.6%) give
-    a figure - so the number has to be typed, and the report header is where it is typed.
-
-    Both counts are stated even when they agree, because "we checked and they match" answers
-    the question as much as a discrepancy does."""
-    stated = max(0, details.pages_stated or 0)
-    on_file = max(0, details.pages_on_file or 0)
-    if not stated:
-        return ""
-    if stated == on_file:
-        return (
-            f"The cover sheet states {stated} pages and the file received contains "
-            f"{on_file} pages. The two agree."
-        )
-    difference = abs(on_file - stated)
-    direction = "more" if on_file > stated else "fewer"
-    return (
-        f"The cover sheet states {stated} pages and the file received contains {on_file} "
-        f"pages - {difference} {direction} than stated. The page count above follows the "
-        "cover sheet."
-    )
-
-
 def memo_opening(accounting, details: MemoDetails) -> str:
     """The memo's first sentence: what arrived and from whom.
 
@@ -519,8 +482,10 @@ def memo_opening(accounting, details: MemoDetails) -> str:
     `accounting.pages_received if accounting else 0`, and `_record_accounting` returns None for a
     record with no rows, which the memo route reaches BY DESIGN: it has no 409 because a record
     still being worked has a memo. So a memo could open "We have received 0 pages of medical
-    records." and then, three lines down, "The cover sheet states 241 pages" - two sentences on
-    one page contradicting each other.
+    records." while the paragraph below it said "The cover sheet states 241 pages" - two
+    sentences on one page contradicting each other. That paragraph has since been removed at the
+    reviewers' request, so the contradiction is no longer visible; the clause is still wrong
+    without this, and it is now the ONLY place the memo states how many pages arrived.
 
     So the count falls back the way everything else here does: the accounting, then the cover
     sheet, then the file, and with none of the three the clause is dropped rather than printing a
@@ -564,12 +529,34 @@ def memo_header_lines(details: MemoDetails) -> list[tuple[str, str]]:
 def _memo_body(doc, accounting, details: MemoDetails) -> None:
     """The accounting paragraphs, each present only when it applies.
 
-    The page-count comparison goes FIRST because it is what the memo is for; the exclusion and
-    duplicate sentences are the same two the letter closes with and follow it."""
-    page_note = page_count_note(details)
-    if page_note:
-        doc.add_paragraph("")
-        _run(doc.add_paragraph(), page_note, bold=True)
+    THE COVER-SHEET COMPARISON IS DELIBERATELY ABSENT, and it used to lead this section.
+
+    It read "The cover sheet states 50 pages and the file received contains 52 pages - 2 more
+    than stated. The page count above follows the cover sheet.", and the reviewers asked for it
+    to come out. It was built on their earlier answer that "the main thing would be the actual
+    page count vs declared page count", which we read as a sentence to print; the rest of that
+    same answer says why it is not - "we should get the actual page count from the cover sheet
+    since there are sometimes additional pages attached by us on the pdf". The gap is their own
+    attached pages. Measured against four human deliverables it is 311/309, 293/290, 244/241 and
+    229/226, i.e. present nearly every time, so the memo was reporting their routine padding back
+    to the doctor's office as though it were a finding.
+
+    The reconciliation itself is NOT lost, and this is the part to check before re-adding
+    anything: `record_accounting` still takes `pages_on_file` and still treats the typed figure
+    as the suspect when the rows fit inside the file but not inside it, which is what stops a
+    mistyped cover-sheet number silently blanking the closing sentences of all three
+    deliverables. What is gone is only the sentence that showed the gap to the reader.
+
+    What that costs: nothing now surfaces a MISTYPED figure to a human. The accounting is
+    guarded, but a reviewer who types 500 for 50 sees no sign of it. If that wants solving it
+    belongs beside the field where the number is typed, not in a document a client reads.
+
+    The figure itself still has to be TYPED: reading it out of the declaration was measured on
+    the box and does not work - of 245 declaration and cover-sheet rows, 94 have no stored page
+    text at all, 130 state no page count, and only 21 (8.6%) give a figure.
+
+    `pages_stated` and `pages_on_file` are still live - `memo_opening` falls back to them for
+    its count clause - so they are not dead with this gone."""
     exclusion_text, duplicates_text = accounting_sentences(accounting)
     if exclusion_text:
         doc.add_paragraph("")

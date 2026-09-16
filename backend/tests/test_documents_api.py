@@ -4406,28 +4406,33 @@ async def test_the_memo_asks_for_nothing_the_record_already_holds(authed):
     assert text[-2] == "Jane Roe"
 
 
-async def test_the_memo_reports_the_cover_sheet_against_the_file(authed):
-    """DEMONSTRATES what the reviewers called the main thing, through the route.
+async def test_the_memo_does_not_compare_the_cover_sheet_against_the_file(authed):
+    """DEMONSTRATES the removal the reviewers asked for, through the ROUTE rather than the
+    builder - the memo is a download, and that is where they read it.
 
-    The header field holds 6 while the PDF is 8 pages long, which is the shape they described -
-    "there are sometimes additional pages attached by us on the pdf".
+    The header field holds 6 while the PDF is 8 pages long, so the two counts DIFFER. That is
+    deliberate: it is the only shape that can tell a removed sentence from one that merely had
+    nothing to compare, and it is the shape the memo used to report as "2 more than stated".
+
+    The rows FIT inside the cover-sheet count on purpose, exactly as
+    `test_the_letter_counts_the_pages_the_cover_sheet_states` does. Marking up all 8 would make
+    `_pages_received` prefer the file - the guard against a mistyped figure - and the memo would
+    then count 8, which is correct behaviour but a different thing from what this pins.
     """
     import docx as docxlib
 
     client, _ = authed
     doc_id = await _upload(client, pages=8)
     await _put_header(client, doc_id, pages_received="6")
-    await _rows(client, doc_id, [{"start": 1, "end": 8, "category": "1", "include": True}])
+    await _rows(client, doc_id, [{"start": 1, "end": 6, "category": "1", "include": True}])
 
     resp = await client.post(f"/api/documents/{doc_id}/export/memo", json={})
     assert resp.status_code == 200, resp.text
     text = [p.text for p in docxlib.Document(io.BytesIO(resp.content)).paragraphs if p.text.strip()]
-    assert any(
-        t.startswith(
-            "The cover sheet states 6 pages and the file received contains 8 pages - 2 more"
-        )
-        for t in text
-    )
+    assert not any("cover sheet" in t for t in text)
+    assert not any("than stated" in t for t in text)
+    # The memo still says what arrived - only the reconciliation went.
+    assert any("6 pages of medical records" in t for t in text)
 
 
 async def test_the_letter_counts_the_pages_the_cover_sheet_states(authed):
@@ -4510,10 +4515,14 @@ async def test_the_zip_carries_the_same_memo_the_button_does(authed):
         assert a.read("word/document.xml") == b.read("word/document.xml")
 
 
-async def test_the_archive_reports_the_page_count_the_memo_was_asked_for(authed):
-    """DEMONSTRATES the point of folding the memo in: one download now carries the cover-sheet
-    check the reviewers called the main thing, instead of it being a fourth click somebody
-    forgets."""
+async def test_the_archive_counts_the_pages_the_cover_sheet_states(authed):
+    """DEMONSTRATES the point of folding the memo in: one download carries it instead of it
+    being a fourth click somebody forgets.
+
+    Pinned on the COUNT rather than on the cover-sheet comparison the memo used to carry - that
+    paragraph was removed at the reviewers' request, but which number the memo counts is the
+    part that still matters. The header says 6 against a file of 8, and the memo follows the
+    header, because the file's own length includes pages attached downstream."""
     client, _ = authed
     doc_id = await _upload(client, pages=8)
     await _put_header(client, doc_id, pages_received="6")
@@ -4528,4 +4537,6 @@ async def test_the_archive_reports_the_page_count_the_memo_was_asked_for(authed)
     import docx as docxlib
 
     text = [p.text for p in docxlib.Document(io.BytesIO(memo)).paragraphs if p.text.strip()]
-    assert any("The cover sheet states 6 pages" in t for t in text)
+    assert any("6 pages of medical records" in t for t in text)
+    assert not any("8 pages of medical records" in t for t in text)
+    assert not any("cover sheet" in t for t in text)

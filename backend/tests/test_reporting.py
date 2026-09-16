@@ -32,7 +32,6 @@ from app.services.reporting import (
     date_label,
     intro_sentence,
     memo_opening,
-    page_count_note,
     record_accounting,
     report_font,
     summary_intro,
@@ -1365,56 +1364,43 @@ def _memo_text(doc):
     return [p.text for p in doc.paragraphs if p.text.strip()]
 
 
-def test_the_memo_leads_with_the_page_count_the_reviewers_called_the_main_thing():
-    """DEMONSTRATES the sentence the memo exists for. Asked what this document needed they
-    answered that the header "is not too important" and "the main thing would be the actual
-    page count vs declared page count" - so both counts are named, the difference is spelled
-    out, and it comes BEFORE the sentences the letter already carries."""
+def test_the_memo_does_not_compare_the_cover_sheet_against_the_file():
+    """DEMONSTRATES the removal the reviewers asked for. The memo used to lead with "The cover
+    sheet states 309 pages and the file received contains 311 pages - 2 more than stated.", and
+    they asked for that paragraph to come out.
+
+    Asserted on a record where the two counts DIFFER, because that is the only case that can
+    tell a removed sentence from one that merely had nothing to say - with the counts equal it
+    would pass against a version that still prints "The two agree"."""
     text = _memo_text(
         build_memo_document(
             _memo_accounting(pages_received=309),
             MemoDetails(pages_stated=309, pages_on_file=311),
         )
     )
-    note = (
-        "The cover sheet states 309 pages and the file received contains 311 pages - "
-        "2 more than stated. The page count above follows the cover sheet."
-    )
-    assert note in text
-    assert text.index(note) < text.index(MEMO_SOURCES_LEAD)
+    assert not any("cover sheet" in t for t in text)
+    assert not any("than stated" in t for t in text)
+    # The sentences the letter carries are still here - only the comparison went.
+    assert any(t.startswith("Of the 309 pages received") for t in text)
+    assert MEMO_SOURCES_LEAD in text
 
 
-def test_the_memo_states_both_counts_even_when_they_agree():
-    """A memo that went silent when the counts matched would leave the reader unable to tell a
-    check that passed from a check nobody ran - which is the defect #133 fixed on the
-    duplicates tab and #290 on the summary card."""
-    note = page_count_note(MemoDetails(pages_stated=241, pages_on_file=241))
-    assert note == (
-        "The cover sheet states 241 pages and the file received contains 241 pages. The two agree."
+def test_the_memo_still_opens_with_the_count_it_was_given():
+    """GUARD on what the removal must NOT take with it. `memo_opening` falls back to
+    `pages_stated` and then `pages_on_file` for its count clause, so those two fields are still
+    live and the memo still says how many pages arrived - it just no longer reconciles them."""
+    assert memo_opening(None, MemoDetails(lawfirm="Acme LLP", pages_stated=309)) == (
+        "We have received 309 pages of medical records from Acme LLP."
     )
 
 
-def test_a_file_shorter_than_the_cover_sheet_is_reported_the_other_way_round():
-    """The measured cases all run the same way - the file is longer, because pages are attached
-    to it downstream - but a short file is the direction that means pages are MISSING, so the
-    sentence must not hard-code "more"."""
-    assert "3 fewer than stated" in page_count_note(
-        MemoDetails(pages_stated=244, pages_on_file=241)
-    )
-
-
-def test_no_cover_sheet_figure_means_no_page_count_sentence():
-    """GUARD, and the reason it is a guard rather than a nicety: with `pages_stated` defaulted
-    to the file's own count the memo would print "the two agree" on every record, which is the
-    memo agreeing with itself. Nobody has said, so it says nothing.
-
-    Reading the figure out of the declaration instead was measured on the box and does not
-    work - 21 of 245 declaration rows state a page count at all - so it is typed or absent."""
-    assert page_count_note(MemoDetails(pages_on_file=311)) == ""
-    assert not any(
-        "cover sheet" in t
-        for t in _memo_text(build_memo_document(_memo_accounting(), MemoDetails(pages_on_file=311)))
-    )
+def test_the_typo_guard_outlives_the_sentence_that_used_to_show_it():
+    """GUARD, and the reason this one matters most. A mistyped cover-sheet figure used to be
+    visible in the memo's comparison; with that gone, the only thing standing between a typo and
+    three blanked deliverables is `record_accounting` preferring the file when the rows fit
+    inside it but not inside the typed number. That is a different code path and it survives."""
+    exclusion, _ = accounting_sentences(record_accounting(_typo_rows(), 24, pages_on_file=244))
+    assert exclusion.startswith("Of the 244 pages received")
 
 
 def test_the_memo_follows_the_shape_the_reviewers_sent():
