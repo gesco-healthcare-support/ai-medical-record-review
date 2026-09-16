@@ -102,12 +102,29 @@ class TranscriptPagesUnreadableError(PipelineError):
     established" and makes the summary cite nothing - the safe degradation that function was built
     around.
 
-    A SUBCLASS rather than a bare exception, and that is the whole reason this class exists. Both
-    callers already handle `PipelineError` and neither handles anything else: `api/documents.py`
-    catches only `PipelineError` on the single-row re-draft route, so a bare raise would be an
-    unhandled 500; and `services/bundles.py` catches per row while ITS caller catches
-    `PipelineError` and discards `entries`, so a bare raise would throw away every summary the
-    export had already paid for. The TYPE is what lets both do the right thing.
+    THREE CALLERS REACH THIS, and they are listed in full because a partial list reads as a
+    complete one. Two of them need the TYPE; the third needs only the base class and pays the
+    highest price.
+
+    Needing the type, which is why this is a subclass rather than a bare exception:
+
+    - `api/documents.py` catches only `PipelineError` on the single-row re-draft route, so a bare
+      raise would be an unhandled 500.
+    - `services/bundles.py` catches this per row, while ITS caller catches `PipelineError` and
+      discards `entries` - so a bare raise would throw away every summary the export had already
+      paid for.
+
+    Needing nothing but `PipelineError`, and the one to understand before changing anything here:
+
+    - the summarize WORKER (`worker/tasks.py`) catches per row and hands the exception to
+      `classify_failure`, which returns "permanent" for any `PipelineError` and never retries it.
+      So on the main production path this does not cost a deposition its page citations - it costs
+      that deposition its ENTIRE SUMMARY, surfaced to the reviewer as a row needing attention.
+      That is the intended trade (Adrian, 2026-09-16, reaffirmed after the price was measured):
+      refusing loudly is recoverable because the reviewer sees it and re-runs, whereas a summary
+      that quietly lost its citations ships looking complete. It is pinned in
+      `test_unreadable_transcript_pages_are_permanent_and_that_costs_the_whole_row` so it stays a
+      choice rather than becoming an accident of which base class this inherited.
 
     Classified 422 for the same reason `EmptyExtractionError` is: it is a property of THIS
     document's pages rather than a fault in the server, and there is nothing an administrator can

@@ -198,6 +198,15 @@ def test_the_model_is_the_general_gemini_model_not_the_summary_one(tmp_path, mon
     general one. Pinned because the model now resolves through a STAGE, and a stage resolving to the
     wrong family would change which model reads the page numbers without changing anything a reader
     would notice.
+
+    THIS TEST DOES NOT HOLD THE GUARANTEE ITS NAME CLAIMS, and a reader should know which one does.
+    On Gemini `model_for_stage("deposition")` and `genai_model` resolve to the SAME STRING, so
+    replacing the stage call with the raw setting leaves this test green. Found by mutation probe:
+    the only test that dies is `test_a_vllm_backend_sends_page_images_at_the_deposition_render_target`,
+    via its `captured["model"] == "served-by-the-pod/model"` assertion, because the two strings part
+    company only once a backend overrides the model. Do not delete that assertion believing it is
+    incidental to a rasterisation test - it is the one pinning that the model resolves through the
+    stage at all.
     """
     captured = {}
     _stub_provider(monkeypatch, captured)
