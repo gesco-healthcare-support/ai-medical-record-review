@@ -18,7 +18,7 @@ from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.errors import OcrUnavailableError
-from app.models import AuditLog, Document, Job, ReviewRow, Summary, User
+from app.models import AuditLog, Document, Job, PageText, ReviewRow, Summary, User
 from app.services.reporting import DOCTORS, LETTER_TYPES
 from app.services.seed_catalog import constants_categories
 from tests.conftest import unique_test_email
@@ -118,6 +118,32 @@ async def test_upload_list_get_status_delete(authed):
 
     assert (await client.delete(f"/api/documents/{doc_id}")).status_code == 200
     assert (await client.get(f"/api/documents/{doc_id}")).status_code == 404
+
+
+async def test_a_document_that_has_been_ocrd_can_still_be_deleted(authed):
+    """DEMONSTRATES the defect a reviewer hit: no record on the server could be deleted.
+
+    The test above deletes a document that was uploaded and never identified, so it has no
+    stored page text - and that is the ONLY shape that ever worked. `page_texts` is the fourth
+    table with a foreign key to `documents` and the only one with no relationship on the model,
+    so the ORM cascade removed jobs, rows and summaries and Postgres then refused the parent
+    row. Measured on the box: the last successful delete was 2026-07-30, eight days before
+    `page_texts` arrived, and 90 of ~94 documents carry page text.
+
+    One page row is enough - the constraint does not care how many - and reaching it through
+    the ROUTE is the point, because the endpoint is where the cascade is claimed."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    with get_sessionmaker()() as session:
+        session.add(PageText(document_id=doc_id, page=1, text="ocr", char_count=3))
+        session.commit()
+
+    resp = await client.delete(f"/api/documents/{doc_id}")
+    assert resp.status_code == 200, resp.text
+    assert (await client.get(f"/api/documents/{doc_id}")).status_code == 404
+    with get_sessionmaker()() as session:
+        left = session.query(PageText).filter(PageText.document_id == doc_id).count()
+    assert left == 0, "the page text outlived its document"
 
 
 async def test_upload_rejects_non_pdf(authed):
