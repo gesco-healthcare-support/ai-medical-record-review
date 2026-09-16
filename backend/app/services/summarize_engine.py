@@ -9,21 +9,18 @@ Model calls go through services.llm, so which vendor answers is a config value r
 import. This module no longer names an SDK.
 """
 
-import io
 import logging
 import re
-
-from pdf2image import convert_from_path
-from pypdf import PdfReader
 
 from app.config import get_settings
 from app.errors import EmptyExtractionError, is_rate_limited
 from app.services.deposition_pages import transcript_page_offset
 from app.services.house_style import sentence_case_caps_runs
-from app.services.llm import ImagePart, TextPart, get_provider
+from app.services.llm import TextPart, get_provider
 from app.services.ocr import extract_pages_with_report
 from app.services.prompts import prompts
 from app.services.provenance import fingerprint, summary_prompt_fingerprint
+from app.services.rasterise import page_image_parts
 from app.services.summary_verify import VERIFY_PROMPT, verify_summary
 
 logger = logging.getLogger(__name__)
@@ -575,70 +572,6 @@ def _backend_name() -> str:
     `get_provider` is cached, so this costs a dict lookup.
     """
     return get_provider().name
-
-
-def _page_dpi(reader, page, settings):
-    """Render DPI for one page, lowered so its long edge lands on ``summary_image_long_edge_px``.
-
-    A DPI is not a resolution. It is a resolution only relative to a page's declared box, and a
-    scanned PDF declares whatever its producer felt like: two thirds of the benchmark corpus sets the
-    box EQUAL to the pixel count, so "120 dpi" silently means a 1.67x upscale there and a normal
-    render elsewhere. Deriving the DPI per page from the box makes the OUTPUT the fixed thing, which
-    is what `SEGMENT_LONG_EDGE_PX` already does on the segmentation pass.
-
-    Uses the CROP box, because that is the region Poppler actually renders; pypdf falls back to the
-    media box when no crop box is set. Orientation is handled by taking the longer side rather than
-    reading ``/Rotate``, so a landscape scan is capped on its long edge too.
-
-    NOTE this lowers a NORMAL letter page as well, from 1020x1320 to about 791x1024. That is
-    deliberate - it is the same target segmentation renders at, so both passes now see the same page
-    at the same size - but it IS a change to what the summarizer reads, and it was never separately
-    A/B'd for summarization. See ``summary_image_long_edge_px``.
-    """
-    box = reader.pages[page - 1].cropbox
-    long_edge_pt = max(float(box.width), float(box.height))
-    if long_edge_pt <= 0:  # a degenerate box would divide by zero; fall back rather than guess
-        return settings.summary_image_dpi
-    fitted = int(settings.summary_image_long_edge_px * 72.0 / long_edge_pt)
-    # Never raise the DPI above the configured one, and never fall to zero on an absurd box.
-    return max(1, min(settings.summary_image_dpi, fitted))
-
-
-def _page_image_parts(pdf_path, start, end):
-    """Rasterize a sub-document's pages to lean JPEG image Parts for multimodal summarization.
-
-    Capped at settings.summary_image_max_pages so a long sub-document cannot blow the payload; the
-    full OCR text still covers every page. Rasterized one page at a time to cap peak memory.
-
-    The one-page loop looks like an obvious optimisation - `convert_from_path` spawns a Poppler
-    subprocess and re-parses the PDF on every call, so a 15-page row pays that 15 times instead of
-    once. MEASURED 2026-08-31 on a 13.7 MB 229-page record, 15 pages at 120 dpi, best of 3:
-
-        per page (this)      2.32s     peak RSS  +12 MB
-        one batched call     1.06s     peak RSS +155 MB
-
-    Identical JPEG bytes either way. So batching is 2.2x faster and costs 143 MB more per CONCURRENT
-    ROW - and that is the number that decides it, because `pipeline_workers` is 5: 5 x 155 MB against
-    5 x 12 MB, on a box that also runs Postgres, Redis, six RQ workers and two web tiers. The saving
-    is 1.26s against a row costing ~38s in model time, so about 3%, for ~700 MB of peak.
-
-    Not worth it, and the memory argument gets SHARPER with every lane rather than weaker. Recorded
-    with numbers so the next person tempted by the loop does not have to re-measure it.
-    """
-    settings = get_settings()
-    last = min(int(end), int(start) + settings.summary_image_max_pages - 1)
-    # ONE reader for the whole row rather than one per page. It parses the PDF once, against the
-    # fifteen Poppler subprocesses the loop below already pays for, so it is noise next to them.
-    reader = PdfReader(pdf_path)
-    parts = []
-    for page in range(int(start), last + 1):
-        for image in convert_from_path(
-            pdf_path, first_page=page, last_page=page, dpi=_page_dpi(reader, page, settings)
-        ):
-            buffer = io.BytesIO()
-            image.convert("RGB").save(buffer, format="JPEG", quality=70)
-            parts.append(ImagePart(data=buffer.getvalue(), mime_type="image/jpeg"))
-    return parts
 
 
 # A header line is "AUTHOR, CREDENTIALS. FACILITY. DOCUMENT TYPE." The longest legitimate one across
@@ -1354,7 +1287,12 @@ def summarize_row(
             # Order matters (G-03): page images, then the OCR text, then the instruction LAST. The
             # instruction used to sit between the images and the text, i.e. in the middle of the
             # payload, against Google's context-first / instruction-last guidance.
-            body_contents = _page_image_parts(pdf_path, row["start"], row["end"]) + [
+            # The 15-page cap is passed EXPLICITLY now rather than read inside the rasteriser.
+            # Segmentation shares that helper and runs to 100 pages, so a baked-in cap would have
+            # silently truncated one of the two callers.
+            body_contents = page_image_parts(
+                pdf_path, row["start"], row["end"], settings.summary_image_max_pages
+            ) + [
                 TextPart(_OCR_TEXT_HEADER + text),
                 TextPart(_MULTIMODAL_INSTRUCTION),
             ]

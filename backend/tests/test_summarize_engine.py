@@ -863,7 +863,9 @@ def test_the_instruction_is_the_last_thing_in_a_multimodal_payload(monkeypatch):
         "extract_pages_with_report",
         lambda path, pages, mark_pages=False, **_kw: ("OCR BODY", _clean(pages)),
     )
-    monkeypatch.setattr(se, "_page_image_parts", lambda path, start, end: ["IMG1", "IMG2"])
+    # Takes the page cap as a fourth argument now: the rasteriser is shared with segmentation, which
+    # runs to 100 pages, so the caller supplies its own bound rather than the helper assuming one.
+    monkeypatch.setattr(se, "page_image_parts", lambda path, start, end, cap: ["IMG1", "IMG2"])
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
     monkeypatch.setattr(se.get_settings(), "summary_multimodal", True, raising=False)
@@ -2221,71 +2223,9 @@ def test_the_discharge_prompt_carries_the_requirement_the_preamble_no_longer_sta
     assert prompt.count("\n") > 20
 
 
-# --- _page_dpi: the render resolution ---------------------------------------------------------
-#
-# These matter more than their size suggests. A DPI is a resolution only relative to a page's
-# declared box, and this corpus declares three different things, so the same "120 dpi" produced
-# three different resolutions and one of them cost 25,380 vision tokens for a single page.
-
-
-def _reader_with_box(width_pt, height_pt):
-    """Stand-in for PdfReader exposing only the crop box that _page_dpi reads."""
-    from types import SimpleNamespace
-
-    box = SimpleNamespace(width=width_pt, height=height_pt)
-    return SimpleNamespace(pages=[SimpleNamespace(cropbox=box)])
-
-
-def _long_edge_px(width_pt, height_pt):
-    dpi = se._page_dpi(_reader_with_box(width_pt, height_pt), 1, get_settings())
-    return dpi, max(width_pt, height_pt) / 72 * dpi
-
-
-@pytest.mark.parametrize(
-    "width_pt,height_pt",
-    [
-        (2700, 3455),  # de-identified records A/B/C: box == pixel count, 120 dpi renders 4500x5758
-        (1258, 1631),  # records 01-04 and 07-09: also box == pixel count
-        (605, 790),  # records 05, 06, 10-14: an honest box over a 150 dpi source
-        (612, 792),  # US Letter, which no record in the corpus actually has
-    ],
-)
-def test_page_dpi_lands_every_corpus_geometry_on_the_configured_long_edge(width_pt, height_pt):
-    settings = get_settings()
-    _, long_edge = _long_edge_px(width_pt, height_pt)
-    target = settings.summary_image_long_edge_px
-    # At or under the target, and ON it rather than far under - a DPI is an integer, so the
-    # rounding loses at most a few pixels. The whole point is that all four land in one place.
-    assert long_edge <= target
-    assert long_edge > target * 0.95
-
-
-def test_page_dpi_never_exceeds_the_configured_dpi():
-    # A page small enough that the long-edge fit would ALLOW a higher DPI must not get one:
-    # summary_image_dpi is the ceiling, and the long edge is a second, lower one.
-    settings = get_settings()
-    dpi, long_edge = _long_edge_px(72, 144)  # a 1x2 inch page
-    assert dpi == settings.summary_image_dpi
-    assert long_edge < settings.summary_image_long_edge_px
-
-
-def test_page_dpi_caps_a_landscape_page_on_its_long_edge():
-    # Orientation comes from the box, not from /Rotate, so the WIDER side is what gets capped.
-    settings = get_settings()
-    dpi = se._page_dpi(_reader_with_box(3455, 2700), 1, get_settings())
-    assert 3455 / 72 * dpi <= settings.summary_image_long_edge_px
-
-
-def test_page_dpi_falls_back_rather_than_dividing_by_zero():
-    # A degenerate box is a corrupt PDF, not a signal to render at 0 dpi. Fall back to the
-    # configured DPI and let the rasterizer fail loudly if the page is genuinely unreadable.
-    settings = get_settings()
-    assert se._page_dpi(_reader_with_box(0, 0), 1, settings) == settings.summary_image_dpi
-
-
-def test_page_dpi_is_never_zero_on_an_absurdly_large_box():
-    # A box big enough that the fitted DPI rounds to 0 must still render something.
-    assert se._page_dpi(_reader_with_box(10_000_000, 10_000_000), 1, get_settings()) >= 1
+# The _page_dpi tests MOVED to tests/test_rasterise.py when that function was extracted into
+# app/services/rasterise.py, so the shared rasteriser and its unit tests live together. They were
+# moved unchanged; segmentation now renders through the same code on the vLLM path.
 
 
 def _audit_returning(**over):
