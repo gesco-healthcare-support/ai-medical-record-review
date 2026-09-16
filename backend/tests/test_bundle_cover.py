@@ -248,7 +248,11 @@ def _column_edges(page) -> list[float]:
     edges = set()
     for drawing in page.get_drawings():
         for item in drawing["items"]:
-            if item[0] == "l" and abs(item[1].x - item[2].x) < 0.5 and abs(item[1].y - item[2].y) > 3:
+            if (
+                item[0] == "l"
+                and abs(item[1].x - item[2].x) < 0.5
+                and abs(item[1].y - item[2].y) > 3
+            ):
                 edges.add(round(item[1].x, 1))
             elif item[0] == "re" and item[1].width < 2 and item[1].height > 3:
                 edges.add(round(item[1].x0, 1))
