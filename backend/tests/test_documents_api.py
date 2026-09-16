@@ -1023,6 +1023,82 @@ def test_an_all_blank_bundle_raises_rather_than_downloading_an_empty_report(monk
     assert bundles.bundle_summary_entries("/x.pdf", []) == []
 
 
+def test_one_unreadable_transcript_does_not_discard_the_rest_of_the_bundle(monkeypatch):
+    """IF one row raises TranscriptPagesUnreadableError, THEN the system SHALL omit that row and
+    RETAIN every entry already built.
+
+    Same argument as the blank-document case above, different trigger. Without the per-row catch the
+    exception leaves `bundle_summary_entries` and the caller's `except PipelineError` discards
+    `entries` - throwing away summaries that each cost a real model call, over one deposition whose
+    printed page numbers could not be read.
+
+    THE ROW THAT RAISES IS DELIBERATELY NOT FIRST. With it first there are no prior entries to lose,
+    so the test would pass with the retention broken - it would only be asserting that the loop
+    continues. The entry built BEFORE it is the whole point.
+    """
+    from app.errors import TranscriptPagesUnreadableError
+    from app.services import bundles
+
+    rows = [
+        {"start": 1, "end": 2, "category": "9", "flag": "-"},  # summarized BEFORE the failure
+        {"start": 3, "end": 3, "category": "9", "flag": "-"},  # the truncated page-number read
+        {"start": 4, "end": 5, "category": "9", "flag": "-"},
+    ]
+
+    def fake(pdf_path, row, *a, **k):
+        if int(row["start"]) == 3:
+            raise TranscriptPagesUnreadableError("truncated at 2048 output tokens")
+        return {"summaryDate": _ENTRY_DATE, "summaryTitle": _DECORATED_TITLE, "summaryText": "b"}
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    entries = bundles.bundle_summary_entries("/x.pdf", rows)
+
+    assert len(entries) == 2, "the summaries built before and after the bad row must both survive"
+
+
+def test_a_wholly_unreadable_transcript_bundle_names_the_page_numbers_not_blank_text(monkeypatch):
+    """WHEN every row is skipped for unreadable transcript pages, THE SYSTEM SHALL raise
+    TranscriptPagesUnreadableError rather than the blank-text one.
+
+    The floor must still refuse to stream an empty Word file, but the message it refuses WITH has to
+    describe what happened. "No readable text was found" sends the reader to check the scan quality
+    of pages that read perfectly well; the text was fine, the printed page numbers were not.
+    """
+    from app.errors import TranscriptPagesUnreadableError
+    from app.services import bundles
+
+    def fake(pdf_path, row, *a, **k):
+        raise TranscriptPagesUnreadableError("truncated")
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    with pytest.raises(TranscriptPagesUnreadableError):
+        bundles.bundle_summary_entries("/x.pdf", [_BUNDLE_ROW, dict(_BUNDLE_ROW, start=20, end=21)])
+
+
+def test_a_mixture_of_skip_causes_falls_back_to_the_blank_text_message(monkeypatch):
+    """WHEN rows are skipped for DIFFERENT reasons and none survives, THE SYSTEM SHALL raise
+    EmptyExtractionError.
+
+    Only a single unanimous cause can honestly be named. This is the control for the test above: it
+    is what stops "name the cause" from degenerating into "name whichever cause was seen last",
+    which would be arbitrary and order-dependent on the row sequence.
+    """
+    from app.errors import EmptyExtractionError, TranscriptPagesUnreadableError
+    from app.services import bundles
+
+    def fake(pdf_path, row, *a, **k):
+        if int(row["start"]) == 20:
+            raise TranscriptPagesUnreadableError("truncated")
+        raise EmptyExtractionError("no OCR text")
+
+    monkeypatch.setattr(bundles.summarize_engine, "summarize_row", fake)
+
+    with pytest.raises(EmptyExtractionError):
+        bundles.bundle_summary_entries("/x.pdf", [_BUNDLE_ROW, dict(_BUNDLE_ROW, start=20, end=21)])
+
+
 def test_a_missing_ocr_binary_still_aborts_the_whole_bundle(monkeypatch):
     """GUARDS the carve-out, and it is the half that makes the fix safe.
 
@@ -3587,6 +3663,34 @@ def test_an_unopenable_pdf_answers_422_not_503():
 
     # And the sibling document-property error is unchanged.
     assert _pipeline_error_response("doc-1", EmptyExtractionError("blank")).status_code == 422
+
+
+def test_unreadable_transcript_pages_answer_422_and_never_leak_the_vendor_error():
+    """WHEN _pipeline_error_response is given a TranscriptPagesUnreadableError, THE SYSTEM SHALL
+    answer 422 with the class's user_message and never the technical detail.
+
+    422 for the same reason EmptyExtractionError is: a property of THIS document's pages, not a
+    server fault, and nothing an administrator can act on. Without the classification it falls to
+    the `else` branch and answers 500, telling the reader the server is broken when the scan is
+    simply unclear.
+
+    The leak assertion is the half that is easy to lose: `PipelineError.__init__` puts the technical
+    string into `str(exc)`, so a handler returning that instead of `user_message` would still be 422
+    and would still look right.
+    """
+    import json
+
+    from app.api.documents import _pipeline_error_response
+    from app.errors import TranscriptPagesUnreadableError
+
+    response = _pipeline_error_response(
+        "doc-1", TranscriptPagesUnreadableError("the reply was truncated at 2048 output tokens")
+    )
+
+    assert response.status_code == 422
+    body = json.loads(response.body)["error"]
+    assert "page numbers printed on this transcript" in body
+    assert "2048" not in body, "the technical detail must not reach the user"
 
 
 # #202: `get_status` answered two different questions with one row. "What is happening now" is the

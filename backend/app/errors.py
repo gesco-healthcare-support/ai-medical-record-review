@@ -94,6 +94,33 @@ class EmptyExtractionError(PipelineError):
     )
 
 
+class TranscriptPagesUnreadableError(PipelineError):
+    """The transcript's printed page numbers could not be read, so no citation can be trusted.
+
+    Raised by `deposition_pages.transcript_page_offset` when the model's reply is TRUNCATED, and
+    only then. Every other read failure there still returns `None`, which means "no offset could be
+    established" and makes the summary cite nothing - the safe degradation that function was built
+    around.
+
+    A SUBCLASS rather than a bare exception, and that is the whole reason this class exists. Both
+    callers already handle `PipelineError` and neither handles anything else: `api/documents.py`
+    catches only `PipelineError` on the single-row re-draft route, so a bare raise would be an
+    unhandled 500; and `services/bundles.py` catches per row while ITS caller catches
+    `PipelineError` and discards `entries`, so a bare raise would throw away every summary the
+    export had already paid for. The TYPE is what lets both do the right thing.
+
+    Classified 422 for the same reason `EmptyExtractionError` is: it is a property of THIS
+    document's pages rather than a fault in the server, and there is nothing an administrator can
+    fix in response to it.
+    """
+
+    user_message = (
+        "The page numbers printed on this transcript could not be read, so no page citations were "
+        "written for it. Please try again; if it keeps happening, the scan may be too unclear for "
+        "those numbers to be read."
+    )
+
+
 class PipelineTimeoutError(PipelineError):
     """A pipeline stage exceeded its wall-clock budget and was stopped rather than left to hang."""
 
