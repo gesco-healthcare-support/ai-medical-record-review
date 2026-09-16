@@ -71,21 +71,36 @@ Return ONLY the JSON array."""
 # Structured-output schema for SEGMENTATION_PROMPT. Enforcing the shape via response_schema
 # (not prose) guarantees parseable, correctly-typed records per the Gemini structured-output
 # guidance; field descriptions steer the model, and the app still validates values.
+#
+# ORDINARY JSON SCHEMA, LOWERCASE. The provider seam translates per backend: `llm/gemini.py`'s
+# `to_gemini_schema` rewrites these type names into google-genai's uppercase dialect and leaves
+# every other key untouched, so what Gemini receives is byte-identical to the uppercase literal this
+# replaced. Writing one vendor's spelling here would make that vendor the default and every other
+# backend the special case, which is precisely what the seam exists to prevent.
+#
+# `propertyOrdering` is a google-genai key with no equivalent elsewhere. Kept because the translator
+# passes keys it does not recognise straight through, so it still reaches Gemini exactly as before.
+#
+# `id` IS DELIBERATELY STILL HERE, and nothing reads it - `parse_segment_item` below takes s, e,
+# t/title, d and m only. Removing it would change the request Gemini gets, which the phase routing
+# these services through the seam is not permitted to do; it is logged to the backlog instead. Note
+# what it costs on the other side: OpenAI-dialect strict mode forces EVERY declared property into
+# `required`, so a vLLM deployment makes the model emit an id that is then thrown away.
 SEGMENT_RESPONSE_SCHEMA = {
-    "type": "ARRAY",
+    "type": "array",
     "items": {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
-            "id": {"type": "STRING", "description": "Sequential id: Doc1, Doc2, ..."},
+            "id": {"type": "string", "description": "Sequential id: Doc1, Doc2, ..."},
             "s": {
-                "type": "INTEGER",
+                "type": "integer",
                 "description": "First page of the sub-document: 1-based position in THIS file",
             },
-            "e": {"type": "INTEGER", "description": "Last page of the sub-document, inclusive"},
-            "t": {"type": "STRING", "description": "Title or document type; no commas"},
-            "d": {"type": "STRING", "description": "Visit/encounter date MM/DD/YYYY, or '-'"},
+            "e": {"type": "integer", "description": "Last page of the sub-document, inclusive"},
+            "t": {"type": "string", "description": "Title or document type; no commas"},
+            "d": {"type": "string", "description": "Visit/encounter date MM/DD/YYYY, or '-'"},
             "m": {
-                "type": "STRING",
+                "type": "string",
                 "enum": ["x", "-"],
                 "description": "'x' when the document needs human review",
             },

@@ -10,7 +10,6 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
@@ -22,10 +21,10 @@ from app.services.gemini import (
     SEGMENTATION_SYSTEM,
     parse_segment_item,
 )
-from app.services.genai_client import get_genai_client
-from app.services.genai_retry import generate_with_retry
+from app.services.llm import DocumentPart, TextPart, provider_for_stage
 from app.services.ocr import extract_pages_with_report
 from app.services.pools import PoolTimeout, drain_pool
+from app.services.rasterise import page_image_parts
 from app.services.summary_doi import extract_injury_date
 from app.services.taxonomy import DEFAULT_ID
 from app.services.verify_pass import verify_and_merge
@@ -34,37 +33,72 @@ from app.services.windows import byte_budgeted_windows
 logger = logging.getLogger(__name__)
 
 
-def _generation_config():
-    # Segmentation keeps thinking (segment_thinking_budget, default dynamic): an A/B on labeled
-    # cases showed thinking-off regresses strict doc-F1 here, unlike the other structured calls.
-    return types.GenerateContentConfig(
-        temperature=0.0,
-        top_p=0.95,
-        top_k=40,
-        response_mime_type="application/json",
-        response_schema=SEGMENT_RESPONSE_SCHEMA,
-        system_instruction=SEGMENTATION_SYSTEM,
-        thinking_config=types.ThinkingConfig(
-            thinking_budget=get_settings().segment_thinking_budget
-        ),
-    )
+# Sampling, preserved to the value from the pre-seam call. Segmentation is the ONLY stage in this
+# pipeline that sets either, which is exactly why the seam carries them as optional rather than
+# demanding them - see llm/base.py. The thinking budget that used to sit beside these is now
+# resolved by `thinking_for("segment")` inside the Gemini provider, from the `stage` argument below;
+# passing any other stage string would silently swap it for gemini_thinking_budget of 0.
+_TOP_P = 0.95
+_TOP_K = 40
 
 
-def _window_rows(pdf_path, window_start, window_end, client):
-    """Segment pages [window_start, window_end] in one inline call; absolute-page rows."""
+def _window_page_cap(settings):
+    """Pages per window, which is a DIFFERENT number per backend once rasterisation is involved.
+
+    Gemini takes the PDF, so `window_max_pages` is the only bound it needs. vLLM turns every page
+    into an image and the pod refuses above its `--limit-mm-per-prompt`, so the window must ALSO be
+    capped at what that deployment mirrors in `vllm_segment_max_pages`. The byte budget beside it
+    bounds REQUEST SIZE and says nothing at all about image count.
+
+    `min` rather than a straight swap, so neither bound can be escaped by the other being generous.
+    """
+    if settings.backend_for("segment") == "vllm":
+        return min(settings.window_max_pages, settings.vllm_segment_max_pages)
+    return settings.window_max_pages
+
+
+def _window_parts(pdf_path, window_start, window_end, settings):
+    """The window payload, which is a different SHAPE per backend rather than a different value.
+
+    vLLM cannot carry an inline PDF at all: `llm/vllm.py` converts parts through
+    `llm/openai.py::_to_messages`, which raises TypeError on a DocumentPart because chat completions
+    has no such part. So the window is rasterised to one image per page there. Gemini keeps the exact
+    PDF bytes it has always been sent, and rasterises nothing.
+    """
+    if settings.backend_for("segment") == "vllm":
+        return page_image_parts(pdf_path, window_start, window_end, settings.vllm_segment_max_pages)
     reader = PdfReader(pdf_path)
     writer = PdfWriter()
     for p in range(window_start - 1, window_end):
         writer.add_page(reader.pages[p])
     buffer = io.BytesIO()
     writer.write(buffer)
-    part = types.Part.from_bytes(data=buffer.getvalue(), mime_type="application/pdf")
+    return [DocumentPart(data=buffer.getvalue(), mime_type="application/pdf")]
 
-    response = generate_with_retry(
-        client,
-        model=get_settings().genai_model,
-        contents=[part, SEGMENTATION_PROMPT],
-        config=_generation_config(),
+
+def _window_rows(pdf_path, window_start, window_end):
+    """Segment pages [window_start, window_end] in one inline call; absolute-page rows."""
+    settings = get_settings()
+    # Document first, prompt LAST, unchanged from the pre-seam call - and the seam preserves caller
+    # order, so this is the order that goes out.
+    parts = _window_parts(pdf_path, window_start, window_end, settings)
+    parts.append(TextPart(SEGMENTATION_PROMPT))
+
+    # BOTH halves resolve through `segment`. A bare `get_provider()` would resolve the TRANSPORT
+    # through backend_for("summarize") while the model below resolved through backend_for("segment")
+    # - so moving only `segment` would send the pod's model name over the Gemini transport.
+    response = provider_for_stage("segment").generate_structured(
+        # Resolved for the backend answering this stage rather than read from genai_model, which is
+        # shared with extract, doi and deposition - none of which moves when segment does.
+        model=settings.model_for_stage("segment"),
+        system=SEGMENTATION_SYSTEM,
+        parts=parts,
+        schema=SEGMENT_RESPONSE_SCHEMA,
+        temperature=0.0,
+        top_p=_TOP_P,
+        top_k=_TOP_K,
+        # Selects `thinking_for("segment")`, which is the carve-out keeping dynamic thinking here.
+        stage="segment",
     )
     clean = (response.text or "").replace("```json", "").replace("```", "").strip()
     rows = []
@@ -232,7 +266,6 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
     ``_categorize``. Threaded through rather than imported so this module stays DB-free.
     """
     settings = get_settings()
-    client = get_genai_client()
     # Every pool drain is bounded by the size-aware budget, so no as_completed waits forever.
     pool_timeout = settings.pool_timeout(total_pages)
 
@@ -245,7 +278,7 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
         total_pages,
         settings.window_overlap,
         int(settings.window_budget_mb * 1024 * 1024),
-        settings.window_max_pages,
+        _window_page_cap(settings),
     )
     # Windows are independent (each builds its own sub-PDF and calls the model), so run them on a
     # small pool - the seam's rate limiter caps the aggregate request rate. Results are placed by
@@ -254,8 +287,7 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
     reports = [None] * len(windows)
     with ThreadPoolExecutor(max_workers=settings.segment_window_workers) as pool:
         futures = {
-            pool.submit(_window_rows, pdf_path, ws, we, client): k
-            for k, (ws, we) in enumerate(windows)
+            pool.submit(_window_rows, pdf_path, ws, we): k for k, (ws, we) in enumerate(windows)
         }
         done = 0
         try:

@@ -457,3 +457,27 @@ def test_the_retry_budget_is_exhausted_and_the_last_error_is_raised(monkeypatch)
     with pytest.raises(openai.APIConnectionError):
         _run_vllm()
     assert state["i"] == attempts
+
+
+def test_top_p_rides_natively_and_top_k_rides_in_extra_body(sent):
+    """WHEN set, THE SYSTEM SHALL send top_p as a native key and top_k inside extra_body.
+
+    top_k is NOT in the OpenAI wire dialect this server speaks. Sent as a top-level key it would be
+    ACCEPTED AND IGNORED - OpenAIBaseModel sets extra="allow" - which is the identical silent-no-op
+    trap this module's docstring records for `store`. extra_body is the channel vLLM actually reads,
+    and it is the one the thinking flag already uses.
+    """
+    VLLMProvider().generate_text(
+        model="m", system=None, parts=[TextPart("hi")], temperature=0.0, top_p=0.95, top_k=40
+    )
+    assert sent["top_p"] == 0.95
+    assert sent["extra_body"]["top_k"] == 40
+    # NOT at the top level, where the server would accept and discard it without complaint.
+    assert "top_k" not in sent
+
+
+def test_omitting_the_sampling_parameters_leaves_the_vllm_request_unchanged(sent):
+    """WHEN a caller omits them, THE SYSTEM SHALL add neither key, natively or in extra_body."""
+    VLLMProvider().generate_text(model="m", system=None, parts=[TextPart("hi")], temperature=0.0)
+    assert "top_p" not in sent
+    assert "top_k" not in sent["extra_body"]

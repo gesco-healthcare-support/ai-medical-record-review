@@ -39,7 +39,6 @@ def test_verify_timeout_keeps_splits(monkeypatch):
 
 def test_window_pool_timeout_is_terminal(monkeypatch):
     _tiny_pool_timeout(monkeypatch)
-    monkeypatch.setattr(segment_engine, "get_genai_client", lambda: object())
     monkeypatch.setattr(segment_engine, "byte_budgeted_windows", lambda *a, **k: [(1, 5), (6, 10)])
     monkeypatch.setattr(segment_engine, "_window_rows", lambda *a, **k: time.sleep(1.5) or [])
     with pytest.raises(PipelineTimeoutError):
@@ -48,7 +47,6 @@ def test_window_pool_timeout_is_terminal(monkeypatch):
 
 def test_categorize_pool_timeout_defaults_rows(monkeypatch):
     _tiny_pool_timeout(monkeypatch)
-    monkeypatch.setattr(segment_engine, "get_genai_client", lambda: object())
     monkeypatch.setattr(segment_engine, "byte_budgeted_windows", lambda *a, **k: [(1, 10)])
     monkeypatch.setattr(segment_engine, "_window_rows", lambda *a, **k: [])  # windows yield no rows
     monkeypatch.setattr(

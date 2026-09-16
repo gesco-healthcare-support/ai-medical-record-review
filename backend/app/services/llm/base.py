@@ -68,6 +68,8 @@ class LLMProvider(Protocol):
         temperature: float,
         stage: str = _DEFAULT_STAGE,
         max_output_tokens: int | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> LLMResponse:
         """Free-text completion. `parts` are sent in the order given - which is load-bearing for the
         multimodal summary call, where images must precede the OCR text and the instruction must
@@ -77,6 +79,13 @@ class LLMProvider(Protocol):
         the services that cross this seam set no cap at all today, so an interface demanding one
         forces the caller to invent a number - a bug this repo has already shipped twice, most
         recently where an audit carried eleven times the budget its largest real answer had needed.
+
+        `top_p` and `top_k` are OPTIONAL in the same way and sent ONLY when set, so a caller that
+        omits them produces a byte-identical request to one built before they existed. Exactly one
+        caller uses them - segmentation, at 0.95 and 40 - and they are here because the alternative
+        was silently dropping them at this boundary, which would have changed the request on the
+        stage this pipeline is most sensitive to. `top_k` has no equivalent in OpenAI chat
+        completions, so that provider REFUSES it rather than sending a request quietly missing it.
         """
         ...
 
@@ -90,6 +99,8 @@ class LLMProvider(Protocol):
         temperature: float,
         stage: str = _DEFAULT_STAGE,
         max_output_tokens: int | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> LLMResponse:
         """JSON completion constrained by `schema`.
 
@@ -113,6 +124,8 @@ class LLMProvider(Protocol):
         temperature: float,
         stage: str = _DEFAULT_STAGE,
         max_output_tokens: int | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> LLMResponse:
         """One value from a fixed list, constrained by the backend rather than by hope.
 
@@ -156,6 +169,8 @@ class DelegatingProvider:
         temperature: float,
         stage: str = _DEFAULT_STAGE,
         max_output_tokens: int | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
         schema: dict[str, Any] | None = None,
         choices: list[str] | None = None,
     ) -> LLMResponse:
@@ -171,6 +186,8 @@ class DelegatingProvider:
         temperature: float,
         stage: str = _DEFAULT_STAGE,
         max_output_tokens: int | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> LLMResponse:
         return self._call(
             model=model,
@@ -179,6 +196,8 @@ class DelegatingProvider:
             temperature=temperature,
             stage=stage,
             max_output_tokens=max_output_tokens,
+            top_p=top_p,
+            top_k=top_k,
         )
 
     def generate_structured(
@@ -191,6 +210,8 @@ class DelegatingProvider:
         temperature: float,
         stage: str = _DEFAULT_STAGE,
         max_output_tokens: int | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> LLMResponse:
         return self._call(
             model=model,
@@ -199,6 +220,8 @@ class DelegatingProvider:
             temperature=temperature,
             stage=stage,
             max_output_tokens=max_output_tokens,
+            top_p=top_p,
+            top_k=top_k,
             schema=schema,
         )
 
@@ -212,6 +235,8 @@ class DelegatingProvider:
         temperature: float,
         stage: str = _DEFAULT_STAGE,
         max_output_tokens: int | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> LLMResponse:
         return self._call(
             model=model,
@@ -220,5 +245,7 @@ class DelegatingProvider:
             temperature=temperature,
             stage=stage,
             max_output_tokens=max_output_tokens,
+            top_p=top_p,
+            top_k=top_k,
             choices=choices,
         )

@@ -137,6 +137,8 @@ class GeminiProvider(DelegatingProvider):
         temperature,
         stage=_DEFAULT_STAGE,
         max_output_tokens=None,
+        top_p=None,
+        top_k=None,
         schema=None,
         choices=None,
     ):
@@ -158,6 +160,14 @@ class GeminiProvider(DelegatingProvider):
         # forces the caller to invent a number.
         if max_output_tokens is not None:
             config_kwargs["max_output_tokens"] = max_output_tokens
+        # Optional for the same reason and sent ONLY when set, so a caller that omits them produces
+        # the request this built before they existed. Segmentation is the sole caller that sets them
+        # (0.95 / 40); they are carried rather than dropped because losing them at this boundary
+        # would have changed the request on the stage the pipeline is most sensitive to.
+        if top_p is not None:
+            config_kwargs["top_p"] = top_p
+        if top_k is not None:
+            config_kwargs["top_k"] = top_k
         if system:
             config_kwargs["system_instruction"] = system
         if choices is not None:

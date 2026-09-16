@@ -280,6 +280,12 @@ class Settings(BaseSettings):
     # Comma-separated approved destination origins, honoured ONLY outside production - see
     # _approved_vllm_origins for why prod ignores rather than rejects it.
     vllm_approved_origins: str = ""
+    # MIRRORS the pod's `--limit-mm-per-prompt {"image":40}` and must be changed with it. This is not
+    # a free parameter: its only job is to equal the serve flag, so that `vllm_segment_max_pages`
+    # below can be checked against something real at boot. If the harness changes that flag and this
+    # does not follow, `_validate_vllm_backend` still READS like a check while proving nothing -
+    # which is worse than having no check, because it invites trust.
+    vllm_max_images_per_prompt: int = 40
 
     # Which vendor answers the summarize stage's calls (body, title, audit). "gemini" is the current
     # behaviour and stays the default: the provider abstraction landed first specifically so it could
@@ -434,9 +440,14 @@ class Settings(BaseSettings):
     #
     # Left at 120s deliberately, and now on evidence rather than assumption. The old comment claimed
     # "120s covers a large vision window"; that was false - an uncapped 241-page window needed 179s.
-    # What makes 120s correct is window_max_pages: with windows capped at 160 pages the slowest
-    # measured call is 54.5s. A deadline above 120s IS honoured (the 179s call completed under a
-    # 600s deadline), so raising this remains available if a capped window ever runs long.
+    # What makes 120s correct is window_max_pages, which caps a window at 100 pages. The measured
+    # curve (windows.py) is 160 pages -> 54.5s, 200 -> 106.3s, 241 -> 179.0s, so a capped window sits
+    # comfortably inside even the 160-page point. A deadline above 120s IS honoured (the 179s call
+    # completed under a 600s deadline), so raising this remains available if a capped window ever
+    # runs long.
+    #
+    # CORRECTED 2026-09-16: this said "capped at 160 pages". The cap is 100 and has been for some
+    # time; 160 is a point on the measurement above, not the cap. Safe direction, wrong record.
     genai_http_timeout_ms: int = 120000
     # Per-1,000-estimated-input-tokens allowance that SCALES the deadline above, in ms. The pair
     # works exactly like `effective_job_timeout` below - a flat floor for ordinary requests, scaling
@@ -444,7 +455,7 @@ class Settings(BaseSettings):
     # bounds the request, and on this path nothing does.
     #
     # That is the whole defect. 120s was set on evidence, but the evidence is about SEGMENTATION,
-    # where `window_max_pages` caps a window at 160 pages and the slowest measured call is 54.5s.
+    # where `window_max_pages` caps a window at 100 pages and the measured curve stays inside it.
     # A SUMMARIZE row is however many pages the segmenter drew, and nothing bounds it - so the
     # larger the record, the likelier a row exceeds a limit chosen for a bounded request.
     #
@@ -695,6 +706,22 @@ class Settings(BaseSettings):
     # where over-segmentation can appear. The overlap plus the ownership merge exist to handle seams,
     # and the recall A/B on the affected labelled cases is a follow-up, not a blocker.
     window_max_pages: int = 100
+    # The vLLM path's own page bound, because NEITHER bound above binds it. Windows are packed to
+    # 12.5 MB of raw PDF BYTES with `window_max_pages` as an outer limit, and once a window is
+    # rasterised neither describes what the pod sees: one page becomes one image, and the pod refuses
+    # above `--limit-mm-per-prompt`. Gemini is untouched by this - it takes the PDF and rasterises
+    # nothing.
+    #
+    # 30 is MEASURED rather than picked. The benchmark harness records "our largest segmentation
+    # window is 27 page-images and summarize sends up to 15" (16_pod_bootstrap.sh), and its serve
+    # matrix says "we send 30" against a pod limit of 40. So this covers the observed maximum and
+    # still leaves 10 images of headroom.
+    #
+    # NOTE which limit binds: at 827 tokens per image (llm/tokens.py, measured on the pod 2026-09-11)
+    # thirty images is ~24,800 tokens against a 131,072 context, so context length is nowhere near
+    # the constraint - the image COUNT is. A sizing argument that reasons from context length is
+    # reasoning about the wrong limit.
+    vllm_segment_max_pages: int = 30
     verify_merge: bool = True
     verify_use_text: bool = True
     verify_suspect_cap: int = 200
@@ -990,6 +1017,17 @@ class Settings(BaseSettings):
                 "a vllm backend requires " + ", ".join(missing) + ". A vLLM server serves exactly "
                 "one model and there is no catalogue to fall back on, so an unset model would "
                 "inherit a Gemini name and 404 on the first call."
+            )
+        # Checked in DEV as well as prod, unlike the origin check below: a wrong bound is not a PHI
+        # question, it is a run that dies on its first window, and that costs just as much on a
+        # rented GPU in dev as anywhere else.
+        if self.vllm_segment_max_pages > self.vllm_max_images_per_prompt:
+            raise RuntimeError(
+                f"VLLM_SEGMENT_MAX_PAGES is {self.vllm_segment_max_pages}, above "
+                f"VLLM_MAX_IMAGES_PER_PROMPT of {self.vllm_max_images_per_prompt}. One page becomes "
+                "one image on this path, so the pod would refuse the first full window. Either "
+                "serve the pod with a higher --limit-mm-per-prompt and raise "
+                "VLLM_MAX_IMAGES_PER_PROMPT to match it, or lower VLLM_SEGMENT_MAX_PAGES."
             )
         if self.environment != "prod":
             return

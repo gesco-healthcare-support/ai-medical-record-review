@@ -465,3 +465,27 @@ def test_backoff_is_abandoned_when_the_job_is_cancelled(monkeypatch):
     # served - the exact case a reviewer wants to kill.
     with pytest.raises(JobCancelled):
         provider._cancellable_sleep(30.0)
+
+
+def test_openai_refuses_top_k_rather_than_dropping_it(captured):
+    """IF top_k is set on this provider, THEN the system SHALL raise rather than send without it.
+
+    Chat completions has no top_k. Discarding it silently would let two backends answer differently
+    while both reported success - the divergence this seam exists to prevent. Unreachable today,
+    since OpenAI serves only the summarize stage and summarize sets no sampling parameters, but the
+    cheapest frame to stop it in is the one that knows why.
+    """
+    # Provider and parts built outside the block (python:S5778): only the call under test may throw
+    # inside it, or a constructor failure would read as the refusal firing.
+    provider = OpenAIProvider()
+    parts = [TextPart("hi")]
+    with pytest.raises(TypeError, match="top_k"):
+        provider.generate_text(model="m", system=None, parts=parts, temperature=0.0, top_k=40)
+
+
+def test_openai_sends_top_p_natively(captured):
+    """WHEN top_p is set, THE SYSTEM SHALL send it as a native key - it does exist in this dialect."""
+    OpenAIProvider().generate_text(
+        model="m", system=None, parts=[TextPart("hi")], temperature=0.0, top_p=0.9
+    )
+    assert captured["top_p"] == 0.9
