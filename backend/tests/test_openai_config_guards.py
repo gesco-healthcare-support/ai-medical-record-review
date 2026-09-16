@@ -318,11 +318,12 @@ def test_a_segment_bound_above_the_pods_image_limit_refuses_to_start(monkeypatch
     single prompt is a run that dies on its first window - mid-benchmark, on rented GPU time. The
     message names `--limit-mm-per-prompt` because that is the thing an operator has to go and change.
     """
+    # The env is built OUTSIDE the raises block on purpose (python:S5778): with two calls inside it,
+    # a failure in the setup helper would read as the guard firing and the test would pass for the
+    # wrong reason. Only the call under test belongs in there.
+    env = _vllm(VLLM_SEGMENT_MAX_PAGES="41", VLLM_MAX_IMAGES_PER_PROMPT="40")
     with pytest.raises(RuntimeError, match="limit-mm-per-prompt"):
-        _settings(
-            monkeypatch,
-            **_vllm(VLLM_SEGMENT_MAX_PAGES="41", VLLM_MAX_IMAGES_PER_PROMPT="40"),
-        )
+        _settings(monkeypatch, **env)
 
 
 def test_the_image_bound_refusal_names_both_numbers(monkeypatch):
@@ -331,16 +332,11 @@ def test_the_image_bound_refusal_names_both_numbers(monkeypatch):
     Mirrors `test_the_refusal_names_the_destination_it_rejected` above: a guard that says only "these
     disagree" sends the reader back to the source to find out what it read.
     """
+    env = _vllm(VLLM_SEGMENT_MAX_PAGES="41", VLLM_MAX_IMAGES_PER_PROMPT="40")
     with pytest.raises(RuntimeError, match=r"41"):
-        _settings(
-            monkeypatch,
-            **_vllm(VLLM_SEGMENT_MAX_PAGES="41", VLLM_MAX_IMAGES_PER_PROMPT="40"),
-        )
+        _settings(monkeypatch, **env)
     with pytest.raises(RuntimeError, match=r"40"):
-        _settings(
-            monkeypatch,
-            **_vllm(VLLM_SEGMENT_MAX_PAGES="41", VLLM_MAX_IMAGES_PER_PROMPT="40"),
-        )
+        _settings(monkeypatch, **env)
 
 
 def test_a_segment_bound_equal_to_the_limit_still_starts(monkeypatch):

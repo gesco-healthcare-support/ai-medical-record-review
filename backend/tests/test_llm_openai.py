@@ -475,10 +475,12 @@ def test_openai_refuses_top_k_rather_than_dropping_it(captured):
     since OpenAI serves only the summarize stage and summarize sets no sampling parameters, but the
     cheapest frame to stop it in is the one that knows why.
     """
+    # Provider and parts built outside the block (python:S5778): only the call under test may throw
+    # inside it, or a constructor failure would read as the refusal firing.
+    provider = OpenAIProvider()
+    parts = [TextPart("hi")]
     with pytest.raises(TypeError, match="top_k"):
-        OpenAIProvider().generate_text(
-            model="m", system=None, parts=[TextPart("hi")], temperature=0.0, top_k=40
-        )
+        provider.generate_text(model="m", system=None, parts=parts, temperature=0.0, top_k=40)
 
 
 def test_openai_sends_top_p_natively(captured):
