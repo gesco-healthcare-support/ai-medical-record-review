@@ -29,8 +29,21 @@ from app.services.llm import ImagePart
 _JPEG_QUALITY = 70
 
 
-def page_dpi(reader, page, settings):
-    """Render DPI for one page, lowered so its long edge lands on ``summary_image_long_edge_px``.
+def page_dpi(reader, page, settings, long_edge_px=None):
+    """Render DPI for one page, lowered so its long edge lands on the requested pixel target.
+
+    ``long_edge_px`` defaults to ``summary_image_long_edge_px``, so a caller that omits it renders
+    exactly as this did before the parameter existed. It is a PARAMETER for the same reason
+    ``page_image_parts`` takes its page cap as one: a second caller wanting a different value had no
+    way to ask, and reading the summarize setting inside a shared helper silently imposes
+    summarize's choice on everyone. The DOI read supplies its own, because reading a labelled date
+    field is a different task from judging page layout and the 1024 figure was measured on the
+    latter.
+
+    THE DPI CEILING STILL BINDS, and it is easy to miss. ``summary_image_dpi`` (120) caps the
+    return, so a letter page cannot exceed about 1320 px on its long edge no matter what is asked
+    for here - a caller requesting 2200 silently gets ~1320. Raise ``summary_image_dpi`` too, or the
+    request is a wish rather than an instruction.
 
     A DPI is not a resolution. It is a resolution only relative to a page's declared box, and a
     scanned PDF declares whatever its producer felt like: two thirds of the benchmark corpus sets the
@@ -53,16 +66,17 @@ def page_dpi(reader, page, settings):
     summarizer reads, and it was never separately A/B'd for summarization. See
     ``summary_image_long_edge_px``.
     """
+    target = long_edge_px or settings.summary_image_long_edge_px
     box = reader.pages[page - 1].cropbox
     long_edge_pt = max(float(box.width), float(box.height))
     if long_edge_pt <= 0:  # a degenerate box would divide by zero; fall back rather than guess
         return settings.summary_image_dpi
-    fitted = int(settings.summary_image_long_edge_px * 72.0 / long_edge_pt)
+    fitted = int(target * 72.0 / long_edge_pt)
     # Never raise the DPI above the configured one, and never fall to zero on an absurd box.
     return max(1, min(settings.summary_image_dpi, fitted))
 
 
-def page_image_parts(pdf_path, start, end, max_pages):
+def page_image_parts(pdf_path, start, end, max_pages, long_edge_px=None):
     """Rasterize pages [start, end] to lean JPEG ``ImagePart``s, at most ``max_pages`` of them.
 
     ``max_pages`` is required and has no default - see the module docstring.
@@ -93,7 +107,10 @@ def page_image_parts(pdf_path, start, end, max_pages):
     parts = []
     for page in range(int(start), last + 1):
         for image in convert_from_path(
-            pdf_path, first_page=page, last_page=page, dpi=page_dpi(reader, page, settings)
+            pdf_path,
+            first_page=page,
+            last_page=page,
+            dpi=page_dpi(reader, page, settings, long_edge_px),
         ):
             buffer = io.BytesIO()
             image.convert("RGB").save(buffer, format="JPEG", quality=_JPEG_QUALITY)

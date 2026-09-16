@@ -191,3 +191,72 @@ def test_the_buffer_is_written_as_jpeg_bytes(monkeypatch):
 
     assert isinstance(parts[0].data, bytes)
     assert isinstance(io.BytesIO(parts[0].data).read(), bytes)
+
+
+# --- the render target as a parameter ----------------------------------------------------------
+#
+# Same lesson as the page cap above, one level down: the resolution was baked in, so a second caller
+# wanting a different value had no way to ask. The DOI read supplies its own, because reading a
+# labelled date field is a different task from judging page layout.
+
+
+def test_omitting_the_render_target_uses_the_summarize_setting():
+    """WHEN long_edge_px is omitted, THE SYSTEM SHALL render exactly as it did before it existed."""
+    settings = get_settings()
+    reader = _reader_with_box(612, 792)
+    assert rasterise.page_dpi(reader, 1, settings) == rasterise.page_dpi(
+        reader, 1, settings, settings.summary_image_long_edge_px
+    )
+
+
+def test_a_supplied_render_target_raises_the_dpi_for_the_same_page():
+    """WHEN a larger long_edge_px is supplied, THE SYSTEM SHALL render that page at a higher DPI.
+
+    Asserted as a comparison rather than an absolute, so the test says what the parameter is FOR
+    without pinning a number that the ceiling below may clamp.
+    """
+    settings = get_settings()
+    reader = _reader_with_box(612, 792)
+    default = rasterise.page_dpi(reader, 1, settings)
+    bigger = rasterise.page_dpi(reader, 1, settings, settings.summary_image_long_edge_px + 260)
+    assert bigger > default
+
+
+def test_the_dpi_ceiling_still_binds_so_a_large_request_is_not_granted():
+    """WHEN the requested target exceeds what summary_image_dpi allows, THE SYSTEM SHALL clamp.
+
+    THIS IS THE TRAP THE PARAMETER INTRODUCES. `summary_image_dpi` (120) caps the returned DPI, so a
+    letter page tops out around 1320 px on its long edge however large the request. A caller asking
+    for 2200 silently gets ~1320 and would read the number back from its own setting believing it
+    had been honoured - which is exactly the class of silent no-op this repo has shipped before.
+    """
+    settings = get_settings()
+    reader = _reader_with_box(612, 792)
+
+    dpi = rasterise.page_dpi(reader, 1, settings, 2200)
+
+    assert dpi == settings.summary_image_dpi, "the ceiling binds, not the request"
+    achieved = 792 / 72 * dpi
+    assert achieved < 2200, "the request was NOT granted"
+
+
+def test_the_render_target_reaches_the_rasteriser(monkeypatch):
+    """WHEN page_image_parts is given a target, THE SYSTEM SHALL pass it through to page_dpi."""
+    rendered = []
+    box = SimpleNamespace(width=612, height=792)
+    reader = SimpleNamespace(pages=[SimpleNamespace(cropbox=box) for _ in range(4)])
+    monkeypatch.setattr(rasterise, "PdfReader", lambda _path: reader)
+
+    def _convert(_path, first_page, last_page, dpi):
+        rendered.append(dpi)
+        return [_FakeImage()]
+
+    monkeypatch.setattr(rasterise, "convert_from_path", _convert)
+
+    rasterise.page_image_parts("/synthetic.pdf", 1, 1, 10)
+    default_dpi = rendered[-1]
+    rasterise.page_image_parts(
+        "/synthetic.pdf", 1, 1, 10, get_settings().summary_image_long_edge_px + 260
+    )
+
+    assert rendered[-1] > default_dpi
