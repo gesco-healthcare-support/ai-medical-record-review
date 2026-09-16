@@ -15,6 +15,7 @@ import pytest
 from pypdf import PdfReader, PdfWriter
 
 from app.services.bundles import (
+    _COVER_CONTENT,
     COVER_COLUMNS,
     build_bundle_pdf,
     build_cover_pdf,
@@ -225,3 +226,87 @@ def test_the_provider_parts_are_joined_with_their_own_en_dash():
     """Not a mistyped hyphen: U+2013 appears 19 times in the reference list they sent, in exactly
     this position, and matching their document is the point of the page."""
     assert "–" in split_deliverable_title(_FULL)[0]
+
+
+# The three below are about GEOMETRY, and they exist because the content assertions above could
+# not see the defect Adam reported: every column had collapsed to its minimum width, so the page
+# read as overlapping gibberish - and the heading, the three labels, the date and the border
+# count were all still present and correct. A page can contain everything it should and still be
+# unreadable.
+
+_SAMPLE_ROWS = [
+    ("04/25/18", "ROLLING OAKS RADIOLOGY – TIRMAN, F., M.D.", "FLUOROSCOPIC RIGHT WRIST"),
+    ("06/02/18", "ROLLING OAKS RADIOLOGY – SHAH, DISHANT, M.D.", "X-RAY OF THE RIGHT WRIST"),
+]
+
+
+def _column_edges(page) -> list[float]:
+    """The x of every vertical rule the table draws, i.e. the real column boundaries.
+
+    Read off the drawn borders rather than off word positions: a collapsed column still places
+    words, which is how the defect stayed invisible to a text assertion."""
+    edges = set()
+    for drawing in page.get_drawings():
+        for item in drawing["items"]:
+            if item[0] == "l" and abs(item[1].x - item[2].x) < 0.5 and abs(item[1].y - item[2].y) > 3:
+                edges.add(round(item[1].x, 1))
+            elif item[0] == "re" and item[1].width < 2 and item[1].height > 3:
+                edges.add(round(item[1].x0, 1))
+    return sorted(edges)
+
+
+def test_every_column_is_wide_enough_to_hold_its_own_content():
+    """DEMONSTRATES the defect Adam reported. Story reads the column widths off the FIRST row,
+    and they were declared on `td` only, so the header cells carried none and every column
+    collapsed: measured 8.7pt / 11.9pt / 448.4pt against a 504pt content rect. Date could not
+    hold `04/25/18` and PROVIDER could not hold one word, so both wrapped a word per line and
+    the three header labels overlapped each other.
+
+    A date is the narrowest thing the table must hold, so it is the honest floor: anything that
+    cannot fit `04/25/18` on one line cannot fit anything."""
+    doc = pymupdf.open(
+        stream=build_cover_pdf("LIST OF DIAGNOSTIC AND OPERATIVE REPORTS", _SAMPLE_ROWS),
+        filetype="pdf",
+    )
+    edges = _column_edges(doc[0])
+    # Outer border, then a rule between each pair of columns, then the outer border again; the
+    # widths that matter are the gaps that are not the 3pt border/padding runs.
+    widths = [b - a for a, b in zip(edges, edges[1:]) if b - a > 5]
+    assert len(widths) == len(COVER_COLUMNS), f"expected 3 real columns, got {widths}"
+    date_width = min(widths)
+    assert date_width > 40, f"the narrowest column is {date_width:.1f}pt - too narrow for a date"
+
+
+def test_no_cell_wraps_one_word_per_line():
+    """DEMONSTRATES the visible symptom. With the columns collapsed, `ROLLING OAKS RADIOLOGY`
+    came out stacked vertically one word to a line. Two rows plus a header is three table rows,
+    so a correct render is a handful of lines; the broken one was nine and climbing with the
+    longest provider name."""
+    doc = pymupdf.open(
+        stream=build_cover_pdf("LIST OF DIAGNOSTIC AND OPERATIVE REPORTS", _SAMPLE_ROWS),
+        filetype="pdf",
+    )
+    words = [w for w in doc[0].get_text("words") if w[1] > 90]  # below the heading
+    lines = {round(w[1], 1) for w in words}
+    assert len(lines) <= 6, f"{len(lines)} text lines for 3 table rows - cells are wrapping"
+
+
+def test_the_cover_table_spans_the_content_rect():
+    """GUARD on the two constants `_cover_column_widths` derives from.
+
+    Story ignores a percentage width, so the widths are absolute points, and absolute points
+    only stay correct while the inset and the per-cell overhead hold. Both were measured off the
+    rendered geometry rather than reasoned from the box model, so a MuPDF release is free to
+    move them - and the failure would be silent, the table drifting past the right margin. This
+    fails instead."""
+    doc = pymupdf.open(
+        stream=build_cover_pdf("LIST OF DIAGNOSTIC AND OPERATIVE REPORTS", _SAMPLE_ROWS),
+        filetype="pdf",
+    )
+    edges = _column_edges(doc[0])
+    assert edges, "the table drew no vertical rules at all"
+    assert edges[-1] <= _COVER_CONTENT.x1 + 0.5, (
+        f"the table reaches x={edges[-1]}, past the content rect at {_COVER_CONTENT.x1}"
+    )
+    # And it should actually USE the width it has, rather than huddling in the left third.
+    assert edges[-1] - edges[0] > _COVER_CONTENT.width * 0.9
