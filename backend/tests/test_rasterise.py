@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config import get_settings
+from app.config import _SMALLEST_PAGE_LONG_EDGE_PT, get_settings
 from app.services import rasterise
 
 # --- page_dpi: the render resolution -----------------------------------------------------------
@@ -260,3 +260,69 @@ def test_the_render_target_reaches_the_rasteriser(monkeypatch):
     )
 
     assert rendered[-1] > default_dpi
+
+
+# --- the SHIPPED target, and the boot guard that protects it -------------------------------------
+#
+# Everything above guards the MECHANISM - omitting the target, a larger target raising the dpi, the
+# ceiling clamping, the target reaching the rasteriser. All four still pass if the shipped value
+# stops being achievable, because the ceiling that would stop it (`summary_image_dpi`) belongs to
+# the SUMMARIZE stage and no test here reads the two together.
+
+
+def test_the_doi_render_target_actually_lands_on_the_tightest_corpus_page():
+    """WHEN page_dpi is given doi_image_long_edge_px, THE SYSTEM SHALL land within one dpi step.
+
+    The assertion the mechanism tests cannot make: that 1300 IS ACHIEVED, not merely configured.
+    Asserted on the 790pt geometry rather than US Letter because a SMALLER box needs a HIGHER dpi,
+    so 790pt is the worst case and no record in the corpus is tighter. The tolerance is one dpi
+    step (790/72 = 10.97px) because a dpi is an integer and the fit loses up to that much however
+    the ceiling is set - anything larger is the ceiling binding rather than rounding.
+    """
+    settings = get_settings()
+    page_pt = _SMALLEST_PAGE_LONG_EDGE_PT
+    dpi = rasterise.page_dpi(
+        _reader_with_box(605, page_pt), 1, settings, settings.doi_image_long_edge_px
+    )
+    achieved = page_pt / 72 * dpi
+    assert achieved >= settings.doi_image_long_edge_px - page_pt / 72, (
+        f"the DOI read renders at {achieved:.0f}px against its "
+        f"{settings.doi_image_long_edge_px}px target - summary_image_dpi "
+        f"({settings.summary_image_dpi}) is capping it"
+    )
+
+
+@pytest.mark.parametrize("ceiling", [120, 118, 117, 110, 60])
+def test_the_boot_guard_agrees_with_what_page_dpi_actually_renders(ceiling, monkeypatch):
+    """The boot guard RE-DERIVES this function's arithmetic; this is what stops the two drifting.
+
+    `Settings._validate_doi_render_target` cannot call page_dpi - `rasterise` imports `config`, so
+    the dependency can only run one way - so it recomputes the fit on the same geometry. A guard
+    that describes arithmetic it does not execute can drift silently and still read like a check,
+    which is the failure mode this repo has shipped before. So the guard's verdict is compared
+    against what the REAL function returns, across the boundary in both directions.
+
+    Parametrised over the ceiling rather than asserted once because a guard that never fires and a
+    guard with the threshold one step off both look correct at the shipped value alone. 120 and 118
+    must pass, 117 and below must refuse.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "summary_image_dpi", ceiling)
+    page_pt = _SMALLEST_PAGE_LONG_EDGE_PT
+
+    dpi = rasterise.page_dpi(
+        _reader_with_box(605, page_pt), 1, settings, settings.doi_image_long_edge_px
+    )
+    lands = page_pt / 72 * dpi >= settings.doi_image_long_edge_px - page_pt / 72
+
+    try:
+        settings._validate_doi_render_target()
+        guard_allows_boot = True
+    except RuntimeError:
+        guard_allows_boot = False
+
+    assert guard_allows_boot == lands, (
+        f"at summary_image_dpi={ceiling} page_dpi returns {dpi} "
+        f"({'lands' if lands else 'falls short'}) but the boot guard "
+        f"{'allows' if guard_allows_boot else 'refuses'} it"
+    )

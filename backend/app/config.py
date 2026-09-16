@@ -33,6 +33,17 @@ _LLM_STAGES = (
 )
 _LLM_BACKENDS = ("gemini", "openai", "vllm")
 
+# The tightest page geometry the benchmark corpus actually contains, as a long edge in POINTS.
+#
+# Used by `_validate_doi_render_target` as the worst case, because a SMALLER declared box demands a
+# HIGHER dpi to reach the same pixel target - so the smallest box is the one a dpi ceiling binds on
+# first. Records 05, 06 and 10-14 declare ~605x790pt, an honest box over a 150 dpi source. The
+# corpus's other two geometries declare the box EQUAL to the pixel count (1258x1631 and 2700x3455),
+# so they fit at 57 and 27 dpi and no plausible ceiling reaches them at all - the exposure is
+# specific to the honest-box records. US Letter (792pt) is marginally LESS demanding than this, and
+# no record in the corpus actually has it; tests/test_rasterise.py parametrises all four.
+_SMALLEST_PAGE_LONG_EDGE_PT = 790.0
+
 # Destinations approved to receive PHI in production, as ORIGINS (scheme + host + port).
 #
 # WHAT THIS ACTUALLY PROVES, and it is less than it looks. The SSH tunnel terminates INSIDE the pod,
@@ -1062,6 +1073,11 @@ class Settings(BaseSettings):
                 "serve the pod with a higher --limit-mm-per-prompt and raise "
                 "VLLM_MAX_IMAGES_PER_PROMPT to match it, or lower VLLM_SEGMENT_MAX_PAGES."
             )
+        # Keyed on the DOI STAGE rather than on `resolved_backends()` above, because Gemini takes
+        # the PDF and rasterises nothing: a deployment whose DOI read never renders an image must
+        # not be refused over a pixel target it will never consult.
+        if self.backend_for("doi") == "vllm":
+            self._validate_doi_render_target()
         if self.environment != "prod":
             return
         # Keyed on the DESTINATION, not the backend name. `llm_backend == "vllm"` asserts only which
@@ -1075,6 +1091,49 @@ class Settings(BaseSettings):
                 "compliance control rather than a misconfiguration - widen it deliberately in "
                 "app/config.py, where the change is visible in a diff and needs a deploy."
             )
+
+    def _validate_doi_render_target(self) -> None:
+        """Refuse to start when `summary_image_dpi` caps the DOI read below its own render target.
+
+        THE CEILING BELONGS TO ANOTHER STAGE, and that is the whole reason this exists.
+        `rasterise.page_dpi` fits the dpi to the requested pixel target and then caps it at
+        `summary_image_dpi` - a SUMMARIZE setting. So lowering summarize's dpi silently drops the
+        DOI read below the resolution `doi_image_long_edge_px` was chosen for, and nothing says so:
+        the pages come back, just smaller. The person who would break it is tuning summarization and
+        will never read this read's docstring.
+
+        A BOOT GUARD RATHER THAN A TEST, deliberately. `model_config` sets no `env_prefix` and no
+        alias, so every field here is env-overridable by its own name: `SUMMARY_IMAGE_DPI=110` in a
+        deployment breaks this with no code diff and no CI run to catch it. A test cannot see that.
+        This also refuses the opposite direction - raising `doi_image_long_edge_px` without raising
+        the ceiling - which `test_the_dpi_ceiling_still_binds_so_a_large_request_is_not_granted`
+        pins as rasteriser BEHAVIOUR but no one was refusing as a CONFIGURATION.
+
+        RE-DERIVES page_dpi's arithmetic instead of calling it, because `rasterise` imports this
+        module and the dependency can only run one way. That is a real weakness - this could drift
+        from the function it describes and still read like a check - so
+        `test_the_boot_guard_agrees_with_what_page_dpi_actually_renders` exists purely to tie the
+        two together, comparing this verdict against the real function across the boundary.
+
+        THE TOLERANCE IS ONE DPI STEP, not a margin of taste. A dpi is an integer, so fitting it to
+        a pixel target loses up to `page_pt / 72` px (10.97 on a 790pt page) however the ceiling is
+        set. A shortfall bigger than that is the ceiling binding rather than rounding.
+        """
+        page_pt = _SMALLEST_PAGE_LONG_EDGE_PT
+        one_dpi_step = page_pt / 72.0
+        fitted = int(self.doi_image_long_edge_px * 72.0 / page_pt)
+        achieved = page_pt / 72.0 * max(1, min(self.summary_image_dpi, fitted))
+        if achieved >= self.doi_image_long_edge_px - one_dpi_step:
+            return
+        raise RuntimeError(
+            f"SUMMARY_IMAGE_DPI is {self.summary_image_dpi}, which caps the DOI read at about "
+            f"{achieved:.0f}px on the tightest page in the corpus, against its "
+            f"DOI_IMAGE_LONG_EDGE_PX target of {self.doi_image_long_edge_px}px. page_dpi fits the "
+            f"dpi to the target and then caps it at summary_image_dpi, a SUMMARIZE setting, so "
+            "this read would render below the resolution its target was chosen for and nothing in "
+            f"the output would say so. Either raise SUMMARY_IMAGE_DPI to at least {fitted}, or "
+            f"lower DOI_IMAGE_LONG_EDGE_PX to at most {int(achieved)}."
+        )
 
     def model_for(self, kind: str) -> str:
         """The model that should answer one summarize-stage call: "body", "title" or "audit".
