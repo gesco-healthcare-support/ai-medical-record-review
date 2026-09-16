@@ -30,12 +30,11 @@ def test_segmentation_reads_the_injury_date_per_sub_document(monkeypatch):
         return f"0{start}/08/2022"
 
     monkeypatch.setattr(se, "extract_injury_date", fake_extract)
-    monkeypatch.setattr(se, "get_genai_client", lambda: None)
     monkeypatch.setattr(se, "byte_budgeted_windows", lambda *a, **k: [(1, 4)])
     monkeypatch.setattr(
         se,
         "_window_rows",
-        lambda pdf_path, ws, we, client: [
+        lambda pdf_path, ws, we: [
             dict(start=1, end=2, title="A", date="-", injury_date="-", flag="-"),
             dict(start=3, end=4, title="B", date="-", injury_date="-", flag="-"),
         ],
@@ -61,12 +60,11 @@ def test_a_failed_injury_date_read_leaves_the_row_at_the_sentinel(monkeypatch):
     import app.services.segment_engine as se
 
     monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
-    monkeypatch.setattr(se, "get_genai_client", lambda: None)
     monkeypatch.setattr(se, "byte_budgeted_windows", lambda *a, **k: [(1, 2)])
     monkeypatch.setattr(
         se,
         "_window_rows",
-        lambda pdf_path, ws, we, client: [
+        lambda pdf_path, ws, we: [
             dict(start=1, end=2, title="A", date="-", injury_date="-", flag="-")
         ],
     )
@@ -178,12 +176,11 @@ def test_a_categorization_timeout_records_the_reason_rather_than_leaving_it_blan
     from app.services.pools import PoolTimeout
 
     monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
-    monkeypatch.setattr(se, "get_genai_client", lambda: None)
     monkeypatch.setattr(se, "byte_budgeted_windows", lambda *a, **k: [(1, 2)])
     monkeypatch.setattr(
         se,
         "_window_rows",
-        lambda pdf_path, ws, we, client: [
+        lambda pdf_path, ws, we: [
             dict(start=1, end=2, title="A", date="-", injury_date="-", flag="-")
         ],
     )

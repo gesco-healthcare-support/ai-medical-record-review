@@ -1844,12 +1844,11 @@ def test_identify_does_not_start_a_duplicate_check(monkeypatch):
     # is about which jobs get enqueued, not OCR, and the OCR failure modes have their own dedicated tests.
     monkeypatch.setattr(page_text_mod, "populate_document", lambda *a, **k: 0)
 
-    monkeypatch.setattr(se, "get_genai_client", lambda: None)
     monkeypatch.setattr(se, "byte_budgeted_windows", lambda *a, **k: [(1, 2)])
     monkeypatch.setattr(
         se,
         "_window_rows",
-        lambda pdf_path, ws, we, client: [
+        lambda pdf_path, ws, we: [
             dict(start=1, end=2, title="A", date="-", injury_date="-", flag="-")
         ],
     )
