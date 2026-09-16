@@ -44,6 +44,16 @@ _LLM_BACKENDS = ("gemini", "openai", "vllm")
 # no record in the corpus actually has it; tests/test_rasterise.py parametrises all four.
 _SMALLEST_PAGE_LONG_EDGE_PT = 790.0
 
+# Stages that declare their OWN render target, and the setting carrying it. Both are here for the
+# same reason: they read a SMALL field off the page - a labelled injury date, a printed transcript
+# page number in a corner - where `summary_image_long_edge_px` (1024) was measured on SEGMENTATION,
+# which judges page layout. `_validate_render_targets` walks this, so a third stage wanting its own
+# target gets the boot guard by adding one line rather than by copying the arithmetic.
+_STAGE_RENDER_TARGETS = {
+    "doi": "doi_image_long_edge_px",
+    "deposition": "deposition_image_long_edge_px",
+}
+
 # Destinations approved to receive PHI in production, as ORIGINS (scheme + host + port).
 #
 # WHAT THIS ACTUALLY PROVES, and it is less than it looks. The SSH tunnel terminates INSIDE the pod,
@@ -262,6 +272,38 @@ class Settings(BaseSettings):
     # page_dpi, so a letter page tops out near 1320px however large the target. 1300 sits under that
     # by design. To go higher, raise summary_image_dpi with it.
     doi_image_long_edge_px: int = 1300
+
+    # Output budget for the transcript page-number read. WAS 400, INLINE, and it is the same
+    # anti-pattern doi_max_output_tokens above documents: thinking is dynamic here too (the call
+    # passes summary_thinking_budget), and "max_output_tokens ... INCLUDING THOUGHT TOKENS" means
+    # the whole 400 can go on thought. The answer is six small objects - about 100 tokens - so the
+    # rest was never the point.
+    #
+    # THE CONSEQUENCE IS NOT THE DOI READ'S, and that difference is worth stating because it is why
+    # the fix took a different shape. A truncated reply here is invalid JSON, so `json.loads` raises
+    # and the fail-safe logs; nothing is written to storage on the sentinel. It costs a deposition
+    # its page citations rather than deleting a stored date. Adrian chose to raise on truncation
+    # anyway, against the recommendation to keep the "never raises" contract, so the sentinel now
+    # only ever means "the offset could not be established".
+    #
+    # 2048 mirrors doi_max_output_tokens for the same reason: with truncation now DETECTED rather
+    # than silent, an over-generous cap fails loudly if it is ever wrong.
+    deposition_max_output_tokens: int = 2048
+
+    # Long-edge pixel target for the transcript page-number read's images, used ONLY on the vLLM
+    # path. A printed page number sits in a corner in small type, so this is the same small-field
+    # read as the injury date and inherits 1300 on the same Qwen3-VL arithmetic - see
+    # doi_image_long_edge_px above for the derivation and the cross-check.
+    #
+    # ITS OWN SETTING rather than reading doi_image_long_edge_px, because a setting named for one
+    # stage must not silently drive two: tuning the DOI read would otherwise retune this one, which
+    # is exactly the coupling summary_image_dpi->doi_image_long_edge_px already caused once.
+    # `_STAGE_RENDER_TARGETS` is what gives it the same boot guard.
+    #
+    # NOT MEASURED on our own pages. 1300 is transferred reasoning, not a reading of whether a
+    # transcript's printed corner number is legible at that render - see docs/backlog.md and the
+    # harness repo's pod checklist, where this is queued for the next rented pod.
+    deposition_image_long_edge_px: int = 1300
 
     # Which BACKEND answers a model call: "gemini", "openai" or "vllm".
     #
@@ -1073,11 +1115,7 @@ class Settings(BaseSettings):
                 "serve the pod with a higher --limit-mm-per-prompt and raise "
                 "VLLM_MAX_IMAGES_PER_PROMPT to match it, or lower VLLM_SEGMENT_MAX_PAGES."
             )
-        # Keyed on the DOI STAGE rather than on `resolved_backends()` above, because Gemini takes
-        # the PDF and rasterises nothing: a deployment whose DOI read never renders an image must
-        # not be refused over a pixel target it will never consult.
-        if self.backend_for("doi") == "vllm":
-            self._validate_doi_render_target()
+        self._validate_render_targets()
         if self.environment != "prod":
             return
         # Keyed on the DESTINATION, not the backend name. `llm_backend == "vllm"` asserts only which
@@ -1092,22 +1130,27 @@ class Settings(BaseSettings):
                 "app/config.py, where the change is visible in a diff and needs a deploy."
             )
 
-    def _validate_doi_render_target(self) -> None:
-        """Refuse to start when `summary_image_dpi` caps the DOI read below its own render target.
+    def _validate_render_targets(self) -> None:
+        """Refuse to start when `summary_image_dpi` caps a stage below its own render target.
 
         THE CEILING BELONGS TO ANOTHER STAGE, and that is the whole reason this exists.
         `rasterise.page_dpi` fits the dpi to the requested pixel target and then caps it at
-        `summary_image_dpi` - a SUMMARIZE setting. So lowering summarize's dpi silently drops the
-        DOI read below the resolution `doi_image_long_edge_px` was chosen for, and nothing says so:
-        the pages come back, just smaller. The person who would break it is tuning summarization and
-        will never read this read's docstring.
+        `summary_image_dpi` - a SUMMARIZE setting. So lowering summarize's dpi silently drops these
+        reads below the resolution their targets were chosen for, and nothing says so: the pages
+        come back, just smaller. The person who would break it is tuning summarization and will
+        never read those reads' docstrings.
 
         A BOOT GUARD RATHER THAN A TEST, deliberately. `model_config` sets no `env_prefix` and no
         alias, so every field here is env-overridable by its own name: `SUMMARY_IMAGE_DPI=110` in a
         deployment breaks this with no code diff and no CI run to catch it. A test cannot see that.
-        This also refuses the opposite direction - raising `doi_image_long_edge_px` without raising
-        the ceiling - which `test_the_dpi_ceiling_still_binds_so_a_large_request_is_not_granted`
-        pins as rasteriser BEHAVIOUR but no one was refusing as a CONFIGURATION.
+        This also refuses the opposite direction - raising a stage's target without raising the
+        ceiling - which `test_the_dpi_ceiling_still_binds_so_a_large_request_is_not_granted` pins as
+        rasteriser BEHAVIOUR but no one was refusing as a CONFIGURATION.
+
+        PER STAGE, and skipping any stage not on vllm, because Gemini takes the PDF and rasterises
+        nothing: a deployment whose DOI read never renders an image must not be refused over a pixel
+        target it will never consult. Generalised from a doi-only check when `deposition` gained its
+        own target; a second copy of this arithmetic would have been a second thing to drift.
 
         RE-DERIVES page_dpi's arithmetic instead of calling it, because `rasterise` imports this
         module and the dependency can only run one way. That is a real weakness - this could drift
@@ -1119,20 +1162,27 @@ class Settings(BaseSettings):
         a pixel target loses up to `page_pt / 72` px (10.97 on a 790pt page) however the ceiling is
         set. A shortfall bigger than that is the ceiling binding rather than rounding.
         """
+        for stage, setting in _STAGE_RENDER_TARGETS.items():
+            if self.backend_for(stage) == "vllm":
+                self._assert_target_is_reachable(stage, setting)
+
+    def _assert_target_is_reachable(self, stage: str, setting: str) -> None:
+        """One stage's render target against the dpi ceiling. See `_validate_render_targets`."""
+        target = getattr(self, setting)
         page_pt = _SMALLEST_PAGE_LONG_EDGE_PT
         one_dpi_step = page_pt / 72.0
-        fitted = int(self.doi_image_long_edge_px * 72.0 / page_pt)
+        fitted = int(target * 72.0 / page_pt)
         achieved = page_pt / 72.0 * max(1, min(self.summary_image_dpi, fitted))
-        if achieved >= self.doi_image_long_edge_px - one_dpi_step:
+        if achieved >= target - one_dpi_step:
             return
         raise RuntimeError(
-            f"SUMMARY_IMAGE_DPI is {self.summary_image_dpi}, which caps the DOI read at about "
+            f"SUMMARY_IMAGE_DPI is {self.summary_image_dpi}, which caps the {stage} read at about "
             f"{achieved:.0f}px on the tightest page in the corpus, against its "
-            f"DOI_IMAGE_LONG_EDGE_PX target of {self.doi_image_long_edge_px}px. page_dpi fits the "
-            f"dpi to the target and then caps it at summary_image_dpi, a SUMMARIZE setting, so "
-            "this read would render below the resolution its target was chosen for and nothing in "
-            f"the output would say so. Either raise SUMMARY_IMAGE_DPI to at least {fitted}, or "
-            f"lower DOI_IMAGE_LONG_EDGE_PX to at most {int(achieved)}."
+            f"{setting.upper()} target of {target}px. page_dpi fits the dpi to the target and then "
+            "caps it at summary_image_dpi, a SUMMARIZE setting, so this read would render below "
+            "the resolution its target was chosen for and nothing in the output would say so. "
+            f"Either raise SUMMARY_IMAGE_DPI to at least {fitted}, or lower {setting.upper()} to "
+            f"at most {int(achieved)}."
         )
 
     def model_for(self, kind: str) -> str:
