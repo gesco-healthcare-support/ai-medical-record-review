@@ -114,6 +114,30 @@ x-backend-env: &backend-env
   # Extra approved PHI destinations. IGNORED in production by design - there the list in
   # app/config.py is the only one, so widening it is a reviewed diff and a deploy.
   VLLM_APPROVED_ORIGINS: ${VLLM_APPROVED_ORIGINS:-}
+  # THE SETTINGS THAT MUST AGREE WITH HOW THE POD IS SERVED.
+  #
+  # These reached no container until 2026-09-16, which matters more than the usual drift: two of
+  # them are checked by BOOT GUARDS, so a pod served differently from these defaults refuses to
+  # start the app - and with the keys unreferenced here the only fix was a code change and a deploy,
+  # at exactly the moment someone is trying to bring a rented GPU up.
+  #
+  # One page becomes one image on the vLLM path, so a window bound above what the pod accepts in a
+  # single prompt dies on its first window. VLLM_MAX_IMAGES_PER_PROMPT mirrors the pod's
+  # --limit-mm-per-prompt; the app refuses to start when the segment bound exceeds it.
+  VLLM_SEGMENT_MAX_PAGES: ${VLLM_SEGMENT_MAX_PAGES:-30}
+  VLLM_MAX_IMAGES_PER_PROMPT: ${VLLM_MAX_IMAGES_PER_PROMPT:-40}
+  # The render ceiling, and the two per-stage targets it caps. page_dpi fits the DPI to a stage's
+  # pixel target and then caps it at SUMMARY_IMAGE_DPI - so lowering this silently shrinks the DOI
+  # and deposition reads, which is why the app refuses to boot on the mismatch rather than rendering
+  # smaller. Raise SUMMARY_IMAGE_DPI alongside a target or the target is a wish; see app/config.py.
+  SUMMARY_IMAGE_DPI: ${SUMMARY_IMAGE_DPI:-120}
+  DOI_IMAGE_LONG_EDGE_PX: ${DOI_IMAGE_LONG_EDGE_PX:-1300}
+  DEPOSITION_IMAGE_LONG_EDGE_PX: ${DEPOSITION_IMAGE_LONG_EDGE_PX:-1300}
+  # Output caps for the two isolated reads. Both count THOUGHT tokens and thinking is dynamic on
+  # these calls, so a cap chosen against Gemini's reasoning may not suit a pod model's. Truncation
+  # is detected rather than silent on both paths now, so a wrong value fails loudly.
+  DOI_MAX_OUTPUT_TOKENS: ${DOI_MAX_OUTPUT_TOKENS:-2048}
+  DEPOSITION_MAX_OUTPUT_TOKENS: ${DEPOSITION_MAX_OUTPUT_TOKENS:-2048}
   # Which vendor answers the summarize stage (body, title, audit) - the older, narrower switch, kept
   # because deployments set it today. It never moved the rest of the pipeline: seven services call
   # google-genai directly and never consulted it. Prefer LLM_BACKEND above. While both exist this one
