@@ -526,8 +526,12 @@ def memo_header_lines(details: MemoDetails) -> list[tuple[str, str]]:
     return rows
 
 
-def _memo_body(doc, accounting, details: MemoDetails) -> None:
+def _memo_body(doc, accounting) -> None:
     """The accounting paragraphs, each present only when it applies.
+
+    Takes no `MemoDetails`: with the cover-sheet comparison gone (below) every remaining
+    sentence comes from the accounting, and the details object was left behind as an unused
+    parameter.
 
     THE COVER-SHEET COMPARISON IS DELIBERATELY ABSENT, and it used to lead this section.
 
@@ -604,7 +608,7 @@ def build_memo_document(accounting, details: MemoDetails | None = None):
     doc.add_paragraph("")
     _run(doc.add_paragraph(), memo_opening(accounting, details))
 
-    _memo_body(doc, accounting, details)
+    _memo_body(doc, accounting)
 
     doc.add_paragraph("")
     _run(doc.add_paragraph(), MEMO_THANKS)
