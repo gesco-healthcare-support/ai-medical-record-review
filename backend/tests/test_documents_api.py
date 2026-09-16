@@ -4273,6 +4273,93 @@ async def test_the_diagnostics_download_opens_on_a_list_of_the_reports(authed):
     assert "05/16/11" in text
 
 
+async def test_a_bundle_download_carries_the_patient_name(authed):
+    """DEMONSTRATES the reviewers' request: the diagnostic download was the one deliverable
+    named only for its own category - `diagnostic-operative.pdf` - so in a folder of four files
+    for one record it was the only one that did not say whose record it was, and two patients'
+    bundles collided in a downloads directory.
+
+    Asserted against the OTHER deliverables' own prefix rather than a hand-written string, so
+    this fails if the bundle stops following the convention it was asked to join."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _put_header(client, doc_id, patient_first_name="Ada", patient_last_name="Lovelace")
+    await _seed_titled_summary(doc_id, "JANE SMITH, M.D. ACME IMAGING. MRI OF THE SPINE.")
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
+    )
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={
+            "categories": [_VALID_CATEGORY],
+            "label": "diagnostic-operative",
+            "coverHeading": _COVER_HEADING,
+            "downloadName": "List of Diagnostic and Operative Reports",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert (
+        "Lovelace_Ada_Medical_Records_List_of_Diagnostic_and_Operative_Reports.pdf"
+        in resp.headers["content-disposition"]
+    )
+
+
+async def test_a_bundle_from_a_client_that_sends_no_download_name_keeps_the_old_filename(authed):
+    """GUARD on the compatibility branch. `downloadName` is new, and a page served from a cached
+    bundle during a rolling deploy sends the old body - which must keep working rather than
+    producing a nameless file. Every other field in this payload has the same contract."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _put_header(client, doc_id, patient_first_name="Ada", patient_last_name="Lovelace")
+    await _seed_titled_summary(doc_id, "JANE SMITH, M.D. ACME IMAGING. MRI OF THE SPINE.")
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
+    )
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "label": "diagnostic-operative"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "diagnostic-operative.pdf" in resp.headers["content-disposition"]
+
+
+async def test_the_archive_names_its_bundle_like_its_other_three_members(authed):
+    """The archive must hand over the file the button hands over, names included. Three of the
+    four members already carried the patient name and the bundle did not, so one folder held
+    `Lovelace_Ada_Medical_Records_summary.docx` beside a bare `diagnostic-operative.pdf`."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _put_header(client, doc_id, patient_first_name="Ada", patient_last_name="Lovelace")
+    await _one_summary(doc_id)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
+    )
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/export/zip",
+        json={
+            "bundles": [
+                {
+                    "label": "diagnostic-operative",
+                    "categories": [_VALID_CATEGORY],
+                    "downloadName": "List of Diagnostic and Operative Reports",
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        names = archive.namelist()
+    prefix = "Lovelace_Ada_Medical_Records"
+    assert all(n.startswith(prefix) for n in names), names
+    assert f"{prefix}_List_of_Diagnostic_and_Operative_Reports.pdf" in names
+
+
 async def test_a_bundle_asking_for_no_cover_page_does_not_get_one(authed):
     """GUARD. Depositions was not asked for a list page, so it sends no heading and the download
     stays exactly the documents."""

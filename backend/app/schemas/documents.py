@@ -78,6 +78,10 @@ class BundlePayload(BaseModel):
     categories: list[Any] = []  # non-empty check lives in the route (-> 400), matching Flask
     label: str | None = None
     coverHeading: str | None = None  # see ZipBundle
+    # What the download calls itself after the patient name, e.g. "List of Diagnostic and
+    # Operative Reports". Optional: a client that predates it falls back to the old
+    # slug-only filename rather than failing, which is the contract every field here has.
+    downloadName: str | None = None
     model: str | None = None
     patientName: str = ""
     patientdob: str = ""
@@ -120,6 +124,10 @@ class ZipBundle(BaseModel):
     # DIAGNOSTIC AND OPERATIVE REPORTS". Absent means no cover page, which is what the
     # depositions bundle sends - the reviewers asked for one on diagnostics only.
     coverHeading: str | None = None
+    # See BundlePayload. Carried here too so a member of the archive is named exactly as its
+    # standalone download is - three of the four members already carried the patient name and
+    # the bundle did not.
+    downloadName: str | None = None
 
 
 class ExportZipPayload(ExportPayload):

@@ -82,6 +82,7 @@ const CONFIG = {
   label: "Diagnostic & Operative",
   slug: "diagnostic-operative",
   categories: ["3", "8"],
+  downloadName: "List of Diagnostic and Operative Reports",
 };
 
 describe("BundlePageClient error handling", () => {

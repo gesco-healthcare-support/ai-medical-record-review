@@ -11,6 +11,16 @@ export type BundleConfig = {
   // asked for one on Diagnostics and sent their own as the example; depositions has none,
   // so that bundle sends no heading and gets no cover page.
   coverHeading?: string;
+  // What the downloaded file calls itself, AFTER the patient name the backend prepends:
+  // `Lastname_Firstname_Medical_Records_<downloadName>.pdf`. The reviewers asked for the
+  // diagnostic download to carry the patient name "similar to how the other files are named" -
+  // it was the one deliverable named only for its own category, so in a folder of four files it
+  // was the only one that did not say whose record it was.
+  //
+  // DECLARED per bundle rather than derived from `coverHeading` or `slug`: it is the name a
+  // client reads, "LIST OF DIAGNOSTIC AND OPERATIVE REPORTS" would need title-casing rules that
+  // guess at connectives, and `depositions` has no heading to derive from at all.
+  downloadName: string;
 };
 
 /** The two bundles the app offers, defined ONCE.
@@ -23,12 +33,16 @@ export const DIAGNOSTIC_OPERATIVE: BundleConfig = {
   slug: "diagnostic-operative",
   categories: ["3", "8"],
   coverHeading: "LIST OF DIAGNOSTIC AND OPERATIVE REPORTS",
+  // The reviewers named this string themselves, so it is theirs rather than a shortening of
+  // the cover heading.
+  downloadName: "List of Diagnostic and Operative Reports",
 };
 
 export const DEPOSITIONS: BundleConfig = {
   label: "Depositions",
   slug: "depositions",
   categories: ["9"],
+  downloadName: "Depositions",
 };
 
 export const BUNDLES: BundleConfig[] = [DIAGNOSTIC_OPERATIVE, DEPOSITIONS];
@@ -54,7 +68,12 @@ export function downloadBundlePdf(documentId: string, config: BundleConfig) {
   return downloadBundle(
     documentId,
     "pdf",
-    { categories: config.categories, label: config.slug, coverHeading: config.coverHeading },
+    {
+      categories: config.categories,
+      label: config.slug,
+      coverHeading: config.coverHeading,
+      downloadName: config.downloadName,
+    },
     `${config.slug}.pdf`,
   );
 }
@@ -68,7 +87,12 @@ export function downloadBundleSummary(
   return downloadBundle(
     documentId,
     "summarize",
-    { categories: config.categories, label: config.slug, ...fields },
+    {
+      categories: config.categories,
+      label: config.slug,
+      downloadName: config.downloadName,
+      ...fields,
+    },
     `${config.slug}.docx`,
   );
 }

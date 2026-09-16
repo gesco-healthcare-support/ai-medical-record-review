@@ -183,18 +183,33 @@ describe("ExportDialog page numbers", () => {
     open();
     await user.click(screen.getByRole("button", { name: "Download all (.zip)" }));
     expect(fetchSpy.mock.calls[0][0]).toContain("/export/zip");
-    // CHANGED EXPECTATION, deliberately: each bundle now also carries the heading of its cover
-    // page. Asked which file they wanted for Diagnostics, the reviewers answered "just a PDF
-    // with the documents together. Preferably with a cover page that includes a list of
-    // reports" - and said nothing of the sort about Depositions, so that one sends no heading
-    // and gets no cover page. The asymmetry is the point and is why this asserts both.
+    // CHANGED EXPECTATION, deliberately, twice over:
+    //
+    // Each bundle carries the heading of its cover page. Asked which file they wanted for
+    // Diagnostics, the reviewers answered "just a PDF with the documents together. Preferably
+    // with a cover page that includes a list of reports" - and said nothing of the sort about
+    // Depositions, so that one sends no heading and gets no cover page. The asymmetry is the
+    // point and is why this asserts both.
+    //
+    // Each also carries `downloadName`, the reader-facing name the server prepends the patient
+    // name to. The reviewers asked for the diagnostic download to be named "similar to how the
+    // other files are named" - three of the four archive members already carried the patient
+    // name and the bundle did not, so this pins that the dialog sends what the server needs to
+    // fix that. BOTH bundles send one: a folder holding one named file and one unnamed is the
+    // inconsistency being removed, not a smaller version of it.
     expect(body(fetchSpy).bundles).toEqual([
       {
         label: "diagnostic-operative",
         categories: ["3", "8"],
         coverHeading: "LIST OF DIAGNOSTIC AND OPERATIVE REPORTS",
+        downloadName: "List of Diagnostic and Operative Reports",
       },
-      { label: "depositions", categories: ["9"], coverHeading: undefined },
+      {
+        label: "depositions",
+        categories: ["9"],
+        coverHeading: undefined,
+        downloadName: "Depositions",
+      },
     ]);
   });
 

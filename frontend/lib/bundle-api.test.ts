@@ -10,6 +10,7 @@ const CONFIG = {
   label: "Diagnostic and Operative",
   slug: "diagnostic-operative",
   categories: ["3", "4"],
+  downloadName: "List of Diagnostic and Operative Reports",
 };
 
 let downloaded: string[] = [];
@@ -56,6 +57,16 @@ describe("downloadBundlePdf", () => {
     vi.stubGlobal("fetch", vi.fn(async () => respond(200, {})));
     await downloadBundlePdf("doc-1", CONFIG);
     expect(downloaded).toEqual(["diagnostic-operative.pdf"]);
+  });
+
+  it("sends the reader-facing name the server builds the filename from", async () => {
+    // DEMONSTRATES the reviewers' request from this side. The server prepends the patient name;
+    // it can only do that for a bundle whose name it was told, so the field has to leave here.
+    // `spyOn` rather than `stubGlobal` so the recorded call keeps fetch's argument types.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200, {}));
+    await downloadBundlePdf("doc-1", CONFIG);
+    const body = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
+    expect(body.downloadName).toBe("List of Diagnostic and Operative Reports");
   });
 
   it("raises the server's own reason rather than a bare status code", async () => {

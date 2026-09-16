@@ -1614,10 +1614,25 @@ def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     }
 
 
-def _download_name(label: str | None, ext: str) -> str:
-    """Safe download filename from a free-text label ('Diagnostic & Operative' -> ...)."""
-    slug = _BUNDLE_NAME_CHARS.sub("-", (label or "records").lower()).strip("-") or "records"
-    return f"{slug}.{ext}"
+def _download_name(document: Document, spec, ext: str) -> str:
+    """A bundle download's filename, carrying the patient name like the other three do.
+
+    `Lastname_Firstname_Medical_Records_List_of_Diagnostic_and_Operative_Reports.pdf`, through
+    the SAME `_deliverable_filename` the MRR, the linked PDF and the memo use. It used to be a
+    slug on its own - `diagnostic-operative.pdf` - so in a folder of four downloads for one
+    record it was the only file that did not say whose record it was, and two patients' bundles
+    collided in a downloads directory. The reviewers asked for it "similar to how the other
+    files are named", which is this function rather than a fourth naming rule.
+
+    `downloadName` is the reader-facing name the frontend declares per bundle. A client that
+    predates it falls back to the OLD slug-only name rather than to a nameless file: an older
+    page sending no `downloadName` keeps working exactly as it did."""
+    name = (getattr(spec, "downloadName", None) or "").strip()
+    if not name:
+        label = getattr(spec, "label", None)
+        slug = _BUNDLE_NAME_CHARS.sub("-", (label or "records").lower()).strip("-") or "records"
+        return f"{slug}.{ext}"
+    return _deliverable_filename(document, name.replace(" ", "_"), ext, fallback="records")
 
 
 def _letter_pages(document: Document) -> int:
@@ -1840,7 +1855,7 @@ def _bundle_members(session: Session, document: Document, specs) -> list[tuple[s
         pdf = bundles.build_bundle_pdf(
             document.stored_path, matched, cover=_bundle_cover(session, document, spec, matched)
         )
-        members.append((_download_name(spec.label, "pdf"), pdf.getvalue()))
+        members.append((_download_name(document, spec, "pdf"), pdf.getvalue()))
     return members
 
 
@@ -2053,7 +2068,7 @@ def bundle_pdf(
         buffer,
         media_type=_PDF_MEDIA_TYPE,
         headers={
-            "Content-Disposition": f'attachment; filename="{_download_name(payload.label, "pdf")}"'
+            "Content-Disposition": f'attachment; filename="{_download_name(document, payload, "pdf")}"'
         },
     )
 
@@ -2127,6 +2142,6 @@ def bundle_summarize(
         buffer,
         media_type=DOCX_MIMETYPE,
         headers={
-            "Content-Disposition": f'attachment; filename="{_download_name(payload.label, "docx")}"'
+            "Content-Disposition": f'attachment; filename="{_download_name(document, payload, "docx")}"'
         },
     )
