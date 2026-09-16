@@ -39,6 +39,8 @@ _PROVIDER_KEYS = (
     "VLLM_API_KEY",
     "VLLM_MODEL",
     "VLLM_APPROVED_ORIGINS",
+    "VLLM_SEGMENT_MAX_PAGES",
+    "VLLM_MAX_IMAGES_PER_PROMPT",
 )
 
 
@@ -296,6 +298,91 @@ def test_production_checks_zdr_when_openai_is_reachable_only_by_an_override(monk
 
 
 # --- the approved-destination check -----------------------------------------------------------------
+
+
+def _vllm(**extra):
+    """The minimum env for a resolvable vLLM deployment, plus whatever the test is varying."""
+    return {
+        "LLM_BACKEND": "vllm",
+        "VLLM_BASE_URL": "http://127.0.0.1:8000/v1",
+        "VLLM_MODEL": "Qwen/Qwen3.6-35B-A3B-FP8",
+        **extra,
+    }
+
+
+def test_a_segment_bound_above_the_pods_image_limit_refuses_to_start(monkeypatch):
+    """IF a vllm backend is resolved AND vllm_segment_max_pages exceeds vllm_max_images_per_prompt,
+    THEN the system shall refuse to start, naming the pod flag it mirrors.
+
+    One page becomes one image on the vLLM path, so a window bound above what the pod accepts in a
+    single prompt is a run that dies on its first window - mid-benchmark, on rented GPU time. The
+    message names `--limit-mm-per-prompt` because that is the thing an operator has to go and change.
+    """
+    with pytest.raises(RuntimeError, match="limit-mm-per-prompt"):
+        _settings(
+            monkeypatch,
+            **_vllm(VLLM_SEGMENT_MAX_PAGES="41", VLLM_MAX_IMAGES_PER_PROMPT="40"),
+        )
+
+
+def test_the_image_bound_refusal_names_both_numbers(monkeypatch):
+    """Whoever hits this at deploy time needs to see WHICH two values disagree.
+
+    Mirrors `test_the_refusal_names_the_destination_it_rejected` above: a guard that says only "these
+    disagree" sends the reader back to the source to find out what it read.
+    """
+    with pytest.raises(RuntimeError, match=r"41"):
+        _settings(
+            monkeypatch,
+            **_vllm(VLLM_SEGMENT_MAX_PAGES="41", VLLM_MAX_IMAGES_PER_PROMPT="40"),
+        )
+    with pytest.raises(RuntimeError, match=r"40"):
+        _settings(
+            monkeypatch,
+            **_vllm(VLLM_SEGMENT_MAX_PAGES="41", VLLM_MAX_IMAGES_PER_PROMPT="40"),
+        )
+
+
+def test_a_segment_bound_equal_to_the_limit_still_starts(monkeypatch):
+    """WHEN the bound equals the limit, THE SYSTEM SHALL start - the pod accepts exactly that many.
+
+    The boundary is asserted rather than assumed because an off-by-one here is a refusal to boot on a
+    configuration that is actually fine, which is the more annoying direction to get wrong.
+    """
+    settings = _settings(
+        monkeypatch,
+        **_vllm(VLLM_SEGMENT_MAX_PAGES="40", VLLM_MAX_IMAGES_PER_PROMPT="40"),
+    )
+    assert settings.vllm_segment_max_pages == 40
+
+
+def test_a_gemini_deployment_ignores_the_image_bound_entirely(monkeypatch):
+    """WHEN no vllm backend is resolved, THE SYSTEM SHALL NOT apply the check.
+
+    Gemini takes the PDF and rasterises nothing, so the bound is meaningless there. A deployment that
+    never touches vLLM must not be refused over a number it will never read.
+    """
+    settings = _settings(
+        monkeypatch,
+        LLM_BACKEND="gemini",
+        VLLM_SEGMENT_MAX_PAGES="9999",
+        VLLM_MAX_IMAGES_PER_PROMPT="40",
+    )
+    assert settings.vllm_segment_max_pages == 9999
+
+
+def test_the_defaults_mirror_what_the_pod_is_actually_launched_with(monkeypatch):
+    """The defaults are NOT free parameters, so they are pinned.
+
+    40 mirrors the pod's `--limit-mm-per-prompt {"image":40}`; if the harness changes that flag and
+    this does not follow, the guard above becomes a check that proves nothing while still reading
+    like one. 30 is the size the harness records sending, against a largest observed window of 27.
+    """
+    settings = _settings(monkeypatch)
+    assert settings.vllm_max_images_per_prompt == 40
+    assert settings.vllm_segment_max_pages == 30
+    # Control: the default pair must satisfy the guard, or every default deployment refuses to boot.
+    assert settings.vllm_segment_max_pages <= settings.vllm_max_images_per_prompt
 
 
 def test_a_vllm_backend_without_a_model_refuses_to_start(monkeypatch):
