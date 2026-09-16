@@ -218,6 +218,39 @@ class Settings(BaseSettings):
     # step this down" a tempting cleanup. Do not, without re-scoring: two silent thinking_budget=0
     # bugs have already shipped in this codebase.
     summary_thinking_budget: int = -1
+    # Output budget for the isolated DOI read. WAS 200, INLINE, and that was Google's documented
+    # anti-pattern rather than a tight-but-fine number: "max_output_tokens ... INCLUDING THOUGHT
+    # TOKENS", and "If the model hits this limit while reasoning, it stops generating ... and
+    # returns truncated or empty output" (ai.google.dev/gemini-api/docs/thinking). Thinking on this
+    # call is dynamic via summary_thinking_budget above, so the whole 200 could go on thought - and
+    # `_clean("")` then returns "-", the value that MEANS "this document states no injury date".
+    # In scripts/backfill_doi.py that STRIPPED a correct injury date out of a stored medical-legal
+    # summary, which is precisely what that function's `strict` flag exists to prevent.
+    #
+    # 2048 because the answer is a date - 30 tokens at the very most - so effectively all of it is
+    # thinking headroom. NOT measured: nothing in this repo persists usage_metadata, so no cap here
+    # can be derived from the live distribution. See summary_verify.py, where finding out its cap
+    # was ELEVEN TIMES too generous took a dedicated 139-audit study; the doctrine recorded there is
+    # the one applied here - "The cap does not prevent a runaway; it bounds what one costs."
+    # A reply that hits this cap now RAISES rather than quietly reporting "-".
+    doi_max_output_tokens: int = 2048
+    # Long-edge pixel target for the DOI read's page images, used ONLY on the vLLM path, where the
+    # PDF cannot be sent at all. Deliberately NOT summary_image_long_edge_px (1024): that figure was
+    # measured on SEGMENTATION, which judges page layout, whereas this reads a small labelled date
+    # field. Different task, different number - exactly as ocr_base_dpi (200) is already a separate
+    # number for reading text off these same pages.
+    #
+    # 1300 is chosen against Qwen3-VL's documented arithmetic: one visual token covers 32x32 px, so
+    # a letter page at a 1300px long edge is ~1004x1300 = 1.305M px = ~1274 tokens, landing on the
+    # ~1280-token upper end its guidance recommends for small-field reading. It renders at ~118 dpi,
+    # so a 10pt form label is ~16px tall against a documented legibility floor of ~10-12px; at 1024
+    # it is ~13px, i.e. AT that floor. Cross-check that the arithmetic describes OUR renders: at
+    # 1024 the same formula predicts 791 tokens and llm/tokens.py measures 827, 4.5% apart.
+    #
+    # NOTE THE CEILING, because raising this alone does nothing: summary_image_dpi (120) caps
+    # page_dpi, so a letter page tops out near 1320px however large the target. 1300 sits under that
+    # by design. To go higher, raise summary_image_dpi with it.
+    doi_image_long_edge_px: int = 1300
 
     # Which BACKEND answers a model call: "gemini", "openai" or "vllm".
     #
