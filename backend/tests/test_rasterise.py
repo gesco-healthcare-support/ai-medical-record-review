@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config import get_settings
+from app.config import _SMALLEST_PAGE_LONG_EDGE_PT, get_settings
 from app.services import rasterise
 
 # --- page_dpi: the render resolution -----------------------------------------------------------
@@ -191,3 +191,138 @@ def test_the_buffer_is_written_as_jpeg_bytes(monkeypatch):
 
     assert isinstance(parts[0].data, bytes)
     assert isinstance(io.BytesIO(parts[0].data).read(), bytes)
+
+
+# --- the render target as a parameter ----------------------------------------------------------
+#
+# Same lesson as the page cap above, one level down: the resolution was baked in, so a second caller
+# wanting a different value had no way to ask. The DOI read supplies its own, because reading a
+# labelled date field is a different task from judging page layout.
+
+
+def test_omitting_the_render_target_uses_the_summarize_setting():
+    """WHEN long_edge_px is omitted, THE SYSTEM SHALL render exactly as it did before it existed."""
+    settings = get_settings()
+    reader = _reader_with_box(612, 792)
+    assert rasterise.page_dpi(reader, 1, settings) == rasterise.page_dpi(
+        reader, 1, settings, settings.summary_image_long_edge_px
+    )
+
+
+def test_a_supplied_render_target_raises_the_dpi_for_the_same_page():
+    """WHEN a larger long_edge_px is supplied, THE SYSTEM SHALL render that page at a higher DPI.
+
+    Asserted as a comparison rather than an absolute, so the test says what the parameter is FOR
+    without pinning a number that the ceiling below may clamp.
+    """
+    settings = get_settings()
+    reader = _reader_with_box(612, 792)
+    default = rasterise.page_dpi(reader, 1, settings)
+    bigger = rasterise.page_dpi(reader, 1, settings, settings.summary_image_long_edge_px + 260)
+    assert bigger > default
+
+
+def test_the_dpi_ceiling_still_binds_so_a_large_request_is_not_granted():
+    """WHEN the requested target exceeds what summary_image_dpi allows, THE SYSTEM SHALL clamp.
+
+    THIS IS THE TRAP THE PARAMETER INTRODUCES. `summary_image_dpi` (120) caps the returned DPI, so a
+    letter page tops out around 1320 px on its long edge however large the request. A caller asking
+    for 2200 silently gets ~1320 and would read the number back from its own setting believing it
+    had been honoured - which is exactly the class of silent no-op this repo has shipped before.
+    """
+    settings = get_settings()
+    reader = _reader_with_box(612, 792)
+
+    dpi = rasterise.page_dpi(reader, 1, settings, 2200)
+
+    assert dpi == settings.summary_image_dpi, "the ceiling binds, not the request"
+    achieved = 792 / 72 * dpi
+    assert achieved < 2200, "the request was NOT granted"
+
+
+def test_the_render_target_reaches_the_rasteriser(monkeypatch):
+    """WHEN page_image_parts is given a target, THE SYSTEM SHALL pass it through to page_dpi."""
+    rendered = []
+    box = SimpleNamespace(width=612, height=792)
+    reader = SimpleNamespace(pages=[SimpleNamespace(cropbox=box) for _ in range(4)])
+    monkeypatch.setattr(rasterise, "PdfReader", lambda _path: reader)
+
+    def _convert(_path, first_page, last_page, dpi):
+        rendered.append(dpi)
+        return [_FakeImage()]
+
+    monkeypatch.setattr(rasterise, "convert_from_path", _convert)
+
+    rasterise.page_image_parts("/synthetic.pdf", 1, 1, 10)
+    default_dpi = rendered[-1]
+    rasterise.page_image_parts(
+        "/synthetic.pdf", 1, 1, 10, get_settings().summary_image_long_edge_px + 260
+    )
+
+    assert rendered[-1] > default_dpi
+
+
+# --- the SHIPPED target, and the boot guard that protects it -------------------------------------
+#
+# Everything above guards the MECHANISM - omitting the target, a larger target raising the dpi, the
+# ceiling clamping, the target reaching the rasteriser. All four still pass if the shipped value
+# stops being achievable, because the ceiling that would stop it (`summary_image_dpi`) belongs to
+# the SUMMARIZE stage and no test here reads the two together.
+
+
+def test_the_doi_render_target_actually_lands_on_the_tightest_corpus_page():
+    """WHEN page_dpi is given doi_image_long_edge_px, THE SYSTEM SHALL land within one dpi step.
+
+    The assertion the mechanism tests cannot make: that 1300 IS ACHIEVED, not merely configured.
+    Asserted on the 790pt geometry rather than US Letter because a SMALLER box needs a HIGHER dpi,
+    so 790pt is the worst case and no record in the corpus is tighter. The tolerance is one dpi
+    step (790/72 = 10.97px) because a dpi is an integer and the fit loses up to that much however
+    the ceiling is set - anything larger is the ceiling binding rather than rounding.
+    """
+    settings = get_settings()
+    page_pt = _SMALLEST_PAGE_LONG_EDGE_PT
+    dpi = rasterise.page_dpi(
+        _reader_with_box(605, page_pt), 1, settings, settings.doi_image_long_edge_px
+    )
+    achieved = page_pt / 72 * dpi
+    assert achieved >= settings.doi_image_long_edge_px - page_pt / 72, (
+        f"the DOI read renders at {achieved:.0f}px against its "
+        f"{settings.doi_image_long_edge_px}px target - summary_image_dpi "
+        f"({settings.summary_image_dpi}) is capping it"
+    )
+
+
+@pytest.mark.parametrize("ceiling", [120, 118, 117, 110, 60])
+def test_the_boot_guard_agrees_with_what_page_dpi_actually_renders(ceiling, monkeypatch):
+    """The boot guard RE-DERIVES this function's arithmetic; this is what stops the two drifting.
+
+    `Settings._validate_doi_render_target` cannot call page_dpi - `rasterise` imports `config`, so
+    the dependency can only run one way - so it recomputes the fit on the same geometry. A guard
+    that describes arithmetic it does not execute can drift silently and still read like a check,
+    which is the failure mode this repo has shipped before. So the guard's verdict is compared
+    against what the REAL function returns, across the boundary in both directions.
+
+    Parametrised over the ceiling rather than asserted once because a guard that never fires and a
+    guard with the threshold one step off both look correct at the shipped value alone. 120 and 118
+    must pass, 117 and below must refuse.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "summary_image_dpi", ceiling)
+    page_pt = _SMALLEST_PAGE_LONG_EDGE_PT
+
+    dpi = rasterise.page_dpi(
+        _reader_with_box(605, page_pt), 1, settings, settings.doi_image_long_edge_px
+    )
+    lands = page_pt / 72 * dpi >= settings.doi_image_long_edge_px - page_pt / 72
+
+    try:
+        settings._validate_doi_render_target()
+        guard_allows_boot = True
+    except RuntimeError:
+        guard_allows_boot = False
+
+    assert guard_allows_boot == lands, (
+        f"at summary_image_dpi={ceiling} page_dpi returns {dpi} "
+        f"({'lands' if lands else 'falls short'}) but the boot guard "
+        f"{'allows' if guard_allows_boot else 'refuses'} it"
+    )

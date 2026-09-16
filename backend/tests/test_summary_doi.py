@@ -8,6 +8,7 @@ import types as pytypes
 
 import pytest
 
+from app.config import get_settings
 from app.services import summary_doi as sd
 
 
@@ -63,50 +64,81 @@ class _FakeWriter:
 def _patch_pdf(monkeypatch, writer=_FakeWriter):
     monkeypatch.setattr(sd, "PdfReader", _FakeReader)
     monkeypatch.setattr(sd, "PdfWriter", writer)
-    monkeypatch.setattr(sd, "get_genai_client", lambda: None)
+
+
+def _answers(text, truncated=False):
+    """A `generate_text` stand-in returning one reply, carrying the seam's truncation flag."""
+
+    def fake(**_kwargs):
+        return pytypes.SimpleNamespace(text=text, truncated=truncated)
+
+    return fake
+
+
+def _stub_provider(monkeypatch, fake):
+    """Route `summary_doi.provider_for_stage` to a stub whose `generate_text` calls `fake`.
+
+    The service asks the seam now, so stubbing `generate_with_retry` by name would leave the real
+    call in place. Returns a dict carrying the stage the SERVICE asked the resolver for - a wrong
+    stage silently swaps the thinking budget for 0, and this function is fail-safe, so nothing
+    downstream could report it.
+    """
+    asked = {}
+
+    class _Provider:
+        def generate_text(self, **kwargs):
+            return fake(**kwargs)
+
+    def _resolver(stage, *_a, **_k):
+        asked["stage"] = stage
+        return _Provider()
+
+    monkeypatch.setattr(sd, "provider_for_stage", _resolver)
+    return asked
 
 
 def test_extract_returns_the_model_date(monkeypatch):
     _patch_pdf(monkeypatch)
-    monkeypatch.setattr(
-        sd, "generate_with_retry", lambda *a, **k: pytypes.SimpleNamespace(text="09/25/2023")
-    )
+    _stub_provider(monkeypatch, _answers("09/25/2023"))
     assert sd.extract_injury_date("/x.pdf", 1, 3) == "09/25/23"
 
 
 def test_extract_returns_a_cumulative_trauma_period(monkeypatch):
     _patch_pdf(monkeypatch)
-    monkeypatch.setattr(
-        sd,
-        "generate_with_retry",
-        lambda *a, **k: pytypes.SimpleNamespace(text="CT 01/02/20-03/04/21"),
-    )
+    _stub_provider(monkeypatch, _answers("CT 01/02/20-03/04/21"))
     assert sd.extract_injury_date("/x.pdf", 1, 3) == "CT 01/02/20-03/04/21"
 
 
-def test_extract_sets_its_own_thinking_budget(monkeypatch):
-    # REGRESSION: summarize_row passes summary_model (2.5-pro) here, and the retry seam applies
-    # thinking_budget=0 to any call that does not set one - which that model rejects with a 400.
-    # This function is fail-safe, so the rejection was silent and every document looked like it
-    # stated no injury date.
-    seen = {}
+def test_extract_asks_for_the_doi_stage_which_is_what_sets_its_thinking_budget(monkeypatch):
+    """REGRESSION, and the mechanism MOVED rather than the guarantee.
+
+    The budget used to be built here as an explicit `thinking_config`; it is now resolved by
+    `thinking_for(stage)` inside the Gemini provider, from the stage string this service passes. So
+    what has to be pinned is the STAGE - pass anything else and the budget silently becomes
+    `gemini_thinking_budget` (0), which a thinking model rejects with a 400.
+
+    That rejection is invisible from here: this function is fail-safe, so it would return "-" and
+    every document would look like it states no injury date. It has already shipped once.
+
+    The comment this replaces named `summarize_row` passing `summary_model` (2.5-pro). Neither part
+    is true any more - summarize_row has not called this since the isolated read moved to the end of
+    run_segmentation, no in-repo caller passes a model at all, and `summary_model` is 3.5-flash now.
+    """
     _patch_pdf(monkeypatch)
+    asked = _stub_provider(monkeypatch, _answers("09/25/23"))
 
-    def gen(client, *, model, contents, config):
-        seen["thinking"] = config.thinking_config
-        return pytypes.SimpleNamespace(text="09/25/23")
-
-    monkeypatch.setattr(sd, "generate_with_retry", gen)
     sd.extract_injury_date("/x.pdf", 1, 3)
-    assert seen["thinking"] is not None
-    assert seen["thinking"].thinking_budget != 0
+
+    settings = get_settings()
+    assert asked["stage"] == "doi"
+    # The stage is only worth pinning because of what it resolves to, so assert that too.
+    assert settings.thinking_for("doi") == settings.summary_thinking_budget
+    assert settings.thinking_for("doi") != 0
 
 
 def test_extract_returns_dash_when_no_date(monkeypatch):
     _patch_pdf(monkeypatch)
-    monkeypatch.setattr(
-        sd, "generate_with_retry", lambda *a, **k: pytypes.SimpleNamespace(text="-")
-    )
+    _stub_provider(monkeypatch, _answers("-"))
     assert sd.extract_injury_date("/x.pdf", 1, 3) == "-"
 
 
@@ -116,7 +148,7 @@ def test_extract_is_failsafe_on_error(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("vertex down")
 
-    monkeypatch.setattr(sd, "generate_with_retry", boom)
+    _stub_provider(monkeypatch, boom)
     assert sd.extract_injury_date("/x.pdf", 1, 3) == "-"
 
 
@@ -128,9 +160,7 @@ def test_extract_caps_pages_sent(monkeypatch):
             added.append(page)
 
     _patch_pdf(monkeypatch, writer=CountingWriter)
-    monkeypatch.setattr(
-        sd, "generate_with_retry", lambda *a, **k: pytypes.SimpleNamespace(text="-")
-    )
+    _stub_provider(monkeypatch, _answers("-"))
     sd.extract_injury_date("/x.pdf", 1, 50)  # 50-page span
     assert len(added) == sd._MAX_PAGES
 
@@ -252,9 +282,7 @@ def test_a_thirty_page_row_is_still_bounded(monkeypatch):
             added.append(page)
 
     _patch_pdf(monkeypatch, writer=CountingWriter)
-    monkeypatch.setattr(
-        sd, "generate_with_retry", lambda *a, **k: pytypes.SimpleNamespace(text="-")
-    )
+    _stub_provider(monkeypatch, _answers("-"))
     sd.extract_injury_date("/x.pdf", 1, 30)
     assert len(added) == 10
 

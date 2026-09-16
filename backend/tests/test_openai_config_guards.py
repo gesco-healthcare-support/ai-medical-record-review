@@ -381,6 +381,113 @@ def test_the_defaults_mirror_what_the_pod_is_actually_launched_with(monkeypatch)
     assert settings.vllm_segment_max_pages <= settings.vllm_max_images_per_prompt
 
 
+# --- the DOI render target, which a SUMMARIZE setting can cap ------------------------------------
+#
+# `rasterise.page_dpi` fits the dpi to a requested pixel target and then caps it at
+# `summary_image_dpi`. That ceiling belongs to summarization, so it can silently drop the DOI read
+# below the resolution `doi_image_long_edge_px` was chosen for - the pages still come back, just
+# smaller. Guarded at BOOT rather than in a test of the rasteriser because `model_config` sets no
+# env_prefix: SUMMARY_IMAGE_DPI=110 in a deployment breaks it with no code diff for CI to run.
+
+
+def test_a_summarize_dpi_that_caps_the_doi_read_refuses_to_start(monkeypatch):
+    """IF doi resolves to vllm AND summary_image_dpi caps the render more than one dpi step under
+    doi_image_long_edge_px, THEN the system shall refuse to start.
+
+    110 dpi renders the tightest corpus page at ~1207px against a 1300px target. Every existing test
+    still passes at that setting, which is exactly why this one has to exist.
+    """
+    env = _vllm(SUMMARY_IMAGE_DPI="110", DOI_IMAGE_LONG_EDGE_PX="1300")
+    with pytest.raises(RuntimeError, match="DOI_IMAGE_LONG_EDGE_PX"):
+        _settings(monkeypatch, **env)
+
+
+def test_the_render_target_refusal_names_both_settings_and_the_fix(monkeypatch):
+    """Whoever hits this at deploy time must see WHICH two values disagree and what to change.
+
+    Mirrors `test_the_image_bound_refusal_names_both_numbers`: a guard saying only "these disagree"
+    sends the reader back to the source to work out what it read.
+    """
+    env = _vllm(SUMMARY_IMAGE_DPI="110", DOI_IMAGE_LONG_EDGE_PX="1300")
+    with pytest.raises(RuntimeError, match="SUMMARY_IMAGE_DPI is 110"):
+        _settings(monkeypatch, **env)
+    with pytest.raises(RuntimeError, match="1300px"):
+        _settings(monkeypatch, **env)
+    # The message must name the minimum dpi that WOULD satisfy it, not merely report the conflict.
+    with pytest.raises(RuntimeError, match="at least 118"):
+        _settings(monkeypatch, **env)
+
+
+def test_a_target_raised_without_the_ceiling_also_refuses_to_start(monkeypatch):
+    """IF doi_image_long_edge_px is raised beyond what summary_image_dpi can deliver, THEN the
+    system shall refuse to start.
+
+    The OTHER direction, and the one `test_the_dpi_ceiling_still_binds...` pins as rasteriser
+    BEHAVIOUR without anyone refusing it as a CONFIGURATION. At 120 dpi the tightest page tops out
+    near 1317px, so a 2200px target is a wish rather than an instruction.
+    """
+    env = _vllm(SUMMARY_IMAGE_DPI="120", DOI_IMAGE_LONG_EDGE_PX="2200")
+    with pytest.raises(RuntimeError, match="2200px"):
+        _settings(monkeypatch, **env)
+
+
+def test_the_last_dpi_that_still_delivers_the_target_starts(monkeypatch):
+    """WHEN the ceiling is the lowest value that still lands the target, THE SYSTEM SHALL start.
+
+    The boundary is asserted rather than assumed because an off-by-one here refuses to boot a
+    deployment that is actually fine - the more annoying direction to get wrong. 118 is the last
+    safe value, NOT 119: `fitted` is an integer, so 1300px on a 790pt page asks for int(118.48) =
+    118, and a ceiling OF 118 does not bind. This is where a pixel-space reading of the headroom
+    and the real threshold part company.
+    """
+    settings = _settings(
+        monkeypatch, **_vllm(SUMMARY_IMAGE_DPI="118", DOI_IMAGE_LONG_EDGE_PX="1300")
+    )
+    assert settings.summary_image_dpi == 118
+
+
+def test_one_dpi_below_the_boundary_refuses_to_start(monkeypatch):
+    """The control for the boundary above: 117 must FAIL, or 118 passing proves nothing.
+
+    Without this pair, a guard that never fires and a guard whose threshold is one step too low are
+    indistinguishable - both leave 118 green.
+    """
+    env = _vllm(SUMMARY_IMAGE_DPI="117", DOI_IMAGE_LONG_EDGE_PX="1300")
+    with pytest.raises(RuntimeError, match="SUMMARY_IMAGE_DPI is 117"):
+        _settings(monkeypatch, **env)
+
+
+def test_a_gemini_doi_stage_ignores_the_render_target_entirely(monkeypatch):
+    """WHEN the doi stage resolves to gemini, THE SYSTEM SHALL NOT apply the check.
+
+    Gemini takes the PDF inline and rasterises nothing, so the pixel target is never read there.
+    Mirrors `test_a_gemini_deployment_ignores_the_image_bound_entirely`: a deployment must not be
+    refused over a number it will never consult. Asserted with SEGMENTATION STILL ON VLLM, so this
+    pins the stage key rather than merely pinning that a gemini-only deployment is exempt.
+    """
+    settings = _settings(
+        monkeypatch,
+        **_vllm(
+            LLM_BACKEND_OVERRIDES="doi=gemini",
+            SUMMARY_IMAGE_DPI="60",
+            DOI_IMAGE_LONG_EDGE_PX="1300",
+        ),
+    )
+    assert settings.backend_for("doi") == "gemini"
+    assert settings.backend_for("segment") == "vllm"
+
+
+def test_the_shipped_defaults_satisfy_the_render_target_guard(monkeypatch):
+    """The defaults are not free parameters: every default vllm deployment must boot.
+
+    This is the assertion the review asked for - that 1300 ACTUALLY LANDS rather than merely being
+    configured - expressed as the guard accepting the shipped pair.
+    """
+    settings = _settings(monkeypatch, **_vllm())
+    assert settings.summary_image_dpi == 120
+    assert settings.doi_image_long_edge_px == 1300
+
+
 def test_a_vllm_backend_without_a_model_refuses_to_start(monkeypatch):
     # A vLLM server serves exactly one model; an unset key would inherit a Gemini name and 404.
     with pytest.raises(RuntimeError, match="VLLM_MODEL"):

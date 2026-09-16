@@ -2,8 +2,15 @@
 
 A segmentation WINDOW covers many documents at once, so a date read from a window propagates onto
 neighbours that state none. This module reads ONE sub-document in ISOLATION - only its own pages - so
-there are no neighbours to copy from, and it reads the date from the PDF image via Gemini vision
-rather than lossy OCR.
+there are no neighbours to copy from, and it reads the date from the page IMAGE rather than from
+lossy OCR.
+
+WHICH BACKEND SEES THOSE PAGES IS A CONFIG VALUE, not a property of this file. It said "via Gemini
+vision" until the stage crossed the provider seam. Gemini receives the sub-document as inline PDF
+bytes and renders them itself; vLLM cannot take a PDF at all, so the pages are rasterised here at
+`doi_image_long_edge_px` first. The destination is whatever `backend_for("doi")` selects, and the
+production guard on it is `_validate_vllm_backend`'s approved-origin check rather than anything
+here.
 
 Called at the END of run_segmentation (once per sub-document, after row boundaries are final) so the
 stored row is the single source of truth for the injury date. It used to be called AGAIN from
@@ -15,12 +22,11 @@ import io
 import logging
 import re
 
-from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
-from app.services.genai_client import get_genai_client
-from app.services.genai_retry import generate_with_retry
+from app.services.llm import DocumentPart, TextPart, provider_for_stage
+from app.services.rasterise import page_image_parts
 from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
@@ -141,6 +147,30 @@ def _clean(reply: str) -> str:
     return " & ".join(items) if items else "-"
 
 
+def _isolated_parts(pdf_path, start, end, settings):
+    """This sub-document's first pages, whose SHAPE differs per backend rather than its content.
+
+    vLLM cannot carry an inline PDF at all: `llm/vllm.py` converts parts through
+    `llm/openai.py::_to_messages`, which raises TypeError on a `DocumentPart` because chat
+    completions has no such part. So the pages are rasterised there - and at
+    `doi_image_long_edge_px`, NOT the summarize target, because reading a small labelled date field
+    needs more pixels than judging page layout. Gemini keeps the exact PDF bytes it has always been
+    sent and rasterises nothing.
+
+    `_MAX_PAGES` bounds both paths identically, so the same pages are sent either way.
+    """
+    if settings.backend_for("doi") == "vllm":
+        return page_image_parts(pdf_path, start, end, _MAX_PAGES, settings.doi_image_long_edge_px)
+    reader = PdfReader(pdf_path)
+    writer = PdfWriter()
+    last = min(int(end), int(start) + _MAX_PAGES - 1)
+    for page in range(int(start) - 1, last):
+        writer.add_page(reader.pages[page])
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return [DocumentPart(data=buffer.getvalue(), mime_type="application/pdf")]
+
+
 def extract_injury_date(pdf_path, start, end, model=None, strict=False) -> str:
     """The injury date THIS sub-document (pages ``start``..``end``) states, or ``"-"``.
 
@@ -153,37 +183,48 @@ def extract_injury_date(pdf_path, start, end, model=None, strict=False) -> str:
     error) must not be mistaken for "this document states no injury date".
     """
     settings = get_settings()
-    model = model or settings.genai_model
+    # Resolved for the backend answering THIS stage rather than read from genai_model, which is
+    # shared with segment, extract and deposition - none of which moves when doi does. A
+    # caller-supplied model still wins, as before, though no in-repo caller passes one today.
+    model = model or settings.model_for_stage("doi")
     try:
-        reader = PdfReader(pdf_path)
-        writer = PdfWriter()
-        last = min(int(end), int(start) + _MAX_PAGES - 1)
-        for page in range(int(start) - 1, last):
-            writer.add_page(reader.pages[page])
-        buffer = io.BytesIO()
-        writer.write(buffer)
-        part = types.Part.from_bytes(data=buffer.getvalue(), mime_type="application/pdf")
-        response = generate_with_retry(
-            get_genai_client(),
+        parts = _isolated_parts(pdf_path, start, end, settings)
+        parts.append(TextPart(_ISOLATION_PROMPT))
+        # BOTH halves resolve through `doi`. A bare `get_provider()` resolves the TRANSPORT through
+        # backend_for("summarize") while the model above resolves through backend_for("doi"), so
+        # moving only this stage would send the pod's model name over the Gemini transport.
+        response = provider_for_stage("doi").generate_text(
             model=model,
-            contents=[part, _ISOLATION_PROMPT],
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                max_output_tokens=200,
-                # summarize_row passes ITS model here, which is summary_model - a thinking model
-                # (2.5-pro) that rejects the retry seam's default thinking_budget of 0 with a 400.
-                # This function is fail-safe, so that rejection was silent and EVERY document
-                # reported "no stated injury date". Set the budget explicitly, as the summary call
-                # does.
-                thinking_config=types.ThinkingConfig(
-                    thinking_budget=get_settings().summary_thinking_budget
-                ),
-            ),
+            # No system instruction: this call never had one, and the seam sends the field only
+            # when it is set.
+            system=None,
+            parts=parts,
+            temperature=0.0,
+            # Was 200, inline. See `doi_max_output_tokens`: thinking is billed against this budget,
+            # so a tight cap could be spent entirely on thought and the empty reply then became a
+            # silent "-".
+            max_output_tokens=settings.doi_max_output_tokens,
+            # Selects `thinking_for("doi")`, which is `summary_thinking_budget`. ANY OTHER STAGE
+            # STRING silently swaps it for gemini_thinking_budget of 0 - which a thinking model
+            # rejects with a 400, and this function is fail-safe, so that rejection is invisible.
+            # That failure has shipped here once already.
+            stage="doi",
         )
+        if response.truncated:
+            # NOT a date, and specifically NOT "-". The model was cut off before it answered, so
+            # what this document states is unknown. Returning "-" here is what deleted a stored
+            # injury date in the backfill: "-" is a CLAIM ("states none"), not a failure. Raising
+            # routes it into the handlers below, where `strict` re-raises so the backfill SKIPS the
+            # summary, while the pooled caller still degrades to "-" exactly as before.
+            raise RuntimeError(
+                f"the DOI reply was truncated at {settings.doi_max_output_tokens} output tokens "
+                "(thinking is billed against this budget); raise DOI_MAX_OUTPUT_TOKENS"
+            )
         return _clean(response.text or "")
     except JobCancelled:
-        # NOT a model failure - the reviewer pressed Stop. `generate_with_retry` raises this
-        # out of its backoff sleep as a cooperative signal meant to unwind to _run's handler,
+        # NOT a model failure - the reviewer pressed Stop. The provider raises this out of its own
+        # cancellable sleep as a cooperative signal meant to unwind to _run's handler - Gemini via
+        # the `generate_with_retry` it wraps, vLLM directly,
         # and JobCancelled subclasses Exception, so the broad catch below swallowed it: the
         # log blamed the model for a deliberate user action, in exactly the place an operator
         # looks to ask whether Vertex was rejecting calls, and this unit of work silently took

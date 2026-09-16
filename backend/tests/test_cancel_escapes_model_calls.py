@@ -11,8 +11,8 @@ site still calling google-genai directly gets the signal from `generate_with_ret
 through the provider seam gets it from the provider - on Gemini via the `generate_with_retry` it
 wraps, on vLLM from its own sleep. Both unwind identically, so moving a service across the seam
 changes what these tests STUB and not what they assert. The duplicate confirmation, the boundary
-verification and the summary audit are on the seam; the deposition page offset and the injury-date
-read are not, yet.
+verification, the summary audit and the injury-date read are on the seam; only the deposition page
+offset is not, yet.
 
 `llm_classify` was fixed for this and pinned in test_classification.py. These are the other four
 call sites with the same shape, found by walking the AST for model calls inside a broad catch
@@ -65,8 +65,14 @@ def test_a_stop_escapes_the_transcript_page_read(monkeypatch):
 def test_a_stop_escapes_the_injury_date_read(monkeypatch):
     """Swallowed, this returned "-" - the row shipped stating no injury date, which is
     indistinguishable from a document that genuinely carries none."""
-    monkeypatch.setattr(summary_doi, "generate_with_retry", _cancels)
-    monkeypatch.setattr(summary_doi, "get_genai_client", object)
+
+    # Routed through the provider seam now, so the signal arrives from the provider's own
+    # cancellable sleep rather than from `generate_with_retry` directly.
+    class _Provider:
+        def generate_text(self, *_a, **_k):
+            raise JobCancelled(3, 170)
+
+    monkeypatch.setattr(summary_doi, "provider_for_stage", lambda *_a, **_k: _Provider())
     monkeypatch.setattr(summary_doi, "PdfReader", lambda *_a, **_k: _FakeReader())
     monkeypatch.setattr(summary_doi, "PdfWriter", _FakeWriter)
     with pytest.raises(JobCancelled):
