@@ -229,6 +229,8 @@ class OpenAIProvider(DelegatingProvider):
         temperature,
         stage=_DEFAULT_STAGE,
         max_output_tokens=None,
+        top_p=None,
+        top_k=None,
         schema=None,
         choices=None,
     ):
@@ -254,6 +256,17 @@ class OpenAIProvider(DelegatingProvider):
         # notion (`reasoning_effort`) that this pipeline has never set, and wiring one in silently
         # from a stage name would change what the models do with no measurement behind it.
         del stage
+        # `top_k` has no equivalent in chat completions. REFUSED rather than dropped, on the same
+        # reasoning as `choices` above and as `store` on the vLLM path: a sampling parameter the
+        # caller set and this silently discarded would make two backends answer differently while
+        # both reported success. Unreachable today - OpenAI is summarize-only and summarize sets
+        # neither - but quiet divergence between backends is the thing this seam exists to prevent,
+        # and the cheapest place to stop it is the frame that knows why.
+        if top_k is not None:
+            raise TypeError(
+                "OpenAI chat completions has no top_k, so a request built here would silently drop "
+                "it. Keep top_k callers on Gemini or vLLM."
+            )
         settings = get_settings()
         kwargs: dict[str, Any] = {
             "model": model,
@@ -266,6 +279,9 @@ class OpenAIProvider(DelegatingProvider):
         # Optional, matching the seam: four of the services that cross it set no cap today.
         if max_output_tokens is not None:
             kwargs["max_completion_tokens"] = max_output_tokens
+        # Sent only when set, so omitting it reproduces the request built before it existed.
+        if top_p is not None:
+            kwargs["top_p"] = top_p
         if schema is not None:
             kwargs["response_format"] = {
                 "type": "json_schema",
@@ -318,6 +334,8 @@ class OpenAIProvider(DelegatingProvider):
         temperature,
         stage=_DEFAULT_STAGE,
         max_output_tokens=None,
+        top_p=None,
+        top_k=None,
     ):
         """One value from a fixed list.
 
@@ -333,6 +351,8 @@ class OpenAIProvider(DelegatingProvider):
             temperature=temperature,
             stage=stage,
             max_output_tokens=max_output_tokens,
+            top_p=top_p,
+            top_k=top_k,
             schema={
                 "type": "object",
                 "properties": {_CHOICE_KEY: {"type": "string", "enum": list(choices)}},

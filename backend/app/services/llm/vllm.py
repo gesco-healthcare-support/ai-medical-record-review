@@ -173,6 +173,8 @@ def _request_kwargs(
     parts,
     temperature,
     max_output_tokens=None,
+    top_p=None,
+    top_k=None,
     schema=None,
     choices=None,
 ) -> dict[str, Any]:
@@ -195,6 +197,15 @@ def _request_kwargs(
     # already shipped twice.
     if max_output_tokens is not None:
         kwargs["max_completion_tokens"] = max_output_tokens
+    # Sent only when set, so omitting them reproduces the request this built before they existed.
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    if top_k is not None:
+        # `top_k` is NOT in the OpenAI wire dialect, but vLLM accepts it as a sampling extra - the
+        # same channel the thinking flag above already rides. Sending it as a top-level key would be
+        # silently ignored: OpenAIBaseModel sets extra="allow", so an unrecognised field is accepted
+        # and dropped, which is the `store` trap this module's docstring already records.
+        kwargs["extra_body"]["top_k"] = top_k
     if choices is not None:
         # vLLM's native constrained choice, and a direct replacement for Gemini's enum mode - so the
         # two services that need it are a parameter swap rather than a rewrite. It rides in
@@ -228,6 +239,8 @@ class VLLMProvider(DelegatingProvider):
         temperature,
         stage=_DEFAULT_STAGE,
         max_output_tokens=None,
+        top_p=None,
+        top_k=None,
         schema=None,
         choices=None,
     ):
@@ -243,6 +256,8 @@ class VLLMProvider(DelegatingProvider):
             parts=parts,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            top_p=top_p,
+            top_k=top_k,
             schema=schema,
             choices=choices,
         )

@@ -183,3 +183,49 @@ def test_registry_rejects_an_unknown_provider():
     get_provider.cache_clear()
     with pytest.raises(ValueError, match="unknown LLM provider"):
         get_provider("bedrock")
+
+
+# --- optional sampling parameters ---------------------------------------------------------------
+#
+# top_p and top_k are on this seam for exactly ONE caller: segmentation, at 0.95 and 40. They are
+# optional and sent only when set, so every other caller's request is unchanged - which is the
+# property these pin. The alternative was dropping them at this boundary, which would have altered
+# the request on the stage the pipeline is most sensitive to, with nothing reporting it.
+
+
+def test_omitting_the_sampling_parameters_sends_neither_key(captured):
+    """WHEN a caller omits top_p and top_k, THE SYSTEM SHALL send no such key at all.
+
+    This is the byte-identical guarantee: adding an optional parameter must not change the request
+    built by the callers that do not set it.
+    """
+    GeminiProvider().generate_text(model="m", system=None, parts=[TextPart("hi")], temperature=0.0)
+    config = captured["config"]
+    assert getattr(config, "top_p", None) is None
+    assert getattr(config, "top_k", None) is None
+
+
+def test_the_sampling_parameters_reach_the_gemini_config_when_set(captured):
+    """WHEN a caller sets them, THE SYSTEM SHALL send both on the Gemini config."""
+    GeminiProvider().generate_structured(
+        model="m",
+        system="sys",
+        parts=[TextPart("hi")],
+        schema={"type": "object", "properties": {"a": {"type": "string"}}},
+        temperature=0.0,
+        top_p=0.95,
+        top_k=40,
+    )
+    config = captured["config"]
+    assert config.top_p == 0.95
+    assert config.top_k == 40
+
+
+def test_one_sampling_parameter_does_not_conjure_the_other(captured):
+    """Each is independent: setting top_p must not invent a top_k, or the reverse."""
+    GeminiProvider().generate_text(
+        model="m", system=None, parts=[TextPart("hi")], temperature=0.0, top_p=0.5
+    )
+    config = captured["config"]
+    assert config.top_p == 0.5
+    assert getattr(config, "top_k", None) is None
