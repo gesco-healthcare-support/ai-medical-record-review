@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config import _SMALLEST_PAGE_LONG_EDGE_PT, get_settings
+from app.config import _SMALLEST_PAGE_LONG_EDGE_PT, _STAGE_RENDER_TARGETS, get_settings
 from app.services import rasterise
 
 # --- page_dpi: the render resolution -----------------------------------------------------------
@@ -293,10 +293,13 @@ def test_the_doi_render_target_actually_lands_on_the_tightest_corpus_page():
 
 
 @pytest.mark.parametrize("ceiling", [120, 118, 117, 110, 60])
-def test_the_boot_guard_agrees_with_what_page_dpi_actually_renders(ceiling, monkeypatch):
+@pytest.mark.parametrize("stage,setting", sorted(_STAGE_RENDER_TARGETS.items()))
+def test_the_boot_guard_agrees_with_what_page_dpi_actually_renders(
+    stage, setting, ceiling, monkeypatch
+):
     """The boot guard RE-DERIVES this function's arithmetic; this is what stops the two drifting.
 
-    `Settings._validate_doi_render_target` cannot call page_dpi - `rasterise` imports `config`, so
+    `Settings._assert_target_is_reachable` cannot call page_dpi - `rasterise` imports `config`, so
     the dependency can only run one way - so it recomputes the fit on the same geometry. A guard
     that describes arithmetic it does not execute can drift silently and still read like a check,
     which is the failure mode this repo has shipped before. So the guard's verdict is compared
@@ -305,18 +308,21 @@ def test_the_boot_guard_agrees_with_what_page_dpi_actually_renders(ceiling, monk
     Parametrised over the ceiling rather than asserted once because a guard that never fires and a
     guard with the threshold one step off both look correct at the shipped value alone. 120 and 118
     must pass, 117 and below must refuse.
+
+    Parametrised over `_STAGE_RENDER_TARGETS` rather than over doi alone so a stage added to that
+    mapping is tied to page_dpi automatically. A new stage whose target nobody checked against the
+    real renderer is exactly what generalising the guard could otherwise have made easy to add.
     """
     settings = get_settings()
     monkeypatch.setattr(settings, "summary_image_dpi", ceiling)
     page_pt = _SMALLEST_PAGE_LONG_EDGE_PT
+    target = getattr(settings, setting)
 
-    dpi = rasterise.page_dpi(
-        _reader_with_box(605, page_pt), 1, settings, settings.doi_image_long_edge_px
-    )
-    lands = page_pt / 72 * dpi >= settings.doi_image_long_edge_px - page_pt / 72
+    dpi = rasterise.page_dpi(_reader_with_box(605, page_pt), 1, settings, target)
+    lands = page_pt / 72 * dpi >= target - page_pt / 72
 
     try:
-        settings._validate_doi_render_target()
+        settings._assert_target_is_reachable(stage, setting)
         guard_allows_boot = True
     except RuntimeError:
         guard_allows_boot = False

@@ -11,7 +11,7 @@ sending medical records to an org whose retention setting nobody looked at.
 
 import pytest
 
-from app.config import Settings
+from app.config import _STAGE_RENDER_TARGETS, Settings
 
 # Settings is a pydantic-settings model: it reads the ENVIRONMENT, and uppercase constructor kwargs
 # are silently ignored as extras. So these must be set as real env vars or the guards never fire -
@@ -457,24 +457,53 @@ def test_one_dpi_below_the_boundary_refuses_to_start(monkeypatch):
         _settings(monkeypatch, **env)
 
 
-def test_a_gemini_doi_stage_ignores_the_render_target_entirely(monkeypatch):
-    """WHEN the doi stage resolves to gemini, THE SYSTEM SHALL NOT apply the check.
+def test_the_check_is_per_stage_so_moving_one_off_vllm_does_not_exempt_the_other(monkeypatch):
+    """IF one stage in _STAGE_RENDER_TARGETS is on gemini AND another is still on vllm, THEN the
+    system SHALL still check the one on vllm, naming IT.
+
+    This is what "per stage" has to mean. A guard keyed on "is vllm resolved anywhere" would pass
+    here the moment doi moved to gemini, silently dropping deposition's target with the setting that
+    caps it unchanged. Asserted by NAME, so a guard that checks the right stage for the wrong reason
+    cannot satisfy it.
+    """
+    env = _vllm(LLM_BACKEND_OVERRIDES="doi=gemini", SUMMARY_IMAGE_DPI="60")
+    with pytest.raises(RuntimeError, match="DEPOSITION_IMAGE_LONG_EDGE_PX"):
+        _settings(monkeypatch, **env)
+
+
+def test_a_stage_on_gemini_ignores_its_render_target_entirely(monkeypatch):
+    """WHEN every stage with a render target resolves to gemini, THE SYSTEM SHALL NOT apply the
+    check at all.
 
     Gemini takes the PDF inline and rasterises nothing, so the pixel target is never read there.
     Mirrors `test_a_gemini_deployment_ignores_the_image_bound_entirely`: a deployment must not be
-    refused over a number it will never consult. Asserted with SEGMENTATION STILL ON VLLM, so this
-    pins the stage key rather than merely pinning that a gemini-only deployment is exempt.
+    refused over a number it will never consult. Asserted with SEGMENTATION STILL ON VLLM at a dpi
+    that would refuse both targets, so this pins the stage key rather than merely pinning that a
+    gemini-only deployment is exempt.
     """
     settings = _settings(
         monkeypatch,
         **_vllm(
-            LLM_BACKEND_OVERRIDES="doi=gemini",
+            LLM_BACKEND_OVERRIDES="doi=gemini,deposition=gemini",
             SUMMARY_IMAGE_DPI="60",
-            DOI_IMAGE_LONG_EDGE_PX="1300",
         ),
     )
     assert settings.backend_for("doi") == "gemini"
+    assert settings.backend_for("deposition") == "gemini"
     assert settings.backend_for("segment") == "vllm"
+
+
+def test_the_deposition_target_is_guarded_on_its_own_setting(monkeypatch):
+    """IF deposition resolves to vllm AND summary_image_dpi caps its render, THEN the system SHALL
+    refuse to start naming DEPOSITION_IMAGE_LONG_EDGE_PX, not the doi one.
+
+    The two settings hold the same number today, so a guard reading doi's value for deposition's
+    stage would pass every test that only checks THAT it raised. Raising deposition's target alone
+    is what tells them apart.
+    """
+    env = _vllm(DOI_IMAGE_LONG_EDGE_PX="1300", DEPOSITION_IMAGE_LONG_EDGE_PX="2200")
+    with pytest.raises(RuntimeError, match="DEPOSITION_IMAGE_LONG_EDGE_PX target of 2200px"):
+        _settings(monkeypatch, **env)
 
 
 def test_the_shipped_defaults_satisfy_the_render_target_guard(monkeypatch):
@@ -486,6 +515,10 @@ def test_the_shipped_defaults_satisfy_the_render_target_guard(monkeypatch):
     settings = _settings(monkeypatch, **_vllm())
     assert settings.summary_image_dpi == 120
     assert settings.doi_image_long_edge_px == 1300
+    assert settings.deposition_image_long_edge_px == 1300
+    # Every stage declaring a target is covered, so adding one to the mapping without a default that
+    # boots cannot slip through on the strength of the two that were checked by name.
+    assert set(_STAGE_RENDER_TARGETS) == {"doi", "deposition"}
 
 
 def test_a_vllm_backend_without_a_model_refuses_to_start(monkeypatch):

@@ -27,7 +27,13 @@ from app.api.deps import get_owned_document
 from app.auth.deps import current_active_user
 from app.config import get_settings
 from app.db import get_db
-from app.errors import EmptyExtractionError, OcrUnavailableError, PdfUnreadableError, PipelineError
+from app.errors import (
+    EmptyExtractionError,
+    OcrUnavailableError,
+    PdfUnreadableError,
+    PipelineError,
+    TranscriptPagesUnreadableError,
+)
 from app.models import Document, Job, ReviewRow, Summary, User
 from app.schemas.documents import (
     BundlePayload,
@@ -108,7 +114,7 @@ def _pipeline_error_response(document_id: str, exc: PipelineError) -> JSONRespon
     need to do is re-upload the file.
     """
     logger.warning("pipeline error on document %s: %s", document_id, exc)
-    if isinstance(exc, (PdfUnreadableError, EmptyExtractionError)):
+    if isinstance(exc, (PdfUnreadableError, EmptyExtractionError, TranscriptPagesUnreadableError)):
         code = status.HTTP_422_UNPROCESSABLE_ENTITY
     elif isinstance(exc, OcrUnavailableError):
         code = status.HTTP_503_SERVICE_UNAVAILABLE

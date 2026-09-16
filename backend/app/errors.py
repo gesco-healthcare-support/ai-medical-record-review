@@ -94,6 +94,50 @@ class EmptyExtractionError(PipelineError):
     )
 
 
+class TranscriptPagesUnreadableError(PipelineError):
+    """The transcript's printed page numbers could not be read, so no citation can be trusted.
+
+    Raised by `deposition_pages.transcript_page_offset` when the model's reply is TRUNCATED, and
+    only then. Every other read failure there still returns `None`, which means "no offset could be
+    established" and makes the summary cite nothing - the safe degradation that function was built
+    around.
+
+    THREE CALLERS REACH THIS, and they are listed in full because a partial list reads as a
+    complete one. Two of them need the TYPE; the third needs only the base class and pays the
+    highest price.
+
+    Needing the type, which is why this is a subclass rather than a bare exception:
+
+    - `api/documents.py` catches only `PipelineError` on the single-row re-draft route, so a bare
+      raise would be an unhandled 500.
+    - `services/bundles.py` catches this per row, while ITS caller catches `PipelineError` and
+      discards `entries` - so a bare raise would throw away every summary the export had already
+      paid for.
+
+    Needing nothing but `PipelineError`, and the one to understand before changing anything here:
+
+    - the summarize WORKER (`worker/tasks.py`) catches per row and hands the exception to
+      `classify_failure`, which returns "permanent" for any `PipelineError` and never retries it.
+      So on the main production path this does not cost a deposition its page citations - it costs
+      that deposition its ENTIRE SUMMARY, surfaced to the reviewer as a row needing attention.
+      That is the intended trade (Adrian, 2026-09-16, reaffirmed after the price was measured):
+      refusing loudly is recoverable because the reviewer sees it and re-runs, whereas a summary
+      that quietly lost its citations ships looking complete. It is pinned in
+      `test_unreadable_transcript_pages_are_permanent_and_that_costs_the_whole_row` so it stays a
+      choice rather than becoming an accident of which base class this inherited.
+
+    Classified 422 for the same reason `EmptyExtractionError` is: it is a property of THIS
+    document's pages rather than a fault in the server, and there is nothing an administrator can
+    fix in response to it.
+    """
+
+    user_message = (
+        "The page numbers printed on this transcript could not be read, so no page citations were "
+        "written for it. Please try again; if it keeps happening, the scan may be too unclear for "
+        "those numbers to be read."
+    )
+
+
 class PipelineTimeoutError(PipelineError):
     """A pipeline stage exceeded its wall-clock budget and was stopped rather than left to hang."""
 

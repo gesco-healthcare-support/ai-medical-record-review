@@ -13,7 +13,7 @@ import re
 import pymupdf
 from pypdf import PdfReader, PdfWriter
 
-from app.errors import EmptyExtractionError
+from app.errors import EmptyExtractionError, TranscriptPagesUnreadableError
 from app.services import summarize_engine
 
 logger = logging.getLogger(__name__)
@@ -373,6 +373,9 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
     check marker reaches most rows, because of the row flag it keys on.
     """
     entries = []
+    # Which exception types caused a row to be skipped, so the all-rows-skipped floor below can name
+    # what actually happened instead of always reporting the blank-text case.
+    skipped_causes: set[type[Exception]] = set()
     for row in rows:
         prompt = prompt_for(row) if prompt_for is not None else None
         # The bundle export is a bounded quick path: skip the faithfulness verify pass to keep it fast.
@@ -401,6 +404,25 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
                 row.get("start"),
                 row.get("end"),
             )
+            skipped_causes.add(EmptyExtractionError)
+            continue
+        except TranscriptPagesUnreadableError:
+            # Same argument, different trigger, and it is here for the same reason the class exists
+            # at all. A deposition whose printed page numbers could not be read is one document's
+            # problem, not the export's: every row already summarized cost real model calls, and
+            # `except PipelineError` upstream would discard all of them over this one.
+            #
+            # It reaches here only on a TRUNCATED reply. A transcript whose offset genuinely cannot
+            # be established still returns None and summarizes normally without citations, so this
+            # branch is not the ordinary "no page numbers" case - it is the case where we do not
+            # know whether there were page numbers to read.
+            logger.warning(
+                "bundle: transcript page numbers unreadable for pages %s-%s; that document is "
+                "omitted",
+                row.get("start"),
+                row.get("end"),
+            )
+            skipped_causes.add(TranscriptPagesUnreadableError)
             continue
         entries.append(
             {
@@ -410,10 +432,20 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
             }
         )
     if rows and not entries:
-        # EVERY row was blank. Skipping per-row must not turn a clear error into a silently empty
+        # EVERY row was skipped. Skipping per-row must not turn a clear error into a silently empty
         # deliverable: without this the caller hands `[]` to `build_mrr_document` and streams a Word
         # file containing a letterhead and no summaries, with a 200. Re-raising restores the 422
-        # ("No readable text was found in this document") that the un-isolated loop produced, which
-        # is the honest answer when there is nothing to deliver.
+        # that the un-isolated loop produced, which is the honest answer when there is nothing to
+        # deliver.
+        #
+        # WHICH error is raised follows what actually happened, rather than defaulting to the blank
+        # case. A bundle of depositions whose page numbers all failed to read is not "no readable
+        # text was found" - that message sends the reader looking at the scan quality of pages that
+        # read fine. Only a single, unanimous cause can be named; a mixture falls back to the
+        # blank-text message, which is the one that describes the commonest reason a row is dropped.
+        if skipped_causes == {TranscriptPagesUnreadableError}:
+            raise TranscriptPagesUnreadableError(
+                f"transcript page numbers unreadable in all {len(rows)} matching documents"
+            )
         raise EmptyExtractionError(f"no readable text in any of the {len(rows)} matching documents")
     return entries
