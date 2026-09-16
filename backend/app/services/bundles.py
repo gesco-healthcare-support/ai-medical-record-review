@@ -252,14 +252,50 @@ def cover_entries(rows, delivered=None) -> list[tuple[str, str, str]]:
     return entries
 
 
+# THE COLUMN WIDTHS, and both halves of this are load-bearing.
+#
+# Story takes each column's width from the FIRST ROW, which is the header, and it silently
+# IGNORES a percentage width - given percentages it lays the columns out in equal thirds. The
+# widths used to be declared on `td` only and as percentages, so the header cells carried none
+# and the columns collapsed to their minimum content width: measured 8.7pt / 11.9pt / 448.4pt
+# against a 504pt content rect. Date could not fit `04/25/18`, PROVIDER could not fit one word,
+# so both wrapped a word per line, and the three header labels overlapped on top of each other
+# because each began inside the previous one's text. A client read that page.
+#
+# So: ABSOLUTE POINTS, declared on `th` AND `td`. The shares are the reviewers' proportions;
+# the points are derived from the content rect so a page-size change carries.
+_COVER_COLUMN_SHARES = (0.15, 0.45, 0.40)
+
+# What Story adds on top of each declared width (3pt padding a side plus the cell border), and
+# how far the table itself sits inside the content rect. Both MEASURED off the rendered
+# geometry rather than reasoned from the box model, and both pinned by
+# `test_the_cover_table_spans_the_content_rect` - if a MuPDF release moves either, that test
+# fails rather than the table quietly overflowing the right margin.
+_COVER_CELL_OVERHEAD_PT = 11
+_COVER_TABLE_INSET_PT = 11
+
+
+def _cover_column_widths() -> tuple[int, ...]:
+    """Absolute point widths for the cover table, filling the content rect exactly."""
+    usable = (
+        _COVER_CONTENT.width
+        - _COVER_TABLE_INSET_PT
+        - _COVER_CELL_OVERHEAD_PT * len(_COVER_COLUMN_SHARES)
+    )
+    return tuple(round(usable * share) for share in _COVER_COLUMN_SHARES)
+
+
+_COVER_COLUMN_CLASSES = ("d", "p", "r")
+
 _COVER_CSS = """
-  body { font-family: 'Times New Roman', serif; font-size: 11pt; }
-  h1 { font-size: 12pt; font-weight: bold; text-align: center; margin: 0 0 12pt 0; }
-  table { width: 100%; border: 1px solid #000; }
-  th { font-weight: bold; text-align: left; border: 1px solid #000; padding: 3pt; }
-  td { text-align: left; border: 1px solid #000; padding: 3pt; vertical-align: top; }
-  td.d { width: 15%; }
-  td.p { width: 45%; }
+  body {{ font-family: 'Times New Roman', serif; font-size: 11pt; }}
+  h1 {{ font-size: 12pt; font-weight: bold; text-align: center; margin: 0 0 12pt 0; }}
+  table {{ border: 1px solid #000; }}
+  th {{ font-weight: bold; text-align: left; border: 1px solid #000; padding: 3pt; }}
+  td {{ text-align: left; border: 1px solid #000; padding: 3pt; vertical-align: top; }}
+  th.d, td.d {{ width: {0}pt; }}
+  th.p, td.p {{ width: {1}pt; }}
+  th.r, td.r {{ width: {2}pt; }}
 """
 
 
@@ -271,14 +307,23 @@ def build_cover_pdf(heading: str, entries) -> bytes:
     will too.
     """
     body = "".join(
-        "<tr><td class='d'>{}</td><td class='p'>{}</td><td>{}</td></tr>".format(
-            html.escape(date), html.escape(provider), html.escape(report)
+        "<tr>"
+        + "".join(
+            f"<td class='{cls}'>{html.escape(value)}</td>"
+            for cls, value in zip(_COVER_COLUMN_CLASSES, row, strict=True)
         )
-        for date, provider, report in entries
+        + "</tr>"
+        for row in entries
     )
-    header = "".join(f"<th>{html.escape(column)}</th>" for column in COVER_COLUMNS)
+    # The header carries the same classes as the body. It is not decoration: Story reads the
+    # column widths off this row, so a bare <th> collapses the whole table - see _COVER_CSS.
+    header = "".join(
+        f"<th class='{cls}'>{html.escape(column)}</th>"
+        for cls, column in zip(_COVER_COLUMN_CLASSES, COVER_COLUMNS, strict=True)
+    )
+    css = _COVER_CSS.format(*_cover_column_widths())
     doc = (
-        f"<html><head><style>{_COVER_CSS}</style></head><body>"
+        f"<html><head><style>{css}</style></head><body>"
         f"<h1>{html.escape(heading)}</h1>"
         f"<table><tr>{header}</tr>{body}</table>"
         "</body></html>"
