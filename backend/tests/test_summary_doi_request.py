@@ -212,3 +212,30 @@ def test_a_vllm_backend_sends_page_images_at_the_doi_render_target(tmp_path, mon
     # Control: it genuinely differs from the summarize target, or this passes for the wrong reason.
     assert settings.doi_image_long_edge_px != settings.summary_image_long_edge_px
     assert captured["model"] == "served-by-the-pod/model"
+
+
+def test_a_strict_caller_re_raises_an_ordinary_read_failure(tmp_path, monkeypatch):
+    """IF the model call fails AND the caller passed `strict`, THEN the system SHALL re-raise.
+
+    FOUND BY A MUTATION PROBE, not by reading. Breaking `if strict: raise` killed only the
+    TRUNCATION test above, which means the re-raise this flag was originally added for - an expired
+    credential, a moved file, a quota error - was pinned by nothing at all, and had not been since
+    the flag was introduced.
+
+    The backfill is what depends on it: without the raise it reads "-" as "this document states no
+    injury date" and strips a correct one out of a stored summary. Same data loss as the truncation
+    case, different trigger.
+    """
+
+    class _Provider:
+        def generate_text(self, **_kwargs):
+            raise RuntimeError("vertex is unhappy")
+
+    monkeypatch.setattr(sd, "provider_for_stage", lambda *_a, **_k: _Provider())
+    pdf = _blank_pdf(tmp_path / "synthetic.pdf", 4)
+
+    with pytest.raises(RuntimeError, match="unhappy"):
+        sd.extract_injury_date(pdf, 1, 2, strict=True)
+    # Control: the SAME failure without strict is still the fail-safe "-", so this pins the flag
+    # rather than merely pinning that errors propagate.
+    assert sd.extract_injury_date(pdf, 1, 2) == "-"
