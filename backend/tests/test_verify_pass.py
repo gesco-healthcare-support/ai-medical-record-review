@@ -421,8 +421,10 @@ def test_the_boundary_block_carries_the_end_of_a_and_the_start_of_b(monkeypatch)
 
     block = verify_pass._boundary_text("a-image", "b-image")
 
-    assert "A-CLOSES" in block and "A-OPENS" not in block
-    assert "B-OPENS" in block and "B-CLOSES" not in block
+    assert "A-CLOSES" in block, "document A's tail is missing from the block"
+    assert "A-OPENS" not in block, "document A was clipped from its START, not its end"
+    assert "B-OPENS" in block, "segment B's head is missing from the block"
+    assert "B-CLOSES" not in block, "segment B was clipped from its END, not its start"
     assert "(no text recognized)" not in block
 
 
