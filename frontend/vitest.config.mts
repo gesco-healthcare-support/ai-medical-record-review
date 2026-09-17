@@ -15,7 +15,12 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov"],
-      include: ["lib/**", "hooks/**", "components/**"],
+      // `app/**` is measured even though nothing tests it yet. The route tree is real shipped
+      // code, so leaving it out reports a coverage figure for a subset of the app while reading
+      // as if it were the whole of it. An honest denominator that starts lower is worth more
+      // than a flattering one, and an untested file counted here can only ever raise the number
+      // as tests arrive - it cannot hide.
+      include: ["lib/**", "hooks/**", "components/**", "app/**"],
       exclude: ["**/*.{test,spec}.{ts,tsx}"],
     },
   },
