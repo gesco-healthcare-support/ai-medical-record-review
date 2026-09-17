@@ -66,6 +66,13 @@ _STAGE_RENDER_TARGETS = {
 _DOI_IMAGE_CAP = 10
 _DEPOSITION_IMAGE_CAP = 6
 
+# Every stage that sends PAGE IMAGES to a pod. Module-level so a test can read it WITHOUT building a
+# `Settings`: constructing one in a test picks up whatever env that run happens to carry, which is
+# how a fake DATABASE_URL once leaked and surfaced as a foreign-key violation in an unrelated file.
+# An earlier version of the coverage test did exactly that and produced an intermittent setup error.
+# `Settings._stage_image_caps` is keyed on this tuple, so the two cannot disagree.
+_IMAGE_CAPPED_STAGES = ("summarize", "segment", "doi", "deposition")
+
 # Destinations approved to receive PHI in production, as ORIGINS (scheme + host + port).
 #
 # WHAT THIS ACTUALLY PROVES, and it is less than it looks. The SSH tunnel terminates INSIDE the pod,
@@ -1149,7 +1156,7 @@ class Settings(BaseSettings):
         over - if the pod genuinely cannot carry 10 images, the DOI read cannot run there, and
         saying so at boot beats discovering it per row.
         """
-        return {
+        by_stage = {
             "summarize": (self.summary_image_max_pages, "SUMMARY_IMAGE_MAX_PAGES"),
             "segment": (self.vllm_segment_max_pages, "VLLM_SEGMENT_MAX_PAGES"),
             "doi": (_DOI_IMAGE_CAP, "summary_doi._MAX_PAGES (a constant, deliberately)"),
@@ -1158,6 +1165,9 @@ class Settings(BaseSettings):
                 "deposition_pages._MAX_PAGES (a constant, deliberately)",
             ),
         }
+        # Keyed on the module tuple rather than returning the literal, so a stage added to one and
+        # not the other raises here instead of being silently unguarded.
+        return {stage: by_stage[stage] for stage in _IMAGE_CAPPED_STAGES}
 
     def _validate_image_counts(self) -> None:
         """Refuse to start when a stage would send more images than the pod accepts in one request.

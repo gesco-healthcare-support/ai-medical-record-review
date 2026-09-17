@@ -108,7 +108,7 @@ def test_every_stage_that_rasterises_is_covered_by_the_image_guard():
     """
     import re
 
-    from app.config import Settings
+    from app.config import _IMAGE_CAPPED_STAGES
 
     services = Path(__file__).resolve().parents[1] / "app" / "services"
     # `[ \t]+` rather than `\s+`: `\s` matches a NEWLINE, so `^\s+` happily spans a blank line and
@@ -132,9 +132,11 @@ def test_every_stage_that_rasterises_is_covered_by_the_image_guard():
         f"the services calling page_image_parts have changed: {sorted(callers)}. Update `expected` "
         "here AND Settings._stage_image_caps, or a stage sends images the pod may refuse."
     )
-    guarded = set(Settings()._stage_image_caps())  # type: ignore[call-arg]
-    assert guarded == set(expected.values()), (
-        f"the image guard covers {sorted(guarded)} but these stages rasterise: "
+    # Read from the module tuple, NOT by constructing a Settings: building one here picks up
+    # whatever env the run carries, which produced an intermittent foreign-key violation at this
+    # test's setup before it was changed. `_stage_image_caps` is keyed on this tuple.
+    assert set(_IMAGE_CAPPED_STAGES) == set(expected.values()), (
+        f"the image guard covers {sorted(_IMAGE_CAPPED_STAGES)} but these stages rasterise: "
         f"{sorted(expected.values())}"
     )
 
