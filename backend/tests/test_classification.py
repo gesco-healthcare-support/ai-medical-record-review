@@ -5,12 +5,15 @@ An A/B showed Flash-Lite matches full Flash on the labeled taxonomy examples (id
 the model call itself is stubbed at the provider seam.
 """
 
+import sys
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from app.config import get_settings
 from app.services import classification
+from app.services.taxonomy import CATEGORIES, DEFAULT_ID
 
 
 def _capturing(captured):
@@ -1821,3 +1824,382 @@ def test_the_rapid_triage_sheet_is_deliberately_still_unruled(title):
     keeps reaching the cascade exactly as it does today and the question stays open.
     """
     assert classification.match_rules(title) is None
+
+
+# ---------------------------------------------------------------------------------------------
+# THE CASCADE ITSELF, AND THE EMBEDDING HALF OF THE MODULE.
+#
+# Everything above this line exercises `match_rules` and `llm_classify`. `classify()` - the public
+# entry point the segment worker actually calls - had no test at all, and neither did the embedding
+# path it arbitrates over, because `sentence-transformers` is an OPTIONAL extra (pyproject.toml,
+# group `classifier`) that the web tier and CI do not install. Nothing below imports it: the model
+# is injected through `sys.modules`, so the suite stays runnable wherever the package is absent and
+# no test downloads a model.
+
+# A title no rule answers, so the cascade below it actually runs. Pinned by its own test rather than
+# assumed in eight others - if the rule table ever grows to cover it, one test says so by name
+# instead of eight failing for a reason that has nothing to do with what they assert.
+_UNRULED = "Zzz Unclassifiable Alpha"
+
+# Three categories, deliberately shaped: two carry examples and the third has NO "examples" key at
+# all, which is the arm of `_corpus`'s `or []` a well-formed database row never reaches.
+_FAKE_CATALOG = [
+    {
+        "id": "1",
+        "name": "Progress Report",
+        "description": "A treating physician's visit note.",
+        "examples": ["PR-2", "Office visit note"],
+    },
+    {
+        "id": "3",
+        "name": "Diagnostic Study",
+        "description": "Imaging and specimen results.",
+        "examples": ["MRI lumbar spine"],
+    },
+    {"id": "100", "name": "General", "description": "Administrative paperwork."},
+]
+
+
+@pytest.fixture
+def isolated_catalog(monkeypatch):
+    """Pin every module global the cascade caches in, so one test cannot poison the other 1800.
+
+    `monkeypatch.setattr` records the ORIGINAL value and restores it at teardown whatever happens in
+    between - including the `global` assignments `_encode` and `_refresh_locked` make, which a
+    cleanup line in the test body would miss on any failure path.
+    """
+    for name in ("_model", "_category_ids", "_category_matrix", "_catalog_categories"):
+        monkeypatch.setattr(classification, name, None)
+    monkeypatch.setattr(classification, "_catalog_version_seen", None)
+    monkeypatch.setattr(classification, "_catalog_text_cache", "")
+
+
+def _stub_catalog(monkeypatch, categories=None, version=7):
+    """Serve the catalog from constants at a fixed revision, instead of from the database."""
+    monkeypatch.setattr(
+        classification, "_auto_assign_categories", lambda: list(categories or _FAKE_CATALOG)
+    )
+    monkeypatch.setattr(classification, "_catalog_version", lambda: version)
+
+
+def _stub_encode(monkeypatch, query_vector=(0.0, 1.0, 0.0)):
+    """Replace the sentence-transformers call with fixed unit vectors; returns the call log.
+
+    The catalog corpora encode to the rows of the identity matrix and a query encodes to
+    `query_vector`, so `matrix @ vec` has one unambiguous winner and the assertion can name WHICH
+    category won rather than merely that something did. Corpora and queries are told apart by count:
+    the three corpora go in together, a query goes in alone.
+    """
+    calls = []
+
+    def fake(texts):
+        texts = list(texts)
+        calls.append(texts)
+        if len(texts) == 1:
+            return np.array([list(query_vector)])
+        return np.eye(len(texts))
+
+    monkeypatch.setattr(classification, "_encode", fake)
+    return calls
+
+
+def _stub_votes(monkeypatch, embedding, llm):
+    """Answer the two voters directly; `embedding` is an (id, score) pair or an Exception to raise.
+
+    `classify()`'s job is the ARBITRATION between two votes, so the voters themselves are replaced -
+    each has its own tests. The returned dict records the text each voter received, which is what
+    pins the page-text-or-title choice and proves a short-circuited path spent no model call.
+    """
+    seen = {}
+
+    def _embed(text):
+        seen["embed"] = text
+        if isinstance(embedding, Exception):
+            raise embedding
+        return embedding
+
+    def _llm(text):
+        seen["llm"] = text
+        return llm
+
+    monkeypatch.setattr(classification, "embed_classify", _embed)
+    monkeypatch.setattr(classification, "llm_classify", _llm)
+    return seen
+
+
+def test_the_unruled_fixture_title_really_is_unruled():
+    """THE SYSTEM SHALL leave `_UNRULED` unmatched, or every cascade test below is short-circuited.
+
+    Load-bearing, not setup noise: `classify()` returns on a rule match before it reaches either
+    voter, so a title that quietly started matching would leave eight tests asserting the rules path
+    while claiming to test arbitration.
+    """
+    assert classification.match_rules(_UNRULED) is None
+
+
+def test_a_category_without_examples_still_yields_a_corpus():
+    """WHERE a catalog row carries no examples, THE SYSTEM SHALL still build its corpus text."""
+    assert classification._corpus(_FAKE_CATALOG[0]) == (
+        "Progress Report. A treating physician's visit note. Examples: PR-2; Office visit note"
+    )
+    assert classification._corpus(_FAKE_CATALOG[2]) == (
+        "General. Administrative paperwork. Examples: "
+    )
+
+
+@pytest.mark.usefixtures("isolated_catalog")
+def test_the_catalog_corpora_are_encoded_once_and_reused(monkeypatch):
+    """WHEN the catalog revision has not changed, THE SYSTEM SHALL reuse the encoded matrix.
+
+    The matrix is the one expensive artefact in the cascade - one encode per category, and rebuilt
+    per call it would land on every sub-document of a 2,600-page record.
+    """
+    _stub_catalog(monkeypatch)
+    calls = _stub_encode(monkeypatch)
+
+    ids_first, matrix_first = classification._category_vectors()
+    ids_again, matrix_again = classification._category_vectors()
+
+    assert ids_first == ["1", "3", "100"]
+    assert ids_again == ids_first
+    assert matrix_again is matrix_first
+    assert len(calls) == 1, "the second call rebuilt the matrix instead of reusing it"
+
+
+@pytest.mark.usefixtures("isolated_catalog")
+def test_dropping_the_cache_rebuilds_the_matrix(monkeypatch):
+    """WHEN reset_catalog_cache() runs, THE SYSTEM SHALL encode the corpora again on the next use.
+
+    The half of the cache contract the test above cannot see. A test that only proves the matrix is
+    KEPT passes just as well against code that could never refresh it - and a worker holding a stale
+    matrix would classify against the old category set after a catalog migration ships.
+
+    PROBING THIS ONE NEEDS A TWO-LINE MUTATION, which is worth knowing before concluding it is
+    inert. `_category_matrix = None` appears in BOTH `reset_catalog_cache` and `_refresh_locked`
+    and either alone is sufficient, so deleting one reads as a no-op. Deleting both fails this test
+    by name - measured 2026-09-17.
+    """
+    _stub_catalog(monkeypatch)
+    calls = _stub_encode(monkeypatch)
+
+    classification._category_vectors()
+    classification.reset_catalog_cache()
+    classification._category_vectors()
+
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "query_vector,expected",
+    [((1.0, 0.0, 0.0), "1"), ((0.0, 1.0, 0.0), "3"), ((0.0, 0.0, 1.0), "100")],
+)
+@pytest.mark.usefixtures("isolated_catalog")
+def test_the_nearest_category_wins_with_its_cosine_score(monkeypatch, query_vector, expected):
+    """WHEN embed_classify runs, THE SYSTEM SHALL return the nearest category id and its score.
+
+    Parametrized over all three directions because a single case cannot tell an argmax from a
+    constant - each category must win when the query points at it.
+    """
+    _stub_catalog(monkeypatch)
+    _stub_encode(monkeypatch, query_vector=query_vector)
+
+    category, score = classification.embed_classify("some document text")
+
+    assert category == expected
+    assert score == pytest.approx(1.0)
+    assert isinstance(score, float), "the caller stores this; a numpy scalar is not JSON"
+
+
+@pytest.mark.usefixtures("isolated_catalog")
+def test_the_embedding_model_is_loaded_once_and_kept(monkeypatch):
+    """WHEN _encode runs twice, THE SYSTEM SHALL construct SentenceTransformer exactly once.
+
+    The load-once contract is the whole reason the `_model` global exists: constructing it per call
+    would re-read the model on every sub-document. The package is injected rather than installed
+    because it is an optional extra the web tier and CI do not carry - which is also what keeps this
+    test from downloading a model.
+    """
+    loaded, encoded = [], []
+
+    class _FakeSentenceTransformer:
+        def __init__(self, name):
+            loaded.append(name)
+
+        def encode(self, texts, normalize_embeddings=False):
+            encoded.append((list(texts), normalize_embeddings))
+            return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=_FakeSentenceTransformer),
+    )
+
+    first = classification._encode(["one"])
+    classification._encode(["two", "three"])
+
+    assert loaded == [classification._EMBED_MODEL_NAME], "the model was constructed more than once"
+    assert isinstance(first, np.ndarray), "callers do matrix arithmetic on this"
+    assert [texts for texts, _ in encoded] == [["one"], ["two", "three"]]
+    assert all(normalized for _, normalized in encoded), "cosine similarity assumes unit vectors"
+
+
+def test_an_unreachable_database_reports_no_catalog_revision(monkeypatch):
+    """IF the database is unavailable, THEN _catalog_version SHALL answer -1 rather than raise.
+
+    -1 never equals a real revision, so the caller reloads rather than trusting a cache it cannot
+    validate. A bare unit test takes this path, and so does any tier without a worker engine.
+    """
+
+    def unreachable():
+        raise RuntimeError("no database here")
+
+    monkeypatch.setattr(classification, "get_sessionmaker", unreachable)
+
+    assert classification._catalog_version() == -1
+
+
+def test_an_unreachable_database_falls_back_to_the_taxonomy_constants(monkeypatch):
+    """IF the database is unavailable, THEN the auto-assignable set SHALL come from CATEGORIES."""
+
+    def unreachable():
+        raise RuntimeError("no database here")
+
+    monkeypatch.setattr(classification, "get_sessionmaker", unreachable)
+
+    rows = classification._auto_assign_categories()
+
+    assert [row["id"] for row in rows] == [c.id for c in CATEGORIES.values()]
+    assert all({"id", "name", "description", "examples"} <= set(row) for row in rows)
+
+
+def test_an_empty_catalog_table_falls_back_to_the_taxonomy_constants(monkeypatch):
+    """IF the catalog holds no auto-assignable rows, THEN the constants SHALL answer instead.
+
+    A different arm from the unreachable-database case above: the session opens and the query
+    succeeds, returning nothing. Without it a merely EMPTY database - a fresh test database before
+    seeding - would classify every document against an empty category set.
+    """
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(classification, "get_sessionmaker", lambda: _Session)
+    monkeypatch.setattr(classification.catalog, "get_categories", lambda *_a, **_k: [])
+
+    rows = classification._auto_assign_categories()
+
+    assert [row["id"] for row in rows] == [c.id for c in CATEGORIES.values()]
+
+
+def test_a_matched_rule_answers_without_consulting_either_model(monkeypatch):
+    """WHEN a deterministic rule matches the title, THE SYSTEM SHALL answer from it alone.
+
+    The cheap path, and the one that must not spend a model call: rules fire on a large share of a
+    record's sub-documents, so a regression that let this fall through would multiply the model
+    calls by roughly the size of the record.
+    """
+    seen = _stub_votes(monkeypatch, embedding=("3", 0.9), llm="1")
+    title = "Routing Slip"
+    ruled = classification.match_rules(title)
+    assert ruled is not None, "control: the rule this test rides on still fires"
+
+    result = classification.classify(title)
+
+    assert result == classification.Classification(ruled, "high", "rules", needs_review=False)
+    assert seen == {}, "a matched rule spent a model call"
+
+
+def test_a_document_with_no_text_is_flagged_rather_than_guessed(monkeypatch):
+    """WHEN there is nothing to classify, THE SYSTEM SHALL return the catch-all for review."""
+    seen = _stub_votes(monkeypatch, embedding=("3", 0.9), llm="1")
+
+    result = classification.classify("   ", page_text="  ")
+
+    assert result == classification.Classification(DEFAULT_ID, "low", "empty", needs_review=True)
+    assert seen == {}, "an empty document spent a model call"
+
+
+def test_the_page_text_is_classified_when_present_and_the_title_when_not(monkeypatch):
+    """WHERE page text is supplied, THE SYSTEM SHALL classify it; otherwise the title.
+
+    The title is a one-line label and the page text is the document, so which of the two reaches the
+    voters decides what is actually being classified.
+    """
+    seen = _stub_votes(monkeypatch, embedding=("1", 0.5), llm="1")
+    classification.classify(_UNRULED, page_text="the first page body")
+    assert seen["embed"] == "the first page body"
+    assert seen["llm"] == "the first page body"
+
+    fallen_back = _stub_votes(monkeypatch, embedding=("1", 0.5), llm="1")
+    classification.classify(_UNRULED)
+    assert fallen_back["embed"] == _UNRULED
+
+
+def test_two_absent_votes_leave_the_document_unclassified(monkeypatch):
+    """WHEN neither voter answers, THE SYSTEM SHALL return the catch-all with needs_review set.
+
+    Also pins that a failed embedding does not abort the cascade: the LLM is still asked.
+    """
+    seen = _stub_votes(monkeypatch, embedding=RuntimeError("the model is not installed"), llm=None)
+
+    result = classification.classify(_UNRULED)
+
+    assert result == classification.Classification(
+        DEFAULT_ID, "low", "no-signal", needs_review=True
+    )
+    assert seen["llm"] == _UNRULED, "the LLM was skipped after the embedding failed"
+
+
+def test_an_absent_llm_leaves_the_embedding_answering_alone(monkeypatch):
+    """WHEN the LLM does not answer, THE SYSTEM SHALL keep the embedding's id and ask for review."""
+    _stub_votes(monkeypatch, embedding=("3", 0.88), llm=None)
+
+    assert classification.classify(_UNRULED) == classification.Classification(
+        "3", "low", "embedding-only", needs_review=True
+    )
+
+
+def test_an_unusable_embedding_leaves_the_llm_answering_alone(monkeypatch):
+    """WHEN the embedding is unavailable, THE SYSTEM SHALL keep the LLM's id and ask for review.
+
+    This is the WEB tier's normal state, not an exotic failure: `sentence-transformers` ships only
+    with the classifier image, so anything classifying outside the segment worker lands here.
+    """
+    _stub_votes(
+        monkeypatch, embedding=RuntimeError("no sentence-transformers on the web tier"), llm="13"
+    )
+
+    assert classification.classify(_UNRULED) == classification.Classification(
+        "13", "low", "llm-only", needs_review=True
+    )
+
+
+def test_two_agreeing_votes_are_confident(monkeypatch):
+    """WHEN both voters return the same id, THE SYSTEM SHALL answer high-confidence and unflagged.
+
+    The only path in the cascade that reaches a reviewer unflagged other than a rule match.
+    """
+    _stub_votes(monkeypatch, embedding=("13", 0.7), llm="13")
+
+    assert classification.classify(_UNRULED) == classification.Classification(
+        "13", "high", "llm+embedding", needs_review=False
+    )
+
+
+def test_a_disagreement_keeps_the_llm_answer_and_asks_for_review(monkeypatch):
+    """WHEN the two votes differ, THE SYSTEM SHALL return the LLM's id with needs_review set.
+
+    WHICH vote survives is the behavioural claim and it is not symmetric - the embedding's answer is
+    discarded. A reviewer sees the LLM's category flagged, never the embedding's, so a change here
+    would silently alter what the correction queue is arguing about.
+    """
+    _stub_votes(monkeypatch, embedding=("3", 0.9), llm="13")
+
+    assert classification.classify(_UNRULED) == classification.Classification(
+        "13", "low", "llm-disagree", needs_review=True
+    )
