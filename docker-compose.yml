@@ -124,6 +124,11 @@ x-backend-env: &backend-env
   # One page becomes one image on the vLLM path, so a window bound above what the pod accepts in a
   # single prompt dies on its first window. VLLM_MAX_IMAGES_PER_PROMPT mirrors the pod's
   # --limit-mm-per-prompt; the app refuses to start when the segment bound exceeds it.
+  # Summarize rasterises on BOTH backends, so its count is not a vLLM-only number - but it is
+  # still bounded by the pod's limit when summarize runs there, and the boot guard refuses on
+  # it. It has to be settable for the same reason the other two do: a guard you cannot clear
+  # from the environment is a wall, not a control.
+  SUMMARY_IMAGE_MAX_PAGES: ${SUMMARY_IMAGE_MAX_PAGES:-15}
   VLLM_SEGMENT_MAX_PAGES: ${VLLM_SEGMENT_MAX_PAGES:-30}
   VLLM_MAX_IMAGES_PER_PROMPT: ${VLLM_MAX_IMAGES_PER_PROMPT:-40}
   # The render ceiling, and the two per-stage targets it caps. page_dpi fits the DPI to a stage's

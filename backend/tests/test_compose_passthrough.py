@@ -34,6 +34,7 @@ import pytest
 _MUST_REACH_A_CONTAINER = {
     "VLLM_SEGMENT_MAX_PAGES": "compared against the image limit by a boot guard",
     "VLLM_MAX_IMAGES_PER_PROMPT": "mirrors the pod's --limit-mm-per-prompt; boot guard reads it",
+    "SUMMARY_IMAGE_MAX_PAGES": "also compared against that limit - four stages rasterise, not one",
     "SUMMARY_IMAGE_DPI": "the ceiling _validate_render_targets checks every target against",
     "DOI_IMAGE_LONG_EDGE_PX": "checked against that ceiling; unmeasured on a pod (issue #333)",
     "DEPOSITION_IMAGE_LONG_EDGE_PX": "checked against that ceiling; unmeasured (issue #333)",
@@ -73,6 +74,68 @@ def test_the_setting_is_documented_in_env_example(name):
     path = Path(__file__).resolve().parents[2] / ".env.example"
     assert re.search(rf"^{name}=", path.read_text(encoding="utf-8", errors="replace"), re.M), (
         f"{name} is missing from .env.example, so nobody will know it can be set."
+    )
+
+
+def test_the_mirrored_page_caps_match_their_modules():
+    """The image guard reads two caps that live as module constants; this stops them drifting.
+
+    `config` cannot import `services.summary_doi` or `services.deposition_pages` - those import
+    `config`, so the dependency runs one way only - so the guard compares mirrored copies. A mirror
+    that drifts still reads like a check and refuses, or fails to refuse, on the wrong number.
+
+    Same pattern as the render-target tie test, and it is here for the same reason: a guard that
+    describes a value it does not read can be silently wrong while looking correct.
+    """
+    from app.config import _DEPOSITION_IMAGE_CAP, _DOI_IMAGE_CAP
+    from app.services import deposition_pages, summary_doi
+
+    assert _DOI_IMAGE_CAP == summary_doi._MAX_PAGES, (
+        "config's mirror of the DOI page cap has drifted from the module that owns it"
+    )
+    assert _DEPOSITION_IMAGE_CAP == deposition_pages._MAX_PAGES, (
+        "config's mirror of the deposition page cap has drifted from the module that owns it"
+    )
+
+
+def test_every_stage_that_rasterises_is_covered_by_the_image_guard():
+    """WHEN a service calls page_image_parts, THE SYSTEM SHALL have that stage in the image guard.
+
+    THE CONTROL FOR THE WHOLE FIX. The guard covered segmentation alone and read as complete; the
+    other three were safe only because the limit it compares against was unreachable in code. This
+    counts the real call sites so adding a fifth rasterising service fails here rather than being
+    discovered when a pod refuses it.
+    """
+    import re
+
+    from app.config import Settings
+
+    services = Path(__file__).resolve().parents[1] / "app" / "services"
+    # `[ \t]+` rather than `\s+`: `\s` matches a NEWLINE, so `^\s+` happily spans a blank line and
+    # matched `rasterise.py`'s own `def page_image_parts(` at column 0 - the module that DEFINES the
+    # helper counted as a caller. Caught by this test failing on its first run, which is the only
+    # reason it is not still wrong.
+    callers = {
+        path.stem
+        for path in services.glob("*.py")
+        if re.search(r"^[ \t]+.*page_image_parts\(", path.read_text(encoding="utf-8"), re.M)
+    }
+    # Module name -> the stage string the guard keys on. Named rather than derived, because the two
+    # do not match ("summarize_engine" is the "summarize" stage) and guessing would be fragile.
+    expected = {
+        "summarize_engine": "summarize",
+        "segment_engine": "segment",
+        "summary_doi": "doi",
+        "deposition_pages": "deposition",
+    }
+    assert callers == set(expected), (
+        f"the services calling page_image_parts have changed: {sorted(callers)}. Update `expected` "
+        "here AND Settings._stage_image_caps, or a stage sends images the pod may refuse."
+    )
+    guarded = set(Settings()._stage_image_caps())  # type: ignore[call-arg]
+    assert guarded == set(expected.values()), (
+        f"the image guard covers {sorted(guarded)} but these stages rasterise: "
+        f"{sorted(expected.values())}"
     )
 
 

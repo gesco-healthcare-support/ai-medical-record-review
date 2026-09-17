@@ -54,6 +54,18 @@ _STAGE_RENDER_TARGETS = {
     "deposition": "deposition_image_long_edge_px",
 }
 
+# The two page caps that live as MODULE CONSTANTS rather than settings, mirrored here so the image
+# guard can see them. `services/summary_doi` and `services/deposition_pages` import this module, so
+# the dependency runs one way and config cannot read theirs;
+# `tests/test_compose_passthrough.py::test_the_mirrored_page_caps_match_their_modules` ties each to
+# its source, and fails here rather than there if they ever drift.
+#
+# They are constants ON PURPOSE and should stay that way: 10 is measured (raising the DOI read from
+# 5 to 10 on 2026-07-31 was the single largest fix to missed injury dates), and making a measured
+# number an env knob invites changing it without redoing the measurement.
+_DOI_IMAGE_CAP = 10
+_DEPOSITION_IMAGE_CAP = 6
+
 # Destinations approved to receive PHI in production, as ORIGINS (scheme + host + port).
 #
 # WHAT THIS ACTUALLY PROVES, and it is less than it looks. The SSH tunnel terminates INSIDE the pod,
@@ -1105,17 +1117,7 @@ class Settings(BaseSettings):
                 "one model and there is no catalogue to fall back on, so an unset model would "
                 "inherit a Gemini name and 404 on the first call."
             )
-        # Checked in DEV as well as prod, unlike the origin check below: a wrong bound is not a PHI
-        # question, it is a run that dies on its first window, and that costs just as much on a
-        # rented GPU in dev as anywhere else.
-        if self.vllm_segment_max_pages > self.vllm_max_images_per_prompt:
-            raise RuntimeError(
-                f"VLLM_SEGMENT_MAX_PAGES is {self.vllm_segment_max_pages}, above "
-                f"VLLM_MAX_IMAGES_PER_PROMPT of {self.vllm_max_images_per_prompt}. One page becomes "
-                "one image on this path, so the pod would refuse the first full window. Either "
-                "serve the pod with a higher --limit-mm-per-prompt and raise "
-                "VLLM_MAX_IMAGES_PER_PROMPT to match it, or lower VLLM_SEGMENT_MAX_PAGES."
-            )
+        self._validate_image_counts()
         self._validate_render_targets()
         if self.environment != "prod":
             return
@@ -1129,6 +1131,56 @@ class Settings(BaseSettings):
                 f"approved to receive PHI in production. Approved: {list(approved)}. This is a "
                 "compliance control rather than a misconfiguration - widen it deliberately in "
                 "app/config.py, where the change is visible in a diff and needs a deploy."
+            )
+
+    def _stage_image_caps(self) -> dict[str, tuple[int, str]]:
+        """Every stage that sends PAGE IMAGES to a pod: how many at most, and what changes it.
+
+        FOUR stages rasterise, not one. The guard below compared only segmentation until 2026-09-16,
+        which was safe for as long as `vllm_max_images_per_prompt` was pinned in code and unreachable
+        - 15, 10 and 6 are all under 40, so the unchecked three could not be wrong. Making that
+        limit settable is correct and is the point of this change, but it opens a configuration
+        nobody could previously reach: a pod at `--limit-mm-per-prompt 10` would refuse segmentation
+        at boot, you would lower VLLM_SEGMENT_MAX_PAGES to clear it, the app would start, and
+        summarize would still send 15 - refused by the pod at RUNTIME with nothing having warned.
+
+        The second element is what an operator has to change, which is not the same thing for every
+        stage: two are settings and two are module constants. A constant is still worth refusing
+        over - if the pod genuinely cannot carry 10 images, the DOI read cannot run there, and
+        saying so at boot beats discovering it per row.
+        """
+        return {
+            "summarize": (self.summary_image_max_pages, "SUMMARY_IMAGE_MAX_PAGES"),
+            "segment": (self.vllm_segment_max_pages, "VLLM_SEGMENT_MAX_PAGES"),
+            "doi": (_DOI_IMAGE_CAP, "summary_doi._MAX_PAGES (a constant, deliberately)"),
+            "deposition": (
+                _DEPOSITION_IMAGE_CAP,
+                "deposition_pages._MAX_PAGES (a constant, deliberately)",
+            ),
+        }
+
+    def _validate_image_counts(self) -> None:
+        """Refuse to start when a stage would send more images than the pod accepts in one request.
+
+        One page becomes one image on this path, so a stage bound above `--limit-mm-per-prompt` is a
+        run that dies on its first request of that shape. Checked in DEV as well as prod, unlike the
+        origin check: a wrong bound is not a PHI question, it is wasted time on a rented GPU, which
+        costs the same in either environment.
+
+        PER STAGE, skipping any stage not on vllm, for the same reason `_validate_render_targets`
+        does: Gemini takes a PDF for segmentation and the two isolated reads, so those never
+        rasterise there. Summarize is the exception worth knowing - it sends page images on BOTH
+        backends - but its count only has to fit a POD's limit, so the skip is still correct.
+        """
+        for stage, (cap, lever) in self._stage_image_caps().items():
+            if self.backend_for(stage) != "vllm" or cap <= self.vllm_max_images_per_prompt:
+                continue
+            raise RuntimeError(
+                f"the {stage} stage sends up to {cap} page images per request, above "
+                f"VLLM_MAX_IMAGES_PER_PROMPT of {self.vllm_max_images_per_prompt}. One page becomes "
+                "one image on this path, so the pod would refuse the first request of that shape. "
+                "Either serve the pod with a higher --limit-mm-per-prompt and raise "
+                f"VLLM_MAX_IMAGES_PER_PROMPT to match it, or lower {lever}."
             )
 
     def _validate_render_targets(self) -> None:
