@@ -166,3 +166,43 @@ def test_listing_is_silent_when_no_audit_was_ever_requested():
     for verified in (False, True):
         summary.verified = verified
         assert summary.listing()["verifyFailed"] is False
+
+
+def test_every_table_that_references_a_document_is_cascaded_by_it():
+    """GUARD on the CLASS of defect, not the instance.
+
+    `page_texts` shipped in #77 with a foreign key to `documents` and no relationship here, and
+    for six weeks no record that had been OCR'd could be deleted at all - the ORM removed the
+    jobs, rows and summaries and Postgres then refused the parent row. Nothing failed at review
+    time and nothing failed in CI, because the one delete test uploads a document and deletes it
+    before anything writes page text.
+
+    So this asserts the RULE rather than the four tables: every mapped table with a foreign key
+    to `documents.id` must either be cascaded from `Document` or carry ON DELETE CASCADE in the
+    database. A fifth child table added tomorrow fails here on the day it lands rather than in
+    front of a reviewer.
+
+    The delete_orphan half matters as much as delete: without it a detached child is orphaned
+    rather than removed, which is the same foreign key waiting to fire.
+    """
+    document_table = Document.__table__
+
+    cascaded = set()
+    for rel in Document.__mapper__.relationships:
+        if "delete" in rel.cascade and "delete-orphan" in rel.cascade:
+            cascaded.add(rel.mapper.class_.__table__.name)
+
+    unprotected = []
+    for mapper in Document.registry.mappers:
+        table = mapper.class_.__table__
+        for fk in table.foreign_keys:
+            if fk.column.table is not document_table:
+                continue
+            db_cascade = (fk.constraint.ondelete or "").upper() == "CASCADE"
+            if table.name not in cascaded and not db_cascade:
+                unprotected.append(f"{table.name}.{fk.parent.name}")
+
+    assert not unprotected, (
+        f"these reference documents.id with no cascade, so deleting a document will fail: "
+        f"{sorted(set(unprotected))}"
+    )

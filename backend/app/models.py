@@ -200,6 +200,26 @@ class Document(Base):
     summaries = relationship(
         "Summary", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Summary.idx"
     )
+    # WITHOUT THIS, A DOCUMENT THAT HAS BEEN OCR'd CANNOT BE DELETED AT ALL.
+    #
+    # `page_texts` is the fourth table with a foreign key to `documents`, added by #77 on
+    # 2026-08-07, and it was the only one with no relationship here. The database rule on all
+    # four is NO ACTION, so the cascade is entirely ORM-side: `delete_document` removed the
+    # jobs, rows and summaries, then Postgres refused the parent row because the page text
+    # still referenced it, and the reviewer got a 500.
+    #
+    # It bit every real record and nothing else. A page row is written the first time a page is
+    # OCR'd, so a freshly uploaded document deletes cleanly and one that has been through
+    # identification never does - which is why `test_upload_list_get_status_delete` passes: it
+    # uploads and deletes without OCR in between. Measured on the box: the last successful
+    # delete was 2026-07-30, eight days before #77, and 90 of the ~94 documents there carry
+    # page text.
+    #
+    # ORM cascade rather than ON DELETE CASCADE, matching the three above: it needs no migration
+    # against a live PHI database, and the volume is small enough that loading the rows to
+    # delete them is not worth a second mechanism - the widest document on the box holds 668
+    # page rows, and the whole table is 37 MB across 90 documents.
+    page_texts = relationship("PageText", backref="document", cascade=_CASCADE_DELETE_ORPHAN)
 
     @property
     def active_job(self):

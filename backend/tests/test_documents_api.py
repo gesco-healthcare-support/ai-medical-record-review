@@ -18,7 +18,7 @@ from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.errors import OcrUnavailableError
-from app.models import AuditLog, Document, Job, ReviewRow, Summary, User
+from app.models import AuditLog, Document, Job, PageText, ReviewRow, Summary, User
 from app.services.reporting import DOCTORS, LETTER_TYPES
 from app.services.seed_catalog import constants_categories
 from tests.conftest import unique_test_email
@@ -118,6 +118,99 @@ async def test_upload_list_get_status_delete(authed):
 
     assert (await client.delete(f"/api/documents/{doc_id}")).status_code == 200
     assert (await client.get(f"/api/documents/{doc_id}")).status_code == 404
+
+
+async def test_a_document_that_has_been_ocrd_can_still_be_deleted(authed):
+    """DEMONSTRATES the defect a reviewer hit: no record on the server could be deleted.
+
+    The test above deletes a document that was uploaded and never identified, so it has no
+    stored page text - and that is the ONLY shape that ever worked. `page_texts` is the fourth
+    table with a foreign key to `documents` and the only one with no relationship on the model,
+    so the ORM cascade removed jobs, rows and summaries and Postgres then refused the parent
+    row. Measured on the box: the last successful delete was 2026-07-30, eight days before
+    `page_texts` arrived, and 90 of ~94 documents carry page text.
+
+    One page row is enough - the constraint does not care how many - and reaching it through
+    the ROUTE is the point, because the endpoint is where the cascade is claimed."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    with get_sessionmaker()() as session:
+        session.add(PageText(document_id=doc_id, page=1, text="ocr", char_count=3))
+        session.commit()
+
+    resp = await client.delete(f"/api/documents/{doc_id}")
+    assert resp.status_code == 200, resp.text
+    assert (await client.get(f"/api/documents/{doc_id}")).status_code == 404
+    with get_sessionmaker()() as session:
+        left = session.query(PageText).filter(PageText.document_id == doc_id).count()
+    assert left == 0, "the page text outlived its document"
+
+
+async def test_deleting_a_worked_record_leaves_nothing_behind(authed):
+    """A live record has EVERY child table populated at once, which the two tests above do not.
+
+    It matters because `summaries` has two parents - `document_id` AND `job_id` - so the unit of
+    work has to delete the summaries before the jobs or the second foreign key fails. That
+    ordering is SQLAlchemy's to get right, and nothing here asserted it; this is the shape a
+    reviewer actually presses Delete on.
+
+    Small counts on purpose. The same shape was run at the widest real size on the box - 668
+    page rows, the largest any document there has - and completed in 493 ms, so nothing about
+    this is scale-sensitive and CI need not pay for it."""
+    from anyio import Path
+
+    from app.models import SegmentRow
+
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    with get_sessionmaker()() as session:
+        stored_path = session.get(Document, doc_id).stored_path
+        job = Job(document_id=doc_id, kind="segment", state="done", model="m", prompt_version="v")
+        session.add(job)
+        session.flush()
+        job_id = job.id
+        for i in range(3):
+            session.add(SegmentRow(job_id=job_id, idx=i, start=i + 1, end=i + 1, category="1"))
+            session.add(ReviewRow(document_id=doc_id, idx=i, start=i + 1, end=i + 1, category="1"))
+            session.add(
+                Summary(
+                    document_id=doc_id,
+                    job_id=job_id,
+                    idx=i,
+                    title="t",
+                    text="x",
+                    row_start=i + 1,
+                    row_end=i + 1,
+                    row_category="1",
+                )
+            )
+            session.add(PageText(document_id=doc_id, page=i + 1, text="ocr", char_count=3))
+        session.commit()
+
+    assert await Path(stored_path).exists(), "the upload should be on disk before the delete"
+    assert (await client.delete(f"/api/documents/{doc_id}")).status_code == 200
+    # The scanned record is PHI, so an orphaned file is not merely untidy. `os.remove` is wrapped
+    # in `except OSError` - correctly, an already-missing file must not block the delete - which
+    # also means a removal that silently stopped working would look exactly like success.
+    assert not await Path(stored_path).exists(), "the stored PDF outlived its record"
+
+    with get_sessionmaker()() as session:
+        left = {
+            "jobs": session.query(Job).filter(Job.document_id == doc_id).count(),
+            "segment_rows": session.query(SegmentRow).filter(SegmentRow.job_id == job_id).count(),
+            "review_rows": session.query(ReviewRow).filter(ReviewRow.document_id == doc_id).count(),
+            "summaries": session.query(Summary).filter(Summary.document_id == doc_id).count(),
+            "page_texts": session.query(PageText).filter(PageText.document_id == doc_id).count(),
+        }
+        audited = (
+            session.query(AuditLog)
+            .filter(AuditLog.action == "delete", AuditLog.document_id == doc_id)
+            .count()
+        )
+    assert left == dict.fromkeys(left, 0), f"orphans left behind: {left}"
+    # The trail is written AFTER the row is gone, which is the one ordering that could silently
+    # drop it - `AuditLog.document_id` carries no foreign key, so nothing would complain.
+    assert audited == 1, "the delete was not recorded in the audit trail"
 
 
 async def test_upload_rejects_non_pdf(authed):
