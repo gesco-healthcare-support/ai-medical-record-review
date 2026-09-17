@@ -14,6 +14,8 @@ They describe the shape of the trade, not the current levels.
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.config import get_settings
 from app.services import verify_pass
 from app.services.llm import ImagePart, TextPart
@@ -344,3 +346,188 @@ def test_the_oracle_answers_true_only_on_an_exact_YES(monkeypatch):
         captured = {}
         _stub_provider(monkeypatch, captured, reply=reply)
         assert verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4)) is expected, reply
+
+
+# ---------------------------------------------------------------------------------------------
+# THE HELPERS EVERY TEST ABOVE REPLACES.
+#
+# `_stub_provider` stands in for `_page_image`, `_png_bytes` and `_boundary_text` so the oracle
+# tests need no PDF, which left all three - and the oracle's own failure arm - unexercised. They are
+# tested here directly, with the two libraries they wrap (poppler via pdf2image, and tesseract via
+# app.services.ocr) faked at the module boundary.
+
+
+def _stub_ocr(monkeypatch, answers):
+    """Answer `extract_text_from_image` from a queue; an Exception in the queue is raised instead."""
+    queue = list(answers)
+
+    def fake(_image):
+        value = queue.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(verify_pass, "extract_text_from_image", fake)
+
+
+def test_one_page_is_rasterized_once_at_the_requested_dpi(monkeypatch):
+    """WHEN a boundary page is needed, THE SYSTEM SHALL rasterize that page alone.
+
+    `first_page` and `last_page` both pin the single page on purpose: the records are up to 2,600
+    pages, so a call that rendered from page 1 to the page wanted would be quadratic in the record.
+    """
+    calls = []
+
+    def fake_convert(path, first_page=None, last_page=None, dpi=None):
+        calls.append((path, first_page, last_page, dpi))
+        return [f"page-{first_page}", "the-page-after-it"]
+
+    monkeypatch.setattr(verify_pass, "convert_from_path", fake_convert)
+
+    assert verify_pass._page_image("record.pdf", 7) == "page-7"
+    assert calls == [("record.pdf", 7, 7, 120)]
+
+    verify_pass._page_image("record.pdf", 7, dpi=200)
+    assert calls[-1][3] == 200, "the caller could not override the dpi"
+
+
+def test_a_rasterized_page_becomes_png_bytes():
+    """WHEN a page image is attached to a request, THE SYSTEM SHALL encode it as PNG.
+
+    The mime type the oracle sends is image/png and is asserted elsewhere; this is the half that
+    makes that true.
+    """
+    saved = {}
+
+    class _Image:
+        def save(self, buffer, **kwargs):
+            saved.update(kwargs)
+            buffer.write(b"PNG-PAYLOAD")
+
+    assert verify_pass._png_bytes(_Image()) == b"PNG-PAYLOAD"
+    assert saved["format"] == "PNG"
+
+
+def test_the_boundary_block_carries_the_end_of_a_and_the_start_of_b(monkeypatch):
+    """WHEN both boundary pages carry text, THE SYSTEM SHALL clip A from the END and B from the START.
+
+    The direction is the whole point of the block: the evidence of a document continuing is the
+    bottom of A meeting the top of B. Clipping either from the wrong end would hand the model two
+    passages that were never adjacent, while still looking like a populated prompt.
+    """
+    _stub_ocr(
+        monkeypatch, ["A-OPENS" + "x" * 3000 + "A-CLOSES", "B-OPENS" + "y" * 3000 + "B-CLOSES"]
+    )
+
+    block = verify_pass._boundary_text("a-image", "b-image")
+
+    assert "A-CLOSES" in block and "A-OPENS" not in block
+    assert "B-OPENS" in block and "B-CLOSES" not in block
+    assert "(no text recognized)" not in block
+
+
+def test_a_failed_boundary_ocr_degrades_to_image_only(monkeypatch):
+    """IF boundary OCR raises, THEN the block SHALL be empty and the oracle SHALL still run.
+
+    Text is enrichment, not a gate. A missing tesseract binary must cost the prompt its OCR block,
+    never the verification itself - which would silently stop checking boundaries at all.
+    """
+    _stub_ocr(monkeypatch, [RuntimeError("tesseract is not installed")])
+
+    assert verify_pass._boundary_text("a-image", "b-image") == ""
+
+
+def test_two_blank_boundary_pages_add_nothing_to_the_prompt(monkeypatch):
+    """WHEN neither boundary page yields text, THE SYSTEM SHALL add no block at all.
+
+    Distinct from the failure above and reached differently: OCR succeeded and found nothing, which
+    is the ordinary case for a scanned separator or a blank verso.
+    """
+    _stub_ocr(monkeypatch, ["   ", ""])
+
+    assert verify_pass._boundary_text("a-image", "b-image") == ""
+
+
+def test_one_blank_boundary_page_still_sends_the_other(monkeypatch):
+    """WHERE only one boundary page yields text, THE SYSTEM SHALL send it and label the other."""
+    _stub_ocr(monkeypatch, ["", "B-SIDE-TEXT"])
+
+    block = verify_pass._boundary_text("a-image", "b-image")
+
+    assert "B-SIDE-TEXT" in block
+    assert block.count("(no text recognized)") == 1
+
+
+def test_the_boundary_text_reaches_the_prompt_only_when_the_flag_is_on(monkeypatch):
+    """WHERE verify_use_text is set, THE SYSTEM SHALL append the OCR block to the prompt.
+
+    Asserted in both directions in one test because the flag exists to be flipped on a live box: a
+    test that only proved the ON side would pass just as well against code that always appended.
+    """
+    captured = {}
+    _stub_provider(monkeypatch, captured)
+    monkeypatch.setattr(verify_pass, "_boundary_text", lambda *_a, **_k: "\n\nOCR-BLOCK-MARKER")
+
+    monkeypatch.setattr(get_settings(), "verify_use_text", True)
+    verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4))
+    assert "OCR-BLOCK-MARKER" in captured["parts"][-1].text
+
+    monkeypatch.setattr(get_settings(), "verify_use_text", False)
+    verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4))
+    assert "OCR-BLOCK-MARKER" not in captured["parts"][-1].text
+
+
+def test_an_oracle_failure_keeps_the_boundary(monkeypatch):
+    """IF the model call raises, THEN the oracle SHALL answer False and the split SHALL stand.
+
+    The fail-safe direction, and the reason this arm matters more than its two lines suggest: False
+    means "not proven to be the same document", so an unreachable backend leaves the segmentation
+    exactly as the segmenter produced it. Answering True on failure would merge documents away.
+    """
+    captured = {}
+    _stub_provider(monkeypatch, captured)
+
+    class _UnhappyBackend:
+        def generate_choice(self, **_kwargs):
+            raise RuntimeError("the backend is unhappy")
+
+    monkeypatch.setattr(verify_pass, "provider_for_stage", lambda *_a, **_k: _UnhappyBackend())
+
+    assert verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4)) is False
+
+
+def test_an_explicit_worker_count_overrides_the_configured_one(monkeypatch):
+    """WHERE a worker count is passed, THE SYSTEM SHALL use it instead of CLASSIFY_WORKERS.
+
+    Same argument as the `triggered_only` pin above: a measurement harness needs to hold the box's
+    settings constant and vary one thing itself. The configured value is set to an unusable 0, so
+    the control below FAILS loudly if the argument is ever ignored - without it this test would pass
+    against code that read the setting regardless.
+    """
+    captured = {}
+    _stub_provider(monkeypatch, captured)
+    monkeypatch.setattr(get_settings(), "classify_workers", 0)
+
+    _out, stats = verify_pass.verify_and_merge("x.pdf", list(_ROWS), workers=1)
+    assert stats["suspects"] > 0, "nothing was verified, so the pool was never built"
+
+    with pytest.raises(ValueError):
+        verify_pass.verify_and_merge("x.pdf", list(_ROWS))
+
+
+def test_the_progress_callback_is_told_how_many_boundaries_remain(monkeypatch):
+    """WHERE a progress callable is supplied, THE SYSTEM SHALL report ("verifying", done, total).
+
+    The first call carries 0 before any work, which is what lets the UI show the denominator while
+    the pass is still starting rather than jumping in at the first completion.
+    """
+    captured = {}
+    _stub_provider(monkeypatch, captured)
+    seen = []
+
+    verify_pass.verify_and_merge(
+        "x.pdf", list(_ROWS), progress=lambda *args: seen.append(args), workers=1
+    )
+
+    assert seen[0] == ("verifying", 0, 3)
+    assert seen[-1] == ("verifying", 3, 3)
