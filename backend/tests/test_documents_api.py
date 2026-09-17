@@ -13,12 +13,19 @@ import pytest
 from pypdf import PdfReader
 from sqlalchemy import event, select
 
-from app.api.documents import _pages_received
+from app.api import documents as documents_api
+from app.api.documents import (
+    _JOB_ALREADY_RUNNING_DETAIL,
+    _JOB_RUNNING_DETAIL,
+    _NOT_FOUND_DETAIL,
+    _pages_received,
+)
 from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.errors import OcrUnavailableError
 from app.models import AuditLog, Document, Job, PageText, ReviewRow, Summary, User
+from app.services.jobs import JobConflict
 from app.services.reporting import DOCTORS, LETTER_TYPES
 from app.services.seed_catalog import constants_categories
 from tests.conftest import unique_test_email
@@ -4824,3 +4831,415 @@ async def test_the_archive_counts_the_pages_the_cover_sheet_states(authed):
     assert any("6 pages of medical records" in t for t in text)
     assert not any("8 pages of medical records" in t for t in text)
     assert not any("cover sheet" in t for t in text)
+
+
+# ---------------------------------------------------------------------------------------------
+# THE GUARD CLAUSES.
+#
+# Thirteen `raise`s in this router had never executed. They are its error semantics - what a
+# reviewer gets when two things happen at once, when a summary index does not exist, when an upload
+# carries nothing readable - and each is the branch a caller hits on a bad day. The success paths
+# around them were already well covered, which is exactly how a gap like this survives: the file
+# reads as tested.
+
+
+def _seed_active_job(doc_id, kind="segment", state="running"):
+    """Seed an IN-FLIGHT job, which is what every 409 guard in this router actually reads.
+
+    `Document.active_job` is the first job whose state is queued, running or PAUSED - a paused
+    summarize run still blocks. A test that seeds `state="done"` exercises none of these guards
+    while looking exactly like one that does, which is why this helper exists rather than an
+    inline `Job(...)`.
+    """
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind=kind, state=state, model="m", prompt_version="1")
+        session.add(job)
+        session.commit()
+        return job.id
+
+
+def _audit_actions(doc_id):
+    """Every audit action recorded against a document, in insertion order."""
+    with get_sessionmaker()() as session:
+        return [
+            row.action
+            for row in session.scalars(
+                select(AuditLog).where(AuditLog.document_id == doc_id).order_by(AuditLog.id)
+            )
+        ]
+
+
+async def _one_row(client, doc_id, category=None):
+    """Store a single valid review row, which several guards below need to exist first."""
+    resp = await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 1, "category": category or _VALID_CATEGORY}]},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp
+
+
+async def test_a_document_cannot_be_deleted_while_a_job_is_running(authed):
+    """WHEN a job is in flight, THE SYSTEM SHALL refuse the delete with 409 and keep the record.
+
+    Deleting mid-job would cascade rows out from under a running worker, and the worker would fail
+    on rows that vanished rather than on anything a reviewer could act on.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_active_job(doc_id)
+
+    resp = await client.delete(f"/api/documents/{doc_id}")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == _JOB_RUNNING_DETAIL
+    assert (await client.get(f"/api/documents/{doc_id}")).status_code == 200, "the record was lost"
+
+
+async def test_rows_cannot_be_stored_while_a_job_is_running(authed):
+    """WHEN a job is in flight, THE SYSTEM SHALL refuse a row write with 409.
+
+    A finishing segment job replaces the whole row set, so a write accepted here would be
+    overwritten with no error at all - the reviewer's edit would simply disappear.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_active_job(doc_id)
+
+    resp = await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}]},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == _JOB_RUNNING_DETAIL
+
+
+async def test_summarize_start_carrying_rows_is_refused_while_a_job_is_running(authed):
+    """WHEN a summarize start carries rows and a job is in flight, THE SYSTEM SHALL answer 409.
+
+    Distinct from the guard above and reached by a different route: this one is the row-carrying
+    variant of the start call, which stores before it enqueues.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_active_job(doc_id)
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/summarize/start",
+        json={"rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}]},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == _JOB_ALREADY_RUNNING_DETAIL
+
+
+async def test_a_job_conflict_at_enqueue_answers_409(authed, monkeypatch):
+    """IF the job service rejects the enqueue, THEN THE SYSTEM SHALL answer 409, not 500.
+
+    The race the earlier guard cannot close: a second job can be created between that check and
+    this enqueue, so the service's own uniqueness constraint is the real gate and this is where its
+    refusal is translated for the caller.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    await _one_row(client, doc_id)
+
+    def conflict(*_args, **_kwargs):
+        raise JobConflict("a job is already running")
+
+    monkeypatch.setattr(documents_api, "enqueue", conflict)
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/summarize/start", json={"skip_duplicate_check": True}
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == _JOB_ALREADY_RUNNING_DETAIL
+
+
+async def test_a_summary_cannot_be_edited_while_summarization_rewrites_it(authed):
+    """WHEN a SUMMARIZE job is in flight, THE SYSTEM SHALL refuse a summary edit with 409.
+
+    Asserted against a segment job too, because this guard is deliberately narrower than the rest
+    of the router's: only summarization rewrites these rows, so a segment run must NOT block an
+    edit. A test of the 409 alone would pass against code that blocked on any job at all.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_summary(doc_id)
+
+    _seed_active_job(doc_id, kind="summarize", state="running")
+    blocked = await client.put(f"/api/documents/{doc_id}/summaries/0", json={"excluded": True})
+    assert blocked.status_code == 409
+    assert "rewriting" in blocked.json()["detail"]
+
+    with get_sessionmaker()() as session:
+        session.query(Job).filter(Job.document_id == doc_id, Job.state == "running").delete()
+        session.commit()
+    _seed_active_job(doc_id, kind="segment", state="running")
+    allowed = await client.put(f"/api/documents/{doc_id}/summaries/0", json={"excluded": True})
+    assert allowed.status_code == 200, "a segment job must not block a summary edit"
+
+
+async def test_a_row_cannot_be_resummarized_while_any_job_is_running(authed):
+    """WHEN any job is in flight, THE SYSTEM SHALL refuse a single-row re-draft with 409.
+
+    Wider than the edit guard above on purpose: re-summarizing spends a model call and writes the
+    same rows a running job may be writing, so any job blocks it, not only a summarize one.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_summary(doc_id)
+    _seed_active_job(doc_id, kind="segment", state="running")
+
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == _JOB_RUNNING_DETAIL
+
+
+async def test_a_bundle_larger_than_the_cap_is_refused(authed, monkeypatch):
+    """WHEN more rows match than the cap allows, THE SYSTEM SHALL answer 409 and name the limit.
+
+    The cap exists because a bundle summarizes synchronously inside the request: without it a wide
+    category selection holds a worker for minutes and the client times out with no way to tell
+    whether anything was written.
+
+    The under-cap side is already covered by test_bundle_summarize_happy_path_returns_docx.
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=3)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={
+            "rows": [
+                {"start": 1, "end": 1, "category": _VALID_CATEGORY},
+                {"start": 2, "end": 2, "category": _VALID_CATEGORY},
+                {"start": 3, "end": 3, "category": _VALID_CATEGORY},
+            ]
+        },
+    )
+    monkeypatch.setattr(get_settings(), "bundle_summarize_cap", 2)
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/bundle/summarize", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    assert resp.status_code == 409
+    assert "2" in resp.json()["detail"], "the refusal does not tell the reviewer what the cap is"
+
+
+async def test_editing_a_summary_that_does_not_exist_is_a_404(authed):
+    """IF no summary exists at the index, THEN THE SYSTEM SHALL answer 404 rather than create one."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_summary(doc_id)
+
+    resp = await client.put(f"/api/documents/{doc_id}/summaries/7", json={"excluded": True})
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == _NOT_FOUND_DETAIL
+
+
+async def test_resummarizing_a_summary_that_does_not_exist_is_a_404(authed):
+    """IF no summary exists at the index, THEN re-summarize SHALL answer 404 and spend no model call.
+
+    A separate arm from the edit route's 404 above, in a separate handler.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_summary(doc_id)
+
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/7/resummarize")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == _NOT_FOUND_DETAIL
+
+
+async def test_an_upload_with_no_file_at_all_is_a_400(authed):
+    """IF no PDF part is present, THEN THE SYSTEM SHALL answer 400 and create nothing.
+
+    The part is optional in the signature so that this produces a stated 400 rather than FastAPI's
+    generic 422 - the message is read by a reviewer, not by a developer.
+    """
+    client, _ = authed
+    before = (await client.get("/api/documents")).json()
+
+    resp = await client.post("/api/documents", data={"name": "no file here"})
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "no PDF uploaded"
+    assert (await client.get("/api/documents")).json() == before, "a row was created anyway"
+
+
+async def test_an_aggregate_upload_carrying_no_files_is_a_400(authed):
+    """IF the form carries no PDF parts, THEN aggregate SHALL answer 400 with a stated message.
+
+    `pdfs` defaults to an empty list rather than being required, so this lands as a 400 the reviewer
+    can read instead of FastAPI's generic 422.
+
+    MEASURED WHILE WRITING THIS, and worth knowing before anyone tries to cover it: the handler's
+    own `if f.filename` filter is NOT reachable over HTTP. A part with an empty filename is rejected
+    by FastAPI's validation with a 422 before the handler runs, so the only way to reach an empty
+    `sources` is an absent list. The filter is defensive, not a live branch.
+    """
+    client, _ = authed
+
+    resp = await client.post("/api/documents/aggregate", data={"name": "nothing attached"})
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "no PDFs uploaded"
+
+
+async def test_an_aggregate_upload_of_unreadable_files_is_a_400(authed):
+    """IF nothing in the upload parses as a PDF, THEN aggregate SHALL answer 400.
+
+    A different arm from the one above: the filenames are fine and the BYTES are not, so the merge
+    runs and returns no records. Without this the caller would get a document with zero pages.
+    """
+    client, _ = authed
+
+    resp = await client.post(
+        "/api/documents/aggregate",
+        files=[("pdfs", ("scan.pdf", b"not a pdf at all", "application/pdf"))],
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "no readable PDFs uploaded"
+
+
+async def test_an_upload_is_never_failed_by_a_job_conflict(authed, monkeypatch):
+    """IF the classify enqueue conflicts, THEN the upload SHALL still succeed.
+
+    A brand-new document cannot already have an active job, so a conflict here means something is
+    wrong with the job service rather than with this upload - and failing the upload would lose the
+    reviewer's file for a reason that has nothing to do with it. The auto-categorize job is a
+    convenience; the stored record is not.
+    """
+    client, _ = authed
+
+    def conflict(*_args, **_kwargs):
+        raise JobConflict("a job is already running")
+
+    monkeypatch.setattr(documents_api, "enqueue", conflict)
+
+    resp = await client.post(
+        "/api/documents/aggregate",
+        files=[("pdfs", ("scan.pdf", _pdf_bytes(2), "application/pdf"))],
+    )
+
+    assert resp.status_code == 201, resp.text
+    doc_id = resp.json()["id"]
+    assert (await client.get(f"/api/documents/{doc_id}")).status_code == 200
+
+
+async def test_a_stored_file_that_cannot_be_removed_does_not_strand_the_record(authed, monkeypatch):
+    """IF os.remove raises, THEN the delete SHALL still succeed and the row SHALL be gone.
+
+    The file may already be absent - a cleaned volume, a half-finished earlier delete. Refusing the
+    delete would leave a record the reviewer cannot get rid of, pointing at a file that is not
+    there. The opposite failure (a removal that silently stopped working) is caught by the
+    full-cascade delete test above, which asserts the file is actually gone.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+
+    def unremovable(_path):
+        raise OSError("the volume went away")
+
+    monkeypatch.setattr(documents_api.os, "remove", unremovable)
+
+    resp = await client.delete(f"/api/documents/{doc_id}")
+
+    assert resp.status_code == 200
+    assert (await client.get(f"/api/documents/{doc_id}")).status_code == 404, "the row survived"
+    assert "delete" in _audit_actions(doc_id)
+
+
+def test_an_unmapped_pipeline_error_becomes_a_500_that_still_speaks_to_the_reviewer():
+    """WHERE a pipeline error matches no mapped class, THE SYSTEM SHALL answer 500 with its message.
+
+    The fallback matters more than the mapped cases: a new PipelineError subclass added later lands
+    here by default, and the thing that must survive is `user_message` - the reviewer-facing text.
+    Answering 500 with a raw exception string would put pipeline internals on their screen.
+    """
+    import json
+
+    from app.errors import PipelineError
+
+    class _NovelFailure(PipelineError):
+        pass
+
+    response = documents_api._pipeline_error_response(
+        "doc-1", _NovelFailure("internal detail nobody should read")
+    )
+
+    assert response.status_code == 500
+    assert json.loads(bytes(response.body))["error"] == _NovelFailure("x").user_message
+
+
+async def test_a_pipeline_failure_during_resummarize_is_answered_not_raised(authed, monkeypatch):
+    """IF the re-draft raises a PipelineError, THEN THE SYSTEM SHALL answer with its mapped status.
+
+    The arm a reviewer meets most often - a page that will not OCR - and it must come back as the
+    friendly message rather than a 500 carrying pipeline internals. `_pipeline_error_response` maps
+    the class; this pins that re-summarize actually routes through it instead of letting the
+    exception escape to the framework.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_summary(doc_id)
+
+    def boom(*_args, **_kwargs):
+        raise OcrUnavailableError("no tesseract")
+
+    monkeypatch.setattr(documents_api, "summarize_row", boom)
+
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 503
+    assert "OCR" in resp.json()["error"], "the reviewer got a raw vendor error"
+
+
+async def test_fetching_the_pdf_returns_it_and_records_the_view(authed):
+    """WHEN an owner fetches the PDF, THE SYSTEM SHALL serve it and record one view_pdf audit row.
+
+    The whole endpoint was untested apart from its 404. The audit row is the half that matters: this
+    is the route that puts raw PHI on a screen, so the trail is the only record that it happened.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+
+    resp = await client.get(f"/api/documents/{doc_id}/pdf")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content.startswith(b"%PDF")
+    assert _audit_actions(doc_id).count("view_pdf") == 1
+
+
+async def test_setting_a_category_to_the_value_it_already_has_writes_no_audit_row(authed):
+    """WHEN a category is set to its current value, THE SYSTEM SHALL write no audit row.
+
+    The trail is read by a human looking for what a reviewer actually changed, so a row saying
+    "1 -> 1" is worse than no row: it is noise that has to be read before it can be dismissed.
+    Asserted in both directions - a real change must still be recorded, or this test would pass
+    against code that had stopped auditing category changes altogether.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    await _one_row(client, doc_id)
+    _seed_summary(doc_id, row_category=_VALID_CATEGORY)
+
+    unchanged = await client.put(
+        f"/api/documents/{doc_id}/summaries/0", json={"category": _VALID_CATEGORY}
+    )
+    assert unchanged.status_code == 200
+    assert _audit_actions(doc_id).count("summary.category") == 0
+
+    changed = await client.put(
+        f"/api/documents/{doc_id}/summaries/0", json={"category": _OTHER_CATEGORY}
+    )
+    assert changed.status_code == 200
+    assert _audit_actions(doc_id).count("summary.category") == 1, "a real change went unrecorded"
