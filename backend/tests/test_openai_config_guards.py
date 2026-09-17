@@ -379,6 +379,125 @@ def test_the_defaults_mirror_what_the_pod_is_actually_launched_with(monkeypatch)
     assert settings.vllm_segment_max_pages == 30
     # Control: the default pair must satisfy the guard, or every default deployment refuses to boot.
     assert settings.vllm_segment_max_pages <= settings.vllm_max_images_per_prompt
+    # And so must every OTHER stage that rasterises - see the three tests below for why that is not
+    # the same statement.
+    for cap, _lever in settings._stage_image_caps().values():
+        assert cap <= settings.vllm_max_images_per_prompt
+
+
+# --- the image bound covers FOUR stages, not just segmentation -----------------------------------
+#
+# It compared segmentation alone until 2026-09-16 and read as complete. The other three were safe
+# only because VLLM_MAX_IMAGES_PER_PROMPT was pinned in code and unreachable: 15, 10 and 6 are all
+# under 40, so they could not be wrong. Making that limit settable - the point of this change - opens
+# a configuration nobody could previously reach.
+
+
+def test_a_summarize_image_count_above_the_pods_limit_refuses_to_start(monkeypatch):
+    """IF summarize resolves to vllm AND it would send more images than the pod accepts, THEN the
+    system SHALL refuse to start, naming summarize.
+
+    THE GAP THIS CLOSES, and the scenario is specific. A pod at --limit-mm-per-prompt 10 refuses
+    segmentation at boot; you lower VLLM_SEGMENT_MAX_PAGES to 10 to clear it; the app starts; and
+    summarize still sends 15, refused by the pod at RUNTIME with nothing having warned at boot.
+    """
+    env = _vllm(VLLM_MAX_IMAGES_PER_PROMPT="10", VLLM_SEGMENT_MAX_PAGES="10")
+    with pytest.raises(RuntimeError, match="summarize stage sends up to 15"):
+        _settings(monkeypatch, **env)
+
+
+def test_the_summarize_refusal_names_the_setting_that_clears_it(monkeypatch):
+    """Whoever hits this at deploy time must be told which knob to turn.
+
+    Load-bearing beyond politeness: SUMMARY_IMAGE_MAX_PAGES was NOT passed through compose before
+    this change, so naming it would have sent the reader to a key that could not be set. The guard
+    and the passthrough land together or the guard is a wall.
+    """
+    env = _vllm(VLLM_MAX_IMAGES_PER_PROMPT="10", VLLM_SEGMENT_MAX_PAGES="10")
+    with pytest.raises(RuntimeError, match="SUMMARY_IMAGE_MAX_PAGES"):
+        _settings(monkeypatch, **env)
+
+
+def test_a_module_constant_cap_is_refused_too_and_says_it_is_a_constant(monkeypatch):
+    """IF a stage whose cap is a module CONSTANT exceeds the limit, THEN the system SHALL refuse.
+
+    The DOI read caps at 10 and the deposition read at 6, both constants rather than settings, both
+    deliberately so - 10 is measured. A constant is still worth refusing over: if the pod cannot
+    carry 10 images then the DOI read cannot run there, and saying so at boot beats finding out one
+    row at a time. The message says the cap is a constant so nobody hunts for an env var that does
+    not exist - and it leads with the remedy that IS reachable; see the test below.
+    """
+    env = _vllm(
+        VLLM_MAX_IMAGES_PER_PROMPT="8", VLLM_SEGMENT_MAX_PAGES="8", SUMMARY_IMAGE_MAX_PAGES="8"
+    )
+    with pytest.raises(RuntimeError, match=r"doi stage sends up to 10"):
+        _settings(monkeypatch, **env)
+    with pytest.raises(RuntimeError, match=r"deliberately not an env var"):
+        _settings(monkeypatch, **env)
+
+
+def test_following_the_refusals_own_advice_clears_it(monkeypatch):
+    """WHEN a constant-capped stage is refused, THE SYSTEM SHALL name a remedy that actually boots.
+
+    THE POINT OF THIS WHOLE PR, ONE LAYER ALONG. The thesis is that a guard refusing over a value
+    nobody can change is a wall rather than a control. For a constant-capped stage the two "lower
+    the count" remedies are renting a different pod and editing code - NEITHER reachable from an
+    environment - so the message leads with LLM_BACKEND_OVERRIDES instead. This asserts that advice
+    is true rather than merely present: the same env that refuses, plus exactly what the message
+    tells you to do, boots.
+
+    Asserted by EXECUTION rather than by matching the string, because a message can name a remedy
+    that does not work and a string match would not notice.
+    """
+    env = _vllm(
+        VLLM_MAX_IMAGES_PER_PROMPT="9", VLLM_SEGMENT_MAX_PAGES="9", SUMMARY_IMAGE_MAX_PAGES="9"
+    )
+    with pytest.raises(RuntimeError, match=r'LLM_BACKEND_OVERRIDES="doi=gemini"'):
+        _settings(monkeypatch, **env)
+
+    settings = _settings(
+        monkeypatch, **dict(env, LLM_BACKEND_OVERRIDES="doi=gemini,deposition=gemini")
+    )
+    assert settings.backend_for("doi") == "gemini"
+    # Control: segmentation stays on the pod, so this is the per-stage escape rather than a retreat
+    # to Gemini for everything.
+    assert settings.backend_for("segment") == "vllm"
+
+
+def test_a_settable_cap_leads_with_the_setting_not_the_override(monkeypatch):
+    """WHEN the cap IS a setting, THE SYSTEM SHALL offer that setting first.
+
+    The control for the ordering above. Routing summarize to Gemini would also clear the refusal,
+    but it is the wrong first suggestion when one env var lowers the count - the order remedies
+    appear in is advice, not decoration.
+    """
+    env = _vllm(VLLM_MAX_IMAGES_PER_PROMPT="10", VLLM_SEGMENT_MAX_PAGES="10")
+    with pytest.raises(RuntimeError, match=r"Either lower SUMMARY_IMAGE_MAX_PAGES"):
+        _settings(monkeypatch, **env)
+    # And it does NOT push an operator at the override when a simpler lever exists.
+    with pytest.raises(RuntimeError) as caught:
+        _settings(monkeypatch, **env)
+    assert "LLM_BACKEND_OVERRIDES" not in str(caught.value)
+
+
+def test_a_gemini_summarize_stage_is_not_refused_over_a_pod_limit(monkeypatch):
+    """WHEN summarize resolves to gemini, THE SYSTEM SHALL NOT check its image count.
+
+    Summarize rasterises on BOTH backends, unlike the other three, so it is the one stage where
+    "sends images" and "sends images TO A POD" come apart. Only the pod imposes a per-request limit,
+    so a Gemini summarize stage must not be refused over one - even with segmentation on vllm.
+    """
+    settings = _settings(
+        monkeypatch,
+        **_vllm(
+            LLM_BACKEND_OVERRIDES="summarize=gemini",
+            VLLM_MAX_IMAGES_PER_PROMPT="10",
+            VLLM_SEGMENT_MAX_PAGES="10",
+        ),
+    )
+    assert settings.backend_for("summarize") == "gemini"
+    assert settings.backend_for("segment") == "vllm"
+    assert settings.summary_image_max_pages == 15
 
 
 # --- the DOI render target, which a SUMMARIZE setting can cap ------------------------------------
