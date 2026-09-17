@@ -1140,7 +1140,7 @@ class Settings(BaseSettings):
                 "app/config.py, where the change is visible in a diff and needs a deploy."
             )
 
-    def _stage_image_caps(self) -> dict[str, tuple[int, str]]:
+    def _stage_image_caps(self) -> dict[str, tuple[int, str | None]]:
         """Every stage that sends PAGE IMAGES to a pod: how many at most, and what changes it.
 
         FOUR stages rasterise, not one. The guard below compared only segmentation until 2026-09-16,
@@ -1151,19 +1151,19 @@ class Settings(BaseSettings):
         at boot, you would lower VLLM_SEGMENT_MAX_PAGES to clear it, the app would start, and
         summarize would still send 15 - refused by the pod at RUNTIME with nothing having warned.
 
-        The second element is what an operator has to change, which is not the same thing for every
-        stage: two are settings and two are module constants. A constant is still worth refusing
-        over - if the pod genuinely cannot carry 10 images, the DOI read cannot run there, and
-        saying so at boot beats discovering it per row.
+        The second element is the ENV VAR that lowers this stage's count, or None when the cap is a
+        module constant with no env var behind it. That distinction decides what the refusal should
+        ADVISE, which is not cosmetic: for a constant-capped stage the only remedies are renting a
+        different pod or editing code, and neither is reachable from an environment - so the
+        refusal has to name `LLM_BACKEND_OVERRIDES` instead, which routes that one stage back to
+        Gemini and clears the boot. A constant is still worth refusing over; it just needs different
+        advice.
         """
-        by_stage = {
+        by_stage: dict[str, tuple[int, str | None]] = {
             "summarize": (self.summary_image_max_pages, "SUMMARY_IMAGE_MAX_PAGES"),
             "segment": (self.vllm_segment_max_pages, "VLLM_SEGMENT_MAX_PAGES"),
-            "doi": (_DOI_IMAGE_CAP, "summary_doi._MAX_PAGES (a constant, deliberately)"),
-            "deposition": (
-                _DEPOSITION_IMAGE_CAP,
-                "deposition_pages._MAX_PAGES (a constant, deliberately)",
-            ),
+            "doi": (_DOI_IMAGE_CAP, None),
+            "deposition": (_DEPOSITION_IMAGE_CAP, None),
         }
         # Keyed on the module tuple rather than returning the literal, so a stage added to one and
         # not the other raises here instead of being silently unguarded.
@@ -1185,12 +1185,31 @@ class Settings(BaseSettings):
         for stage, (cap, lever) in self._stage_image_caps().items():
             if self.backend_for(stage) != "vllm" or cap <= self.vllm_max_images_per_prompt:
                 continue
+            # THE ORDER OF THE REMEDIES IS ADVICE, and it differs by stage. Where the cap is a
+            # setting, lowering it is correct and comes first. Where it is a module constant the
+            # only two remedies that "lower the count" are renting a different pod or editing code,
+            # NEITHER reachable from an environment - so routing the stage back to Gemini leads,
+            # because it is both the reachable fix and the right one: those caps are measured, and
+            # lowering a measured number to satisfy a limit is how a measurement gets lost.
+            if lever is not None:
+                remedies = (
+                    f"Either lower {lever}, or serve the pod with a higher --limit-mm-per-prompt "
+                    "and raise VLLM_MAX_IMAGES_PER_PROMPT to match it."
+                )
+            else:
+                remedies = (
+                    f'Route this one stage back to Gemini with LLM_BACKEND_OVERRIDES="{stage}='
+                    'gemini" - it takes a PDF there and rasterises nothing, so the pod limit stops '
+                    "applying. Or serve the pod with a higher --limit-mm-per-prompt and raise "
+                    "VLLM_MAX_IMAGES_PER_PROMPT to match it. The cap itself is a module constant "
+                    "and deliberately not an env var: it is a measured value, so lowering it needs "
+                    "the measurement redone rather than a config edit."
+                )
             raise RuntimeError(
                 f"the {stage} stage sends up to {cap} page images per request, above "
                 f"VLLM_MAX_IMAGES_PER_PROMPT of {self.vllm_max_images_per_prompt}. One page becomes "
                 "one image on this path, so the pod would refuse the first request of that shape. "
-                "Either serve the pod with a higher --limit-mm-per-prompt and raise "
-                f"VLLM_MAX_IMAGES_PER_PROMPT to match it, or lower {lever}."
+                + remedies
             )
 
     def _validate_render_targets(self) -> None:

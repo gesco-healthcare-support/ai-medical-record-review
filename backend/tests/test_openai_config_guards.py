@@ -424,15 +424,60 @@ def test_a_module_constant_cap_is_refused_too_and_says_it_is_a_constant(monkeypa
     The DOI read caps at 10 and the deposition read at 6, both constants rather than settings, both
     deliberately so - 10 is measured. A constant is still worth refusing over: if the pod cannot
     carry 10 images then the DOI read cannot run there, and saying so at boot beats finding out one
-    row at a time. The message says "a constant" so nobody hunts for an env var that does not exist.
+    row at a time. The message says the cap is a constant so nobody hunts for an env var that does
+    not exist - and it leads with the remedy that IS reachable; see the test below.
     """
     env = _vllm(
         VLLM_MAX_IMAGES_PER_PROMPT="8", VLLM_SEGMENT_MAX_PAGES="8", SUMMARY_IMAGE_MAX_PAGES="8"
     )
     with pytest.raises(RuntimeError, match=r"doi stage sends up to 10"):
         _settings(monkeypatch, **env)
-    with pytest.raises(RuntimeError, match=r"a constant, deliberately"):
+    with pytest.raises(RuntimeError, match=r"deliberately not an env var"):
         _settings(monkeypatch, **env)
+
+
+def test_following_the_refusals_own_advice_clears_it(monkeypatch):
+    """WHEN a constant-capped stage is refused, THE SYSTEM SHALL name a remedy that actually boots.
+
+    THE POINT OF THIS WHOLE PR, ONE LAYER ALONG. The thesis is that a guard refusing over a value
+    nobody can change is a wall rather than a control. For a constant-capped stage the two "lower
+    the count" remedies are renting a different pod and editing code - NEITHER reachable from an
+    environment - so the message leads with LLM_BACKEND_OVERRIDES instead. This asserts that advice
+    is true rather than merely present: the same env that refuses, plus exactly what the message
+    tells you to do, boots.
+
+    Asserted by EXECUTION rather than by matching the string, because a message can name a remedy
+    that does not work and a string match would not notice.
+    """
+    env = _vllm(
+        VLLM_MAX_IMAGES_PER_PROMPT="9", VLLM_SEGMENT_MAX_PAGES="9", SUMMARY_IMAGE_MAX_PAGES="9"
+    )
+    with pytest.raises(RuntimeError, match=r'LLM_BACKEND_OVERRIDES="doi=gemini"'):
+        _settings(monkeypatch, **env)
+
+    settings = _settings(
+        monkeypatch, **dict(env, LLM_BACKEND_OVERRIDES="doi=gemini,deposition=gemini")
+    )
+    assert settings.backend_for("doi") == "gemini"
+    # Control: segmentation stays on the pod, so this is the per-stage escape rather than a retreat
+    # to Gemini for everything.
+    assert settings.backend_for("segment") == "vllm"
+
+
+def test_a_settable_cap_leads_with_the_setting_not_the_override(monkeypatch):
+    """WHEN the cap IS a setting, THE SYSTEM SHALL offer that setting first.
+
+    The control for the ordering above. Routing summarize to Gemini would also clear the refusal,
+    but it is the wrong first suggestion when one env var lowers the count - the order remedies
+    appear in is advice, not decoration.
+    """
+    env = _vllm(VLLM_MAX_IMAGES_PER_PROMPT="10", VLLM_SEGMENT_MAX_PAGES="10")
+    with pytest.raises(RuntimeError, match=r"Either lower SUMMARY_IMAGE_MAX_PAGES"):
+        _settings(monkeypatch, **env)
+    # And it does NOT push an operator at the override when a simpler lever exists.
+    with pytest.raises(RuntimeError) as caught:
+        _settings(monkeypatch, **env)
+    assert "LLM_BACKEND_OVERRIDES" not in str(caught.value)
 
 
 def test_a_gemini_summarize_stage_is_not_refused_over_a_pod_limit(monkeypatch):
