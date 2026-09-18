@@ -106,4 +106,60 @@ describe("CategoryDialog dismissal", () => {
 
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/couldn.t reach the server/i));
   });
+
+  it("closes without saving when Cancel is pressed", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    const onCreate = vi.fn();
+    render(
+      <CategoryDialog
+        open
+        onOpenChange={onOpenChange}
+        editing={null}
+        onCreate={onCreate}
+        onUpdate={vi.fn()}
+        saving={false}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    // The positive comes first on purpose. "onCreate was not called" is true of a dialog whose
+    // Cancel button does nothing at all, so on its own it would pass against a dead control.
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("CategoryDialog payload", () => {
+  it("sends every field the reviewer filled in, with the examples list split and cleaned", async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    renderDialog(onCreate);
+
+    // Padding on the text fields and a blank line plus an indented line in the examples box are
+    // all load-bearing. Without them `split("\n")` and `split("\n").map(trim).filter(Boolean)`
+    // produce the same array, and the cleanup could be deleted with this test still green.
+    await user.type(screen.getByLabelText("ID (number)"), " 15 ");
+    await user.type(screen.getByLabelText("Name"), "  Operative report  ");
+    await user.type(screen.getByLabelText("Description"), "  Surgery notes  ");
+    await user.type(
+      screen.getByLabelText(/Example document titles/i),
+      "MRI Report{enter}{enter}   CT Scan   ",
+    );
+    await user.click(screen.getByLabelText(/Auto-assign/i)); // default on -> off
+    await user.click(screen.getByLabelText("Active")); // default on -> off
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // Exact, not objectContaining: a field silently dropped from the body is the failure this
+    // guards, and objectContaining cannot see an omission.
+    expect(onCreate).toHaveBeenCalledWith({
+      id: "15",
+      name: "Operative report",
+      description: "Surgery notes",
+      examples: ["MRI Report", "CT Scan"],
+      auto_assign: false,
+      summarize_default: true,
+      active: false,
+    });
+  });
 });
