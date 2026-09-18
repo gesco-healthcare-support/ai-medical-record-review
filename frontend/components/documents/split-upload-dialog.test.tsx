@@ -84,3 +84,65 @@ describe("SplitUploadDialog file handling", () => {
     expect(screen.queryByText("a.pdf")).not.toBeInTheDocument();
   });
 });
+
+describe("SplitUploadDialog queue editing", () => {
+  it("removes only the file whose button was pressed", async () => {
+    // THREE files, deliberately. With one, "remove the file at this index" and "remove everything"
+    // produce the same list, so a broken filter would pass. With three, an index-blind removal
+    // empties the queue and a wrong index takes out a neighbour - both visible here.
+    const user = userEvent.setup();
+    render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
+    fireEvent.change(document.querySelector('input[type="file"]')!, {
+      target: { files: [pdf("first.pdf"), pdf("second.pdf"), pdf("third.pdf")] },
+    });
+    expect(await screen.findByText("second.pdf")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Remove second.pdf" }));
+
+    expect(screen.getByText("first.pdf")).toBeInTheDocument();
+    expect(screen.getByText("third.pdf")).toBeInTheDocument();
+    expect(screen.queryByText("second.pdf")).toBeNull();
+  });
+
+  it("sends the record name the reviewer typed", async () => {
+    const user = userEvent.setup();
+    aggregate.mutateAsync.mockResolvedValue({ id: "d9" });
+    render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
+    fireEvent.change(document.querySelector('input[type="file"]')!, {
+      target: { files: [pdf("a.pdf"), pdf("b.pdf")] },
+    });
+
+    await user.type(screen.getByLabelText("Record name"), "Combined record");
+    await user.click(await screen.findByRole("button", { name: "Combine & upload" }));
+
+    await waitFor(() =>
+      expect(aggregate.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "Combined record" }),
+      ),
+    );
+  });
+
+  it("opens the file picker from Add PDFs", async () => {
+    // The real input is hidden, so this button is the only way to reach it with a pointer. A
+    // reviewer with no files queued and a dead button has no route forward at all.
+    const user = userEvent.setup();
+    render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const clicks = vi.fn();
+    input.addEventListener("click", clicks);
+
+    await user.click(screen.getByRole("button", { name: "Add PDFs" }));
+
+    expect(clicks).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a dismissal to the caller so the parent can close it", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(<SplitUploadDialog open onOpenChange={onOpenChange} />);
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+});
