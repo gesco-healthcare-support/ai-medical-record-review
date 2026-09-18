@@ -834,7 +834,10 @@ describe("ReviewPageClient body panel selection", () => {
 
 /** One summary, described by whether the reviewer edited it and whether its row has been
  *  re-classified since it was written - the two facts the resume guard weighs. */
-const summary = (idx: number, edited: boolean, liveCategory: string) => ({
+/** `liveCategory` is nullable because the PRODUCTION predicate tests for null, and a fixture that
+ *  cannot express null leaves that clause unpinned - a summary whose row no longer exists carries
+ *  a null live category, and `null !== "1"` would otherwise count it as at risk. */
+const summary = (idx: number, edited: boolean, liveCategory: string | null) => ({
   idx,
   edited,
   rowCategoryLive: liveCategory,
@@ -878,10 +881,15 @@ describe("ReviewPageClient resuming after a stop", () => {
     // unstubbed test would pass here while proving the opposite of the guarantee.
     const restartCancelled = vi.fn();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    // ONE DECOY PER CONJUNCT of `edited && rowCategoryLive !== null && rowCategoryLive !== category`.
+    // Three clauses, so three decoys: without the third, deleting the null check breaks no test,
+    // and a summary whose row no longer exists would be counted as at risk - warning the reviewer
+    // their edits are about to be destroyed when they are not.
     sumState.data = [
       summary(0, true, "3"), // edited AND re-classified - the only one at risk
       summary(1, false, "3"), // re-classified but untouched by the reviewer
       summary(2, true, "1"), // edited but its category still matches
+      summary(3, true, null), // edited, but no row covers its pages any more
     ];
     mockWf({ cancelledJob: { kind: "summarize" }, restartCancelled });
     render(<ReviewPageClient documentId="d1" />);
