@@ -22,9 +22,15 @@ function renderPane(storageKey = "mrr.test.split") {
   };
 }
 
-/** jsdom returns an all-zero DOMRect, and `width` is the DIVISOR in the drag arithmetic: left
- *  unstubbed the result is NaN, which survives Math.min/Math.max, so an assertion on a clamped
- *  bound would pass having measured nothing at all. */
+/** jsdom returns an all-zero DOMRect, and `width` is the DIVISOR in the drag arithmetic.
+ *
+ *  Left unstubbed the failure is NOT uniform, and the dangerous half is the quiet one. Dividing a
+ *  non-zero offset by zero gives `Infinity`, and `Math.min(70, Math.max(24, Infinity))` is **70** -
+ *  a clean, plausible number that an assertion on the MAXIMUM bound would happily accept from a
+ *  completely broken calculation. Only `clientX === 0` yields `NaN`, and there the assertion fails,
+ *  which is the safe outcome.
+ *
+ *  So the rule is: stub the rect, and assert an INTERIOR value. A bound cannot tell the two apart. */
 function giveRootAWidth(root: HTMLElement, width = 1000) {
   vi.spyOn(root, "getBoundingClientRect").mockReturnValue({
     left: 0,

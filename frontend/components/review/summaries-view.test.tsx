@@ -661,15 +661,20 @@ describe("SummariesView re-draft", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     renderOne({ edited: true });
 
-    fireEvent.click(screen.getByRole("button", { name: /^Re-draft$/ }));
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(redraftMock).not.toHaveBeenCalled(); // declined: nothing is discarded
+    // `finally`, because an assertion failing between here and the restore would leak a confirm
+    // stubbed to TRUE into every later test in this file - turning one red test into several that
+    // pass for the wrong reason, which is far harder to read than a single failure.
+    try {
+      fireEvent.click(screen.getByRole("button", { name: /^Re-draft$/ }));
+      expect(confirmSpy).toHaveBeenCalled();
+      expect(redraftMock).not.toHaveBeenCalled(); // declined: nothing is discarded
 
-    confirmSpy.mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: /^Re-draft$/ }));
-    await waitFor(() => expect(redraftMock).toHaveBeenCalledWith(0));
-
-    confirmSpy.mockRestore();
+      confirmSpy.mockReturnValue(true);
+      fireEvent.click(screen.getByRole("button", { name: /^Re-draft$/ }));
+      await waitFor(() => expect(redraftMock).toHaveBeenCalledWith(0));
+    } finally {
+      confirmSpy.mockRestore();
+    }
   });
 });
 
@@ -721,19 +726,27 @@ describe("SummariesView export dialog and paging", () => {
     expect(screen.queryByText("Body 20.")).toBeNull();
   });
 
-  it("leaves no editor open after the page changes", () => {
-    // HONEST LIMIT, recorded rather than implied. Both pager buttons call setEditingIdx(-1), and
-    // this pins the observable half - no editor is open once the page has changed. It CANNOT
-    // isolate either button's call: editingIdx is matched against the indices rendered on the
-    // CURRENT page, and the edited index is never among them afterwards, so breaking one button
-    // alone changes nothing visible and a mutation probe on it returns NO-OP by construction
-    // (confirmed, PR 4.2). The calls are defensive; this test guards the outcome, not them.
+  it("leaves no editor open after paging away and back", () => {
+    // PAGING AWAY IS NOT THE TEST - PAGING BACK IS. `editingIdx` is read in exactly one place,
+    // `editingIdx === item.idx` inside the map over the CURRENT page's items. On the destination
+    // page the edited index is not among them, so no editor renders whether or not either pager
+    // cleared it - an assertion that stops after Next passes with BOTH setEditingIdx(-1) calls
+    // deleted, which is what an earlier version of this test did.
+    //
+    // Returning to page 0 brings item 0 back into range, so a stale editingIdx re-opens the editor
+    // over a card the reviewer had moved on from. That is the observable consequence, and it makes
+    // the PAIR of calls probeable - individually they really are inert, collectively they are not.
     renderMany();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit$/ })[0]);
     expect(screen.getByLabelText("Summary text")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Next$/ }));
+    expect(screen.queryByLabelText("Summary text")).toBeNull();
 
+    fireEvent.click(screen.getByRole("button", { name: /^Prev$/ }));
+
+    // The assertion that earns the test: back on the original page, the editor must stay closed.
+    expect(screen.getByText("Body 0.")).toBeInTheDocument();
     expect(screen.queryByLabelText("Summary text")).toBeNull();
   });
 });
