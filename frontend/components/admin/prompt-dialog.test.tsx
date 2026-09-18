@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
@@ -95,9 +95,13 @@ describe("PromptDialog built-in vs custom", () => {
     expect(screen.queryByRole("button", { name: /revert to built-in/i })).not.toBeInTheDocument();
     // Nothing to compare against, so the reference panel stays hidden.
     expect(screen.queryByText(/would use without the custom one/i)).not.toBeInTheDocument();
-    expect(await screen.findByLabelText(/prompt sent to the model/i)).toHaveValue(
-      "BUILT-IN PROMPT FROM THE APP",
-    );
+    // `waitFor`, not a bare assertion, and the blurb above is why. It reads "uses the built-in
+    // prompt" whenever the response is neither an error nor custom - which is also true while the
+    // request is still in flight, so finding it proves nothing has arrived yet. The textarea is
+    // populated by an effect keyed on the query data, so its value has to be waited for. Observed
+    // failing once under coverage instrumentation before this was added.
+    const editor = await screen.findByLabelText(/prompt sent to the model/i);
+    await waitFor(() => expect(editor).toHaveValue("BUILT-IN PROMPT FROM THE APP"));
   });
 
   it("shows the built-in alongside a custom prompt and reverts on confirm", async () => {
@@ -239,5 +243,50 @@ describe("PromptDialog when the prompt could not be loaded", () => {
   it("does not offer to save nothing over the prompt on the server", async () => {
     await openFailing();
     expect(screen.getByRole("button", { name: "Save prompt" })).toBeDisabled();
+  });
+});
+
+describe("PromptDialog reference panel", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("copies the built-in prompt into the editor", async () => {
+    // The panel exists so the two prompts can be compared before reverting; this button is the
+    // shortcut that turns the comparison into a starting point, replacing the editor's contents
+    // rather than appending to them.
+    const user = userEvent.setup();
+    vi.mocked(getPrompt).mockResolvedValue(promptInfo());
+    mockHooks();
+
+    open();
+    const editor = await screen.findByLabelText(/prompt sent to the model/i);
+    // The textarea renders immediately and empty; `text` is only populated by the effect that
+    // runs once the query resolves, so the starting value has to be waited for rather than read.
+    await waitFor(() => expect(editor).toHaveValue("CUSTOM PROMPT"));
+
+    await user.click(await screen.findByRole("button", { name: /copy into editor/i }));
+
+    expect(editor).toHaveValue("BUILT-IN PROMPT FROM THE APP");
+  });
+
+  it("closes without saving when Cancel is pressed", async () => {
+    const user = userEvent.setup();
+    const save = vi.fn();
+    const onOpenChange = vi.fn();
+    vi.mocked(getPrompt).mockResolvedValue(promptInfo());
+    mockHooks({ save });
+
+    withClient(
+      <PromptDialog
+        open
+        onOpenChange={onOpenChange}
+        category={{ id: "3", name: "Imaging" } as never}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    // The positive first: "save was not called" is equally true of a Cancel button wired to
+    // nothing, so on its own it proves the control is dead rather than that it dismisses.
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(save).not.toHaveBeenCalled();
   });
 });
