@@ -210,6 +210,27 @@ x-backend-env: &backend-env
   GENAI_MODEL: ${GENAI_MODEL:-}
   VERIFY_MODEL: ${VERIFY_MODEL:-}
   CLASSIFY_MODEL: ${CLASSIFY_MODEL:-gemini-2.5-flash-lite}
+  # THE EMERGENCY LEVERS, and the reason this block exists is that none of them worked. Each of the
+  # four below documents itself in app/config.py as revertable from the environment - "a regression
+  # reverts via env with no redeploy", "Env-toggle to revert to OCR-only", "Env-overridable so a
+  # regression reverts without a redeploy", "Env-overridable so a box can raise it without a
+  # redeploy" - and not one reached a container, so every one of those sentences was false on every
+  # deployed box.
+  #
+  # Found on 2026-09-18 with the pipeline on a self-hosted model: the summary audit was destroying
+  # long summaries, SUMMARY_VERIFY=false was the obvious containment, and it did nothing. The
+  # containment had to become a code change and a deploy instead, at exactly the moment someone was
+  # trying to stop something. That is what a missing line here costs.
+  #
+  # SUMMARY_MULTIMODAL is the one to be careful with rather than casual about: turning images off
+  # was measured to halve distinct measurements (13 -> 6), so it is load-bearing. A lever that
+  # should not be pulled lightly is still a different thing from a lever that cannot be pulled.
+  #
+  # Fallbacks mirror app/config.py, so an unset key behaves EXACTLY as it did before this commit.
+  SUMMARY_VERIFY: ${SUMMARY_VERIFY:-true}
+  SUMMARY_MULTIMODAL: ${SUMMARY_MULTIMODAL:-true}
+  SUMMARY_TEMPERATURE: ${SUMMARY_TEMPERATURE:-0.0}
+  SUMMARY_MAX_OUTPUT_TOKENS: ${SUMMARY_MAX_OUTPUT_TOKENS:-8192}
   # Narrow the boundary verify pass to the rows its trigger heuristic selects, instead of every
   # adjacent boundary. Named here BECAUSE it is meant to be flipped on a live box and measured:
   # a setting absent from this block reaches the container only through a rebuild, which is the
@@ -237,6 +258,11 @@ x-backend-env: &backend-env
   # windows need longer than 120000; the replacement value is being measured rather than guessed, so
   # this ships at the current default and the raise lands with that measurement.
   GENAI_HTTP_TIMEOUT_MS: ${GENAI_HTTP_TIMEOUT_MS:-120000}
+  # The thinking budget EVERY non-segmentation call inherits. Its own comment says to "set >0 or -1
+  # (model-dynamic) via env to re-enable if a task regresses", which no deployment could do. Named
+  # here beside SEGMENT_THINKING_BUDGET because the two are a pair - that comment defines itself as
+  # the exception to this one - and only the exception was reachable.
+  GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:-0}
   # How much work one segmentation vision call carries, and therefore whether it fits inside
   # GENAI_HTTP_TIMEOUT_MS. -1 is dynamic thinking, which an A/B showed is what holds strict doc-F1 up
   # (thinking-off over-segments), so if windows run long prefer shrinking WINDOW_BUDGET_MB over

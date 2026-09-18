@@ -4,6 +4,7 @@ Allowed commit/PR scopes for this repo (kebab-case). Keeps history grep-able.
 
 - `repo` - repo setup, meta, top-level config
 - `tooling` - uv, build, dependency, env tooling
+- `compose` - docker-compose.yml: what a container is actually given
 - `quality` - linters, formatters, pre-commit, CI gates
 - `ci` - GitHub Actions / pipeline
 - `docs` - documentation, runbook, references
