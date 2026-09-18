@@ -39,6 +39,36 @@ describe("HeaderBar error handling", () => {
   });
 });
 
+describe("HeaderBar fields", () => {
+  it("saves every field with the value typed into it", async () => {
+    // Asserted on the PAYLOAD rather than on the boxes, because two of these share the placeholder
+    // MM/DD/YYYY: a DOB wired to letter_date looks identical on screen and is visible only in what
+    // gets sent. The reviewer would find out when the delivered letter carried the wrong date.
+    const user = userEvent.setup();
+    vi.mocked(saveHeader).mockResolvedValue(undefined);
+    render(<HeaderBar documentId="d1" doctors={["Dr Vasquez"]} header={null} onSaved={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Last name"), "Roe");
+    await user.type(screen.getByLabelText("DOB"), "04/05/1980");
+    await user.type(screen.getByLabelText("Attorney"), "Jordan Reyes");
+    await user.type(screen.getByLabelText("Law firm"), "Reyes and Partners");
+    await user.selectOptions(screen.getByLabelText("Letter"), "advocacy");
+    await user.type(screen.getByLabelText("Letter date"), "06/07/2026");
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(saveHeader).toHaveBeenCalled());
+    expect(vi.mocked(saveHeader).mock.calls[0][1]).toMatchObject({
+      patient_last_name: "Roe",
+      patient_dob: "04/05/1980",
+      attorney_name: "Jordan Reyes",
+      law_firm: "Reyes and Partners",
+      letter_type: "advocacy",
+      letter_date: "06/07/2026",
+    });
+  });
+});
+
 describe("HeaderBar persistence", () => {
   const DETECTED = {
     patient_first_name: "Jane",

@@ -57,6 +57,35 @@ describe("DuplicatesView", () => {
     await waitFor(() => expect(onResolved).toHaveBeenCalled());
   });
 
+  it("dismisses a cluster as not duplicates", async () => {
+    // The quietly consequential choice: dismissing says these are NOT copies of each other, so every
+    // member stays in the deliverable. Sending keep_one instead would silently drop all but one.
+    resolveMock.mockClear();
+    dupState.error = null;
+    dupState.data = {
+      job: null,
+      clusters: [
+        {
+          group: 7,
+          dismissed: false,
+          rows: [
+            { idx: 0, title: "Progress Note", date: "01/02/2026", pages: { start: 1, end: 2 }, include: true, primary: false },
+            { idx: 3, title: "Progress Note", date: "02/02/2026", pages: { start: 10, end: 11 }, include: true, primary: false },
+          ],
+        },
+      ],
+    };
+    const onResolved = vi.fn();
+    render(<DuplicatesView documentId="d1" onResolved={onResolved} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Not duplicates$/ }));
+
+    await waitFor(() =>
+      expect(resolveMock).toHaveBeenCalledWith({ group: 7, action: "dismiss" }),
+    );
+    await waitFor(() => expect(onResolved).toHaveBeenCalled());
+  });
+
   it("opens a copy's first page in the viewer when its row or title is clicked", async () => {
     jumpTo.mockClear();
     resolveMock.mockClear();
