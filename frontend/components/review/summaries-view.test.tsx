@@ -750,3 +750,97 @@ describe("SummariesView export dialog and paging", () => {
     expect(screen.queryByLabelText("Summary text")).toBeNull();
   });
 });
+
+/** #352: the audit records what it found wrong and the reviewer was never shown any of it.
+ *
+ *  `verifyIssues` has been on the wire and declared in `types.ts` since the pass was written - its
+ *  own comment said "for later UIs" - and `summaries-view.tsx` never rendered it. On the box, 1,805
+ *  of 2,981 audited summaries (61%) carry flagged issues nobody has seen.
+ *
+ *  Synthetic details only: the real `detail` field carries the offending text out of a medical
+ *  summary. */
+describe("SummariesView verify issues", () => {
+  function renderWith(overrides: Record<string, unknown>) {
+    summariesState.error = null;
+    summariesState.isLoading = false;
+    summariesState.data = [
+      {
+        idx: 0,
+        summaryTitle: "Progress Note (Pages 1-1)",
+        summaryDate: "01/02/2026",
+        summaryText: "Body.",
+        manualCheck: false,
+        excluded: false,
+        edited: false,
+        verified: true,
+        verifyChanged: false,
+        verifyIssues: [],
+        row: { start: 1, end: 1, category: "1" },
+        ...overrides,
+      },
+    ];
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+  }
+
+  it("lists what the AI check flagged, so the detail is reachable", () => {
+    renderWith({
+      verifyChanged: true,
+      verifyIssues: [
+        { type: "date", detail: "synthetic date phrase" },
+        { type: "range_of_motion", detail: "synthetic ROM phrase" },
+      ],
+    });
+    expect(screen.getByText(/2 things the AI check flagged/i)).toBeInTheDocument();
+    expect(screen.getByText("synthetic date phrase")).toBeInTheDocument();
+    expect(screen.getByText("synthetic ROM phrase")).toBeInTheDocument();
+  });
+
+  it("says nothing at all when the audit found nothing", () => {
+    // GUARD. At 61% prevalence the list is on most cards, so the clean case is the one that has to
+    // stay silent - otherwise every summary grows an empty disclosure.
+    renderWith({ verifyIssues: [] });
+    expect(screen.queryByText(/the AI check flagged/i)).not.toBeInTheDocument();
+  });
+
+  it("counts one issue in the singular", () => {
+    renderWith({ verifyIssues: [{ type: "vitals", detail: "synthetic vitals phrase" }] });
+    expect(screen.getByText(/1 thing the AI check flagged/i)).toBeInTheDocument();
+  });
+
+  it("says the correction was not applied when the rewrite was discarded", () => {
+    // The distinction the reviewer acts on: the body on screen is the model's own, with known flags
+    // against it. 81 summaries were in this state on the box on 2026-09-18, every one delivered.
+    renderWith({
+      verifyChanged: false,
+      verifyKeptRaw: true,
+      verifyIssues: [{ type: "laterality", detail: "synthetic laterality phrase" }],
+    });
+    expect(screen.getByText(/Flagged, not applied/i)).toBeInTheDocument();
+    expect(screen.getByText(/its correction was not applied/i)).toBeInTheDocument();
+  });
+
+  it("does not call a discarded rewrite a correction", () => {
+    // The defect itself: `verifyChanged` was `verified AND verify_issues`, so a card whose rewrite
+    // had been thrown away still read "AI verify pass corrected this summary".
+    renderWith({
+      verifyChanged: false,
+      verifyKeptRaw: true,
+      verifyIssues: [{ type: "date", detail: "synthetic date phrase" }],
+    });
+    expect(screen.queryByText(/AI-fixed/i)).not.toBeInTheDocument();
+  });
+
+  it("shows neither flag on a summary the audit corrected cleanly", () => {
+    // GUARD in the other direction, so the fix is a narrowing rather than a silencing: the ordinary
+    // case (1,727 of 2,981 audited) must keep saying it was corrected.
+    renderWith({
+      verifyChanged: true,
+      verifyKeptRaw: false,
+      verifyIssues: [{ type: "unsupported", detail: "synthetic unsupported phrase" }],
+    });
+    expect(screen.getByText(/AI-fixed/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Flagged, not applied/i)).not.toBeInTheDocument();
+  });
+});
