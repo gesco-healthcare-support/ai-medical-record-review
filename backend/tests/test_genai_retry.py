@@ -7,6 +7,8 @@ wins, that a request's deadline SCALES with its size, and that a deadline 504 co
 one at that deadline and one at a multiple of it - rather than the whole budget it once burned.
 """
 
+from types import SimpleNamespace  # NB: `types` below is google-genai's, not the stdlib module
+
 import pytest
 from google.genai import errors, types
 
@@ -20,7 +22,7 @@ from app.services.genai_retry import (
     _sleep_for,
     generate_with_retry,
 )
-from app.worker.failures import classify_failure
+from app.worker.failures import JobCancelled, classify_failure
 
 
 class _FakeExc(Exception):
@@ -447,3 +449,112 @@ def test_the_retry_multiplies_the_deadline_that_call_actually_had(quiet_seam):
     generate_with_retry(client, model="m", config=_config(), _est_tokens=big)
     assert client.timeouts[0] == scaled
     assert client.timeouts[1] == int(scaled * settings.genai_deadline_retry_multiplier)
+
+
+# ---------------------------------------------------------------------------------------------
+# THE ARMS THE TESTS ABOVE LOOK LIKE THEY COVER AND DO NOT.
+#
+# `test_parse_duration_bad_values_return_none` passes "nope" and "17" - neither ends in "s", so both
+# reach the final `return None` and the two `except` arms inside the function never run. The dict
+# arm is cold for the same reason: every dict it is given holds numbers. Named-for-the-behaviour is
+# not the same as reaching it.
+
+
+class _CodedError(Exception):
+    """A client error carrying the HTTP-ish `code` the retry loop branches on."""
+
+    def __init__(self, code):
+        super().__init__(f"error {code}")
+        self.code = code
+
+
+def test_a_duration_shaped_like_a_number_but_not_one_returns_none():
+    """IF a Duration cannot be parsed, THEN THE SYSTEM SHALL answer None rather than raise.
+
+    A malformed retry hint must degrade to "no server advice, use our own backoff". Raising here
+    would turn a cosmetic protocol oddity into a failed request, on the rate-limit path where the
+    server is already telling us it is under strain.
+
+    These three reach the two `except` arms; the existing bad-value test does not, because a string
+    with no trailing "s" and a non-dict both fall through to the final return.
+    """
+    assert _parse_duration("threes") is None
+    assert _parse_duration({"seconds": "many"}) is None
+    assert _parse_duration({"seconds": None}) is None
+
+
+def test_a_details_entry_that_is_not_retry_info_is_passed_over():
+    """WHERE the error details carry other entries, THE SYSTEM SHALL keep looking for the RetryInfo.
+
+    Vertex returns several typed entries in one details list. Reading only the first would make the
+    server's retry advice depend on the order it happened to send them in.
+    """
+    exc = _FakeExc(
+        {
+            "error": {
+                "code": 429,
+                "details": [
+                    {"@type": "type.googleapis.com/google.rpc.Help", "links": []},
+                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "5s"},
+                ],
+            }
+        }
+    )
+
+    assert _retry_delay_seconds(exc) == 5.0
+
+
+def test_the_deadline_is_set_by_key_on_a_mapping_and_by_attribute_on_an_object():
+    """THE SYSTEM SHALL carry the per-request deadline on either config shape.
+
+    google-genai accepts both, and callers in this repo use both. Asserting one shape alone passes
+    against code that handles only that shape - and the failure would be silent, because a config
+    that never receives http_options simply keeps the client-wide timeout.
+    """
+    as_mapping: dict = {}
+    assert _set_deadline(as_mapping, 1234) is True
+    assert as_mapping["http_options"].timeout == 1234
+
+    as_object = SimpleNamespace()
+    assert _set_deadline(as_object, 1234) is True
+    assert as_object.http_options.timeout == 1234
+
+
+def test_the_backoff_sleep_is_abandoned_the_moment_the_job_is_cancelled(monkeypatch):
+    """WHEN a job is cancelled mid-backoff, THE SYSTEM SHALL raise JobCancelled instead of sleeping.
+
+    This is what makes the stop button usable: eight retries with jitter can park a job here for
+    many minutes, and those wedged jobs are exactly the ones a reviewer wants to kill. Both arms are
+    asserted - an uncancelled sleep must still serve its full time in slices, or a test of the
+    cancel alone would pass against code that never sleeps at all.
+    """
+    slept = []
+    monkeypatch.setattr(genai_retry.time, "sleep", slept.append)
+
+    monkeypatch.setattr(genai_retry, "current_job_cancelled", lambda: False)
+    genai_retry._cancellable_sleep(2.5)
+    assert slept == [1.0, 1.0, 0.5], "the full backoff was not served in one-second slices"
+
+    slept.clear()
+    monkeypatch.setattr(genai_retry, "current_job_cancelled", lambda: True)
+    with pytest.raises(JobCancelled):
+        genai_retry._cancellable_sleep(2.5)
+    assert slept == [], "it slept before noticing the cancel"
+
+
+def test_an_error_that_is_not_a_rate_limit_is_re_raised_unchanged():
+    """IF a client error is not a 429, THEN THE SYSTEM SHALL re-raise it with its traceback intact.
+
+    A bare `raise`, deliberately: wrapping or re-constructing here would replace the original
+    traceback with one rooted in the retry helper, and the retry helper is never where such a
+    failure actually comes from.
+    """
+    original = _CodedError(400)
+
+    try:
+        raise original
+    except _CodedError as exc:
+        with pytest.raises(_CodedError) as caught:
+            genai_retry._note_client_error(exc, "model-x")
+
+    assert caught.value is original, "the error was replaced rather than re-raised"

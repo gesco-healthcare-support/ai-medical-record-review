@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.errors import OcrUnavailableError
+from app.errors import OcrUnavailableError, PdfUnreadableError
 from app.services import ocr
 
 
@@ -413,3 +413,279 @@ def test_the_two_report_contracts_agree_on_the_types_of_all_three_keys(monkeypat
     # word to explain that it used to be there. A test of prose tests prose; the type comparison
     # above is the claim that matters.
     assert pt.get_row_text_with_report.__doc__ is not None
+
+
+# ---------------------------------------------------------------------------------------------
+# FAIL FAST VERSUS SKIP, AT THE SITES THAT PROPAGATE RATHER THAN RAISE.
+#
+# The tests above prove the distinction where the error is BORN - `_ocr_image` raises
+# OcrUnavailableError, and `extract_pages_with_report` fails fast on it. Three other call sites
+# re-raise it, and each pairs that re-raise with a tolerate-and-continue arm for every other
+# exception. Those pairs had never run: the existing tests stub `_rasterize` or `_ocr_image`, which
+# is exactly the layer the pairs live in.
+#
+# Each test below asserts BOTH arms of its pair. One arm alone is satisfied by code that always
+# does the other, which is the failure mode this whole distinction exists to prevent.
+
+
+def _settings_stub(monkeypatch, **over):
+    """Point `ocr.get_settings()` at a copy, for the fields these tests vary."""
+    real = ocr.get_settings()
+    fields = {
+        "ocr_base_dpi": real.ocr_base_dpi,
+        "ocr_max_long_edge_px": real.ocr_max_long_edge_px,
+        "ocr_timeout_seconds": real.ocr_timeout_seconds,
+        "tesseract_cmd": real.tesseract_cmd,
+    }
+    fields.update(over)
+    stub = SimpleNamespace(**fields)
+    monkeypatch.setattr(ocr, "get_settings", lambda: stub)
+    return stub
+
+
+def test_the_tesseract_binary_path_is_applied_once_and_only_when_set(monkeypatch):
+    """WHEN a tesseract_cmd is configured, THE SYSTEM SHALL apply it once and not re-read it.
+
+    `_configured` is a module global holding a process-wide side effect on the pytesseract package.
+    The once-only contract is why it exists: re-applying per call would make every OCR read settings
+    and write a third-party global. Both halves are asserted - that it applies, and that a later
+    change does NOT take - because a test of the first alone passes against code with no guard.
+    """
+    monkeypatch.setattr(ocr.pytesseract.pytesseract, "tesseract_cmd", "untouched")
+    monkeypatch.setattr(ocr, "_configured", False)
+    _settings_stub(monkeypatch, tesseract_cmd="/opt/first/tesseract")
+
+    ocr._ensure_tesseract()
+    assert ocr.pytesseract.pytesseract.tesseract_cmd == "/opt/first/tesseract"
+    assert ocr._configured is True
+
+    _settings_stub(monkeypatch, tesseract_cmd="/opt/second/tesseract")
+    ocr._ensure_tesseract()
+    assert ocr.pytesseract.pytesseract.tesseract_cmd == "/opt/first/tesseract", (
+        "it re-read settings"
+    )
+
+
+def test_no_configured_binary_leaves_the_pytesseract_default_alone(monkeypatch):
+    """WHERE no tesseract_cmd is set, THE SYSTEM SHALL NOT overwrite pytesseract's own default.
+
+    The other side of the `if cmd:` guard. Writing an empty string there would point the package at
+    nothing and produce a missing-binary failure on a machine where Tesseract is on PATH.
+    """
+    monkeypatch.setattr(ocr.pytesseract.pytesseract, "tesseract_cmd", "the-package-default")
+    monkeypatch.setattr(ocr, "_configured", False)
+    _settings_stub(monkeypatch, tesseract_cmd="")
+
+    ocr._ensure_tesseract()
+
+    assert ocr.pytesseract.pytesseract.tesseract_cmd == "the-package-default"
+    assert ocr._configured is True, "it must still record that it ran"
+
+
+def test_an_unreadable_page_box_yields_no_sizes_rather_than_raising(monkeypatch):
+    """IF the PDF's page boxes cannot be read, THEN the sizes SHALL be empty, not an exception.
+
+    Callers fall back to the base DPI on an empty tuple, so a raise here would abort OCR over a
+    detail that only ever makes the render slightly larger.
+
+    `_page_long_edges_pt` is `@lru_cache`d, so this uses a path no other test touches AND clears the
+    cache first. Without that the assertion could pass against a value cached by an earlier test and
+    never call the code under test at all.
+    """
+    ocr._page_long_edges_pt.cache_clear()
+
+    def unreadable(_path):
+        raise ValueError("not a PDF")
+
+    monkeypatch.setattr(ocr, "PdfReader", unreadable)
+
+    assert ocr._page_long_edges_pt("/only-this-test-uses-this-path.pdf") == ()
+
+
+def test_the_long_edge_of_each_page_is_measured_in_points(monkeypatch):
+    """THE SYSTEM SHALL report the LONGER side of each page, whichever way the page is oriented.
+
+    The cap divides by this, so taking the width of a landscape page would under-report its real
+    extent and let an oversized render through the very guard that exists to stop it.
+    """
+    ocr._page_long_edges_pt.cache_clear()
+    portrait = SimpleNamespace(mediabox=SimpleNamespace(width=612, height=792))
+    landscape = SimpleNamespace(mediabox=SimpleNamespace(width=1224, height=792))
+    monkeypatch.setattr(ocr, "PdfReader", lambda _p: SimpleNamespace(pages=[portrait, landscape]))
+
+    assert ocr._page_long_edges_pt("/a-second-path-only-this-test-uses.pdf") == (792.0, 1224.0)
+
+
+def test_an_explicitly_supplied_dpi_is_used_instead_of_the_image_metadata(monkeypatch):
+    """WHERE a dpi is passed, THE SYSTEM SHALL use it and not consult the image's own metadata.
+
+    The caller knows the render resolution when the image came from `_rasterize`; reading it back
+    off the image would make the declaration depend on a stamp another code path had to remember to
+    write. The stamped-metadata route is covered separately.
+    """
+    captured = {}
+
+    def fake_image_to_string(_image, timeout=0, config=""):
+        captured["config"] = config
+        return "text"
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake_image_to_string)
+    monkeypatch.setattr(ocr, "_configured", True)
+    base = ocr.get_settings().ocr_base_dpi
+
+    ocr._ocr_image(SimpleNamespace(info={"dpi": (base, base)}), dpi=base // 2)
+
+    assert captured["config"] == f"--dpi {base // 2}", "the passed dpi lost to the image metadata"
+
+
+def test_a_rasterized_page_carries_the_dpi_it_was_rendered_at(monkeypatch):
+    """WHEN pages are rasterized, THE SYSTEM SHALL stamp the render DPI onto each image.
+
+    `_ocr_image` reads `image.info["dpi"]` to decide whether to declare the DPI to Tesseract, so a
+    page that did not carry it would be OCR'd as though it were rendered at the base resolution -
+    silently worse recognition on exactly the pages that were down-rendered.
+    """
+    rendered = [SimpleNamespace(info={}), SimpleNamespace(info={})]
+    monkeypatch.setattr(ocr, "convert_from_path", lambda _p, **_k: rendered)
+    _settings_stub(monkeypatch)
+
+    out = ocr._rasterize("/x.pdf", first_page=1, last_page=2)
+
+    assert [image.info["dpi"] for image in out] == [(ocr.get_settings().ocr_base_dpi,) * 2] * 2
+
+
+def test_extract_text_from_image_ocrs_the_image_it_is_given(monkeypatch):
+    """THE SYSTEM SHALL OCR an already-rasterized page without rasterizing anything.
+
+    The entry point the verify pass uses: it holds an image already and must not touch the file.
+    """
+    monkeypatch.setattr(ocr, "_ocr_image", lambda image: f"text of {image}")
+
+    assert ocr.extract_text_from_image("an-image") == "text of an-image"
+
+
+def test_a_missing_binary_stops_the_page_loop_while_a_bad_page_is_skipped(monkeypatch):
+    """IF OCR is unavailable, THEN the page loop SHALL propagate; any other failure SHALL be skipped.
+
+    Both arms in one test because they are one decision. The loop's docstring states the `except`
+    ORDER is load-bearing - `PdfUnreadableError` SUBCLASSES `OcrUnavailableError`, so the fail-fast
+    arm must come first, and swapping them turns a configuration failure into a silently skipped
+    page. The third assertion pins that subclass case specifically.
+    """
+    monkeypatch.setattr(ocr, "_configured", True)
+
+    def unavailable(_image):
+        raise OcrUnavailableError("tesseract is not installed")
+
+    monkeypatch.setattr(ocr, "_ocr_image", unavailable)
+    with pytest.raises(OcrUnavailableError):
+        ocr._ocr_page_images([_Sentinel()], 1, 0, False)
+
+    def subclassed(_image):
+        raise PdfUnreadableError("the upload is truncated")
+
+    monkeypatch.setattr(ocr, "_ocr_image", subclassed)
+    with pytest.raises(PdfUnreadableError):
+        ocr._ocr_page_images([_Sentinel()], 1, 0, False)
+
+    answers = iter([RuntimeError("Tesseract process timeout"), "second page body"])
+
+    def one_bad_then_good(_image):
+        value = next(answers)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(ocr, "_ocr_image", one_bad_then_good)
+    assert ocr._ocr_page_images([_Sentinel(), _Sentinel()], 1, 0, False) == "second page body"
+
+
+def test_a_missing_binary_stops_selected_pages_while_one_bad_page_is_skipped(monkeypatch):
+    """IF rasterizing is unavailable, THEN selected-page extraction SHALL propagate; a per-page
+    rasterize failure SHALL skip that page and keep the rest.
+
+    Same pair, a level up, and reached differently: here it is the RASTERIZE that fails rather than
+    the OCR. Returning partial text on a config failure would store a truncated record as though it
+    were complete, which nothing downstream can detect.
+    """
+    monkeypatch.setattr(ocr, "_configured", True)
+
+    def unavailable(*_a, **_k):
+        raise OcrUnavailableError("poppler is not installed")
+
+    monkeypatch.setattr(ocr, "_rasterize", unavailable)
+    with pytest.raises(OcrUnavailableError):
+        ocr.extract_text_from_selected_pages("/x.pdf", [1, 2])
+
+    def fail_page_one(_path, first_page, last_page):
+        if first_page == 1:
+            raise ValueError("page 1 is corrupt")
+        return [_Page(first_page)]
+
+    monkeypatch.setattr(ocr, "_rasterize", fail_page_one)
+    monkeypatch.setattr(ocr, "_ocr_image", lambda image: f"body of {image.page}")
+
+    assert ocr.extract_text_from_selected_pages("/x.pdf", [1, 2]) == "body of 2"
+
+
+def test_the_report_marks_absolute_page_numbers_when_asked(monkeypatch):
+    """WHERE mark_pages is set, the reported text SHALL carry each page's label.
+
+    The offset is added to the label only; the report's own page list stays on real record pages, so
+    a deposition labelled with its printed numbers is still reported by the numbers in our file.
+    """
+    monkeypatch.setattr(ocr, "_configured", True)
+    monkeypatch.setattr(ocr, "_rasterize", _per_page_rasterize)
+    monkeypatch.setattr(ocr, "_ocr_image", lambda image: f"body {image.page}")
+
+    text, report = ocr.extract_pages_with_report(
+        "/x.pdf", [1, 2], mark_pages=True, page_label_offset=10
+    )
+
+    assert "Page 11:\nbody 1\n" in text
+    assert "Page 12:\nbody 2\n" in text
+    assert report["pages"] == [1, 2], "the report must stay on real record pages"
+
+
+def test_a_whole_document_rasterize_failure_returns_nothing_unless_it_is_a_config_failure(
+    monkeypatch,
+):
+    """IF the whole-document rasterize is unavailable, THEN it SHALL propagate; any other failure
+    SHALL return empty text rather than raise.
+
+    The same pair once more, on the all-pages path. Empty text is the tolerable answer for an
+    unreadable upload - a reviewer sees a document with no OCR - whereas a missing binary must stop,
+    because every other document on the box would fail the same way and silently.
+    """
+    monkeypatch.setattr(ocr, "_configured", True)
+
+    def unavailable(*_a, **_k):
+        raise OcrUnavailableError("poppler is not installed")
+
+    monkeypatch.setattr(ocr, "_rasterize", unavailable)
+    with pytest.raises(OcrUnavailableError):
+        ocr.extract_text_from_all_pages("/x.pdf")
+
+    def corrupt(*_a, **_k):
+        raise ValueError("the file is truncated")
+
+    monkeypatch.setattr(ocr, "_rasterize", corrupt)
+    assert ocr.extract_text_from_all_pages("/x.pdf") == ""
+
+
+def test_a_missing_binary_stops_the_all_pages_loop(monkeypatch):
+    """IF OCR becomes unavailable mid-document, THEN the all-pages loop SHALL propagate.
+
+    Distinct from the rasterize arm above: rasterizing succeeded and the OCR call is what fails, so
+    this is the one place the loop could have produced a document of empty pages instead of failing.
+    """
+    monkeypatch.setattr(ocr, "_configured", True)
+    monkeypatch.setattr(ocr, "_rasterize", lambda *_a, **_k: [_Sentinel(), _Sentinel()])
+
+    def unavailable(_image):
+        raise OcrUnavailableError("tesseract vanished")
+
+    monkeypatch.setattr(ocr, "_ocr_image", unavailable)
+
+    with pytest.raises(OcrUnavailableError):
+        ocr.extract_text_from_all_pages("/x.pdf")

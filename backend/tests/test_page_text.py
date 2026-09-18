@@ -463,3 +463,213 @@ def test_a_row_read_from_an_empty_store_persists_the_page_that_failed(monkeypatc
         "the failure must be recorded, or the pages lost while dedup produced a row's text are "
         "unrecoverable by the time that row is summarized"
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# THE STORAGE RULES, AND THE ARM THE STUBS HIDE.
+#
+# Every test above stubs `pt._extract` wholesale, so its own body - the one place that decides
+# whether a page counts as failed - has never run. The rest of this section covers the precedence
+# rule the store enforces: A FAILURE NEVER OVERWRITES A STORED SUCCESS.
+
+
+def _stored(doc_id, page):
+    """The PageText row for one page, or None."""
+    with get_sessionmaker()() as session:
+        return session.scalar(
+            select(PageText).where(PageText.document_id == doc_id, PageText.page == page)
+        )
+
+
+def test_a_config_failure_propagates_while_any_other_failure_is_recorded(monkeypatch):
+    """IF OCR is unavailable, THEN `_extract` SHALL raise; any other failure SHALL return ("", False).
+
+    Both arms in one test because they are one decision, and the decision is the whole reason this
+    function does not simply call `extract_text_from_selected_pages`. A missing binary marks EVERY
+    page of EVERY document failed, and failures are retryable - so swallowing it turns one wasted
+    run into a wasted run forever, against something that cannot succeed.
+    """
+
+    def unavailable(_path, _pages):
+        raise OcrUnavailableError("tesseract is not installed")
+
+    monkeypatch.setattr(pt, "extract_pages_with_report", unavailable)
+    with pytest.raises(OcrUnavailableError):
+        pt._extract("/x.pdf", 3)
+
+    def corrupt(_path, _pages):
+        raise ValueError("the page object is corrupt")
+
+    monkeypatch.setattr(pt, "extract_pages_with_report", corrupt)
+    assert pt._extract("/x.pdf", 3) == ("", False)
+
+
+def test_a_failed_extraction_never_overwrites_text_already_stored():
+    """WHERE a page already has readable text, a later FAILED read SHALL leave it untouched.
+
+    The precedence rule this module exists to enforce. A transient timeout on a page that was read
+    successfully last week must not blank it - nothing downstream could tell the difference between
+    a page that is empty and one that was emptied.
+    """
+    doc_id = _doc()
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 1, "the good text", ok=True)
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 1, "", ok=False)
+
+    row = _stored(doc_id, 1)
+    assert row.text == "the good text"
+    assert row.extract_ok is True
+
+
+def test_a_later_success_does_replace_a_stored_failure():
+    """WHERE a page is stored as FAILED, a later successful read SHALL replace it.
+
+    The other direction, and the reason the rule above is precedence rather than immutability: a
+    stored failure is exactly what a retry is for. Without this the first timeout would be permanent
+    and every later run would re-OCR a page it could never improve.
+    """
+    doc_id = _doc()
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 2, "", ok=False)
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 2, "recovered body", ok=True)
+
+    row = _stored(doc_id, 2)
+    assert row.text == "recovered body"
+    assert row.extract_ok is True
+    assert row.char_count == len("recovered body")
+
+
+def test_an_unstored_page_with_no_pdf_reads_as_empty_rather_than_raising():
+    """WHERE nothing is stored and no PDF is available, THE SYSTEM SHALL answer an empty string.
+
+    Callers without a `pdf_path` are asking "what do we already know about this page" - a question
+    with a legitimate empty answer, not an error.
+    """
+    doc_id = _doc()
+
+    with get_sessionmaker()() as session:
+        assert pt.get_page_text(session, doc_id, 5) == ""
+
+    assert _stored(doc_id, 5) is None, "a read must not create a row"
+
+
+def test_a_first_read_of_a_page_stores_what_it_extracted(monkeypatch):
+    """WHEN a page is read for the first time with a PDF available, THE SYSTEM SHALL store the text.
+
+    The store is what makes every later stage cheap: dedup, summarization and export all read the
+    same page and only the first of them pays for OCR.
+    """
+    doc_id = _doc()
+    monkeypatch.setattr(pt, "_extract", lambda _path, page: (f"fresh body {page}", True))
+
+    with get_sessionmaker()() as session:
+        assert pt.get_page_text(session, doc_id, 1, pdf_path="/x.pdf") == "fresh body 1"
+
+    row = _stored(doc_id, 1)
+    assert row.text == "fresh body 1"
+    assert row.extract_ok is True
+
+
+def test_pages_absent_from_the_store_are_extracted_when_a_pdf_is_available(monkeypatch):
+    """WHERE some pages are stored and others are not, THE SYSTEM SHALL extract only the missing ones.
+
+    Asserted by making the extractor's output distinguishable from the stored text: a test that
+    only checked the joined length would pass against code that re-extracted everything, which is
+    the expensive mistake this branch exists to avoid.
+    """
+    doc_id = _doc()
+    extracted = []
+
+    def fake_extract(_path, page):
+        extracted.append(page)
+        return f"extracted {page}", True
+
+    monkeypatch.setattr(pt, "_extract", fake_extract)
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 1, "stored one", ok=True)
+
+    with get_sessionmaker()() as session:
+        out = pt.get_pages_text(session, doc_id, [1, 2], pdf_path="/x.pdf")
+
+    assert out == "stored oneextracted 2"
+    assert extracted == [2], "a stored page was re-extracted"
+
+
+def test_a_page_with_nothing_stored_and_no_pdf_is_reported_as_errored():
+    """WHERE a page has no stored text and no PDF to read it from, THE SYSTEM SHALL report it errored.
+
+    The one case the row loader cannot express, because it is a skip rather than a value. It must
+    not be reported BLANK: blank means "read cleanly and holds no words", and treating an unread
+    page as blank is how a record that was never OCR'd looks identical to one that is genuinely
+    empty.
+    """
+    doc_id = _doc()
+
+    with get_sessionmaker()() as session:
+        text, report = pt.get_row_text_with_report(session, doc_id, [1, 2])
+
+    assert text == ""
+    assert report["errored"] == [1, 2]
+    assert report["blank"] == [], "an unread page must never be counted as blank"
+
+
+def test_storing_a_success_over_an_existing_success_is_idempotent():
+    """WHERE a page is already stored as readable, storing it again SHALL leave the row alone.
+
+    Two stages can race to populate the same page - the dedup pass and a summarize run both read
+    through here. The insert loses to the unique constraint, and the recovery path deliberately
+    repairs only a row marked FAILED. Rewriting a good row would churn `char_count` and the engine
+    stamp for no gain, and would make the winner of a race observable in the data.
+    """
+    doc_id = _doc()
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 3, "first body", ok=True)
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 3, "second body", ok=True)
+
+    row = _stored(doc_id, 3)
+    assert row.text == "first body"
+    assert row.char_count == len("first body")
+
+
+def test_a_fresh_failure_leaves_a_stored_failure_as_it_stands(monkeypatch):
+    """WHERE a page is stored as FAILED and fails again, THE SYSTEM SHALL leave the stored row alone.
+
+    The retry already happened - `get_page_text` re-extracted because the row was marked failed.
+    Writing the new failure back would rewrite the row on every read of an unreadable page, on a
+    table the whole pipeline reads through.
+    """
+    doc_id = _doc()
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 4, "partial text", ok=False)
+    monkeypatch.setattr(pt, "_extract", lambda _path, _page: ("", False))
+
+    with get_sessionmaker()() as session:
+        assert pt.get_page_text(session, doc_id, 4, pdf_path="/x.pdf") == ""
+
+    row = _stored(doc_id, 4)
+    assert row.text == "partial text", "the stored failure was overwritten by a fresh one"
+    assert row.extract_ok is False
+
+
+def test_a_second_failure_does_not_promote_a_stored_failure_to_a_success():
+    """WHERE a page is stored as FAILED and fails again, its row SHALL still read as failed.
+
+    FOUND BY A MUTATION PROBE, which is why it is here: deleting `_store`'s `if not ok: return`
+    guard broke nothing in the test above, because that one stores a failure over a SUCCESS - where
+    the repair branch declines anyway and the guard is redundant. The guard only bites on this
+    shape: stored failure, fresh failure. Without it the repair branch fires and writes
+    `extract_ok=True`, PROMOTING a page that has now failed twice into one recorded as read
+    cleanly - and a page marked readable is never retried again.
+    """
+    doc_id = _doc()
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 6, "first attempt", ok=False)
+    with get_sessionmaker()() as session:
+        pt._store(session, doc_id, 6, "", ok=False)
+
+    row = _stored(doc_id, 6)
+    assert row.extract_ok is False, "a twice-failed page was recorded as successfully read"
+    assert row.text == "first attempt"

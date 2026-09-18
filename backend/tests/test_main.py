@@ -7,14 +7,24 @@ serve against a model backend it has not verified.
 
 `asgi-lifespan` is in the dev group for exactly this. It runs the REAL ASGI startup rather than
 calling `_lifespan` directly, so the wiring between the lifespan and the app is exercised too, not
-only the function body. This file starts with one smoke test; the startup's two opposed rules - a
-failed preflight must stop the boot, a Redis outage must not - are covered separately.
+only the function body.
+
+The startup holds TWO OPPOSED RULES, and the source comment at `main.py:26-29` argues the
+distinction explicitly. A failed model-backend preflight MUST stop the boot - it sits outside the
+try beneath it precisely so that a PHI destination failing its check cannot be logged and carried
+past. A Redis outage during orphan recovery MUST NOT - that block is wrapped so the web tier still
+serves. Each is tested here, because a test of either alone passes against code that does the same
+thing to both.
 """
 
+import logging
+
+import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 
 import app.main as main
+from app.auth.deps import AuthRedirect
 
 
 async def test_the_app_runs_its_lifespan_and_then_serves(monkeypatch):
@@ -41,3 +51,82 @@ async def test_the_app_runs_its_lifespan_and_then_serves(monkeypatch):
             assert (await client.get("/health")).json() == {"status": "ok"}
 
     assert reached == ["preflight"], "the lifespan did not run"
+
+
+async def test_a_backend_that_fails_its_preflight_stops_the_boot(monkeypatch):
+    """IF assert_backends_ready raises, THEN startup SHALL fail and the app SHALL NOT serve.
+
+    The reason this check sits OUTSIDE the try below it, stated in the source: a PHI destination
+    that fails its own fitness check must stop the boot rather than be logged and carried past. An
+    app that serves in this state sends medical-record content to a model server nothing has
+    verified, and the only signal would be a warning in a log nobody reads at boot.
+    """
+    monkeypatch.setattr("app.worker.recovery.recover_orphans", lambda _session: 0)
+
+    def refuse():
+        raise RuntimeError("vLLM is not fit to receive traffic")
+
+    monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", refuse)
+
+    with pytest.raises(RuntimeError, match="not fit to receive traffic"):
+        async with LifespanManager(main.app):
+            pass
+
+
+async def test_a_recovery_failure_does_not_stop_the_boot(monkeypatch):
+    """IF orphan recovery raises, THEN startup SHALL complete and the app SHALL still serve.
+
+    The opposite ruling to the test above, and the pair is the point. Orphan recovery talks to Redis
+    and the database; neither is required for the web tier to serve a reviewer their record list, so
+    an outage there must degrade to a warning. Wrapping the preflight the same way - or leaving this
+    one unwrapped - would each be a one-line change that no other test would notice.
+    """
+    monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", lambda: None)
+
+    def redis_is_down(_session):
+        raise ConnectionError("redis is unreachable")
+
+    monkeypatch.setattr("app.worker.recovery.recover_orphans", redis_is_down)
+
+    async with LifespanManager(main.app):
+        transport = ASGITransport(app=main.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.get("/health")).status_code == 200
+
+
+async def test_stale_jobs_interrupted_at_startup_are_reported(monkeypatch, caplog):
+    """WHERE startup recovery interrupts stale jobs, THE SYSTEM SHALL report how many.
+
+    A worker that died leaves jobs that look live forever. The count is the only operator-visible
+    trace that the boot cleaned any up, and a silent recovery is indistinguishable from one that
+    found nothing - which is the state the box is in on almost every restart.
+    """
+    monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", lambda: None)
+    monkeypatch.setattr("app.worker.recovery.recover_orphans", lambda _session: 3)
+
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        async with LifespanManager(main.app):
+            pass
+
+    reported = [record.getMessage() for record in caplog.records]
+    assert any("3 stale job(s)" in message for message in reported), (
+        f"the interrupted count was not reported: {reported}"
+    )
+
+
+async def test_an_unauthenticated_browser_navigation_becomes_a_redirect_to_login():
+    """WHEN AuthRedirect propagates, THE SYSTEM SHALL answer 302 to /login.
+
+    Browsers get a redirect and JSON clients get a 401 - the split is the whole reason this
+    exception type exists rather than raising HTTPException at the gate.
+
+    Asserted in two parts because they fail independently: the handler must produce the redirect,
+    AND it must be REGISTERED for that exception type. A handler that is correct and unregistered
+    leaves a browser looking at a 500.
+    """
+    assert AuthRedirect in main.app.exception_handlers, "the handler is not wired to the exception"
+
+    response = await main._auth_redirect(request=None, exc=AuthRedirect())
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "/login"
