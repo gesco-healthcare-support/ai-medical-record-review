@@ -8,10 +8,14 @@ const summariesState: { data: unknown; error: unknown; isLoading: boolean } = {
   isLoading: false,
 };
 const saveMock = vi.fn().mockResolvedValue({});
+// Hoisted for the same reason as saveMock: a fresh vi.fn() per call cannot be asserted on, so the
+// re-draft path could be exercised but never checked - including the confirm guard that stands
+// between a re-draft and the reviewer's own edits.
+const redraftMock = vi.fn().mockResolvedValue({});
 vi.mock("@/hooks/use-summaries", () => ({
   useSummaries: () => summariesState,
   useSaveSummary: () => ({ mutateAsync: saveMock }),
-  useResummarize: () => ({ mutateAsync: vi.fn() }),
+  useResummarize: () => ({ mutateAsync: redraftMock }),
 }));
 const jumpTo = vi.fn();
 // jsdom cannot run the pdf.js iframe; stub the viewer and record the page it is asked to show.
@@ -25,7 +29,7 @@ vi.mock("@/components/review/pdf-viewer", async () => {
   };
 });
 
-import { fireEvent, waitFor } from "@testing-library/react";
+import { fireEvent, waitFor, within } from "@testing-library/react";
 import { ApiError } from "@/lib/api";
 import { SummariesView } from "@/components/review/summaries-view";
 
@@ -527,5 +531,209 @@ describe("SummariesView unaudited flag", () => {
     // This is the same trap `rowMissing` and `rowCategoryLive` are optional for.
     renderWith({});
     expect(screen.queryByText(/Not checked/i)).not.toBeInTheDocument();
+  });
+});
+
+const one = (over: Record<string, unknown> = {}) => [
+  {
+    idx: 0,
+    summaryTitle: "Progress Note (Pages 1-2)",
+    summaryDate: "01/02/2026",
+    summaryText: "Body.",
+    manualCheck: false,
+    excluded: false,
+    edited: false,
+    verified: false,
+    verifyChanged: false,
+    verifyIssues: [],
+    row: { start: 1, end: 2, category: "1" },
+    ...over,
+  },
+];
+
+/** The edit card's own Save / Cancel. The report HeaderBar above the list carries a Save button
+ *  too, so an unscoped query matches both - and would be satisfied by the wrong one. */
+const editActions = () => within(document.querySelector(".edit-actions") as HTMLElement);
+
+function renderOne(over: Record<string, unknown> = {}) {
+  summariesState.error = null;
+  summariesState.isLoading = false;
+  summariesState.data = one(over);
+  render(
+    <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+  );
+}
+
+describe("SummariesView inline edit", () => {
+  it("saves the title, date and text the reviewer typed", async () => {
+    saveMock.mockClear();
+    renderOne();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    fireEvent.change(screen.getByLabelText("Summary title"), { target: { value: "Knee MRI" } });
+    fireEvent.change(screen.getByLabelText("Summary date"), { target: { value: "03/04/2026" } });
+    fireEvent.change(screen.getByLabelText("Summary text"), { target: { value: "Revised body." } });
+    fireEvent.click(editActions().getByRole("button", { name: /^Save$/ }));
+
+    // All three fields in one request, each under its own key: a buffer wired to the wrong field
+    // saves happily and the reviewer finds out in the delivered document.
+    await waitFor(() =>
+      expect(saveMock).toHaveBeenCalledWith({
+        idx: 0,
+        body: {
+          summaryTitle: "Knee MRI",
+          summaryDate: "03/04/2026",
+          summaryText: "Revised body.",
+        },
+      }),
+    );
+  });
+
+  it("names the server's reason when a save is refused, rather than reporting success", async () => {
+    saveMock.mockClear();
+    saveMock.mockRejectedValueOnce(new ApiError("that summary no longer exists", 404));
+    renderOne();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    fireEvent.click(editActions().getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() => expect(screen.getByText(/Not saved/i)).toBeInTheDocument());
+    expect(screen.queryByText(/^Saved$/)).not.toBeInTheDocument();
+    saveMock.mockResolvedValue({});
+  });
+
+  it("leaves the card as it was when an edit is cancelled", () => {
+    saveMock.mockClear();
+    renderOne();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+    fireEvent.change(screen.getByLabelText("Summary title"), { target: { value: "Discarded" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
+
+    expect(screen.queryByLabelText("Summary title")).toBeNull(); // the editor closed
+    expect(screen.getByText("Body.")).toBeInTheDocument(); // ...and the original text is back
+    expect(saveMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("SummariesView export toggle", () => {
+  it("excludes a summary from the deliverable when In export is unticked", async () => {
+    saveMock.mockClear();
+    renderOne();
+
+    fireEvent.click(screen.getByLabelText(/In export/i));
+
+    // The checkbox reads "in export" and the field stores "excluded", so the value is inverted on
+    // the way out. Sending it straight through would exclude exactly the summaries kept.
+    await waitFor(() =>
+      expect(saveMock).toHaveBeenCalledWith({ idx: 0, body: { excluded: true } }),
+    );
+  });
+
+  it("reports a refused exclude toggle rather than dropping it silently", async () => {
+    saveMock.mockClear();
+    saveMock.mockRejectedValueOnce(new ApiError("a job is running for this document", 409));
+    renderOne();
+
+    fireEvent.click(screen.getByLabelText(/In export/i));
+
+    await waitFor(() => expect(screen.getByText(/Not saved/i)).toBeInTheDocument());
+    saveMock.mockResolvedValue({});
+  });
+});
+
+describe("SummariesView re-draft", () => {
+  it("re-drafts the summary that was asked for", async () => {
+    redraftMock.mockClear();
+    renderOne();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Re-draft$/ }));
+
+    await waitFor(() => expect(redraftMock).toHaveBeenCalledWith(0));
+  });
+
+  it("warns before discarding the reviewer's own edits, and obeys the answer", async () => {
+    // Re-drafting replaces the text with fresh AI output. On a summary the reviewer has edited that
+    // destroys their work, so the guard is the only thing between them and silent loss - and jsdom's
+    // window.confirm returns undefined, which reads as "declined", so an unstubbed test would pass
+    // while proving the opposite.
+    redraftMock.mockClear();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderOne({ edited: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Re-draft$/ }));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(redraftMock).not.toHaveBeenCalled(); // declined: nothing is discarded
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: /^Re-draft$/ }));
+    await waitFor(() => expect(redraftMock).toHaveBeenCalledWith(0));
+
+    confirmSpy.mockRestore();
+  });
+});
+
+describe("SummariesView export dialog and paging", () => {
+  it("opens the export dialog from the Export button", () => {
+    renderOne();
+    expect(screen.queryByRole("button", { name: "Export to Word" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Export$/ }));
+
+    expect(screen.getByRole("button", { name: "Export to Word" })).toBeInTheDocument();
+  });
+
+  const manySummaries = () =>
+    Array.from({ length: 25 }, (_, i) => ({
+      idx: i,
+      summaryTitle: `Summary ${i} (Pages ${i + 1}-${i + 1})`,
+      summaryDate: "01/02/2026",
+      summaryText: `Body ${i}.`,
+      manualCheck: false,
+      excluded: false,
+      edited: false,
+      verified: false,
+      verifyChanged: false,
+      verifyIssues: [],
+      row: { start: i + 1, end: i + 1, category: "1" },
+    }));
+
+  function renderMany() {
+    summariesState.error = null;
+    summariesState.isLoading = false;
+    summariesState.data = manySummaries();
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+  }
+
+  it("pages forward and back through the summaries", () => {
+    renderMany();
+    expect(screen.getByText("Body 0.")).toBeInTheDocument();
+    expect(screen.queryByText("Body 20.")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Next$/ }));
+    expect(screen.getByText("Body 20.")).toBeInTheDocument();
+    expect(screen.queryByText("Body 0.")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Prev$/ }));
+    expect(screen.getByText("Body 0.")).toBeInTheDocument();
+    expect(screen.queryByText("Body 20.")).toBeNull();
+  });
+
+  it("leaves no editor open after the page changes", () => {
+    // HONEST LIMIT, recorded rather than implied. Both pager buttons call setEditingIdx(-1), and
+    // this pins the observable half - no editor is open once the page has changed. It CANNOT
+    // isolate either button's call: editingIdx is matched against the indices rendered on the
+    // CURRENT page, and the edited index is never among them afterwards, so breaking one button
+    // alone changes nothing visible and a mutation probe on it returns NO-OP by construction
+    // (confirmed, PR 4.2). The calls are defensive; this test guards the outcome, not them.
+    renderMany();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit$/ })[0]);
+    expect(screen.getByLabelText("Summary text")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Next$/ }));
+
+    expect(screen.queryByLabelText("Summary text")).toBeNull();
   });
 });

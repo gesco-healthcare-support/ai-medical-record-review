@@ -221,4 +221,48 @@ describe("ExportDialog page numbers", () => {
     await user.click(screen.getByRole("button", { name: "Download all (.zip)" }));
     expect(body(fetchSpy).includePageNumbers).toBe(true);
   });
+
+  it("sends each header box under its own field", async () => {
+    // Four free-text boxes writing into four differently-named request fields. A box wired to the
+    // wrong one fires its handler, updates, and exports happily - and the reviewer finds out when
+    // the delivered document carries the date of birth where the law firm should be.
+    const user = userEvent.setup();
+    const fetchSpy = mockFetch();
+    open();
+
+    await user.type(screen.getByLabelText("Patient name"), "Jordan Vasquez");
+    await user.type(screen.getByLabelText("DOB"), "04/05/1980");
+    // Evaluation type is the one box that ships prefilled (the panel-QME wording), so it is cleared
+    // rather than typed into - appending would assert against a value the test did not choose.
+    await user.clear(screen.getByLabelText(/Evaluation type/i));
+    await user.type(screen.getByLabelText(/Evaluation type/i), "QME");
+    await user.type(screen.getByLabelText(/Attorney law firm/i), "Reyes and Partners");
+    await user.click(screen.getByRole("button", { name: "Export to Word" }));
+
+    const sent = body(fetchSpy);
+    expect(sent.patientName).toBe("Jordan Vasquez");
+    expect(sent.patientdob).toBe("04/05/1980");
+    expect(sent.QMEorAME).toBe("QME");
+    expect(sent.lawfirm).toBe("Reyes and Partners");
+  });
+
+  it("closes without exporting when Cancel is used", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetch();
+    const onOpenChange = vi.fn();
+    render(
+      <ExportDialog
+        open
+        onOpenChange={onOpenChange}
+        documentId="d1"
+        includedCount={1}
+        excludedCount={0}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /^Cancel$/ }));
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(fetchSpy).not.toHaveBeenCalled(); // dismissing is not a silent export
+  });
 });
