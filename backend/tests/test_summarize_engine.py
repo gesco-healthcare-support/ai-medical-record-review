@@ -1051,6 +1051,72 @@ def test_a_substantive_rewrite_that_drops_headings_is_accepted(monkeypatch):
     assert "shockwave therapy" in out["verifiedText"].lower()
 
 
+# Eight points, because the ceiling only engages on a body structured enough for "most of the
+# headings" to mean anything. `_LABELLED` carries two and is deliberately below it - that is why
+# the two tests above keep passing unchanged.
+_STRUCTURED = (
+    "**DOI**: 11/03/24. **Subjective Complaints**: Low back pain 6/10. "
+    "**History of Present Illness**: Lifting injury. **Physical Examination**: Flexion 55 degrees. "
+    "Height 70 inches. Weight 194 pounds. **Diagnoses**: Lumbar disc protrusion. "
+    "**Treatment Plan**: Continue therapy. **Discussed**: Imaging reviewed. "
+    "**Work Status**: Modified duty."
+)
+
+
+def _structured_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+    return ("Progress Note - Dr Smith" if system_msg == se.TITLE_PROMPT else _STRUCTURED), False
+
+
+def test_a_substantive_rewrite_that_guts_the_body_is_rejected(monkeypatch, caplog):
+    """WHEN a substantive issue is answered by removing MOST of the bold points, THE SYSTEM SHALL
+    keep the raw body.
+
+    Observed 2026-09-18 on a self-hosted model: one `vitals` issue - a legitimate house-rule hit -
+    was answered by replacing eight points with a single line naming the date, physician and
+    facility. A vitals fix can empty ONE point; it cannot empty the summary. Before this, the
+    `vitals` type alone put the set outside the correction-only pair and the rewrite was accepted
+    whole.
+    """
+    _stub_verify(
+        monkeypatch,
+        "**DOI**: 11/03/24. Marcus V, M.D. Valley Ridge Orthopedic Medical Group.",
+        [
+            {"type": "capitalization", "detail": "**Subjective Complaints**"},
+            {"type": "vitals", "detail": "Height 70 inches. Weight 194 pounds."},
+        ],
+    )
+    monkeypatch.setattr(se, "_generate", _structured_generate)
+
+    with caplog.at_level("WARNING"):
+        out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is None
+    assert "**Diagnoses**" in out["summaryText"]
+    # The reviewer still sees why it was flagged - rejecting the rewrite is not swallowing it.
+    assert {i["type"] for i in out["verifyIssues"]} == {"capitalization", "vitals"}
+    assert "vitals" in caplog.text
+
+
+def test_a_substantive_rewrite_that_empties_one_point_is_still_accepted(monkeypatch):
+    """WHEN a substantive issue removes ONE bold point, THE SYSTEM SHALL store the audited body.
+
+    The case the ceiling must not break, and the reason `vitals` is excluded from the
+    correction-only pair in the first place: house rule 1 strips height and weight, and doing so can
+    legitimately take the point that carried them.
+    """
+    without_exam = _STRUCTURED.replace(
+        "**Physical Examination**: Flexion 55 degrees. Height 70 inches. Weight 194 pounds. ", ""
+    )
+    _stub_verify(monkeypatch, without_exam, [{"type": "vitals", "detail": "Height 70 inches."}])
+    monkeypatch.setattr(se, "_generate", _structured_generate)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert "Height 70 inches" not in out["verifiedText"]
+    assert "**Diagnoses**" in out["verifiedText"]
+
+
 def test_a_renamed_heading_passes_the_guard_untouched(monkeypatch):
     """WHEN the audit RENAMES a heading without reducing the count, THE SYSTEM SHALL store its body.
 
