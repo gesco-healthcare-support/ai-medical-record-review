@@ -262,6 +262,13 @@ x-backend-env: &backend-env
   # (model-dynamic) via env to re-enable if a task regresses", which no deployment could do. Named
   # here beside SEGMENT_THINKING_BUDGET because the two are a pair - that comment defines itself as
   # the exception to this one - and only the exception was reachable.
+  #
+  # GEMINI-ONLY, AND THEREFORE INERT ON A POD. It is read in exactly one place - genai_retry.py,
+  # as a types.ThinkingConfig - so with LLM_BACKEND=vllm nothing consults it at all. Wired anyway,
+  # because the promise is in the code and the guard derives it from there, but do not reach for
+  # this one expecting it to move anything while the pipeline is on the self-hosted model. The four
+  # above are not like that: they resolve in summarize_engine/summary_verify, which are
+  # backend-independent, so they are live levers on whichever backend is answering.
   GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:-0}
   # How much work one segmentation vision call carries, and therefore whether it fits inside
   # GENAI_HTTP_TIMEOUT_MS. -1 is dynamic thinking, which an A/B showed is what holds strict doc-F1 up
