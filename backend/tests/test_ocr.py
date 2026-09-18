@@ -573,20 +573,23 @@ def test_a_missing_binary_stops_the_page_loop_while_a_bad_page_is_skipped(monkey
     page. The third assertion pins that subclass case specifically.
     """
     monkeypatch.setattr(ocr, "_configured", True)
+    # Hoisted deliberately: a constructor inside a `pytest.raises` block is a second invocation, and
+    # then the block no longer says WHICH call was expected to throw (python:S5778).
+    one_page = [_Sentinel()]
 
     def unavailable(_image):
         raise OcrUnavailableError("tesseract is not installed")
 
     monkeypatch.setattr(ocr, "_ocr_image", unavailable)
     with pytest.raises(OcrUnavailableError):
-        ocr._ocr_page_images([_Sentinel()], 1, 0, False)
+        ocr._ocr_page_images(one_page, 1, 0, False)
 
     def subclassed(_image):
         raise PdfUnreadableError("the upload is truncated")
 
     monkeypatch.setattr(ocr, "_ocr_image", subclassed)
     with pytest.raises(PdfUnreadableError):
-        ocr._ocr_page_images([_Sentinel()], 1, 0, False)
+        ocr._ocr_page_images(one_page, 1, 0, False)
 
     answers = iter([RuntimeError("Tesseract process timeout"), "second page body"])
 
