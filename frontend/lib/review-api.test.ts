@@ -10,7 +10,20 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { cancelJob, startDedup, startSegment } from "@/lib/review-api";
+import {
+  cancelJob,
+  extractHeader,
+  getDocument,
+  getStatus,
+  getSummaries,
+  putSummary,
+  resummarize,
+  saveHeader,
+  saveRows,
+  startDedup,
+  startSegment,
+  startSummarize,
+} from "@/lib/review-api";
 
 const ok = (body: unknown) =>
   new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -75,5 +88,76 @@ describe("restart starts", () => {
 
     await startDedup("doc-1", true);
     expect(lastCall().body).toEqual({ fresh: true });
+  });
+});
+
+describe("the review reads", () => {
+  it("each address their own path", async () => {
+    await getDocument("doc-1");
+    expect(lastCall().url).toBe("/api/documents/doc-1");
+
+    await getStatus("doc-1");
+    expect(lastCall().url).toBe("/api/documents/doc-1/status");
+
+    await getSummaries("doc-1");
+    expect(lastCall().url).toBe("/api/documents/doc-1/summaries");
+  });
+});
+
+describe("startSummarize", () => {
+  it("never skips the duplicate check unless the caller asks", async () => {
+    // #125: a record could go upload -> segment -> summarize with the duplicate check never having
+    // run, and nothing saying so - 14 of 44 summarized documents on the box. The server now refuses
+    // without this flag and AUDITS the skip with it, so a default of true would silently disable a
+    // gate that exists because the failure already happened once.
+    await startSummarize("doc-1", []);
+    expect(lastCall().url).toBe("/api/documents/doc-1/summarize/start");
+    expect(lastCall().body.skip_duplicate_check).toBe(false);
+
+    await startSummarize("doc-1", [], false, true);
+    expect(lastCall().body.skip_duplicate_check).toBe(true);
+  });
+
+  it("asks for a fresh run only when told to", async () => {
+    await startSummarize("doc-1", []);
+    expect(lastCall().body.fresh).toBe(false);
+
+    await startSummarize("doc-1", [], true);
+    expect(lastCall().body.fresh).toBe(true);
+  });
+});
+
+describe("putSummary", () => {
+  it("sends only the fields the caller gave", async () => {
+    // A PARTIAL patch, deliberately. Sending the whole summary would write back fields the caller
+    // never touched - including `category`, which the server writes through to the owning ReviewRow,
+    // so a full-object PUT could revert a re-classification made on the other tab.
+    await putSummary("doc-1", 4, { summaryText: "Revised." });
+
+    expect(lastCall().url).toBe("/api/documents/doc-1/summaries/4");
+    expect(lastCall().init?.method).toBe("PUT");
+    expect(lastCall().body).toEqual({ summaryText: "Revised." });
+  });
+});
+
+describe("the remaining review writes", () => {
+  it("each address their own path and method", async () => {
+    await saveRows("doc-1", []);
+    expect(lastCall().url).toBe("/api/documents/doc-1/rows");
+    expect(lastCall().init?.method).toBe("PUT");
+
+    await extractHeader("doc-1");
+    expect(lastCall().url).toBe("/api/documents/doc-1/extract-header");
+    expect(lastCall().init?.method).toBe("POST");
+
+    await saveHeader("doc-1", { patient_last_name: "Roe" } as never);
+    expect(lastCall().url).toBe("/api/documents/doc-1/header");
+    // PUT rather than POST: extract-header does NOT persist, and this is the call that does.
+    expect(lastCall().init?.method).toBe("PUT");
+    expect(lastCall().body).toEqual({ patient_last_name: "Roe" });
+
+    await resummarize("doc-1", 2);
+    expect(lastCall().url).toBe("/api/documents/doc-1/summaries/2/resummarize");
+    expect(lastCall().init?.method).toBe("POST");
   });
 });

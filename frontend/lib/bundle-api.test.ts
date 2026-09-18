@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
-import { downloadBundlePdf } from "@/lib/bundle-api";
+import { downloadBundlePdf, downloadBundleSummary } from "@/lib/bundle-api";
 import { humanizeError } from "@/lib/errors";
 
 /** The category-bundle download had no tests at all, despite owning the filename the reviewer ends
@@ -112,5 +112,36 @@ describe("downloadBundlePdf", () => {
     );
     const err = await downloadBundlePdf("doc-1", CONFIG).catch((e: unknown) => e);
     expect(humanizeError(err)).toMatch(/couldn't reach the server/i);
+  });
+});
+
+describe("downloadBundleSummary", () => {
+  it("asks the summarize route for the same categories, carrying the header fields", async () => {
+    // The two bundle calls differ only in their action segment and in whether the header travels
+    // with them. A summary bundle that posted to /pdf would return the concatenated source pages
+    // instead of a written report - a plausible-looking file that is the wrong deliverable.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200, {}));
+    // An earlier test in this file installs fetch via `stubGlobal`, which `restoreAllMocks` does
+    // not undo - so `spyOn` hands back that same mock WITH its call history, and `calls[0]` would
+    // be someone else's request. Cleared explicitly rather than indexing from the end, so the
+    // assertion below is about the only call this test makes.
+    fetchSpy.mockClear();
+
+    await downloadBundleSummary("doc-1", CONFIG, {
+      patientName: "Jordan Vasquez",
+      patientdob: "04/05/1980",
+      QMEorAME: "QME",
+      lawfirm: "Reyes and Partners",
+    });
+
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("/documents/doc-1/bundle/summarize");
+    const body = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
+    expect(body.categories).toEqual(CONFIG.categories);
+    expect(body.label).toBe(CONFIG.slug);
+    // The reviewers asked for the diagnostic download to be named like the other files; the server
+    // prepends the patient name to this, so dropping it is how the archive got one unnamed member.
+    expect(body.downloadName).toBe(CONFIG.downloadName);
+    expect(body.patientName).toBe("Jordan Vasquez");
+    expect(body.lawfirm).toBe("Reyes and Partners");
   });
 });
