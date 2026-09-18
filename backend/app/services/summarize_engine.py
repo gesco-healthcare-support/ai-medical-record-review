@@ -249,12 +249,25 @@ def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> boo
     Compares COUNTS, never heading text, and deliberately so: renaming or re-casing a heading is the
     behaviour the audit is being asked for, and comparing text would block exactly that. Only a
     heading that stopped existing is the defect.
+
+    A SUBSTANTIVE reason - an unsupported claim, a vitals line - still justifies a rewrite, and one
+    of those can legitimately empty a point and take its heading with it. It cannot empty MOST of
+    them. Measured 2026-09-18 on a self-hosted model: a body carrying eight bold points was answered
+    with a single line naming the date, the physician and the facility - 1,482 chars to 126, every
+    clinical finding gone - because one `vitals` issue put the set outside the correction-only pair
+    and the guard below returned False without looking at how much was removed. Blast radius of the
+    ceiling, replayed over every stored rewrite: 0 of 475 on gemini, so nothing about the answering
+    model's current behaviour changes; 14 of 929 pre-provenance rows, which lost EVERY heading while
+    keeping 90-98% of their prose, i.e. exactly the de-bolding this guard was written to reject.
     """
-    # Any issue type outside the correction-only pair means the audit had a substantive reason to
-    # restructure the body - an unsupported claim, a duplicated finding - so its rewrite stands.
-    if not issue_types or not issue_types <= _CORRECTION_ONLY_ISSUES:
+    if not issue_types:
         return False
-    return _bold_span_count(fixed) < _bold_span_count(raw)
+    raw_headings = _bold_span_count(raw)
+    if issue_types <= _CORRECTION_ONLY_ISSUES:
+        return _bold_span_count(fixed) < raw_headings
+    # The ceiling. Three is the floor for "structured": below it, losing one heading IS losing a
+    # large share, and a vitals fix on a two-point body is the case the exclusion above protects.
+    return raw_headings >= 3 and _bold_span_count(fixed) * 2 < raw_headings
 
 
 # "On pages 4 to 6," / "On pages 34 and 35," - the opener every deposition paragraph carries. Matched
