@@ -10,11 +10,18 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
-    include: ["{lib,hooks,components}/**/*.{test,spec}.{ts,tsx}"],
+    // `app` is in this list because it is in the COVERAGE list below. Without it a test written
+    // under app/ is never collected: the run passes having executed nothing, the coverage number
+    // does not move, and nothing anywhere reports a problem. Measuring a directory the runner
+    // cannot collect tests for is the one combination that fails silently.
+    include: ["{app,lib,hooks,components}/**/*.{test,spec}.{ts,tsx}"],
     exclude: ["node_modules", ".next", "e2e/**"],
     coverage: {
       provider: "v8",
-      reporter: ["text", "lcov"],
+      // `json-summary` carries a statements metric; lcov does NOT (it has lines, functions and
+      // branches only). The CI coverage floor gates all four, so it cannot be computed from lcov
+      // alone. `text` stays for the local run, `lcov` for SonarCloud.
+      reporter: ["text", "lcov", "json-summary"],
       // `app/**` is measured even though nothing tests it yet. The route tree is real shipped
       // code, so leaving it out reports a coverage figure for a subset of the app while reading
       // as if it were the whole of it. An honest denominator that starts lower is worth more

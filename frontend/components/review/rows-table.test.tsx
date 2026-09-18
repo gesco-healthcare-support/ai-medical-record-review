@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { RowsTable } from "@/components/review/rows-table";
@@ -23,10 +24,23 @@ const erow = (over: Partial<EditorRow> = {}): EditorRow => ({
 
 const categories: CategoryOption[] = [{ id: "1", name: "Progress report" }];
 
-/** Render RowsTable with stub callbacks; returns the onField spy for interaction assertions. */
-function renderTable(rows: EditorRow[], errors = new Map<number, string>()) {
-  const onField = vi.fn();
-  render(
+/** Render RowsTable with stub callbacks; returns every spy plus the container, so a test can assert
+ *  on the callback it cares about and reach the row elements that carry no accessible name. */
+function renderTable(
+  rows: EditorRow[],
+  errors = new Map<number, string>(),
+  overrides: Partial<ComponentProps<typeof RowsTable>> = {},
+) {
+  const spies = {
+    onSelect: vi.fn(),
+    onField: vi.fn(),
+    onMergeUp: vi.fn(),
+    onSplitStart: vi.fn(),
+    onSplitConfirm: vi.fn(),
+    onSplitCancel: vi.fn(),
+    onDelete: vi.fn(),
+  };
+  const { container } = render(
     <RowsTable
       rows={rows}
       categories={categories}
@@ -34,16 +48,11 @@ function renderTable(rows: EditorRow[], errors = new Map<number, string>()) {
       errors={errors}
       selected={-1}
       splitting={-1}
-      onSelect={vi.fn()}
-      onField={onField}
-      onMergeUp={vi.fn()}
-      onSplitStart={vi.fn()}
-      onSplitConfirm={vi.fn()}
-      onSplitCancel={vi.fn()}
-      onDelete={vi.fn()}
+      {...spies}
+      {...overrides}
     />,
   );
-  return onField;
+  return { ...spies, container };
 }
 
 describe("RowsTable", () => {
@@ -161,7 +170,7 @@ describe("RowsTable", () => {
 
   it("emits an include toggle via onField", async () => {
     const user = userEvent.setup();
-    const onField = renderTable([erow({ include: true })]);
+    const { onField } = renderTable([erow({ include: true })]);
     await user.click(screen.getByLabelText("Include in summarization"));
     expect(onField).toHaveBeenCalledWith(0, { include: false });
   });
@@ -178,9 +187,64 @@ describe("RowsTable", () => {
 
   it("reflects and toggles the review flag (case-insensitive 'x')", async () => {
     const user = userEvent.setup();
-    const onField = renderTable([erow({ flag: "X" })]);
+    const { onField } = renderTable([erow({ flag: "X" })]);
     expect(screen.getByLabelText("Flag for manual review")).toBeChecked(); // 'X' -> checked
     await user.click(screen.getByLabelText("Flag for manual review"));
     expect(onField).toHaveBeenCalledWith(0, { flag: "-" }); // was checked -> unchecks -> '-'
+  });
+
+  // A document occupies TWO rows - the title line and the dense fields line - and both must select
+  // it. Wiring only one leaves half of every document inert, which reads as an intermittent
+  // "clicking does nothing" rather than as a missing handler.
+  it("selects the document from either of its two rows", async () => {
+    const user = userEvent.setup();
+    const { onSelect, container } = renderTable([
+      erow({ start: 1, end: 3 }),
+      erow({ start: 4, end: 6 }),
+    ]);
+
+    const titleRows = container.querySelectorAll("tr.title-row");
+    const fieldRows = container.querySelectorAll("tr.doc-row:not(.title-row)");
+    expect(titleRows).toHaveLength(2);
+    expect(fieldRows).toHaveLength(2);
+
+    await user.click(titleRows[1] as HTMLElement);
+    expect(onSelect).toHaveBeenCalledWith(1);
+
+    onSelect.mockClear();
+    await user.click(fieldRows[0] as HTMLElement);
+    expect(onSelect).toHaveBeenCalledWith(0);
+  });
+
+  it("confirms a split at the page typed into the split box", async () => {
+    const user = userEvent.setup();
+    const { onSplitConfirm } = renderTable(
+      [erow({ start: 1, end: 5 })],
+      new Map<number, string>(),
+      { splitting: 0 },
+    );
+
+    const atPage = screen.getByLabelText("First page of the second document");
+    expect(atPage).toHaveValue(2); // defaults to the first page that could start a second document
+    await user.clear(atPage);
+    await user.type(atPage, "4");
+    await user.click(screen.getByRole("button", { name: /^Split$/ }));
+
+    // The typed page, not the default: reading the default would silently split every document
+    // after its first page regardless of what the reviewer asked for.
+    expect(onSplitConfirm).toHaveBeenCalledWith(0, 4);
+  });
+
+  it("cancels a split without confirming one", async () => {
+    const user = userEvent.setup();
+    const { onSplitCancel, onSplitConfirm } = renderTable(
+      [erow({ start: 1, end: 5 })],
+      new Map<number, string>(),
+      { splitting: 0 },
+    );
+
+    await user.click(screen.getByRole("button", { name: /^Cancel$/ }));
+    expect(onSplitCancel).toHaveBeenCalled();
+    expect(onSplitConfirm).not.toHaveBeenCalled();
   });
 });
