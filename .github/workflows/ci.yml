@@ -111,8 +111,14 @@ jobs:
       - name: Upload frontend coverage
         uses: actions/upload-artifact@v5
         with:
+          # Both files share the ancestor frontend/coverage, so they land at the artifact root
+          # exactly as the single file did - the sonarcloud job's download + SF-path rewrite below
+          # is unaffected. coverage-summary.json is here because lcov carries no statements metric
+          # and the coverage floor gates all four.
           name: frontend-coverage
-          path: frontend/coverage/lcov.info
+          path: |
+            frontend/coverage/lcov.info
+            frontend/coverage/coverage-summary.json
           retention-days: 1
 
   e2e:
