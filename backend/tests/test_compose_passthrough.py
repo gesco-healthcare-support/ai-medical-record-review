@@ -156,3 +156,226 @@ def test_every_named_setting_actually_exists_on_settings():
         f"these names are asserted against compose but are not Settings fields: {unknown}. "
         "Either the field was renamed and this list was not, or the name is a typo."
     )
+
+
+# --- The derived half. ------------------------------------------------------------------------
+#
+# The list above is hand-maintained, and that is defensible for it: "a boot guard compares this
+# against another setting" is a property of the CODE, so a reader looking at a new guard can tell.
+#
+# This half covers a property of the COMMENT, and a hand list is how it went wrong. Four settings
+# each documented themselves as revertable from the environment - "a regression reverts via env with
+# no redeploy", "Env-toggle to revert to OCR-only", "Env-overridable so a regression reverts without
+# a redeploy", "Env-overridable so a box can raise it without a redeploy" - and not one was named in
+# `docker-compose.yml`, so every one of those sentences was false on every deployed box. It surfaced
+# on 2026-09-18 mid-incident, when `SUMMARY_VERIFY=false` was the obvious containment for an audit
+# that was destroying summaries, was already set in the box `.env`, and did nothing.
+#
+# DERIVED RATHER THAN LISTED, because the issue reporting it counted four by hand and there were
+# five: `gemini_thinking_budget` says "set >0 or -1 (model-dynamic) via env to re-enable if a task
+# regresses" and was missing too. Someone scanning eighty-six fields for a promise will miss one.
+#
+# The phrase set is the loose half and is meant to be. Adding a phrase costs nothing, and a promise
+# worded some way not listed here is a FALSE NEGATIVE - this is a floor, not a proof that every
+# claim in the file is honoured.
+_ENV_TOGGLE_PHRASES = (
+    "env-overridable",
+    "env overridable",
+    "env-toggle",
+    "env toggle",
+    "via env",
+    "by env",
+    "from env",
+    "from .env",
+    "without a redeploy",
+    "with no redeploy",
+    "without a deploy",
+    "with no deploy",
+    "without a rebuild",
+    "with no rebuild",
+)
+
+
+def _config_lines() -> list[str]:
+    path = Path(__file__).resolve().parents[1] / "app" / "config.py"
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def _settings_fields() -> list[tuple[str, int]]:
+    """Every `Settings` field as (name, 1-based line of its annotation).
+
+    Found with `ast` rather than by regex over the file, so a field is found by being a field.
+    Shared by the two readers below so they cannot disagree about what a field is.
+    """
+    import ast
+
+    path = Path(__file__).resolve().parents[1] / "app" / "config.py"
+    settings_class = next(
+        node
+        for node in ast.parse(path.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.ClassDef) and node.name == "Settings"
+    )
+    return [
+        (node.target.id, node.lineno)
+        for node in settings_class.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    ]
+
+
+def _field_comments() -> dict[str, str]:
+    """Every field mapped to the comment block written directly above it.
+
+    The block is the contiguous run of `#` lines immediately above the annotation, walked upwards,
+    which is this file's convention throughout - and is why `summary_verify`'s four-line note and
+    `audit_max_output_tokens`' twenty-line one both land on the right field. Adjacency is required
+    rather than nearest-comment-wins, because skipping a blank line would hand a field with no
+    comment of its own the PREVIOUS field's one. `test_no_comment_block_is_orphaned_from_its_field`
+    is what makes the strict rule safe.
+    """
+    lines = _config_lines()
+    comments: dict[str, str] = {}
+    for name, lineno in _settings_fields():
+        block: list[str] = []
+        index = lineno - 2  # lineno is 1-based, so -2 is the line directly above the annotation
+        while index >= 0 and lines[index].strip().startswith("#"):
+            block.append(lines[index].strip().lstrip("#").strip())
+            index -= 1
+        comments[name] = " ".join(reversed(block))
+    return comments
+
+
+def _env_name(field: str) -> str:
+    """The variable a deployment would actually set for `field`.
+
+    NOT `field.upper()`. `model_config` sets no `env_prefix`, so that is right for eighty-five of
+    the eighty-six - but `use_vertex` carries `validation_alias="GOOGLE_GENAI_USE_VERTEXAI"` and
+    does not answer to its own name at all. Asking pydantic keeps this right for the next alias
+    rather than for today's.
+    """
+    from app.config import Settings
+
+    alias = Settings.model_fields[field].validation_alias
+    return (alias if isinstance(alias, str) else field).upper()
+
+
+def _settings_promising_an_env_toggle() -> list[str]:
+    """Field names whose own comment advertises that they can be set from the environment."""
+    return sorted(
+        field
+        for field, comment in _field_comments().items()
+        if any(phrase in comment.lower() for phrase in _ENV_TOGGLE_PHRASES)
+    )
+
+
+_PROMISED = _settings_promising_an_env_toggle()
+
+
+def test_the_comment_reader_still_finds_comments():
+    """WHEN the derivation runs, THE SYSTEM SHALL prove it read something.
+
+    A CONTROL, and the two parametrized tests below are worthless without it: pytest reports a
+    parametrize over an empty list as nothing to run rather than as a failure, so a reformat of
+    `app/config.py` that moved comments off the line above a field would disarm both while the
+    suite stayed green.
+
+    Asserts the reader's OUTPUT rather than naming protected settings, so this stays a control and
+    does not quietly become the hand list the derivation exists to avoid. It catches the reader
+    failing WHOLESALE; the orphan test below is what catches it failing for one field, which is the
+    likelier accident and which this cannot see.
+    """
+    comments = _field_comments()
+    assert len(comments) > 50, f"only {len(comments)} Settings fields parsed; the ast walk broke"
+    documented = [field for field, comment in comments.items() if comment]
+    assert len(documented) > 30, (
+        f"only {len(documented)} of {len(comments)} fields came back with a comment block. The "
+        "comment reader has stopped seeing comments, which disarms the tests below silently."
+    )
+    assert _PROMISED, (
+        "no setting's comment advertises an env toggle, which has not been true of this file since "
+        "the phrase set was written against it. The reader or the phrases have drifted."
+    )
+
+
+def test_no_comment_block_is_orphaned_from_its_field():
+    """WHEN a comment block sits above a field, THE SYSTEM SHALL leave no blank line between them.
+
+    THE FAILURE THE AGGREGATE CONTROL ABOVE CANNOT SEE, found by running it: inserting one blank
+    line above `summary_verify` does not make anything fail - it makes that field drop out of
+    `_PROMISED`, so its test stops being generated and the run goes from nine passes to eight. A
+    silently smaller guard looks exactly like a passing one.
+
+    So the adjacency the reader depends on is enforced here rather than hoped for. Zero fields
+    violate it today; the alternative - letting the reader skip blank lines - is worse, because
+    then a field with no comment of its own would inherit the previous field's and could be
+    protected, or unprotected, on the strength of a sentence about something else.
+
+    A deliberate section header over a GROUP of fields would fail this. That is the right outcome
+    to have to argue with: this file has none, and one would break the reader for the first field
+    under it.
+    """
+    lines = _config_lines()
+    orphaned = []
+    for name, lineno in _settings_fields():
+        index = lineno - 2
+        if index < 0 or lines[index].strip().startswith("#"):
+            continue  # no gap: either adjacent comment, or code/nothing above
+        above = index
+        while above >= 0 and not lines[above].strip():
+            above -= 1
+        if above >= 0 and above != index and lines[above].strip().startswith("#"):
+            orphaned.append(f"{name} (line {lineno})")
+    assert not orphaned, (
+        f"a comment block is separated from its field by a blank line: {orphaned}. The reader that "
+        "decides which settings promise an env toggle requires adjacency, so that field is now "
+        "silently outside every check in this file rather than failing one."
+    )
+
+
+@pytest.mark.parametrize("field", _PROMISED)
+def test_a_setting_that_promises_an_env_toggle_can_reach_a_container(field):
+    """WHEN a comment says a setting is env-settable, THE SYSTEM SHALL name it in compose.
+
+    The promise and the passthrough live in two files, are written at different times, and only the
+    passthrough is load-bearing. This fails on the sentence, so the sentence stops being free.
+
+    Asserted as a `${NAME:-default}` substitution rather than a bare mention: a key named only in a
+    comment reads as present to a grep and passes nothing to a container, and `OMP_THREAD_LIMIT`
+    shows the other shape - passed, but hardcoded, so `.env` cannot reach it either.
+    """
+    name = _env_name(field)
+    assert re.search(rf"^\s+{name}:\s*\$\{{{name}:-", _compose_text(), re.M), (
+        f"app/config.py tells a reader that `{field}` can be set from the environment, but "
+        f"{name} is not passed through docker-compose.yml - so on a deployed box it cannot be, "
+        "whatever .env says. Add it to the x-backend-env anchor, or stop promising it."
+    )
+
+
+@pytest.mark.parametrize("field", _PROMISED)
+def test_the_compose_default_matches_the_config_default(field):
+    """WHEN compose names a setting, THE SYSTEM SHALL repeat config.py's default exactly.
+
+    THE MIRROR IMAGE, and the more expensive direction. Naming a key in compose makes THAT the
+    value a container reads and `app/config.py` merely documentation - so a typo in a fallback
+    changes production silently, and editing the code default afterwards changes nothing at all.
+    `DUPE_SIMILARITY_OVERRIDE` is this tree's worked example: config said 0.99, compose said 0.90,
+    and every container served 0.90 for three weeks while the code and the analysis said 0.99.
+
+    Compared through the field's own annotation, so "true" is read as a bool and "8192" as an int.
+    Comparing raw strings would fail on every non-string setting, and comparing `str(default)`
+    would pass "0.0" against 0 by accident.
+    """
+    from pydantic import TypeAdapter
+
+    from app.config import Settings
+
+    name = _env_name(field)
+    match = re.search(rf"^\s+{name}:\s*\$\{{{name}:-(.*?)\}}\s*$", _compose_text(), re.M)
+    assert match, f"{name} is not passed through docker-compose.yml"  # the test above says why
+
+    info = Settings.model_fields[field]
+    composed = TypeAdapter(info.annotation).validate_python(match.group(1))
+    assert composed == info.default, (
+        f"docker-compose.yml defaults {name} to {composed!r} but app/config.py defaults "
+        f"`{field}` to {info.default!r}. Compose wins inside a container, so the code default is "
+        "already dead and every box is running the compose one."
+    )
