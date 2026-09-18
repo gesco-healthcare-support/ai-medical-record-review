@@ -22,13 +22,29 @@ vi.mock("@/hooks/use-duplicates", () => ({
 vi.mock("@/components/review/review-editor", () => ({
   ReviewEditor: () => <div data-testid="editor" />,
 }));
+// The stub carries a button that calls the prop, because `onGotoSummarizeStep` is wiring owned by
+// THIS component - a stub that cannot invoke it leaves the empty state's only escape route untested.
 vi.mock("@/components/review/summaries-view", () => ({
-  SummariesView: () => <div data-testid="summaries-view" />,
+  SummariesView: ({ onGotoSummarizeStep }: { onGotoSummarizeStep: () => void }) => (
+    <div data-testid="summaries-view">
+      <button type="button" onClick={onGotoSummarizeStep}>
+        stub goto summarize step
+      </button>
+    </div>
+  ),
 }));
 vi.mock("@/components/review/duplicates-view", () => ({
   DuplicatesView: () => <div data-testid="duplicates-view" />,
 }));
-vi.mock("@/components/review/header-bar", () => ({ HeaderBar: () => <div /> }));
+// Same reason: `onSaved` is how a saved report header reaches the rest of the page, and a bare div
+// cannot call it.
+vi.mock("@/components/review/header-bar", () => ({
+  HeaderBar: ({ onSaved }: { onSaved: (fields: unknown) => void }) => (
+    <button type="button" onClick={() => onSaved({ patient_last_name: "Roe" })}>
+      stub save header
+    </button>
+  ),
+}));
 vi.mock("@/components/review/start-panel", () => ({
   StartPanel: () => <div data-testid="start-panel" />,
 }));
@@ -813,5 +829,119 @@ describe("ReviewPageClient body panel selection", () => {
     fireEvent.click(screen.getByRole("tab", { name: /Summaries/ }));
     expect(screen.getByTestId("summaries-view")).toBeInTheDocument();
     expect(screen.queryByTestId("duplicates-view")).toBeNull();
+  });
+});
+
+/** One summary, described by whether the reviewer edited it and whether its row has been
+ *  re-classified since it was written - the two facts the resume guard weighs. */
+const summary = (idx: number, edited: boolean, liveCategory: string) => ({
+  idx,
+  edited,
+  rowCategoryLive: liveCategory,
+  row: { start: idx * 2 + 1, end: idx * 2 + 2, category: "1" },
+});
+
+describe("ReviewPageClient resuming after a stop", () => {
+  it("resumes the stopped job when Continue is pressed", () => {
+    const restartCancelled = vi.fn();
+    const confirmSpy = vi.spyOn(window, "confirm");
+    // Neither of these is at risk: one was edited but its category has not moved, the other moved
+    // but was never edited. A count that ignored either condition would warn on this record.
+    sumState.data = [summary(0, true, "1"), summary(1, false, "3")];
+    mockWf({ cancelledJob: { kind: "summarize" }, restartCancelled });
+    render(<ReviewPageClient documentId="d1" />);
+
+    fireEvent.click(button(/^Continue$/));
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(restartCancelled).toHaveBeenCalledWith(false);
+    confirmSpy.mockRestore();
+  });
+
+  it("starts over from scratch when Start over is pressed", () => {
+    const restartCancelled = vi.fn();
+    sumState.data = [];
+    mockWf({ cancelledJob: { kind: "summarize" }, restartCancelled });
+    render(<ReviewPageClient documentId="d1" />);
+
+    fireEvent.click(button(/^Start over$/));
+
+    // `true` is what discards the finished work and re-runs; Continue and Start over differ by
+    // exactly this flag, so passing the wrong one silently turns one button into the other.
+    expect(restartCancelled).toHaveBeenCalledWith(true);
+  });
+
+  it("warns before a resume rewrites summaries the reviewer edited, and obeys the answer", () => {
+    // A summarize resume keys on (start, end, category), so a summary whose row was re-classified
+    // since it was written no longer matches: it is deleted and regenerated, taking the reviewer's
+    // edits with it. jsdom's window.confirm returns undefined - which reads as "declined" - so an
+    // unstubbed test would pass here while proving the opposite of the guarantee.
+    const restartCancelled = vi.fn();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    sumState.data = [
+      summary(0, true, "3"), // edited AND re-classified - the only one at risk
+      summary(1, false, "3"), // re-classified but untouched by the reviewer
+      summary(2, true, "1"), // edited but its category still matches
+    ];
+    mockWf({ cancelledJob: { kind: "summarize" }, restartCancelled });
+    render(<ReviewPageClient documentId="d1" />);
+
+    fireEvent.click(button(/^Continue$/));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("1 summary you edited"));
+    expect(restartCancelled).not.toHaveBeenCalled(); // declined: nothing is discarded
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(button(/^Continue$/));
+    expect(restartCancelled).toHaveBeenCalledWith(false);
+
+    confirmSpy.mockRestore();
+  });
+});
+
+describe("ReviewPageClient navigation", () => {
+  it("opens the Duplicates tab from the unresolved-duplicates banner", () => {
+    dupState.data = {
+      job: null,
+      checked: true,
+      stale: false,
+      unreadable: 0,
+      clusters: [
+        {
+          group: 1,
+          dismissed: false,
+          rows: [{ include: true }, { include: true }], // 2 included copies = still unresolved
+        },
+      ],
+    };
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.queryByTestId("duplicates-view")).toBeNull();
+
+    fireEvent.click(button(/^Review duplicates$/));
+
+    expect(screen.getByTestId("duplicates-view")).toBeInTheDocument();
+  });
+
+  it("sends the summaries empty state to the step that owns Summarize", () => {
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    fireEvent.click(screen.getByRole("tab", { name: /Summaries/ }));
+
+    fireEvent.click(button(/stub goto summarize step/));
+
+    // Summarize lives on the Duplicates step, not on the Summaries tab that lacks it.
+    expect(screen.getByTestId("duplicates-view")).toBeInTheDocument();
+  });
+
+  it("carries a saved report header back to the page", () => {
+    const setHeader = vi.fn();
+    mockWf({ setHeader });
+    render(<ReviewPageClient documentId="d1" />);
+
+    fireEvent.click(button(/stub save header/));
+
+    // Both tabs render the header bar from this one value, so a save that does not come back up
+    // leaves the other tab showing the pre-save state.
+    expect(setHeader).toHaveBeenCalledWith({ patient_last_name: "Roe" });
   });
 });
