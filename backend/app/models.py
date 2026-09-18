@@ -547,8 +547,43 @@ class Summary(Base):
             ),
             "verified": self.verified,
             "verifyIssues": self.verify_issues or [],
-            # The reviewer-facing flag: the AI actually changed this summary (issues were found).
-            "verifyChanged": bool(self.verified and self.verify_issues),
+            # The reviewer-facing flag, and it means what the card says: the body below IS the
+            # audit's rewrite.
+            #
+            # WAS `verified and verify_issues`, which asks a different question and answered it
+            # wrongly. `verified_text` is left None when a rewrite is REJECTED - both
+            # `_drops_required_headings` and `_drops_deposition_structure` keep the raw body and
+            # store the issues anyway - so those cards read "AI verify pass corrected this summary"
+            # over text the audit had not touched, which is the opposite of what happened.
+            #
+            # IT IS A DIFFERENT DEFECT SINCE THE PIPELINE LEFT GEMINI, which is why it is worth
+            # fixing now rather than whenever. Split by the model that AUDITED, on the box
+            # 2026-09-18:
+            #
+            #     gemini-2.5-flash        1,394 flagged      2 rewrites discarded    0.1%
+            #     Qwen/Qwen3.6-35B-A3B      120 flagged     79 rewrites discarded   65.8%
+            #
+            # On Gemini this was a rounding error. On the self-hosted model it is the common case,
+            # two flagged summaries in three, because the rewrite comes back without the required
+            # structure and the guards refuse it. So the card is wrong more often than it is right,
+            # on exactly the runs a reviewer is being asked to judge.
+            #
+            # The TITLE is corrected independently and can be applied while the body rewrite is
+            # thrown away, 23 of the 79. This flag tracks the BODY: it is what the reviewer is
+            # reading when they decide whether to check it, and a corrected title is already
+            # visible in the title.
+            "verifyChanged": bool(self.verified and self.verified_text is not None),
+            # The case that flag used to swallow, and the one a reviewer has to act on: the audit
+            # found something, its rewrite was discarded, and the body below is the model's
+            # original. "Check this yourself", not "this was checked".
+            #
+            # Rare POOLED over all history - 81 of 2,983 audited - which is why it earns a chip
+            # where the 61%-prevalent issue list does not. But it is 65.8% of flagged summaries on
+            # the backend the pipeline runs on today, so read the pooled figure as history rather
+            # than as a rate, and expect this chip to be common rather than rare.
+            "verifyKeptRaw": bool(
+                self.verified and self.verify_issues and self.verified_text is None
+            ),
             # The other reviewer-facing flag, and the one `verified` alone cannot express on the
             # wire: the audit was ASKED FOR and did not complete. `audit_model` records the request
             # (it is set from the `verify` setting) and `verified` records the outcome, so a client

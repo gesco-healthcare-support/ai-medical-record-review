@@ -100,6 +100,43 @@ function categoryIsStale(item: SummaryItem) {
  *  Order is deliberate and unchanged: what the REVIEWER did (Edited), then what the SYSTEM
  *  flagged, then what is stale, then Excluded last because it describes the export rather than
  *  the summary. */
+/** What the audit found, collapsed.
+ *
+ *  The list has been on the wire and in `types.ts` since the pass was written - its own comment
+ *  said "for later UIs" - and nothing rendered it. Over the stored summaries on the box, 1,805 of
+ *  2,981 audited (61%) carry flagged issues nobody has seen, including 116 with a flagged wrong
+ *  date or left/right flip, which are the two the enum gained precisely because "unsupported" and
+ *  "contradiction" could not name them.
+ *
+ *  COLLAPSED, AND NO CHIP. At 61% prevalence a badge is noise - the point is that the detail is
+ *  reachable when someone wants it, not that it shouts. The rare case does get a chip, because
+ *  `verifyKeptRaw` fires on 2.6% and means the reviewer has to do the check themselves.
+ *
+ *  `detail` already carries the offending text, so this needs no lookup and invents nothing. */
+function VerifyIssues({ item }: Readonly<{ item: SummaryItem }>) {
+  const issues = item.verifyIssues ?? [];
+  if (issues.length === 0) return null;
+  return (
+    <details className="verify-issues">
+      <summary>
+        {issues.length === 1 ? "1 thing" : `${issues.length} things`} the AI check flagged
+        {item.verifyKeptRaw ? " - its correction was not applied" : ""}
+      </summary>
+      <ul>
+        {issues.map((issue, position) => (
+          // Keyed on position because the pair can legitimately repeat: the same type against the
+          // same phrase twice in one summary is a real answer, not a duplicate to collapse.
+          <li key={`${issue.type}-${position}`}>
+            <span className="vi-type">{issue.type.replaceAll("_", " ")}</span>
+            {issue.detail ? <span className="vi-detail">{issue.detail}</span> : null}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+
 function SummaryChips({
   item,
   categoryLabel,
@@ -122,6 +159,15 @@ function SummaryChips({
         <span className="ev-chip ev-chip-review" title="AI verify pass corrected this summary - please confirm">
           <ShieldCheck width={12} height={12} aria-hidden />
           AI-fixed
+        </span>
+      ) : null}
+      {item.verifyKeptRaw ? (
+        <span
+          className="ev-chip ev-chip-review"
+          title="The AI check flagged problems here and its rewrite was rejected for dropping required structure, so the text below is the model's own. Open the list underneath and read it against the pages."
+        >
+          <ShieldAlert width={12} height={12} aria-hidden />
+          Flagged, not applied
         </span>
       ) : null}
       {item.verifyFailed ? (
@@ -472,6 +518,7 @@ export function SummariesView({
                   <p className="body">
                     <MarkdownText text={text} />
                   </p>
+                  <VerifyIssues item={item} />
                 </div>
               );
             })}

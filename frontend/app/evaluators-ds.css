@@ -255,6 +255,20 @@ textarea:focus-visible, a:focus-visible {
     margin: 2px 0 0; font: 14.5px/1.65 var(--font-body), sans-serif;
     color: var(--gray-700); white-space: pre-wrap;
 }
+/* What the AI check flagged: closed by default, because it is present on most summaries and the
+   point is that it is reachable rather than loud. */
+.verify-issues { margin: 4px 0 0; font: 13px/1.5 var(--font-body), sans-serif; }
+.verify-issues > summary {
+    cursor: pointer; color: var(--gray-500); list-style-position: outside; width: fit-content;
+}
+.verify-issues > summary:hover { color: var(--gray-700); }
+.verify-issues ul { margin: 6px 0 0; padding: 0 0 0 18px; display: flex;
+    flex-direction: column; gap: 4px; }
+.verify-issues li { color: var(--gray-700); }
+.vi-type { font-weight: 600; text-transform: capitalize; }
+.vi-type::after { content: ": "; font-weight: 400; }
+.vi-detail { color: var(--gray-500); }
+
 /* Edit mode (in place): title/date fields + a content-sized textarea + save/cancel. */
 .summary-card.editing { border-color: var(--blue-500); }
 .sum-title { flex: 1 1 240px; width: auto; font-weight: 600; }

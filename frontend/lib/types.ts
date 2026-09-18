@@ -131,10 +131,19 @@ export type SummaryItem = {
   manualCheck: boolean;
   excluded: boolean;
   edited: boolean;
-  // Faithfulness verify pass: `verified` = the pass ran; `verifyChanged` = the AI corrected this
-  // summary (issues were found). `verifyIssues` carries the {type, detail} list for later UIs.
+  // Faithfulness verify pass. `verified` = the pass ran. `verifyChanged` = the body below IS the
+  // audit's rewrite. `verifyKeptRaw` = the audit found something and its rewrite was DISCARDED, so
+  // the body is the model's original with known flags against it - the two are mutually exclusive
+  // and the second is the one to act on. `verifyIssues` is the {type, detail} list behind both.
+  //
+  // `verifyChanged` used to mean "verified AND issues exist", which said "corrected" over every
+  // summary whose rewrite had been thrown away. That was 0.1% of flagged summaries on Gemini and
+  // is 65.8% on the self-hosted model the pipeline runs on now, so the card is usually wrong
+  // rather than occasionally. Optional `verifyKeptRaw` for the same rolling-deploy reason as
+  // `rowMissing`: an older backend omits it, and absent must read as "nothing to say".
   verified: boolean;
   verifyChanged: boolean;
+  verifyKeptRaw?: boolean;
   // The audit was ASKED FOR and did not complete, so this body shipped with no faithfulness check.
   // Derived on the server, because `verified` alone cannot say it: false there also means the audit
   // was never requested, and this tab would then flag every card if the setting were off.

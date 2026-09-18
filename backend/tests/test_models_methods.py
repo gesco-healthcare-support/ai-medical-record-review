@@ -168,6 +168,97 @@ def test_listing_is_silent_when_no_audit_was_ever_requested():
         assert summary.listing()["verifyFailed"] is False
 
 
+def test_listing_does_not_report_a_correction_the_audit_discarded():
+    """WHEN a rewrite is rejected, THE SYSTEM SHALL not report the summary as corrected.
+
+    `verified_text` is left None when `_drops_required_headings` or `_drops_deposition_structure`
+    refuses a rewrite - the guards that stop the audit flattening a required structure - and the
+    issues are stored either way. So `verified and verify_issues` reported "AI verify pass corrected
+    this summary" over a body the audit had not touched, which is the opposite of what happened.
+
+    Measured on the box 2026-09-18: 81 summaries in this state, every one delivered, the newest that
+    same day. The count grows with however often the rewrite is refused, and #343 widened exactly
+    that - on a self-hosted model it fires on every long summary.
+    """
+    summary = Summary(
+        idx=0, title="T", date="-", text="RAW", row_start=1, row_end=2, row_category="9"
+    )
+    summary.verified = True
+    summary.verify_issues = [{"type": "date", "detail": "d"}]
+    summary.verified_text = None  # the rewrite was rejected; the raw body ships
+
+    listing = summary.listing()
+    assert listing["verifyChanged"] is False
+    assert listing["verifyKeptRaw"] is True
+    assert listing["summaryText"] == "RAW"
+
+
+def test_listing_still_reports_a_correction_the_audit_did_apply():
+    """The other side of it, so the fix is a narrowing rather than a silencing.
+
+    The flag has to keep meaning something: a body the audit DID rewrite is the ordinary case (1,727
+    of 2,981 audited on the box) and is exactly what the chip was written for.
+    """
+    summary = Summary(
+        idx=0, title="T", date="-", text="RAW", row_start=1, row_end=2, row_category="1"
+    )
+    summary.verified = True
+    summary.verify_issues = [{"type": "unsupported", "detail": "d"}]
+    summary.verified_text = "CORRECTED"
+
+    listing = summary.listing()
+    assert listing["verifyChanged"] is True
+    assert listing["verifyKeptRaw"] is False
+    assert listing["summaryText"] == "CORRECTED"
+
+
+def test_the_two_verify_outcomes_cannot_both_be_true():
+    """WHEN the audit reports an outcome, THE SYSTEM SHALL report exactly one of the two.
+
+    They are read as opposites on the card - "this was corrected" against "check this yourself" -
+    so a row asserting both would tell a reviewer nothing. Checked across every combination of the
+    three columns the pair is derived from rather than on one example, because the pair is derived
+    and a derivation is where an overlap would appear.
+    """
+    for verified in (True, False):
+        for issues in ([], [{"type": "vitals", "detail": "d"}]):
+            for fixed in (None, "CORRECTED"):
+                summary = Summary(
+                    idx=0,
+                    title="T",
+                    date="-",
+                    text="RAW",
+                    row_start=1,
+                    row_end=2,
+                    row_category="1",
+                )
+                summary.verified = verified
+                summary.verify_issues = issues
+                summary.verified_text = fixed
+                listing = summary.listing()
+                assert not (listing["verifyChanged"] and listing["verifyKeptRaw"]), (
+                    f"both flags true for verified={verified} issues={bool(issues)} "
+                    f"verified_text={fixed!r}"
+                )
+
+
+def test_an_unaudited_summary_reports_neither_outcome():
+    """The guard that keeps both flags off every card when the audit never ran.
+
+    `verify_issues` is NULL and `verified` False for a summary nobody audited, which is most of a
+    record when `summary_verify` is off. Neither flag may fire there: the first would claim a
+    correction and the second would send a reviewer to check something against a pass that was
+    never requested.
+    """
+    summary = Summary(
+        idx=0, title="T", date="-", text="RAW", row_start=1, row_end=2, row_category="1"
+    )
+    listing = summary.listing()
+    assert listing["verifyChanged"] is False
+    assert listing["verifyKeptRaw"] is False
+    assert listing["verifyIssues"] == []
+
+
 def test_every_table_that_references_a_document_is_cascaded_by_it():
     """GUARD on the CLASS of defect, not the instance.
 
