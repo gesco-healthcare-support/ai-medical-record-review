@@ -14,6 +14,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # The pinned Gemini flash model: the Vertex default, and the step-down for the title and
 # audit calls. Named once so a version bump is a single edit.
 _GEMINI_FLASH_MODEL = "gemini-2.5-flash"
+# Every Gemini model name begins with this, and no other vendor uses the namespace - which is
+# what makes it a safe test for a name that has landed on the wrong backend.
+_GEMINI_NAME_PREFIX = "gemini-"
 
 # The stages that can be routed to a backend independently. Named once so an override naming a stage
 # that does not exist fails at startup instead of silently leaving that stage where it was.
@@ -922,6 +925,10 @@ class Settings(BaseSettings):
         # is what guarantees is non-empty. Run earlier it would happily pin the summarize triple to
         # "" and turn a loud refusal-to-boot into three empty model names at call time.
         self._apply_vllm_call_defaults()
+        # AFTER the two defaulting passes, because it judges the names they leave behind rather
+        # than the ones an operator typed. Before them it would pass a deployment whose keys were
+        # still empty and fail one whose Gemini names had not yet been replaced.
+        self._validate_model_names_match_their_backend()
         return self
 
     def _apply_gemini_call_defaults(self) -> None:
@@ -983,6 +990,78 @@ class Settings(BaseSettings):
         self.summary_body_model = self.summary_body_model or self.vllm_model
         self.summary_title_model = self.summary_title_model or self.vllm_model
         self.audit_model = self.audit_model or self.vllm_model
+
+    def _resolved_call_models(self) -> list[tuple[str, str, str]]:
+        """Every (description, model name, backend) pair the app will actually put on a wire.
+
+        Built from the same two resolvers the pipeline uses - `model_for` for the summarize triple
+        and `model_for_stage` for everything else - rather than from the raw fields, so a name that
+        `_apply_vllm_call_defaults` replaced is judged as replaced.
+        """
+        summarize = self.backend_for("summarize")
+        pairs = [
+            (f"the summarize {kind} model", self.model_for(kind), summarize)
+            for kind in ("body", "title", "audit")
+        ]
+        pairs += [
+            (f"the {stage} model", self.model_for_stage(stage), self.backend_for(stage))
+            for stage in _LLM_STAGES
+            if stage != "summarize"
+        ]
+        return pairs
+
+    def _validate_model_names_match_their_backend(self) -> None:
+        """Refuse to start when a model name cannot belong to the backend that will receive it.
+
+        THE FAILURE THIS CONVERTS. `LLM_BACKEND=vllm` with `AUDIT_MODEL=gemini-2.5-pro` boots
+        clean today. `_apply_vllm_call_defaults` fills the summarize triple from `vllm_model` only
+        where a key is EMPTY, so an explicitly set Gemini name survives and is sent to the pod as a
+        model id. The pod has never heard of it, so the job fails PER ROW, mid-run - which is the
+        outcome `_validate_vllm_backend` exists to prevent one field away.
+
+        The summarize triple is where the whole exposure is: `model_for_stage` returns `vllm_model`
+        for every other stage routed to vllm, so a Gemini name cannot reach a pod through them.
+        Both directions are checked for all of them anyway, because the Gemini direction has no
+        such protection and costs nothing to cover.
+
+        COARSE ON PURPOSE, and that is the design rather than a shortcut. A vLLM server serves
+        whatever name it was started with, so "is this a real model" is not a question answerable
+        here, and a check that guessed would refuse working deployments. Two things ARE knowable:
+
+        * a `gemini-` name on a backend that is not Gemini. Nobody else serves that namespace, so
+          it can only have come from these defaults or from a copied `.env`.
+        * a Hugging Face repo id on the Gemini backend - `Qwen/Qwen3.6-35B-A3B`, the mirror image,
+          which `_apply_vllm_call_defaults` will happily leave in place if the backend moves back.
+
+        THE SECOND TEST IS NARROWER THAN "HAS A SLASH", deliberately. google-genai documents a
+        fully-qualified form:
+
+            projects/<p>/locations/<l>/publishers/google/models/gemini-2.5-flash
+
+        Refusing that would break a legitimate deployment in order to close a hypothetical one, so
+        the rule asks for a slash AND no "gemini" anywhere in the name.
+
+        Everything else passes. A wrong Gemini VERSION, or an OpenAI name on a vLLM server that
+        happens to serve it, are not things this can know - and a guard that fails on what it
+        cannot know is worse than no guard, because the next person silences it.
+        """
+        for description, model, backend in self._resolved_call_models():
+            if not model:
+                continue  # emptiness is _validate_vllm_backend's and _validate_openai_provider's
+            if backend != "gemini" and model.startswith(_GEMINI_NAME_PREFIX):
+                raise RuntimeError(
+                    f"{description} is {model!r}, a Gemini model name, but that call is routed to "
+                    f"the {backend!r} backend. It would be sent as a model id to a server that has "
+                    "never heard of it and fail per row mid-job rather than here. Set it to a "
+                    f"name the {backend!r} backend serves, or clear it and let that backend's own "
+                    "default apply."
+                )
+            if backend == "gemini" and "/" in model and "gemini" not in model.lower():
+                raise RuntimeError(
+                    f"{description} is {model!r}, which reads as a Hugging Face repo id, but that "
+                    "call is routed to the 'gemini' backend. Set it to a Gemini model name, or "
+                    "clear it. (A fully-qualified Vertex path containing 'gemini' is accepted.)"
+                )
 
     def _validate_openai_provider(self) -> None:
         """Refuse to start an OpenAI-backed deployment that is missing a key, a model, or ZDR.

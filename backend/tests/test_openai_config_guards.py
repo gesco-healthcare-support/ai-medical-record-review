@@ -942,3 +942,105 @@ def test_an_unknown_stage_is_refused_rather_than_answered(monkeypatch):
     s = _settings(monkeypatch, LLM_BACKEND="gemini")
     with pytest.raises(KeyError, match="unknown stage"):
         s.model_for_stage("sumarize")
+
+
+# --- A model name against the backend that will receive it (#350 part 2). ----------------------
+#
+# The keys that carry this risk exist precisely so they can be set independently, and the one thing
+# that makes them dangerous - which vendor will be handed the name - is invisible at the point of
+# setting them.
+
+# The pod's own two keys, WITHOUT the backend switch, so a test can name the backend itself - the
+# per-stage case below needs LLM_BACKEND=gemini while the pod is still reachable.
+_POD = {"VLLM_BASE_URL": "http://127.0.0.1:8000/v1", "VLLM_MODEL": "Qwen/Qwen3.6-35B-A3B"}
+_VLLM_UP = {"LLM_BACKEND": "vllm", **_POD}
+
+
+def test_a_gemini_model_name_on_the_pod_is_refused_at_startup(monkeypatch):
+    """WHEN a Gemini name is routed to vLLM, THE SYSTEM SHALL refuse to start.
+
+    THE ISSUE'S OWN REPRO. `_apply_vllm_call_defaults` fills the summarize triple from `vllm_model`
+    only where a key is EMPTY, so an explicitly set Gemini name survives and goes to the pod as a
+    model id. It boots clean and then fails PER ROW, mid-job - the outcome `_validate_vllm_backend`
+    exists to prevent one field away.
+
+    The audit specifically, because that is the call the containment for #348 would have wanted to
+    move on its own.
+    """
+    with pytest.raises(RuntimeError, match="Gemini model name"):
+        _settings(monkeypatch, **_VLLM_UP, AUDIT_MODEL="gemini-2.5-pro")
+
+
+@pytest.mark.parametrize("key", ["SUMMARY_BODY_MODEL", "SUMMARY_TITLE_MODEL", "AUDIT_MODEL"])
+def test_every_summarize_call_is_checked_not_just_the_audit(key, monkeypatch):
+    """All three, because all three are separately settable and none is more protected.
+
+    Parametrized rather than asserted once: the triple is where the entire exposure lives, since
+    `model_for_stage` returns `vllm_model` for every OTHER stage routed to vllm and a Gemini name
+    cannot survive that path.
+    """
+    with pytest.raises(RuntimeError, match="Gemini model name"):
+        _settings(monkeypatch, **_VLLM_UP, **{key: "gemini-2.5-pro"})
+
+
+def test_a_repo_id_on_the_gemini_backend_is_refused(monkeypatch):
+    """The mirror image, which is what a move back off the pod would leave behind.
+
+    Nothing rewrites `classify_model` when a deployment returns to Gemini, so a Hugging Face repo id
+    set during the pod experiment would be sent to Vertex as a model name.
+    """
+    with pytest.raises(RuntimeError, match="Hugging Face repo id"):
+        _settings(monkeypatch, LLM_BACKEND="gemini", CLASSIFY_MODEL="Qwen/Qwen3.6-35B-A3B")
+
+
+def test_a_fully_qualified_vertex_path_is_not_mistaken_for_a_repo_id(monkeypatch):
+    """THE FALSE-POSITIVE GUARD, and the reason the test is not simply "contains a slash".
+
+    google-genai documents `projects/<p>/locations/<l>/publishers/google/models/gemini-2.5-flash` as
+    a model name. A slash-alone rule would refuse that, breaking a legitimate deployment in order to
+    close a hypothetical one - so the rule asks for a slash AND no "gemini" anywhere.
+    """
+    settings = _settings(
+        monkeypatch,
+        LLM_BACKEND="gemini",
+        CLASSIFY_MODEL="projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash",
+    )
+    assert settings.classify_model.endswith("gemini-2.5-flash")
+
+
+def test_a_pod_deployment_that_names_nothing_extra_still_starts(monkeypatch):
+    """GUARD: today's actual configuration must not be refused by its own new check.
+
+    Every key empty, so `_apply_vllm_call_defaults` points the triple at `vllm_model` and there is
+    no Gemini name anywhere to object to. This is what the box runs.
+    """
+    settings = _settings(monkeypatch, **_VLLM_UP)
+    assert settings.model_for("audit") == "Qwen/Qwen3.6-35B-A3B"
+    assert settings.model_for_stage("classify") == "Qwen/Qwen3.6-35B-A3B"
+
+
+def test_a_stage_left_on_gemini_keeps_its_gemini_name(monkeypatch):
+    """GUARD for the per-stage override, which is the case most likely to trip a careless check.
+
+    With only `segment` on the pod, every other stage still resolves a Gemini name and must not be
+    refused for it - the check has to read the backend PER CALL rather than once for the process.
+    """
+    settings = _settings(
+        monkeypatch, **_POD, LLM_BACKEND="gemini", LLM_BACKEND_OVERRIDES="segment=vllm"
+    )
+    assert settings.model_for_stage("segment") == "Qwen/Qwen3.6-35B-A3B"
+    assert settings.model_for_stage("classify").startswith("gemini-")
+
+
+def test_the_refusal_names_the_call_and_what_to_do(monkeypatch):
+    """A boot refusal is read by someone who cannot see the code, so it has to carry both.
+
+    `_validate_openai_provider`'s messages set this bar in the same file: name the thing that is
+    wrong and the action that fixes it, rather than restating the rule.
+    """
+    with pytest.raises(RuntimeError) as caught:
+        _settings(monkeypatch, **_VLLM_UP, AUDIT_MODEL="gemini-2.5-pro")
+    message = str(caught.value)
+    assert "the summarize audit model" in message
+    assert "gemini-2.5-pro" in message
+    assert "clear it" in message
