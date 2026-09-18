@@ -857,3 +857,76 @@ describe("useReviewWorkflow recovers the needs_attention detail after a later jo
     expect(result.current.attention?.rows).toEqual([]);
   });
 });
+
+describe("step navigation and re-running identification", () => {
+  const idleStatus = { status: "reviewing" as const, job: null };
+  const runningJob = {
+    id: 42,
+    kind: "summarize" as const,
+    state: "running" as JobState,
+    stage: "summarizing",
+    current: 2,
+    total: 9,
+    error: null,
+  };
+
+  it("refuses to change step while a job is running", async () => {
+    // A running job holds the screen and auto-advances when it finishes. Letting the reviewer
+    // navigate mid-run means the two fight each other and the screen lands wherever the race ends.
+    mockDoc.mockResolvedValue(detail({ status: "summarizing", active_job: runningJob }));
+    mockStatus.mockResolvedValue({ status: "summarizing" as DocumentStatus, job: runningJob });
+
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.watching).toBe(true));
+    const before = result.current.section;
+
+    act(() => result.current.gotoStep("summaries"));
+
+    expect(result.current.section).toBe(before);
+  });
+
+  it("moves between the steps when nothing is running", async () => {
+    mockDoc.mockResolvedValue(detail({}));
+    mockStatus.mockResolvedValue(idleStatus);
+
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() => result.current.gotoStep("summaries"));
+    expect(result.current.section).toBe("summaries");
+
+    act(() => result.current.gotoStep("identify"));
+    expect(result.current.section).toBe("start");
+
+    act(() => result.current.gotoStep("review"));
+    expect(result.current.section).toBe("editor");
+  });
+
+  it("warns before a re-run replaces the reviewer's corrections, and obeys the answer", async () => {
+    // Re-running identification throws away the whole document list INCLUDING every boundary and
+    // category the reviewer fixed by hand. jsdom's window.confirm returns undefined, which reads as
+    // "declined", so an unstubbed test would pass here while proving the opposite of the guarantee.
+    mockDoc.mockResolvedValue(detail({}));
+    mockStatus.mockResolvedValue(idleStatus);
+    mockStartSegment.mockResolvedValue({ ok: true });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.rows.length).toBeGreaterThan(0));
+    mockStartSegment.mockClear();
+
+    await act(async () => {
+      await result.current.onStart();
+    });
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(mockStartSegment).not.toHaveBeenCalled(); // declined: the corrections survive
+
+    confirmSpy.mockReturnValue(true);
+    await act(async () => {
+      await result.current.onStart();
+    });
+    expect(mockStartSegment).toHaveBeenCalled();
+
+    confirmSpy.mockRestore();
+  });
+});
