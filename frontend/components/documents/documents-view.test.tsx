@@ -29,6 +29,11 @@ import { ApiError } from "@/lib/api";
 import { DocumentsView } from "@/components/documents/documents-view";
 
 afterEach(() => {
+  // `clearAllMocks` resets `mock.calls`, `mock.instances` and `mock.results` and NOTHING ELSE - an
+  // implementation set by `mockRejectedValue` survives it and stays armed for every later test in
+  // the file. Every rejection below therefore uses `mockRejectedValueOnce`, consumed by the single
+  // call it was written for. Resetting `docsState` here is the other half: a mutable module-scope
+  // fixture leaks in exactly the same way, just more visibly.
   vi.clearAllMocks();
   docsState.data = [];
   docsState.isLoading = false;
@@ -56,7 +61,7 @@ async function menuItem(user: ReturnType<typeof userEvent.setup>, name: RegExp) 
 
 describe("DocumentsView error handling", () => {
   it("toasts a humanized message when an upload fails", async () => {
-    upload.mutateAsync.mockRejectedValue(new ApiError("network", 0));
+    upload.mutateAsync.mockRejectedValueOnce(new ApiError("network", 0));
     const { container } = render(<DocumentsView />);
     const file = new File([new Uint8Array([1, 2, 3])], "rec.pdf", { type: "application/pdf" });
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
@@ -126,7 +131,7 @@ describe("DocumentsView re-identification guard", () => {
 
   it("says so when identification cannot be started", async () => {
     const user = userEvent.setup();
-    identify.mutateAsync.mockRejectedValue(new ApiError("a job is already running", 409));
+    identify.mutateAsync.mockRejectedValueOnce(new ApiError("a job is already running", 409));
     docsState.data = [doc({ rows_count: 0 })];
     render(<DocumentsView />);
 
@@ -158,7 +163,7 @@ describe("DocumentsView delete", () => {
   it("says so when a delete is refused rather than reporting it gone", async () => {
     // A record that still exists but reads as deleted is worse than an error: the reviewer moves on.
     const user = userEvent.setup();
-    del.mutateAsync.mockRejectedValue(new ApiError("a job is running for this document", 409));
+    del.mutateAsync.mockRejectedValueOnce(new ApiError("a job is running for this document", 409));
     docsState.data = [doc({})];
     render(<DocumentsView />);
 

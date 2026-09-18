@@ -182,12 +182,29 @@ describe("DocumentsTable paging when the list shrinks underneath it", () => {
   });
 });
 
-/** Three records whose orderings DIFFER on every column under test, so a sort accessor reading the
- *  wrong field produces a visibly wrong order rather than accidentally the right one. */
+/** Three records whose orderings differ on EVERY SORTABLE FIELD ON THE RECORD - not merely on the
+ *  three columns under test. That distinction is the whole point of this fixture, and the weaker
+ *  version of it is what let a gap survive here: `page_count` and `created_at` are not asserted on,
+ *  but both used to sort to the same order as `patient_name`, so an accessor reading either of them
+ *  instead would have passed. "Accessor pointed at the neighbouring column" is precisely the
+ *  mutation these tests exist to catch.
+ *
+ *  Three records give six permutations and there are six sortable columns, so there is no slack -
+ *  every field below is pinned. Descending, which is how every non-name column opens:
+ *
+ *    patient_name  Zoe / Adam / Mia          -> A, C, B   asserted
+ *    rows_count    1 / 9 / 5                 -> B, C, A   asserted
+ *    updated_at    Feb / Mar / Jan           -> B, A, C   asserted
+ *    page_count    30 / 20 / 10              -> A, B, C
+ *    created_at    Jan-02 / Jan-01 / Jan-03  -> C, A, B
+ *    filename      A / B / C                 -> C, B, A
+ *
+ *  Changing any value here needs that table rechecked, or two fields collide again and the
+ *  collision is invisible from the assertions. */
 const VARIED: DocumentListItem[] = [
-  { ...doc("a", "A.pdf", 30, "2026-01-03T00:00:00Z"), patient_name: "Zoe Last", rows_count: 1, updated_at: "2026-02-01T00:00:00Z" },
-  { ...doc("b", "B.pdf", 10, "2026-01-01T00:00:00Z"), patient_name: "Adam First", rows_count: 9, updated_at: "2026-03-01T00:00:00Z" },
-  { ...doc("c", "C.pdf", 20, "2026-01-02T00:00:00Z"), patient_name: "Mia Middle", rows_count: 5, updated_at: "2026-01-01T00:00:00Z" },
+  { ...doc("a", "A.pdf", 30, "2026-01-02T00:00:00Z"), patient_name: "Zoe Last", rows_count: 1, updated_at: "2026-02-01T00:00:00Z" },
+  { ...doc("b", "B.pdf", 20, "2026-01-01T00:00:00Z"), patient_name: "Adam First", rows_count: 9, updated_at: "2026-03-01T00:00:00Z" },
+  { ...doc("c", "C.pdf", 10, "2026-01-03T00:00:00Z"), patient_name: "Mia Middle", rows_count: 5, updated_at: "2026-01-01T00:00:00Z" },
 ];
 
 function renderVaried(over: Partial<Parameters<typeof DocumentsTable>[0]> = {}) {
