@@ -150,8 +150,17 @@ describe("CategoryDialog payload", () => {
     await user.click(screen.getByLabelText("Active")); // default on -> off
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    // Exact, not objectContaining: a field silently dropped from the body is the failure this
-    // guards, and objectContaining cannot see an omission.
+    // Exact, not objectContaining - but NOT because objectContaining would miss a dropped field.
+    // It would not: it requires the received object to carry every property listed, so with all
+    // seven enumerated an omission fails under either matcher. Measured, not reasoned:
+    //
+    //   omission    objectContaining FAILS   exact FAILS
+    //   extra key   objectContaining PASSES  exact FAILS   <- the only real difference
+    //
+    // The EXTRA field is what exact buys, and it is the one worth buying for a body going to a
+    // server: a form field leaking into the payload, or a rename arriving alongside the name it
+    // replaced. It also pins the payload's SHAPE as a contract, so a field added to the dialog but
+    // not to the API type fails here rather than being sent silently.
     expect(onCreate).toHaveBeenCalledWith({
       id: "15",
       name: "Operative report",
