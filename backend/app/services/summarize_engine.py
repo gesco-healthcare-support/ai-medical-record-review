@@ -41,7 +41,13 @@ TITLE_PROMPT = (
     'then the credentials with periods, for example "JANE SMITH, M.D." Non-physicians are '
     "included: M.D., D.O., D.C., P.T., R.N., P.A., N.P., PSY.D., L.V.N., O.D., D.D.S.\n"
     "2. FACILITY - the clinic, imaging centre, hospital, laboratory, or practice that produced "
-    "the document, usually on the letterhead.\n"
+    "the document, read from the LETTERHEAD at the top of the page.\n"
+    "   A stamp added to the photocopy afterwards is NOT the facility. Records-copying, "
+    "transcription, billing and bill-review vendors stamp their name, an address and a "
+    "received-date or bill/DCN number onto the page; that names who handled the paper, not who "
+    "saw the patient. Where such a stamp carries the facility's own name with a department "
+    'beside it, keep the facility and drop the department - "VALLEY OCCUPATIONAL HEALTH", never '
+    '"VALLEY OCCUPATIONAL HEALTH TRANSCRIPTION".\n'
     "3. DOCUMENT TYPE - what the document IS.\n"
     "   For a diagnostic study, name the study, never its class. Use the form "
     "<MODALITY> OF THE <SIDE IF STATED> <BODY PART> <CONTRAST STATUS IF STATED>, for example "
@@ -49,6 +55,13 @@ TITLE_PROMPT = (
     '"X-RAY OF THE LEFT WRIST", "EMG/NCS OF THE UPPER EXTREMITIES". Never "RADIOLOGY REPORT", '
     '"GENERAL RADIOLOGY PROCEDURE", or "DIAGNOSTIC REPORT". Ultrasound and mammogram studies '
     'are named organ-first, for example "THYROID ULTRASOUND".\n'
+    "   A DEPOSITION or recorded statement is titled for the person being DEPOSED and for nobody "
+    'else: write the whole line as "DEPOSITION OF <NAME>" and omit the AUTHOR and FACILITY '
+    "elements entirely. The deponent is the witness who is sworn and answers the questions, named "
+    "in the caption or at the start of the examination. The certified shorthand reporter who "
+    "signed the transcript is NOT the author, and the court reporting service on the cover page "
+    "is NOT the facility: both appear on every deposition, so taking them makes every deposition "
+    "title look alike and tells a reviewer nothing about whose testimony it is.\n"
     "   A facility name is NOT a document type. If the top of the page carries only letterhead, "
     "read on for the study or report heading, which often sits above the findings.\n\n"
     "If an element is not stated in the document, omit that element and its separator. Do not "

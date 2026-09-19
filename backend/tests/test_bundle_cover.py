@@ -314,3 +314,68 @@ def test_the_cover_table_spans_the_content_rect():
     )
     # And it should actually USE the width it has, rather than huddling in the left third.
     assert edges[-1] - edges[0] > _COVER_CONTENT.width * 0.9
+
+
+# --- The deposition title shape (reviewer-reported, 2026-09-18). ------------------------------
+#
+# TITLE_PROMPT now tells the model to write a deposition as "DEPOSITION OF <NAME>" with no AUTHOR
+# and no FACILITY element, because the signature block on a transcript belongs to the certified
+# shorthand reporter and the letterhead to the reporting service - so the general rule was naming
+# the two people who appear on EVERY deposition and never the one whose testimony it is.
+#
+# That makes a ONE-ELEMENT title routine where it used to be a long tail, and this splitter is a
+# consumer of the shape TITLE_PROMPT specifies. These pin that it stays graceful.
+
+
+def test_a_deposition_title_puts_everything_under_the_report_title():
+    """GUARD. A title with nothing to split must leave PROVIDER empty rather than inventing one.
+
+    The behaviour already exists - its docstring records 72 of 268 titles arriving as a single
+    element - but the deposition rule makes it load-bearing rather than incidental, so a future
+    "always split something out" change has to fail here.
+    """
+    provider, report = split_deliverable_title("DEPOSITION OF JANE SMITH")
+    assert provider == ""
+    assert report == "DEPOSITION OF JANE SMITH"
+
+
+def test_a_deposed_physician_keeps_their_name_in_one_element():
+    """The deponent is often a treating physician, so the name arrives WITH a credential.
+
+    The credential's own period must not be read as a separator - that is what `_elements`
+    guards - so this stays one element and the provider column stays empty.
+
+    Asserted as the splitter actually behaves, not as I first assumed: the trailing period is
+    dropped, so this reads `M.D` rather than `M.D.`. That is pre-existing and general to any
+    title whose LAST element ends in an abbreviation; the credential-period restoration runs on
+    the provider column, which is empty here. Left alone deliberately - depositions are category
+    9 and this cover page is built for the diagnostic bundle, so no deposition title reaches it
+    today. Recorded rather than fixed so the next reader does not take it for a new defect.
+    """
+    provider, report = split_deliverable_title("DEPOSITION OF JANE SMITH, M.D.")
+    assert provider == ""
+    assert report == "DEPOSITION OF JANE SMITH, M.D"
+
+
+def test_the_old_reporter_fronted_shape_still_parses():
+    """GUARD, and the reason this change is not retroactive.
+
+    Every deposition already stored was titled under the old rule, so the cover page must keep
+    splitting that shape for as long as those rows exist. Only a NEW summary gets the new title.
+
+    It also shows why the old titles read badly even here: the reorder fires only on a leading
+    element carrying a RECOGNISED credential, and `C.S.R.` is not one of them - so the reporter's
+    name is not identified as a person and our author-first order is kept. Compare the M.D. case
+    below, which is reordered facility-first. Once a deposition stops naming the reporter this
+    stops mattering, which is why the credential list is not being widened to include C.S.R.
+    """
+    provider, report = split_deliverable_title(
+        "JANE SMITH, C.S.R. ACME COURT REPORTING. DEPOSITION."
+    )
+    assert provider.startswith("JANE SMITH, C.S.R.")
+    assert provider.endswith("ACME COURT REPORTING")
+    assert report == "DEPOSITION"
+
+    reordered, _ = split_deliverable_title("JANE SMITH, M.D. ACME COURT REPORTING. DEPOSITION.")
+    assert reordered.startswith("ACME COURT REPORTING")
+    assert reordered.endswith("JANE SMITH, M.D.")
