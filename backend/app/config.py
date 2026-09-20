@@ -201,6 +201,28 @@ class Settings(BaseSettings):
     # headroom, well under 2.5-flash's 65k output ceiling. Env-overridable so a box can raise it
     # without a redeploy, and a reply that still hits the cap is flagged for manual check.
     summary_max_output_tokens: int = 8192
+    # A body cut off at that cap is RE-ASKED ONCE with the cap multiplied by this, and the longer
+    # reply is kept. 1.0 disables the retry; the cost is zero on a row that was never truncated.
+    # Env-overridable so a box can turn it off without a redeploy.
+    #
+    # The cap above is sized, by its own comment, against "the longest real NOTES" - and a
+    # deposition is not a note. `human_baselines.json` puts category 9's delivered length at a
+    # median of 27,758 characters and a p90 of 39,382 over the frozen corpus. At roughly four
+    # characters to the token that is ~6,900 and ~9,800, so the MEDIAN deposition sits at 84% of
+    # the budget and the p90 is already over it - before #343's measurement that the self-hosted
+    # model writes about 50% longer than gemini, which carries the median over too.
+    #
+    # That is why this is a retry and not a bigger cap. Raising `summary_max_output_tokens` moves
+    # every row, and on a thinking model the extra budget is spent on reasoning as readily as on
+    # output - §23.17's category-13 arm came back at MAX_TOKENS having dropped six points off the
+    # END, including Impairment Rating, from a prompt that merely asked for more. Re-asking only
+    # the reply that was actually cut off changes nothing that works today.
+    #
+    # NOT the same trade as retrying the AUDIT, which was measured and rejected (1.7x the time for
+    # a 29% yield). The audit runs AWAY with a budget it never needed, so its cure is a smaller
+    # cap; a truncated body needs a bigger one. Segmentation is the case that resembles this, and
+    # an escalating cap took it from 2 dead windows to 0 across 78 retries on the benchmark.
+    summary_truncation_retry_multiplier: float = 2.0
     # Output budget for the AUDIT pass, when it should differ from the body's. None means the
     # audit shares `summary_max_output_tokens` above, which is exactly the historical behaviour.
     #
