@@ -6,6 +6,7 @@ import {
   clearFlagOnEdit,
   couldNotIdentify,
   mergeRows,
+  moveSharedBoundary,
   newKey,
   rowErrors,
   sortRows,
@@ -508,5 +509,59 @@ describe("clearFlagOnEdit", () => {
       end: "3",
     });
     expect(clearFlagOnEdit(flagged({ end: 3 }), { end: 4 } as Partial<Row>).flag).toBe("-");
+  });
+});
+
+describe("moveSharedBoundary", () => {
+  // Segmentation tiles rows by construction - `merge_window_rows` re-derives every end as
+  // `next.start - 1` - and the editor lost that the moment a reviewer typed. A reviewer reported
+  // the model landing "off by a page or two" and having to "manually fix everything" after it.
+  const tiled = () => [row(1, 10), row(11, 20), row(21, 30)];
+
+  it("carries the previous row's end when the boundary moves later", () => {
+    const next = moveSharedBoundary(tiled(), 1, 12);
+    expect(next[0].end).toBe(11);
+    // Only the shared edge moves: the edited row is patched by the caller, not here.
+    expect(next[1]).toEqual(tiled()[1]);
+    expect(next[2]).toEqual(tiled()[2]);
+  });
+
+  it("carries it earlier too", () => {
+    expect(moveSharedBoundary(tiled(), 1, 9)[0].end).toBe(8);
+  });
+
+  it("leaves a deliberate gap open", () => {
+    // rowErrors permits gaps, and deleting a sub-document leaves one. Closing it silently would
+    // be the same surprise this rule removes.
+    const gapped = [row(1, 10), row(15, 20)];
+    expect(moveSharedBoundary(gapped, 1, 16)).toEqual(gapped);
+  });
+
+  it("does nothing on the first row, which shares no boundary above it", () => {
+    const rows = tiled();
+    expect(moveSharedBoundary(rows, 0, 3)).toEqual(rows);
+  });
+
+  it("leaves an overlap alone rather than resolving it", () => {
+    // Already invalid, and rowErrors is what says so. Silently tidying it would hide the error.
+    const overlapping = [row(1, 12), row(11, 20)];
+    expect(moveSharedBoundary(overlapping, 1, 13)).toEqual(overlapping);
+  });
+
+  it("leaves the previous row's review flag up", () => {
+    // They adjudicated the BOUNDARY, not the document above it. Clearing that flag would drop a
+    // row off the to-check list without anyone having looked at it.
+    const rows = [{ ...row(1, 10), flag: "x" }, row(11, 20)];
+    expect(moveSharedBoundary(rows, 1, 12)[0].flag).toBe("x");
+  });
+
+  it("preserves identity of every row it does not touch", () => {
+    // The editor keys rows by `_key` for the touched set (#204); a wholesale rebuild would break
+    // it. Only index i-1 is a new object.
+    const rows = tiled();
+    const next = moveSharedBoundary(rows, 2, 22);
+    expect(next[0]).toBe(rows[0]);
+    expect(next[1]).not.toBe(rows[1]);
+    expect(next[2]).toBe(rows[2]);
   });
 });
