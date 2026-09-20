@@ -323,6 +323,20 @@ describe("DuplicatesView never checked", () => {
     ).not.toBeInTheDocument();
   });
 
+  // Raised by a reviewer: the red banner reads as an error, and "no check has run yet" is not one.
+  // It is the DEFAULT state of every record, so this was the first thing every reviewer saw on
+  // every document they opened.
+  it("reads as information rather than as an error", () => {
+    dupState.error = null;
+    dupState.data = neverChecked();
+    render(<DuplicatesView documentId="d1" />);
+    const said = screen.getByText(
+      /no duplicate check has run on this record yet/i,
+    );
+    expect(said.closest(".banner-info")).not.toBeNull();
+    expect(said.closest(".banner")).toBeNull();
+  });
+
   it("stays quiet while a check is running", () => {
     // Mid-run is not "never checked" - the running counter already says what is happening.
     dupState.error = null;
@@ -444,6 +458,10 @@ describe("DuplicatesView similarity", () => {
     // ...and must NOT claim the record has never been checked, or offer a clean bill of health.
     expect(screen.queryByText(/No duplicate check has run on this record yet/i)).toBeNull();
     expect(screen.queryByText(/No duplicates/i)).toBeNull();
+    // Guard on the other side of the line: a check that FAILED is an error and stays red.
+    expect(
+      screen.getAllByText(/did not finish/i)[0].closest(".banner"),
+    ).not.toBeNull();
   });
 
   it("keeps showing the last completed check's groups when a re-check fails", () => {

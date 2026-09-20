@@ -84,6 +84,20 @@ a:hover { color: var(--blue-600); }
     border-bottom: 1px solid var(--danger-500); font-size: 13.5px;
 }
 
+/* Informational banner: a fact, or the next step - nothing has gone wrong. Same box as .banner so
+   the two are interchangeable at the call site; only the palette differs.
+
+   The line between them is what the reviewer can DO about it. Red means a result you should not
+   trust or an action you cannot take: a failed save, a row that blocks Summarize, a duplicate
+   check that did not finish or whose answer is now stale. Blue means there is nothing wrong -
+   "you stopped the run", "no check has run yet", "five groups to look at". The duplicates one
+   was raised by a reviewer directly, and "no check has run yet" is the DEFAULT state of every
+   record, so red there was the first thing every reviewer saw on every document. */
+.banner-info {
+    display: block; padding: 10px 28px; background: var(--blue-100); color: var(--blue-600);
+    border-bottom: 1px solid var(--blue-500); font-size: 13.5px;
+}
+
 /* Calm "needs attention" notice (item 7): amber, not the red error banner - some documents
    could not be summarized, but it is not a failure the reviewer should read as alarming. */
 .notice-attention {

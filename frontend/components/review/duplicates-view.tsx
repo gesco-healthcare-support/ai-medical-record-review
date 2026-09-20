@@ -87,7 +87,7 @@ function NeverCheckedBanner({
 }: Readonly<{ neverChecked: boolean }>) {
   if (!neverChecked) return null;
   return (
-    <div className="banner" aria-live="polite">
+    <div className="banner-info" aria-live="polite">
       <span>
         No duplicate check has run on this record yet, so nothing here has been
         compared. Use &quot;Re-check duplicates&quot; above to scan for

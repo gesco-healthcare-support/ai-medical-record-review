@@ -428,6 +428,22 @@ describe("ReviewPageClient duplicate advisory count", () => {
     ).toBeInTheDocument();
   });
 
+  // Reviewer feedback: "make this message not red since it is not an error". It is a to-do - five
+  // groups to look at before summarizing - and the red banner beside it means a failed save or a
+  // row that blocks Summarize.
+  it("advises in the information tone, not the error tone", () => {
+    dupState.data = {
+      clusters: [cluster([true, true])],
+      job: null,
+      stale: false,
+    };
+    mockWf({});
+    render(<ReviewPageClient documentId="d1" />);
+    const said = screen.getByText(/1 possible duplicate group to review/i);
+    expect(said.closest(".banner-info")).not.toBeNull();
+    expect(said.closest(".banner")).toBeNull();
+  });
+
   it("stops advising once only one copy is included", () => {
     dupState.data = {
       clusters: [cluster([true, false])],
