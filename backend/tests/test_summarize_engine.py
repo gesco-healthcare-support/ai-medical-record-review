@@ -1111,6 +1111,79 @@ def test_a_rejected_body_still_stores_a_corrected_title(monkeypatch):
     assert out["verifiedTitle"] == "CORRECTED HEADER (Pages 1-2)"  # title still corrected
 
 
+# The title-restatement guard. A reviewer reported bodies that read as the document header and
+# nothing else, on the self-hosted model, while the same document type summarized correctly
+# elsewhere in the same record. The guards above cannot catch it: both stand down whenever the
+# audit reports an issue outside `_CORRECTION_ONLY_ISSUES`, so a reply of "unsupported_claim" plus
+# the header is accepted wholesale.
+_TITLE_BACK = "Progress note - Dr Smith."  # every word of `_labelled_generate`'s title
+_SUBSTANTIVE = [{"type": "unsupported", "detail": "a fabricated diagnosis"}]
+
+
+def test_an_audit_rewrite_that_is_only_the_title_is_refused(monkeypatch, caplog):
+    """WHEN the audit returns the row's own title as its correction, THE SYSTEM SHALL keep the raw
+    body, store the issues, and warn - whatever reason the audit gave for the rewrite."""
+    _stub_verify(monkeypatch, _TITLE_BACK, _SUBSTANTIVE)
+
+    with caplog.at_level("WARNING"):
+        out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    # None means effective_text() falls back to the raw body, so the real summary still ships.
+    assert out["verifiedText"] is None
+    assert "**Body part being treated**" in out["summaryText"]
+    # The reviewer still sees what was flagged; refusing the rewrite is not swallowing the finding.
+    assert out["verifyIssues"] == _SUBSTANTIVE
+    assert "only the title" in caplog.text
+    assert "1-2" in caplog.text
+
+
+def test_a_substantive_issue_cannot_excuse_a_title_only_rewrite(monkeypatch):
+    """The hole this closes, stated on its own.
+
+    `_drops_required_headings` returns False for any issue outside the correction-only pair, on the
+    reasoning that a substantive complaint earns a substantive rewrite. That holds while a rewrite
+    is a correction; it does not hold for a reply that is the header, which is why this guard runs
+    FIRST rather than sharing that test.
+    """
+    assert se._drops_required_headings(_LABELLED, _TITLE_BACK, {"unsupported"}) is False
+    assert se._restates_the_title(_TITLE_BACK, "Progress Note - Dr Smith") is True
+
+
+def test_an_empty_audit_rewrite_is_refused(monkeypatch):
+    """An empty rewrite is the same defect at its limit, and it was reachable the same way: with a
+    substantive issue type the heading guard stands down and an empty body is stored and shipped."""
+    _stub_verify(monkeypatch, "", _SUBSTANTIVE)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is None
+    assert "Shockwave therapy" in out["summaryText"]
+
+
+def test_a_real_correction_is_not_read_as_a_restatement(monkeypatch):
+    """Guard on today's behaviour: a rewrite that says anything the title does not must be stored.
+
+    The subset test is what makes this safe without a length threshold - a correction has to state
+    something, and anything it states is a word outside the header.
+    """
+    _stub_verify(monkeypatch, _PROSE, _SUBSTANTIVE)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert "shockwave therapy" in out["verifiedText"].lower()
+
+
+def test_a_title_only_rewrite_still_lets_the_title_itself_be_corrected(monkeypatch):
+    """The body and the title fall back independently, and refusing one must not refuse the other."""
+    _stub_verify(monkeypatch, _TITLE_BACK, _SUBSTANTIVE, fixed_title="CORRECTED HEADER")
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is None
+    assert out["verifiedTitle"] == "CORRECTED HEADER (Pages 1-2)"
+
+
 def test_the_guard_never_fires_on_a_body_that_had_no_headings(monkeypatch):
     """A prose-format category has nothing to lose, so the guard must stay out of the way entirely."""
     monkeypatch.setattr(

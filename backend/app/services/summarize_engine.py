@@ -270,6 +270,42 @@ def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> boo
     return _bold_span_count(fixed) < _bold_span_count(raw)
 
 
+# Content words only. Case, punctuation and the `**` of a heading are all things the audit is
+# legitimately allowed to change, so none of them can form part of the test below.
+_CONTENT_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _restates_the_title(fixed: str, title: str) -> bool:
+    """True when the audit's "correction" says nothing the row's own title had not already said.
+
+    A reviewer reported summaries that read as the document title and nothing else, while the
+    same document type summarized correctly elsewhere in the SAME record. The reported body was
+    its own row title with the capitals folded: `..., D.c. ...` where the title reads
+    `..., D.C. ...`. (Redacted here because a title names the provider.)
+
+    That lower-case `c` is the provenance, and it is why this guard sits on the AUDIT
+    rather than on generation: it is precisely what `sentence_case_caps_runs` returns for the ALL
+    CAPS title, and the only call that case-folds an audit reply is the one building
+    `verified_text`. A raw body is case-folded before the audit ever sees it, so a title-shaped
+    RAW body could not arrive in that exact form. The body was a real summary and the audit
+    replaced it with the header.
+
+    Compares CONTENT WORDS as a subset rather than lengths, deliberately. A length ratio needs a
+    threshold and the only honest way to choose one is to measure the distribution, which needs a
+    box this was written without. A subset test needs no threshold and cannot reject a real
+    correction: for it to fire, every word of the rewrite must already appear in the title, which
+    is the definition of a body that states nothing. An empty rewrite falls out of the same test,
+    the empty set being a subset of anything.
+    """
+    if not title:
+        # Nothing to be a restatement OF. Firing here would flag every row whose title call came
+        # back empty - a different fault, with its own handling in `_usable_title`.
+        return False
+    return set(_CONTENT_WORD.findall((fixed or "").lower())) <= set(
+        _CONTENT_WORD.findall(title.lower())
+    )
+
+
 # "On pages 4 to 6," / "On pages 34 and 35," - the opener every deposition paragraph carries. Matched
 # loosely (any leading whitespace, either joiner, optional comma) because the guard's job is to notice
 # that citations STOPPED EXISTING, not to police their punctuation.
@@ -1180,7 +1216,23 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
         issue_types = {
             str(issue.get("type") or "") for issue in result["issues"] if isinstance(issue, dict)
         }
-        if _drops_required_headings(summary, result["fixed_text"], issue_types):
+        # FIRST, and ahead of the issue-type test the two guards below share. Those stand down
+        # for any issue outside `_CORRECTION_ONLY_ISSUES`, on the reasoning that a substantive
+        # complaint earns a substantive rewrite - which holds while a rewrite is a correction.
+        # It does not hold for a reply that is the title: the audit can report `unsupported_claim`
+        # and hand back the header, and every guard after this one would step aside for it.
+        if _restates_the_title(result["fixed_text"], title):
+            # Same remedy as its siblings: leave `verified_text` None so `effective_text()` falls
+            # back to the raw body, and store the issues anyway so the reviewer still sees what
+            # was flagged. WARNING because the rate is the measurement - on the self-hosted model
+            # this is the failure a reviewer reported, and on gemini it should never fire.
+            logger.warning(
+                "verify pass returned only the title on pages %s-%s (issues: %s); keeping raw body",
+                row["start"],
+                row["end"],
+                ",".join(sorted(issue_types)),
+            )
+        elif _drops_required_headings(summary, result["fixed_text"], issue_types):
             # Keep the RAW body by leaving verified_text None: effective_text() then falls back to
             # summaryText. The issues are still stored below, so the reviewer sees what was
             # flagged, and this logs at WARNING so the guard's firing rate stays measurable rather
