@@ -259,6 +259,14 @@ def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> boo
     ceiling, replayed over every stored rewrite: 0 of 475 on gemini, so nothing about the answering
     model's current behaviour changes; 14 of 929 pre-provenance rows, which lost EVERY heading while
     keeping 90-98% of their prose, i.e. exactly the de-bolding this guard was written to reject.
+
+    THE TRADE, named here so the next reader does not have to rediscover it: the ceiling also
+    catches `unsupported`, which means a FABRICATED claim. Where a summary is largely fabricated,
+    the audit's fix legitimately guts it, this rejects that fix, and the fabricated text is what
+    stands. It is flagged and logged rather than silent, and the replay above found 0 of 475 on the
+    answering model in production - so it is forward risk on the self-hosted pipeline rather than a
+    live regression. The alternative trade is worse: accepting every gutting rewrite is what the
+    reviewer reported, and a body reduced to one line loses content that WAS supported.
     """
     if not issue_types:
         return False

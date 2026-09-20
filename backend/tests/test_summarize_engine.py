@@ -1117,6 +1117,42 @@ def test_a_substantive_rewrite_that_empties_one_point_is_still_accepted(monkeypa
     assert "**Diagnoses**" in out["verifiedText"]
 
 
+# The RATIO, pinned in both directions. The two tests above pin the ENDS (8 -> 1 rejected, 8 -> 7
+# accepted) and the floor of 3 is pinned by `_LABELLED` carrying two, but nothing held the "half"
+# in place: two mutations of the constant survived the whole suite, and each of the two tests below
+# exists to kill one of them. Asserted against `_drops_required_headings` directly, because what is
+# under test is the arithmetic rather than the wiring the tests above already cover.
+def _bold(n: int) -> str:
+    """A body carrying exactly `n` bold point headings."""
+    return " ".join(f"**Point {i}**: finding {i}." for i in range(n))
+
+
+def test_a_structured_body_cut_to_just_under_half_is_rejected():
+    """WHEN a substantive rewrite leaves FEWER than half the bold points, THE SYSTEM SHALL reject it.
+
+    Kills the mutation `fixed * 2 < raw` -> `fixed * 3 < raw`. At 8 -> 3 the live constant gives
+    `3 * 2 = 6 < 8`, True, so the rewrite is rejected; the mutation gives `3 * 3 = 9 < 8`, False,
+    and the gutted body would be stored. Nothing else in the suite distinguishes the two.
+    """
+    # The fixture must carry the count it claims, or the ratio below is asserted against nothing.
+    assert se._bold_span_count(_bold(8)) == 8
+    assert se._bold_span_count(_bold(3)) == 3
+    assert se._drops_required_headings(_bold(8), _bold(3), {"unsupported"}) is True
+
+
+def test_a_structured_body_cut_to_exactly_half_is_accepted():
+    """WHEN a substantive rewrite leaves EXACTLY half the bold points, THE SYSTEM SHALL store it.
+
+    The other side of the same constant, and it records which side of "half" the boundary sits on -
+    which the docstring leaves to the reader. Kills the mutation `fixed * 2 < raw` ->
+    `fixed * 2 <= raw`. At 4 -> 2 the live constant gives `2 * 2 = 4 < 4`, False, so the rewrite is
+    stored; the mutation gives `4 <= 4`, True, and a legitimate fix would be thrown away.
+    """
+    assert se._bold_span_count(_bold(4)) == 4
+    assert se._bold_span_count(_bold(2)) == 2
+    assert se._drops_required_headings(_bold(4), _bold(2), {"unsupported"}) is False
+
+
 def test_a_renamed_heading_passes_the_guard_untouched(monkeypatch):
     """WHEN the audit RENAMES a heading without reducing the count, THE SYSTEM SHALL store its body.
 
