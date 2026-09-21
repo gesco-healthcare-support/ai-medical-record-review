@@ -1052,8 +1052,13 @@ def test_a_substantive_rewrite_that_drops_headings_is_accepted(monkeypatch):
 
 
 # Eight points, because the ceiling only engages on a body structured enough for "most of the
-# headings" to mean anything. `_LABELLED` carries two and is deliberately below it - that is why
-# the two tests above keep passing unchanged.
+# headings" to mean anything. `_LABELLED` carries two, below the floor of 3.
+#
+# That USED to be why the two tests above passed unchanged, and it is no longer the reason for
+# both: the fabrication exemption now returns before the floor is reached for
+# `..._substantive_rewrite_that_drops_headings_is_accepted`, whose issue set includes
+# `unsupported`. Neither of those tests reaches the floor at all, so neither pins it - which is
+# what `test_the_floor_keeps_a_small_bodys_rewrite` below is for.
 _STRUCTURED = (
     "**DOI**: 11/03/24. **Subjective Complaints**: Low back pain 6/10. "
     "**History of Present Illness**: Lifting injury. **Physical Examination**: Flexion 55 degrees. "
@@ -1125,6 +1130,30 @@ def test_a_substantive_rewrite_that_empties_one_point_is_still_accepted(monkeypa
 def _bold(n: int) -> str:
     """A body carrying exactly `n` bold point headings."""
     return " ".join(f"**Point {i}**: finding {i}." for i in range(n))
+
+
+def test_the_floor_keeps_a_small_bodys_rewrite():
+    """WHEN a substantive rewrite empties a body carrying FEWER than three headings, THE SYSTEM
+    SHALL store it.
+
+    Pins the second conjunct of the ceiling, `raw_headings >= 3`, which nothing else did: delete
+    it and every other assertion in this file still passes, so the floor had no decoy at all
+    while the ratio beside it had two.
+
+    It is load-bearing rather than decorative. WITH the floor a two-heading body gutted to
+    nothing is stored; WITHOUT it, rejected. Storing is the intent - below three, losing one
+    heading IS losing a large share, and a vitals fix on a two-point body is exactly the case the
+    correction-only exclusion exists to protect.
+
+    `vitals` deliberately, not `unsupported`: the fabrication exemption returns before the floor
+    is reached, so an `unsupported` fixture would assert against the exemption and never touch
+    the line under test.
+    """
+    assert se._drops_required_headings(_bold(2), "", {"vitals"}) is False
+    assert se._drops_required_headings(_bold(1), "", {"vitals"}) is False
+    # ...and one heading above the floor, the same rewrite is refused - so the assertions above
+    # are the floor talking rather than the ratio.
+    assert se._drops_required_headings(_bold(3), "", {"vitals"}) is True
 
 
 def test_a_fabrication_fix_is_never_blocked_however_much_it_removes():

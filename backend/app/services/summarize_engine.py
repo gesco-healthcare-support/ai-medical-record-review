@@ -284,6 +284,15 @@ def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> boo
     # Narrows what the ceiling covers, deliberately, because shipping invented clinical content is
     # the worse of the two failures.
     #
+    # WIDER THAN THAT SENTENCE, and deliberately: this fires when `unsupported` appears AT ALL,
+    # including alongside other issues where the rewrite still deletes everything. The narrow
+    # reading - a rewrite ANSWERING fabrication - would need the audit to report its issues in
+    # priority order, and it reports a set. Given the set, the choice is between letting one
+    # fabrication finding exempt the whole rewrite and blocking a fabrication fix whenever it
+    # arrives with company; the first ships less invented content, which is the failure that
+    # matters here. Pinned by the mixed-issue case in
+    # `test_a_fabrication_fix_is_never_blocked_however_much_it_removes`.
+    #
     # It does NOT reopen the case this guard was written for: that row carried a `vitals` issue,
     # not `unsupported`, so it is still rejected. Pinned by a test either side of the exemption.
     if _FABRICATION_ISSUE in issue_types:
