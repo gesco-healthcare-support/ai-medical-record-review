@@ -345,10 +345,12 @@ def test_a_readable_date_is_never_labelled_undated(written):
     assert date_label({"summaryDate": written}) != UNDATED_LABEL
 
 
-def test_a_four_digit_year_is_not_pivoted_through_the_two_digit_rule():
-    """Order matters in `_DATE_FORMATS`. `%y` pivots at 1969-2068, so a four-digit year offered to
-    it first would be MISREAD rather than rejected - 2026 is not 2020, and nothing downstream would
-    say so."""
+def test_a_four_digit_year_reads_as_the_year_it_states():
+    """Renamed from a claim that was false. It used to say this pinned `_DATE_FORMATS` ORDER,
+    against `%y` misreading a four-digit year through its 1969-2068 pivot. `%y` raises on one
+    instead - "unconverted data remains" - so the order is harmless and this assertion passes under
+    either. It still earns its place: it pins the OUTCOME, that a stated year is the year read.
+    """
     assert parsed_date({"summaryDate": "09/22/2026"}).year == 2026
     assert parsed_date({"summaryDate": "6/15/2002"}).year == 2002
 

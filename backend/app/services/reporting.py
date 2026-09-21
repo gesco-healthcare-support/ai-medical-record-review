@@ -821,8 +821,16 @@ UNDATED_LABEL = "Undated"
 # The 2-digit variants are NOT speculative padding, they were failing too: `%Y` needs four digits,
 # so `09/22/26` parsed as nothing and a dated document rendered Undated AND sorted to the end.
 #
-# ORDER MATTERS, 4-digit before 2-digit. `%y` pivots at 1969-2068, so a four-digit year offered to
-# it first would be misread rather than rejected.
+# ORDER IS NOT LOAD-BEARING, and this says so rather than leaving the reassuring version in place.
+# An earlier note here claimed `%y` would MISREAD a four-digit year through its 1969-2068 pivot, so
+# 4-digit had to be offered first. It does not: `%y` matches exactly two digits, and the trailing
+# pair is unconverted data, so it RAISES and the loop moves on.
+#
+#     strptime("09/22/2026", "%m/%d/%y")  ->  ValueError: unconverted data remains: 26
+#     strptime("12/31/1999", "%m/%d/%y")  ->  ValueError: unconverted data remains: 99
+#
+# The 4-digit-first order is kept because it is the common case and tries one format fewer, not
+# because anything breaks without it.
 #
 # NOT extended to spelled-out months or ambiguous DD/MM. A reviewer compares this against the page,
 # and guessing between 03/04 and 04/03 to rescue a date is the kind of help nobody asked for.
