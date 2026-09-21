@@ -1063,6 +1063,131 @@ def _trailing_notices(verified_text, unreadable_pages, embedded_review_pages, pa
     return partial_notice, verified_text
 
 
+_PAGE_MARKER = re.compile(r"^Page (\d+):", re.MULTILINE)
+_CITED_THROUGH = re.compile(
+    r"^\s*On pages?\s+\d+\s*(?:to|and|-)\s*(\d+)", re.IGNORECASE | re.MULTILINE
+)
+
+
+def _log_incomplete_deposition(summary, text, row) -> None:
+    """WARNING when a deposition body's citations stop well short of the pages it was handed.
+
+    LOGS ONLY. It changes no output, and that restraint is deliberate: a body can stop early for
+    two different reasons and only one of them is visible from here. Hitting the token cap is
+    reported by the provider as `truncated`, and `_retry_if_truncated` acts on it. A model that
+    simply emits an end-of-reply after four paragraphs of seventy reports `finish_reason=stop` -
+    it looks, to every layer above, exactly like a finished summary - and nothing anywhere records
+    that the transcript was abandoned.
+
+    The two are indistinguishable on the delivered row, which is why a reviewer reporting "cut off
+    partway through" could not be attributed to either. This is the instrument that separates them:
+    a row carrying this line and NOT the truncation warning above is the second case.
+
+    The comparison needs no inference. `extract_pages_with_report(mark_pages=True)` prefixes every
+    page with ``Page <n>:`` using the SAME offset the prompt tells the model to cite back, so the
+    last marker in the source and the last ``On pages N to M`` in the body are in one numbering by
+    construction. Half is a deliberately loose floor - a deposition legitimately spends its closing
+    pages on exhibits and signatures, so the intent is to catch the six-fold shortfall, not to
+    police the last page.
+    """
+    markers = _PAGE_MARKER.findall(text or "")
+    cited = _CITED_THROUGH.findall(summary or "")
+    if not markers or not cited:
+        return
+    last_given, last_cited = int(markers[-1]), max(int(c) for c in cited)
+    if last_cited >= last_given / 2:
+        return
+    logger.warning(
+        "deposition body on pages %s-%s cites through page %d of %d and stops "
+        "(%d group(s) for %d page(s)); the summary covers part of the transcript",
+        row["start"],
+        row["end"],
+        last_cited,
+        last_given,
+        len(cited),
+        len(markers),
+    )
+
+
+def _retry_if_truncated(model, system_msg, body_contents, row, summary, truncated):
+    """Re-ask ONCE at a wider cap when the body was cut off. Returns ``(summary, truncated)``.
+
+    A reply that hits the token cap is a HALF SUMMARY that reads like a whole one - it stops
+    mid-clause and nothing downstream says so. `summaries` has no column for it, and the only
+    surface is `manual_check`, which `tasks.py` also sets from the row's own flag and from a
+    fallback-model answer and which carries on 79% of rows, so it cannot single this out. The cap's
+    own comment records the same failure at 2048 ("cut long category-1 narratives off mid-sentence
+    and the partial reply was stored as if it were finished"); raising it to 8192 moved the
+    threshold rather than removing it, and category 9 sits the wrong side of the new one.
+
+    THE RETRY IS THE WHOLE FIX, not a bigger cap - see `summary_truncation_retry_multiplier` for
+    why, and for the measurement that says a truncated AUDIT wants the opposite treatment.
+
+    Preference order when both replies exist: one that FINISHED beats one that did not, and between
+    two truncated replies the longer covers more of the transcript. The first attempt is truncated
+    by construction here, so a complete retry always wins.
+
+    A raising retry is swallowed deliberately. We already hold a usable, if partial, summary; losing
+    it to an exception raised while trying to improve it would turn a degraded row into a failed
+    job, which is strictly worse for the reviewer.
+    """
+    settings = get_settings()
+    multiplier = settings.summary_truncation_retry_multiplier
+    if not truncated or multiplier <= 1:
+        return summary, truncated
+    wider = int(settings.summary_max_output_tokens * multiplier)
+    logger.warning(
+        "summary body hit the %d-token cap on pages %s-%s (%d chars); re-asking at %d",
+        settings.summary_max_output_tokens,
+        row["start"],
+        row["end"],
+        len(summary or ""),
+        wider,
+    )
+    try:
+        retried, still_truncated = _generate(
+            model,
+            system_msg,
+            body_contents,
+            temperature=settings.summary_temperature,
+            max_output_tokens=wider,
+        )
+    except Exception:  # noqa: BLE001 - a partial body beats losing the row; see the docstring
+        logger.warning(
+            "the wider re-ask failed on pages %s-%s; keeping the truncated body",
+            row["start"],
+            row["end"],
+        )
+        return summary, truncated
+    # AN EMPTY REPLY IS NEVER AN IMPROVEMENT, and this is checked BEFORE the preference below.
+    # Without it `not still_truncated` accepts a reply that is empty and merely reports itself
+    # finished, so the usable partial body is discarded and nothing ships - a worse outcome than
+    # the truncation this function exists to fix.
+    #
+    # Reachable rather than theoretical: both providers normalise a missing reply to "" and never
+    # None (`gemini.py` and `openai.py` both `(response.text or "").strip()`), and neither sets
+    # `truncated` unless the finish reason says so. A safety block, or a model that simply stops,
+    # lands exactly here. The asymmetry is the tell that it was an oversight: empty-AND-truncated
+    # was already safe, because `len("") > len(partial)` is False.
+    if not (retried or "").strip():
+        logger.warning(
+            "the wider re-ask came back empty on pages %s-%s; keeping the truncated body",
+            row["start"],
+            row["end"],
+        )
+        return summary, truncated
+    if not still_truncated or len(retried) > len(summary or ""):
+        logger.warning(
+            "the wider re-ask returned %d chars on pages %s-%s (truncated=%s); keeping it",
+            len(retried or ""),
+            row["start"],
+            row["end"],
+            still_truncated,
+        )
+        return retried, still_truncated
+    return summary, truncated
+
+
 def _generate_body(model, system_msg, body_contents, row):
     """The summary body, with the 429 fallback. Returns (summary, truncated, model, fallback_from).
 
@@ -1126,6 +1251,12 @@ def _generate_body(model, system_msg, body_contents, row):
         body_fallback_from, model = model, fallback_model
     else:
         body_fallback_from = None
+    # AFTER the fallback, and against whichever model answered: a row that fell back to the lesser
+    # model can be truncated too, and re-asking the model that just refused us would be the race
+    # the fallback exists to avoid.
+    summary, truncated = _retry_if_truncated(
+        model, system_msg, body_contents, row, summary, truncated
+    )
     return summary, truncated, model, body_fallback_from
 
 
@@ -1373,6 +1504,11 @@ def summarize_row(
     summary, truncated, model, body_fallback_from = _generate_body(
         model, system_msg, body_contents, row
     )
+    if deposition:
+        # Here rather than inside `_generate_body`, which is handed neither the source text nor
+        # the row's deposition-ness - and passing both would take it, and the helper below it,
+        # past the seven-parameter ceiling this module already sits at.
+        _log_incomplete_deposition(summary, text, row)
     title, _ = _generate(title_model, TITLE_PROMPT, text, temperature=0.0)
     # The title call has no response_schema, and Gemini does not enforce maxLength on strings even
     # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and

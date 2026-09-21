@@ -2398,3 +2398,282 @@ def test_the_caller_survives_an_audit_shape_without_the_new_keys(monkeypatch, ca
 
     assert out["verified"] is False
     assert "truncated=None" in " ".join(r.getMessage() for r in caplog.records)
+
+
+# --- A body cut off at the token cap is re-asked, not shipped half-written -----------------------
+#
+# Reported by a reviewer on a 74-page deposition: the summary "is getting cut off partway through
+# even after redrafting twice", ending mid-clause. Re-drafting regenerates the body, so a cause that
+# survives two re-drafts is a CEILING rather than a flake.
+#
+# `summary_max_output_tokens`' own comment records the same failure one category over, at the
+# previous value: 2048 "cut long category-1 narratives off mid-sentence and the partial reply was
+# stored as if it were finished". Raising it to 8192 moved the threshold instead of removing it, and
+# it was sized against "the longest real NOTES" - while `human_baselines.json` puts category 9's
+# delivered length at a 27,758-character median and a 39,382-character p90.
+
+
+def _truncating_body(monkeypatch, replies, multiplier="2.0"):
+    """Drive summarize_row with a scripted sequence of BODY replies.
+
+    `replies` is a list of (text, truncated) consumed in order by the body calls; the title call is
+    answered separately and never consumes one. Returns the list of recorded body calls, so a test
+    can assert BOTH how many were made and what cap each carried - "it retried" and "it retried at a
+    wider cap" are different claims and the second is the one that matters.
+    """
+    body_calls = []
+    pending = list(replies)
+
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        if system_msg == se.TITLE_PROMPT:
+            return "Progress Note - Dr Smith", False
+        body_calls.append({"model": model, "cap": max_output_tokens})
+        return pending.pop(0)
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setenv("SUMMARY_TRUNCATION_RETRY_MULTIPLIER", multiplier)
+    get_settings.cache_clear()
+    return body_calls
+
+
+def test_a_truncated_body_is_re_asked_at_a_wider_cap(monkeypatch):
+    """The reviewer's case: a half summary is re-asked and the fuller reply is what ships.
+
+    The second cap is asserted explicitly. Re-asking at the SAME budget would be a pure re-roll -
+    the model would be as free to stop in the same place - so the widening IS the mechanism.
+    """
+    calls = _truncating_body(
+        monkeypatch,
+        [("On pages 4 to 6, denied that", True), ("the fuller second reply. " * 200, False)],
+    )
+    try:
+        out = se.summarize_row("/x.pdf", _row(), prompt="P")
+    finally:
+        get_settings.cache_clear()
+
+    assert len(calls) == 2
+    assert calls[0]["cap"] == 8192
+    assert calls[1]["cap"] == 16384
+    assert out["summaryText"].startswith("the fuller second reply")
+    assert len(out["summaryText"]) > 4000
+    assert out["truncated"] is False
+
+
+EMPTY_REPLIES = ["", "   "]
+
+
+@pytest.mark.parametrize("empty_reply", EMPTY_REPLIES)
+def test_an_empty_wider_re_ask_keeps_the_truncated_body(monkeypatch, caplog, empty_reply):
+    """WHEN the wider re-ask comes back empty but reports itself FINISHED, THE SYSTEM SHALL keep
+    the truncated body.
+
+    Without the emptiness check `not still_truncated` accepts it, so the usable partial body is
+    discarded and NOTHING ships - worse than the truncation this function exists to fix.
+
+    The asymmetry is what makes it an oversight rather than a trade: empty-AND-truncated was
+    already safe, because len("") > len(partial) is False. Only the finished arm let it through.
+
+    Reachable rather than theoretical - both providers normalise a missing reply to "" and never
+    None, and neither sets `truncated` unless the finish reason says so, so a safety block or a
+    model that simply stops lands exactly here.
+    """
+    partial = "On pages 1 to 4, the witness described the collision."
+    calls = _truncating_body(monkeypatch, [(partial, True), (empty_reply, False)])
+
+    with caplog.at_level("WARNING"):
+        out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert out["summaryText"] == partial
+    assert len(calls) == 2  # it DID re-ask; it refused the answer
+    assert "came back empty" in caplog.text
+
+
+def test_a_shorter_but_real_wider_re_ask_is_still_kept(monkeypatch):
+    """The guard is emptiness, NOT length. A finished reply shorter than the partial is the case
+    the preference order already decided in its favour, and must not be caught by the new check."""
+    long_partial = "On pages 1 to 9, a long partial that was cut off mid-"
+    _truncating_body(monkeypatch, [(long_partial, True), ("Short but complete.", False)])
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert out["summaryText"] == "Short but complete."
+
+
+def test_a_complete_body_is_never_re_asked(monkeypatch):
+    """GUARD, and it is the cost argument: the retry must be free on a row that finished.
+
+    97% of rows are this case, so a retry that fired unconditionally would double the most expensive
+    stage in the pipeline to fix a minority.
+    """
+    calls = _truncating_body(monkeypatch, [("Summary body", False)])
+    try:
+        se.summarize_row("/x.pdf", _row(), prompt="P")
+    finally:
+        get_settings.cache_clear()
+    assert len(calls) == 1
+
+
+def test_a_finished_retry_wins_even_when_it_is_shorter(monkeypatch):
+    """Preference order: a reply that FINISHED beats one that did not, length notwithstanding.
+
+    For a deposition that is the substantive choice rather than a tidy one - a complete summary
+    covers every transcript page tersely, while a longer truncated one covers the opening pages and
+    silently abandons the rest. A reviewer navigating testimony needs the whole span.
+    """
+    calls = _truncating_body(
+        monkeypatch,
+        [("first attempt. " * 300, True), ("second attempt. " * 50, False)],
+    )
+    try:
+        out = se.summarize_row("/x.pdf", _row(), prompt="P")
+    finally:
+        get_settings.cache_clear()
+    assert len(calls) == 2
+    assert out["summaryText"].startswith("second attempt")
+    assert out["truncated"] is False
+
+
+def test_between_two_truncated_replies_the_longer_one_is_kept(monkeypatch):
+    """A retry that ALSO hits the cap still wins when it got further through the transcript."""
+    calls = _truncating_body(
+        monkeypatch,
+        [("first attempt. " * 60, True), ("second attempt. " * 400, True)],
+    )
+    try:
+        out = se.summarize_row("/x.pdf", _row(), prompt="P")
+    finally:
+        get_settings.cache_clear()
+    assert len(calls) == 2
+    assert out["summaryText"].startswith("second attempt")
+    # Still flagged: the row really is incomplete, and saying otherwise would be the defect again.
+    assert out["truncated"] is True
+
+
+def test_a_shorter_truncated_retry_is_discarded(monkeypatch):
+    """Model variance must not make the delivered summary WORSE than the first attempt."""
+    calls = _truncating_body(
+        monkeypatch,
+        [("first attempt. " * 400, True), ("second attempt. " * 10, True)],
+    )
+    try:
+        out = se.summarize_row("/x.pdf", _row(), prompt="P")
+    finally:
+        get_settings.cache_clear()
+    assert len(calls) == 2
+    assert out["summaryText"].startswith("first attempt")
+
+
+def test_a_failing_re_ask_keeps_the_truncated_body(monkeypatch):
+    """A partial summary beats losing the row.
+
+    The re-ask is an improvement attempt on a body we already hold, so letting it raise would turn a
+    degraded row into a failed job - strictly worse for the reviewer than the thing being fixed.
+    """
+    body_calls = []
+
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        if system_msg == se.TITLE_PROMPT:
+            return "Progress Note - Dr Smith", False
+        body_calls.append(max_output_tokens)
+        if len(body_calls) == 1:
+            return "On pages 4 to 6, denied that", True
+        raise RuntimeError("the wider re-ask blew up")
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setenv("SUMMARY_TRUNCATION_RETRY_MULTIPLIER", "2.0")
+    get_settings.cache_clear()
+    try:
+        out = se.summarize_row("/x.pdf", _row(), prompt="P")
+    finally:
+        get_settings.cache_clear()
+
+    assert body_calls == [8192, 16384]
+    assert out["summaryText"].endswith("denied that")
+    assert out["truncated"] is True
+
+
+def test_the_re_ask_can_be_turned_off(monkeypatch):
+    """1.0 is the escape hatch, and it restores today's behaviour exactly.
+
+    An operator watching the token bill needs to be able to stop this from a box without a redeploy,
+    which is why the multiplier is a setting and reaches a container through the compose anchor.
+    """
+    calls = _truncating_body(
+        monkeypatch,
+        [("On pages 4 to 6, denied that", True)],
+        multiplier="1.0",
+    )
+    try:
+        out = se.summarize_row("/x.pdf", _row(), prompt="P")
+    finally:
+        get_settings.cache_clear()
+    assert len(calls) == 1
+    assert out["truncated"] is True
+
+
+# --- Separating "hit the cap" from "the model just stopped" ---------------------------------------
+#
+# Both deliver a half summary and only one is visible from the code. The provider reports the cap as
+# `truncated`; a model that emits end-of-reply after four paragraphs of seventy reports
+# `finish_reason=stop`, which is indistinguishable from a finished summary at every layer above.
+# These pin the instrument that tells them apart. It logs and changes nothing.
+
+
+def _marked_source(last_page):
+    """Source text as `extract_pages_with_report(mark_pages=True)` writes it, one marker per page."""
+    return "".join(f"Page {n}:\nsome testimony\n" for n in range(4, last_page + 1))
+
+
+def _cited_through(last_page):
+    """A deposition body in house form, three-page groups, stopping after `last_page`."""
+    return "".join(
+        f"On pages {n} to {n + 2}, the witness answered questions.\n\n"
+        for n in range(4, last_page - 1, 3)
+    )
+
+
+def test_a_deposition_that_abandons_the_transcript_is_logged(caplog):
+    """The reviewer's shape: cites through page 15 of a transcript running to 77."""
+    with caplog.at_level(logging.WARNING, logger="app.services.summarize_engine"):
+        se._log_incomplete_deposition(
+            _cited_through(15), _marked_source(77), _row(start=58, end=131)
+        )
+    assert "cites through page 15 of 77" in caplog.text
+    assert "covers part of the transcript" in caplog.text
+
+
+def test_a_deposition_that_reaches_the_end_is_not_logged(caplog):
+    """GUARD. A transcript legitimately closes on exhibits and signatures, so the floor is half -
+    this must not fire on a body that merely stops a few pages short."""
+    with caplog.at_level(logging.WARNING, logger="app.services.summarize_engine"):
+        se._log_incomplete_deposition(
+            _cited_through(70), _marked_source(77), _row(start=58, end=131)
+        )
+    assert caplog.text == ""
+
+
+def test_the_check_is_silent_when_there_is_nothing_to_compare(caplog):
+    """GUARD. Unmarked source or an uncited body means no signal, not a warning and not a crash.
+
+    Reached for real: `mark_pages` is False for every non-deposition, and a deposition whose page
+    offset could not be established still gets markers but may produce a body with no citations.
+    """
+    with caplog.at_level(logging.WARNING, logger="app.services.summarize_engine"):
+        se._log_incomplete_deposition(
+            "A plain summary with no citations.", _marked_source(77), _row()
+        )
+        se._log_incomplete_deposition(_cited_through(15), "unmarked source text", _row())
+        se._log_incomplete_deposition("", "", _row())
+    assert caplog.text == ""

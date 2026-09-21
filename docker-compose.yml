@@ -235,6 +235,7 @@ x-backend-env: &backend-env
   SUMMARY_MULTIMODAL: ${SUMMARY_MULTIMODAL:-true}
   SUMMARY_TEMPERATURE: ${SUMMARY_TEMPERATURE:-0.0}
   SUMMARY_MAX_OUTPUT_TOKENS: ${SUMMARY_MAX_OUTPUT_TOKENS:-8192}
+  SUMMARY_TRUNCATION_RETRY_MULTIPLIER: ${SUMMARY_TRUNCATION_RETRY_MULTIPLIER:-2.0}
   # Narrow the boundary verify pass to the rows its trigger heuristic selects, instead of every
   # adjacent boundary. Named here BECAUSE it is meant to be flipped on a live box and measured:
   # a setting absent from this block reaches the container only through a rebuild, which is the
