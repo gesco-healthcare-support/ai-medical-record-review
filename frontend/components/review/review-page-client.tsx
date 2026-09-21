@@ -408,7 +408,7 @@ function ReviewBanners({
       {/* The post-stop choice lives HERE rather than in the progress bar, because that bar unmounts
           the moment the job stops being active and so cannot host it. */}
       {wf.cancelledJob ? (
-        <output className="banner">
+        <output className="banner-info">
           <strong>Stopped.</strong> Anything already finished has been kept.{" "}
           <button
             type="button"
@@ -427,7 +427,7 @@ function ReviewBanners({
         </output>
       ) : null}
       {unresolvedDupes > 0 && tab !== "duplicates" ? (
-        <output className="banner">
+        <output className="banner-info">
           {unresolvedDupes} possible duplicate{" "}
           {unresolvedDupes === 1 ? "group" : "groups"} to review before
           summarizing.{" "}

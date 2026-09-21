@@ -269,3 +269,40 @@ export function clearFlagOnEdit<T extends Row>(row: T, patch: Partial<Row>): Par
   );
   return adjudicated ? { ...patch, flag: "-" } : patch;
 }
+
+/**
+ * A row's `start` IS the boundary it shares with the row above, so moving it moves both sides.
+ *
+ * Segmentation already guarantees rows tile: `merge_window_rows` discards every `end` the model
+ * reported and re-derives it as `next.start - 1`, because only the STARTS are the model's answer.
+ * The editor dropped that invariant the moment a reviewer typed - `start` and `end` are two
+ * independent number inputs - so correcting one misplaced boundary took two edits, with the rows
+ * overlapping in between, which is a blocking error. A reviewer reported the model landing "off by
+ * a page or two" and "the next several documents are off and I have to manually fix everything":
+ * the model placing N boundaries badly cost 2N edits, not N.
+ *
+ * ONLY when the two were already tiled. A gap is legal - `rowErrors` rejects overlaps and permits
+ * gaps, and deleting a sub-document leaves one - so a gap the reviewer made is theirs, and closing
+ * it silently would be the same class of surprise this removes. Editing an `end` is deliberately
+ * left alone, which is what keeps a gap something they can still make on purpose, and it is the
+ * asymmetry the backend already has: starts are the answer, ends are derived from them.
+ *
+ * The previous row's flag is NOT cleared. `clearFlagOnEdit` means "the reviewer has looked at this
+ * row and dealt with it", and they have not - they adjudicated the boundary, not the document above
+ * it. A row that silently leaves the to-check list is worse than one that stays on it.
+ *
+ * Takes the rows as they WERE: whether the two are tiled is a fact about the state before this
+ * keystroke, not after it.
+ */
+export function moveSharedBoundary<T extends Row>(
+  rows: T[],
+  i: number,
+  start: Row["start"],
+): T[] {
+  const previous = rows[i - 1];
+  if (!previous) return rows;
+  if (Number(previous.end) + 1 !== Number(rows[i].start)) return rows;
+  return rows.map((r, idx) =>
+    idx === i - 1 ? { ...r, end: Number(start) - 1 } : r,
+  );
+}

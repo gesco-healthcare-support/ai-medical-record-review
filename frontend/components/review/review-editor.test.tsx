@@ -113,6 +113,51 @@ const lasts = () => screen.getAllByLabelText("Last page") as HTMLInputElement[];
 
 beforeEach(() => jumpTo.mockClear());
 
+describe("ReviewEditor shared boundaries", () => {
+  // A reviewer reported segmentation landing "off by a page or two", and that fixing it meant
+  // "the next several documents are off and I have to manually fix everything". A boundary is one
+  // number in the model's answer but two inputs in the table, so every correction cost two edits
+  // with the rows overlapping - a blocking error - in between.
+  const tiled = () => [
+    row({ _key: "a", start: 1, end: 5, title: "First" }),
+    row({ _key: "b", start: 6, end: 10, title: "Second" }),
+  ];
+
+  it("carries the previous document's last page when a start is corrected", () => {
+    render(<Harness initial={tiled()} />);
+    fireEvent.change(firsts()[1], { target: { value: "7" } });
+    expect(firsts()[1].value).toBe("7");
+    expect(lasts()[0].value).toBe("6");
+  });
+
+  it("does not close a gap the reviewer left", () => {
+    render(
+      <Harness
+        initial={[
+          row({ _key: "a", start: 1, end: 5 }),
+          row({ _key: "b", start: 8, end: 10 }),
+        ]}
+      />,
+    );
+    fireEvent.change(firsts()[1], { target: { value: "9" } });
+    expect(lasts()[0].value).toBe("5");
+  });
+
+  it("leaves the next document alone when an end is edited", () => {
+    // One-directional on purpose: editing an end is how a reviewer opens a gap deliberately.
+    render(<Harness initial={tiled()} />);
+    fireEvent.change(lasts()[0], { target: { value: "4" } });
+    expect(firsts()[1].value).toBe("6");
+  });
+
+  it("leaves every other field of the previous document untouched", () => {
+    render(<Harness initial={tiled()} />);
+    fireEvent.change(firsts()[1], { target: { value: "7" } });
+    expect(titles().map((i) => i.value)).toEqual(["First", "Second"]);
+    expect(firsts()[0].value).toBe("1");
+  });
+});
+
 describe("ReviewEditor row edits", () => {
   it("round-trips every editable field through the parent", () => {
     // The table is presentational and the editor owns the rows, so "the handler fired" is not the

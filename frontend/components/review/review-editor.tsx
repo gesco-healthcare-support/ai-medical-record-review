@@ -8,6 +8,7 @@ import {
   clearFlagOnEdit,
   couldNotIdentify,
   mergeRows,
+  moveSharedBoundary,
   newKey,
   rowErrors,
   type EditorRow,
@@ -76,9 +77,16 @@ export function ReviewEditor({
 
   function field(i: number, patch: Partial<Row>) {
     // Every row edit in the table arrives here, which is why the flag rule lives at this one point
-    // rather than at the eleven `onField` call sites in rows-table.
+    // rather than at the eleven `onField` call sites in rows-table - and now the boundary rule too.
+    //
+    // `moveSharedBoundary` reads the rows as they WERE, so it answers "were these two tiled before
+    // this keystroke", and the row patch is applied on top of whatever it returns.
+    const base =
+      patch.start === undefined
+        ? rows
+        : moveSharedBoundary(rows, i, patch.start);
     onRowsChange(
-      rows.map((r, idx) => (idx === i ? { ...r, ...clearFlagOnEdit(r, patch) } : r)),
+      base.map((r, idx) => (idx === i ? { ...r, ...clearFlagOnEdit(r, patch) } : r)),
     );
   }
 
