@@ -65,4 +65,36 @@ describe("the user menu's name label", () => {
     expect(within(menu).getByText("Sam Reviewer")).toBeInTheDocument();
     expect(within(menu).queryByText("Signed in")).toBeNull();
   });
+
+  it("says the reviewer is signed in when their name is only spaces", async () => {
+    // THE CASE THE FIRST FIX MISSED. `""` is falsy so `||` already handled it; `"   "` is TRUTHY,
+    // so the empty-string fix left this rendering three spaces in a bold line. The fixture above
+    // could not express it - it distinguishes the value under test from a real name and leaves it
+    // indistinguishable from the NEIGHBOURING falsy-looking value, which is the same shape as the
+    // sort-fixture gap on #355 one level out.
+    current.user = { name: "   ", email: "reviewer@example.test" };
+
+    const menu = await openMenu();
+
+    expect(within(menu).getByText("Signed in")).toBeInTheDocument();
+  });
+});
+
+describe("the user menu's trigger", () => {
+  it("falls back to the email on the trigger when the name is only spaces", async () => {
+    // The SECOND site. `displayName` at user-menu.tsx:41 reads the same field and needed the same
+    // trim, so this is a separate test rather than another assertion on the one above: a probe
+    // that reverts one site should name the site it broke.
+    //
+    // Asserted BEFORE the menu opens, because the open menu also contains the email and an
+    // unscoped assertion would pass on the menu's copy while the trigger still showed spaces.
+    current.user = { name: "   ", email: "reviewer@example.test" };
+    render(<UserMenu />, { wrapper: Wrapper });
+
+    const trigger = screen.getByRole("button");
+
+    // textContent rather than getByText: Testing Library normalises whitespace, so a trigger
+    // rendering "   " and one rendering "" are indistinguishable through the usual queries.
+    expect(trigger.textContent).toContain("reviewer@example.test");
+  });
 });
