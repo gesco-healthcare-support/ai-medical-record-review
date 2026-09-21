@@ -831,6 +831,25 @@ class Settings(BaseSettings):
     # the constraint - the image COUNT is. A sizing argument that reasons from context length is
     # reasoning about the wrong limit.
     vllm_segment_max_pages: int = 30
+    # Stages allowed to THINK on the vLLM path, comma-separated, empty for none.
+    #
+    # Empty is today's behaviour exactly, and this ships empty. It exists because the blanket
+    # thinking-off on that backend was measured on SUMMARIZATION and does not obviously transfer:
+    # with thinking on, 25 of 476 rows returned an EMPTY summary, every one finish_reason=length at
+    # exactly the 8,192 output cap, the reasoning having spent the allowance meant for the reply.
+    #
+    # SEGMENTATION IS THE CASE THAT ARGUES BACK, and `thinking_for` states the reason in the other
+    # direction: it keeps dynamic thinking on Gemini "because an A/B showed thinking-OFF regresses
+    # strict doc-F1 by over-segmenting". So a prior measurement says thinking-off causes exactly the
+    # over-splitting this backend now shows (207 boundaries invented against 116 missed on the
+    # 17-record arm), and the reason it is off here cannot apply: `segment_engine._window_rows`
+    # passes no `max_output_tokens` at all, so there is no output allowance for reasoning to spend.
+    #
+    # NOT a recommendation to turn it on. It is what makes the A/B possible without a code change,
+    # on a backend where an arm costs rented-GPU time - and the boundary noise floor is +/-0.05 exact
+    # F1, so this needs a measurement rather than an argument. `summarize` in particular must not be
+    # added without re-running the empty-summary case above.
+    vllm_thinking_stages: str = ""
     verify_merge: bool = True
     verify_use_text: bool = True
     verify_suspect_cap: int = 200
@@ -1144,6 +1163,31 @@ class Settings(BaseSettings):
             if overridden_stage == stage:
                 return backend
         return self.llm_backend
+
+    def vllm_thinking_for(self, stage: str) -> bool:
+        """Whether ``stage`` may think on the vLLM path. False for every stage by default.
+
+        A BOOLEAN, not a budget, and deliberately: `thinking_token_budget` is recorded beside
+        `_THINKING_OFF` as not solving the empty-summary failure but relocating it, because the
+        reasoning is then written INTO the reply. So the only two states worth offering are on and
+        off, and the cap a stage sets - or does not set - is what bounds it.
+
+        RAISES on a stage name this does not know, in the setting as well as in the argument. A
+        typo would otherwise be a silent no-op: the operator sets VLLM_THINKING_STAGES=segmet,
+        reads the arm as "thinking did not help", and the arm never had it on. That failure mode is
+        the one thing this setting exists to avoid, since its whole purpose is making a measurement
+        possible.
+        """
+        if stage not in _LLM_STAGES:
+            raise KeyError(f"unknown stage {stage!r}; expected one of {list(_LLM_STAGES)}")
+        allowed = {name.strip() for name in self.vllm_thinking_stages.split(",") if name.strip()}
+        unknown = allowed - set(_LLM_STAGES)
+        if unknown:
+            raise ValueError(
+                f"VLLM_THINKING_STAGES names unknown stage(s) {sorted(unknown)}; "
+                f"expected any of {list(_LLM_STAGES)}"
+            )
+        return stage in allowed
 
     def thinking_for(self, stage: str) -> int:
         """The Gemini thinking budget for one stage, preserving exactly today's per-stage values.

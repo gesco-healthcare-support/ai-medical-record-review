@@ -13,6 +13,7 @@ key, which is what demonstrates these tests would notice if vLLM started sending
 
 import pytest
 
+from app.config import get_settings
 from app.services.llm import pacing
 from app.services.llm.base import DelegatingProvider
 from app.services.llm.openai import OpenAIProvider
@@ -190,6 +191,88 @@ def test_thinking_is_off_on_the_structured_path_too(sent):
     # for four of the seven services.
     _run_vllm(schema={"type": "object", "properties": {"a": {"type": "string"}}})
     assert sent["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def _thinking_stages(monkeypatch, value):
+    """Point the provider at settings whose `vllm_thinking_stages` is `value`.
+
+    `model_copy` over the real settings rather than a stub listing the fields the provider happens
+    to read today: a stub breaks the moment it reads one more, and raises AttributeError from
+    inside production code, which reads like a bug in the code under test.
+    """
+    stub = get_settings().model_copy(update={"vllm_thinking_stages": value})
+    monkeypatch.setattr("app.services.llm.vllm.get_settings", lambda: stub)
+
+
+def _run_stage(stage, schema=None):
+    provider = VLLMProvider()
+    kwargs = {
+        "model": "Qwen/Qwen3.6-35B-A3B",
+        "system": "s",
+        "parts": [TextPart("hi")],
+        "temperature": 0.0,
+        "max_output_tokens": 64,
+        "stage": stage,
+    }
+    if schema is None:
+        return provider.generate_text(**kwargs)
+    return provider.generate_structured(schema=schema, **kwargs)
+
+
+def test_every_stage_still_sends_thinking_off_by_default(sent, monkeypatch):
+    """The guard that matters: shipping this setting must change nothing until someone sets it."""
+    _thinking_stages(monkeypatch, "")
+    for stage in ("summarize", "segment", "verify", "dedup"):
+        _run_stage(stage)
+        assert sent["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_a_named_stage_thinks_and_the_others_do_not(sent, monkeypatch):
+    """WHEN a stage is named in `vllm_thinking_stages`, THE SYSTEM SHALL send thinking ON for that
+    stage and OFF for every other.
+
+    Sent EXPLICITLY true rather than by omitting the flag: the pod is served with
+    `--default-chat-template-kwargs '{"enable_thinking":false}'`, so saying nothing inherits off and
+    the arm would report that thinking did not help while never having had it on.
+    """
+    _thinking_stages(monkeypatch, "segment")
+    _run_stage("segment")
+    assert sent["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+    _run_stage("summarize")
+    assert sent["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_a_named_stage_thinks_on_the_structured_path_too(sent, monkeypatch):
+    # Segmentation IS the structured path, so a flag wired only into generate_text would be a
+    # setting that cannot reach the one stage it was added for.
+    _thinking_stages(monkeypatch, "segment")
+    _run_stage("segment", schema={"type": "object", "properties": {"a": {"type": "string"}}})
+    assert sent["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_a_thinking_budget_is_still_never_sent_when_a_stage_thinks(sent, monkeypatch):
+    # On or off, a BUDGET does not fix the empty summary - it relocates the reasoning INTO the
+    # reply. The boolean is the only control this backend gets.
+    _thinking_stages(monkeypatch, "segment")
+    _run_stage("segment")
+    flat = str(sent)
+    assert "thinking_token_budget" not in flat
+    assert "reasoning_effort" not in flat
+
+
+def test_a_misspelled_stage_name_is_refused_rather_than_ignored(monkeypatch):
+    """A typo would otherwise be a silent no-op, and the operator would read the arm as "thinking
+    did not help" when the arm never had it on. That is the one failure this setting exists to
+    avoid, so it is loud."""
+    stub = get_settings().model_copy(update={"vllm_thinking_stages": "segmet"})
+    with pytest.raises(ValueError, match="segmet"):
+        stub.vllm_thinking_for("segment")
+
+
+def test_an_unknown_stage_argument_is_refused(monkeypatch):
+    stub = get_settings().model_copy(update={"vllm_thinking_stages": "segment"})
+    with pytest.raises(KeyError):
+        stub.vllm_thinking_for("not-a-stage")
 
 
 # --- divergence 4: a client-side timeout is not retried ---------------------------------------------
