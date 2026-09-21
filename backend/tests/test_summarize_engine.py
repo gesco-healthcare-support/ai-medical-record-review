@@ -6,6 +6,7 @@ tests assert what summarize_row FEEDS the model and how it threads the verify re
 """
 
 import logging
+import re
 
 import pytest
 
@@ -2275,6 +2276,33 @@ def test_a_discharge_summary_is_not_told_to_drop_a_reassuring_condition():
     assert preamble == se.build_preamble("15")
     # And no longer byte-identical to an id the catalog does not ship, which is what it was.
     assert preamble != se.build_preamble("999")
+
+
+def test_the_qme_prompt_asks_for_the_treatment_plan():
+    """The senior reviewer, on a delivered record: "Initial evaluations are treating reports they
+    should always include treatment plan, and so should AME/QME reports."
+
+    It was not in the lettered list, so it was never asked for and never emitted - the mechanism
+    this repo has measured before, that a point absent from the list is absent from the output
+    however plainly the surrounding guidance implies it. And it WAS implied: the same prompt
+    already says "Include the treatment summary too" in its narrative section, which the model
+    does not follow the way it follows the list.
+
+    "(if specified)" like every other point, NOT "always". The reported failure was that nothing
+    asked for it; a stronger instruction risks inventing a plan the report does not state, which
+    is the one thing a faithfulness pipeline must not do.
+    """
+    from app.services.prompts import prompts
+
+    points = [
+        line.strip()
+        for line in prompts["category_13"].splitlines()
+        if re.match(r"\s*[a-z]{1,2}[.)]\s", line)
+    ]
+    assert any("treatment plan" in point.lower() for point in points)
+    # Still a conditional point, so a report that states none does not gain an invented one.
+    plan = next(point for point in points if "treatment plan" in point.lower())
+    assert "(if specified)" in plan
 
 
 def test_the_discharge_prompt_carries_the_requirement_the_preamble_no_longer_states():
