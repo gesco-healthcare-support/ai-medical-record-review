@@ -51,7 +51,11 @@ export function UserMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel className="flex flex-col">
-          <span className="truncate font-medium">{user?.name ?? "Signed in"}</span>
+          {/* `||`, not `??`. A name saved as an empty string is missing, not present-and-blank -
+              and the trigger above already treats it that way (`user?.name || user?.email`), so
+              `??` here rendered an empty bold line in the menu while the trigger showed the
+              email. The two lines read the same field and now agree on what absent means. */}
+          <span className="truncate font-medium">{user?.name || "Signed in"}</span>
           {user?.email ? (
             <span className="truncate text-xs font-normal text-muted-foreground">{user.email}</span>
           ) : null}
