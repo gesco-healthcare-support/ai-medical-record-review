@@ -2392,6 +2392,46 @@ def test_a_truncated_body_is_re_asked_at_a_wider_cap(monkeypatch):
     assert out["truncated"] is False
 
 
+EMPTY_REPLIES = ["", "   "]
+
+
+@pytest.mark.parametrize("empty_reply", EMPTY_REPLIES)
+def test_an_empty_wider_re_ask_keeps_the_truncated_body(monkeypatch, caplog, empty_reply):
+    """WHEN the wider re-ask comes back empty but reports itself FINISHED, THE SYSTEM SHALL keep
+    the truncated body.
+
+    Without the emptiness check `not still_truncated` accepts it, so the usable partial body is
+    discarded and NOTHING ships - worse than the truncation this function exists to fix.
+
+    The asymmetry is what makes it an oversight rather than a trade: empty-AND-truncated was
+    already safe, because len("") > len(partial) is False. Only the finished arm let it through.
+
+    Reachable rather than theoretical - both providers normalise a missing reply to "" and never
+    None, and neither sets `truncated` unless the finish reason says so, so a safety block or a
+    model that simply stops lands exactly here.
+    """
+    partial = "On pages 1 to 4, the witness described the collision."
+    calls = _truncating_body(monkeypatch, [(partial, True), (empty_reply, False)])
+
+    with caplog.at_level("WARNING"):
+        out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert out["summaryText"] == partial
+    assert len(calls) == 2  # it DID re-ask; it refused the answer
+    assert "came back empty" in caplog.text
+
+
+def test_a_shorter_but_real_wider_re_ask_is_still_kept(monkeypatch):
+    """The guard is emptiness, NOT length. A finished reply shorter than the partial is the case
+    the preference order already decided in its favour, and must not be caught by the new check."""
+    long_partial = "On pages 1 to 9, a long partial that was cut off mid-"
+    _truncating_body(monkeypatch, [(long_partial, True), ("Short but complete.", False)])
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert out["summaryText"] == "Short but complete."
+
+
 def test_a_complete_body_is_never_re_asked(monkeypatch):
     """GUARD, and it is the cost argument: the retry must be free on a row that finished.
 

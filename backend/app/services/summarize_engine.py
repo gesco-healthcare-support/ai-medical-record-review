@@ -1123,6 +1123,23 @@ def _retry_if_truncated(model, system_msg, body_contents, row, summary, truncate
             row["end"],
         )
         return summary, truncated
+    # AN EMPTY REPLY IS NEVER AN IMPROVEMENT, and this is checked BEFORE the preference below.
+    # Without it `not still_truncated` accepts a reply that is empty and merely reports itself
+    # finished, so the usable partial body is discarded and nothing ships - a worse outcome than
+    # the truncation this function exists to fix.
+    #
+    # Reachable rather than theoretical: both providers normalise a missing reply to "" and never
+    # None (`gemini.py` and `openai.py` both `(response.text or "").strip()`), and neither sets
+    # `truncated` unless the finish reason says so. A safety block, or a model that simply stops,
+    # lands exactly here. The asymmetry is the tell that it was an oversight: empty-AND-truncated
+    # was already safe, because `len("") > len(partial)` is False.
+    if not (retried or "").strip():
+        logger.warning(
+            "the wider re-ask came back empty on pages %s-%s; keeping the truncated body",
+            row["start"],
+            row["end"],
+        )
+        return summary, truncated
     if not still_truncated or len(retried) > len(summary or ""):
         logger.warning(
             "the wider re-ask returned %d chars on pages %s-%s (truncated=%s); keeping it",
