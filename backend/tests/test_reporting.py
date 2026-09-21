@@ -159,7 +159,7 @@ def test_build_mrr_document_renders_two_column_table():
     assert len(table.columns) == 2
     assert len(table.rows) == 2
     # 03/04/2019 sorts before 01/02/2020; left cell = date, right cell = title + text.
-    assert table.rows[0].cells[0].text == "03/04/2019"
+    assert table.rows[0].cells[0].text == "03/04/19"
     assert "Report B" in table.rows[0].cells[1].text
     assert "text B" in table.rows[0].cells[1].text
 
@@ -278,7 +278,7 @@ def test_undated_entries_sort_last_in_the_word_document(undated):
     # first entry, which is how the first version of this test passed for the wrong reason.
     dates = [row.cells[0].text for row in doc.tables[0].rows]
 
-    assert dates == ["01/02/2020", "03/04/2021", UNDATED_LABEL]
+    assert dates == ["01/02/20", "03/04/21", UNDATED_LABEL]
 
 
 @pytest.mark.parametrize("undated", ["-", "", "   ", "n/a", "unknown"])
@@ -292,9 +292,27 @@ def test_a_missing_key_is_undated_rather_than_a_crash():
     assert date_label({}) == UNDATED_LABEL
 
 
-def test_a_real_date_is_left_exactly_as_written():
-    """Copy dates EXACTLY - the factuality rules say so, and a reviewer compares them to the page."""
-    assert date_label({"summaryDate": "01/02/2020"}) == "01/02/2020"
+def test_every_readable_date_renders_as_one_shape():
+    """WHEN a date can be read, THE SYSTEM SHALL render it MM/DD/YY whatever the source wrote.
+
+    REVERSES what this test used to assert - "Copy dates EXACTLY - the factuality rules say so, and
+    a reviewer compares them to the page". That rule was written on the reviewer's behalf and the
+    reviewer asked for the opposite, having seen a record whose dates arrived in three different
+    shapes: "Maybe we can implement something to automatically convert them into XX/XX/XX format".
+
+    The factuality rule it was protecting is untouched: normalising punctuation and year width does
+    not change which day the entry states, and an unreadable date is still Undated rather than
+    guessed at - which the cases below pin alongside.
+    """
+    assert date_label({"summaryDate": "01/02/2020"}) == "01/02/20"
+    assert date_label({"summaryDate": "01-02-2020"}) == "01/02/20"
+    assert date_label({"summaryDate": "2020-01-02"}) == "01/02/20"
+    assert date_label({"summaryDate": "1/2/20"}) == "01/02/20"
+    # An old record still normalises, and its age is less obvious at a glance. Accepted, and named
+    # in `date_label` so the trade is not rediscovered as a defect.
+    assert date_label({"summaryDate": "6/15/2002"}) == "06/15/02"
+    # Still not guessed at.
+    assert date_label({"summaryDate": "Sept 22, 2026"}) == UNDATED_LABEL
 
 
 # A senior reviewer found dated documents rendering as "Undated" on a delivered record: "It had some

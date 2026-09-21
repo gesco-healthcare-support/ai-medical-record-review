@@ -856,18 +856,32 @@ def parsed_date(entry):
 
 
 def date_label(entry) -> str:
-    """The date cell text: the date exactly as written, or "Undated".
+    """The date cell text: the date as MM/DD/YY, or "Undated".
 
     The field spec writes "-" when a document carries no date, which in a finished deliverable reads
     as a value nobody filled in rather than a fact about the document. The reviewers call these
     Undated and expect them at the end of the review.
 
-    A parsed date is returned VERBATIM, never reformatted: the factuality rules say copy dates
-    exactly, and a reviewer compares them against the page.
+    NORMALISED, which REVERSES the rule this function used to carry - "returned VERBATIM, never
+    reformatted: the factuality rules say copy dates exactly, and a reviewer compares them against
+    the page". That rule was written on the reviewer's behalf, and the reviewer asked for the
+    opposite: "Maybe we can implement something to automatically convert them into XX/XX/XX format
+    (IE: 09/22/26) since there were some formatting issues using the 4-digit year as well." He is
+    the one doing the comparing, so it is his to overrule, and he has.
+
+    The factuality concern is untouched by it: normalising punctuation and year width does not
+    change WHICH DAY the entry states, and a date this cannot read is still "Undated" rather than
+    guessed at. What it does change is that the column no longer shows the separator the source
+    used - which is the point, since a record carrying three separators rendered as three shapes.
+
+    KNOWN COST, accepted deliberately: these records span 2002 to 2026, so an old entry now reads
+    06/15/02 beside a recent 09/22/26 and its age is less obvious at a glance. Raised before the
+    change and taken anyway.
     """
-    if parsed_date(entry) is None:
+    parsed = parsed_date(entry)
+    if parsed is None:
         return UNDATED_LABEL
-    return (entry.get("summaryDate") or "").strip()
+    return parsed.strftime("%m/%d/%y")
 
 
 def build_mrr_document(
