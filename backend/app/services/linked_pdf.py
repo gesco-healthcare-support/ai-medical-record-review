@@ -73,11 +73,21 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
     rows = []
     for i, e in enumerate(entries):
         # id='t{i}' lets Story report this title's rendered rect (see _render_summary_pdf).
+        # A HANGING-INDENT PARAGRAPH, not a table row. Story cannot split a table row across a
+        # page break: an entry taller than the space left is CLIPPED, and one taller than a whole
+        # page renders nothing at all while `place` never reports itself finished. Measured on the
+        # shape this used to emit - a 90-sentence body in one row kept 72 of 90 sentences, and a
+        # 120-sentence body kept none over 31 pages. The same body as a hanging-indent paragraph
+        # keeps all 90 with the date still at x=84 and the body at x=174, i.e. the two-column look
+        # this markup existed for, unchanged.
+        #
+        # Word keeps its two-column TABLE, and that is not drift: python-docx writes a real Word
+        # table and Word splits rows across pages by itself. Only Story cannot.
         rows.append(
-            f"<tr><td class='d'>{html.escape(date_label(e))}</td>"
-            f"<td class='b'><a class='ln' id='t{i}'>{html.escape(e['linkTitle'])}</a>"
+            f"<p class='e'><span class='d'>{html.escape(date_label(e))}</span>"
+            f"<a class='ln' id='t{i}'>{html.escape(e['linkTitle'])}</a>"
             f"{html.escape(TITLE_SEPARATOR)}"
-            f"{_inline_html(e['summaryText'])}</td></tr>"
+            f"{_inline_html(e['summaryText'])}</p>"
         )
     # The same two sentences the Word renderer emits, from the same builder, bold to match
     # it - and the excluded-type list left PLAIN beneath them, which is the contrast the
@@ -107,10 +117,11 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
          SUMMARY_INTRO and CONCLUSION are one line each, where justify is a no-op - and it is
          the same sentence #115 and #158 each had to correct. */
       p {{ margin: 0 0 8pt 0; }}
-      table {{ width: 100%; border-collapse: collapse; }}
-      td {{ vertical-align: top; padding: 0 0 10pt 0; }}
-      td.d {{ width: 72px; }}
-      td.b {{ text-align: justify; }}
+      /* The date column, as a hanging indent rather than a table - see the note beside `rows`.
+         The body indent and the span width MUST match, or the first line starts in the wrong
+         place; 90pt is the old 72px column plus its gutter. */
+      .e {{ margin: 0 0 10pt 90pt; text-indent: -90pt; text-align: justify; }}
+      .d {{ display: inline-block; width: 90pt; text-align: left; }}
       a.ln {{ color: {_TITLE_COLOR}; text-decoration: underline; font-weight: bold; }}
     </style></head><body>
       <p class='ttl'>{html.escape(qme_or_ame or " ")}</p>
@@ -128,7 +139,7 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
         )
     }</p>
       <p style='font-weight:bold;'>{html.escape(summary_intro(details.lawfirm))}</p>
-      <table>{"".join(rows)}</table>
+      {"".join(rows)}
       {tail}
       <p>{html.escape(CONCLUSION)}</p>
     </body></html>"""

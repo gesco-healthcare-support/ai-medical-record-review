@@ -1,5 +1,7 @@
 """Unit tests for the native linked-PDF builder (no DB, no network)."""
 
+import re
+
 import pymupdf
 
 from app.services.linked_pdf import build_linked_pdf
@@ -105,6 +107,82 @@ def test_build_linked_pdf_links_every_title_in_a_multipage_letter(tmp_path):
     assert expected.issubset(set(targets))  # every title's source page is linked
     assert len(set(targets)) == n  # all 30 distinct titles linked (none dropped)
     doc.close()
+
+
+def test_an_entry_longer_than_a_page_is_delivered_whole(tmp_path):
+    """WHEN one entry's body is taller than a page, THE SYSTEM SHALL render all of it.
+
+    A reviewer reported entries "cut off if they don't fit entirely on one page", with the Word
+    document carrying the whole entry - so the text existed and only the PDF lost it. The cause is
+    that Story cannot split a TABLE ROW across a page break, and each entry was one row: measured on
+    that shape, a 90-sentence body kept 72 of 90 sentences and a 120-sentence body kept NONE while
+    `place` never reported itself finished.
+
+    The last sentence is the assertion that matters - a clipped entry keeps its opening, so checking
+    that the body "appears" would pass on the very bug this pins.
+    """
+    source = _make_source(tmp_path, pages=3)
+    body = " ".join(f"Sentence {i} of a very long clinical narrative." for i in range(1, 121))
+    data = build_linked_pdf(
+        source,
+        [
+            {
+                "summaryDate": "01/14/2026",
+                "linkTitle": "Long Evaluation (Pages 1-1)",
+                "summaryText": body,
+                "startPage": 1,
+            }
+        ],
+        num_pages=3,
+        patient_name="Synthetic Patient",
+        patient_dob="01/01/1990",
+        qme_or_ame="QME",
+        details=ReportDetails(lawfirm="Example Firm"),
+    )
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    pages = [doc[p].get_text() for p in range(doc.page_count - 3)]
+    doc.close()
+    # Whitespace-collapsed, because a wrapped line puts a newline INSIDE a sentence and the search
+    # would then miss text that is plainly on the page - every 7th sentence, on the first run.
+    letter = re.sub(r"\s+", " ", " ".join(pages))
+
+    assert "Sentence 1 of" in letter
+    assert "Sentence 120 of" in letter
+    missing = [i for i in range(1, 121) if f"Sentence {i} of" not in letter]
+    assert not missing, f"{len(missing)} sentence(s) lost, first {missing[:5]}"
+
+
+def test_a_long_entry_still_links_to_its_source_page(tmp_path):
+    """The link rects come from Story's `element_positions`, so a change to how an entry is laid
+    out could deliver the whole body and silently stop linking it."""
+    source = _make_source(tmp_path, pages=3)
+    body = " ".join(f"Sentence {i} of a very long clinical narrative." for i in range(1, 121))
+    data = build_linked_pdf(
+        source,
+        [
+            {
+                "summaryDate": "01/14/2026",
+                "linkTitle": "Long Evaluation (Pages 2-2)",
+                "summaryText": body,
+                "startPage": 2,
+            }
+        ],
+        num_pages=3,
+        patient_name="Synthetic Patient",
+        patient_dob="01/01/1990",
+        qme_or_ame="QME",
+        details=ReportDetails(lawfirm="Example Firm"),
+    )
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    summ = doc.page_count - 3
+    targets = [
+        link["page"]
+        for pno in range(summ)
+        for link in doc[pno].get_links()
+        if link.get("kind") == pymupdf.LINK_GOTO
+    ]
+    doc.close()
+    assert summ + 1 in targets  # source page 2, offset past the letter
 
 
 def test_build_linked_pdf_empty_entries_is_summary_only(tmp_path):
