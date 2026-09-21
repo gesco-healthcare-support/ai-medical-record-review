@@ -66,6 +66,11 @@ _PLACEHOLDER_API_KEY = "not-required-by-vllm"
 # parameter. Never send `thinking_token_budget` alongside it - a bounded budget does not solve the
 # empty-summary failure, it relocates it, because the reasoning is then written INTO the reply.
 _THINKING_OFF: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": False}}
+# ...and its counterpart, which must be sent EXPLICITLY rather than by omitting the flag: the pod is
+# served with `--default-chat-template-kwargs '{"enable_thinking":false}'`, so a request that says
+# nothing inherits off. Only `settings.vllm_thinking_for` selects this, and it answers False for
+# every stage unless an operator names one.
+_THINKING_ON: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": True}}
 
 
 def _client():
@@ -172,6 +177,7 @@ def _request_kwargs(
     system,
     parts,
     temperature,
+    stage,
     max_output_tokens=None,
     top_p=None,
     top_k=None,
@@ -188,9 +194,13 @@ def _request_kwargs(
         "model": model,
         "messages": _to_messages(system, parts),
         "temperature": temperature,
-        # Thinking off on every call. See the module docstring: with it on, 5.3% of rows on a long
-        # record returned nothing at all.
-        "extra_body": dict(_THINKING_OFF),
+        # Thinking off unless this stage is named in `vllm_thinking_stages`, which is empty by
+        # default. See the module docstring for why off is the default: with it on, 5.3% of rows on
+        # a long record returned nothing at all - measured on SUMMARIZATION, whose 8,192 output cap
+        # the reasoning consumed. See the setting for why segmentation is the case that argues back.
+        "extra_body": dict(
+            _THINKING_ON if get_settings().vllm_thinking_for(stage) else _THINKING_OFF
+        ),
     }
     # Optional, unlike the OpenAI provider. Four of the seven services that will route here set no
     # cap today, and a seam that demands one forces callers to invent a number - a bug this repo has
@@ -244,17 +254,17 @@ class VLLMProvider(DelegatingProvider):
         schema=None,
         choices=None,
     ):
-        # `stage` is accepted and unused, and unlike the OpenAI provider that is not a deferral. On
-        # Gemini the stage selects a thinking budget; here there is no budget to select, because
-        # thinking is off unconditionally and for a measured reason. A stage-dependent budget on this
-        # backend would reintroduce exactly the failure the module docstring records.
-        del stage
+        # `stage` used to be discarded here, because thinking was off unconditionally. It now
+        # selects ON or OFF through `vllm_thinking_for`, which answers False for every stage until
+        # an operator names one - so the request this builds is byte-identical until they do. Still
+        # no BUDGET is ever sent, for the reason `vllm_thinking_for` records.
         settings = get_settings()
         kwargs = _request_kwargs(
             model=model,
             system=system,
             parts=parts,
             temperature=temperature,
+            stage=stage,
             max_output_tokens=max_output_tokens,
             top_p=top_p,
             top_k=top_k,

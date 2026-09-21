@@ -131,6 +131,10 @@ x-backend-env: &backend-env
   SUMMARY_IMAGE_MAX_PAGES: ${SUMMARY_IMAGE_MAX_PAGES:-15}
   VLLM_SEGMENT_MAX_PAGES: ${VLLM_SEGMENT_MAX_PAGES:-30}
   VLLM_MAX_IMAGES_PER_PROMPT: ${VLLM_MAX_IMAGES_PER_PROMPT:-40}
+  # Empty ships today's behaviour: thinking off on every vLLM call. Named here because the whole
+  # point of the setting is that an operator can turn segmentation's thinking on for one arm
+  # WITHOUT a rebuild - a config default a container never reads is documentation, not behaviour.
+  VLLM_THINKING_STAGES: ${VLLM_THINKING_STAGES:-}
   # The render ceiling, and the two per-stage targets it caps. page_dpi fits the DPI to a stage's
   # pixel target and then caps it at SUMMARY_IMAGE_DPI - so lowering this silently shrinks the DOI
   # and deposition reads, which is why the app refuses to boot on the mismatch rather than rendering

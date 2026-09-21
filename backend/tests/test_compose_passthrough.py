@@ -40,6 +40,7 @@ _MUST_REACH_A_CONTAINER = {
     "DEPOSITION_IMAGE_LONG_EDGE_PX": "checked against that ceiling; unmeasured (issue #333)",
     "DOI_MAX_OUTPUT_TOKENS": "counts thought tokens; a pod model reasons differently from Gemini",
     "DEPOSITION_MAX_OUTPUT_TOKENS": "counts thought tokens; same reason",
+    "VLLM_THINKING_STAGES": "the arm it exists for is run WHILE a pod bills; a rebuild defeats it",
 }
 
 
