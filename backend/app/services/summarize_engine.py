@@ -227,6 +227,11 @@ _F_BOLD = (
 # legitimately empty a point and take its heading with it. Blocking those would suppress a correct fix.
 _CORRECTION_ONLY_ISSUES = frozenset({"capitalization", "range_of_motion"})
 
+# The audit's name for a claim the source does not support. Named rather than inlined because the
+# ceiling and any later guard must exempt the SAME type - a second spelling here is a fabrication
+# fix silently blocked.
+_FABRICATION_ISSUE = "unsupported"
+
 
 def _bold_span_count(text: str) -> int:
     """How many `**...**` spans a body carries.
@@ -273,6 +278,16 @@ def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> boo
     raw_headings = _bold_span_count(raw)
     if issue_types <= _CORRECTION_ONLY_ISSUES:
         return _bold_span_count(fixed) < raw_headings
+    # A FABRICATED CLAIM IS NEVER BLOCKED. `unsupported` means the audit found something the source
+    # does not support, and where a summary is largely fabricated its fix legitimately guts the
+    # body - so the ceiling below would reject that fix and leave the fabricated text standing.
+    # Narrows what the ceiling covers, deliberately, because shipping invented clinical content is
+    # the worse of the two failures.
+    #
+    # It does NOT reopen the case this guard was written for: that row carried a `vitals` issue,
+    # not `unsupported`, so it is still rejected. Pinned by a test either side of the exemption.
+    if _FABRICATION_ISSUE in issue_types:
+        return False
     # The ceiling. Three is the floor for "structured": below it, losing one heading IS losing a
     # large share, and a vitals fix on a two-point body is the case the exclusion above protects.
     return raw_headings >= 3 and _bold_span_count(fixed) * 2 < raw_headings

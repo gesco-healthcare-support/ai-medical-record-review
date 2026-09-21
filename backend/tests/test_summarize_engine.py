@@ -1127,6 +1127,28 @@ def _bold(n: int) -> str:
     return " ".join(f"**Point {i}**: finding {i}." for i in range(n))
 
 
+def test_a_fabrication_fix_is_never_blocked_however_much_it_removes():
+    """WHEN the audit reports an unsupported claim, THE SYSTEM SHALL store its rewrite whatever the
+    ceiling would say.
+
+    `unsupported` means the source does not support the text. Where a summary is largely fabricated
+    its fix legitimately guts the body, and rejecting that fix leaves the FABRICATED text standing -
+    the worse of the two failures, which is why the ceiling narrows here.
+    """
+    assert se._drops_required_headings(_bold(8), _bold(1), {"unsupported"}) is False
+    assert se._drops_required_headings(_bold(8), "", {"unsupported"}) is False
+    # Still exempt when it arrives alongside another substantive type.
+    assert se._drops_required_headings(_bold(8), _bold(1), {"unsupported", "vitals"}) is False
+
+
+def test_the_reported_failure_is_still_rejected_after_the_exemption():
+    """The case this guard exists for carried a `vitals` issue, not `unsupported` - so exempting
+    fabrication fixes does not reopen it. That is what makes the narrowing safe, and it is asserted
+    rather than assumed."""
+    assert se._drops_required_headings(_bold(8), _bold(1), {"vitals"}) is True
+    assert se._drops_required_headings(_bold(8), _bold(1), {"capitalization", "vitals"}) is True
+
+
 def test_a_structured_body_cut_to_just_under_half_is_rejected():
     """WHEN a substantive rewrite leaves FEWER than half the bold points, THE SYSTEM SHALL reject it.
 
@@ -1137,7 +1159,7 @@ def test_a_structured_body_cut_to_just_under_half_is_rejected():
     # The fixture must carry the count it claims, or the ratio below is asserted against nothing.
     assert se._bold_span_count(_bold(8)) == 8
     assert se._bold_span_count(_bold(3)) == 3
-    assert se._drops_required_headings(_bold(8), _bold(3), {"unsupported"}) is True
+    assert se._drops_required_headings(_bold(8), _bold(3), {"vitals"}) is True
 
 
 def test_a_structured_body_cut_to_exactly_half_is_accepted():
@@ -1150,7 +1172,7 @@ def test_a_structured_body_cut_to_exactly_half_is_accepted():
     """
     assert se._bold_span_count(_bold(4)) == 4
     assert se._bold_span_count(_bold(2)) == 2
-    assert se._drops_required_headings(_bold(4), _bold(2), {"unsupported"}) is False
+    assert se._drops_required_headings(_bold(4), _bold(2), {"vitals"}) is False
 
 
 def test_a_renamed_heading_passes_the_guard_untouched(monkeypatch):
