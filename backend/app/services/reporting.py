@@ -863,6 +863,13 @@ def parsed_date(entry):
     return None
 
 
+# The years `%y` round-trips. Below or above this window the century cannot be recovered from a
+# 2-digit label, so `date_label` keeps four digits there. Python maps 69-99 to 1969-1999 and
+# 00-68 to 2000-2068; these are that rule, named rather than left as bare numbers.
+_SHORT_YEAR_FIRST = 1969
+_SHORT_YEAR_LAST = 2068
+
+
 def date_label(entry) -> str:
     """The date cell text: the date as MM/DD/YY, or "Undated".
 
@@ -882,14 +889,36 @@ def date_label(entry) -> str:
     guessed at. What it does change is that the column no longer shows the separator the source
     used - which is the point, since a record carrying three separators rendered as three shapes.
 
-    KNOWN COST, accepted deliberately: these records span 2002 to 2026, so an old entry now reads
-    06/15/02 beside a recent 09/22/26 and its age is less obvious at a glance. Raised before the
-    change and taken anyway.
+    THE REAL COST OF A 2-DIGIT YEAR IS NOT READABILITY, it is that the century is UNRECOVERABLE
+    outside `%y`'s 1969-2068 window. An earlier version of this paragraph said an old entry's age
+    was merely "less obvious at a glance", which understates it:
+
+        03/04/1968  ->  03/04/68  ->  reads back as 2068
+        01/01/2069  ->  01/01/69  ->  reads back as 1969
+
+    A hundred years wrong, in a document a client reads, with nothing on the page saying so.
+    Sorting is unaffected - `parsed_date` reads the SOURCE, not this label - so it is display
+    only, and display is what the client gets.
+
+    So a year outside that window keeps its four digits. It should fire rarely - MEASURED across
+    four delivered letters, the oldest date appearing anywhere in them is 1974 - so the column is
+    uniformly MM/DD/YY in practice, exactly as asked for.
+
+    Note the margin is FIVE years, not the several decades a first guess suggests. An earlier
+    draft of this paragraph said these dates 'run from the 1990s'; they run from 1974, and the
+    four records to hand are not the corpus. So the branch is closer to live than it looks, which
+    is an argument for keeping it rather than against.
+
+    NOT A REJECTION OF THE REQUEST - the request did not consider a pre-1969 document date, and
+    this decides only that case. One line to revert if the reviewer would rather have the short
+    form unconditionally.
     """
     parsed = parsed_date(entry)
     if parsed is None:
         return UNDATED_LABEL
-    return parsed.strftime("%m/%d/%y")
+    if _SHORT_YEAR_FIRST <= parsed.year <= _SHORT_YEAR_LAST:
+        return parsed.strftime("%m/%d/%y")
+    return parsed.strftime("%m/%d/%Y")
 
 
 def build_mrr_document(

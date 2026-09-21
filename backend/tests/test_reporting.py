@@ -308,9 +308,16 @@ def test_every_readable_date_renders_as_one_shape():
     assert date_label({"summaryDate": "01-02-2020"}) == "01/02/20"
     assert date_label({"summaryDate": "2020-01-02"}) == "01/02/20"
     assert date_label({"summaryDate": "1/2/20"}) == "01/02/20"
-    # An old record still normalises, and its age is less obvious at a glance. Accepted, and named
-    # in `date_label` so the trade is not rediscovered as a defect.
+    # Inside `%y`'s window, so it shortens - and 2002 round-trips, which is why this case alone
+    # demonstrates NOTHING about the century. The two below are the ones that carry the property.
     assert date_label({"summaryDate": "6/15/2002"}) == "06/15/02"
+    # OUTSIDE the window, where a 2-digit year would state the wrong century: 03/04/68 reads back
+    # as 2068 and 01/01/69 as 1969. Four digits kept rather than a hundred years lost.
+    assert date_label({"summaryDate": "03/04/1968"}) == "03/04/1968"
+    assert date_label({"summaryDate": "01/01/2069"}) == "01/01/2069"
+    # The edges of the window itself, so a later reader can see where the rule turns over.
+    assert date_label({"summaryDate": "01/01/1969"}) == "01/01/69"
+    assert date_label({"summaryDate": "12/31/2068"}) == "12/31/68"
     # Still not guessed at.
     assert date_label({"summaryDate": "Sept 22, 2026"}) == UNDATED_LABEL
 
