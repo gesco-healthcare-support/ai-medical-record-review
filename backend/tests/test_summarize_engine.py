@@ -1052,6 +1052,159 @@ def test_a_substantive_rewrite_that_drops_headings_is_accepted(monkeypatch):
     assert "shockwave therapy" in out["verifiedText"].lower()
 
 
+# Eight points, because the ceiling only engages on a body structured enough for "most of the
+# headings" to mean anything. `_LABELLED` carries two, below the floor of 3.
+#
+# That USED to be why the two tests above passed unchanged, and it is no longer the reason for
+# both: the fabrication exemption now returns before the floor is reached for
+# `..._substantive_rewrite_that_drops_headings_is_accepted`, whose issue set includes
+# `unsupported`. Neither of those tests reaches the floor at all, so neither pins it - which is
+# what `test_the_floor_keeps_a_small_bodys_rewrite` below is for.
+_STRUCTURED = (
+    "**DOI**: 11/03/24. **Subjective Complaints**: Low back pain 6/10. "
+    "**History of Present Illness**: Lifting injury. **Physical Examination**: Flexion 55 degrees. "
+    "Height 70 inches. Weight 194 pounds. **Diagnoses**: Lumbar disc protrusion. "
+    "**Treatment Plan**: Continue therapy. **Discussed**: Imaging reviewed. "
+    "**Work Status**: Modified duty."
+)
+
+
+def _structured_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+    return ("Progress Note - Dr Smith" if system_msg == se.TITLE_PROMPT else _STRUCTURED), False
+
+
+def test_a_substantive_rewrite_that_guts_the_body_is_rejected(monkeypatch, caplog):
+    """WHEN a substantive issue is answered by removing MOST of the bold points, THE SYSTEM SHALL
+    keep the raw body.
+
+    Observed 2026-09-18 on a self-hosted model: one `vitals` issue - a legitimate house-rule hit -
+    was answered by replacing eight points with a single line naming the date, physician and
+    facility. A vitals fix can empty ONE point; it cannot empty the summary. Before this, the
+    `vitals` type alone put the set outside the correction-only pair and the rewrite was accepted
+    whole.
+    """
+    _stub_verify(
+        monkeypatch,
+        "**DOI**: 11/03/24. Marcus V, M.D. Valley Ridge Orthopedic Medical Group.",
+        [
+            {"type": "capitalization", "detail": "**Subjective Complaints**"},
+            {"type": "vitals", "detail": "Height 70 inches. Weight 194 pounds."},
+        ],
+    )
+    monkeypatch.setattr(se, "_generate", _structured_generate)
+
+    with caplog.at_level("WARNING"):
+        out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is None
+    assert "**Diagnoses**" in out["summaryText"]
+    # The reviewer still sees why it was flagged - rejecting the rewrite is not swallowing it.
+    assert {i["type"] for i in out["verifyIssues"]} == {"capitalization", "vitals"}
+    assert "vitals" in caplog.text
+
+
+def test_a_substantive_rewrite_that_empties_one_point_is_still_accepted(monkeypatch):
+    """WHEN a substantive issue removes ONE bold point, THE SYSTEM SHALL store the audited body.
+
+    The case the ceiling must not break, and the reason `vitals` is excluded from the
+    correction-only pair in the first place: house rule 1 strips height and weight, and doing so can
+    legitimately take the point that carried them.
+    """
+    without_exam = _STRUCTURED.replace(
+        "**Physical Examination**: Flexion 55 degrees. Height 70 inches. Weight 194 pounds. ", ""
+    )
+    _stub_verify(monkeypatch, without_exam, [{"type": "vitals", "detail": "Height 70 inches."}])
+    monkeypatch.setattr(se, "_generate", _structured_generate)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert "Height 70 inches" not in out["verifiedText"]
+    assert "**Diagnoses**" in out["verifiedText"]
+
+
+# The RATIO, pinned in both directions. The two tests above pin the ENDS (8 -> 1 rejected, 8 -> 7
+# accepted) and the floor of 3 is pinned by `_LABELLED` carrying two, but nothing held the "half"
+# in place: two mutations of the constant survived the whole suite, and each of the two tests below
+# exists to kill one of them. Asserted against `_drops_required_headings` directly, because what is
+# under test is the arithmetic rather than the wiring the tests above already cover.
+def _bold(n: int) -> str:
+    """A body carrying exactly `n` bold point headings."""
+    return " ".join(f"**Point {i}**: finding {i}." for i in range(n))
+
+
+def test_the_floor_keeps_a_small_bodys_rewrite():
+    """WHEN a substantive rewrite empties a body carrying FEWER than three headings, THE SYSTEM
+    SHALL store it.
+
+    Pins the second conjunct of the ceiling, `raw_headings >= 3`, which nothing else did: delete
+    it and every other assertion in this file still passes, so the floor had no decoy at all
+    while the ratio beside it had two.
+
+    It is load-bearing rather than decorative. WITH the floor a two-heading body gutted to
+    nothing is stored; WITHOUT it, rejected. Storing is the intent - below three, losing one
+    heading IS losing a large share, and a vitals fix on a two-point body is exactly the case the
+    correction-only exclusion exists to protect.
+
+    `vitals` deliberately, not `unsupported`: the fabrication exemption returns before the floor
+    is reached, so an `unsupported` fixture would assert against the exemption and never touch
+    the line under test.
+    """
+    assert se._drops_required_headings(_bold(2), "", {"vitals"}) is False
+    assert se._drops_required_headings(_bold(1), "", {"vitals"}) is False
+    # ...and one heading above the floor, the same rewrite is refused - so the assertions above
+    # are the floor talking rather than the ratio.
+    assert se._drops_required_headings(_bold(3), "", {"vitals"}) is True
+
+
+def test_a_fabrication_fix_is_never_blocked_however_much_it_removes():
+    """WHEN the audit reports an unsupported claim, THE SYSTEM SHALL store its rewrite whatever the
+    ceiling would say.
+
+    `unsupported` means the source does not support the text. Where a summary is largely fabricated
+    its fix legitimately guts the body, and rejecting that fix leaves the FABRICATED text standing -
+    the worse of the two failures, which is why the ceiling narrows here.
+    """
+    assert se._drops_required_headings(_bold(8), _bold(1), {"unsupported"}) is False
+    assert se._drops_required_headings(_bold(8), "", {"unsupported"}) is False
+    # Still exempt when it arrives alongside another substantive type.
+    assert se._drops_required_headings(_bold(8), _bold(1), {"unsupported", "vitals"}) is False
+
+
+def test_the_reported_failure_is_still_rejected_after_the_exemption():
+    """The case this guard exists for carried a `vitals` issue, not `unsupported` - so exempting
+    fabrication fixes does not reopen it. That is what makes the narrowing safe, and it is asserted
+    rather than assumed."""
+    assert se._drops_required_headings(_bold(8), _bold(1), {"vitals"}) is True
+    assert se._drops_required_headings(_bold(8), _bold(1), {"capitalization", "vitals"}) is True
+
+
+def test_a_structured_body_cut_to_just_under_half_is_rejected():
+    """WHEN a substantive rewrite leaves FEWER than half the bold points, THE SYSTEM SHALL reject it.
+
+    Kills the mutation `fixed * 2 < raw` -> `fixed * 3 < raw`. At 8 -> 3 the live constant gives
+    `3 * 2 = 6 < 8`, True, so the rewrite is rejected; the mutation gives `3 * 3 = 9 < 8`, False,
+    and the gutted body would be stored. Nothing else in the suite distinguishes the two.
+    """
+    # The fixture must carry the count it claims, or the ratio below is asserted against nothing.
+    assert se._bold_span_count(_bold(8)) == 8
+    assert se._bold_span_count(_bold(3)) == 3
+    assert se._drops_required_headings(_bold(8), _bold(3), {"vitals"}) is True
+
+
+def test_a_structured_body_cut_to_exactly_half_is_accepted():
+    """WHEN a substantive rewrite leaves EXACTLY half the bold points, THE SYSTEM SHALL store it.
+
+    The other side of the same constant, and it records which side of "half" the boundary sits on -
+    which the docstring leaves to the reader. Kills the mutation `fixed * 2 < raw` ->
+    `fixed * 2 <= raw`. At 4 -> 2 the live constant gives `2 * 2 = 4 < 4`, False, so the rewrite is
+    stored; the mutation gives `4 <= 4`, True, and a legitimate fix would be thrown away.
+    """
+    assert se._bold_span_count(_bold(4)) == 4
+    assert se._bold_span_count(_bold(2)) == 2
+    assert se._drops_required_headings(_bold(4), _bold(2), {"vitals"}) is False
+
+
 def test_a_renamed_heading_passes_the_guard_untouched(monkeypatch):
     """WHEN the audit RENAMES a heading without reducing the count, THE SYSTEM SHALL store its body.
 

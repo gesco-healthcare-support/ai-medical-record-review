@@ -240,6 +240,11 @@ _F_BOLD = (
 # legitimately empty a point and take its heading with it. Blocking those would suppress a correct fix.
 _CORRECTION_ONLY_ISSUES = frozenset({"capitalization", "range_of_motion"})
 
+# The audit's name for a claim the source does not support. Named rather than inlined because the
+# ceiling and any later guard must exempt the SAME type - a second spelling here is a fabrication
+# fix silently blocked.
+_FABRICATION_ISSUE = "unsupported"
+
 
 def _bold_span_count(text: str) -> int:
     """How many `**...**` spans a body carries.
@@ -262,12 +267,52 @@ def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> boo
     Compares COUNTS, never heading text, and deliberately so: renaming or re-casing a heading is the
     behaviour the audit is being asked for, and comparing text would block exactly that. Only a
     heading that stopped existing is the defect.
+
+    A SUBSTANTIVE reason - an unsupported claim, a vitals line - still justifies a rewrite, and one
+    of those can legitimately empty a point and take its heading with it. It cannot empty MOST of
+    them. Measured 2026-09-18 on a self-hosted model: a body carrying eight bold points was answered
+    with a single line naming the date, the physician and the facility - 1,482 chars to 126, every
+    clinical finding gone - because one `vitals` issue put the set outside the correction-only pair
+    and the guard below returned False without looking at how much was removed. Blast radius of the
+    ceiling, replayed over every stored rewrite: 0 of 475 on gemini, so nothing about the answering
+    model's current behaviour changes; 14 of 929 pre-provenance rows, which lost EVERY heading while
+    keeping 90-98% of their prose, i.e. exactly the de-bolding this guard was written to reject.
+
+    THE TRADE, named here so the next reader does not have to rediscover it: the ceiling also
+    catches `unsupported`, which means a FABRICATED claim. Where a summary is largely fabricated,
+    the audit's fix legitimately guts it, this rejects that fix, and the fabricated text is what
+    stands. It is flagged and logged rather than silent, and the replay above found 0 of 475 on the
+    answering model in production - so it is forward risk on the self-hosted pipeline rather than a
+    live regression. The alternative trade is worse: accepting every gutting rewrite is what the
+    reviewer reported, and a body reduced to one line loses content that WAS supported.
     """
-    # Any issue type outside the correction-only pair means the audit had a substantive reason to
-    # restructure the body - an unsupported claim, a duplicated finding - so its rewrite stands.
-    if not issue_types or not issue_types <= _CORRECTION_ONLY_ISSUES:
+    if not issue_types:
         return False
-    return _bold_span_count(fixed) < _bold_span_count(raw)
+    raw_headings = _bold_span_count(raw)
+    if issue_types <= _CORRECTION_ONLY_ISSUES:
+        return _bold_span_count(fixed) < raw_headings
+    # A FABRICATED CLAIM IS NEVER BLOCKED. `unsupported` means the audit found something the source
+    # does not support, and where a summary is largely fabricated its fix legitimately guts the
+    # body - so the ceiling below would reject that fix and leave the fabricated text standing.
+    # Narrows what the ceiling covers, deliberately, because shipping invented clinical content is
+    # the worse of the two failures.
+    #
+    # WIDER THAN THAT SENTENCE, and deliberately: this fires when `unsupported` appears AT ALL,
+    # including alongside other issues where the rewrite still deletes everything. The narrow
+    # reading - a rewrite ANSWERING fabrication - would need the audit to report its issues in
+    # priority order, and it reports a set. Given the set, the choice is between letting one
+    # fabrication finding exempt the whole rewrite and blocking a fabrication fix whenever it
+    # arrives with company; the first ships less invented content, which is the failure that
+    # matters here. Pinned by the mixed-issue case in
+    # `test_a_fabrication_fix_is_never_blocked_however_much_it_removes`.
+    #
+    # It does NOT reopen the case this guard was written for: that row carried a `vitals` issue,
+    # not `unsupported`, so it is still rejected. Pinned by a test either side of the exemption.
+    if _FABRICATION_ISSUE in issue_types:
+        return False
+    # The ceiling. Three is the floor for "structured": below it, losing one heading IS losing a
+    # large share, and a vitals fix on a two-point body is the case the exclusion above protects.
+    return raw_headings >= 3 and _bold_span_count(fixed) * 2 < raw_headings
 
 
 # Content words only. Case, punctuation and the `**` of a heading are all things the audit is
