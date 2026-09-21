@@ -814,6 +814,29 @@ def _fill_header(header, re_line, dob_line, *, numbered: bool, font=None) -> Non
 UNDATED_LABEL = "Undated"
 
 
+# Every separator and year width these records actually use. ONE format was accepted before -
+# `%m/%d/%Y` - and everything else became "Undated", which a senior reviewer found on a delivered
+# record: "It had some dates under the XX-XX-20XX format instead of XX/XX/20XX format."
+#
+# The 2-digit variants are NOT speculative padding, they were failing too: `%Y` needs four digits,
+# so `09/22/26` parsed as nothing and a dated document rendered Undated AND sorted to the end.
+#
+# ORDER MATTERS, 4-digit before 2-digit. `%y` pivots at 1969-2068, so a four-digit year offered to
+# it first would be misread rather than rejected.
+#
+# NOT extended to spelled-out months or ambiguous DD/MM. A reviewer compares this against the page,
+# and guessing between 03/04 and 04/03 to rescue a date is the kind of help nobody asked for.
+_DATE_FORMATS = (
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+    "%m.%d.%Y",
+    "%Y-%m-%d",
+    "%m/%d/%y",
+    "%m-%d-%y",
+    "%m.%d.%y",
+)
+
+
 def parsed_date(entry):
     """The entry's date as a datetime, or None when it states none.
 
@@ -823,10 +846,13 @@ def parsed_date(entry):
     reachable from today's field spec, which only ever writes "-", but two definitions of one concept
     drift eventually.
     """
-    try:
-        return datetime.strptime((entry.get("summaryDate") or "").strip(), "%m/%d/%Y")
-    except ValueError:
-        return None
+    value = (entry.get("summaryDate") or "").strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def date_label(entry) -> str:

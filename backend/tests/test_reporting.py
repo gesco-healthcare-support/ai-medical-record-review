@@ -32,6 +32,7 @@ from app.services.reporting import (
     date_label,
     intro_sentence,
     memo_opening,
+    parsed_date,
     record_accounting,
     report_font,
     summary_intro,
@@ -294,6 +295,51 @@ def test_a_missing_key_is_undated_rather_than_a_crash():
 def test_a_real_date_is_left_exactly_as_written():
     """Copy dates EXACTLY - the factuality rules say so, and a reviewer compares them to the page."""
     assert date_label({"summaryDate": "01/02/2020"}) == "01/02/2020"
+
+
+# A senior reviewer found dated documents rendering as "Undated" on a delivered record: "It had some
+# dates under the XX-XX-20XX format instead of XX/XX/20XX format." Only `%m/%d/%Y` was accepted, so
+# every other separator - and every 2-digit year, which was failing too - lost its date entirely.
+# The cost is not only the label: an unparseable date sorts as undated, so the entry also moved to
+# the END of the review.
+@pytest.mark.parametrize(
+    "written,expected",
+    [
+        ("09/22/2026", (2026, 9, 22)),
+        ("09-22-2026", (2026, 9, 22)),
+        ("9-22-2026", (2026, 9, 22)),
+        ("09.22.2026", (2026, 9, 22)),
+        ("2026-09-22", (2026, 9, 22)),
+        ("09/22/26", (2026, 9, 22)),
+        ("9/22/26", (2026, 9, 22)),
+        ("09-22-26", (2026, 9, 22)),
+        ("6/15/2002", (2002, 6, 15)),
+    ],
+)
+def test_a_date_is_read_whatever_separator_or_year_width_it_uses(written, expected):
+    parsed = parsed_date({"summaryDate": written})
+    assert parsed is not None, f"{written!r} was read as undated"
+    assert (parsed.year, parsed.month, parsed.day) == expected
+
+
+@pytest.mark.parametrize("written", ["09/22/2026", "09-22-2026", "09/22/26", "2026-09-22"])
+def test_a_readable_date_is_never_labelled_undated(written):
+    assert date_label({"summaryDate": written}) != UNDATED_LABEL
+
+
+def test_a_four_digit_year_is_not_pivoted_through_the_two_digit_rule():
+    """Order matters in `_DATE_FORMATS`. `%y` pivots at 1969-2068, so a four-digit year offered to
+    it first would be MISREAD rather than rejected - 2026 is not 2020, and nothing downstream would
+    say so."""
+    assert parsed_date({"summaryDate": "09/22/2026"}).year == 2026
+    assert parsed_date({"summaryDate": "6/15/2002"}).year == 2002
+
+
+def test_an_ambiguous_or_written_out_date_is_still_undated():
+    """Deliberately NOT rescued. A reviewer checks this against the page, and guessing between
+    03/04 and 04/03, or parsing prose, is the kind of help nobody asked for."""
+    assert date_label({"summaryDate": "Sept 22, 2026"}) == UNDATED_LABEL
+    assert date_label({"summaryDate": "22/09/2026"}) == UNDATED_LABEL
 
 
 def test_both_renderers_share_the_label_and_the_ordering():
