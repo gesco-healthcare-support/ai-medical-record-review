@@ -305,21 +305,21 @@ def test_a_real_date_is_left_exactly_as_written():
 @pytest.mark.parametrize(
     "written,expected",
     [
-        ("09/22/2026", (2026, 9, 22)),
-        ("09-22-2026", (2026, 9, 22)),
-        ("9-22-2026", (2026, 9, 22)),
-        ("09.22.2026", (2026, 9, 22)),
-        ("2026-09-22", (2026, 9, 22)),
-        ("09/22/26", (2026, 9, 22)),
-        ("9/22/26", (2026, 9, 22)),
-        ("09-22-26", (2026, 9, 22)),
-        ("6/15/2002", (2002, 6, 15)),
+        ("09/22/2026", "2026-09-22"),
+        ("09-22-2026", "2026-09-22"),
+        ("9-22-2026", "2026-09-22"),
+        ("09.22.2026", "2026-09-22"),
+        ("2026-09-22", "2026-09-22"),
+        ("09/22/26", "2026-09-22"),
+        ("9/22/26", "2026-09-22"),
+        ("09-22-26", "2026-09-22"),
+        ("6/15/2002", "2002-06-15"),
     ],
 )
 def test_a_date_is_read_whatever_separator_or_year_width_it_uses(written, expected):
     parsed = parsed_date({"summaryDate": written})
     assert parsed is not None, f"{written!r} was read as undated"
-    assert (parsed.year, parsed.month, parsed.day) == expected
+    assert parsed.strftime("%Y-%m-%d") == expected
 
 
 @pytest.mark.parametrize("written", ["09/22/2026", "09-22-2026", "09/22/26", "2026-09-22"])
