@@ -291,9 +291,11 @@ os.environ.setdefault("ENVIRONMENT", "dev")
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+from argon2 import PasswordHasher, profiles  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402 - env must be set before app import
 from sqlalchemy import delete, select  # noqa: E402
 
+from app.auth import password as _password  # noqa: E402
 from app.auth.password import MrrPasswordHelper  # noqa: E402
 from app.db import get_sessionmaker  # noqa: E402
 from app.main import app  # noqa: E402
@@ -308,6 +310,19 @@ from app.models import (  # noqa: E402
     Summary,
     User,
 )
+
+# Hash every NEW test password at argon2's CHEAPEST cost. Measured 2026-09-22: hashing at the
+# production cost was 43% of backend test time (562 hashes and verifies across ~360 tests), and a
+# full-suite trial with this swap took it from 215s to 0.5s with every test still passing.
+#
+# It is safe because verify() reads the cost from the stored hash, not from the hasher - a hash
+# made at production cost still verifies at production cost - and because the scheme itself (the
+# HMAC-SHA512 pre-hash, then argon2id) is unchanged. Module level, before any test, because the app
+# builds a fresh MrrPasswordHelper per request (app/auth/users.py) and every helper reads this
+# global when it is constructed. PRODUCTION_HASHER keeps the real one so test_password.py can pin
+# its cost: after this swap, no other test would notice it changing.
+PRODUCTION_HASHER = _password._DEFAULT_HASHER
+_password._DEFAULT_HASHER = PasswordHasher.from_parameters(profiles.CHEAPEST)
 
 TEST_EMAIL_PREFIX = "pytest-auth-"
 

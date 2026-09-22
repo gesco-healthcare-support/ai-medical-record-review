@@ -6,14 +6,15 @@ The security-critical guarantees:
 - verify_and_update NEVER returns an updated hash (so migrated Flask-Security hashes are never
   silently rewritten into a different format, which would lock existing users out on next login);
 - the helper verifies a hash built the way Flask-Security-Too builds one -- argon2id over
-  base64(HMAC-SHA512(salt, password)) -- proving byte-compatibility with the migrated hashes.
+  base64(HMAC-SHA512(salt, password)) -- proving byte-compatibility with the migrated hashes;
+- the PRODUCTION hasher keeps the Flask-Security cost, even though the suite hashes cheaply.
 """
 
 import base64
 import hashlib
 import hmac
 
-from argon2 import PasswordHasher
+from argon2 import PasswordHasher, Type, extract_parameters, profiles
 
 from app.auth.password import MrrPasswordHelper
 
@@ -67,3 +68,30 @@ def test_generate_is_random_and_nonempty():
     assert a
     assert b
     assert a != b
+
+
+def test_the_production_hasher_keeps_the_flask_security_cost():
+    """conftest swaps the default hasher for a cheap one, so no other test would notice a change to
+    the PRODUCTION cost. Every new user's hash is made at this cost, and it must stay the one the
+    migrated Flask-Security hashes were made with."""
+    from tests.conftest import PRODUCTION_HASHER
+
+    got = {
+        "type": PRODUCTION_HASHER.type,
+        "time_cost": PRODUCTION_HASHER.time_cost,
+        "memory_cost": PRODUCTION_HASHER.memory_cost,
+        "parallelism": PRODUCTION_HASHER.parallelism,
+    }
+    assert got == {"type": Type.ID, "time_cost": 3, "memory_cost": 65536, "parallelism": 4}, (
+        "the production password hasher no longer uses the Flask-Security cost"
+    )
+
+
+def test_the_suite_hashes_at_the_cheapest_cost():
+    """Hashing at production cost was 43% of backend test time (562 hashes and verifies, measured
+    2026-09-22). Reads the parameters back out of a hash made through the default path, so it fails
+    if the swap is removed OR if the helper stops using the default hasher."""
+    stored = MrrPasswordHelper(salt=_SALT).hash(_PW)
+    assert extract_parameters(stored) == profiles.CHEAPEST, (
+        "the suite is hashing test passwords at more than the cheapest cost"
+    )
