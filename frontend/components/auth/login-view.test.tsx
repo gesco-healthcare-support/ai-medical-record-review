@@ -15,9 +15,15 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CurrentUser } from "@/lib/types";
 
-// Backed by a REAL URLSearchParams rather than a hand-rolled { get }. A stub would have to
-// reproduce `get` returning null for an absent key, which is the exact semantic the `token ?
-// "reset" : "signin"` fallback turns on - a stub that returned undefined would test the stub.
+// Backed by a REAL URLSearchParams rather than a hand-rolled { get }, because it parses a query
+// string the way a link does.
+//
+// NOT for the null-vs-undefined reason this comment used to give. That reason was checked and is
+// false: `token ? :` treats null and undefined alike, `token ?? ""` catches both, and
+// `viewParam === "register"` rejects both, so a stub returning undefined behaves identically in
+// every path of this component. What a real URLSearchParams actually buys is the EMPTY VALUE -
+// "?token=" parses to "", not null - which is the distinction the truncated-link test turns on,
+// and the one a hand-rolled stub would have had to be written already knowing about.
 const query = { params: new URLSearchParams() };
 const replace = vi.fn();
 const current: { user: Partial<CurrentUser> | undefined } = { user: undefined };
@@ -92,6 +98,29 @@ describe("which form the auth entry point shows", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Back to sign in" }));
     expect(headingIs(SIGN_IN)).toBeInTheDocument();
+  });
+
+  it("drops a truncated reset link on the plain sign-in form, with no explanation", () => {
+    // THE CASE THE HEADER OF THIS FILE NAMES AND THE FIRST VERSION OF IT MISSED. "?token=" parses
+    // to the empty string, not null; "" is falsy, so `token ? "reset" : "signin"` sends it all the
+    // way through to the sign-in catch-all. Compare the test three above: a token-LESS "?view=reset"
+    // gets "Link expired". The MORE broken link gets the LESS helpful screen.
+    //
+    // PINNED AS IT BEHAVES, NOT AS IT ARGUABLY SHOULD. Whether a truncated link deserves the expired
+    // message is a product question, not a test's to settle - so this records today's answer and
+    // makes the next person's decision visible instead of leaving it to be rediscovered.
+    //
+    // Coverage was never going to find this: `token ? :` is already exercised both ways by the two
+    // tests above, so there is no uncovered branch here to report. It is a behavioural pin.
+    //
+    // It is also the ONLY fixture in this file that separates "" from null - probe P10 flips the
+    // fallback to `token !== null`, and every other test here agrees with the mutation.
+    visit("token=");
+
+    expect(headingIs(SIGN_IN)).toBeInTheDocument();
+    // The absence is the finding; the positive above is what proves the channel is live, since a
+    // component that rendered nothing at all would satisfy this line on its own.
+    expect(screen.queryByRole("heading", { name: EXPIRED })).not.toBeInTheDocument();
   });
 
   it("falls back to the link's own view when the view parameter is not one it knows", () => {
