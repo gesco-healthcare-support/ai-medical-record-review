@@ -281,7 +281,7 @@ jobs:
 
       - name: Frontend coverage must not fall below the floor
         env:
-          FLOOR: "80"
+          FLOOR: "101"
         run: |
           set -euo pipefail
           f=frontend/coverage/coverage-summary.json
