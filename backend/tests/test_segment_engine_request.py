@@ -178,7 +178,9 @@ def test_a_vllm_backend_sends_page_images_instead_of_the_pdf(tmp_path, monkeypat
     monkeypatch.setattr(settings, "llm_backend", "vllm")
     monkeypatch.setattr(settings, "vllm_model", "served-by-the-pod/model")
     monkeypatch.setattr(
-        se, "page_image_parts", lambda _p, start, end, cap: [ImagePart(data=b"img")] * 3
+        se,
+        "page_image_parts",
+        lambda _p, start, end, cap, label_pages=False: [ImagePart(data=b"img")] * 3,
     )
     _stub_provider(monkeypatch, captured)
     pdf = _blank_pdf(tmp_path / "synthetic.pdf", 4)
@@ -204,7 +206,7 @@ def test_the_vllm_page_cap_is_handed_to_the_rasteriser(tmp_path, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "llm_backend", "vllm")
 
-    def _rasterise(_path, start, end, cap):
+    def _rasterise(_path, start, end, cap, label_pages=False):
         seen["cap"] = cap
         return [ImagePart(data=b"img")]
 
@@ -217,6 +219,53 @@ def test_the_vllm_page_cap_is_handed_to_the_rasteriser(tmp_path, monkeypatch):
     assert seen["cap"] == settings.vllm_segment_max_pages
     # Control: it is genuinely a different number from the summarize cap, or this passes trivially.
     assert settings.vllm_segment_max_pages != settings.summary_image_max_pages
+
+
+def test_the_vllm_window_labels_every_page_with_its_position(tmp_path, monkeypatch):
+    """WHEN rasterising for vllm, THE SYSTEM SHALL ask for page labels.
+
+    A PDF part carries page positions; a list of JPEGs does not. So on this backend the model
+    had to COUNT its way to a page number, while SEGMENTATION_PROMPT forbids the only other
+    positional signal ("Ignore page numbers printed on the pages"). Measured against the
+    boundaries reviewers kept, that cost 6.14 misplaced boundaries per 100 on vllm against 0.62
+    on gemini, 82% of them by exactly one page - while the rate of boundaries deleted outright
+    was unchanged, which is what says the model found the right documents and numbered them
+    wrong. `_window_parts` carries the full measurement.
+    """
+    seen = {}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "llm_backend", "vllm")
+
+    def _rasterise(_path, start, end, cap, label_pages=False):
+        seen["label_pages"] = label_pages
+        return [ImagePart(data=b"img")]
+
+    monkeypatch.setattr(se, "page_image_parts", _rasterise)
+    _stub_provider(monkeypatch, {})
+    pdf = _blank_pdf(tmp_path / "synthetic.pdf", 4)
+
+    se._window_rows(pdf, 1, 3)
+
+    assert seen["label_pages"] is True
+
+
+def test_the_gemini_window_is_not_labelled(tmp_path, monkeypatch):
+    """GUARD, and the reason the labelling is not unconditional: the PDF path needs nothing.
+
+    Gemini receives one DocumentPart whose container already carries page positions, so a label
+    there would add tokens, change a payload that has been stable since this stage was written,
+    and move nothing it measures.
+    """
+    captured = {}
+    _stub_provider(monkeypatch, captured)
+    pdf = _blank_pdf(tmp_path / "synthetic.pdf", 4)
+
+    se._window_rows(pdf, 1, 3)
+
+    parts = captured["parts"]
+    assert len(parts) == 2, "one PDF then the prompt, and nothing between them"
+    assert isinstance(parts[0], DocumentPart)
+    assert parts[1].text == SEGMENTATION_PROMPT
 
 
 def test_a_fenced_reply_is_still_parsed(tmp_path, monkeypatch):

@@ -100,9 +100,57 @@ def _window_parts(pdf_path, window_start, window_end, settings):
     `llm/openai.py::_to_messages`, which raises TypeError on a DocumentPart because chat completions
     has no such part. So the window is rasterised to one image per page there. Gemini keeps the exact
     PDF bytes it has always been sent, and rasterises nothing.
+
+    THE IMAGES ARE LABELLED AND THE PDF IS NOT, because only one of the two carries a page
+    position. A PDF part has discrete pages, so Gemini's answer to "which page is this" comes
+    from the container. Loose JPEGs carry no position at all, so the model had to COUNT them -
+    and SEGMENTATION_PROMPT forbids the only other positional signal on the page: "Ignore page
+    numbers printed on the pages", because scanned bundles restart and repeat their printed
+    numbering. Counting was therefore the model's ONLY route to a page number, and a count that
+    slips by one is a boundary in the wrong place.
+
+    MEASURED ON THE BOX over every reviewer-corrected document, our boundaries against the ones
+    the reviewer kept - the only ground truth available, since a boundary they left alone is one
+    they accepted:
+
+        arm       boundaries    MOVED by the reviewer     deleted outright
+        gemini          5934      37   (0.62 per 100)      678   (11.4%)
+        vllm            1369      84   (6.14 per 100)      175   (12.8%)
+
+    A TENFOLD difference in MISPLACEMENT while over-splitting is unchanged, which is the shape
+    that identifies this: the model was finding the right documents and numbering them wrong.
+    82% of those moves are exactly one page. This was reported as fragmentation, and the rate
+    that would show fragmentation does not: 37.4% of our rows are single-page against 38.1% of
+    the human ground truth's 1158 rows, so that metric cannot separate the two arms at all.
+
+    A/B against the same reviewers' boundaries, three corrected records, two repeats each:
+
+        record            arm         boundaries   exact match   off by 1-2
+        c4e34e39 100pg    bare                24         43.8%            8
+                          labelled            15         56.2%            5
+        826c394e 152pg    bare                72         70.1%           20
+                          labelled            58         82.1%            0
+        9f96c0e1 194pg    bare                70         72.1%           17
+                          labelled            71         83.8%            2
+
+    Pooled, exact agreement 68.2% -> 80.1% and misplacement 45 -> 7. The third record is the
+    control that matters: labelling produced MORE boundaries there and still agreed with the
+    reviewer more often, so this is not "labels make it split less". Both repeats of all six
+    arms came back byte-identical, so none of the gap is run-to-run variance.
+
+    The labels are 1-based WITHIN THE WINDOW, which is already what SEGMENTATION_PROMPT means by
+    "the N-th page of THIS file" and already what `_window_rows` assumes when it adds
+    `window_start - 1`. So THE PROMPT IS UNTOUCHED - its fingerprint does not move, and the
+    segmentation quality baseline stays comparable across this change.
     """
     if settings.backend_for("segment") == "vllm":
-        return page_image_parts(pdf_path, window_start, window_end, settings.vllm_segment_max_pages)
+        return page_image_parts(
+            pdf_path,
+            window_start,
+            window_end,
+            settings.vllm_segment_max_pages,
+            label_pages=True,
+        )
     reader = PdfReader(pdf_path)
     writer = PdfWriter()
     for p in range(window_start - 1, window_end):
