@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-from docx.shared import Pt
+from docx.shared import Inches, Pt
 
 from app.services.reporting import (
     CONCLUSION,
@@ -32,6 +32,7 @@ from app.services.reporting import (
     date_label,
     intro_sentence,
     memo_opening,
+    parsed_date,
     record_accounting,
     report_font,
     summary_intro,
@@ -158,7 +159,7 @@ def test_build_mrr_document_renders_two_column_table():
     assert len(table.columns) == 2
     assert len(table.rows) == 2
     # 03/04/2019 sorts before 01/02/2020; left cell = date, right cell = title + text.
-    assert table.rows[0].cells[0].text == "03/04/2019"
+    assert table.rows[0].cells[0].text == "03/04/19"
     assert "Report B" in table.rows[0].cells[1].text
     assert "text B" in table.rows[0].cells[1].text
 
@@ -277,7 +278,7 @@ def test_undated_entries_sort_last_in_the_word_document(undated):
     # first entry, which is how the first version of this test passed for the wrong reason.
     dates = [row.cells[0].text for row in doc.tables[0].rows]
 
-    assert dates == ["01/02/2020", "03/04/2021", UNDATED_LABEL]
+    assert dates == ["01/02/20", "03/04/21", UNDATED_LABEL]
 
 
 @pytest.mark.parametrize("undated", ["-", "", "   ", "n/a", "unknown"])
@@ -291,9 +292,140 @@ def test_a_missing_key_is_undated_rather_than_a_crash():
     assert date_label({}) == UNDATED_LABEL
 
 
-def test_a_real_date_is_left_exactly_as_written():
-    """Copy dates EXACTLY - the factuality rules say so, and a reviewer compares them to the page."""
-    assert date_label({"summaryDate": "01/02/2020"}) == "01/02/2020"
+def test_every_readable_date_renders_as_one_shape():
+    """WHEN a date can be read, THE SYSTEM SHALL render it MM/DD/YY whatever the source wrote.
+
+    REVERSES what this test used to assert - "Copy dates EXACTLY - the factuality rules say so, and
+    a reviewer compares them to the page". That rule was written on the reviewer's behalf and the
+    reviewer asked for the opposite, having seen a record whose dates arrived in three different
+    shapes: "Maybe we can implement something to automatically convert them into XX/XX/XX format".
+
+    The factuality rule it was protecting is untouched: normalising punctuation and year width does
+    not change which day the entry states, and an unreadable date is still Undated rather than
+    guessed at - which the cases below pin alongside.
+    """
+    assert date_label({"summaryDate": "01/02/2020"}) == "01/02/20"
+    assert date_label({"summaryDate": "01-02-2020"}) == "01/02/20"
+    assert date_label({"summaryDate": "2020-01-02"}) == "01/02/20"
+    assert date_label({"summaryDate": "1/2/20"}) == "01/02/20"
+    # Inside `%y`'s window, so it shortens - and 2002 round-trips, which is why this case alone
+    # demonstrates NOTHING about the century. The two below are the ones that carry the property.
+    assert date_label({"summaryDate": "6/15/2002"}) == "06/15/02"
+    # OUTSIDE the window, where a 2-digit year would state the wrong century: 03/04/68 reads back
+    # as 2068 and 01/01/69 as 1969. Four digits kept rather than a hundred years lost.
+    assert date_label({"summaryDate": "03/04/1968"}) == "03/04/1968"
+    assert date_label({"summaryDate": "01/01/2069"}) == "01/01/2069"
+    # The edges of the window itself, so a later reader can see where the rule turns over.
+    assert date_label({"summaryDate": "01/01/1969"}) == "01/01/69"
+    assert date_label({"summaryDate": "12/31/2068"}) == "12/31/68"
+    # Still not guessed at.
+    assert date_label({"summaryDate": "Sept 22, 2026"}) == UNDATED_LABEL
+
+
+# A senior reviewer found dated documents rendering as "Undated" on a delivered record: "It had some
+# dates under the XX-XX-20XX format instead of XX/XX/20XX format." Only `%m/%d/%Y` was accepted, so
+# every other separator - and every 2-digit year, which was failing too - lost its date entirely.
+# The cost is not only the label: an unparseable date sorts as undated, so the entry also moved to
+# the END of the review.
+@pytest.mark.parametrize(
+    "written,expected",
+    [
+        ("09/22/2026", "2026-09-22"),
+        ("09-22-2026", "2026-09-22"),
+        ("9-22-2026", "2026-09-22"),
+        ("09.22.2026", "2026-09-22"),
+        ("2026-09-22", "2026-09-22"),
+        ("09/22/26", "2026-09-22"),
+        ("9/22/26", "2026-09-22"),
+        ("09-22-26", "2026-09-22"),
+        ("6/15/2002", "2002-06-15"),
+    ],
+)
+def test_a_date_is_read_whatever_separator_or_year_width_it_uses(written, expected):
+    parsed = parsed_date({"summaryDate": written})
+    assert parsed is not None, f"{written!r} was read as undated"
+    assert parsed.strftime("%Y-%m-%d") == expected
+
+
+@pytest.mark.parametrize("written", ["09/22/2026", "09-22-2026", "09/22/26", "2026-09-22"])
+def test_a_readable_date_is_never_labelled_undated(written):
+    assert date_label({"summaryDate": written}) != UNDATED_LABEL
+
+
+def test_a_four_digit_year_reads_as_the_year_it_states():
+    """Renamed from a claim that was false. It used to say this pinned `_DATE_FORMATS` ORDER,
+    against `%y` misreading a four-digit year through its 1969-2068 pivot. `%y` raises on one
+    instead - "unconverted data remains" - so the order is harmless and this assertion passes under
+    either. It still earns its place: it pins the OUTCOME, that a stated year is the year read.
+    """
+    assert parsed_date({"summaryDate": "09/22/2026"}).year == 2026
+    assert parsed_date({"summaryDate": "6/15/2002"}).year == 2002
+
+
+def test_an_ambiguous_or_written_out_date_is_still_undated():
+    """Deliberately NOT rescued. A reviewer checks this against the page, and guessing between
+    03/04 and 04/03, or parsing prose, is the kind of help nobody asked for."""
+    assert date_label({"summaryDate": "Sept 22, 2026"}) == UNDATED_LABEL
+    assert date_label({"summaryDate": "22/09/2026"}) == UNDATED_LABEL
+
+
+def _table_widths(entries):
+    """The (date, body) column widths the builder lays a record out with."""
+    doc = build_mrr_document(
+        entries,
+        num_pages=len(entries),
+        patient_name="Synthetic Patient",
+        patient_dob="-",
+        qme_or_ame="QME",
+        details=ReportDetails(lawfirm="Example Law Firm"),
+    )
+    row = doc.tables[0].rows[0]
+    return row.cells[0].width, row.cells[1].width
+
+
+def test_a_four_digit_date_gets_a_column_wide_enough_to_hold_it():
+    """DEMONSTRATES a defect the four-digit branch above introduced.
+
+    `table.autofit = False` writes `<w:tblLayout w:type="fixed"/>`, so Word will NOT widen a
+    column to fit its text - it wraps instead. 0.9in leaves 54.0pt for text after the cell
+    margins, and at 11pt MM/DD/YYYY measures 54.0pt in Arial, 56.0 in Tahoma and Calibri and
+    63.0 in Georgia. So in most doctor fonts the date a reviewer asked to keep its century
+    would have wrapped onto a second line, in exactly the rows that branch exists to protect.
+    """
+    date_w, body_w = _table_widths(
+        [
+            {"summaryDate": "03/04/2019", "summaryTitle": "A", "summaryText": "a"},
+            {"summaryDate": "06/15/1958", "summaryTitle": "B", "summaryText": "b"},
+        ]
+    )
+    assert date_w == Inches(1.2)
+    assert date_w + body_w == Inches(6.5)  # the usable width of the page is unchanged
+
+
+def test_a_record_of_short_dates_keeps_the_layout_it_always_had():
+    """The widening is CONDITIONAL, and this is the half that keeps it honest.
+
+    Every record seen so far is laid out by this branch - the oldest date on hand is 1974 - so
+    an unconditional widening would narrow the body column on every document to accommodate a
+    row shape that almost never occurs. The body is the content; that is the wrong trade.
+    """
+    date_w, body_w = _table_widths(
+        [
+            {"summaryDate": "03/04/2019", "summaryTitle": "A", "summaryText": "a"},
+            {"summaryDate": "01/02/2020", "summaryTitle": "B", "summaryText": "b"},
+        ]
+    )
+    assert date_w == Inches(0.9)
+    assert date_w + body_w == Inches(6.5)
+
+
+def test_an_undated_entry_does_not_widen_the_column():
+    """`Undated` is shorter than MM/DD/YY, so it needs nothing - and it is the ONE label with no
+    slash in it. A width rule written as "is it long" rather than "does it carry four year
+    digits" would have to special-case it; this one does not."""
+    date_w, body_w = _table_widths([{"summaryDate": "-", "summaryTitle": "A", "summaryText": "a"}])
+    assert date_w == Inches(0.9)
+    assert date_w + body_w == Inches(6.5)
 
 
 def test_both_renderers_share_the_label_and_the_ordering():

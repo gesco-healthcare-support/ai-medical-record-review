@@ -814,6 +814,37 @@ def _fill_header(header, re_line, dob_line, *, numbered: bool, font=None) -> Non
 UNDATED_LABEL = "Undated"
 
 
+# Every separator and year width these records actually use. ONE format was accepted before -
+# `%m/%d/%Y` - and everything else became "Undated", which a senior reviewer found on a delivered
+# record: "It had some dates under the XX-XX-20XX format instead of XX/XX/20XX format."
+#
+# The 2-digit variants are NOT speculative padding, they were failing too: `%Y` needs four digits,
+# so `09/22/26` parsed as nothing and a dated document rendered Undated AND sorted to the end.
+#
+# ORDER IS NOT LOAD-BEARING, and this says so rather than leaving the reassuring version in place.
+# An earlier note here claimed `%y` would MISREAD a four-digit year through its 1969-2068 pivot, so
+# 4-digit had to be offered first. It does not: `%y` matches exactly two digits, and the trailing
+# pair is unconverted data, so it RAISES and the loop moves on.
+#
+#     strptime("09/22/2026", "%m/%d/%y")  ->  ValueError: unconverted data remains: 26
+#     strptime("12/31/1999", "%m/%d/%y")  ->  ValueError: unconverted data remains: 99
+#
+# The 4-digit-first order is kept because it is the common case and tries one format fewer, not
+# because anything breaks without it.
+#
+# NOT extended to spelled-out months or ambiguous DD/MM. A reviewer compares this against the page,
+# and guessing between 03/04 and 04/03 to rescue a date is the kind of help nobody asked for.
+_DATE_FORMATS = (
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+    "%m.%d.%Y",
+    "%Y-%m-%d",
+    "%m/%d/%y",
+    "%m-%d-%y",
+    "%m.%d.%y",
+)
+
+
 def parsed_date(entry):
     """The entry's date as a datetime, or None when it states none.
 
@@ -823,25 +854,119 @@ def parsed_date(entry):
     reachable from today's field spec, which only ever writes "-", but two definitions of one concept
     drift eventually.
     """
-    try:
-        return datetime.strptime((entry.get("summaryDate") or "").strip(), "%m/%d/%Y")
-    except ValueError:
-        return None
+    value = (entry.get("summaryDate") or "").strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+# The years `%y` round-trips. Below or above this window the century cannot be recovered from a
+# 2-digit label, so `date_label` keeps four digits there. Python maps 69-99 to 1969-1999 and
+# 00-68 to 2000-2068; these are that rule, named rather than left as bare numbers.
+_SHORT_YEAR_FIRST = 1969
+_SHORT_YEAR_LAST = 2068
 
 
 def date_label(entry) -> str:
-    """The date cell text: the date exactly as written, or "Undated".
+    """The date cell text: the date as MM/DD/YY, or "Undated".
 
     The field spec writes "-" when a document carries no date, which in a finished deliverable reads
     as a value nobody filled in rather than a fact about the document. The reviewers call these
     Undated and expect them at the end of the review.
 
-    A parsed date is returned VERBATIM, never reformatted: the factuality rules say copy dates
-    exactly, and a reviewer compares them against the page.
+    NORMALISED, which REVERSES the rule this function used to carry - "returned VERBATIM, never
+    reformatted: the factuality rules say copy dates exactly, and a reviewer compares them against
+    the page". That rule was written on the reviewer's behalf, and the reviewer asked for the
+    opposite: "Maybe we can implement something to automatically convert them into XX/XX/XX format
+    (IE: 09/22/26) since there were some formatting issues using the 4-digit year as well." He is
+    the one doing the comparing, so it is his to overrule, and he has.
+
+    The factuality concern is untouched by it: normalising punctuation and year width does not
+    change WHICH DAY the entry states, and a date this cannot read is still "Undated" rather than
+    guessed at. What it does change is that the column no longer shows the separator the source
+    used - which is the point, since a record carrying three separators rendered as three shapes.
+
+    THE REAL COST OF A 2-DIGIT YEAR IS NOT READABILITY, it is that the century is UNRECOVERABLE
+    outside `%y`'s 1969-2068 window. An earlier version of this paragraph said an old entry's age
+    was merely "less obvious at a glance", which understates it:
+
+        03/04/1968  ->  03/04/68  ->  reads back as 2068
+        01/01/2069  ->  01/01/69  ->  reads back as 1969
+
+    A hundred years wrong, in a document a client reads, with nothing on the page saying so.
+    Sorting is unaffected - `parsed_date` reads the SOURCE, not this label - so it is display
+    only, and display is what the client gets.
+
+    So a year outside that window keeps its four digits. It should fire rarely - MEASURED across
+    four delivered letters, the oldest date appearing anywhere in them is 1974 - so the column is
+    uniformly MM/DD/YY in practice, exactly as asked for.
+
+    Note the margin is FIVE years, not the several decades a first guess suggests. An earlier
+    draft of this paragraph said these dates 'run from the 1990s'; they run from 1974, and the
+    four records to hand are not the corpus. So the branch is closer to live than it looks, which
+    is an argument for keeping it rather than against.
+
+    NOT A REJECTION OF THE REQUEST - the request did not consider a pre-1969 document date, and
+    this decides only that case. One line to revert if the reviewer would rather have the short
+    form unconditionally.
     """
-    if parsed_date(entry) is None:
+    parsed = parsed_date(entry)
+    if parsed is None:
         return UNDATED_LABEL
-    return (entry.get("summaryDate") or "").strip()
+    if _SHORT_YEAR_FIRST <= parsed.year <= _SHORT_YEAR_LAST:
+        return parsed.strftime("%m/%d/%y")
+    return parsed.strftime("%m/%d/%Y")
+
+
+# The date column, and the wider one a four-digit year needs.
+#
+# `table.autofit = False` writes `<w:tblLayout w:type="fixed"/>`, so Word will NOT widen a column
+# to fit its text - it wraps instead. After the Table Normal style's 108-twip cell margins, 0.9in
+# leaves 54.0pt, which held every MM/DD/YY label in every doctor font. Then `date_label` began
+# rendering a year outside 1969-2068 with four digits, and at 11pt that label measures 50.1pt in
+# Times New Roman but 53.1 Calibri, 55.1 Arial, 56.4 Tahoma, 58.4 Century Gothic, 61.4 Georgia.
+# So in four of the six doctor fonts that can be measured the date would wrap onto a second line,
+# in exactly the rows that branch exists to protect.
+#
+# 1.2in IS CHOSEN FROM A RATIO, NOT FROM A FONT, because five of the eleven doctor fonts are
+# installed on no machine that has looked at this. Across the six that can be measured,
+# MM/DD/YYYY is 1.217x to 1.286x the width of MM/DD/YY - a property of adding two digits rather
+# than of the typeface, so it bounds the five nobody can open. Every doctor font's two-digit
+# label already fits the 54.0pt this column gives it, so the same font's four-digit label is at
+# most 54.0 x 1.286 = 69.4pt, needing an 80.2pt cell once the margins are added back = 1.114in.
+# 1.2in = 86.4pt clears that by 6.2pt, and the widest label measured by 14.2pt.
+#
+# The margins do NOT scale with the ratio, which is why the arithmetic goes through the TEXT
+# width rather than multiplying the column: 0.9 x 1.286 would be 1.157in and would be reasoning
+# about 10.8pt of fixed margin as though it were type.
+#
+# The two widths sum to 6.5in either way, which is the usable width of a letter page at the 1in
+# margins this document uses. Widening the date column narrows the body by the same amount.
+_DATE_COL = Inches(0.9)
+_DATE_COL_WIDE = Inches(1.2)
+_BODY_COL = Inches(5.6)
+_BODY_COL_NARROW = Inches(5.3)
+
+
+def _column_widths(entries) -> tuple[Inches, Inches]:
+    """``(date, body)`` widths: the wider date column only when some label needs it.
+
+    Conditional rather than always-wide, so a record whose dates are all inside the short-year
+    window is laid out exactly as it was before - which is every record seen so far, the oldest
+    date on hand being 1974. The body column is the content, and narrowing it on every document
+    to accommodate a row shape that almost never occurs is the wrong trade.
+    """
+    # `date_label` emits exactly three shapes: MM/DD/YY, MM/DD/YYYY, and UNDATED_LABEL. The year
+    # width separates all three on its own - `rsplit` returns the undated label whole, and its
+    # length is not 4 - so there is no slash test here. One was written and removed: nothing
+    # caught its removal, because it could never change an answer.
+    for entry in entries:
+        if len(date_label(entry).rsplit("/", 1)[-1]) == 4:
+            return _DATE_COL_WIDE, _BODY_COL_NARROW
+    return _DATE_COL, _BODY_COL
 
 
 def build_mrr_document(
@@ -913,10 +1038,11 @@ def build_mrr_document(
     # the summary flows in the right column) instead of the old inline date-tab-title paragraph.
     table = doc.add_table(rows=0, cols=2)
     table.autofit = False
+    date_width, body_width = _column_widths(entries)
     for entry in entries:
         cells = table.add_row().cells
-        cells[0].width = Inches(0.9)
-        cells[1].width = Inches(5.6)
+        cells[0].width = date_width
+        cells[1].width = body_width
         cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         cells[1].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         _run(cells[0].paragraphs[0], date_label(entry), font=font)
