@@ -38,7 +38,10 @@ export function UserMenu() {
     router.push("/login");
   }
 
-  const displayName = user?.name || user?.email || "Account";
+  // `?.trim()`, matching `initialsFrom` at :19. Without it a name of "   " is truthy, so this
+  // rendered three spaces instead of falling through to the email - and `initialsFrom`, which does
+  // trim, correctly showed initials derived from the email. Correct initials beside a blank name.
+  const displayName = user?.name?.trim() || user?.email || "Account";
 
   return (
     <DropdownMenu>
@@ -51,11 +54,13 @@ export function UserMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel className="flex flex-col">
-          {/* `||`, not `??`. A name saved as an empty string is missing, not present-and-blank -
-              and the trigger above already treats it that way (`user?.name || user?.email`), so
-              `??` here rendered an empty bold line in the menu while the trigger showed the
-              email. The two lines read the same field and now agree on what absent means. */}
-          <span className="truncate font-medium">{user?.name || "Signed in"}</span>
+          {/* `?.trim() ||`, not `??` and not a bare `||`. A name that is empty OR only whitespace
+              is missing, not present-and-blank. `??` kept "" and rendered an empty bold line; a
+              bare `||` fixed that and still kept "   ", because three spaces are truthy.
+              All THREE readers of `user.name` now agree on what absent means - here, `displayName`
+              at :41, and `initialsFrom` at :19, which trimmed from the start and was the one that
+              made the disagreement visible: it showed initials from the email beside a blank name. */}
+          <span className="truncate font-medium">{user?.name?.trim() || "Signed in"}</span>
           {user?.email ? (
             <span className="truncate text-xs font-normal text-muted-foreground">{user.email}</span>
           ) : null}
