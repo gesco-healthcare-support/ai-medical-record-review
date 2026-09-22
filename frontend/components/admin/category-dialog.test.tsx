@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -139,13 +139,30 @@ describe("CategoryDialog payload", () => {
     // Padding on the text fields and a blank line plus an indented line in the examples box are
     // all load-bearing. Without them `split("\n")` and `split("\n").map(trim).filter(Boolean)`
     // produce the same array, and the cleanup could be deleted with this test still green.
-    await user.type(screen.getByLabelText("ID (number)"), " 15 ");
-    await user.type(screen.getByLabelText("Name"), "  Operative report  ");
-    await user.type(screen.getByLabelText("Description"), "  Surgery notes  ");
-    await user.type(
-      screen.getByLabelText(/Example document titles/i),
-      "MRI Report{enter}{enter}   CT Scan   ",
-    );
+    //
+    // `fireEvent.change` rather than `user.type`, and the CONTENT above is why that is safe:
+    // what this test pins is the payload, not per-keystroke behaviour, and every field here is a
+    // plain controlled input (`onChange={(e) => setX(e.target.value)}`) with no validation gating
+    // Save. The same strings reach the same state either way.
+    //
+    // It was `user.type`, which types character by character with a delay between keystrokes, and
+    // that cost about 3.2s against a 5000ms default - close enough that the test timed out twice
+    // under full-suite load and passed 8/8 in isolation. Four fields, one of them a 37-character
+    // string with two newlines, is the whole of the difference.
+    //
+    // Proven rather than argued: the four mutation probes on the cleanup were run against BOTH the
+    // typed version and this one and returned identical verdicts, so the change is faster without
+    // pinning less. Reserve `user.type` for where per-keystroke behaviour is actually under test.
+    fireEvent.change(screen.getByLabelText("ID (number)"), { target: { value: " 15 " } });
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "  Operative report  " },
+    });
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "  Surgery notes  " },
+    });
+    fireEvent.change(screen.getByLabelText(/Example document titles/i), {
+      target: { value: "MRI Report\n\n   CT Scan   " },
+    });
     await user.click(screen.getByLabelText(/Auto-assign/i)); // default on -> off
     await user.click(screen.getByLabelText("Active")); // default on -> off
     await user.click(screen.getByRole("button", { name: "Save" }));
