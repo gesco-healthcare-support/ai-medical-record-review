@@ -21,7 +21,7 @@ from pdf2image import convert_from_path
 from pypdf import PdfReader
 
 from app.config import get_settings
-from app.services.llm import ImagePart
+from app.services.llm import ImagePart, TextPart
 
 # JPEG at quality 70, unchanged from the summarize rasteriser this was extracted from. These are
 # page scans: JPEG's loss is invisible against an OCR-grade source, and the byte saving is what
@@ -76,10 +76,20 @@ def page_dpi(reader, page, settings, long_edge_px=None):
     return max(1, min(settings.summary_image_dpi, fitted))
 
 
-def page_image_parts(pdf_path, start, end, max_pages, long_edge_px=None):
+def page_image_parts(pdf_path, start, end, max_pages, long_edge_px=None, label_pages=False):
     """Rasterize pages [start, end] to lean JPEG ``ImagePart``s, at most ``max_pages`` of them.
 
     ``max_pages`` is required and has no default - see the module docstring.
+
+    ``label_pages`` puts a ``Page N`` text part immediately BEFORE each image, numbered from 1
+    WITHIN THIS CALL. Default off: it costs a few tokens per page and only earns them where the
+    model has to report a page POSITION back, which summarization and the DOI read do not.
+
+    A bare list of images carries no position at all, and a PDF part does - its container has
+    discrete pages, so the model reads a page number rather than deriving one. So a caller that
+    crossed from Gemini onto a rasterised backend silently swapped 'read the number off the
+    container' for 'count the images'. `segment_engine._window_parts` records what that cost
+    when it was measured.
 
     Rasterized ONE PAGE AT A TIME, which is deliberate rather than naive. The loop looks like an
     obvious optimisation: `convert_from_path` spawns a Poppler subprocess and re-parses the PDF on
@@ -105,7 +115,12 @@ def page_image_parts(pdf_path, start, end, max_pages, long_edge_px=None):
     # Poppler subprocesses the loop below already pays for, so it is noise next to them.
     reader = PdfReader(pdf_path)
     parts = []
-    for page in range(int(start), last + 1):
+    for offset, page in enumerate(range(int(start), last + 1), start=1):
+        if label_pages:
+            # BEFORE the image, so the label reads as naming what follows rather than what
+            # preceded it. `_to_messages` puts every part in ONE user message and preserves
+            # caller order, so the pairing survives the transport.
+            parts.append(TextPart(f"Page {offset}"))
         for image in convert_from_path(
             pdf_path,
             first_page=page,

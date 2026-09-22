@@ -158,6 +158,61 @@ def test_every_part_is_a_jpeg_image_part(monkeypatch):
     assert all(part.data == b"JPEG:JPEG:70" for part in parts)
 
 
+def test_images_carry_no_page_label_unless_asked(monkeypatch):
+    """GUARD. Summarization, the DOI read and the deposition read all take this default, and
+    none of them reports a page position back - so a label there is tokens for nothing and a
+    change to what those three send."""
+    _stub_the_rasteriser(monkeypatch)
+
+    parts = rasterise.page_image_parts("/synthetic.pdf", 1, 3, 10)
+
+    assert [type(part).__name__ for part in parts] == ["ImagePart"] * 3
+
+
+def test_a_labelled_page_says_which_page_it_is_before_showing_it(monkeypatch):
+    """A bare list of images carries NO page position, so a model asked for one has to count the
+    images. Gemini never had to - a PDF part has discrete pages - which is why this only arises
+    on the rasterised backend. The label goes BEFORE its image so it reads as naming what
+    follows."""
+    _stub_the_rasteriser(monkeypatch)
+
+    parts = rasterise.page_image_parts("/synthetic.pdf", 1, 3, 10, label_pages=True)
+
+    assert len(parts) == 6
+    assert [p.text for p in parts[::2]] == ["Page 1", "Page 2", "Page 3"]
+    assert [type(p).__name__ for p in parts[1::2]] == ["ImagePart"] * 3
+
+
+def test_the_label_numbers_the_call_and_not_the_document(monkeypatch):
+    """THE COORDINATE SYSTEM, and the one thing here most likely to be 'corrected' later.
+
+    A window starting at page 21 labels its images `Page 1`..`Page 5`, NOT `Page 21`. That is
+    what SEGMENTATION_PROMPT already means by "the N-th page of THIS file" - the file being the
+    excerpt - and what `_window_rows` already assumes when it adds `window_start - 1` to every
+    row it parses. Labelling absolutely would double-count that offset and would need the prompt
+    reworded, which moves its fingerprint and costs the quality baseline its comparability.
+    """
+    rendered = _stub_the_rasteriser(monkeypatch)
+
+    parts = rasterise.page_image_parts("/synthetic.pdf", 21, 25, 10, label_pages=True)
+
+    assert [p.text for p in parts[::2]] == ["Page 1", "Page 2", "Page 3", "Page 4", "Page 5"]
+    # Control: the ABSOLUTE pages really are 21-25, so the labels are relative by choice rather
+    # than because the call happened to start at 1.
+    assert [first for first, _last, _dpi in rendered] == [21, 22, 23, 24, 25]
+
+
+def test_the_cap_counts_pages_rather_than_parts(monkeypatch):
+    """A labelled call emits two parts per page, so a cap applied to the PARTS list would halve
+    the window - 15 pages of a 30-page window, silently, which is what `max_pages` exists to stop."""
+    _stub_the_rasteriser(monkeypatch)
+
+    parts = rasterise.page_image_parts("/synthetic.pdf", 1, 50, 4, label_pages=True)
+
+    assert [p.text for p in parts[::2]] == ["Page 1", "Page 2", "Page 3", "Page 4"]
+    assert sum(1 for p in parts if type(p).__name__ == "ImagePart") == 4
+
+
 def test_the_dpi_is_derived_per_page_rather_than_taken_from_the_setting(monkeypatch):
     """WHEN a page declares a box equal to its pixel count, THE SYSTEM SHALL lower the DPI for it.
 
