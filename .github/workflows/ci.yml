@@ -208,10 +208,12 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks dir . --redact --no-banner --exit-code 1
 
-  # Coverage floor. A SEPARATE job so a shortfall reads as "coverage" rather than as the test job
-  # failing. Backend only for now; the frontend floor lands once frontend coverage reaches 80 on all
-  # four metrics (Phase 5 Task 9) - a floor above today's number would make this permanently red,
-  # which teaches people to ignore it.
+  # Coverage floor. A SEPARATE job so a shortfall reads as "coverage" rather than as a test job
+  # failing. Two halves, one job - so the ruleset needs ONE check name to enforce both:
+  #   backend   90, on coverage.py's branch-aware total (one number)
+  #   frontend  80, on EACH of statements, branches, functions and lines (four numbers)
+  # The frontend half landed in Phase 5 Task 9, once frontend coverage cleared 80 on all four - a
+  # floor above today's number would make this permanently red, which teaches people to ignore it.
   #
   # NOT YET A REQUIRED CHECK. Until `coverage-floor` is added to the `main` ruleset's required
   # checks, this reports and blocks NOTHING - the same evaluate-mode gap the ruleset flip closes.
@@ -220,11 +222,16 @@ jobs:
   # unparseable report and reports success is worse than no gate, because it looks like protection.
   # The measurement is proved to exist before any number is read from it.
   #
-  # The metric is coverage.py's branch-aware total, (covered lines + covered branches) /
+  # Backend: coverage.py's branch-aware total, (covered lines + covered branches) /
   # (valid lines + valid branches) - which is why the backend step passes --cov-branch. Read it from
   # the ARTIFACT pytest-cov produced; regenerating from a .coverage data file does NOT reproduce it.
+  #
+  # Frontend: from coverage-summary.json's integer covered/total counts, compared as integers
+  # (covered * 100 >= floor * total). Never from `pct` or the text table: those are rounded and
+  # truncated, so 79.996% would print as 80.00 and pass. A skipped job is not a passed one - if the
+  # frontend or backend job fails, this is skipped, and that job's own failure is what blocks.
   coverage-floor:
-    needs: [backend]
+    needs: [backend, frontend]
     runs-on: ubuntu-latest
     steps:
       - name: Download backend coverage
@@ -264,6 +271,61 @@ jobs:
           if pct < floor:
               sys.exit(f"BELOW THE FLOOR: {pct:.2f}% < {floor:.0f}%")
           print("above the floor")
+          PYEOF
+
+      - name: Download frontend coverage
+        uses: actions/download-artifact@v5
+        with:
+          name: frontend-coverage
+          path: frontend/coverage
+
+      - name: Frontend coverage must not fall below the floor
+        env:
+          FLOOR: "80"
+        run: |
+          set -euo pipefail
+          f=frontend/coverage/coverage-summary.json
+          if [ ! -s "$f" ]; then
+            echo "No coverage summary at $f."
+            echo "Refusing to report a floor from a measurement that does not exist."
+            exit 1
+          fi
+          python3 - "$f" "$FLOOR" <<'PYEOF'
+          import json, sys
+          path = sys.argv[1]
+          try:
+              floor = int(sys.argv[2])
+          except ValueError:
+              sys.exit(f"FLOOR must be a whole percentage, got {sys.argv[2]!r}.")
+          try:
+              with open(path, encoding="utf-8") as fh:
+                  doc = json.load(fh)
+          except Exception as exc:
+              sys.exit(f"coverage-summary.json did not parse ({exc!r}) - failing rather than passing blind.")
+          total = doc.get("total") if isinstance(doc, dict) else None
+          if not isinstance(total, dict):
+              sys.exit("coverage-summary.json lacks a total object; cannot read the four metrics.")
+          below = []
+          for metric in ("statements", "branches", "functions", "lines"):
+              entry = total.get(metric)
+              covered = entry.get("covered") if isinstance(entry, dict) else None
+              valid = entry.get("total") if isinstance(entry, dict) else None
+              # `type(...) is int`: a float would be silently truncated by int(), and json-summary's
+              # "Unknown" (its pct for an empty total) must not be read as a number at all.
+              if type(covered) is not int or type(valid) is not int:
+                  sys.exit(f"coverage-summary.json lacks a usable {metric} count ({entry!r}).")
+              if valid <= 0:
+                  sys.exit(f"coverage-summary.json reports zero measurable {metric} - empty report.")
+              ok = covered * 100 >= floor * valid
+              needed = -(-floor * valid // 100)
+              print(f"frontend {metric:<10} {100.0 * covered / valid:6.2f}%  {covered} / {valid}"
+                    f"  floor {floor}%  headroom {covered - needed:+d}  {'ok' if ok else 'BELOW'}")
+              if not ok:
+                  # Counts, not a percentage: a rounded 80.00% "below" 80% reads as a contradiction.
+                  below.append(f"{metric} {covered}/{valid} needs {needed}, {needed - covered} short")
+          if below:
+              sys.exit(f"BELOW THE FLOOR ({floor}%): {'; '.join(below)}")
+          print("frontend above the floor on all four")
           PYEOF
 
   # Separate job so a quality-gate failure reads as "sonarcloud", not "tests". Consumes the
