@@ -42,6 +42,18 @@ _TOP_P = 0.95
 _TOP_K = 40
 
 
+# Large enough that the page cap is always the binding constraint, for a backend where raw PDF
+# bytes are not sent at all. Not `inf`: the packing arithmetic adds to it, and a float infinity
+# there would make every comparison true in a way that reads as a bug to the next person.
+_NO_BYTE_BUDGET = 1 << 40  # 1 TiB
+
+# What ONE page may be before Gemini cannot carry it inline. Vertex caps the request near 20 MB
+# AFTER base64, which inflates by 4/3, so the raw ceiling is ~15 MB. Held below that.
+# Distinct from `window_budget_mb`, which packs several pages together and is tuned for
+# duration as much as size; this is the point past which one page alone cannot be sent.
+_GEMINI_INLINE_PAGE_LIMIT = 14 * 1024 * 1024
+
+
 def _window_page_cap(settings):
     """Pages per window, which is a DIFFERENT number per backend once rasterisation is involved.
 
@@ -55,6 +67,30 @@ def _window_page_cap(settings):
     if settings.backend_for("segment") == "vllm":
         return min(settings.window_max_pages, settings.vllm_segment_max_pages)
     return settings.window_max_pages
+
+
+def _window_byte_bounds(settings) -> tuple[int, int | None]:
+    """The packing budget and the hard per-page ceiling for one window, per backend.
+
+    Returns ``(budget_bytes, hard_limit_bytes)``; a None ceiling means there is none.
+
+    THE BUDGET MEASURES RAW PDF BYTES, and that is a GEMINI fact. Vertex receives the pages
+    inline and caps the request, which is the whole reason `window_budget_mb` exists.
+
+    vLLM cannot carry a PDF at all - `_window_parts` rasterises every page to a lean JPEG - so
+    the raw size of the source page is never sent anywhere, and a budget measured in those bytes
+    bounds nothing on that path. It is not merely useless there: on 2026-09-21 it refused a
+    141-page record outright because one page was 12.7 MB, on a backend that would have rendered
+    that page to the same ~1024px image as every other. What DOES bound the request there is the
+    image count, and `_window_page_cap` already enforces it.
+
+    So vLLM packs by page count alone. The budget is not merely raised - raising it is chasing a
+    number that describes a different transport, and the next heavy scan moves it again.
+    """
+    if settings.backend_for("segment") == "vllm":
+        return _NO_BYTE_BUDGET, None
+    budget = int(settings.window_budget_mb * 1024 * 1024)
+    return budget, _GEMINI_INLINE_PAGE_LIMIT
 
 
 def _window_parts(pdf_path, window_start, window_end, settings):
@@ -273,12 +309,16 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
         if progress is not None:
             progress(stage, current, total)
 
+    # The byte budget and the hard ceiling are both properties of the TRANSPORT, so both are
+    # resolved per backend. See `_window_byte_bounds`.
+    budget_bytes, hard_limit_bytes = _window_byte_bounds(settings)
     windows = byte_budgeted_windows(
         pdf_path,
         total_pages,
         settings.window_overlap,
-        int(settings.window_budget_mb * 1024 * 1024),
+        budget_bytes,
         _window_page_cap(settings),
+        hard_limit_bytes=hard_limit_bytes,
     )
     # Windows are independent (each builds its own sub-PDF and calls the model), so run them on a
     # small pool - the seam's rate limiter caps the aggregate request rate. Results are placed by

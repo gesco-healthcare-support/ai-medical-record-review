@@ -49,12 +49,54 @@ def test_cap_is_inert_when_the_byte_budget_binds_first(monkeypatch):
     assert max(end - start + 1 for start, end in with_cap) < 160
 
 
-def test_single_oversized_page_still_raises(monkeypatch):
-    # The existing fail-fast must survive: a page bigger than the whole budget cannot be split, and
-    # silently truncating it would lose coverage.
+def test_a_page_over_the_budget_gets_its_own_window(monkeypatch):
+    """REVERSES `test_single_oversized_page_still_raises`, which pinned the old fail-fast.
+
+    That behaviour cost a real record: on 2026-09-21 a 141-page document failed segmentation
+    outright because page 10 was 12.7 MB against a 12.5 MB budget. OCR had completed and every
+    other page was ordinary; the reviewer got nothing.
+
+    The budget is a PACKING target - how many pages travel together - so one heavy page is a
+    reason to send it alone, not a reason to refuse the other 140. Coverage is not lost, which
+    was the original worry: the page is still in a window, just by itself.
+    """
+    _fake_sizes(monkeypatch, [20 * MB, 1024, 1024])
+    windows = byte_budgeted_windows("x.pdf", 3, 30, int(12.5 * MB), 160)
+
+    assert windows[0] == (1, 1)  # alone, not refused
+    covered = {page for start, end in windows for page in range(start, end + 1)}
+    assert covered == {1, 2, 3}  # and nothing is dropped
+
+
+def test_only_a_hard_limit_raises(monkeypatch):
+    """The ceiling that remains is the transport's, not the packing budget's.
+
+    `hard_limit_bytes` is what one page genuinely cannot exceed on this backend - Gemini carries
+    the raw bytes inline and Vertex caps the request. None means no ceiling, which is the honest
+    value for vLLM, where every page is rasterised and no raw-byte size is ever sent.
+    """
     _fake_sizes(monkeypatch, [20 * MB, 1024])
-    with pytest.raises(RuntimeError, match="raise WINDOW_BUDGET_MB"):
-        byte_budgeted_windows("x.pdf", 2, 30, int(12.5 * MB), 160)
+    with pytest.raises(RuntimeError, match="one request"):
+        byte_budgeted_windows("x.pdf", 2, 30, int(12.5 * MB), 160, hard_limit_bytes=14 * MB)
+
+    # Under the ceiling, the same page is placed rather than refused.
+    _fake_sizes(monkeypatch, [13 * MB, 1024])
+    assert byte_budgeted_windows("x.pdf", 2, 30, int(12.5 * MB), 160, hard_limit_bytes=14 * MB)[
+        0
+    ] == (1, 1)
+
+    # And with no ceiling at all, nothing raises however heavy the page.
+    _fake_sizes(monkeypatch, [500 * MB, 1024])
+    assert byte_budgeted_windows("x.pdf", 2, 30, int(12.5 * MB), 160)[0] == (1, 1)
+
+
+def test_a_run_of_heavy_pages_still_terminates(monkeypatch):
+    """Every page over the budget, so every window holds exactly one. The old code raised on the
+    first; the new code must place all of them and stop, rather than loop."""
+    _fake_sizes(monkeypatch, [20 * MB] * 6)
+    windows = byte_budgeted_windows("x.pdf", 6, 30, int(12.5 * MB), 160)
+
+    assert windows == [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)]
 
 
 def test_cap_of_one_still_covers_every_page(monkeypatch):
