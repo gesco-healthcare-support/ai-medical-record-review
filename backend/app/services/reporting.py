@@ -921,6 +921,54 @@ def date_label(entry) -> str:
     return parsed.strftime("%m/%d/%Y")
 
 
+# The date column, and the wider one a four-digit year needs.
+#
+# `table.autofit = False` writes `<w:tblLayout w:type="fixed"/>`, so Word will NOT widen a column
+# to fit its text - it wraps instead. After the Table Normal style's 108-twip cell margins, 0.9in
+# leaves 54.0pt, which held every MM/DD/YY label in every doctor font. Then `date_label` began
+# rendering a year outside 1969-2068 with four digits, and at 11pt that label measures 50.1pt in
+# Times New Roman but 53.1 Calibri, 55.1 Arial, 56.4 Tahoma, 58.4 Century Gothic, 61.4 Georgia.
+# So in four of the six doctor fonts that can be measured the date would wrap onto a second line,
+# in exactly the rows that branch exists to protect.
+#
+# 1.2in IS CHOSEN FROM A RATIO, NOT FROM A FONT, because five of the eleven doctor fonts are
+# installed on no machine that has looked at this. Across the six that can be measured,
+# MM/DD/YYYY is 1.217x to 1.286x the width of MM/DD/YY - a property of adding two digits rather
+# than of the typeface, so it bounds the five nobody can open. Every doctor font's two-digit
+# label already fits the 54.0pt this column gives it, so the same font's four-digit label is at
+# most 54.0 x 1.286 = 69.4pt, needing an 80.2pt cell once the margins are added back = 1.114in.
+# 1.2in = 86.4pt clears that by 6.2pt, and the widest label measured by 14.2pt.
+#
+# The margins do NOT scale with the ratio, which is why the arithmetic goes through the TEXT
+# width rather than multiplying the column: 0.9 x 1.286 would be 1.157in and would be reasoning
+# about 10.8pt of fixed margin as though it were type.
+#
+# The two widths sum to 6.5in either way, which is the usable width of a letter page at the 1in
+# margins this document uses. Widening the date column narrows the body by the same amount.
+_DATE_COL = Inches(0.9)
+_DATE_COL_WIDE = Inches(1.2)
+_BODY_COL = Inches(5.6)
+_BODY_COL_NARROW = Inches(5.3)
+
+
+def _column_widths(entries) -> tuple[Inches, Inches]:
+    """``(date, body)`` widths: the wider date column only when some label needs it.
+
+    Conditional rather than always-wide, so a record whose dates are all inside the short-year
+    window is laid out exactly as it was before - which is every record seen so far, the oldest
+    date on hand being 1974. The body column is the content, and narrowing it on every document
+    to accommodate a row shape that almost never occurs is the wrong trade.
+    """
+    # `date_label` emits exactly three shapes: MM/DD/YY, MM/DD/YYYY, and UNDATED_LABEL. The year
+    # width separates all three on its own - `rsplit` returns the undated label whole, and its
+    # length is not 4 - so there is no slash test here. One was written and removed: nothing
+    # caught its removal, because it could never change an answer.
+    for entry in entries:
+        if len(date_label(entry).rsplit("/", 1)[-1]) == 4:
+            return _DATE_COL_WIDE, _BODY_COL_NARROW
+    return _DATE_COL, _BODY_COL
+
+
 def build_mrr_document(
     entries,
     num_pages,
@@ -990,10 +1038,11 @@ def build_mrr_document(
     # the summary flows in the right column) instead of the old inline date-tab-title paragraph.
     table = doc.add_table(rows=0, cols=2)
     table.autofit = False
+    date_width, body_width = _column_widths(entries)
     for entry in entries:
         cells = table.add_row().cells
-        cells[0].width = Inches(0.9)
-        cells[1].width = Inches(5.6)
+        cells[0].width = date_width
+        cells[1].width = body_width
         cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         cells[1].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         _run(cells[0].paragraphs[0], date_label(entry), font=font)

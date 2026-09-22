@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-from docx.shared import Pt
+from docx.shared import Inches, Pt
 
 from app.services.reporting import (
     CONCLUSION,
@@ -367,6 +367,65 @@ def test_an_ambiguous_or_written_out_date_is_still_undated():
     03/04 and 04/03, or parsing prose, is the kind of help nobody asked for."""
     assert date_label({"summaryDate": "Sept 22, 2026"}) == UNDATED_LABEL
     assert date_label({"summaryDate": "22/09/2026"}) == UNDATED_LABEL
+
+
+def _table_widths(entries):
+    """The (date, body) column widths the builder lays a record out with."""
+    doc = build_mrr_document(
+        entries,
+        num_pages=len(entries),
+        patient_name="Synthetic Patient",
+        patient_dob="-",
+        qme_or_ame="QME",
+        details=ReportDetails(lawfirm="Example Law Firm"),
+    )
+    row = doc.tables[0].rows[0]
+    return row.cells[0].width, row.cells[1].width
+
+
+def test_a_four_digit_date_gets_a_column_wide_enough_to_hold_it():
+    """DEMONSTRATES a defect the four-digit branch above introduced.
+
+    `table.autofit = False` writes `<w:tblLayout w:type="fixed"/>`, so Word will NOT widen a
+    column to fit its text - it wraps instead. 0.9in leaves 54.0pt for text after the cell
+    margins, and at 11pt MM/DD/YYYY measures 54.0pt in Arial, 56.0 in Tahoma and Calibri and
+    63.0 in Georgia. So in most doctor fonts the date a reviewer asked to keep its century
+    would have wrapped onto a second line, in exactly the rows that branch exists to protect.
+    """
+    date_w, body_w = _table_widths(
+        [
+            {"summaryDate": "03/04/2019", "summaryTitle": "A", "summaryText": "a"},
+            {"summaryDate": "06/15/1958", "summaryTitle": "B", "summaryText": "b"},
+        ]
+    )
+    assert date_w == Inches(1.2)
+    assert date_w + body_w == Inches(6.5)  # the usable width of the page is unchanged
+
+
+def test_a_record_of_short_dates_keeps_the_layout_it_always_had():
+    """The widening is CONDITIONAL, and this is the half that keeps it honest.
+
+    Every record seen so far is laid out by this branch - the oldest date on hand is 1974 - so
+    an unconditional widening would narrow the body column on every document to accommodate a
+    row shape that almost never occurs. The body is the content; that is the wrong trade.
+    """
+    date_w, body_w = _table_widths(
+        [
+            {"summaryDate": "03/04/2019", "summaryTitle": "A", "summaryText": "a"},
+            {"summaryDate": "01/02/2020", "summaryTitle": "B", "summaryText": "b"},
+        ]
+    )
+    assert date_w == Inches(0.9)
+    assert date_w + body_w == Inches(6.5)
+
+
+def test_an_undated_entry_does_not_widen_the_column():
+    """`Undated` is shorter than MM/DD/YY, so it needs nothing - and it is the ONE label with no
+    slash in it. A width rule written as "is it long" rather than "does it carry four year
+    digits" would have to special-case it; this one does not."""
+    date_w, body_w = _table_widths([{"summaryDate": "-", "summaryTitle": "A", "summaryText": "a"}])
+    assert date_w == Inches(0.9)
+    assert date_w + body_w == Inches(6.5)
 
 
 def test_both_renderers_share_the_label_and_the_ordering():
