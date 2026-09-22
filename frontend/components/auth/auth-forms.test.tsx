@@ -73,6 +73,26 @@ describe("auth forms on a dropped connection", () => {
         expect(screen.getByText(/check your email and password/i)).toBeInTheDocument(),
       );
     });
+
+    it("keeps the Remember-me choice on screen without sending it to the server", async () => {
+      // "Remember me" is PRESENTATIONAL - sign-in-form.tsx:10 says the session lifetime is fixed
+      // server-side. So the checkbox reflecting a click is not the guarantee worth having; React
+      // gives that away. The guarantee is that it changes nothing downstream, and the only way to
+      // hold that is to pin the exact payload. Asserting "the payload does not contain remember"
+      // would pass against a request that was never made at all.
+      render(<SignInForm onRegister={vi.fn()} onForgot={vi.fn()} />);
+      fill(/email/i, "a@b.com");
+      fill(/password/i, "Password!1");
+
+      const remember = screen.getByRole("checkbox", { name: /remember me/i });
+      expect(remember).not.toBeChecked();
+      fireEvent.click(remember);
+      expect(remember).toBeChecked();
+
+      fireEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+      await waitFor(() => expect(mutations.login).toHaveBeenCalled());
+      expect(mutations.login).toHaveBeenCalledWith({ email: "a@b.com", password: "Password!1" });
+    });
   });
 
   describe("reset password", () => {
