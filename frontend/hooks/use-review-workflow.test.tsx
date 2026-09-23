@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The hook calls the review-api module directly, so mock that module. The stub factory references
 // nothing external, so vitest's hoisting of vi.mock above the imports is safe.
@@ -42,6 +42,21 @@ function renderWorkflow(...args: Parameters<typeof useReviewWorkflow>) {
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   return { ...renderHook(() => useReviewWorkflow(...args), { wrapper }), client };
+}
+
+/** Make a row edit and run the 800ms autosave debounce out on a FAKE clock, then hand the real
+ *  clock back. Waiting the debounce out in real time raced `waitFor`'s 1000ms budget and lost
+ *  under load; after this, the caller's `waitFor` only waits for the save's promise to settle. */
+async function editAndRunTheDebounce(edit: () => void) {
+  vi.useFakeTimers();
+  try {
+    act(edit);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 const detail = (over: Partial<DocumentDetail> = {}): DocumentDetail => ({
@@ -300,14 +315,30 @@ describe("useReviewWorkflow autosave gating", () => {
     ...over,
   });
 
+  // The debounce tests drive the 800ms timer on a FAKE clock rather than waiting it out. Waiting it
+  // out raced the clock: under load, `waitFor`'s 1000ms budget and a real 900ms sleep both lost to
+  // an 800ms timer and failed tests that had nothing wrong with them. The clock goes fake only AFTER
+  // boot, because Testing Library's `waitFor` cannot see vitest's fake timers and would hang.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("autosaves valid rows without the client _key after the debounce", async () => {
     mockDoc.mockResolvedValue(detail({ status: "reviewing" })); // page_count 10
     mockSave.mockResolvedValue({ ok: true, count: 1 });
     const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
+    vi.useFakeTimers();
     act(() => result.current.onRowsChange([editorRow({ start: 2, end: 5 })]));
-    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(799);
+    });
+    expect(mockSave, "saved before the 800ms debounce ran out").not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(mockSave, "nothing saved once the 800ms debounce ran out").toHaveBeenCalledTimes(1);
     expect(mockSave).toHaveBeenCalledWith("d1", [expect.objectContaining({ start: 2, end: 5 })]);
     expect(mockSave.mock.calls[0][1][0]).not.toHaveProperty("_key");
   });
@@ -318,13 +349,16 @@ describe("useReviewWorkflow autosave gating", () => {
     const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
+    vi.useFakeTimers();
     act(() =>
       result.current.onRowsChange([
         editorRow({ _key: "a", start: 1, end: 5 }),
         editorRow({ _key: "b", start: 3, end: 7 }), // overlaps the previous row
       ]),
     );
-    await new Promise((resolve) => setTimeout(resolve, 900)); // past the 800ms debounce
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800); // the debounce runs out
+    });
     expect(mockSave).not.toHaveBeenCalled();
     // Loud, not silent: the state flips to error with a fix-the-rows message (Summarize stays blocked).
     expect(result.current.saveState.kind).toBe("error");
@@ -383,9 +417,10 @@ describe("useReviewWorkflow autosave gating", () => {
     const { result, unmount } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
+    vi.useFakeTimers();
     act(() => result.current.onRowsChange([editorRow({ start: 2, end: 5 })]));
     act(() => unmount());
-    await new Promise((resolve) => setTimeout(resolve, 900)); // past the 800ms debounce
+    await vi.advanceTimersByTimeAsync(800); // where the debounce would have fired
 
     expect(mockSave).toHaveBeenCalledTimes(1);
   });
@@ -663,7 +698,7 @@ describe("useReviewWorkflow reloadRows", () => {
     const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
-    act(() =>
+    await editAndRunTheDebounce(() =>
       result.current.onRowsChange([
         { ...serverRow({ title: "Reviewer's title", date: "09/09/2026" }), _key: "k1" },
       ]),
@@ -692,7 +727,9 @@ describe("useReviewWorkflow reloadRows", () => {
     const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
-    act(() => result.current.onRowsChange([{ ...serverRow({ title: "Local" }), _key: "k1" }]));
+    await editAndRunTheDebounce(() =>
+      result.current.onRowsChange([{ ...serverRow({ title: "Local" }), _key: "k1" }]),
+    );
     await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
     mockSave.mockClear();
 
@@ -734,7 +771,7 @@ describe("useReviewWorkflow reloadRows protects unsaved edits to the server-writ
     mockSave.mockRejectedValue(new Error("boom"));
     const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
-    act(() =>
+    await editAndRunTheDebounce(() =>
       result.current.onRowsChange(result.current.rows.map((row) => ({ ...row, ...edit }))),
     );
     await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
@@ -789,12 +826,16 @@ describe("useReviewWorkflow reloadRows protects unsaved edits to the server-writ
     const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
-    act(() => result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, category: "13" }))));
+    await editAndRunTheDebounce(() =>
+      result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, category: "13" }))),
+    );
     await waitFor(() => expect(result.current.saveState.kind).toBe("saved"));
 
     // Back into an unsaved state, but via a DIFFERENT field.
     mockSave.mockRejectedValue(new Error("boom"));
-    act(() => result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, title: "t" }))));
+    await editAndRunTheDebounce(() =>
+      result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, title: "t" }))),
+    );
     await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
 
     mockDoc.mockResolvedValue(detail({ status: "reviewing", rows: [serverRow({ category: "5" })] }));

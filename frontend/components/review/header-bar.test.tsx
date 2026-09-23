@@ -50,8 +50,10 @@ describe("HeaderBar fields", () => {
 
     await user.type(screen.getByLabelText("Last name"), "Roe");
     await user.type(screen.getByLabelText("DOB"), "04/05/1980");
-    await user.type(screen.getByLabelText("Attorney"), "Jordan Reyes");
-    await user.type(screen.getByLabelText("Law firm"), "Reyes and Partners");
+    // Short, DISTINCT values: the payload check needs each box to carry its own value, not a long
+    // one - every keystroke re-renders the whole bar, and long strings are what timed this out.
+    await user.type(screen.getByLabelText("Attorney"), "Reyes");
+    await user.type(screen.getByLabelText("Law firm"), "Acme");
     await user.selectOptions(screen.getByLabelText("Letter"), "advocacy");
     await user.type(screen.getByLabelText("Letter date"), "06/07/2026");
 
@@ -61,8 +63,8 @@ describe("HeaderBar fields", () => {
     expect(vi.mocked(saveHeader).mock.calls[0][1]).toMatchObject({
       patient_last_name: "Roe",
       patient_dob: "04/05/1980",
-      attorney_name: "Jordan Reyes",
-      law_firm: "Reyes and Partners",
+      attorney_name: "Reyes",
+      law_firm: "Acme",
       letter_type: "advocacy",
       letter_date: "06/07/2026",
     });

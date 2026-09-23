@@ -230,20 +230,22 @@ describe("ExportDialog page numbers", () => {
     const fetchSpy = mockFetch();
     open();
 
-    await user.type(screen.getByLabelText("Patient name"), "Jordan Vasquez");
+    // Short, DISTINCT values: each box only has to carry its own value into its own field, and
+    // every keystroke re-renders the dialog - long strings are what timed this test out under load.
+    await user.type(screen.getByLabelText("Patient name"), "Vasquez");
     await user.type(screen.getByLabelText("DOB"), "04/05/1980");
     // Evaluation type is the one box that ships prefilled (the panel-QME wording), so it is cleared
     // rather than typed into - appending would assert against a value the test did not choose.
     await user.clear(screen.getByLabelText(/Evaluation type/i));
     await user.type(screen.getByLabelText(/Evaluation type/i), "QME");
-    await user.type(screen.getByLabelText(/Attorney law firm/i), "Reyes and Partners");
+    await user.type(screen.getByLabelText(/Attorney law firm/i), "Acme");
     await user.click(screen.getByRole("button", { name: "Export to Word" }));
 
     const sent = body(fetchSpy);
-    expect(sent.patientName).toBe("Jordan Vasquez");
+    expect(sent.patientName).toBe("Vasquez");
     expect(sent.patientdob).toBe("04/05/1980");
     expect(sent.QMEorAME).toBe("QME");
-    expect(sent.lawfirm).toBe("Reyes and Partners");
+    expect(sent.lawfirm).toBe("Acme");
   });
 
   it("closes without exporting when Cancel is used", async () => {
