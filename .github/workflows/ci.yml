@@ -70,9 +70,14 @@ jobs:
           SECRET_KEY: ci-test-secret
           SECURITY_PASSWORD_SALT: ci-test-salt
           ENVIRONMENT: dev
+        # Four workers on the runner's 4 vCPUs (pytest-xdist). `--dist loadfile` keeps every file on one
+        # worker: test_admin_api.py writes fixed-id rows to the shared catalog, and the workers share
+        # one Postgres. Each worker cleans only its own test users and uses its own Redis database
+        # (tests/conftest.py). pytest-cov combines the workers' coverage, so coverage.xml - and the
+        # coverage-floor gate reading it - is unchanged. A plain local `pytest` stays serial.
         run: |
           uv run alembic upgrade head
-          uv run pytest --cov=app --cov-branch --cov-report=xml --cov-report=term-missing
+          uv run pytest -n 4 --dist loadfile --cov=app --cov-branch --cov-report=xml --cov-report=term-missing
 
       - name: Upload backend coverage
         uses: actions/upload-artifact@v5

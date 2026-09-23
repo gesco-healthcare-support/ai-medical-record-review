@@ -9,7 +9,14 @@ value was applied to whichever port won and the winner is preferred to be the de
 hardcodes its own password and never reads that variable.
 """
 
-from tests.conftest import _compose_postgres_ports, redis_port_is_shared
+import pytest
+
+from tests.conftest import (
+    _compose_postgres_ports,
+    _worker_email_prefix,
+    _worker_redis_url,
+    redis_port_is_shared,
+)
 
 
 def test_dev_stack_publishes_the_redis_port_the_suite_uses():
@@ -50,3 +57,49 @@ def test_dev_password_is_never_overridden_by_the_env_file():
     # Mirrors the resolution in _local_database_url: a False flag drops env_pw entirely.
     env_pw = "a-password-from-dot-env"
     assert ((env_pw if reads_env_password else "") or default_pw) == "mrr_dev_only"
+
+
+# Parallel runs (pytest-xdist in CI) share ONE Postgres and ONE Redis. Two things would otherwise let a
+# worker destroy another worker's test data mid-test: the cleanup deletes every user whose email starts
+# with the prefix, and the queue tests empty and count whole queues. Each worker therefore gets its own
+# prefix and its own Redis database, and a serial run keeps exactly what it had.
+
+
+def test_a_serial_run_keeps_the_original_email_prefix():
+    assert _worker_email_prefix({}) == "pytest-auth-", "a serial run changed its test-user prefix"
+
+
+def test_each_worker_cleans_only_the_users_it_created():
+    gw2 = _worker_email_prefix({"PYTEST_XDIST_WORKER": "gw2"})
+    assert gw2 == "pytest-auth-gw2-", "a worker is not using its own test-user prefix"
+    assert _worker_email_prefix({"PYTEST_XDIST_WORKER": "gw3"}) != gw2, "two workers share a prefix"
+    # The serial prefix is a prefix of every worker's, so a later serial run still sweeps up anything a
+    # killed parallel run left behind.
+    assert gw2.startswith(_worker_email_prefix({})), (
+        "a serial run can no longer clean worker leftovers"
+    )
+
+
+def test_a_serial_run_keeps_the_original_redis_url():
+    url = "redis://localhost:6379/0"
+    assert _worker_redis_url(url, {}) == url, "a serial run changed its Redis URL"
+
+
+def test_each_worker_gets_its_own_redis_database():
+    gw0 = {"PYTEST_XDIST_WORKER": "gw0"}
+    assert _worker_redis_url("redis://localhost:6379/0", gw0) == "redis://localhost:6379/1", (
+        "worker gw0 is not on Redis database 1"
+    )
+    assert (
+        _worker_redis_url("redis://localhost:6379/0", {"PYTEST_XDIST_WORKER": "gw3"})
+        == "redis://localhost:6379/4"
+    ), "worker gw3 is not on Redis database 4"
+    # Only the database changes - host, port and credentials are kept, and a URL without one gets one.
+    assert _worker_redis_url("redis://:pw@cache:6380/0", gw0) == "redis://:pw@cache:6380/1"
+    assert _worker_redis_url("redis://localhost:6379", gw0) == "redis://localhost:6379/1"
+
+
+def test_an_unrecognised_worker_id_is_refused_rather_than_guessed():
+    # Guessing would put two workers on one database - the collision this exists to prevent.
+    with pytest.raises(RuntimeError, match="PYTEST_XDIST_WORKER"):
+        _worker_redis_url("redis://localhost:6379/0", {"PYTEST_XDIST_WORKER": "master"})
