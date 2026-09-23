@@ -357,11 +357,17 @@ def test_a_stop_during_the_ocr_pass_returns_without_draining_the_queue(monkeypat
 
     An earlier version of this test asserted only `pytest.raises(JobCancelled)` and a stored count.
     Both hold whether or not the pool drains, because it stubbed `_extract` with an instant lambda
-    and the drain is free when every page takes no time. The sleep is what gives the test teeth.
+    and the drain is free when every page takes no time.
 
     Measured as WORK DONE, not wall-clock. `_extract` runs in the pool, so counting its calls says
-    directly whether the queued pages were cancelled or drained - which is the guarantee - and no
-    runner load can change the answer.
+    directly whether the queued pages were cancelled or drained - which is the guarantee.
+
+    The readers are HELD, not slowed. This used to give each page a 30ms sleep and claimed no runner
+    load could change the answer; on 2026-09-22 a loaded laptop read 60 of 60, because the stop fires
+    only after the caller has STORED four pages through the database, and storing four took longer
+    than reading sixty. Now every page after the first `free` waits until the stop has actually been
+    raised, so however slow the caller is the readers cannot get ahead of it: a cancelling pool reads
+    about a dozen, a draining one reads all sixty, and load moves neither.
 
     It used to time a full pass and require the stopped one to be a fraction of it. That flaked
     twice on GitHub Actions (PR #235 2026-09-01, PR #298 2026-09-11) at the SAME 0.243s stopped
@@ -375,29 +381,39 @@ def test_a_stop_during_the_ocr_pass_returns_without_draining_the_queue(monkeypat
     `progress` INSIDE that loop - so drained pages are extracted and never stored, and the stored
     count is the same either way. That is what the earlier version of this test found.
     """
-    import time
+    import threading
 
     from app.worker.failures import JobCancelled
 
-    pages, per_page, workers = 60, 0.03, 4
+    pages, workers, free = 60, 4, 8
     reads: list[int] = []
-    monkeypatch.setattr(
-        pt,
-        "_extract",
-        lambda path, page: (reads.append(page), time.sleep(per_page), (f"p{page}", True))[2],
-    )
+    stopped = threading.Event()
+
+    def extract(path, page):
+        reads.append(page)
+        if page > free:
+            # Bounded, so a regression that never raises the stop fails slowly instead of hanging.
+            stopped.wait(timeout=5)
+        return f"p{page}", True
+
+    monkeypatch.setattr(pt, "_extract", extract)
 
     # The control, in the same test: a full pass reads every page. Without this the assertion below
-    # could pass on a version that never reads anything at all.
+    # could pass on a version that never reads anything at all. Nothing is held here.
+    stopped.set()
     baseline_doc = _doc(pages=pages)
     with get_sessionmaker()() as session:
         pt.populate_document(session, baseline_doc, "/x.pdf", pages, workers=workers)
     assert len(reads) == pages, "a full pass must read every page - the control is broken"
 
     reads.clear()
+    stopped.clear()
 
     def stop_after_four(stage, current, total):
         if current >= 4:
+            # Release the held readers as the stop is raised: a pool that cancels its queue now reads
+            # only the pages already running; one that drains reads every page that is left.
+            stopped.set()
             raise JobCancelled(current, total)
 
     doc_id = _doc(pages=pages)

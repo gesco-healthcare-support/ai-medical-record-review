@@ -14,6 +14,7 @@ import sys
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 
@@ -279,11 +280,50 @@ def pytest_sessionstart(session) -> None:  # noqa: ARG001 - pytest hook signatur
         )
 
 
+def _worker_email_prefix(env) -> str:
+    """The test-user email prefix for this process: one per pytest-xdist worker.
+
+    `_delete_test_users` removes every user whose email starts with the prefix. Parallel workers share
+    one Postgres, so a shared prefix would let each worker's cleanup delete the others' users in the
+    middle of their tests. A serial run keeps the original prefix, which is also a prefix of every
+    worker's - so a later serial run still sweeps up anything a killed parallel run left behind.
+    """
+    worker = env.get("PYTEST_XDIST_WORKER")
+    return f"pytest-auth-{worker}-" if worker else "pytest-auth-"
+
+
+def _worker_redis_url(url: str, env) -> str:
+    """This process's Redis URL: worker `gwN` gets database N+1; a serial run keeps `url` as it is.
+
+    The queue tests empty and count whole queues, and parallel workers share one Redis server, so each
+    worker needs its own database. Only the database changes - host, port and credentials are kept.
+    An unrecognised worker id is refused rather than guessed, because guessing could put two workers
+    on one database. Redis ships 16 databases, so this supports up to 15 workers.
+    """
+    worker = env.get("PYTEST_XDIST_WORKER")
+    if not worker:
+        return url
+    match = re.fullmatch(r"gw(\d+)", worker)
+    if not match:
+        raise RuntimeError(
+            f"PYTEST_XDIST_WORKER is {worker!r}, not gw<N> - cannot pick this worker's Redis database"
+        )
+    return urlunsplit(urlsplit(url)._replace(path=f"/{int(match.group(1)) + 1}"))
+
+
 os.environ.setdefault("DATABASE_URL", _local_database_url())
 _reject_the_app_database(os.environ["DATABASE_URL"])
 os.environ.setdefault("SECRET_KEY", "dev-only-secret")
 os.environ.setdefault("SECURITY_PASSWORD_SALT", "dev-only-salt")
 os.environ.setdefault("ENVIRONMENT", "dev")
+if os.environ.get("PYTEST_XDIST_WORKER"):
+    # Before the app import below, so the cached settings read the worker's own database. The
+    # default comes from Settings itself rather than a second copy of the literal.
+    from app.config import Settings
+
+    os.environ["REDIS_URL"] = _worker_redis_url(
+        os.environ.get("REDIS_URL", Settings.model_fields["redis_url"].default), os.environ
+    )
 
 # psycopg3's async mode cannot run on Windows' default ProactorEventLoop; select the
 # SelectorEventLoop policy so the async DB works under pytest here. No-op on Linux (CI, prod),
@@ -324,7 +364,7 @@ from app.models import (  # noqa: E402
 PRODUCTION_HASHER = _password._DEFAULT_HASHER
 _password._DEFAULT_HASHER = PasswordHasher.from_parameters(profiles.CHEAPEST)
 
-TEST_EMAIL_PREFIX = "pytest-auth-"
+TEST_EMAIL_PREFIX = _worker_email_prefix(os.environ)
 
 
 def unique_test_email() -> str:
