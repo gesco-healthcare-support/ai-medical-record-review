@@ -10,6 +10,24 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
+    // One worker keeps its jsdom environment across the files it runs, instead of building a fresh
+    // one per file - the environment was as large as the tests themselves in CI (41s of 106s summed).
+    // Measured 2026-09-23, coverage on, same window: 26-35s against 55-59s for forks + isolation.
+    //
+    // Sharing a worker is only safe because of three guards, one per thing that would otherwise leak
+    // from one file into the next:
+    //   - modules: vitest.setup.ts resets the module cache at the start of every file. Without it a
+    //     module first imported under file A's vi.mock stays wired to A's mock for file B - shuffled
+    //     file orders failed 6 and 32 tests that way.
+    //   - globals: `unstubGlobals` undoes every vi.stubGlobal before each test. Load-bearing, not a
+    //     precaution: with it off, one shuffled single-worker order failed 7 tests
+    //     (lib/bundle-api.test.ts, for one, stubs fetch and never restores it).
+    //   - the DOM: vitest.setup.ts unmounts after every test, as before.
+    // Not guarded: a test that redefines something on a prototype or a built-in (Object.defineProperty)
+    // and leaves it. Restore anything like that in the same file.
+    pool: "threads",
+    isolate: false,
+    unstubGlobals: true,
     // `app` is in this list because it is in the COVERAGE list below. Without it a test written
     // under app/ is never collected: the run passes having executed nothing, the coverage number
     // does not move, and nothing anywhere reports a problem. Measuring a directory the runner
