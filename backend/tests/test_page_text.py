@@ -365,9 +365,12 @@ def test_a_stop_during_the_ocr_pass_returns_without_draining_the_queue(monkeypat
     The readers are HELD, not slowed. This used to give each page a 30ms sleep and claimed no runner
     load could change the answer; on 2026-09-22 a loaded laptop read 60 of 60, because the stop fires
     only after the caller has STORED four pages through the database, and storing four took longer
-    than reading sixty. Now every page after the first `free` waits until the stop has actually been
-    raised, so however slow the caller is the readers cannot get ahead of it: a cancelling pool reads
-    about a dozen, a draining one reads all sixty, and load moves neither.
+    than reading sixty. Now every page after the first `free` waits until the pool SHUTS DOWN - which
+    `populate_document` only reaches after its `except` block has cancelled the queue - so the readers
+    are held through the cancel however slow the caller is: a cancelling pool reads about a dozen, a
+    draining one reads all sixty, and load moves neither. (Releasing them in the stop callback instead,
+    as a first version did, left a gap between the release and the cancel; a 10ms pause there made
+    correct code read 60 of 60 - found in review of #388.)
 
     It used to time a full pass and require the stopped one to be a fraction of it. That flaked
     twice on GitHub Actions (PR #235 2026-09-01, PR #298 2026-09-11) at the SAME 0.243s stopped
@@ -392,11 +395,21 @@ def test_a_stop_during_the_ocr_pass_returns_without_draining_the_queue(monkeypat
     def extract(path, page):
         reads.append(page)
         if page > free:
-            # Bounded, so a regression that never raises the stop fails slowly instead of hanging.
+            # Bounded, so a regression that never reaches shutdown fails slowly instead of hanging.
+            # The bound is PER HELD PAGE: at worst ~52 pages / 4 workers x 5s, about 65s.
             stopped.wait(timeout=5)
         return f"p{page}", True
 
+    class ReleasingPool(pt.ThreadPoolExecutor):
+        """The pool `populate_document` builds, releasing the held readers only at shutdown - after
+        the `except` block has cancelled whatever was still queued."""
+
+        def shutdown(self, *args, **kwargs):
+            stopped.set()
+            return super().shutdown(*args, **kwargs)
+
     monkeypatch.setattr(pt, "_extract", extract)
+    monkeypatch.setattr(pt, "ThreadPoolExecutor", ReleasingPool)
 
     # The control, in the same test: a full pass reads every page. Without this the assertion below
     # could pass on a version that never reads anything at all. Nothing is held here.
@@ -410,10 +423,8 @@ def test_a_stop_during_the_ocr_pass_returns_without_draining_the_queue(monkeypat
     stopped.clear()
 
     def stop_after_four(stage, current, total):
+        # Only raises. The readers are released by the pool's shutdown, after the cancel.
         if current >= 4:
-            # Release the held readers as the stop is raised: a pool that cancels its queue now reads
-            # only the pages already running; one that drains reads every page that is left.
-            stopped.set()
             raise JobCancelled(current, total)
 
     doc_id = _doc(pages=pages)
