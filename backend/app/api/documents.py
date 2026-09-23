@@ -18,7 +18,7 @@ import zipfile
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from rq.command import send_stop_job_command
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -1688,6 +1688,25 @@ def _zip_filename(document: Document) -> str:
     return _deliverable_filename(document, "", "zip", fallback="record")
 
 
+def _attachment(content: bytes, media_type: str, filename: str) -> Response:
+    """A finished file, sent as ONE body with its length declared. Every download goes through
+    here, so the next one cannot quietly go back to streaming.
+
+    NOT `StreamingResponse(io.BytesIO(...))`, which all six downloads used until 2026-09-22.
+    Each file here is fully built in memory before the response starts, so streaming saved
+    nothing - and iterating a BytesIO yields LINES, so a binary file went out in fragments. A
+    50.2 MB linked PDF took 260,433 of them and 25.6 s, measured on the server with no network
+    involved. Something on a tester's side dropped the connection at about 5 s, so every large
+    export stopped near 10.78 MB, while a 49.8 MB source PDF sent by `FileResponse` reached the
+    same browser in 0.36 s. One body goes out at link speed, and the declared length lets a
+    client tell a cut-off transfer from a complete one."""
+    return Response(
+        content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _included_summaries(document: Document) -> list[Summary]:
     """The summaries an export ships, or 409 when the record has none yet."""
     included = [s for s in document.summaries if not s.excluded]
@@ -1934,13 +1953,9 @@ def export_document(
     user: User = Depends(current_active_user),
 ):
     payload = payload or ExportPayload()
-    buffer = io.BytesIO(_mrr_docx_bytes(session, document, payload, user))
+    content = _mrr_docx_bytes(session, document, payload, user)
     audit(session, "export", user.id, document.id)
-    return StreamingResponse(
-        buffer,
-        media_type=DOCX_MIMETYPE,
-        headers={"Content-Disposition": f'attachment; filename="{_summary_filename(document)}"'},
-    )
+    return _attachment(content, DOCX_MIMETYPE, _summary_filename(document))
 
 
 @router.post(
@@ -1958,11 +1973,7 @@ def export_document_pdf(
     payload = payload or ExportPayload()
     pdf_bytes = _linked_pdf_bytes(session, document, payload, user)
     audit(session, "export_pdf", user.id, document.id)
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type=_PDF_MEDIA_TYPE,
-        headers={"Content-Disposition": f'attachment; filename="{_linked_filename(document)}"'},
-    )
+    return _attachment(pdf_bytes, _PDF_MEDIA_TYPE, _linked_filename(document))
 
 
 @router.post("/{document_id}/export/memo")
@@ -1986,13 +1997,9 @@ def export_document_memo(
     answerable from the reviewer's rows alone. A record still being worked has a memo; it does
     not yet have a report."""
     payload = payload or ExportPayload()
-    buffer = io.BytesIO(_memo_docx_bytes(session, document, payload, user))
+    content = _memo_docx_bytes(session, document, payload, user)
     audit(session, "export_memo", user.id, document.id)
-    return StreamingResponse(
-        buffer,
-        media_type=DOCX_MIMETYPE,
-        headers={"Content-Disposition": f'attachment; filename="{_memo_filename(document)}"'},
-    )
+    return _attachment(content, DOCX_MIMETYPE, _memo_filename(document))
 
 
 @router.post(
@@ -2037,13 +2044,8 @@ def export_document_zip(
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
         for name, blob in members:
             archive.writestr(name, blob)
-    buffer.seek(0)
     audit(session, "export_zip", user.id, document.id)
-    return StreamingResponse(
-        buffer,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{_zip_filename(document)}"'},
-    )
+    return _attachment(buffer.getvalue(), "application/zip", _zip_filename(document))
 
 
 @router.post(
@@ -2070,13 +2072,8 @@ def bundle_pdf(
         document.stored_path, matched, cover=_bundle_cover(session, document, payload, matched)
     )
     audit(session, "bundle_pdf", user.id, document.id)
-    return StreamingResponse(
-        buffer,
-        media_type=_PDF_MEDIA_TYPE,
-        headers={
-            "Content-Disposition": f'attachment; filename="{_download_name(document, payload, "pdf")}"'
-        },
-    )
+    filename = _download_name(document, payload, "pdf")
+    return _attachment(buffer.getvalue(), _PDF_MEDIA_TYPE, filename)
 
 
 @router.post(
@@ -2142,12 +2139,6 @@ def bundle_summarize(
     )
     buffer = io.BytesIO()
     docx.save(buffer)
-    buffer.seek(0)
     audit(session, "bundle_summarize", user.id, document.id)
-    return StreamingResponse(
-        buffer,
-        media_type=DOCX_MIMETYPE,
-        headers={
-            "Content-Disposition": f'attachment; filename="{_download_name(document, payload, "docx")}"'
-        },
-    )
+    filename = _download_name(document, payload, "docx")
+    return _attachment(buffer.getvalue(), DOCX_MIMETYPE, filename)
