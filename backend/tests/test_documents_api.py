@@ -4098,6 +4098,61 @@ async def test_the_zip_carries_the_same_word_document_the_export_button_does(aut
     assert any(n.endswith(".pdf") for n in names)
 
 
+def _assert_sent_whole(resp) -> None:
+    """A download must go out as ONE body with its length declared.
+
+    Pins `_attachment` in api/documents.py, whose docstring carries the measurements. Every
+    download used to be `StreamingResponse(io.BytesIO(...))`, which iterates the buffer line by
+    line: a 50.2 MB linked PDF trickled out over 25.6 s, and a tester's side cut it off at about
+    5 s, every time, near 10.78 MB. Only a body sent whole can declare its length, so a missing
+    `content-length` here is that regression coming back."""
+    assert resp.status_code == 200, resp.text
+    assert resp.headers.get("content-length") == str(len(resp.content)), (
+        "a download must be sent whole with its length declared - see `_attachment`"
+    )
+
+
+@pytest.mark.parametrize("endpoint", ["export", "export/pdf", "export/memo", "export/zip"])
+async def test_a_record_download_is_sent_whole(authed, endpoint):
+    """The Word summary, the linked PDF, the memo and the zip - the export dialog's buttons."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _seed_one_summary(doc_id)
+    resp = await client.post(
+        f"/api/documents/{doc_id}/{endpoint}", json={"patientName": "Synthetic Patient"}
+    )
+    _assert_sent_whole(resp)
+
+
+@pytest.mark.parametrize("endpoint", ["bundle/pdf", "bundle/summarize"])
+async def test_a_bundle_download_is_sent_whole(authed, monkeypatch, endpoint):
+    """The bundle PDF and the bundle summary. The summary call is faked the same way
+    `test_bundle_summarize_happy_path_returns_docx` fakes it, so no model runs."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}]},
+    )
+
+    import app.services.summarize_engine as se
+
+    def fake(_pdf_path, row, _model=None, prompt=None, verify=None, standalone_studies=None):
+        return {
+            "summaryDate": row.get("date", "-"),
+            "summaryTitle": "T (Pages 1-1)",
+            "summaryText": "body",
+            "manualCheck": "",
+            "sourceText": "x",
+        }
+
+    monkeypatch.setattr(se, "summarize_row", fake)
+    resp = await client.post(
+        f"/api/documents/{doc_id}/{endpoint}", json={"categories": [_VALID_CATEGORY]}
+    )
+    _assert_sent_whole(resp)
+
+
 # The three record-level deliverables every archive carries, whatever bundles were asked
 # for. Named rather than counted: a count reports "4 == 3" and says nothing about which
 # member arrived or went missing.
