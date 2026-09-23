@@ -3,7 +3,13 @@
 import "@testing-library/jest-dom/vitest";
 
 import { cleanup } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, vi } from "vitest";
+
+// Test files share a worker (vitest.config.mts: `isolate: false`), and vitest only clears its module
+// cache between files when isolation is ON. So clear it here, at the start of every file: otherwise a
+// module first imported while another file had it vi.mock'ed stays wired to THAT file's mock. Shuffled
+// file orders failed 6 and 32 tests that way before this line existed.
+vi.resetModules();
 
 // Node 26 installs an EXPERIMENTAL `localStorage` accessor on the global object, and it resolves to
 // `undefined` unless the process was started with --localstorage-file. Under the jsdom environment the
