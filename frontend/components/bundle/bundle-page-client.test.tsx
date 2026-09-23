@@ -197,9 +197,12 @@ describe("BundlePageClient error handling", () => {
     withClient(<BundlePageClient config={CONFIG} />);
     await user.click(await screen.findByRole("button", { name: "Select" }));
 
+    // Short, DISTINCT values: each field only has to show that its own typing came back through
+    // onChange. Every keystroke re-renders the whole page, and 51 characters of typing is what took
+    // this test past the 5000ms timeout under load.
     const patient = await screen.findByLabelText("Patient name");
-    await user.type(patient, "Jane Roe");
-    expect(patient).toHaveValue("Jane Roe");
+    await user.type(patient, "Roe");
+    expect(patient).toHaveValue("Roe");
 
     const dob = screen.getByLabelText("DOB");
     await user.type(dob, "01/02/1990");
@@ -207,12 +210,12 @@ describe("BundlePageClient error handling", () => {
 
     const qme = screen.getByLabelText("Evaluation type (QME / AME)");
     await user.clear(qme);
-    await user.type(qme, "AGREED MEDICAL EVALUATION");
-    expect(qme).toHaveValue("AGREED MEDICAL EVALUATION");
+    await user.type(qme, "AME");
+    expect(qme).toHaveValue("AME");
 
     const firm = screen.getByLabelText("Attorney law firm");
-    await user.type(firm, "Acme LLP");
-    expect(firm).toHaveValue("Acme LLP");
+    await user.type(firm, "Acme");
+    expect(firm).toHaveValue("Acme");
   });
 
   it("shows the empty state rather than the table when nothing matches the preset", async () => {

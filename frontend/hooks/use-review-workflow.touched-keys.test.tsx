@@ -50,6 +50,21 @@ function renderWorkflow(documentId: string | null) {
   });
 }
 
+/** Make a row edit and run the 800ms autosave debounce out on a FAKE clock, then hand the real
+ *  clock back. Waiting the debounce out in real time raced `waitFor`'s 1000ms budget and lost
+ *  under load; after this, the caller's `waitFor` only waits for the save's promise to settle. */
+async function editAndRunTheDebounce(edit: () => void) {
+  vi.useFakeTimers();
+  try {
+    act(edit);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 const row = (over: Record<string, unknown> = {}) => ({
   start: 1,
   end: 3,
@@ -92,7 +107,9 @@ describe("the touched set does not cross a document boundary", () => {
     mockSave.mockRejectedValue(new Error("boom"));
     const { result, rerender } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
-    act(() => result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, category: "13" }))));
+    await editAndRunTheDebounce(() =>
+      result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, category: "13" }))),
+    );
     await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
 
     // B: a different document, whose row takes the same key under this mock.
@@ -102,7 +119,9 @@ describe("the touched set does not cross a document boundary", () => {
 
     // Put B into an unsaved state via a field the touched set does not track, so the only thing
     // that could withhold the server's category is a leftover entry from A.
-    act(() => result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, title: "t" }))));
+    await editAndRunTheDebounce(() =>
+      result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, title: "t" }))),
+    );
     await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
 
     // Another tab re-classifies B's row. It must land: nothing on B has been touched.
@@ -122,7 +141,9 @@ describe("the touched set does not cross a document boundary", () => {
     const { result } = renderWorkflow("d2");
     await waitFor(() => expect(result.current.section).toBe("editor"));
 
-    act(() => result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, category: "13" }))));
+    await editAndRunTheDebounce(() =>
+      result.current.onRowsChange(result.current.rows.map((r) => ({ ...r, category: "13" }))),
+    );
     await waitFor(() => expect(result.current.saveState.kind).toBe("error"));
 
     mockDoc.mockResolvedValue(detail({ id: "d2", rows: [row({ category: "5" })] }));
