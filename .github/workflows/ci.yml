@@ -4,11 +4,15 @@ name: CI
 # the backend suite on real Postgres + Redis with coverage, the frontend unit/component suite,
 # and a Playwright E2E pass over the core non-AI flows against the docker-compose app. The legacy
 # Flask app (mrr_ai/) is being phased out and is no longer covered here.
+# `qwen` is a long-lived branch that the TEST instance deploys from - changes aimed at our
+# own model that are not yet fit for main. It is listed here because a PR based on it
+# otherwise gets NO CI AT ALL: `branches:` filters on the pull request's BASE, so a
+# qwen-based PR matched nothing and merged green on an empty check set. Found on #391.
 on:
   push:
-    branches: [main]
+    branches: [main, qwen]
   pull_request:
-    branches: [main]
+    branches: [main, qwen]
 
 jobs:
   backend:
