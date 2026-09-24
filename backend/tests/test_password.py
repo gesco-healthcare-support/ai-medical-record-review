@@ -7,7 +7,8 @@ The security-critical guarantees:
   silently rewritten into a different format, which would lock existing users out on next login);
 - the helper verifies a hash built the way Flask-Security-Too builds one -- argon2id over
   base64(HMAC-SHA512(salt, password)) -- proving byte-compatibility with the migrated hashes;
-- the PRODUCTION hasher keeps the Flask-Security cost, even though the suite hashes cheaply.
+- the PRODUCTION hasher's cost is pinned: the suite hashes cheaply, so nothing else would notice it
+  change.
 """
 
 import base64
@@ -72,8 +73,10 @@ def test_generate_is_random_and_nonempty():
 
 def test_the_production_hasher_keeps_the_flask_security_cost():
     """conftest swaps the default hasher for a cheap one, so no other test would notice a change to
-    the PRODUCTION cost. Every new user's hash is made at this cost, and it must stay the one the
-    migrated Flask-Security hashes were made with."""
+    the PRODUCTION cost - the cost every new user's password is hashed at. Verification reads the
+    cost from each stored hash, so the migrated Flask-Security hashes verify at any setting: raising
+    the cost is safe (update this pin with it); lowering it weakens every new user's hash and needs
+    a security reason."""
     from tests.conftest import PRODUCTION_HASHER
 
     got = {

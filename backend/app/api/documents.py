@@ -73,6 +73,7 @@ from app.services.reporting import (
     ReportDetails,
     build_memo_document,
     build_mrr_document,
+    is_diagnostic,
     record_accounting,
 )
 from app.services.rows import validate_rows
@@ -1613,6 +1614,7 @@ def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
         "summaryDate": summary.effective_date(),
         "summaryTitle": title,
         "summaryText": text,
+        "diagnostic": is_diagnostic(summary.row_category),
     }
 
 
@@ -1642,6 +1644,7 @@ def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:
         "linkTitle": title,
         "summaryText": text,
         "startPage": summary.row_start,
+        "diagnostic": is_diagnostic(summary.row_category),
     }
 
 

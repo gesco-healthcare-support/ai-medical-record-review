@@ -15,6 +15,7 @@ from pypdf import PdfReader, PdfWriter
 
 from app.errors import EmptyExtractionError, TranscriptPagesUnreadableError
 from app.services import summarize_engine
+from app.services.reporting import is_diagnostic
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +430,7 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
                 "summaryDate": output.get("summaryDate") or "-",
                 "summaryTitle": summarize_engine.presentable_title(output["summaryTitle"]),
                 "summaryText": output["summaryText"],
+                "diagnostic": is_diagnostic(row.get("category")),
             }
         )
     if rows and not entries:
