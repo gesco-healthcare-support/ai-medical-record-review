@@ -3229,6 +3229,8 @@ def test_two_doctors_with_one_suffix_do_not_share_a_visit():
     entries = [{**e, "summaryTitle": t} for e, t in zip(entries, titles, strict=True)]
     out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
     assert [e["summaryTitle"] for e in out] == [smith, davis]
+
+
 def test_a_job_description_gets_the_minimal_preamble():
     """A job description describes a job, not a patient: "report positive and abnormal findings only"
     would strip the physical demands, which are the content. So 17 is registered with the minimal
