@@ -437,7 +437,10 @@ jobs:
             echo "${task_file} names no ceTaskId - failing rather than passing blind."
             exit 1
           fi
-          task=$(curl -sS --fail-with-body --retry 3 --retry-delay 5 -u "${SONAR_TOKEN}:" \
+          # A header held in a variable rather than `curl -u`: gitleaks reads any inline `-u "x:"`
+          # as a committed credential (rule curl-auth-user), even when x is a secret reference.
+          sonar_auth="Authorization: Bearer ${SONAR_TOKEN}"
+          task=$(curl -sS --fail-with-body --retry 3 --retry-delay 5 -H "$sonar_auth" \
             "https://sonarcloud.io/api/ce/task?id=${task_id}")
           task_status=$(printf '%s' "$task" | jq -r '.task.status // ""')
           task_pr=$(printf '%s' "$task" | jq -r '.task.pullRequest // ""')
