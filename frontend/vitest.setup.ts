@@ -62,13 +62,16 @@ afterEach(() => {
   }
 });
 
-// A fake clock left on at the end of a file would reach the next file in this worker - vitest never
-// switches it off between files - and that file's waitFor calls would time out for no visible reason.
-// This runs after the file's own cleanup hooks, so a file that restores its own clock never trips it.
+// A fake clock, or a Date frozen with vi.setSystemTime(), left on at the end of a file would reach
+// the next file in this worker - vitest switches neither off between files - and that file would
+// time out, or read the wrong date, for no visible reason. This runs after the file's own cleanup
+// hooks, so a file that restores its own clock never trips it. It does not run in a file whose
+// every test is skipped: vitest runs no hooks there.
 afterAll(() => {
-  if (!vi.isFakeTimers()) return;
+  if (!vi.isFakeTimers() && vi.getMockedSystemTime() === null) return;
   vi.useRealTimers();
   throw new Error(
-    "This test file left fake timers on. Call vi.useRealTimers() in its own afterEach or afterAll.",
+    "This test file left fake timers or a mocked Date on. " +
+      "Call vi.useRealTimers() in its own afterEach or afterAll.",
   );
 });

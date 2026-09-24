@@ -23,11 +23,13 @@ export default defineConfig({
     //     precaution: with it off, one shuffled single-worker order failed 7 tests
     //     (lib/bundle-api.test.ts, for one, stubs fetch and never restores it).
     //   - the DOM: vitest.setup.ts unmounts after every test, as before.
-    //   - fake clocks: vitest never switches them off between files, so vitest.setup.ts fails any file
-    //     that ends with fake timers still on, after switching real timers back on.
+    //   - fake clocks and a mocked Date: vitest switches neither off between files, so
+    //     vitest.setup.ts fails any file that ends with fake timers or a vi.setSystemTime() date
+    //     still on, after restoring both.
     // Not guarded - restore these in the same file:
     //   - anything set directly on window or document rather than through vi.stubGlobal: the next
     //     file runs in the same window and sees it;
+    //   - an env var set with vi.stubEnv (unstubEnvs is off) or written to process.env directly;
     //   - a redefinition on a prototype or a built-in (Object.defineProperty);
     //   - module state inside a node_modules package (a Testing Library configure() call, say): the
     //     module reset does not reach packages, which load once per worker.
