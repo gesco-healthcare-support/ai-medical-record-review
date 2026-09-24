@@ -2181,6 +2181,328 @@ def test_presentable_title_keeps_a_page_reference_that_is_not_the_suffix():
     )
 
 
+# --- a title names the facility, never where it is --------------------------------------------
+# Adam Flake, 2026-09-24, on three of five records: "addresses are being summarized into the
+# document titles". 0 of 80 entry headers in the reviewers' three reference MRRs carry a street,
+# suite, state or ZIP. The shapes below are the letterhead forms these records actually print.
+@pytest.mark.parametrize(
+    ("generated", "expected"),
+    [
+        (
+            "JANE ROE, N.P. VALLEY OCCUPATIONAL MEDICAL CENTER, 5300 MAIN AVE, SUITE 105, "
+            "SPRINGFIELD, CA 93309. PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)",
+            "JANE ROE, N.P. VALLEY OCCUPATIONAL MEDICAL CENTER. "
+            "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)",
+        ),
+        (
+            "VALLEY RADIOLOGY GROUP, 9330 OAK HWY STE. 100, SPRINGFIELD, CA 93311. "
+            "MRI OF THE LEFT ELBOW WITHOUT CONTRAST",
+            "VALLEY RADIOLOGY GROUP. MRI OF THE LEFT ELBOW WITHOUT CONTRAST",
+        ),
+        (
+            "JOHN DOE, M.D. 16530 VENTURA BLVD STE 510, ENCINO CA 91436-4504. "
+            "QUALIFIED MEDICAL EVALUATION",
+            "JOHN DOE, M.D. QUALIFIED MEDICAL EVALUATION",
+        ),
+        (
+            "JOHN DOE, D.C. VALLEY CHIROPRACTIC, TEL: (661) 555-1880. CHIROPRACTIC RE-EVALUATION",
+            "JOHN DOE, D.C. VALLEY CHIROPRACTIC. CHIROPRACTIC RE-EVALUATION",
+        ),
+    ],
+)
+def test_a_title_loses_the_address_the_letterhead_prints(generated, expected):
+    """DEMONSTRATES the fix at generation: the stored title carries the facility's name only."""
+    assert se._usable_title(generated, "ROW TITLE") == expected
+
+
+# Adam Flake, 2026-09-24, on a record already run past the ZIP-anchored rules: "some of the titles
+# say lynwood CA". A city with its state and no ZIP - in its own pieces or in one.
+@pytest.mark.parametrize(
+    ("generated", "expected"),
+    [
+        (
+            "JOHN Q. DOE, D.C., SPRINGFIELD, CA, PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)",
+            "JOHN Q. DOE, D.C. PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)",
+        ),
+        ("JOHN DOE, M.D., SPRINGFIELD, CA. PROGRESS NOTE", "JOHN DOE, M.D. PROGRESS NOTE"),
+        (
+            "JOHN DOE, D.C. VALLEY CHIROPRACTIC. SPRINGFIELD CA. PROGRESS REPORT",
+            "JOHN DOE, D.C. VALLEY CHIROPRACTIC. PROGRESS REPORT",
+        ),
+        (
+            "JOHN DOE, M.D., SUITE 105 B, SPRINGFIELD, CA 90262. PROGRESS REPORT",
+            "JOHN DOE, M.D. PROGRESS REPORT",
+        ),
+        # Adrian, #396: a bare suite split off by its own period goes too
+        (
+            "JANE ROE, M.D. ACME ORTHOPEDICS. 123 MAIN ST. STE. 100. PROGRESS NOTE",
+            "JANE ROE, M.D. ACME ORTHOPEDICS. PROGRESS NOTE",
+        ),
+        # and the facility a city rule once took for a city stays
+        (
+            "JANE ROE, M.D. SUNRISE MEDICAL GROUP, CA 91367. PROGRESS NOTE",
+            "JANE ROE, M.D. SUNRISE MEDICAL GROUP. PROGRESS NOTE",
+        ),
+    ],
+)
+def test_a_city_and_state_without_a_zip_come_out_of_the_title(generated, expected):
+    """DEMONSTRATES the no-ZIP half, and that no doubled punctuation is left behind."""
+    assert se.without_address(generated) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # an issuing body on DWC forms, not an address - the replay caught the first cut taking it
+        "JANE ROE, M.D. STATE OF CALIFORNIA, DEPARTMENT OF INDUSTRIAL RELATIONS. RFA",
+        "JOHN DOE, P.A. STATE OF CALIFORNIA DWC FORM",
+        # an organisation is never taken for a city
+        "VALLEY MEDICAL GROUP, CA. MRI OF THE LUMBAR SPINE",
+        "CALIFORNIA HIGHWAY PATROL. JOB DESCRIPTION",
+    ],
+)
+def test_a_state_named_as_part_of_an_organisation_stays(title):
+    """GUARD: only a city standing before the abbreviation is an address."""
+    assert se.without_address(title) == title
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # a bare city is indistinguishable from a facility word, so it is left alone
+        "JANE ROE, M.D. SOUTHERN ORTHOPEDIC INSTITUTE - SPRINGFIELD. PROGRESS REPORT",
+        "MRI OF THE L4-5 LUMBAR SPINE",
+        "EMG/NCS OF THE UPPER EXTREMITIES",
+        "DEPOSITION OF JOHN DOE",
+        "JANE ROE, C.O.T.A. PAIR & MARTIN PHYSICAL THERAPY. OCCUPATIONAL THERAPY PROGRESS NOTE",
+        "JOHN DOE, M.D. 2ND OPINION ORTHOPEDICS. PR-4 PERMANENT AND STATIONARY REPORT",
+        "A TITLE CARRYING NO ADDRESS",
+        # a number is only address beside one - a report number is content (Adrian, #396)
+        "JANE ROE, M.D. ACME ORTHOPEDICS. WORK STATUS REPORT NO. 12345",
+    ],
+)
+def test_a_title_without_an_address_is_returned_unchanged(title):
+    """GUARD: everything that is not an address survives byte for byte."""
+    assert se.without_address(title) == title
+
+
+def test_the_export_cleans_a_title_stored_before_this_fix():
+    """DEMONSTRATES the export half: a title already stored with an address is cleaned when it is
+    delivered, so records summarized before the fix do not need re-running."""
+    stored = (
+        "[ManualCheck] VALLEY RADIOLOGY GROUP, 9330 OAK HWY, SPRINGFIELD, CA 93311. "
+        "MRI OF THE CERVICAL SPINE [Diagnostic Study] (Pages 12-19)"
+    )
+    assert se.presentable_title(stored) == "VALLEY RADIOLOGY GROUP. MRI OF THE CERVICAL SPINE"
+
+
+def test_the_title_prompt_asks_for_the_facility_name_only():
+    """The prompt half: the model is told, not only filtered after."""
+    assert "NAME only" in se.TITLE_PROMPT
+    assert "street address" in se.TITLE_PROMPT
+
+
+# --- one spelling per provider across a record ------------------------------------------------
+# Adam Flake, 2026-09-24: "inconsistencies with the provider name with some titles including a
+# middle name while others are not". One provider, printed three ways across one record's forms.
+def test_every_spelling_of_one_provider_becomes_the_same():
+    """DEMONSTRATES the fix: the majority spelling wins, and only the name changes."""
+    titles = [
+        "JOHN DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
+        "JOHN QUINCY DOE, M.D. VALLEY CLINIC. WORK STATUS",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. REQUEST FOR AUTHORIZATION",
+    ]
+    assert se.consistent_authors(titles) == [
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. WORK STATUS",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. REQUEST FOR AUTHORIZATION",
+    ]
+
+
+def test_a_tie_goes_to_the_fuller_spelling():
+    """A first name written out beats an initial, and a middle initial beats none."""
+    assert se.consistent_authors(["JANE ROE, P.T. A", "J. ROE, P.T. B"]) == [
+        "JANE ROE, P.T. A",
+        "JANE ROE, P.T. B",
+    ]
+    assert se.consistent_authors(["JANE ROE, P.T. A", "JANE K. ROE, P.T. B"])[0] == (
+        "JANE K. ROE, P.T. A"
+    )
+
+
+def test_different_providers_are_not_merged():
+    """GUARD: a different surname, a different first initial or a different credential is a
+    different person, and a title with no author element is left exactly as it came."""
+    titles = [
+        "JOHN DOE, M.D. CLINIC. PR-2",
+        "MARY DOE, M.D. CLINIC. PR-2",
+        "JOHN DOE, D.C. CLINIC. CHIROPRACTIC NOTE",
+        "JOHN ROE, M.D. CLINIC. PR-2",
+        "MRI OF THE LEFT KNEE",
+        "DEPOSITION OF JOHN DOE",
+        "",
+    ]
+    assert se.consistent_authors(titles) == titles
+
+
+def test_two_first_names_sharing_an_initial_stay_two_people():
+    """GUARD: a shared surname, credential and first initial is not enough, and nor is a near
+    spelling - JOHN and JAMES stay apart, and so do JEFFERY and JEFFREY."""
+    titles = ["JOHN DOE, M.D. A", "JAMES DOE, M.D. B", "JEFFERY ROE, M.D. C", "JEFFREY ROE, M.D. D"]
+    assert se.consistent_authors(titles) == titles
+
+
+# Adrian's review of #396 reproduced four ways the first cut joined different people. Each pair
+# below is one of them; every title must come back exactly as it went in.
+@pytest.mark.parametrize(
+    "titles",
+    [
+        # a suffix is not the surname: father and son can both practise
+        ["JOHN SMITH JR., M.D. A", "JOHN DAVIS JR., M.D. B", "JOHN DAVIS JR., M.D. C"],
+        # a near first name is a different person
+        ["MARIA GARCIA, M.D. A", "MARIO GARCIA, M.D. B", "MARIO GARCIA, M.D. C"],
+        # so is a prefix of one
+        ["CHRIS LOPEZ, P.T. A", "CHRISTINA LOPEZ, P.T. B", "CHRISTINA LOPEZ, P.T. C"],
+        # an initial that fits two first names states neither
+        ["J. SMITH, M.D. A", "JAMES SMITH, M.D. B", "JAMES SMITH, M.D. C", "JOHN SMITH, M.D. D"],
+        # two different middle initials are two people, and a bare name could be either
+        ["JOHN Q. DOE, M.D. A", "JOHN R. DOE, M.D. B", "JOHN DOE, M.D. C"],
+        ["ANNA KIM, M.D. A", "PAUL KIM, M.D. B"],
+    ],
+)
+def test_names_that_could_be_two_people_are_left_alone(titles):
+    """GUARD on finding 2 of Adrian's review: joining the wrong provider is worse than two
+    spellings of the right one."""
+    assert se.consistent_authors(titles) == titles
+
+
+def test_a_reviewer_edited_title_is_never_outvoted():
+    """DEMONSTRATES the lock: a reviewer's spelling is never rewritten, and it wins its group."""
+    titles = ["JOHN ROE, M.D. A", "JOHN K. ROE, M.D. B", "JOHN K. ROE, M.D. C"]
+    assert se.consistent_authors(titles, [True, False, False]) == [
+        "JOHN ROE, M.D. A",
+        "JOHN ROE, M.D. B",
+        "JOHN ROE, M.D. C",
+    ]
+
+
+def test_the_export_locks_the_titles_a_reviewer_edited():
+    """The export passes the lock from `edited_title`, so a correction survives the record pass."""
+    from types import SimpleNamespace
+
+    from app.api.documents import _record_pass
+
+    summaries = [
+        SimpleNamespace(row_category="3", edited_title="JOHN ROE, M.D. A"),
+        SimpleNamespace(row_category="3", edited_title=None),
+        SimpleNamespace(row_category="3", edited_title=None),
+    ]
+    titles = ["JOHN ROE, M.D. A", "JOHN K. ROE, M.D. B", "JOHN K. ROE, M.D. C"]
+    entries = [{"summaryTitle": t, "summaryText": "x", "summaryDate": "-"} for t in titles]
+    out = _record_pass(entries, summaries, "summaryTitle")
+    assert [e["summaryTitle"].split(",")[0] for e in out] == ["JOHN ROE"] * 3
+
+
+def test_both_export_renderers_name_a_provider_alike():
+    """The Word and PDF entry lists go through the same pass, so the two deliverables agree."""
+    from app.api.documents import _consistent_authors
+
+    word = [{"summaryTitle": "JOHN DOE, M.D. A"}, {"summaryTitle": "JOHN Q. DOE, M.D. B"}]
+    pdf = [{"linkTitle": "JOHN DOE, M.D. A"}, {"linkTitle": "JOHN Q. DOE, M.D. B"}]
+    assert [e["summaryTitle"] for e in _consistent_authors(word, "summaryTitle")] == [
+        e["linkTitle"] for e in _consistent_authors(pdf, "linkTitle")
+    ]
+
+
+# --- one entry per visit: a doctor's category 1 documents on one date become one entry ----------
+def _entry(title, text, date="02/04/2026"):
+    return {"summaryDate": date, "summaryTitle": title, "summaryText": text}
+
+
+_PR2 = "JANE ROE, N.P. VALLEY CLINIC. PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)"
+_SLIP = "JANE ROE, N.P. VALLEY CLINIC. WORK STATUS"
+
+
+def test_a_same_visit_work_status_slip_folds_into_its_pr2():
+    """DEMONSTRATES the fold: the reviewers want one entry per visit, the PR-2 giving the header."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Full duty."),
+        _entry(_SLIP, "**Work Status**: Full duty."),
+    ]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert [e["summaryTitle"] for e in out] == [_PR2]
+    assert out[0]["summaryText"] == "**Diagnoses**: strain. **Work Status**: Full duty."
+
+
+def test_a_pr2_without_a_work_status_point_takes_the_slips_text():
+    """DEMONSTRATES that folding never loses the work status: it is appended when the PR-2 has none."""
+    entries = [_entry(_PR2, "**Diagnoses**: strain."), _entry(_SLIP, "**Work Status**: Modified.")]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert [e["summaryTitle"] for e in out] == [_PR2]
+    assert "**Diagnoses**: strain." in out[0]["summaryText"]
+    assert "**Work Status**: Modified." in out[0]["summaryText"]
+
+
+@pytest.mark.parametrize(
+    ("slip", "date", "categories"),
+    [
+        ("JOHN DOE, M.D. OTHER CLINIC. WORK STATUS", "02/04/2026", ["1", "1"]),  # another doctor
+        (_SLIP, "03/11/2026", ["1", "1"]),  # another visit
+        (_SLIP, "02/04/2026", ["1", "5"]),  # another category
+    ],
+)
+def test_a_slip_from_another_doctor_visit_or_category_stays_its_own_entry(slip, date, categories):
+    """GUARD on the reviewers' own limit: same doctor, same date, same category - or no fold."""
+    entries = [_entry(_PR2, "**Work Status**: Full duty."), _entry(slip, "x", date=date)]
+    assert se.fold_same_visit(entries, categories, "summaryTitle") == entries
+
+
+_NOTE = "JANE ROE, N.P. VALLEY CLINIC. PROGRESS NOTE"
+
+
+def test_a_pr2_form_and_the_visits_progress_note_become_one_entry():
+    """DEMONSTRATES the Camarillo shape Adam Flake called a duplicate on 2026-09-24: a short PR-2
+    form and the full progress note of the same visit. One entry, headed by the PR-2, carrying the
+    fuller body and every section only the form states."""
+    note = "**Subjective**: neck pain. **Diagnoses**: strain. **Treatment Plan**: PT."
+    form = "**Work Status**: Modified duty."
+    out = se.fold_same_visit([_entry(_NOTE, note), _entry(_PR2, form)], ["1", "1"], "summaryTitle")
+    assert [e["summaryTitle"] for e in out] == [_PR2]
+    assert out[0]["summaryText"] == f"{note} {form}"
+
+
+def test_two_same_day_notes_by_one_doctor_keep_every_section():
+    """Two category 1 notes, no PR-2: headed by the fuller one, no section lost."""
+    long_note = "**Subjective**: pain. **Diagnoses**: strain. **Physical Examination**: tender."
+    short_note = "**Diagnoses**: strain. **Treatment Plan**: PT twice weekly."
+    out = se.fold_same_visit(
+        [_entry(_NOTE, short_note), _entry(_NOTE + " ADDENDUM", long_note)],
+        ["1", "1"],
+        "summaryTitle",
+    )
+    assert len(out) == 1
+    assert out[0]["summaryTitle"] == _NOTE + " ADDENDUM"
+    assert out[0]["summaryText"] == f"{long_note} **Treatment Plan**: PT twice weekly."
+
+
+def test_both_export_renderers_fold_the_same_entries():
+    """The Word and PDF lists go through one record-level pass, so they list the same entries."""
+    from types import SimpleNamespace
+
+    from app.api.documents import _record_pass
+
+    summaries = [
+        SimpleNamespace(row_category="1", edited_title=None),
+        SimpleNamespace(row_category="1", edited_title=None),
+    ]
+    word = [_entry(_PR2, "**Work Status**: a."), _entry(_SLIP, "b")]
+    pdf = [{**e, "linkTitle": e.pop("summaryTitle")} for e in (dict(x) for x in word)]
+    assert len(_record_pass(word, summaries, "summaryTitle")) == 1
+    assert len(_record_pass(pdf, summaries, "linkTitle")) == 1
+
+
 # --- the two title paths that could still overflow varchar(512) -------------------------------
 
 
@@ -2858,6 +3180,55 @@ def test_the_check_is_silent_when_there_is_nothing_to_compare(caplog):
         se._log_incomplete_deposition(_cited_through(15), "unmarked source text", _row())
         se._log_incomplete_deposition("", "", _row())
     assert caplog.text == ""
+
+
+def test_a_repeated_label_with_different_text_is_kept_beside_it():
+    """DEMONSTRATES finding B of the re-review: a slip whose work status differs from the PR-2's is
+    carried into the entry, not dropped because the label already exists."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified duty."),
+        _entry(_SLIP, "**Work Status**: Off work until 03/16/2026."),
+    ]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert len(out) == 1
+    assert "Modified duty." in out[0]["summaryText"]
+    assert "Off work until 03/16/2026." in out[0]["summaryText"]
+
+
+def test_unlabelled_text_is_carried_into_the_entry():
+    """DEMONSTRATES finding C of the re-review: a note written without labels is not skipped."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified duty."),
+        _entry(_NOTE, "Patient reports new numbness in the left hand."),
+    ]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert len(out) == 1
+    assert "new numbness in the left hand" in out[0]["summaryText"]
+
+
+def test_the_same_section_is_not_repeated_whatever_its_case():
+    """GUARD: only text the kept body already says is dropped, compared without case or spacing."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified duty."),
+        _entry(_SLIP, "**Work status**: modified duty"),
+    ]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert out[0]["summaryText"] == "**Diagnoses**: strain. **Work Status**: Modified duty."
+
+
+def test_two_doctors_with_one_suffix_do_not_share_a_visit():
+    """GUARD on finding 4 of Adrian's review: SMITH JR.'s slip is not folded into DAVIS JR.'s PR-2,
+    so neither doctor's work status is lost."""
+    smith = "JOHN SMITH JR., M.D. VALLEY CLINIC. WORK STATUS"
+    davis = "JOHN DAVIS JR., M.D. VALLEY CLINIC. PROGRESS REPORT (PR-2)"
+    entries = [
+        _entry(smith, "**Work Status**: Off work until 03/16/2026."),
+        _entry(davis, "**Diagnoses**: Strain. **Work Status**: Modified duty."),
+    ]
+    titles = se.consistent_authors([e["summaryTitle"] for e in entries])
+    entries = [{**e, "summaryTitle": t} for e, t in zip(entries, titles, strict=True)]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert [e["summaryTitle"] for e in out] == [smith, davis]
 
 
 def test_a_job_description_gets_the_minimal_preamble():

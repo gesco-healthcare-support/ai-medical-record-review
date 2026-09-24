@@ -56,6 +56,7 @@ from app.services.classification import DEFAULT_ID, match_rules
 from app.services.extraction import extract_header
 from app.services.files import safe_name
 from app.services.gemini import PROMPT_VERSION
+from app.services.house_style import one_paragraph
 from app.services.jobs import (
     ACTIVE_STATES,
     SUMMARIZED_DOCUMENT_STATUSES,
@@ -77,6 +78,8 @@ from app.services.reporting import (
 )
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
+    consistent_authors,
+    fold_same_visit,
     presentable_title,
     standalone_studies_from_rows,
     summarize_row,
@@ -1589,6 +1592,11 @@ def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tup
     if with_pages:
         title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
     text = summary.effective_text()
+    # A summary written before generation enforced one paragraph is flattened on the way out, so
+    # stored records need no re-run. The MACHINE text only: a reviewer's own edit is theirs, and a
+    # deposition is grouped by page on purpose.
+    if summary.edited_text is None and str(summary.row_category) != "9":
+        text = one_paragraph(text)
     # The Summaries UI strips the DOI prefix into its edit box, so a reviewer-saved body carries
     # none; restore it from the raw model output. doi_prefix owns the grammar, so a document that
     # states two injury dates keeps both.
@@ -1608,6 +1616,27 @@ def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
         "summaryText": text,
         "diagnostic": is_diagnostic(summary.row_category),
     }
+
+
+def _consistent_authors(
+    entries: list[dict], key: str, locked: list[bool] | None = None
+) -> list[dict]:
+    """``entries`` with one spelling per provider across the record - see
+    `summarize_engine.consistent_authors`. Record-level, so it runs once over the whole list rather
+    than per entry, and both renderers call it so the Word and PDF deliverables name people alike.
+    ``locked`` marks the entries whose title a reviewer edited: never rewritten, and they win."""
+    titles = consistent_authors([e[key] for e in entries], locked)
+    return [{**e, key: t} for e, t in zip(entries, titles, strict=True)]
+
+
+def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> list[dict]:
+    """The record-level passes over a delivered entry list, in order: one spelling per provider,
+    then one entry per visit for a doctor's category 1 documents on one date (which needs the
+    spellings to agree first). Both renderers call this, so the Word and PDF deliverables list the
+    same entries."""
+    locked = [s.edited_title is not None for s in summaries]
+    entries = _consistent_authors(entries, key, locked)
+    return fold_same_visit(entries, [str(s.row_category) for s in summaries], key)
 
 
 def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:
@@ -1728,10 +1757,12 @@ def _mrr_docx_bytes(
     client for exactly that reason, and the Word and PDF renderers disagreed about a
     heading and a separator for the same one. The zip has to hand over the same file the
     button does, so there is one definition and both callers take it."""
-    entries = [
-        _export_entry(s, with_pages=payload.includePageNumbers)
-        for s in _included_summaries(document)
-    ]
+    summaries = _included_summaries(document)
+    entries = _record_pass(
+        [_export_entry(s, with_pages=payload.includePageNumbers) for s in summaries],
+        summaries,
+        "summaryTitle",
+    )
     docx = build_mrr_document(
         entries,
         _letter_pages(document),
@@ -1765,9 +1796,12 @@ def _linked_pdf_bytes(
     which is the reviewers' own answer ("does not need the font on that one"); the covering
     letter, the sender and the Labor Code sentences are facts about the record, and the PDF
     having none of them is what the review caught."""
-    entries = [
-        _pdf_entry(s, with_pages=payload.includePageNumbers) for s in _included_summaries(document)
-    ]
+    summaries = _included_summaries(document)
+    entries = _record_pass(
+        [_pdf_entry(s, with_pages=payload.includePageNumbers) for s in summaries],
+        summaries,
+        "linkTitle",
+    )
     return build_linked_pdf(
         document.stored_path,
         entries,

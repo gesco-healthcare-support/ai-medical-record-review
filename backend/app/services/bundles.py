@@ -450,4 +450,6 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
                 f"transcript page numbers unreadable in all {len(rows)} matching documents"
             )
         raise EmptyExtractionError(f"no readable text in any of the {len(rows)} matching documents")
-    return entries
+    # One spelling per provider across the bundle, as the record export does.
+    titles = summarize_engine.consistent_authors([e["summaryTitle"] for e in entries])
+    return [{**e, "summaryTitle": t} for e, t in zip(entries, titles, strict=True)]
