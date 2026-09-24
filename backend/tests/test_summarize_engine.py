@@ -2233,6 +2233,16 @@ def test_a_title_loses_the_address_the_letterhead_prints(generated, expected):
             "JOHN DOE, M.D., SUITE 105 B, SPRINGFIELD, CA 90262. PROGRESS REPORT",
             "JOHN DOE, M.D. PROGRESS REPORT",
         ),
+        # Adrian, #396: a bare suite split off by its own period goes too
+        (
+            "JANE ROE, M.D. ACME ORTHOPEDICS. 123 MAIN ST. STE. 100. PROGRESS NOTE",
+            "JANE ROE, M.D. ACME ORTHOPEDICS. PROGRESS NOTE",
+        ),
+        # and the facility a city rule once took for a city stays
+        (
+            "JANE ROE, M.D. SUNRISE MEDICAL GROUP, CA 91367. PROGRESS NOTE",
+            "JANE ROE, M.D. SUNRISE MEDICAL GROUP. PROGRESS NOTE",
+        ),
     ],
 )
 def test_a_city_and_state_without_a_zip_come_out_of_the_title(generated, expected):
@@ -2267,6 +2277,8 @@ def test_a_state_named_as_part_of_an_organisation_stays(title):
         "JANE ROE, C.O.T.A. PAIR & MARTIN PHYSICAL THERAPY. OCCUPATIONAL THERAPY PROGRESS NOTE",
         "JOHN DOE, M.D. 2ND OPINION ORTHOPEDICS. PR-4 PERMANENT AND STATIONARY REPORT",
         "A TITLE CARRYING NO ADDRESS",
+        # a number is only address beside one - a report number is content (Adrian, #396)
+        "JANE ROE, M.D. ACME ORTHOPEDICS. WORK STATUS REPORT NO. 12345",
     ],
 )
 def test_a_title_without_an_address_is_returned_unchanged(title):
@@ -2298,7 +2310,7 @@ def test_every_spelling_of_one_provider_becomes_the_same():
     titles = [
         "JOHN DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
         "JOHN Q. DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
-        "JON QUINCY DOE, M.D. VALLEY CLINIC. WORK STATUS",
+        "JOHN QUINCY DOE, M.D. VALLEY CLINIC. WORK STATUS",
         "JOHN Q. DOE, M.D. VALLEY CLINIC. REQUEST FOR AUTHORIZATION",
     ]
     assert se.consistent_authors(titles) == [
@@ -2336,12 +2348,61 @@ def test_different_providers_are_not_merged():
 
 
 def test_two_first_names_sharing_an_initial_stay_two_people():
-    """GUARD on the one false merge the live-box replay found: a shared surname, credential and
-    first initial is not enough - JOHN and JAMES stay apart, while JEFFERY and JEFFREY join."""
+    """GUARD: a shared surname, credential and first initial is not enough, and nor is a near
+    spelling - JOHN and JAMES stay apart, and so do JEFFERY and JEFFREY."""
     titles = ["JOHN DOE, M.D. A", "JAMES DOE, M.D. B", "JEFFERY ROE, M.D. C", "JEFFREY ROE, M.D. D"]
-    out = se.consistent_authors(titles)
-    assert out[:2] == titles[:2]
-    assert out[2].split(",")[0] == out[3].split(",")[0]
+    assert se.consistent_authors(titles) == titles
+
+
+# Adrian's review of #396 reproduced four ways the first cut joined different people. Each pair
+# below is one of them; every title must come back exactly as it went in.
+@pytest.mark.parametrize(
+    "titles",
+    [
+        # a suffix is not the surname: father and son can both practise
+        ["JOHN SMITH JR., M.D. A", "JOHN DAVIS JR., M.D. B", "JOHN DAVIS JR., M.D. C"],
+        # a near first name is a different person
+        ["MARIA GARCIA, M.D. A", "MARIO GARCIA, M.D. B", "MARIO GARCIA, M.D. C"],
+        # so is a prefix of one
+        ["CHRIS LOPEZ, P.T. A", "CHRISTINA LOPEZ, P.T. B", "CHRISTINA LOPEZ, P.T. C"],
+        # an initial that fits two first names states neither
+        ["J. SMITH, M.D. A", "JAMES SMITH, M.D. B", "JAMES SMITH, M.D. C", "JOHN SMITH, M.D. D"],
+        # two different middle initials are two people, and a bare name could be either
+        ["JOHN Q. DOE, M.D. A", "JOHN R. DOE, M.D. B", "JOHN DOE, M.D. C"],
+        ["ANNA KIM, M.D. A", "PAUL KIM, M.D. B"],
+    ],
+)
+def test_names_that_could_be_two_people_are_left_alone(titles):
+    """GUARD on finding 2 of Adrian's review: joining the wrong provider is worse than two
+    spellings of the right one."""
+    assert se.consistent_authors(titles) == titles
+
+
+def test_a_reviewer_edited_title_is_never_outvoted():
+    """DEMONSTRATES the lock: a reviewer's spelling is never rewritten, and it wins its group."""
+    titles = ["JOHN ROE, M.D. A", "JOHN K. ROE, M.D. B", "JOHN K. ROE, M.D. C"]
+    assert se.consistent_authors(titles, [True, False, False]) == [
+        "JOHN ROE, M.D. A",
+        "JOHN ROE, M.D. B",
+        "JOHN ROE, M.D. C",
+    ]
+
+
+def test_the_export_locks_the_titles_a_reviewer_edited():
+    """The export passes the lock from `edited_title`, so a correction survives the record pass."""
+    from types import SimpleNamespace
+
+    from app.api.documents import _record_pass
+
+    summaries = [
+        SimpleNamespace(row_category="3", edited_title="JOHN ROE, M.D. A"),
+        SimpleNamespace(row_category="3", edited_title=None),
+        SimpleNamespace(row_category="3", edited_title=None),
+    ]
+    titles = ["JOHN ROE, M.D. A", "JOHN K. ROE, M.D. B", "JOHN K. ROE, M.D. C"]
+    entries = [{"summaryTitle": t, "summaryText": "x", "summaryDate": "-"} for t in titles]
+    out = _record_pass(entries, summaries, "summaryTitle")
+    assert [e["summaryTitle"].split(",")[0] for e in out] == ["JOHN ROE"] * 3
 
 
 def test_both_export_renderers_name_a_provider_alike():
@@ -2432,7 +2493,10 @@ def test_both_export_renderers_fold_the_same_entries():
 
     from app.api.documents import _record_pass
 
-    summaries = [SimpleNamespace(row_category="1"), SimpleNamespace(row_category="1")]
+    summaries = [
+        SimpleNamespace(row_category="1", edited_title=None),
+        SimpleNamespace(row_category="1", edited_title=None),
+    ]
     word = [_entry(_PR2, "**Work Status**: a."), _entry(_SLIP, "b")]
     pdf = [{**e, "linkTitle": e.pop("summaryTitle")} for e in (dict(x) for x in word)]
     assert len(_record_pass(word, summaries, "summaryTitle")) == 1
@@ -3116,3 +3180,52 @@ def test_the_check_is_silent_when_there_is_nothing_to_compare(caplog):
         se._log_incomplete_deposition(_cited_through(15), "unmarked source text", _row())
         se._log_incomplete_deposition("", "", _row())
     assert caplog.text == ""
+
+
+def test_a_repeated_label_with_different_text_is_kept_beside_it():
+    """DEMONSTRATES finding B of the re-review: a slip whose work status differs from the PR-2's is
+    carried into the entry, not dropped because the label already exists."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified duty."),
+        _entry(_SLIP, "**Work Status**: Off work until 03/16/2026."),
+    ]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert len(out) == 1
+    assert "Modified duty." in out[0]["summaryText"]
+    assert "Off work until 03/16/2026." in out[0]["summaryText"]
+
+
+def test_unlabelled_text_is_carried_into_the_entry():
+    """DEMONSTRATES finding C of the re-review: a note written without labels is not skipped."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified duty."),
+        _entry(_NOTE, "Patient reports new numbness in the left hand."),
+    ]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert len(out) == 1
+    assert "new numbness in the left hand" in out[0]["summaryText"]
+
+
+def test_the_same_section_is_not_repeated_whatever_its_case():
+    """GUARD: only text the kept body already says is dropped, compared without case or spacing."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified duty."),
+        _entry(_SLIP, "**Work status**: modified duty"),
+    ]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert out[0]["summaryText"] == "**Diagnoses**: strain. **Work Status**: Modified duty."
+
+
+def test_two_doctors_with_one_suffix_do_not_share_a_visit():
+    """GUARD on finding 4 of Adrian's review: SMITH JR.'s slip is not folded into DAVIS JR.'s PR-2,
+    so neither doctor's work status is lost."""
+    smith = "JOHN SMITH JR., M.D. VALLEY CLINIC. WORK STATUS"
+    davis = "JOHN DAVIS JR., M.D. VALLEY CLINIC. PROGRESS REPORT (PR-2)"
+    entries = [
+        _entry(smith, "**Work Status**: Off work until 03/16/2026."),
+        _entry(davis, "**Diagnoses**: Strain. **Work Status**: Modified duty."),
+    ]
+    titles = se.consistent_authors([e["summaryTitle"] for e in entries])
+    entries = [{**e, "summaryTitle": t} for e, t in zip(entries, titles, strict=True)]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert [e["summaryTitle"] for e in out] == [smith, davis]

@@ -286,7 +286,16 @@ def sentence_case_caps_runs(text: str) -> str:
 # `1. `) is dropped with its line break. NOT for depositions, which are grouped by page on purpose -
 # the caller decides.
 _LIST_MARKER = re.compile(r"(?:[-*•]|\d{1,2}[.)])[ \t]{1,4}")
-_EMPTY_LABEL = re.compile(r"\*\*[^*\n]{1,60}\*\*:?[ \t]{0,8}(?=\*\*|$)")
+# An EMPTY heading is a LABEL - a bold span marked as one by its colon, `**X**:` or `**X:**` -
+# followed by nothing but another label or the end. Both halves are load-bearing, and the first
+# version had neither: it treated ANY bold span at the end as a heading, and deleted the label in
+# front of any bold span. Adrian reproduced both on review (#396), measured over 4,570 stored
+# summaries: 175 would have lost words and 28 a key label entirely -
+# `**Work Status**: **Modified duty.**` lost its work status, `**Impression**: **Normal study.**`
+# the whole summary. A bold span without a colon is content, never a heading, and a label followed
+# by bold CONTENT is not empty.
+_LABEL = r"\*\*[^*\n]{1,60}(?:\*\*:|:\*\*)"
+_EMPTY_LABEL = re.compile(_LABEL + r"[ \t]{0,8}(?=" + _LABEL + r"|$)")
 _CLAUSE_END = ".:;,!?"
 
 

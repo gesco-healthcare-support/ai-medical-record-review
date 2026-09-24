@@ -1618,11 +1618,14 @@ def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     }
 
 
-def _consistent_authors(entries: list[dict], key: str) -> list[dict]:
+def _consistent_authors(
+    entries: list[dict], key: str, locked: list[bool] | None = None
+) -> list[dict]:
     """``entries`` with one spelling per provider across the record - see
     `summarize_engine.consistent_authors`. Record-level, so it runs once over the whole list rather
-    than per entry, and both renderers call it so the Word and PDF deliverables name people alike."""
-    titles = consistent_authors([e[key] for e in entries])
+    than per entry, and both renderers call it so the Word and PDF deliverables name people alike.
+    ``locked`` marks the entries whose title a reviewer edited: never rewritten, and they win."""
+    titles = consistent_authors([e[key] for e in entries], locked)
     return [{**e, key: t} for e, t in zip(entries, titles, strict=True)]
 
 
@@ -1631,7 +1634,8 @@ def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> lis
     then one entry per visit for a doctor's category 1 documents on one date (which needs the
     spellings to agree first). Both renderers call this, so the Word and PDF deliverables list the
     same entries."""
-    entries = _consistent_authors(entries, key)
+    locked = [s.edited_title is not None for s in summaries]
+    entries = _consistent_authors(entries, key, locked)
     return fold_same_visit(entries, [str(s.row_category) for s in summaries], key)
 
 

@@ -9,7 +9,6 @@ Model calls go through services.llm, so which vendor answers is a config value r
 import. This module no longer names an SDK.
 """
 
-import difflib
 import logging
 import re
 
@@ -896,13 +895,16 @@ _ADDRESS_PIECES = (
         r"(?: (?:SUITE|STE|UNIT|#)(?: ?[A-Z0-9-]{1,6})?)?",
         re.I,
     ),
-    re.compile(r"(?:SUITE|STE|UNIT|#) ?[A-Z0-9-]{1,6}(?: [A-Z0-9-]{1,6})?", re.I),
+    # the number optional: "STE. 100" splits on its own period, leaving a bare "STE" piece
+    re.compile(r"(?:SUITE|STE|UNIT|#)(?: ?[A-Z0-9-]{1,6}(?: [A-Z0-9-]{1,6})?)?", re.I),
     re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){0,3}(?:CA|CALIFORNIA|[A-Z]{2}) \d{5}(?:-\d{4})?", re.I),
-    re.compile(r"\d{5}(?:-\d{4})?"),
     re.compile(r"(?:PH|PHONE|TEL|FAX|F|T)?:? ?\(?\d{3}\)?[ -]?\d{3}-\d{4}", re.I),
 )
 _STATE_ZIP = _ADDRESS_PIECES[2]
-_BARE_NUMBER = re.compile(r"\d{1,6}")
+# A number is address only when it follows an address piece - a suite number split off by its own
+# period, or a ZIP after a street. Anywhere else it is content: "WORK STATUS REPORT NO. 12345"
+# lost its report number when any five-digit piece was taken for a ZIP (Adrian, #396).
+_BARE_NUMBER = re.compile(r"\d{1,6}(?:-\d{4})?")
 _CITY = re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){0,2}[A-Z][A-Z'-]{1,20}", re.I)
 # A city with its state and NO ZIP - "LYNWOOD, CA" or "LYNWOOD CA". Adam Flake flagged exactly that
 # on 2026-09-24, on a record whose titles the ZIP-anchored rules above had already been run past.
@@ -950,7 +952,7 @@ def without_address(title: str) -> str:
     _mark_city_state(pieces, drop)
     for i in range(1, len(pieces)):
         if drop[i - 1] and _BARE_NUMBER.fullmatch(pieces[i][1].strip()):
-            # `STE. 100` splits on its own period and leaves the number behind.
+            # `STE. 100` splits on its own period and leaves the number behind; a ZIP follows a street.
             drop[i] = True
     if not any(drop):
         return title
@@ -961,78 +963,107 @@ def without_address(title: str) -> str:
 
 
 # ONE spelling per provider across a record. Titles are generated one sub-document at a time, each
-# from its own pages, so a provider printed "JEFFERY FREESEMANN" on one form, "JEFFERY M. FREESEMANN"
-# on the next and "JEFFREY MARK FREESEMANN" on a third got all three in one delivered report. Adam
-# Flake, 2026-09-24: "inconsistencies with the provider name with some titles including a middle name
-# while others are not". Reviewer corrections on the same record show the same thing done by hand.
+# from its own pages, so a provider printed "JEFFERY FREESEMANN" on one form and "JEFFERY M.
+# FREESEMANN" on the next got both in one delivered report. Adam Flake, 2026-09-24: "inconsistencies
+# with the provider name with some titles including a middle name while others are not".
 #
 # The author is the element before the first comma - the TITLE_PROMPT form "AUTHOR, CREDENTIALS. ...".
-# Two authors are one provider when they share a surname and a credential AND their first names are
-# compatible - the same, one an initial or prefix of the other, or a near spelling (JEFFERY /
-# JEFFREY). Measured over the last 30 days on the live box before settling on that: of 47 groups a
-# surname + first initial + credential key would merge, 34 differed only in the middle name, 12 in the
-# first name's spelling or an initial, and ONE joined two plainly different first names - possibly
-# two people, which a record must never collapse. A group is rewritten to its most frequent spelling,
-# ties going to the fuller one (more words, then more letters: a middle initial or a first name
-# written out carries more of the name), then alphabetically so the choice is deterministic. Only the
-# name is touched. A title without a recognisable author element is returned as it came.
+# Only variants that can ONLY be one person are joined, because putting the wrong provider's name on
+# an entry is worse than leaving two spellings of the right one. Adrian's review of the first cut
+# (#396) reproduced four ways it joined different people, and each rule below closes one:
+#
+#   - The surname is the last word BEFORE a suffix (JR, SR, II ...), and the suffix is part of the
+#     key: "JOHN SMITH JR." and "JOHN DAVIS JR." were one group when the suffix was the surname, and
+#     a father and son can both practise.
+#   - First names must be IDENTICAL. No near spelling (MARIA / MARIO) and no prefix (CHRIS /
+#     CHRISTINA): in this caseload a common surname is exactly where two providers share one.
+#   - An initial ("J.") joins a group only when exactly ONE first name in the record fits it -
+#     otherwise it would state a first name the document never gave.
+#   - Two different middle initials are two people. A spelling with NO middle joins only when every
+#     middle in its group agrees, and is left alone when it could belong to more than one.
+#   - A REVIEWER-EDITED title is never rewritten, and its spelling wins its group - the same "a
+#     reviewer's own edit is theirs" rule the export applies to bodies.
+#
+# A group is otherwise rewritten to its most frequent spelling, ties going to the fuller one, then
+# alphabetically. Only the name is touched; a title with no recognisable author is left as it came.
 _AUTHOR_NAME = re.compile(r"[A-Z][A-Z'\-]{0,24}\.?(?: [A-Z][A-Z'\-]{0,24}\.?){1,4}")
 _AUTHOR_CRED = re.compile(r"[A-Z][A-Z.\-/]{0,11}")
-_FIRST_NAME_SIMILARITY = 0.75
+_NAME_SUFFIXES = frozenset({"JR", "SR", "II", "III", "IV", "V"})
 
 
 def _author_parts(title: str):
-    """``(name, key)`` for a title that opens with ``NAME, CREDENTIAL``, else ``None``."""
+    """``(name, key)`` for a title that opens with ``NAME, CREDENTIAL``, else ``None``.
+
+    The key is ``(surname, suffix, credential)`` - see the note above."""
     name, sep, rest = (title or "").partition(", ")
     cred = _AUTHOR_CRED.match(rest) if sep else None
     if not cred or not _AUTHOR_NAME.fullmatch(name):
         return None
     words = name.replace(".", "").split()
-    return name, (words[-1], cred.group(0).replace(".", "").upper())
+    suffix = words[-1] if words[-1] in _NAME_SUFFIXES and len(words) > 2 else ""
+    core = words[:-1] if suffix else words
+    return name, (core[-1], suffix, cred.group(0).replace(".", "").upper())
 
 
-def _first_names_compatible(a: str, b: str) -> bool:
-    """Whether two first names can be one person's - see the note above."""
-    a, b = a.replace(".", ""), b.replace(".", "")
-    short, long_ = sorted((a, b), key=len)
-    return (
-        a == b
-        or long_.startswith(short)
-        or difflib.SequenceMatcher(None, a, b).ratio() >= _FIRST_NAME_SIMILARITY
-    )
+def _first_and_middle(name: str) -> tuple[str, str]:
+    """First name and middle initial ("" when none) of one spelling, suffix excluded."""
+    words = name.replace(".", "").split()
+    if words[-1] in _NAME_SUFFIXES and len(words) > 2:
+        words = words[:-1]
+    return words[0], (words[1][0] if len(words) > 2 else "")
 
 
-def _spelling_rank(spellings: dict[str, int]):
-    return lambda s: (-spellings[s], -len(s.split()), -len(s), s)
+def _spelling_rank(counts: dict[str, int], locked: set[str]):
+    return lambda s: (s not in locked, -counts[s], -len(s.split()), -len(s), s)
 
 
-def _cluster_spellings(spellings: dict[str, int]) -> dict[str, str]:
-    """Each spelling of one surname + credential mapped to its cluster's canonical spelling.
-
-    Strongest spelling first, so each cluster is named after its most frequent member and a weaker
-    spelling joins the first cluster whose first name it is compatible with."""
-    clusters: list[list[str]] = []
-    for name in sorted(spellings, key=_spelling_rank(spellings)):
-        first = name.split()[0]
-        home = next((c for c in clusters if _first_names_compatible(first, c[0].split()[0])), None)
-        if home is None:
-            clusters.append([name])
+def _people(spellings: list[str]) -> list[list[str]]:
+    """The spellings of one surname + suffix + credential, split into the people they can only be."""
+    by_first: dict[str, list[str]] = {}
+    initials = []
+    for s in spellings:
+        first, _ = _first_and_middle(s)
+        (initials if len(first) == 1 else by_first.setdefault(first, [])).append(s)
+    people: list[list[str]] = []
+    for group in by_first.values():
+        middles = {_first_and_middle(s)[1] for s in group} - {""}
+        if len(middles) <= 1:
+            people.append(group)
+            continue
+        for m in sorted(middles):
+            people.append([s for s in group if _first_and_middle(s)[1] == m])
+        people.extend([s] for s in group if not _first_and_middle(s)[1])
+    for s in initials:
+        fits = [p for p in people if _first_and_middle(p[0])[0].startswith(s.split()[0][0])]
+        if len(fits) == 1 and len({_first_and_middle(x)[0] for x in fits[0]}) == 1:
+            fits[0].append(s)
         else:
-            home.append(name)
-    return {name: cluster[0] for cluster in clusters for name in cluster}
+            people.append([s])
+    return people
 
 
-def consistent_authors(titles: list[str]) -> list[str]:
-    """``titles`` with every spelling of one provider made the same - see the note above."""
+def consistent_authors(titles: list[str], locked: list[bool] | None = None) -> list[str]:
+    """``titles`` with every spelling of one provider made the same - see the note above.
+
+    ``locked`` marks reviewer-edited titles: never rewritten, and their spelling wins its group."""
+    locked = locked or [False] * len(titles)
     parts = [_author_parts(t) for t in titles]
     counts: dict[tuple, dict[str, int]] = {}
-    for p in (p for p in parts if p):
-        spellings = counts.setdefault(p[1], {})
-        spellings[p[0]] = spellings.get(p[0], 0) + 1
-    chosen = {key: _cluster_spellings(spellings) for key, spellings in counts.items()}
+    pinned: set[str] = set()
+    for p, is_locked in zip(parts, locked, strict=True):
+        if p:
+            spellings = counts.setdefault(p[1], {})
+            spellings[p[0]] = spellings.get(p[0], 0) + 1
+            if is_locked:
+                pinned.add(p[0])
+    chosen: dict[tuple, str] = {}
+    for key, spellings in counts.items():
+        for person in _people(list(spellings)):
+            canonical = min(person, key=_spelling_rank(spellings, pinned))
+            chosen.update({(name, key): canonical for name in person})
     return [
-        title if not p else chosen[p[1]][p[0]] + title[len(p[0]) :]
-        for title, p in zip(titles, parts, strict=True)
+        title if not p or is_locked else chosen[(p[0], p[1])] + title[len(p[0]) :]
+        for title, p, is_locked in zip(titles, parts, locked, strict=True)
     ]
 
 
@@ -1043,19 +1074,20 @@ def consistent_authors(titles: list[str]) -> list[str]:
 # has read the leftover pairs as duplicates on two rounds of review (2026-09-24, twice): a work status
 # slip beside its PR-2, and a PR-2 form beside the progress note of the same visit.
 #
-# Category 1 entries by the SAME author (after `consistent_authors`) on the SAME date become one
-# entry: headed by a PR-2 when the visit has one, otherwise by the fullest entry; bodied by the
-# fullest body, with every section ANOTHER entry carries and the kept body lacks appended - so a
-# work status only the slip states, or a treatment plan only the note states, is kept rather than
-# lost. Folded at EXPORT over the delivered entries: the rows are untouched, the review page still
+# Category 1 entries by the SAME author and credential (after `consistent_authors`, which only joins
+# spellings that can be one person) on the SAME date become one entry: headed by a PR-2 when the
+# visit has one, otherwise by the fullest entry; bodied by the fullest body, with every section of
+# the others it does not already say appended - see `_merged_body`. Nothing is dropped unless the
+# kept body holds the same text. Folded at EXPORT over the delivered entries: the rows are untouched, the review page still
 # shows every document, and a reviewer can still separate them.
 #
 # Measured on the live box over the last 30 days before widening it past work status slips: 95
 # such visits across 25 records, 125 entries folding away; reviewers had excluded 2 of them by hand.
 _WORK_STATUS_TITLE = re.compile(r"\bWORK (?:ACTIVITY )?STATUS\b|\bRETURN[- ]TO[- ]WORK\b", re.I)
 _PR2_TITLE = re.compile(r"\bPR-?2\b|\bPROGRESS REPORT\b", re.I)
-_SECTION = re.compile(r"(?=\*\*[^*\n]{1,60}\*\*)")
-_SECTION_LABEL = re.compile(r"\*\*([^*\n]{1,60})\*\*")
+# A section starts at a LABEL - a bold span marked by its colon - never at bold content, so
+# "**Work Status**: **Modified duty.**" stays one section.
+_SECTION = re.compile(r"(?=\*\*[^*\n]{1,60}(?:\*\*:|:\*\*))")
 
 
 def _is_pr2(title: str) -> bool:
@@ -1068,20 +1100,28 @@ def _visit_key(entry: dict, category: str, title_key: str):
     date = (entry.get("summaryDate") or "").strip()
     if category != "1" or not author or date in ("", "-"):
         return None
-    return date, author[0]
+    return date, author[0], author[1][2]
+
+
+def _normal(section: str) -> str:
+    return re.sub(r"\s+", " ", section).strip(" .;:").casefold()
 
 
 def _merged_body(bodies: list[str]) -> str:
-    """The fullest body, with each section only another body carries appended to it."""
+    """The fullest body, with every section of the others it does not already carry appended.
+
+    A section is dropped only when the kept body already holds the SAME TEXT. A repeated label with
+    different text is appended beside it, and so is text under no label at all: the first version
+    compared labels only, so a slip's "Work Status: Off work" vanished next to a PR-2's "Work Status:
+    Modified duty", and an unlabelled note contributed nothing (Adrian, #396). Two statements of one
+    point in one entry are visible to the reviewer; a lost one is not."""
     kept = max(bodies, key=len)
-    have = {m.lower().strip(" :") for m in _SECTION_LABEL.findall(kept)}
+    have = {_normal(sec) for sec in _SECTION.split(kept) if sec.strip()}
     extra = []
     for body in (b for b in bodies if b is not kept):
-        for section in (s.strip() for s in _SECTION.split(body) if s.strip()):
-            label = _SECTION_LABEL.match(section)
-            key = label.group(1).lower().strip(" :") if label else None
-            if key and key not in have:
-                have.add(key)
+        for section in (sec.strip() for sec in _SECTION.split(body) if sec.strip()):
+            if _normal(section) not in have:
+                have.add(_normal(section))
                 extra.append(section)
     return " ".join([kept, *extra]).strip()
 

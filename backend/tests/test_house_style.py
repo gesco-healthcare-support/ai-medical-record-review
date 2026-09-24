@@ -159,3 +159,27 @@ def test_the_export_leaves_a_deposition_and_a_reviewer_edit_alone():
         _stored(text="Raw.\nBody.", edited_text="Line one.\nLine two.")
     )
     assert text == "Line one.\nLine two."
+
+
+# Adrian's review of #396: the first `_EMPTY_LABEL` took ANY bold span at the end for an empty
+# heading and deleted the label in front of any bold span. Over 4,570 stored summaries 175 would have
+# lost words and 28 a key label. Every one of these must come back unchanged.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Mild degeneration at L4-5. **Return to clinic in 4 weeks.**",
+        "**Diagnoses**: Lumbar strain. **Work Status**: **Modified duty.**",
+        "**Impression**: **Normal study.**",
+        "**Impression**: Normal study.",
+    ],
+)
+def test_bold_content_is_never_taken_for_an_empty_heading(text):
+    """GUARD on finding 1: a bold span without a colon is content, and a label followed by bold
+    content is not empty."""
+    assert one_paragraph(text) == text
+
+
+def test_a_label_followed_only_by_another_label_is_still_removed():
+    """The case the rule exists for survives the tightening: a heading introducing nothing."""
+    text = "**Objective Findings**: **Range of Motion**: flexion 40 degrees."
+    assert one_paragraph(text) == "**Range of Motion**: flexion 40 degrees."
