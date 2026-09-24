@@ -77,6 +77,7 @@ from app.services.reporting import (
 )
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
+    consistent_authors,
     presentable_title,
     standalone_studies_from_rows,
     summarize_row,
@@ -1614,6 +1615,14 @@ def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     }
 
 
+def _consistent_authors(entries: list[dict], key: str) -> list[dict]:
+    """``entries`` with one spelling per provider across the record - see
+    `summarize_engine.consistent_authors`. Record-level, so it runs once over the whole list rather
+    than per entry, and both renderers call it so the Word and PDF deliverables name people alike."""
+    titles = consistent_authors([e[key] for e in entries])
+    return [{**e, key: t} for e, t in zip(entries, titles, strict=True)]
+
+
 def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     """Linked-PDF entry: like _export_entry, plus ``startPage`` (the 1-based source page the title
     links to - unaffected by whether the page range is printed in the text)."""
@@ -1731,10 +1740,13 @@ def _mrr_docx_bytes(
     client for exactly that reason, and the Word and PDF renderers disagreed about a
     heading and a separator for the same one. The zip has to hand over the same file the
     button does, so there is one definition and both callers take it."""
-    entries = [
-        _export_entry(s, with_pages=payload.includePageNumbers)
-        for s in _included_summaries(document)
-    ]
+    entries = _consistent_authors(
+        [
+            _export_entry(s, with_pages=payload.includePageNumbers)
+            for s in _included_summaries(document)
+        ],
+        "summaryTitle",
+    )
     docx = build_mrr_document(
         entries,
         _letter_pages(document),
@@ -1768,9 +1780,13 @@ def _linked_pdf_bytes(
     which is the reviewers' own answer ("does not need the font on that one"); the covering
     letter, the sender and the Labor Code sentences are facts about the record, and the PDF
     having none of them is what the review caught."""
-    entries = [
-        _pdf_entry(s, with_pages=payload.includePageNumbers) for s in _included_summaries(document)
-    ]
+    entries = _consistent_authors(
+        [
+            _pdf_entry(s, with_pages=payload.includePageNumbers)
+            for s in _included_summaries(document)
+        ],
+        "linkTitle",
+    )
     return build_linked_pdf(
         document.stored_path,
         entries,

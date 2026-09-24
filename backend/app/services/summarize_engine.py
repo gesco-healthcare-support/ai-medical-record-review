@@ -9,6 +9,7 @@ Model calls go through services.llm, so which vendor answers is a config value r
 import. This module no longer names an SDK.
 """
 
+import difflib
 import logging
 import re
 
@@ -930,6 +931,83 @@ def without_address(title: str) -> str:
     if kept and pieces and drop[0]:
         kept[0] = ("", kept[0][1])
     return "".join(sep + piece for sep, piece in kept).strip()
+
+
+# ONE spelling per provider across a record. Titles are generated one sub-document at a time, each
+# from its own pages, so a provider printed "JEFFERY FREESEMANN" on one form, "JEFFERY M. FREESEMANN"
+# on the next and "JEFFREY MARK FREESEMANN" on a third got all three in one delivered report. Adam
+# Flake, 2026-09-24: "inconsistencies with the provider name with some titles including a middle name
+# while others are not". Reviewer corrections on the same record show the same thing done by hand.
+#
+# The author is the element before the first comma - the TITLE_PROMPT form "AUTHOR, CREDENTIALS. ...".
+# Two authors are one provider when they share a surname and a credential AND their first names are
+# compatible - the same, one an initial or prefix of the other, or a near spelling (JEFFERY /
+# JEFFREY). Measured over the last 30 days on the live box before settling on that: of 47 groups a
+# surname + first initial + credential key would merge, 34 differed only in the middle name, 12 in the
+# first name's spelling or an initial, and ONE joined two plainly different first names - possibly
+# two people, which a record must never collapse. A group is rewritten to its most frequent spelling,
+# ties going to the fuller one (more words, then more letters: a middle initial or a first name
+# written out carries more of the name), then alphabetically so the choice is deterministic. Only the
+# name is touched. A title without a recognisable author element is returned as it came.
+_AUTHOR_NAME = re.compile(r"[A-Z][A-Z'\-]{0,24}\.?(?: [A-Z][A-Z'\-]{0,24}\.?){1,4}")
+_AUTHOR_CRED = re.compile(r"[A-Z][A-Z.\-/]{0,11}")
+_FIRST_NAME_SIMILARITY = 0.75
+
+
+def _author_parts(title: str):
+    """``(name, key)`` for a title that opens with ``NAME, CREDENTIAL``, else ``None``."""
+    name, sep, rest = (title or "").partition(", ")
+    cred = _AUTHOR_CRED.match(rest) if sep else None
+    if not cred or not _AUTHOR_NAME.fullmatch(name):
+        return None
+    words = name.replace(".", "").split()
+    return name, (words[-1], cred.group(0).replace(".", "").upper())
+
+
+def _first_names_compatible(a: str, b: str) -> bool:
+    """Whether two first names can be one person's - see the note above."""
+    a, b = a.replace(".", ""), b.replace(".", "")
+    short, long_ = sorted((a, b), key=len)
+    return (
+        a == b
+        or long_.startswith(short)
+        or difflib.SequenceMatcher(None, a, b).ratio() >= _FIRST_NAME_SIMILARITY
+    )
+
+
+def _spelling_rank(spellings: dict[str, int]):
+    return lambda s: (-spellings[s], -len(s.split()), -len(s), s)
+
+
+def consistent_authors(titles: list[str]) -> list[str]:
+    """``titles`` with every spelling of one provider made the same - see the note above."""
+    parts = [_author_parts(t) for t in titles]
+    counts: dict[tuple, dict[str, int]] = {}
+    for p in parts:
+        if p:
+            spellings = counts.setdefault(p[1], {})
+            spellings[p[0]] = spellings.get(p[0], 0) + 1
+    chosen: dict[tuple, str] = {}
+    for key, spellings in counts.items():
+        # Clusters within one surname + credential, strongest spelling first, so each cluster is
+        # named after its most frequent member and a weaker spelling joins the first it fits.
+        clusters: list[list[str]] = []
+        for name in sorted(spellings, key=_spelling_rank(spellings)):
+            first = name.split()[0]
+            home = next(
+                (c for c in clusters if _first_names_compatible(first, c[0].split()[0])), None
+            )
+            if home is None:
+                clusters.append([name])
+            else:
+                home.append(name)
+        for cluster in clusters:
+            for name in cluster:
+                chosen[(name, key)] = cluster[0]
+    return [
+        title if not p else chosen[p] + title[len(p[0]) :]
+        for title, p in zip(titles, parts, strict=True)
+    ]
 
 
 def presentable_title(title: str) -> str:

@@ -2249,6 +2249,71 @@ def test_the_title_prompt_asks_for_the_facility_name_only():
     assert "street address" in se.TITLE_PROMPT
 
 
+# --- one spelling per provider across a record ------------------------------------------------
+# Adam Flake, 2026-09-24: "inconsistencies with the provider name with some titles including a
+# middle name while others are not". One provider, printed three ways across one record's forms.
+def test_every_spelling_of_one_provider_becomes_the_same():
+    """DEMONSTRATES the fix: the majority spelling wins, and only the name changes."""
+    titles = [
+        "JOHN DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
+        "JON QUINCY DOE, M.D. VALLEY CLINIC. WORK STATUS",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. REQUEST FOR AUTHORIZATION",
+    ]
+    assert se.consistent_authors(titles) == [
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. PROGRESS REPORT",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. WORK STATUS",
+        "JOHN Q. DOE, M.D. VALLEY CLINIC. REQUEST FOR AUTHORIZATION",
+    ]
+
+
+def test_a_tie_goes_to_the_fuller_spelling():
+    """A first name written out beats an initial, and a middle initial beats none."""
+    assert se.consistent_authors(["JANE ROE, P.T. A", "J. ROE, P.T. B"]) == [
+        "JANE ROE, P.T. A",
+        "JANE ROE, P.T. B",
+    ]
+    assert se.consistent_authors(["JANE ROE, P.T. A", "JANE K. ROE, P.T. B"])[0] == (
+        "JANE K. ROE, P.T. A"
+    )
+
+
+def test_different_providers_are_not_merged():
+    """GUARD: a different surname, a different first initial or a different credential is a
+    different person, and a title with no author element is left exactly as it came."""
+    titles = [
+        "JOHN DOE, M.D. CLINIC. PR-2",
+        "MARY DOE, M.D. CLINIC. PR-2",
+        "JOHN DOE, D.C. CLINIC. CHIROPRACTIC NOTE",
+        "JOHN ROE, M.D. CLINIC. PR-2",
+        "MRI OF THE LEFT KNEE",
+        "DEPOSITION OF JOHN DOE",
+        "",
+    ]
+    assert se.consistent_authors(titles) == titles
+
+
+def test_two_first_names_sharing_an_initial_stay_two_people():
+    """GUARD on the one false merge the live-box replay found: a shared surname, credential and
+    first initial is not enough - JOHN and JAMES stay apart, while JEFFERY and JEFFREY join."""
+    titles = ["JOHN DOE, M.D. A", "JAMES DOE, M.D. B", "JEFFERY ROE, M.D. C", "JEFFREY ROE, M.D. D"]
+    out = se.consistent_authors(titles)
+    assert out[:2] == titles[:2]
+    assert out[2].split(",")[0] == out[3].split(",")[0]
+
+
+def test_both_export_renderers_name_a_provider_alike():
+    """The Word and PDF entry lists go through the same pass, so the two deliverables agree."""
+    from app.api.documents import _consistent_authors
+
+    word = [{"summaryTitle": "JOHN DOE, M.D. A"}, {"summaryTitle": "JOHN Q. DOE, M.D. B"}]
+    pdf = [{"linkTitle": "JOHN DOE, M.D. A"}, {"linkTitle": "JOHN Q. DOE, M.D. B"}]
+    assert [e["summaryTitle"] for e in _consistent_authors(word, "summaryTitle")] == [
+        e["linkTitle"] for e in _consistent_authors(pdf, "linkTitle")
+    ]
+
+
 # --- the two title paths that could still overflow varchar(512) -------------------------------
 
 
