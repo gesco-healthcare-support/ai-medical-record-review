@@ -129,11 +129,14 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
          place; 90pt is the old 72px column plus its gutter. */
       .e {{ margin: 0 0 10pt 90pt; text-indent: -90pt; text-align: justify; }}
       .d {{ display: inline-block; width: 90pt; text-align: left; }}
+      /* The opening paragraph is justified, as in the Word document - see the note at its
+         call site in reporting.build_mrr_document. */
+      .intro {{ text-align: justify; }}
       a.ln {{ color: {_TITLE_COLOR}; text-decoration: underline; font-weight: bold; }}
     </style></head><body>
       <p class='ttl'>{html.escape(qme_or_ame or " ")}</p>
       <p class='h2'>{html.escape(REVIEW_HEADING)}</p>
-      <p>{
+      <p class='intro'>{
         html.escape(
             intro_sentence(
                 num_pages,
