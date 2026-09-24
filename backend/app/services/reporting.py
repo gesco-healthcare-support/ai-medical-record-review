@@ -780,7 +780,9 @@ def _page_number_field(paragraph) -> None:
     paragraph._p.append(field)
 
 
-def _letter_paragraph(doc, text, *, bold=False, underline=False, centered=False, font=None):
+def _letter_paragraph(
+    doc, text, *, bold=False, underline=False, centered=False, justified=False, font=None
+):
     """One styled paragraph of the letter: its whole run formatting decided in one place.
 
     Five paragraphs each styled their own run with the same six lines, and the copies had
@@ -796,11 +798,18 @@ def _letter_paragraph(doc, text, *, bold=False, underline=False, centered=False,
     `alignment` is a PARAGRAPH property, so it is set on the paragraph and not on the run;
     assigning it to a run is silently a no-op. Both were done at the two call sites that
     wanted LEFT, which is also the default - so nothing was visible, but the CENTER one would
-    have failed the same way."""
+    have failed the same way.
+
+    `justified` is the opening paragraph only - see its call site."""
     paragraph = doc.add_paragraph("")
     run = _run(paragraph, text, bold=bold, size=Pt(12), font=font)
     run.underline = underline
-    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER if centered else WD_PARAGRAPH_ALIGNMENT.LEFT
+    if centered:
+        paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+    elif justified:
+        paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+    else:
+        paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     return paragraph
 
 
@@ -1046,6 +1055,11 @@ def build_mrr_document(
             letter_date=details.letter_date,
             reviewer_name=details.reviewer_name,
         ),
+        # JUSTIFIED, in both renderers. The reviewers sent the correct form on 2026-09-24 beside
+        # ours, flush on both edges. #268 had made it ragged on purpose to stop the renderers
+        # disagreeing - the PDF stretched it while Word did not - and that agreement is kept: both
+        # now justify it. Only this paragraph wraps; the other letter lines are one line each.
+        justified=True,
         font=font,
     )
     _letter_paragraph(doc, summary_intro(lawfirm), bold=True, font=font)
