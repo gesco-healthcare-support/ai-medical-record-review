@@ -1010,6 +1010,65 @@ def consistent_authors(titles: list[str]) -> list[str]:
     ]
 
 
+# One entry per visit when a work status slip rides with its PR-2. The reviewers, 2026-08-21:
+# "mostly when one visit produces a work status report, a PR-2 and office notes on the same day -
+# just one entry, usually PR-2 giving the header and no point to mention other things", and in the
+# next round "only if they are the same category would we combine (In the case of Work Status, we
+# will count that as Category 1)" and "the same doctor". Adam Flake read the two entries as a
+# duplicate on 2026-09-24. Folded at EXPORT, over the delivered entries - the rows are untouched,
+# so the review page still shows both documents and a reviewer can still split them apart.
+#
+# A slip folds only into a PR-2 on the SAME date, by the SAME author (after `consistent_authors`),
+# both category 1. Measured on the live box over the last 30 days: 20 such pairs across 6 records,
+# and every one of the 20 PR-2s already carried its own Work Status point - so the slip is dropped.
+# Should a PR-2 ever lack one, the slip's text is appended to it instead of lost.
+_WORK_STATUS_TITLE = re.compile(r"\bWORK (?:ACTIVITY )?STATUS\b|\bRETURN[- ]TO[- ]WORK\b", re.I)
+_PR2_TITLE = re.compile(r"\bPR-?2\b|\bPROGRESS REPORT\b", re.I)
+_WORK_STATUS_POINT = "**Work Status**"
+
+
+def fold_work_status(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
+    """``entries`` with each same-visit work status slip folded into its PR-2 - see above."""
+    authors = [_author_parts(e.get(title_key) or "") for e in entries]
+
+    def is_slip(i):
+        t = entries[i].get(title_key) or ""
+        return categories[i] == "1" and _WORK_STATUS_TITLE.search(t) and not _PR2_TITLE.search(t)
+
+    def is_pr2(i):
+        t = entries[i].get(title_key) or ""
+        return categories[i] == "1" and _PR2_TITLE.search(t) and not _WORK_STATUS_TITLE.search(t)
+
+    folded: dict[int, int] = {}
+    for i in range(len(entries)):
+        if not is_slip(i) or not authors[i]:
+            continue
+        home = next(
+            (
+                j
+                for j in range(len(entries))
+                if j != i
+                and is_pr2(j)
+                and authors[j]
+                and authors[j][0] == authors[i][0]
+                and entries[j].get("summaryDate") == entries[i].get("summaryDate")
+            ),
+            None,
+        )
+        if home is not None:
+            folded[i] = home
+    out = []
+    for j, entry in enumerate(entries):
+        if j in folded:
+            continue
+        text = entry.get("summaryText") or ""
+        for i in (i for i, h in folded.items() if h == j):
+            if _WORK_STATUS_POINT not in text:
+                text = f"{text} {entries[i].get('summaryText') or ''}".strip()
+        out.append({**entry, "summaryText": text})
+    return out
+
+
 def presentable_title(title: str) -> str:
     """``title`` with every internal review marker removed, ready for a delivered document.
 

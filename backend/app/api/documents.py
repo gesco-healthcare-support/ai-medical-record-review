@@ -78,6 +78,7 @@ from app.services.reporting import (
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
     consistent_authors,
+    fold_work_status,
     presentable_title,
     standalone_studies_from_rows,
     summarize_row,
@@ -1623,6 +1624,15 @@ def _consistent_authors(entries: list[dict], key: str) -> list[dict]:
     return [{**e, key: t} for e, t in zip(entries, titles, strict=True)]
 
 
+def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> list[dict]:
+    """The record-level passes over a delivered entry list, in order: one spelling per provider,
+    then one entry per visit where a work status slip rides with its PR-2 (which needs the
+    spellings to agree first). Both renderers call this, so the Word and PDF deliverables list the
+    same entries."""
+    entries = _consistent_authors(entries, key)
+    return fold_work_status(entries, [str(s.row_category) for s in summaries], key)
+
+
 def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     """Linked-PDF entry: like _export_entry, plus ``startPage`` (the 1-based source page the title
     links to - unaffected by whether the page range is printed in the text)."""
@@ -1740,11 +1750,10 @@ def _mrr_docx_bytes(
     client for exactly that reason, and the Word and PDF renderers disagreed about a
     heading and a separator for the same one. The zip has to hand over the same file the
     button does, so there is one definition and both callers take it."""
-    entries = _consistent_authors(
-        [
-            _export_entry(s, with_pages=payload.includePageNumbers)
-            for s in _included_summaries(document)
-        ],
+    summaries = _included_summaries(document)
+    entries = _record_pass(
+        [_export_entry(s, with_pages=payload.includePageNumbers) for s in summaries],
+        summaries,
         "summaryTitle",
     )
     docx = build_mrr_document(
@@ -1780,11 +1789,10 @@ def _linked_pdf_bytes(
     which is the reviewers' own answer ("does not need the font on that one"); the covering
     letter, the sender and the Labor Code sentences are facts about the record, and the PDF
     having none of them is what the review caught."""
-    entries = _consistent_authors(
-        [
-            _pdf_entry(s, with_pages=payload.includePageNumbers)
-            for s in _included_summaries(document)
-        ],
+    summaries = _included_summaries(document)
+    entries = _record_pass(
+        [_pdf_entry(s, with_pages=payload.includePageNumbers) for s in summaries],
+        summaries,
         "linkTitle",
     )
     return build_linked_pdf(

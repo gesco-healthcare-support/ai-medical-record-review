@@ -2314,6 +2314,60 @@ def test_both_export_renderers_name_a_provider_alike():
     ]
 
 
+# --- one entry per visit: a work status slip folds into its PR-2 -------------------------------
+def _entry(title, text, date="02/04/2026"):
+    return {"summaryDate": date, "summaryTitle": title, "summaryText": text}
+
+
+_PR2 = "JANE ROE, N.P. VALLEY CLINIC. PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)"
+_SLIP = "JANE ROE, N.P. VALLEY CLINIC. WORK STATUS"
+
+
+def test_a_same_visit_work_status_slip_folds_into_its_pr2():
+    """DEMONSTRATES the fold: the reviewers want one entry per visit, the PR-2 giving the header."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Full duty."),
+        _entry(_SLIP, "**Work Status**: Full duty."),
+    ]
+    out = se.fold_work_status(entries, ["1", "1"], "summaryTitle")
+    assert [e["summaryTitle"] for e in out] == [_PR2]
+    assert out[0]["summaryText"] == "**Diagnoses**: strain. **Work Status**: Full duty."
+
+
+def test_a_pr2_without_a_work_status_point_takes_the_slips_text():
+    """DEMONSTRATES that folding never loses the work status: it is appended when the PR-2 has none."""
+    entries = [_entry(_PR2, "**Diagnoses**: strain."), _entry(_SLIP, "**Work Status**: Modified.")]
+    out = se.fold_work_status(entries, ["1", "1"], "summaryTitle")
+    assert out == [_entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified.")]
+
+
+@pytest.mark.parametrize(
+    ("slip", "date", "categories"),
+    [
+        ("JOHN DOE, M.D. OTHER CLINIC. WORK STATUS", "02/04/2026", ["1", "1"]),  # another doctor
+        (_SLIP, "03/11/2026", ["1", "1"]),  # another visit
+        (_SLIP, "02/04/2026", ["1", "5"]),  # another category
+    ],
+)
+def test_a_slip_from_another_doctor_visit_or_category_stays_its_own_entry(slip, date, categories):
+    """GUARD on the reviewers' own limit: same doctor, same date, same category - or no fold."""
+    entries = [_entry(_PR2, "**Work Status**: Full duty."), _entry(slip, "x", date=date)]
+    assert se.fold_work_status(entries, categories, "summaryTitle") == entries
+
+
+def test_both_export_renderers_fold_the_same_entries():
+    """The Word and PDF lists go through one record-level pass, so they list the same entries."""
+    from types import SimpleNamespace
+
+    from app.api.documents import _record_pass
+
+    summaries = [SimpleNamespace(row_category="1"), SimpleNamespace(row_category="1")]
+    word = [_entry(_PR2, "**Work Status**: a."), _entry(_SLIP, "b")]
+    pdf = [{**e, "linkTitle": e.pop("summaryTitle")} for e in (dict(x) for x in word)]
+    assert len(_record_pass(word, summaries, "summaryTitle")) == 1
+    assert len(_record_pass(pdf, summaries, "linkTitle")) == 1
+
+
 # --- the two title paths that could still overflow varchar(512) -------------------------------
 
 
