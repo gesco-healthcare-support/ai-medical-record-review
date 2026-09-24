@@ -3,7 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 
 import { cleanup } from "@testing-library/react";
-import { afterEach, vi } from "vitest";
+import { afterAll, afterEach, vi } from "vitest";
 
 // Test files share a worker (vitest.config.mts: `isolate: false`), and vitest only clears its module
 // cache between files when isolation is ON. So clear it here, at the start of every file: otherwise a
@@ -60,4 +60,18 @@ afterEach(() => {
   } catch {
     // A storage that refuses to clear is not worth failing a test over.
   }
+});
+
+// A fake clock, or a Date frozen with vi.setSystemTime(), left on at the end of a file would reach
+// the next file in this worker - vitest switches neither off between files - and that file would
+// time out, or read the wrong date, for no visible reason. This runs after the file's own cleanup
+// hooks, so a file that restores its own clock never trips it. It does not run in a file whose
+// every test is skipped: vitest runs no hooks there.
+afterAll(() => {
+  if (!vi.isFakeTimers() && vi.getMockedSystemTime() === null) return;
+  vi.useRealTimers();
+  throw new Error(
+    "This test file left fake timers or a mocked Date on. " +
+      "Call vi.useRealTimers() in its own afterEach or afterAll.",
+  );
 });

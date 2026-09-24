@@ -694,6 +694,20 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # paperwork rule above), so claiming it here would contradict that; and nobody has been
         # asked about discharge instructions.
         (r"\bdischarge summar(?:y|ies)\b", "16"),
+        # Job description -> its own category 17. Asked 2026-09-24; the senior reviewer confirmed a
+        # job description is summarized and named its points. Measured over every row on the live
+        # box first: 22 rows, 49 pages, every one in 100 and five of them ticked for summary by hand
+        # - the manual workaround the reviewer described as the wrong behaviour.
+        #
+        # LAST, after every clinical and evaluator rule, for the discharge rule's reason: a title
+        # that names a real report as well ("QME Report and Job Description") keeps that report's
+        # answer, since the evaluation is the better answer and only a bare job description is this
+        # category.
+        (
+            r"\bjob (?:description|duties|requirements|analysis)\b"
+            + r"|\bessential functions\b|\bposition description\b",
+            "17",
+        ),
     )
 )
 
