@@ -1086,8 +1086,10 @@ def _merged_body(bodies: list[str]) -> str:
     return " ".join([kept, *extra]).strip()
 
 
-def fold_same_visit(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
-    """``entries`` with each same-visit group of category 1 entries made one - see above."""
+def _visit_heads(
+    entries: list[dict], categories: list[str], title_key: str
+) -> dict[int, list[int]]:
+    """Each same-visit group of two or more, keyed by the index of the entry that heads it."""
     groups: dict[tuple, list[int]] = {}
     for i, (entry, category) in enumerate(zip(entries, categories, strict=True)):
         key = _visit_key(entry, category, title_key)
@@ -1100,6 +1102,12 @@ def fold_same_visit(entries: list[dict], categories: list[str], title_key: str) 
             pr2[0] if pr2 else max(members, key=lambda i: len(entries[i].get("summaryText") or ""))
         )
         heads[head] = members
+    return heads
+
+
+def fold_same_visit(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
+    """``entries`` with each same-visit group of category 1 entries made one - see above."""
+    heads = _visit_heads(entries, categories, title_key)
     folded = {i for members in heads.values() for i in members} - set(heads)
     out = []
     for i, entry in enumerate(entries):
