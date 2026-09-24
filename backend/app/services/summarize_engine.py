@@ -979,33 +979,32 @@ def _spelling_rank(spellings: dict[str, int]):
     return lambda s: (-spellings[s], -len(s.split()), -len(s), s)
 
 
+def _cluster_spellings(spellings: dict[str, int]) -> dict[str, str]:
+    """Each spelling of one surname + credential mapped to its cluster's canonical spelling.
+
+    Strongest spelling first, so each cluster is named after its most frequent member and a weaker
+    spelling joins the first cluster whose first name it is compatible with."""
+    clusters: list[list[str]] = []
+    for name in sorted(spellings, key=_spelling_rank(spellings)):
+        first = name.split()[0]
+        home = next((c for c in clusters if _first_names_compatible(first, c[0].split()[0])), None)
+        if home is None:
+            clusters.append([name])
+        else:
+            home.append(name)
+    return {name: cluster[0] for cluster in clusters for name in cluster}
+
+
 def consistent_authors(titles: list[str]) -> list[str]:
     """``titles`` with every spelling of one provider made the same - see the note above."""
     parts = [_author_parts(t) for t in titles]
     counts: dict[tuple, dict[str, int]] = {}
-    for p in parts:
-        if p:
-            spellings = counts.setdefault(p[1], {})
-            spellings[p[0]] = spellings.get(p[0], 0) + 1
-    chosen: dict[tuple, str] = {}
-    for key, spellings in counts.items():
-        # Clusters within one surname + credential, strongest spelling first, so each cluster is
-        # named after its most frequent member and a weaker spelling joins the first it fits.
-        clusters: list[list[str]] = []
-        for name in sorted(spellings, key=_spelling_rank(spellings)):
-            first = name.split()[0]
-            home = next(
-                (c for c in clusters if _first_names_compatible(first, c[0].split()[0])), None
-            )
-            if home is None:
-                clusters.append([name])
-            else:
-                home.append(name)
-        for cluster in clusters:
-            for name in cluster:
-                chosen[(name, key)] = cluster[0]
+    for p in (p for p in parts if p):
+        spellings = counts.setdefault(p[1], {})
+        spellings[p[0]] = spellings.get(p[0], 0) + 1
+    chosen = {key: _cluster_spellings(spellings) for key, spellings in counts.items()}
     return [
-        title if not p else chosen[p] + title[len(p[0]) :]
+        title if not p else chosen[p[1]][p[0]] + title[len(p[0]) :]
         for title, p in zip(titles, parts, strict=True)
     ]
 
@@ -1027,33 +1026,33 @@ _PR2_TITLE = re.compile(r"\bPR-?2\b|\bPROGRESS REPORT\b", re.I)
 _WORK_STATUS_POINT = "**Work Status**"
 
 
+def _visit_kind(entry: dict, category: str, title_key: str) -> str:
+    """``"slip"`` for a category 1 work status, ``"pr2"`` for a category 1 PR-2, else ``""``."""
+    title = entry.get(title_key) or ""
+    if category != "1":
+        return ""
+    slip, pr2 = bool(_WORK_STATUS_TITLE.search(title)), bool(_PR2_TITLE.search(title))
+    if slip and not pr2:
+        return "slip"
+    return "pr2" if pr2 and not slip else ""
+
+
+def _same_visit(a: dict, b: dict, a_author, b_author) -> bool:
+    """One author (after `consistent_authors`) on one date."""
+    return bool(a_author and b_author and a_author[0] == b_author[0]) and (
+        a.get("summaryDate") == b.get("summaryDate")
+    )
+
+
 def fold_work_status(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
     """``entries`` with each same-visit work status slip folded into its PR-2 - see above."""
     authors = [_author_parts(e.get(title_key) or "") for e in entries]
-
-    def is_slip(i):
-        t = entries[i].get(title_key) or ""
-        return categories[i] == "1" and _WORK_STATUS_TITLE.search(t) and not _PR2_TITLE.search(t)
-
-    def is_pr2(i):
-        t = entries[i].get(title_key) or ""
-        return categories[i] == "1" and _PR2_TITLE.search(t) and not _WORK_STATUS_TITLE.search(t)
-
+    kinds = [_visit_kind(e, c, title_key) for e, c in zip(entries, categories, strict=True)]
+    pr2s = [j for j, k in enumerate(kinds) if k == "pr2"]
     folded: dict[int, int] = {}
-    for i in range(len(entries)):
-        if not is_slip(i) or not authors[i]:
-            continue
+    for i in (i for i, k in enumerate(kinds) if k == "slip"):
         home = next(
-            (
-                j
-                for j in range(len(entries))
-                if j != i
-                and is_pr2(j)
-                and authors[j]
-                and authors[j][0] == authors[i][0]
-                and entries[j].get("summaryDate") == entries[i].get("summaryDate")
-            ),
-            None,
+            (j for j in pr2s if _same_visit(entries[i], entries[j], authors[i], authors[j])), None
         )
         if home is not None:
             folded[i] = home
@@ -1062,9 +1061,8 @@ def fold_work_status(entries: list[dict], categories: list[str], title_key: str)
         if j in folded:
             continue
         text = entry.get("summaryText") or ""
-        for i in (i for i, h in folded.items() if h == j):
-            if _WORK_STATUS_POINT not in text:
-                text = f"{text} {entries[i].get('summaryText') or ''}".strip()
+        for i in (i for i, h in folded.items() if h == j and _WORK_STATUS_POINT not in text):
+            text = f"{text} {entries[i].get('summaryText') or ''}".strip()
         out.append({**entry, "summaryText": text})
     return out
 
@@ -1505,6 +1503,14 @@ def _generate_body(model, system_msg, body_contents, row):
     return summary, truncated, model, body_fallback_from
 
 
+def _house_body(text: str, deposition: bool) -> str:
+    """The deterministic house-style passes over a body, generated or audited alike: capitals, then
+    one paragraph - see `house_style.one_paragraph` - for everything but a deposition, which is
+    grouped by page on purpose."""
+    text = sentence_case_caps_runs(text)
+    return text if deposition else one_paragraph(text)
+
+
 def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
     """Audit the body and title, and turn the verdict into the four fields the row stores.
 
@@ -1632,9 +1638,7 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
         else:
             # The audit may reintroduce capitals while fixing something else, so the transform runs
             # over its output too - the verified text is what effective_text() delivers.
-            verified_text = f"{doi_lead}{sentence_case_caps_runs(result['fixed_text'])}"
-            if not deposition:
-                verified_text = one_paragraph(verified_text)
+            verified_text = f"{doi_lead}{_house_body(result['fixed_text'], deposition)}"
         verify_issues = result["issues"]
         # The title is corrected INDEPENDENTLY of the body, including when the body rewrite was
         # rejected above: effective_title() and effective_text() fall back separately, and a wrong
@@ -1764,11 +1768,7 @@ def summarize_row(
     # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
     # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
-    summary = sentence_case_caps_runs(summary)
-    # One paragraph, whatever the model sent - see `house_style.one_paragraph`. Not a deposition,
-    # which is grouped by page on purpose.
-    if not deposition:
-        summary = one_paragraph(summary)
+    summary = _house_body(summary, deposition)
 
     # The row IS the source of truth for the injury date. It was read once, per sub-document and in
     # isolation, at the END of segmentation (see segment_engine.run_segmentation), so a reviewer who
