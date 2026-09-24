@@ -673,6 +673,18 @@ KEY_ENTRY_LABELS: frozenset[str] = frozenset(
     {"diagnoses", "diagnosis", "work status", "treatment plan", "return to clinic"}
 )
 
+# A THIRD tier, for diagnostic studies: the whole entry is bold - date, header and body - with the
+# labels (Indication, Impression) still underlined. Read off all three reference MRRs the reviewers
+# supplied: 5 of 5 diagnostic entries are bold throughout, against none of their treating reports.
+# Adam Flake asked for it directly on 2026-09-24 ("the diagnostic studies should be bolded"). Keyed
+# on the row's category rather than on the text, because "MRI" appears in treating reports too.
+DIAGNOSTIC_CATEGORY = "3"
+
+
+def is_diagnostic(category) -> bool:
+    """Whether an entry is rendered in the diagnostic tier (bold throughout)."""
+    return str(category or "").strip() == DIAGNOSTIC_CATEGORY
+
 
 def _label_key(label: str) -> str:
     r"""A bold span reduced to the form KEY_ENTRY_LABELS is written in.
@@ -688,7 +700,9 @@ def _label_key(label: str) -> str:
     return (label or "").lower().strip(" \t\r\n:.-")
 
 
-def entry_body_segments(text: str) -> list[tuple[str, bool, bool, bool]]:
+def entry_body_segments(
+    text: str, *, whole_bold: bool = False
+) -> list[tuple[str, bool, bool, bool]]:
     """One entry body as ``(text, bold, italic, underline)`` runs, in the two tiers above.
 
     ONE parser, two emitters: `build_mrr_document` turns these into Word runs and
@@ -698,7 +712,10 @@ def entry_body_segments(text: str) -> list[tuple[str, bool, bool, bool]]:
     Every `**span**` is treated as a LABEL, because in the reviewers' document the
     underlined runs ARE the labels. A model that bolds something mid-sentence therefore
     gets it underlined rather than bold - visible and harmless, and the alternative is
-    guessing which bold spans are headings."""
+    guessing which bold spans are headings.
+
+    ``whole_bold`` is the diagnostic tier (see DIAGNOSTIC_CATEGORY): every run is bold and the
+    labels keep their underline, so the two tiers above still read inside it."""
     segments: list[tuple[str, bool, bool, bool]] = []
     pos, carry_bold = 0, False
     for m in INLINE_EMPHASIS_RE.finditer(text or ""):
@@ -712,7 +729,7 @@ def entry_body_segments(text: str) -> list[tuple[str, bool, bool, bool]]:
         pos = m.end()
     if pos < len(text or ""):
         segments.append((text[pos:], carry_bold, False, False))
-    return [s for s in segments if s[0]]
+    return [(t, b or whole_bold, i, u) for t, b, i, u in segments if t]
 
 
 def _run(paragraph, s, *, bold=False, italic=False, size=None, underline=False, font=None):
@@ -763,7 +780,9 @@ def _page_number_field(paragraph) -> None:
     paragraph._p.append(field)
 
 
-def _letter_paragraph(doc, text, *, bold=False, underline=False, centered=False, font=None):
+def _letter_paragraph(
+    doc, text, *, bold=False, underline=False, centered=False, justified=False, font=None
+):
     """One styled paragraph of the letter: its whole run formatting decided in one place.
 
     Five paragraphs each styled their own run with the same six lines, and the copies had
@@ -779,11 +798,18 @@ def _letter_paragraph(doc, text, *, bold=False, underline=False, centered=False,
     `alignment` is a PARAGRAPH property, so it is set on the paragraph and not on the run;
     assigning it to a run is silently a no-op. Both were done at the two call sites that
     wanted LEFT, which is also the default - so nothing was visible, but the CENTER one would
-    have failed the same way."""
+    have failed the same way.
+
+    `justified` is the opening paragraph only - see its call site."""
     paragraph = doc.add_paragraph("")
     run = _run(paragraph, text, bold=bold, size=Pt(12), font=font)
     run.underline = underline
-    paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER if centered else WD_PARAGRAPH_ALIGNMENT.LEFT
+    if centered:
+        paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+    elif justified:
+        paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+    else:
+        paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     return paragraph
 
 
@@ -1029,6 +1055,11 @@ def build_mrr_document(
             letter_date=details.letter_date,
             reviewer_name=details.reviewer_name,
         ),
+        # JUSTIFIED, in both renderers. The reviewers sent the correct form on 2026-09-24 beside
+        # ours, flush on both edges. #268 had made it ragged on purpose to stop the renderers
+        # disagreeing - the PDF stretched it while Word did not - and that agreement is kept: both
+        # now justify it. Only this paragraph wraps; the other letter lines are one line each.
+        justified=True,
         font=font,
     )
     _letter_paragraph(doc, summary_intro(lawfirm), bold=True, font=font)
@@ -1045,16 +1076,19 @@ def build_mrr_document(
         cells[1].width = body_width
         cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         cells[1].vertical_alignment = WD_ALIGN_VERTICAL.TOP
-        _run(cells[0].paragraphs[0], date_label(entry), font=font)
+        diagnostic = bool(entry.get("diagnostic"))
+        _run(cells[0].paragraphs[0], date_label(entry), bold=diagnostic, font=font)
         body = cells[1].paragraphs[0]
         # Justified: the report is read as a finished document, and a ragged right edge on every
         # record is what made the export look like a draft.
         body.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
         # The entry header is PLAIN in the reviewers' own reports - date, author, facility
-        # and type read as a sentence rather than a heading. Ours bolded it.
-        _add_inline_runs(body, entry["summaryTitle"], font=font)
-        _run(body, TITLE_SEPARATOR, font=font)
-        for chunk, bold, italic, underline in entry_body_segments(entry["summaryText"]):
+        # and type read as a sentence rather than a heading. Ours bolded it. A diagnostic
+        # study is the exception: bold throughout (see DIAGNOSTIC_CATEGORY).
+        _add_inline_runs(body, entry["summaryTitle"], bold=diagnostic, font=font)
+        _run(body, TITLE_SEPARATOR, bold=diagnostic, font=font)
+        segments = entry_body_segments(entry["summaryText"], whole_bold=diagnostic)
+        for chunk, bold, italic, underline in segments:
             _run(body, chunk, bold=bold, italic=italic, underline=underline, font=font)
 
     # THE PAGE ACCOUNTING, between the entries and the conclusion - the position both

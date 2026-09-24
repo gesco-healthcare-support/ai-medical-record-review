@@ -443,7 +443,12 @@ _KNOWN_CATEGORIES = (
     # verdict of a diagnostic study or a laboratory result, which a discharge summary is not, so
     # nothing rescues it. `_C_VERDICT` is ruled out on the same wording. The requirement is stated
     # in category 16's own prompt instead, as category 15 states its determination requirement.
-    | frozenset({"4", "7", "8", "10", "11", "15", "16", "100"})
+    #
+    # 17 (job descriptions) takes the minimal preamble too: it describes a JOB, not a patient, so
+    # none of the examination blocks - normal findings, vitals, pain, range of motion - can apply,
+    # and "report positive and abnormal findings only" would strip the physical demands, which are
+    # the content. Its points are stated in its own prompt.
+    | frozenset({"4", "7", "8", "10", "11", "15", "16", "17", "100"})
 )
 
 

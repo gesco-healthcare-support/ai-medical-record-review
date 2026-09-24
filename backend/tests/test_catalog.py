@@ -321,15 +321,16 @@ def test_creating_a_category_does_not_collapse_an_unseeded_catalog(session):
     session.add(user)
     session.commit()
 
-    # 17, not 16: 16 became a real category (hospital discharge summary, 2026-09-08), and this test
-    # needs an id the catalog does NOT already carry or `create_category` answers 409 duplicate.
-    created = create_category(CategoryCreate(id="17", name="A New Category"), session, user)
-    assert created["id"] == "17"
+    # 18, not 17: 17 became a real category (job description, 2026-09-24) after 16 did (hospital
+    # discharge summary, 2026-09-08), and this test needs an id the catalog does NOT already carry
+    # or `create_category` answers 409 duplicate.
+    created = create_category(CategoryCreate(id="18", name="A New Category"), session, user)
+    assert created["id"] == "18"
 
     ids = catalog.get_category_ids(session, active_only=True)
-    assert "17" in ids, "the category the admin created must exist"
-    for category_id in ("1", "3", "5", "10", "13", "15", "16", "100"):
-        assert category_id in ids, f"category {category_id} was destroyed by creating '17'"
+    assert "18" in ids, "the category the admin created must exist"
+    for category_id in ("1", "3", "5", "10", "13", "15", "16", "17", "100"):
+        assert category_id in ids, f"category {category_id} was destroyed by creating '18'"
     assert validate_rows(session, [{"start": 1, "end": 2, "category": "1"}], 5) is None
     assert catalog.summarize_default_for(session, "100") is False  # General still off by default
 
@@ -424,3 +425,48 @@ def test_category_four_is_no_longer_gastroenterology_only():
     # GI keeps a worked example - it is the shape this bucket was built for and the only one
     # observed on the box - but no longer defines the category.
     assert any("GI" in title for title in four["examples"])
+
+
+def test_an_unseeded_catalog_offers_the_job_description_category(session):
+    """Category 17's migration does nothing on an unseeded catalog, which is only safe because the
+    constants carry it - the same guard categories 15 and 16 have, pinned for the same reason."""
+    from app.services import catalog
+
+    ids = catalog.get_category_ids(session, active_only=True, auto_assign=True)
+    assert "17" in ids, "an unseeded catalog must still offer category 17 from the constants"
+    assert catalog.summarize_default_for(session, "17") is True
+
+
+def test_the_job_description_category_resolves_its_own_code_prompt(session):
+    """No prompt ROW is inserted for 17, so it must reach its code prompt with no row at all."""
+    from app.services import catalog
+
+    prompt = catalog.get_prompt(session, "summary", "17")
+    assert "Duties and Responsibilities" in prompt
+    assert "Physical Demands and Working Environment" in prompt
+    assert prompt != catalog.get_prompt(session, "summary", "100")
+
+
+def test_the_job_description_migration_carries_the_constants_text():
+    """The migration inserts the row a seeded box sees; it must say exactly what the constants say,
+    or the two catalogs describe category 17 differently."""
+    import importlib.util
+    from pathlib import Path
+
+    from app.services import taxonomy
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "e4b7a2c91d05_job_description_category.py"
+    )
+    spec = importlib.util.spec_from_file_location("job_description_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    constant = taxonomy.CATEGORIES["17"]
+    assert migration.CATEGORY_ID == "17"
+    assert migration._NAME == constant.name
+    assert migration._DESCRIPTION == constant.description
+    assert tuple(migration._EXAMPLES) == tuple(constant.examples)

@@ -541,8 +541,12 @@ def test_both_renderers_agree_that_the_summary_intro_is_bold():
     assert word_is_bold, "both renderers agree, but on NOT bold - the intended style is bold"
 
 
-def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
-    """`reporting.py` draws a distinction the PDF collapsed: four explicit LEFT assignments for
+def test_both_renderers_justify_the_opening_paragraph_and_the_bodies():
+    """The opening paragraph is JUSTIFIED in both renderers - the reviewers sent the correct form
+    on 2026-09-24, flush on both edges, beside ours. What #268 established still holds and is what
+    this pins: the two renderers must AGREE about it. History of that fix, kept below.
+
+    `reporting.py` drew a distinction the PDF collapsed: four explicit LEFT assignments for
     the letter paragraphs against one explicit JUSTIFY for the table bodies. `linked_pdf` set a
     blanket `p { text-align: justify }`, so the intro sentence shipped STRETCHED in the .pdf and
     ragged in the .docx - measured 14.5pt apart at the right edge of its first line.
@@ -552,7 +556,7 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
     other three were invisible. It is the third defect in this one sentence after #115 and #158.
 
     Geometry rather than CSS text, because the CSS is the thing under test: the justified bodies
-    reach the measure, so a ragged letter paragraph must fall SHORT of it. That is page-size
+    reach the measure, so a justified letter paragraph must reach it too. That is page-size
     independent, which a hardcoded x-coordinate would not be.
     """
     linked_pdf = pytest.importorskip("app.services.linked_pdf")
@@ -568,7 +572,7 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
         }
     ]
 
-    # Word: the letter paragraph is LEFT, the body cell is JUSTIFY.
+    # Word: the opening paragraph and the body cell are both JUSTIFY.
     doc = build_mrr_document(
         entries,
         num_pages=259,
@@ -579,7 +583,7 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
     )
     word_letter = _paragraph_named(doc, intro).alignment
     word_body = doc.tables[0].rows[0].cells[1].paragraphs[0].alignment
-    assert word_letter == WD_PARAGRAPH_ALIGNMENT.LEFT
+    assert word_letter == WD_PARAGRAPH_ALIGNMENT.JUSTIFY
     assert word_body == WD_PARAGRAPH_ALIGNMENT.JUSTIFY
 
     # PDF: same distinction, read off the rendered page.
@@ -612,8 +616,8 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
     assert body, "no wrapped body line to read the measure from"
     letter_right = intro_line["bbox"][2]
     body_right = max(line["bbox"][2] for line in body)  # justified, so this IS the measure
-    assert letter_right < body_right - 2, (
-        "the .pdf stretches the intro sentence to the measure while the .docx leaves it ragged "
+    assert abs(letter_right - body_right) <= 2, (
+        "the .docx justifies the opening paragraph but the .pdf leaves it ragged "
         f"(letter right edge {letter_right:.1f}, justified measure {body_right:.1f})"
     )
 
@@ -1009,6 +1013,76 @@ def test_the_delivered_entry_carries_both_tiers():
     assert by_text["DOI"] == (False, True)
     assert by_text["Work Status"] == (True, True)
     assert by_text[": modified duty."] == (True, False)
+
+
+# The diagnostic tier. All three reference MRRs the reviewers supplied render a diagnostic study
+# bold from start to finish - 5 of 5 entries - with Indication and Impression underlined.
+_DIAGNOSTIC_ENTRY = {
+    "summaryDate": "05/15/2025",
+    "summaryTitle": "JANE ROE, M.D. IMAGING CENTER. MRI OF THE LUMBAR SPINE",
+    "summaryText": "**Findings**: L4-5 disc bulge. **Impression**: Mild degeneration.",
+    "diagnostic": True,
+}
+
+
+def test_a_diagnostic_study_is_bold_throughout_in_the_word_document():
+    """DEMONSTRATES the ask: date, header and body all bold, and the labels still underlined so
+    the section structure reads inside the bold. Fails before the tier existed."""
+    doc = build_mrr_document(
+        [dict(_DIAGNOSTIC_ENTRY)], 8, "Pat", "01/01/1980", "AME", details=ReportDetails()
+    )
+    cells = doc.tables[0].rows[0].cells
+    date_runs = [r for r in cells[0].paragraphs[0].runs if r.text.strip()]
+    body_runs = [r for r in cells[1].paragraphs[0].runs if r.text.strip()]
+    assert all(r.bold for r in date_runs)
+    assert all(r.bold for r in body_runs)
+    underlined = [r.text for r in body_runs if r.underline]
+    assert underlined == ["Findings", "Impression"]
+
+
+def test_a_treating_report_keeps_its_two_tiers():
+    """GUARD: the diagnostic tier must not leak into an entry that is not one. The flag is absent
+    here, as it is for every entry built before this existed."""
+    entry = {k: v for k, v in _DIAGNOSTIC_ENTRY.items() if k != "diagnostic"}
+    doc = build_mrr_document([entry], 8, "Pat", "01/01/1980", "AME", details=ReportDetails())
+    body_runs = [r for r in doc.tables[0].rows[0].cells[1].paragraphs[0].runs if r.text.strip()]
+    assert not any(r.bold for r in body_runs)
+
+
+def test_both_renderers_bold_a_diagnostic_study_the_same_way():
+    """The two renderers agree - the invariant this module keeps having to restore (#158, #268)."""
+    import docx
+
+    from app.services.linked_pdf import _inline_html
+    from app.services.reporting import _run, entry_body_segments
+
+    body = _DIAGNOSTIC_ENTRY["summaryText"]
+    paragraph = docx.Document().add_paragraph()
+    for chunk, bold, italic, underline in entry_body_segments(body, whole_bold=True):
+        _run(paragraph, chunk, bold=bold, italic=italic, underline=underline)
+    html_out = _inline_html(body, whole_bold=True)
+    for flag, tag in (("bold", "b"), ("underline", "u")):
+        word = [r.text for r in paragraph.runs if getattr(r, flag)]
+        assert word == _pdf_tagged(html_out, tag), flag
+
+
+def test_the_linked_pdf_bolds_the_date_of_a_diagnostic_study():
+    """DEMONSTRATES the PDF half: the date column and the separator are bold for a diagnostic
+    entry. The title is bold for every entry there, because it is the link."""
+    linked_pdf = pytest.importorskip("app.services.linked_pdf")
+    entry = dict(_DIAGNOSTIC_ENTRY, linkTitle=_DIAGNOSTIC_ENTRY["summaryTitle"], startPage=1)
+    markup = linked_pdf._summary_html([entry], 8, "QME", ReportDetails())
+    assert "<span class='d'><b>05/15/25</b></span>" in markup
+
+
+def test_only_category_3_is_a_diagnostic_study():
+    """GUARD on the key: the tier follows the row's category, not words in the text."""
+    from app.services.reporting import is_diagnostic
+
+    assert is_diagnostic("3")
+    assert is_diagnostic(3)
+    for other in ("1", "13", "14", "100", "", None):
+        assert not is_diagnostic(other), other
 
 
 def test_each_doctor_gets_their_own_typeface():

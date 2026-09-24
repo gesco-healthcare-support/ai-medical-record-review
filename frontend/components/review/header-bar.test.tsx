@@ -69,6 +69,21 @@ describe("HeaderBar fields", () => {
       letter_date: "06/07/2026",
     });
   });
+
+  // Each box writes through its own onChange. One that trimmed on every keystroke would turn "a b" into
+  // "ab" - the space is gone before the "b" arrives - so a firm typed as "Acme LLP" would reach the
+  // letter as "AcmeLLP". Only typing exposes it: a pasted value survives a trim of its ends. One test
+  // per box, so each has its own time budget and a failure names the box.
+  it.each(["First name", "Last name", "Attorney", "Law firm"])(
+    "keeps a space typed into %s",
+    async (label) => {
+      const user = userEvent.setup();
+      render(<HeaderBar documentId="d1" doctors={[]} header={null} onSaved={vi.fn()} />);
+      const box = screen.getByLabelText(label);
+      await user.type(box, "a b");
+      expect(box).toHaveValue("a b");
+    },
+  );
 });
 
 describe("HeaderBar persistence", () => {

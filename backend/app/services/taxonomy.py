@@ -319,6 +319,27 @@ CATEGORIES: dict[str, "Category"] = {
             "Discharge Summary and Instructions",
         ),
     ),
+    "17": Category(
+        "17",
+        "Job description",
+        # Asked 2026-09-24 and answered by the senior reviewer: a job description is summarized, and
+        # the points listed - title, employer, duties, physical demands, hours - are the right ones.
+        # It had no category at all, so every one on the box landed in 100 and a reviewer ticked it
+        # by hand. The last sentence is load-bearing for the classifier: a QME or a PR-2 discusses
+        # the patient's job at length, and that is still the evaluation, not a job description.
+        "The employer's written description of a job: the position title, its duties and "
+        "responsibilities, and its physical demands and working environment - how much is lifted, "
+        "how long the worker stands, sits or bends, the hours worked, and the equipment used. It "
+        "describes the job, not the patient, so a medical report that discusses the job belongs "
+        "to that report's own category.",
+        (
+            "Job Description",
+            "Description of Employee's Job Duties",
+            "Job Requirements",
+            "Essential Functions Job Description",
+            "Position Description",
+        ),
+    ),
     "100": Category(
         "100",
         "General or uncategorized documents",

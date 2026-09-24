@@ -4,11 +4,20 @@ name: CI
 # the backend suite on real Postgres + Redis with coverage, the frontend unit/component suite,
 # and a Playwright E2E pass over the core non-AI flows against the docker-compose app. The legacy
 # Flask app (mrr_ai/) is being phased out and is no longer covered here.
+# `pull_request` carries NO `branches` filter on purpose. That key filters on the pull
+# request's BASE, not its head, so any PR targeting a branch not listed gets NO CI AT ALL -
+# it reports mergeable against an empty check set. That is not hypothetical and it is not
+# specific to one branch: #391 (into `qwen`), #141 (into `feat/date-vs-human-entries`) and
+# #12 (into `experiment/segmentation-pss`) all merged green without the suite ever running.
+# Listing target branches only moves the hole, so there is no list. The repo is public, so
+# the extra runs cost nothing.
+#
+# `push` KEEPS a list: without one, pushing a feature branch would run the whole suite a
+# second time alongside its own PR run.
 on:
   push:
-    branches: [main]
+    branches: [main, qwen]
   pull_request:
-    branches: [main]
 
 jobs:
   backend:
@@ -407,6 +416,7 @@ jobs:
           PROJECT: gesco-healthcare-support_ai-medical-record-review
           PR_NUMBER: ${{ github.event.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -414,20 +424,53 @@ jobs:
           # log says why. set -e then stops the step rather than letting it read an error as data.
           api() { curl -sS --fail-with-body --retry 3 --retry-delay 5 "$1"; }
 
-          # 1. The analysis must exist at all. Without this, every zero below is meaningless.
-          prs=$(api "https://sonarcloud.io/api/project_pull_requests/list?project=${PROJECT}")
-          pr=$(printf '%s' "$prs" | jq -c --arg k "$PR_NUMBER" \
-            '[.pullRequests[]? | select(.key == $k)] | .[0] // empty')
-          if [ -z "$pr" ]; then
-            echo "SonarCloud holds no analysis for PR ${PR_NUMBER} of ${PROJECT}."
-            echo "Refusing to report 'no new issues' from an analysis that does not exist."
+          # 1. The analysis must exist, and it must be THIS RUN'S. The proof is the scanner's own
+          # report: the scan step above writes the compute-engine task it submitted to
+          # .scannerwork/report-task.txt, and api/ce/task says whether that task finished and for
+          # which pull request. That closes both old holes at once - an analysis that was never
+          # stored cannot have a SUCCESS task, and a task submitted by this job cannot describe an
+          # earlier push.
+          #
+          # This replaced a lookup in api/project_pull_requests/list, which STOPPED UPDATING on
+          # 2026-09-23 (frozen at #388, 185 entries, every page and ps value alike) while every
+          # scan after it succeeded and passed its Quality Gate. Each PR then failed here with "no
+          # analysis", including PRs with zero issues - a check that fails every PR says nothing.
+          # The list is still consulted for the commit, below, whenever it does carry the PR.
+          task_file=.scannerwork/report-task.txt
+          if [ ! -f "$task_file" ]; then
+            echo "The scan left no ${task_file}, so there is no analysis of this run to check."
+            exit 1
+          fi
+          task_id=$(sed -n 's/^ceTaskId=//p' "$task_file")
+          if [ -z "$task_id" ]; then
+            echo "${task_file} names no ceTaskId - failing rather than passing blind."
+            exit 1
+          fi
+          # A header held in a variable rather than `curl -u`: gitleaks reads any inline `-u "x:"`
+          # as a committed credential (rule curl-auth-user), even when x is a secret reference.
+          sonar_auth="Authorization: Bearer ${SONAR_TOKEN}"
+          task=$(curl -sS --fail-with-body --retry 3 --retry-delay 5 -H "$sonar_auth" \
+            "https://sonarcloud.io/api/ce/task?id=${task_id}")
+          task_status=$(printf '%s' "$task" | jq -r '.task.status // ""')
+          task_pr=$(printf '%s' "$task" | jq -r '.task.pullRequest // ""')
+          if [ "$task_status" != "SUCCESS" ] || [ "$task_pr" != "$PR_NUMBER" ]; then
+            echo "SonarCloud task ${task_id} is '${task_status:-unknown}' for PR '${task_pr:-none}',"
+            echo "not a finished analysis of PR ${PR_NUMBER}. Refusing to report 'no new issues'."
             exit 1
           fi
 
-          # 2. ...and it must be an analysis OF THE COMMIT UNDER TEST.
-          analysed=$(printf '%s' "$pr" | jq -r '.commit.sha // ""')
-          if [ "$analysed" != "$HEAD_SHA" ]; then
-            echo "SonarCloud analysed ${analysed:-<no commit recorded>}, but this PR's head is ${HEAD_SHA}."
+          # 2. Belt and braces: the pull request's own component must exist. measures/component
+          # answers 404 for a pull request SonarCloud has never analysed (checked by hand against
+          # a made-up number), unlike issues/search, which answers {"total":0}.
+          api "https://sonarcloud.io/api/measures/component?component=${PROJECT}&pullRequest=${PR_NUMBER}&metricKeys=new_violations" > /dev/null
+
+          # 3. Where the pull-request list does carry this PR, its commit must be the one under
+          # test - the stale-analysis guard, kept for when the list is current.
+          prs=$(api "https://sonarcloud.io/api/project_pull_requests/list?project=${PROJECT}")
+          analysed=$(printf '%s' "$prs" | jq -r --arg k "$PR_NUMBER" \
+            '[.pullRequests[]? | select(.key == $k)] | .[0].commit.sha // ""')
+          if [ -n "$analysed" ] && [ "$analysed" != "$HEAD_SHA" ]; then
+            echo "SonarCloud analysed ${analysed}, but this PR's head is ${HEAD_SHA}."
             echo "Re-run the SonarQube Cloud scan so the issue list describes the code under test."
             exit 1
           fi
