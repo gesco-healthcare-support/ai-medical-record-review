@@ -4,15 +4,20 @@ name: CI
 # the backend suite on real Postgres + Redis with coverage, the frontend unit/component suite,
 # and a Playwright E2E pass over the core non-AI flows against the docker-compose app. The legacy
 # Flask app (mrr_ai/) is being phased out and is no longer covered here.
-# `qwen` is a long-lived branch that the TEST instance deploys from - changes aimed at our
-# own model that are not yet fit for main. It is listed here because a PR based on it
-# otherwise gets NO CI AT ALL: `branches:` filters on the pull request's BASE, so a
-# qwen-based PR matched nothing and merged green on an empty check set. Found on #391.
+# `pull_request` carries NO `branches` filter on purpose. That key filters on the pull
+# request's BASE, not its head, so any PR targeting a branch not listed gets NO CI AT ALL -
+# it reports mergeable against an empty check set. That is not hypothetical and it is not
+# specific to one branch: #391 (into `qwen`), #141 (into `feat/date-vs-human-entries`) and
+# #12 (into `experiment/segmentation-pss`) all merged green without the suite ever running.
+# Listing target branches only moves the hole, so there is no list. The repo is public, so
+# the extra runs cost nothing.
+#
+# `push` KEEPS a list: without one, pushing a feature branch would run the whole suite a
+# second time alongside its own PR run.
 on:
   push:
     branches: [main, qwen]
   pull_request:
-    branches: [main, qwen]
 
 jobs:
   backend:
