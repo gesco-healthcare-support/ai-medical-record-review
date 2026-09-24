@@ -2181,6 +2181,74 @@ def test_presentable_title_keeps_a_page_reference_that_is_not_the_suffix():
     )
 
 
+# --- a title names the facility, never where it is --------------------------------------------
+# Adam Flake, 2026-09-24, on three of five records: "addresses are being summarized into the
+# document titles". 0 of 80 entry headers in the reviewers' three reference MRRs carry a street,
+# suite, state or ZIP. The shapes below are the letterhead forms these records actually print.
+@pytest.mark.parametrize(
+    ("generated", "expected"),
+    [
+        (
+            "JANE ROE, N.P. VALLEY OCCUPATIONAL MEDICAL CENTER, 5300 MAIN AVE, SUITE 105, "
+            "SPRINGFIELD, CA 93309. PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)",
+            "JANE ROE, N.P. VALLEY OCCUPATIONAL MEDICAL CENTER. "
+            "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)",
+        ),
+        (
+            "VALLEY RADIOLOGY GROUP, 9330 OAK HWY STE. 100, SPRINGFIELD, CA 93311. "
+            "MRI OF THE LEFT ELBOW WITHOUT CONTRAST",
+            "VALLEY RADIOLOGY GROUP. MRI OF THE LEFT ELBOW WITHOUT CONTRAST",
+        ),
+        (
+            "JOHN DOE, M.D. 16530 VENTURA BLVD STE 510, ENCINO CA 91436-4504. "
+            "QUALIFIED MEDICAL EVALUATION",
+            "JOHN DOE, M.D. QUALIFIED MEDICAL EVALUATION",
+        ),
+        (
+            "JOHN DOE, D.C. VALLEY CHIROPRACTIC, TEL: (661) 555-1880. CHIROPRACTIC RE-EVALUATION",
+            "JOHN DOE, D.C. VALLEY CHIROPRACTIC. CHIROPRACTIC RE-EVALUATION",
+        ),
+    ],
+)
+def test_a_title_loses_the_address_the_letterhead_prints(generated, expected):
+    """DEMONSTRATES the fix at generation: the stored title carries the facility's name only."""
+    assert se._usable_title(generated, "ROW TITLE") == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # a bare city is indistinguishable from a facility word, so it is left alone
+        "JANE ROE, M.D. SOUTHERN ORTHOPEDIC INSTITUTE - SPRINGFIELD. PROGRESS REPORT",
+        "MRI OF THE L4-5 LUMBAR SPINE",
+        "EMG/NCS OF THE UPPER EXTREMITIES",
+        "DEPOSITION OF JOHN DOE",
+        "JANE ROE, C.O.T.A. PAIR & MARTIN PHYSICAL THERAPY. OCCUPATIONAL THERAPY PROGRESS NOTE",
+        "JOHN DOE, M.D. 2ND OPINION ORTHOPEDICS. PR-4 PERMANENT AND STATIONARY REPORT",
+        "A TITLE CARRYING NO ADDRESS",
+    ],
+)
+def test_a_title_without_an_address_is_returned_unchanged(title):
+    """GUARD: everything that is not an address survives byte for byte."""
+    assert se.without_address(title) == title
+
+
+def test_the_export_cleans_a_title_stored_before_this_fix():
+    """DEMONSTRATES the export half: a title already stored with an address is cleaned when it is
+    delivered, so records summarized before the fix do not need re-running."""
+    stored = (
+        "[ManualCheck] VALLEY RADIOLOGY GROUP, 9330 OAK HWY, SPRINGFIELD, CA 93311. "
+        "MRI OF THE CERVICAL SPINE [Diagnostic Study] (Pages 12-19)"
+    )
+    assert se.presentable_title(stored) == "VALLEY RADIOLOGY GROUP. MRI OF THE CERVICAL SPINE"
+
+
+def test_the_title_prompt_asks_for_the_facility_name_only():
+    """The prompt half: the model is told, not only filtered after."""
+    assert "NAME only" in se.TITLE_PROMPT
+    assert "street address" in se.TITLE_PROMPT
+
+
 # --- the two title paths that could still overflow varchar(512) -------------------------------
 
 

@@ -41,7 +41,9 @@ TITLE_PROMPT = (
     'then the credentials with periods, for example "JANE SMITH, M.D." Non-physicians are '
     "included: M.D., D.O., D.C., P.T., R.N., P.A., N.P., PSY.D., L.V.N., O.D., D.D.S.\n"
     "2. FACILITY - the clinic, imaging centre, hospital, laboratory, or practice that produced "
-    "the document, read from the LETTERHEAD at the top of the page.\n"
+    "the document, read from the LETTERHEAD at the top of the page. The facility's NAME only: "
+    "never its street address, suite, city, state, ZIP code, phone or fax number, even though "
+    "the letterhead prints them beside the name.\n"
     "   A stamp added to the photocopy afterwards is NOT the facility. Records-copying, "
     "transcription, billing and bill-review vendors stamp their name, an address and a "
     "received-date or bill/DCN number onto the page; that names who handled the paper, not who "
@@ -701,7 +703,7 @@ def _usable_title(generated, fallback, source="generated"):
     """
     cleaned = (generated or "").strip()
     if cleaned and len(cleaned) <= MAX_GENERATED_TITLE:
-        return cleaned
+        return without_address(cleaned)
     logger.warning(
         "%s title unusable (%d chars); falling back to the row title", source, len(cleaned)
     )
@@ -869,6 +871,67 @@ _MANUAL_CHECK_PREFIX = re.compile(r"^\[ManualCheck\]\s{0,8}")
 _DIAGNOSTIC_TAG = re.compile(r"\s{0,8}\[Diagnostic Study\]\s{0,8}")
 
 
+# A title names the FACILITY, never where it is. Adam Flake flagged it on three records on
+# 2026-09-24 ("addresses are being summarized into the document titles") and the reviewers' own
+# deliverables agree: 0 of 80 entry headers across their three reference MRRs carry a street, a
+# suite, a state or a ZIP. The prompt says so too; this is the deterministic half, because the
+# model copies the letterhead's address line with the name often enough to have been reported.
+#
+# Parsed rather than matched as one pattern. The title is split on its own separators (period,
+# comma, spaced dash) and a PIECE is dropped only when the piece as a whole is unmistakably an
+# address. A bare city is NOT dropped - "BAKERSFIELD" is indistinguishable from a facility word -
+# unless it sits directly before a state + ZIP, where it can only be the address. Per-piece
+# fullmatch on short strings keeps every pattern linear, which is the property #162 and #312 had to
+# restore after Sonar refused a backtracking one.
+_TITLE_SEPARATOR_RE = re.compile(r"(\s{0,4}[.,]\s{0,4}|\s{1,4}[-\u2013]\s{1,4})")
+_STREET_SUFFIX = (
+    "STREET|ST|AVENUE|AVE|BOULEVARD|BLVD|DRIVE|DR|ROAD|RD|WAY|LANE|LN|HIGHWAY|HWY|PARKWAY|PKWY"
+    "|COURT|PLACE|CIRCLE|CIR|TERRACE|TER|PLAZA"
+)
+_ADDRESS_PIECES = (
+    # 5300 CALIFORNIA AVE / 16530 VENTURA BLVD STE 510 / 9330 STOCKDALE HWY SUITE 100
+    re.compile(
+        rf"\d{{1,6}}[A-Z]?(?: [A-Z0-9'#/&-]{{1,20}}){{1,5}} (?:{_STREET_SUFFIX})"
+        r"(?: (?:SUITE|STE|UNIT|#)(?: ?[A-Z0-9-]{1,6})?)?",
+        re.I,
+    ),
+    re.compile(r"(?:SUITE|STE|UNIT|#) ?[A-Z0-9-]{1,6}", re.I),
+    re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){0,3}(?:CA|CALIFORNIA|[A-Z]{2}) \d{5}(?:-\d{4})?", re.I),
+    re.compile(r"\d{5}(?:-\d{4})?"),
+    re.compile(r"(?:PH|PHONE|TEL|FAX|F|T)?:? ?\(?\d{3}\)?[ -]?\d{3}-\d{4}", re.I),
+)
+_STATE_ZIP = _ADDRESS_PIECES[2]
+_BARE_NUMBER = re.compile(r"\d{1,6}")
+_CITY = re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){0,2}[A-Z][A-Z'-]{1,20}", re.I)
+
+
+def without_address(title: str) -> str:
+    """``title`` with any street, suite, city-before-ZIP, state/ZIP or phone piece removed.
+
+    A piece is removed together with the separator in front of it, so the header keeps the shape
+    ``AUTHOR, CREDENTIALS. FACILITY. DOCUMENT TYPE`` and no doubled punctuation is left behind.
+    Everything that is not an address is returned byte for byte."""
+    parts = _TITLE_SEPARATOR_RE.split(title or "")
+    # parts alternates piece, separator, piece, ... ; pair each piece with the separator before it.
+    pieces = [(parts[i - 1] if i else "", parts[i]) for i in range(0, len(parts), 2)]
+    drop = [any(p.fullmatch(piece.strip()) for p in _ADDRESS_PIECES) for _, piece in pieces]
+    for i in range(len(pieces) - 1):
+        nxt = pieces[i + 1][1].strip()
+        if not drop[i] and _CITY.fullmatch(pieces[i][1].strip()) and _STATE_ZIP.fullmatch(nxt):
+            # Only a city can stand directly before a state and ZIP.
+            drop[i] = drop[i + 1] = True
+    for i in range(1, len(pieces)):
+        if drop[i - 1] and _BARE_NUMBER.fullmatch(pieces[i][1].strip()):
+            # `STE. 100` splits on its own period and leaves the number behind.
+            drop[i] = True
+    if not any(drop):
+        return title
+    kept = [(sep, piece) for (sep, piece), gone in zip(pieces, drop, strict=True) if not gone]
+    if kept and pieces and drop[0]:
+        kept[0] = ("", kept[0][1])
+    return "".join(sep + piece for sep, piece in kept).strip()
+
+
 def presentable_title(title: str) -> str:
     """``title`` with every internal review marker removed, ready for a delivered document.
 
@@ -892,7 +955,7 @@ def presentable_title(title: str) -> str:
     # value were being mutated.
     presentable = _MANUAL_CHECK_PREFIX.sub("", (title or "").strip())
     presentable = _PAGES_SUFFIX.sub("", presentable).rstrip()
-    return _DIAGNOSTIC_TAG.sub(" ", presentable).strip()
+    return without_address(_DIAGNOSTIC_TAG.sub(" ", presentable).strip())
 
 
 def _unreadable_output(row, unreadable_pages) -> dict:
