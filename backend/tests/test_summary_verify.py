@@ -403,3 +403,32 @@ def test_a_truncated_audit_names_the_cap_that_was_in_force(monkeypatch, caplog):
     warning = "".join(r.getMessage() for r in caplog.records)
     assert "2048-token cap" in warning
     assert str(get_settings().summary_max_output_tokens) not in warning
+
+
+def test_a_diagnostic_study_keeps_its_findings_and_its_impression():
+    """Adam Flake, 2026-09-24: "the 05/15/25 lumbar spine MRI only includes the impression, while
+    the 05/15/25 cervical spine MRI includes both the findings and the impression as it is supposed
+    to." Both halves of the pipeline used to delete the Findings when the Impression restated them -
+    the category 3 prompt and this audit's rule 5 - so which MRIs kept them came down to wording.
+    Now both say to keep both."""
+    from app.services import prompts
+
+    audit = sv.VERIFY_PROMPT
+    assert "KEEP BOTH" in audit
+    assert "keep the Impression and drop the Findings" not in audit
+    diagnostic = prompts.prompts["category_03"]
+    assert "report BOTH, every time" in diagnostic
+    assert "keep the impression ONLY" not in diagnostic
+    # An example that shows the two together, since every example used to show the impression alone.
+    assert "**Findings**:" in diagnostic.split("<examples>", 1)[1]
+
+
+def test_an_impairment_rating_states_the_method_for_every_body_part():
+    """Adam Flake, 2026-09-24, on an MMI report: "it gave the correct rating method for the cervical
+    spine, but not the shoulders ... not the right detail that the shoulder were rated for abnormal
+    range of motion." Both prompts that carry an Impairment Rating point now ask for the method per
+    body part, in the same words."""
+    from app.services import prompts
+
+    for key in ("category_02", "category_13"):
+        assert "For EACH body part rated, state HOW it was rated" in prompts.prompts[key], key

@@ -1011,6 +1011,76 @@ def test_the_delivered_entry_carries_both_tiers():
     assert by_text[": modified duty."] == (True, False)
 
 
+# The diagnostic tier. All three reference MRRs the reviewers supplied render a diagnostic study
+# bold from start to finish - 5 of 5 entries - with Indication and Impression underlined.
+_DIAGNOSTIC_ENTRY = {
+    "summaryDate": "05/15/2025",
+    "summaryTitle": "JANE ROE, M.D. IMAGING CENTER. MRI OF THE LUMBAR SPINE",
+    "summaryText": "**Findings**: L4-5 disc bulge. **Impression**: Mild degeneration.",
+    "diagnostic": True,
+}
+
+
+def test_a_diagnostic_study_is_bold_throughout_in_the_word_document():
+    """DEMONSTRATES the ask: date, header and body all bold, and the labels still underlined so
+    the section structure reads inside the bold. Fails before the tier existed."""
+    doc = build_mrr_document(
+        [dict(_DIAGNOSTIC_ENTRY)], 8, "Pat", "01/01/1980", "AME", details=ReportDetails()
+    )
+    cells = doc.tables[0].rows[0].cells
+    date_runs = [r for r in cells[0].paragraphs[0].runs if r.text.strip()]
+    body_runs = [r for r in cells[1].paragraphs[0].runs if r.text.strip()]
+    assert all(r.bold for r in date_runs)
+    assert all(r.bold for r in body_runs)
+    underlined = [r.text for r in body_runs if r.underline]
+    assert underlined == ["Findings", "Impression"]
+
+
+def test_a_treating_report_keeps_its_two_tiers():
+    """GUARD: the diagnostic tier must not leak into an entry that is not one. The flag is absent
+    here, as it is for every entry built before this existed."""
+    entry = {k: v for k, v in _DIAGNOSTIC_ENTRY.items() if k != "diagnostic"}
+    doc = build_mrr_document([entry], 8, "Pat", "01/01/1980", "AME", details=ReportDetails())
+    body_runs = [r for r in doc.tables[0].rows[0].cells[1].paragraphs[0].runs if r.text.strip()]
+    assert not any(r.bold for r in body_runs)
+
+
+def test_both_renderers_bold_a_diagnostic_study_the_same_way():
+    """The two renderers agree - the invariant this module keeps having to restore (#158, #268)."""
+    import docx
+
+    from app.services.linked_pdf import _inline_html
+    from app.services.reporting import _run, entry_body_segments
+
+    body = _DIAGNOSTIC_ENTRY["summaryText"]
+    paragraph = docx.Document().add_paragraph()
+    for chunk, bold, italic, underline in entry_body_segments(body, whole_bold=True):
+        _run(paragraph, chunk, bold=bold, italic=italic, underline=underline)
+    html_out = _inline_html(body, whole_bold=True)
+    for flag, tag in (("bold", "b"), ("underline", "u")):
+        word = [r.text for r in paragraph.runs if getattr(r, flag)]
+        assert word == _pdf_tagged(html_out, tag), flag
+
+
+def test_the_linked_pdf_bolds_the_date_of_a_diagnostic_study():
+    """DEMONSTRATES the PDF half: the date column and the separator are bold for a diagnostic
+    entry. The title is bold for every entry there, because it is the link."""
+    linked_pdf = pytest.importorskip("app.services.linked_pdf")
+    entry = dict(_DIAGNOSTIC_ENTRY, linkTitle=_DIAGNOSTIC_ENTRY["summaryTitle"], startPage=1)
+    markup = linked_pdf._summary_html([entry], 8, "QME", ReportDetails())
+    assert "<span class='d'><b>05/15/25</b></span>" in markup
+
+
+def test_only_category_3_is_a_diagnostic_study():
+    """GUARD on the key: the tier follows the row's category, not words in the text."""
+    from app.services.reporting import is_diagnostic
+
+    assert is_diagnostic("3")
+    assert is_diagnostic(3)
+    for other in ("1", "13", "14", "100", "", None):
+        assert not is_diagnostic(other), other
+
+
 def test_each_doctor_gets_their_own_typeface():
     """The reviewers gave a font per evaluator and the Word document is written in theirs.
 
