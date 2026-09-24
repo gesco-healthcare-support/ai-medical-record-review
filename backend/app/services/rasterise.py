@@ -76,6 +76,27 @@ def page_dpi(reader, page, settings, long_edge_px=None):
     return max(1, min(settings.summary_image_dpi, fitted))
 
 
+# Emitted ONCE before the labelled images, never per page.
+#
+# The labels are a monotonic run - "Page 1", "Page 2", "Page 3" - and that is ALSO exactly what
+# one document's own pagination looks like. Measured on the six reviewer-corrected records
+# (2026-09-23): boundary recall on ONE-PAGE documents was 77.6% against 95.3% on every other
+# length, inside a population where the scoring bias is identical across lengths, so the gap is
+# the model's and not the metric's. 78% of all remaining missed boundaries sat on documents of
+# one or two pages, and the misses arrived in consecutive runs (22,23,24,25 / 146,147,148,149) -
+# the signature of several one-page documents read as one paginated document.
+#
+# Labelling itself is not the error and must not be reverted: it took off-by-one misplacement
+# from 88 to 26 over those same records. This says what a label MEANS, which the label alone
+# cannot.
+_LABEL_PREAMBLE = (
+    "Each image below is preceded by its page label. A label gives that page's POSITION in "
+    "this file and nothing else. Consecutive pages are frequently SEPARATE documents, and many "
+    "documents here are a single page long, so a label following the previous one never implies "
+    "the two pages belong to the same document."
+)
+
+
 def page_image_parts(pdf_path, start, end, max_pages, long_edge_px=None, label_pages=False):
     """Rasterize pages [start, end] to lean JPEG ``ImagePart``s, at most ``max_pages`` of them.
 
@@ -84,6 +105,9 @@ def page_image_parts(pdf_path, start, end, max_pages, long_edge_px=None, label_p
     ``label_pages`` puts a ``Page N`` text part immediately BEFORE each image, numbered from 1
     WITHIN THIS CALL. Default off: it costs a few tokens per page and only earns them where the
     model has to report a page POSITION back, which summarization and the DOI read do not.
+
+    It also emits ``_LABEL_PREAMBLE`` ONCE before the first image, because the labels alone
+    proved ambiguous: a monotonic run reads as one document's pagination. See that constant.
 
     A bare list of images carries no position at all, and a PDF part does - its container has
     discrete pages, so the model reads a page number rather than deriving one. So a caller that
@@ -115,6 +139,9 @@ def page_image_parts(pdf_path, start, end, max_pages, long_edge_px=None, label_p
     # Poppler subprocesses the loop below already pays for, so it is noise next to them.
     reader = PdfReader(pdf_path)
     parts = []
+    if label_pages:
+        # once per call, not per page: it is a statement about the labels, not about a page.
+        parts.append(TextPart(_LABEL_PREAMBLE))
     for offset, page in enumerate(range(int(start), last + 1), start=1):
         if label_pages:
             # BEFORE the image, so the label reads as naming what follows rather than what

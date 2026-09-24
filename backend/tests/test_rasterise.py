@@ -169,6 +169,42 @@ def test_images_carry_no_page_label_unless_asked(monkeypatch):
     assert [type(part).__name__ for part in parts] == ["ImagePart"] * 3
 
 
+def _labels(parts):
+    """The ``Page N`` labels only.
+
+    Extracted by PREDICATE rather than by slicing `parts[::2]`, which the one-time preamble
+    broke: a caller that adds any part before the first label silently shifts every index."""
+    return [p.text for p in parts if getattr(p, "text", "").startswith("Page ")]
+
+
+def test_the_labels_are_introduced_as_positions_rather_than_pagination(monkeypatch):
+    """WHEN pages are labelled, THE SYSTEM SHALL say once that a label is a position only.
+
+    "Page 1", "Page 2", "Page 3" is also exactly what ONE document's pagination looks like, and
+    the model read it that way: on the six reviewer-corrected records (2026-09-23) boundary
+    recall on ONE-PAGE documents was 77.6% against 95.3% on every other length, and 78% of all
+    remaining missed boundaries sat on documents of one or two pages, arriving in consecutive
+    runs. The label cannot say what it MEANS; this does."""
+    _stub_the_rasteriser(monkeypatch)
+
+    parts = rasterise.page_image_parts("/synthetic.pdf", 1, 3, 10, label_pages=True)
+
+    assert parts[0].text == rasterise._LABEL_PREAMBLE
+    assert "SEPARATE documents" in parts[0].text
+    # ONCE for the whole call, not once per page - it is a statement about the labels.
+    assert sum(1 for p in parts if getattr(p, "text", "") == rasterise._LABEL_PREAMBLE) == 1
+
+
+def test_an_unlabelled_call_gets_no_preamble(monkeypatch):
+    """The preamble explains the labels, so with no labels it is noise - and it would reach
+    summarization and the DOI read, which pass label_pages=False and never ask for a position."""
+    _stub_the_rasteriser(monkeypatch)
+
+    parts = rasterise.page_image_parts("/synthetic.pdf", 1, 3, 10)
+
+    assert all(type(p).__name__ == "ImagePart" for p in parts)
+
+
 def test_a_labelled_page_says_which_page_it_is_before_showing_it(monkeypatch):
     """A bare list of images carries NO page position, so a model asked for one has to count the
     images. Gemini never had to - a PDF part has discrete pages - which is why this only arises
@@ -178,9 +214,10 @@ def test_a_labelled_page_says_which_page_it_is_before_showing_it(monkeypatch):
 
     parts = rasterise.page_image_parts("/synthetic.pdf", 1, 3, 10, label_pages=True)
 
-    assert len(parts) == 6
-    assert [p.text for p in parts[::2]] == ["Page 1", "Page 2", "Page 3"]
-    assert [type(p).__name__ for p in parts[1::2]] == ["ImagePart"] * 3
+    # one preamble, then a label before each of the three images
+    assert len(parts) == 7
+    assert _labels(parts) == ["Page 1", "Page 2", "Page 3"]
+    assert [type(p).__name__ for p in parts[2::2]] == ["ImagePart"] * 3
 
 
 def test_the_label_numbers_the_call_and_not_the_document(monkeypatch):
@@ -196,7 +233,7 @@ def test_the_label_numbers_the_call_and_not_the_document(monkeypatch):
 
     parts = rasterise.page_image_parts("/synthetic.pdf", 21, 25, 10, label_pages=True)
 
-    assert [p.text for p in parts[::2]] == ["Page 1", "Page 2", "Page 3", "Page 4", "Page 5"]
+    assert _labels(parts) == ["Page 1", "Page 2", "Page 3", "Page 4", "Page 5"]
     # Control: the ABSOLUTE pages really are 21-25, so the labels are relative by choice rather
     # than because the call happened to start at 1.
     assert [first for first, _last, _dpi in rendered] == [21, 22, 23, 24, 25]
@@ -209,7 +246,7 @@ def test_the_cap_counts_pages_rather_than_parts(monkeypatch):
 
     parts = rasterise.page_image_parts("/synthetic.pdf", 1, 50, 4, label_pages=True)
 
-    assert [p.text for p in parts[::2]] == ["Page 1", "Page 2", "Page 3", "Page 4"]
+    assert _labels(parts) == ["Page 1", "Page 2", "Page 3", "Page 4"]
     assert sum(1 for p in parts if type(p).__name__ == "ImagePart") == 4
 
 
