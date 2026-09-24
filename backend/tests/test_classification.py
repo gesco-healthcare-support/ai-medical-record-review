@@ -2203,3 +2203,32 @@ def test_a_disagreement_keeps_the_llm_answer_and_asks_for_review(monkeypatch):
     assert classification.classify(_UNRULED) == classification.Classification(
         "13", "low", "llm-disagree", needs_review=True
     )
+
+
+# --- job description -> its own category 17, 2026-09-24 ------------------------------------------
+# Measured on the live box before the rule: 22 rows / 49 pages, every one in 100, five ticked for
+# summary by hand. Replayed over all 3,002 distinct titles there: 8 move, every one None -> 17.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Job Description",
+        "Description of Employee's Job Duties",
+        "Job Requirements",
+        "Acme Corporation Job Description",
+        "Job Description - Custodian",
+        "Essential Functions Job Description",
+        "Position Description",
+        "Job Analysis",
+    ],
+)
+def test_a_job_description_gets_its_own_category(title):
+    """DEMONSTRATES the rule: on origin/main every one of these answered None and landed in 100."""
+    assert classification.match_rules(title) == "17"
+
+
+def test_a_report_that_mentions_the_job_keeps_its_own_category():
+    """GUARD: the rule sits last, so a real report whose title names a job description as well keeps
+    that report's answer, and the treating reports that discuss work are untouched."""
+    assert classification.match_rules("QME Report and Job Description") == "13"
+    assert classification.match_rules("Work Status Report") == "1"
+    assert classification.match_rules("Physician's Return-to-Work & Voucher Report") == "1"

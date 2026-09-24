@@ -2858,3 +2858,13 @@ def test_the_check_is_silent_when_there_is_nothing_to_compare(caplog):
         se._log_incomplete_deposition(_cited_through(15), "unmarked source text", _row())
         se._log_incomplete_deposition("", "", _row())
     assert caplog.text == ""
+
+
+def test_a_job_description_gets_the_minimal_preamble():
+    """A job description describes a job, not a patient: "report positive and abnormal findings only"
+    would strip the physical demands, which are the content. So 17 is registered with the minimal
+    preamble 15 and 16 have, not the every-block default an unregistered id gets."""
+    preamble = se.build_preamble("17")
+    assert se._C_NORMAL_FINDINGS not in preamble
+    assert preamble == se.build_preamble("16")
+    assert preamble != se.build_preamble("999")
