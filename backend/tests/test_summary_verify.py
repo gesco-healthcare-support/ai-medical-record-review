@@ -432,3 +432,16 @@ def test_an_impairment_rating_states_the_method_for_every_body_part():
 
     for key in ("category_02", "category_13"):
         assert "For EACH body part rated, state HOW it was rated" in prompts.prompts[key], key
+
+
+def test_a_nerve_study_lists_its_findings_as_well_as_its_impression():
+    """Adam Flake, 2026-09-24, on the next batch: "still the same issue with the diagnostics and
+    only sometimes summarizing both the findings and the impression." Two of that record's studies
+    were EMG/NCS reports, whose entry listed Assessment as its ONLY point - so "report BOTH" had
+    nothing to point at there. The entry now names Findings first."""
+    from app.services import prompts
+
+    diagnostic = prompts.prompts["category_03"]
+    emg = diagnostic.split("### NCS/EMG Report ###", 1)[1].split("</medical_document_type>", 1)[0]
+    assert "Findings" in emg
+    assert emg.index("Findings") < emg.index("Assessment")
