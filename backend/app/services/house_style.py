@@ -270,3 +270,53 @@ def sentence_case_caps_runs(text: str) -> str:
         return word.capitalize()
 
     return _LONE_CAPS_WORD.sub(replace_word, out)
+
+
+# ONE paragraph, deterministically. The prompt already says so (`_F_ONE_PARAGRAPH`) and the model
+# still breaks it: over the 30 days to 2026-09-24 on the live box, 83 delivered summaries outside the
+# deposition category carried line breaks and 20 an EMPTY label - a heading followed straight by the
+# next one, `**Objective Findings**:` then a line break into `**Range of Motion**:`. Adam Flake
+# reported one of them as "some strange formatting happening in the 06/18/26 PT evaluation report",
+# and the reviewer's own correction of it was exactly this: the same content, run together inline,
+# with the empty heading gone.
+#
+# Line by line rather than one substitution, so each join can choose its punctuation: a line that
+# already ends a sentence or a clause joins with a space, one that does not gets "; " (". " before a
+# heading) so two list items do not run into one clause. A leading list marker (`- `, `* `, a bullet,
+# `1. `) is dropped with its line break. NOT for depositions, which are grouped by page on purpose -
+# the caller decides.
+_LIST_MARKER = re.compile(r"(?:[-*•]|\d{1,2}[.)])[ \t]{1,4}")
+# An EMPTY heading is a LABEL - a bold span marked as one by its colon, `**X**:` or `**X:**` -
+# followed by nothing but another label or the end. Both halves are load-bearing, and the first
+# version had neither: it treated ANY bold span at the end as a heading, and deleted the label in
+# front of any bold span. Adrian reproduced both on review (#396), measured over 4,570 stored
+# summaries: 175 would have lost words and 28 a key label entirely -
+# `**Work Status**: **Modified duty.**` lost its work status, `**Impression**: **Normal study.**`
+# the whole summary. A bold span without a colon is content, never a heading, and a label followed
+# by bold CONTENT is not empty.
+_LABEL = r"\*\*[^*\n]{1,60}(?:\*\*:|:\*\*)"
+_EMPTY_LABEL = re.compile(_LABEL + r"[ \t]{0,8}(?=" + _LABEL + r"|$)")
+_CLAUSE_END = ".:;,!?"
+
+
+def one_paragraph(text: str) -> str:
+    """``text`` as a single paragraph, with any heading that introduces nothing removed.
+
+    Returns ``text`` unchanged when it is already one paragraph with no empty heading, so a
+    conforming summary passes through byte for byte."""
+    if not text or ("\n" not in text and not _EMPTY_LABEL.search(text)):
+        return text
+    lines = [ln.strip() for ln in text.strip().splitlines()]
+    lines = [_LIST_MARKER.sub("", ln, count=1) if _LIST_MARKER.match(ln) else ln for ln in lines]
+    flat = ""
+    for line in (ln for ln in lines if ln):
+        if not flat:
+            flat = line
+        elif flat[-1] in _CLAUSE_END or flat.endswith("**"):
+            flat = f"{flat} {line}"
+        elif line.startswith("**"):
+            flat = f"{flat}. {line}"
+        else:
+            flat = f"{flat}; {line}"
+    flat = _EMPTY_LABEL.sub("", flat)
+    return re.sub(r"[ \t]{2,}", " ", flat).strip()

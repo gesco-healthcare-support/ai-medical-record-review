@@ -15,7 +15,7 @@ import re
 from app.config import get_settings
 from app.errors import EmptyExtractionError, is_rate_limited
 from app.services.deposition_pages import transcript_page_offset
-from app.services.house_style import sentence_case_caps_runs
+from app.services.house_style import one_paragraph, sentence_case_caps_runs
 from app.services.llm import TextPart, get_provider
 from app.services.ocr import extract_pages_with_report
 from app.services.prompts import prompts
@@ -41,7 +41,9 @@ TITLE_PROMPT = (
     'then the credentials with periods, for example "JANE SMITH, M.D." Non-physicians are '
     "included: M.D., D.O., D.C., P.T., R.N., P.A., N.P., PSY.D., L.V.N., O.D., D.D.S.\n"
     "2. FACILITY - the clinic, imaging centre, hospital, laboratory, or practice that produced "
-    "the document, read from the LETTERHEAD at the top of the page.\n"
+    "the document, read from the LETTERHEAD at the top of the page. The facility's NAME only: "
+    "never its street address, suite, city, state, ZIP code, phone or fax number, even though "
+    "the letterhead prints them beside the name.\n"
     "   A stamp added to the photocopy afterwards is NOT the facility. Records-copying, "
     "transcription, billing and bill-review vendors stamp their name, an address and a "
     "received-date or bill/DCN number onto the page; that names who handled the paper, not who "
@@ -706,7 +708,7 @@ def _usable_title(generated, fallback, source="generated"):
     """
     cleaned = (generated or "").strip()
     if cleaned and len(cleaned) <= MAX_GENERATED_TITLE:
-        return cleaned
+        return without_address(cleaned)
     logger.warning(
         "%s title unusable (%d chars); falling back to the row title", source, len(cleaned)
     )
@@ -874,6 +876,295 @@ _MANUAL_CHECK_PREFIX = re.compile(r"^\[ManualCheck\]\s{0,8}")
 _DIAGNOSTIC_TAG = re.compile(r"\s{0,8}\[Diagnostic Study\]\s{0,8}")
 
 
+# A title names the FACILITY, never where it is. Adam Flake flagged it on three records on
+# 2026-09-24 ("addresses are being summarized into the document titles") and the reviewers' own
+# deliverables agree: 0 of 80 entry headers across their three reference MRRs carry a street, a
+# suite, a state or a ZIP. The prompt says so too; this is the deterministic half, because the
+# model copies the letterhead's address line with the name often enough to have been reported.
+#
+# Parsed rather than matched as one pattern. The title is split on its own separators (period,
+# comma, spaced dash) and a PIECE is dropped only when the piece as a whole is unmistakably an
+# address. A bare city is NOT dropped - "BAKERSFIELD" is indistinguishable from a facility word -
+# unless it sits directly before a state + ZIP, where it can only be the address. Per-piece
+# fullmatch on short strings keeps every pattern linear, which is the property #162 and #312 had to
+# restore after Sonar refused a backtracking one.
+_TITLE_SEPARATOR_RE = re.compile(r"(\s{0,4}[.,]\s{0,4}|\s{1,4}[-\u2013]\s{1,4})")
+_STREET_SUFFIX = (
+    "STREET|ST|AVENUE|AVE|BOULEVARD|BLVD|DRIVE|DR|ROAD|RD|WAY|LANE|LN|HIGHWAY|HWY|PARKWAY|PKWY"
+    "|COURT|PLACE|CIRCLE|CIR|TERRACE|TER|PLAZA"
+)
+_ADDRESS_PIECES = (
+    # 5300 CALIFORNIA AVE / 16530 VENTURA BLVD STE 510 / 9330 STOCKDALE HWY SUITE 100
+    re.compile(
+        rf"\d{{1,6}}[A-Z]?(?: [A-Z0-9'#/&-]{{1,20}}){{1,5}} (?:{_STREET_SUFFIX})"
+        r"(?: (?:SUITE|STE|UNIT|#)(?: ?[A-Z0-9-]{1,6})?)?",
+        re.I,
+    ),
+    # the number optional: "STE. 100" splits on its own period, leaving a bare "STE" piece
+    re.compile(r"(?:SUITE|STE|UNIT|#)(?: ?[A-Z0-9-]{1,6}(?: [A-Z0-9-]{1,6})?)?", re.I),
+    re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){0,3}(?:CA|CALIFORNIA|[A-Z]{2}) \d{5}(?:-\d{4})?", re.I),
+    re.compile(r"(?:PH|PHONE|TEL|FAX|F|T)?:? ?\(?\d{3}\)?[ -]?\d{3}-\d{4}", re.I),
+)
+_STATE_ZIP = _ADDRESS_PIECES[2]
+# A number is address only when it follows an address piece - a suite number split off by its own
+# period, or a ZIP after a street. Anywhere else it is content: "WORK STATUS REPORT NO. 12345"
+# lost its report number when any five-digit piece was taken for a ZIP (Adrian, #396).
+_BARE_NUMBER = re.compile(r"\d{1,6}(?:-\d{4})?")
+_CITY = re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){0,2}[A-Z][A-Z'-]{1,20}", re.I)
+# A city with its state and NO ZIP - "LYNWOOD, CA" or "LYNWOOD CA". Adam Flake flagged exactly that
+# on 2026-09-24, on a record whose titles the ZIP-anchored rules above had already been run past.
+# The abbreviation "CA" only, deliberately. A general two-letter "state" piece would also match a
+# credential such as "MD" or "PT", and the spelled-out state would take "STATE OF CALIFORNIA" - an
+# issuing body on DWC forms, not an address - which a replay over the live box caught removing on
+# five titles. A piece naming an organisation is never taken for a city, so "VALLEY MEDICAL GROUP,
+# CA" keeps its name.
+_STATE_ONLY = re.compile(r"CA")
+_CITY_STATE = re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){1,3}CA")
+# "M.D., LYNWOOD, CA. PR-2" splits into "D", ".", "", ", ", ... - removing the address can leave the
+# credential's own period next to the next separator. Collapsed after the rejoin.
+_DOUBLED_SEPARATOR = re.compile(r"([.,])[ \t]{0,4}[.,]")
+_ORGANISATION = re.compile(
+    r"\b(?:GROUP|MEDICAL|CENTERS?|CENTRE|CLINICS?|HOSPITAL|INSTITUTE|INC|LLC|ASSOCIATES|HEALTH"
+    + r"|IMAGING|RADIOLOGY|THERAPY|CARE|SERVICES|PHYSICIANS|ORTHOPA?EDICS?|CHIROPRACTIC|PARTNERS)\b",
+    re.I,
+)
+
+
+def _mark_city_state(pieces: list[tuple[str, str]], drop: list[bool]) -> None:
+    """Mark a city standing before a state (with or without its ZIP) as address, in place."""
+    for i, (_, raw) in enumerate(pieces):
+        piece = raw.strip()
+        if drop[i] or not i or _ORGANISATION.search(piece):
+            continue
+        nxt = pieces[i + 1][1].strip() if i + 1 < len(pieces) else ""
+        if _CITY.fullmatch(piece) and (_STATE_ZIP.fullmatch(nxt) or _STATE_ONLY.fullmatch(nxt)):
+            # Only a city can stand directly before a state.
+            drop[i] = drop[i + 1] = True
+        elif _CITY_STATE.fullmatch(piece):
+            drop[i] = True
+
+
+def without_address(title: str) -> str:
+    """``title`` with any street, suite, city-before-ZIP, state/ZIP or phone piece removed.
+
+    A piece is removed together with the separator in front of it, so the header keeps the shape
+    ``AUTHOR, CREDENTIALS. FACILITY. DOCUMENT TYPE`` and no doubled punctuation is left behind.
+    Everything that is not an address is returned byte for byte."""
+    parts = _TITLE_SEPARATOR_RE.split(title or "")
+    # parts alternates piece, separator, piece, ... ; pair each piece with the separator before it.
+    pieces = [(parts[i - 1] if i else "", parts[i]) for i in range(0, len(parts), 2)]
+    drop = [any(p.fullmatch(piece.strip()) for p in _ADDRESS_PIECES) for _, piece in pieces]
+    _mark_city_state(pieces, drop)
+    for i in range(1, len(pieces)):
+        if drop[i - 1] and _BARE_NUMBER.fullmatch(pieces[i][1].strip()):
+            # `STE. 100` splits on its own period and leaves the number behind; a ZIP follows a street.
+            drop[i] = True
+    if not any(drop):
+        return title
+    kept = [(sep, piece) for (sep, piece), gone in zip(pieces, drop, strict=True) if not gone]
+    if kept and pieces and drop[0]:
+        kept[0] = ("", kept[0][1])
+    return _DOUBLED_SEPARATOR.sub(r"\1", "".join(sep + piece for sep, piece in kept)).strip()
+
+
+# ONE spelling per provider across a record. Titles are generated one sub-document at a time, each
+# from its own pages, so a provider printed "JEFFERY FREESEMANN" on one form and "JEFFERY M.
+# FREESEMANN" on the next got both in one delivered report. Adam Flake, 2026-09-24: "inconsistencies
+# with the provider name with some titles including a middle name while others are not".
+#
+# The author is the element before the first comma - the TITLE_PROMPT form "AUTHOR, CREDENTIALS. ...".
+# Only variants that can ONLY be one person are joined, because putting the wrong provider's name on
+# an entry is worse than leaving two spellings of the right one. Adrian's review of the first cut
+# (#396) reproduced four ways it joined different people, and each rule below closes one:
+#
+#   - The surname is the last word BEFORE a suffix (JR, SR, II ...), and the suffix is part of the
+#     key: "JOHN SMITH JR." and "JOHN DAVIS JR." were one group when the suffix was the surname, and
+#     a father and son can both practise.
+#   - First names must be IDENTICAL. No near spelling (MARIA / MARIO) and no prefix (CHRIS /
+#     CHRISTINA): in this caseload a common surname is exactly where two providers share one.
+#   - An initial ("J.") joins a group only when exactly ONE first name in the record fits it -
+#     otherwise it would state a first name the document never gave.
+#   - Two different middle initials are two people. A spelling with NO middle joins only when every
+#     middle in its group agrees, and is left alone when it could belong to more than one.
+#   - A REVIEWER-EDITED title is never rewritten, and its spelling wins its group - the same "a
+#     reviewer's own edit is theirs" rule the export applies to bodies.
+#
+# A group is otherwise rewritten to its most frequent spelling, ties going to the fuller one, then
+# alphabetically. Only the name is touched; a title with no recognisable author is left as it came.
+_AUTHOR_NAME = re.compile(r"[A-Z][A-Z'\-]{0,24}\.?(?: [A-Z][A-Z'\-]{0,24}\.?){1,4}")
+_AUTHOR_CRED = re.compile(r"[A-Z][A-Z.\-/]{0,11}")
+_NAME_SUFFIXES = frozenset({"JR", "SR", "II", "III", "IV", "V"})
+
+
+def _author_parts(title: str):
+    """``(name, key)`` for a title that opens with ``NAME, CREDENTIAL``, else ``None``.
+
+    The key is ``(surname, suffix, credential)`` - see the note above."""
+    name, sep, rest = (title or "").partition(", ")
+    cred = _AUTHOR_CRED.match(rest) if sep else None
+    if not cred or not _AUTHOR_NAME.fullmatch(name):
+        return None
+    words = name.replace(".", "").split()
+    suffix = words[-1] if words[-1] in _NAME_SUFFIXES and len(words) > 2 else ""
+    core = words[:-1] if suffix else words
+    return name, (core[-1], suffix, cred.group(0).replace(".", "").upper())
+
+
+def _first_and_middle(name: str) -> tuple[str, str]:
+    """First name and middle initial ("" when none) of one spelling, suffix excluded."""
+    words = name.replace(".", "").split()
+    if words[-1] in _NAME_SUFFIXES and len(words) > 2:
+        words = words[:-1]
+    return words[0], (words[1][0] if len(words) > 2 else "")
+
+
+def _spelling_rank(counts: dict[str, int], locked: set[str]):
+    return lambda s: (s not in locked, -counts[s], -len(s.split()), -len(s), s)
+
+
+def _people(spellings: list[str]) -> list[list[str]]:
+    """The spellings of one surname + suffix + credential, split into the people they can only be."""
+    by_first: dict[str, list[str]] = {}
+    initials = []
+    for s in spellings:
+        first, _ = _first_and_middle(s)
+        (initials if len(first) == 1 else by_first.setdefault(first, [])).append(s)
+    people: list[list[str]] = []
+    for group in by_first.values():
+        middles = {_first_and_middle(s)[1] for s in group} - {""}
+        if len(middles) <= 1:
+            people.append(group)
+            continue
+        for m in sorted(middles):
+            people.append([s for s in group if _first_and_middle(s)[1] == m])
+        people.extend([s] for s in group if not _first_and_middle(s)[1])
+    for s in initials:
+        fits = [p for p in people if _first_and_middle(p[0])[0].startswith(s.split()[0][0])]
+        if len(fits) == 1 and len({_first_and_middle(x)[0] for x in fits[0]}) == 1:
+            fits[0].append(s)
+        else:
+            people.append([s])
+    return people
+
+
+def consistent_authors(titles: list[str], locked: list[bool] | None = None) -> list[str]:
+    """``titles`` with every spelling of one provider made the same - see the note above.
+
+    ``locked`` marks reviewer-edited titles: never rewritten, and their spelling wins its group."""
+    locked = locked or [False] * len(titles)
+    parts = [_author_parts(t) for t in titles]
+    counts: dict[tuple, dict[str, int]] = {}
+    pinned: set[str] = set()
+    for p, is_locked in zip(parts, locked, strict=True):
+        if p:
+            spellings = counts.setdefault(p[1], {})
+            spellings[p[0]] = spellings.get(p[0], 0) + 1
+            if is_locked:
+                pinned.add(p[0])
+    chosen: dict[tuple, str] = {}
+    for key, spellings in counts.items():
+        for person in _people(list(spellings)):
+            canonical = min(person, key=_spelling_rank(spellings, pinned))
+            chosen.update({(name, key): canonical for name in person})
+    return [
+        title if not p or is_locked else chosen[(p[0], p[1])] + title[len(p[0]) :]
+        for title, p, is_locked in zip(titles, parts, locked, strict=True)
+    ]
+
+
+# One entry per visit. The reviewers, 2026-08-21: "mostly when one visit produces a work status
+# report, a PR-2 and office notes on the same day - just one entry, usually PR-2 giving the header",
+# and in the next round the limit: "The only time it should be combined is if it is the same doctor
+# and same category ... (In the case of Work Status, we will count that as Category 1)". Adam Flake
+# has read the leftover pairs as duplicates on two rounds of review (2026-09-24, twice): a work status
+# slip beside its PR-2, and a PR-2 form beside the progress note of the same visit.
+#
+# Category 1 entries by the SAME author and credential (after `consistent_authors`, which only joins
+# spellings that can be one person) on the SAME date become one entry: headed by a PR-2 when the
+# visit has one, otherwise by the fullest entry; bodied by the fullest body, with every section of
+# the others it does not already say appended - see `_merged_body`. Nothing is dropped unless the
+# kept body holds the same text. Folded at EXPORT over the delivered entries: the rows are untouched, the review page still
+# shows every document, and a reviewer can still separate them.
+#
+# Measured on the live box over the last 30 days before widening it past work status slips: 95
+# such visits across 25 records, 125 entries folding away; reviewers had excluded 2 of them by hand.
+_WORK_STATUS_TITLE = re.compile(r"\bWORK (?:ACTIVITY )?STATUS\b|\bRETURN[- ]TO[- ]WORK\b", re.I)
+_PR2_TITLE = re.compile(r"\bPR-?2\b|\bPROGRESS REPORT\b", re.I)
+# A section starts at a LABEL - a bold span marked by its colon - never at bold content, so
+# "**Work Status**: **Modified duty.**" stays one section.
+_SECTION = re.compile(r"(?=\*\*[^*\n]{1,60}(?:\*\*:|:\*\*))")
+
+
+def _is_pr2(title: str) -> bool:
+    return bool(_PR2_TITLE.search(title)) and not _WORK_STATUS_TITLE.search(title)
+
+
+def _visit_key(entry: dict, category: str, title_key: str):
+    """``(date, author)`` for a category 1 entry that names both, else ``None``."""
+    author = _author_parts(entry.get(title_key) or "")
+    date = (entry.get("summaryDate") or "").strip()
+    if category != "1" or not author or date in ("", "-"):
+        return None
+    return date, author[0], author[1][2]
+
+
+def _normal(section: str) -> str:
+    return re.sub(r"\s+", " ", section).strip(" .;:").casefold()
+
+
+def _merged_body(bodies: list[str]) -> str:
+    """The fullest body, with every section of the others it does not already carry appended.
+
+    A section is dropped only when the kept body already holds the SAME TEXT. A repeated label with
+    different text is appended beside it, and so is text under no label at all: the first version
+    compared labels only, so a slip's "Work Status: Off work" vanished next to a PR-2's "Work Status:
+    Modified duty", and an unlabelled note contributed nothing (Adrian, #396). Two statements of one
+    point in one entry are visible to the reviewer; a lost one is not."""
+    kept = max(bodies, key=len)
+    have = {_normal(sec) for sec in _SECTION.split(kept) if sec.strip()}
+    extra = []
+    for body in (b for b in bodies if b is not kept):
+        for section in (sec.strip() for sec in _SECTION.split(body) if sec.strip()):
+            if _normal(section) not in have:
+                have.add(_normal(section))
+                extra.append(section)
+    return " ".join([kept, *extra]).strip()
+
+
+def _visit_heads(
+    entries: list[dict], categories: list[str], title_key: str
+) -> dict[int, list[int]]:
+    """Each same-visit group of two or more, keyed by the index of the entry that heads it."""
+    groups: dict[tuple, list[int]] = {}
+    for i, (entry, category) in enumerate(zip(entries, categories, strict=True)):
+        key = _visit_key(entry, category, title_key)
+        if key:
+            groups.setdefault(key, []).append(i)
+    heads: dict[int, list[int]] = {}
+    for members in (m for m in groups.values() if len(m) > 1):
+        pr2 = [i for i in members if _is_pr2(entries[i].get(title_key) or "")]
+        head = (
+            pr2[0] if pr2 else max(members, key=lambda i: len(entries[i].get("summaryText") or ""))
+        )
+        heads[head] = members
+    return heads
+
+
+def fold_same_visit(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
+    """``entries`` with each same-visit group of category 1 entries made one - see above."""
+    heads = _visit_heads(entries, categories, title_key)
+    folded = {i for members in heads.values() for i in members} - set(heads)
+    out = []
+    for i, entry in enumerate(entries):
+        if i in folded:
+            continue
+        if i in heads:
+            bodies = [entries[j].get("summaryText") or "" for j in heads[i]]
+            entry = {**entry, "summaryText": _merged_body(bodies)}
+        out.append(entry)
+    return out
+
+
 def presentable_title(title: str) -> str:
     """``title`` with every internal review marker removed, ready for a delivered document.
 
@@ -897,7 +1188,7 @@ def presentable_title(title: str) -> str:
     # value were being mutated.
     presentable = _MANUAL_CHECK_PREFIX.sub("", (title or "").strip())
     presentable = _PAGES_SUFFIX.sub("", presentable).rstrip()
-    return _DIAGNOSTIC_TAG.sub(" ", presentable).strip()
+    return without_address(_DIAGNOSTIC_TAG.sub(" ", presentable).strip())
 
 
 def _unreadable_output(row, unreadable_pages) -> dict:
@@ -1310,6 +1601,14 @@ def _generate_body(model, system_msg, body_contents, row):
     return summary, truncated, model, body_fallback_from
 
 
+def _house_body(text: str, deposition: bool) -> str:
+    """The deterministic house-style passes over a body, generated or audited alike: capitals, then
+    one paragraph - see `house_style.one_paragraph` - for everything but a deposition, which is
+    grouped by page on purpose."""
+    text = sentence_case_caps_runs(text)
+    return text if deposition else one_paragraph(text)
+
+
 def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
     """Audit the body and title, and turn the verdict into the four fields the row stores.
 
@@ -1437,7 +1736,7 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
         else:
             # The audit may reintroduce capitals while fixing something else, so the transform runs
             # over its output too - the verified text is what effective_text() delivers.
-            verified_text = f"{doi_lead}{sentence_case_caps_runs(result['fixed_text'])}"
+            verified_text = f"{doi_lead}{_house_body(result['fixed_text'], deposition)}"
         verify_issues = result["issues"]
         # The title is corrected INDEPENDENTLY of the body, including when the body rewrite was
         # rejected above: effective_title() and effective_text() fall back separately, and a wrong
@@ -1567,7 +1866,7 @@ def summarize_row(
     # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
     # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
-    summary = sentence_case_caps_runs(summary)
+    summary = _house_body(summary, deposition)
 
     # The row IS the source of truth for the injury date. It was read once, per sub-document and in
     # isolation, at the END of segmentation (see segment_engine.run_segmentation), so a reviewer who
