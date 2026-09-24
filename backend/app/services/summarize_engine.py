@@ -1036,61 +1036,79 @@ def consistent_authors(titles: list[str]) -> list[str]:
     ]
 
 
-# One entry per visit when a work status slip rides with its PR-2. The reviewers, 2026-08-21:
-# "mostly when one visit produces a work status report, a PR-2 and office notes on the same day -
-# just one entry, usually PR-2 giving the header and no point to mention other things", and in the
-# next round "only if they are the same category would we combine (In the case of Work Status, we
-# will count that as Category 1)" and "the same doctor". Adam Flake read the two entries as a
-# duplicate on 2026-09-24. Folded at EXPORT, over the delivered entries - the rows are untouched,
-# so the review page still shows both documents and a reviewer can still split them apart.
+# One entry per visit. The reviewers, 2026-08-21: "mostly when one visit produces a work status
+# report, a PR-2 and office notes on the same day - just one entry, usually PR-2 giving the header",
+# and in the next round the limit: "The only time it should be combined is if it is the same doctor
+# and same category ... (In the case of Work Status, we will count that as Category 1)". Adam Flake
+# has read the leftover pairs as duplicates on two rounds of review (2026-09-24, twice): a work status
+# slip beside its PR-2, and a PR-2 form beside the progress note of the same visit.
 #
-# A slip folds only into a PR-2 on the SAME date, by the SAME author (after `consistent_authors`),
-# both category 1. Measured on the live box over the last 30 days: 20 such pairs across 6 records,
-# and every one of the 20 PR-2s already carried its own Work Status point - so the slip is dropped.
-# Should a PR-2 ever lack one, the slip's text is appended to it instead of lost.
+# Category 1 entries by the SAME author (after `consistent_authors`) on the SAME date become one
+# entry: headed by a PR-2 when the visit has one, otherwise by the fullest entry; bodied by the
+# fullest body, with every section ANOTHER entry carries and the kept body lacks appended - so a
+# work status only the slip states, or a treatment plan only the note states, is kept rather than
+# lost. Folded at EXPORT over the delivered entries: the rows are untouched, the review page still
+# shows every document, and a reviewer can still separate them.
+#
+# Measured on the live box over the last 30 days before widening it past work status slips: 95
+# such visits across 25 records, 125 entries folding away; reviewers had excluded 2 of them by hand.
 _WORK_STATUS_TITLE = re.compile(r"\bWORK (?:ACTIVITY )?STATUS\b|\bRETURN[- ]TO[- ]WORK\b", re.I)
 _PR2_TITLE = re.compile(r"\bPR-?2\b|\bPROGRESS REPORT\b", re.I)
-_WORK_STATUS_POINT = "**Work Status**"
+_SECTION = re.compile(r"(?=\*\*[^*\n]{1,60}\*\*)")
+_SECTION_LABEL = re.compile(r"\*\*([^*\n]{1,60})\*\*")
 
 
-def _visit_kind(entry: dict, category: str, title_key: str) -> str:
-    """``"slip"`` for a category 1 work status, ``"pr2"`` for a category 1 PR-2, else ``""``."""
-    title = entry.get(title_key) or ""
-    if category != "1":
-        return ""
-    slip, pr2 = bool(_WORK_STATUS_TITLE.search(title)), bool(_PR2_TITLE.search(title))
-    if slip and not pr2:
-        return "slip"
-    return "pr2" if pr2 and not slip else ""
+def _is_pr2(title: str) -> bool:
+    return bool(_PR2_TITLE.search(title)) and not _WORK_STATUS_TITLE.search(title)
 
 
-def _same_visit(a: dict, b: dict, a_author, b_author) -> bool:
-    """One author (after `consistent_authors`) on one date."""
-    return bool(a_author and b_author and a_author[0] == b_author[0]) and (
-        a.get("summaryDate") == b.get("summaryDate")
-    )
+def _visit_key(entry: dict, category: str, title_key: str):
+    """``(date, author)`` for a category 1 entry that names both, else ``None``."""
+    author = _author_parts(entry.get(title_key) or "")
+    date = (entry.get("summaryDate") or "").strip()
+    if category != "1" or not author or date in ("", "-"):
+        return None
+    return date, author[0]
 
 
-def fold_work_status(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
-    """``entries`` with each same-visit work status slip folded into its PR-2 - see above."""
-    authors = [_author_parts(e.get(title_key) or "") for e in entries]
-    kinds = [_visit_kind(e, c, title_key) for e, c in zip(entries, categories, strict=True)]
-    pr2s = [j for j, k in enumerate(kinds) if k == "pr2"]
-    folded: dict[int, int] = {}
-    for i in (i for i, k in enumerate(kinds) if k == "slip"):
-        home = next(
-            (j for j in pr2s if _same_visit(entries[i], entries[j], authors[i], authors[j])), None
+def _merged_body(bodies: list[str]) -> str:
+    """The fullest body, with each section only another body carries appended to it."""
+    kept = max(bodies, key=len)
+    have = {m.lower().strip(" :") for m in _SECTION_LABEL.findall(kept)}
+    extra = []
+    for body in (b for b in bodies if b is not kept):
+        for section in (s.strip() for s in _SECTION.split(body) if s.strip()):
+            label = _SECTION_LABEL.match(section)
+            key = label.group(1).lower().strip(" :") if label else None
+            if key and key not in have:
+                have.add(key)
+                extra.append(section)
+    return " ".join([kept, *extra]).strip()
+
+
+def fold_same_visit(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
+    """``entries`` with each same-visit group of category 1 entries made one - see above."""
+    groups: dict[tuple, list[int]] = {}
+    for i, (entry, category) in enumerate(zip(entries, categories, strict=True)):
+        key = _visit_key(entry, category, title_key)
+        if key:
+            groups.setdefault(key, []).append(i)
+    heads: dict[int, list[int]] = {}
+    for members in (m for m in groups.values() if len(m) > 1):
+        pr2 = [i for i in members if _is_pr2(entries[i].get(title_key) or "")]
+        head = (
+            pr2[0] if pr2 else max(members, key=lambda i: len(entries[i].get("summaryText") or ""))
         )
-        if home is not None:
-            folded[i] = home
+        heads[head] = members
+    folded = {i for members in heads.values() for i in members} - set(heads)
     out = []
-    for j, entry in enumerate(entries):
-        if j in folded:
+    for i, entry in enumerate(entries):
+        if i in folded:
             continue
-        text = entry.get("summaryText") or ""
-        for i in (i for i, h in folded.items() if h == j and _WORK_STATUS_POINT not in text):
-            text = f"{text} {entries[i].get('summaryText') or ''}".strip()
-        out.append({**entry, "summaryText": text})
+        if i in heads:
+            bodies = [entries[j].get("summaryText") or "" for j in heads[i]]
+            entry = {**entry, "summaryText": _merged_body(bodies)}
+        out.append(entry)
     return out
 
 

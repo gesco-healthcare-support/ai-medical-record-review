@@ -79,7 +79,7 @@ from app.services.reporting import (
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
     consistent_authors,
-    fold_work_status,
+    fold_same_visit,
     presentable_title,
     standalone_studies_from_rows,
     summarize_row,
@@ -1628,11 +1628,11 @@ def _consistent_authors(entries: list[dict], key: str) -> list[dict]:
 
 def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> list[dict]:
     """The record-level passes over a delivered entry list, in order: one spelling per provider,
-    then one entry per visit where a work status slip rides with its PR-2 (which needs the
+    then one entry per visit for a doctor's category 1 documents on one date (which needs the
     spellings to agree first). Both renderers call this, so the Word and PDF deliverables list the
     same entries."""
     entries = _consistent_authors(entries, key)
-    return fold_work_status(entries, [str(s.row_category) for s in summaries], key)
+    return fold_same_visit(entries, [str(s.row_category) for s in summaries], key)
 
 
 def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:

@@ -2355,7 +2355,7 @@ def test_both_export_renderers_name_a_provider_alike():
     ]
 
 
-# --- one entry per visit: a work status slip folds into its PR-2 -------------------------------
+# --- one entry per visit: a doctor's category 1 documents on one date become one entry ----------
 def _entry(title, text, date="02/04/2026"):
     return {"summaryDate": date, "summaryTitle": title, "summaryText": text}
 
@@ -2370,7 +2370,7 @@ def test_a_same_visit_work_status_slip_folds_into_its_pr2():
         _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Full duty."),
         _entry(_SLIP, "**Work Status**: Full duty."),
     ]
-    out = se.fold_work_status(entries, ["1", "1"], "summaryTitle")
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
     assert [e["summaryTitle"] for e in out] == [_PR2]
     assert out[0]["summaryText"] == "**Diagnoses**: strain. **Work Status**: Full duty."
 
@@ -2378,8 +2378,10 @@ def test_a_same_visit_work_status_slip_folds_into_its_pr2():
 def test_a_pr2_without_a_work_status_point_takes_the_slips_text():
     """DEMONSTRATES that folding never loses the work status: it is appended when the PR-2 has none."""
     entries = [_entry(_PR2, "**Diagnoses**: strain."), _entry(_SLIP, "**Work Status**: Modified.")]
-    out = se.fold_work_status(entries, ["1", "1"], "summaryTitle")
-    assert out == [_entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified.")]
+    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    assert [e["summaryTitle"] for e in out] == [_PR2]
+    assert "**Diagnoses**: strain." in out[0]["summaryText"]
+    assert "**Work Status**: Modified." in out[0]["summaryText"]
 
 
 @pytest.mark.parametrize(
@@ -2393,7 +2395,35 @@ def test_a_pr2_without_a_work_status_point_takes_the_slips_text():
 def test_a_slip_from_another_doctor_visit_or_category_stays_its_own_entry(slip, date, categories):
     """GUARD on the reviewers' own limit: same doctor, same date, same category - or no fold."""
     entries = [_entry(_PR2, "**Work Status**: Full duty."), _entry(slip, "x", date=date)]
-    assert se.fold_work_status(entries, categories, "summaryTitle") == entries
+    assert se.fold_same_visit(entries, categories, "summaryTitle") == entries
+
+
+_NOTE = "JANE ROE, N.P. VALLEY CLINIC. PROGRESS NOTE"
+
+
+def test_a_pr2_form_and_the_visits_progress_note_become_one_entry():
+    """DEMONSTRATES the Camarillo shape Adam Flake called a duplicate on 2026-09-24: a short PR-2
+    form and the full progress note of the same visit. One entry, headed by the PR-2, carrying the
+    fuller body and every section only the form states."""
+    note = "**Subjective**: neck pain. **Diagnoses**: strain. **Treatment Plan**: PT."
+    form = "**Work Status**: Modified duty."
+    out = se.fold_same_visit([_entry(_NOTE, note), _entry(_PR2, form)], ["1", "1"], "summaryTitle")
+    assert [e["summaryTitle"] for e in out] == [_PR2]
+    assert out[0]["summaryText"] == f"{note} {form}"
+
+
+def test_two_same_day_notes_by_one_doctor_keep_every_section():
+    """Two category 1 notes, no PR-2: headed by the fuller one, no section lost."""
+    long_note = "**Subjective**: pain. **Diagnoses**: strain. **Physical Examination**: tender."
+    short_note = "**Diagnoses**: strain. **Treatment Plan**: PT twice weekly."
+    out = se.fold_same_visit(
+        [_entry(_NOTE, short_note), _entry(_NOTE + " ADDENDUM", long_note)],
+        ["1", "1"],
+        "summaryTitle",
+    )
+    assert len(out) == 1
+    assert out[0]["summaryTitle"] == _NOTE + " ADDENDUM"
+    assert out[0]["summaryText"] == f"{long_note} **Treatment Plan**: PT twice weekly."
 
 
 def test_both_export_renderers_fold_the_same_entries():
