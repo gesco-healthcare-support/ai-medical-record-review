@@ -311,19 +311,94 @@ def _worker_redis_url(url: str, env) -> str:
     return urlunsplit(urlsplit(url)._replace(path=f"/{int(match.group(1)) + 1}"))
 
 
+def _worker_database_url(url: str, env) -> str:
+    """This process's DATABASE_URL: worker `gwN` gets its own database, `<name>_gwN`; serial keeps `url`.
+
+    Workers used to share one Postgres database, so code that reads a WHOLE table saw the other workers'
+    rows mid-test. `recover_orphans` sweeps every active job: another worker's job made
+    `test_recover_orphans_does_not_overwrite_an_outcome_another_writer_committed` fail under -n 4 (found
+    on the 2026-09-24 measurement runs). A copy per worker removes that class outright, as
+    `_worker_redis_url` does for the queues; `pytest_xdist_setupnodes` below makes the copies before any
+    worker starts. Only the database name changes, and an unrecognised worker id is refused rather than
+    guessed, because guessing could put two workers on one database.
+    """
+    worker = env.get("PYTEST_XDIST_WORKER")
+    if not worker:
+        return url
+    if not re.fullmatch(r"gw\d+", worker):
+        raise RuntimeError(
+            f"PYTEST_XDIST_WORKER is {worker!r}, not gw<N> - cannot pick this worker's database"
+        )
+    parts = urlsplit(url)
+    name = parts.path.lstrip("/")
+    return urlunsplit(parts._replace(path=f"/{name}_{worker}"))
+
+
+def _clone_worker_databases(url: str, count: int) -> None:
+    """Make each worker's database, `<name>_gw0` .. `<name>_gw<count-1>`, a fresh copy of `<name>`.
+
+    A TEMPLATE copy rather than a migration per worker: Postgres copies the migrated schema and its seed
+    rows in about a second, and each worker then starts from exactly what a serial run sees. Any copy an
+    earlier run left is dropped first, so a killed run can never leak into the next one. The copy needs
+    nobody connected to `<name>` while it runs - in CI nothing is; locally a second pytest run or a psql
+    session would be, and that failure is re-raised saying so.
+    """
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import DBAPIError
+
+    parts = urlsplit(url)
+    name = parts.path.lstrip("/")
+    if not re.fullmatch(r"[a-z0-9_]+", name):
+        # The name goes into SQL as an identifier, so it must be one we would have written ourselves.
+        raise RuntimeError(f"test database name {name!r} is not [a-z0-9_]+ - refusing to clone it")
+    # CREATE DATABASE cannot run inside a transaction, and not while connected to the template itself.
+    engine = create_engine(
+        urlunsplit(parts._replace(path="/postgres")), isolation_level="AUTOCOMMIT"
+    )
+    try:
+        with engine.connect() as conn:
+            for i in range(count):
+                clone = f"{name}_gw{i}"
+                conn.execute(text(f'DROP DATABASE IF EXISTS "{clone}" WITH (FORCE)'))
+                try:
+                    conn.execute(text(f'CREATE DATABASE "{clone}" TEMPLATE "{name}"'))
+                except DBAPIError as exc:
+                    if "being accessed by other users" not in str(exc):
+                        raise
+                    raise RuntimeError(
+                        f"Could not copy the test database {name!r} for worker gw{i}: something else is "
+                        f"connected to it - usually another pytest run or a psql session. Close it and "
+                        f"re-run."
+                    ) from exc
+    finally:
+        engine.dispose()
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_xdist_setupnodes(config, specs) -> None:  # noqa: ARG001 - pytest-xdist hook signature
+    """Before any xdist worker starts, give each one its own copy of the test database.
+
+    Runs once, in the controller, and only for a parallel run - a serial run never calls it. The workers
+    are named gw0 .. gw<N-1> in `specs` order, which is what `_worker_database_url` maps them to.
+    """
+    _clone_worker_databases(os.environ["DATABASE_URL"], len(specs))
+
+
 os.environ.setdefault("DATABASE_URL", _local_database_url())
 _reject_the_app_database(os.environ["DATABASE_URL"])
 os.environ.setdefault("SECRET_KEY", "dev-only-secret")
 os.environ.setdefault("SECURITY_PASSWORD_SALT", "dev-only-salt")
 os.environ.setdefault("ENVIRONMENT", "dev")
 if os.environ.get("PYTEST_XDIST_WORKER"):
-    # Before the app import below, so the cached settings read the worker's own database. The
-    # default comes from Settings itself rather than a second copy of the literal.
+    # Before the app import below, so the cached settings read the worker's own Redis database and
+    # its own Postgres database. The Redis default comes from Settings itself rather than a second
+    # copy of the literal.
     from app.config import Settings
 
     os.environ["REDIS_URL"] = _worker_redis_url(
         os.environ.get("REDIS_URL", Settings.model_fields["redis_url"].default), os.environ
     )
+    os.environ["DATABASE_URL"] = _worker_database_url(os.environ["DATABASE_URL"], os.environ)
 
 # psycopg3's async mode cannot run on Windows' default ProactorEventLoop; select the
 # SelectorEventLoop policy so the async DB works under pytest here. No-op on Linux (CI, prod),
