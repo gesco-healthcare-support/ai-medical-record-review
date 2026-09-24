@@ -40,7 +40,7 @@ _LETTER = pymupdf.paper_rect("letter")  # 612 x 792 pt
 _CONTENT = pymupdf.Rect(72, 90, _LETTER.width - 72, _LETTER.height - 72)
 
 
-def _inline_html(text: str) -> str:
+def _inline_html(text: str, *, whole_bold: bool = False) -> str:
     """One entry body as HTML, in the same two tiers the Word renderer uses.
 
     `entry_body_segments` makes every emphasis decision; this only chooses the tags. The
@@ -48,7 +48,7 @@ def _inline_html(text: str) -> str:
     formatting is a defect this module has already shipped three times (#115, #158, #268),
     so the classification is not repeated here."""
     out = []
-    for chunk, bold, italic, underline in entry_body_segments(text):
+    for chunk, bold, italic, underline in entry_body_segments(text, whole_bold=whole_bold):
         esc = html.escape(chunk)
         if underline:
             esc = f"<u>{esc}</u>"
@@ -83,11 +83,18 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
         #
         # Word keeps its two-column TABLE, and that is not drift: python-docx writes a real Word
         # table and Word splits rows across pages by itself. Only Story cannot.
+        # A diagnostic study is bold throughout - date, separator and body as well as the
+        # title, which is bold here for every entry because it is the link. Same tier as Word.
+        diagnostic = bool(e.get("diagnostic"))
+        date_html = html.escape(date_label(e))
+        separator = html.escape(TITLE_SEPARATOR)
+        if diagnostic:
+            date_html, separator = f"<b>{date_html}</b>", f"<b>{separator}</b>"
         rows.append(
-            f"<p class='e'><span class='d'>{html.escape(date_label(e))}</span>"
+            f"<p class='e'><span class='d'>{date_html}</span>"
             f"<a class='ln' id='t{i}'>{html.escape(e['linkTitle'])}</a>"
-            f"{html.escape(TITLE_SEPARATOR)}"
-            f"{_inline_html(e['summaryText'])}</p>"
+            f"{separator}"
+            f"{_inline_html(e['summaryText'], whole_bold=diagnostic)}</p>"
         )
     # The same two sentences the Word renderer emits, from the same builder, bold to match
     # it - and the excluded-type list left PLAIN beneath them, which is the contrast the
