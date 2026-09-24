@@ -896,7 +896,7 @@ _ADDRESS_PIECES = (
         r"(?: (?:SUITE|STE|UNIT|#)(?: ?[A-Z0-9-]{1,6})?)?",
         re.I,
     ),
-    re.compile(r"(?:SUITE|STE|UNIT|#) ?[A-Z0-9-]{1,6}", re.I),
+    re.compile(r"(?:SUITE|STE|UNIT|#) ?[A-Z0-9-]{1,6}(?: [A-Z0-9-]{1,6})?", re.I),
     re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){0,3}(?:CA|CALIFORNIA|[A-Z]{2}) \d{5}(?:-\d{4})?", re.I),
     re.compile(r"\d{5}(?:-\d{4})?"),
     re.compile(r"(?:PH|PHONE|TEL|FAX|F|T)?:? ?\(?\d{3}\)?[ -]?\d{3}-\d{4}", re.I),
@@ -904,6 +904,37 @@ _ADDRESS_PIECES = (
 _STATE_ZIP = _ADDRESS_PIECES[2]
 _BARE_NUMBER = re.compile(r"\d{1,6}")
 _CITY = re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){0,2}[A-Z][A-Z'-]{1,20}", re.I)
+# A city with its state and NO ZIP - "LYNWOOD, CA" or "LYNWOOD CA". Adam Flake flagged exactly that
+# on 2026-09-24, on a record whose titles the ZIP-anchored rules above had already been run past.
+# The abbreviation "CA" only, deliberately. A general two-letter "state" piece would also match a
+# credential such as "MD" or "PT", and the spelled-out state would take "STATE OF CALIFORNIA" - an
+# issuing body on DWC forms, not an address - which a replay over the live box caught removing on
+# five titles. A piece naming an organisation is never taken for a city, so "VALLEY MEDICAL GROUP,
+# CA" keeps its name.
+_STATE_ONLY = re.compile(r"CA")
+_CITY_STATE = re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){1,3}CA")
+# "M.D., LYNWOOD, CA. PR-2" splits into "D", ".", "", ", ", ... - removing the address can leave the
+# credential's own period next to the next separator. Collapsed after the rejoin.
+_DOUBLED_SEPARATOR = re.compile(r"([.,])[ \t]{0,4}[.,]")
+_ORGANISATION = re.compile(
+    r"\b(?:GROUP|MEDICAL|CENTERS?|CENTRE|CLINICS?|HOSPITAL|INSTITUTE|INC|LLC|ASSOCIATES|HEALTH"
+    + r"|IMAGING|RADIOLOGY|THERAPY|CARE|SERVICES|PHYSICIANS|ORTHOPA?EDICS?|CHIROPRACTIC|PARTNERS)\b",
+    re.I,
+)
+
+
+def _mark_city_state(pieces: list[tuple[str, str]], drop: list[bool]) -> None:
+    """Mark a city standing before a state (with or without its ZIP) as address, in place."""
+    for i, (_, raw) in enumerate(pieces):
+        piece = raw.strip()
+        if drop[i] or not i or _ORGANISATION.search(piece):
+            continue
+        nxt = pieces[i + 1][1].strip() if i + 1 < len(pieces) else ""
+        if _CITY.fullmatch(piece) and (_STATE_ZIP.fullmatch(nxt) or _STATE_ONLY.fullmatch(nxt)):
+            # Only a city can stand directly before a state.
+            drop[i] = drop[i + 1] = True
+        elif _CITY_STATE.fullmatch(piece):
+            drop[i] = True
 
 
 def without_address(title: str) -> str:
@@ -916,11 +947,7 @@ def without_address(title: str) -> str:
     # parts alternates piece, separator, piece, ... ; pair each piece with the separator before it.
     pieces = [(parts[i - 1] if i else "", parts[i]) for i in range(0, len(parts), 2)]
     drop = [any(p.fullmatch(piece.strip()) for p in _ADDRESS_PIECES) for _, piece in pieces]
-    for i in range(len(pieces) - 1):
-        nxt = pieces[i + 1][1].strip()
-        if not drop[i] and _CITY.fullmatch(pieces[i][1].strip()) and _STATE_ZIP.fullmatch(nxt):
-            # Only a city can stand directly before a state and ZIP.
-            drop[i] = drop[i + 1] = True
+    _mark_city_state(pieces, drop)
     for i in range(1, len(pieces)):
         if drop[i - 1] and _BARE_NUMBER.fullmatch(pieces[i][1].strip()):
             # `STE. 100` splits on its own period and leaves the number behind.
@@ -930,7 +957,7 @@ def without_address(title: str) -> str:
     kept = [(sep, piece) for (sep, piece), gone in zip(pieces, drop, strict=True) if not gone]
     if kept and pieces and drop[0]:
         kept[0] = ("", kept[0][1])
-    return "".join(sep + piece for sep, piece in kept).strip()
+    return _DOUBLED_SEPARATOR.sub(r"\1", "".join(sep + piece for sep, piece in kept)).strip()
 
 
 # ONE spelling per provider across a record. Titles are generated one sub-document at a time, each

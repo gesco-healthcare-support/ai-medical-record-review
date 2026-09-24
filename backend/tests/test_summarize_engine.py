@@ -2215,6 +2215,47 @@ def test_a_title_loses_the_address_the_letterhead_prints(generated, expected):
     assert se._usable_title(generated, "ROW TITLE") == expected
 
 
+# Adam Flake, 2026-09-24, on a record already run past the ZIP-anchored rules: "some of the titles
+# say lynwood CA". A city with its state and no ZIP - in its own pieces or in one.
+@pytest.mark.parametrize(
+    ("generated", "expected"),
+    [
+        (
+            "JOHN Q. DOE, D.C., SPRINGFIELD, CA, PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)",
+            "JOHN Q. DOE, D.C. PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)",
+        ),
+        ("JOHN DOE, M.D., SPRINGFIELD, CA. PROGRESS NOTE", "JOHN DOE, M.D. PROGRESS NOTE"),
+        (
+            "JOHN DOE, D.C. VALLEY CHIROPRACTIC. SPRINGFIELD CA. PROGRESS REPORT",
+            "JOHN DOE, D.C. VALLEY CHIROPRACTIC. PROGRESS REPORT",
+        ),
+        (
+            "JOHN DOE, M.D., SUITE 105 B, SPRINGFIELD, CA 90262. PROGRESS REPORT",
+            "JOHN DOE, M.D. PROGRESS REPORT",
+        ),
+    ],
+)
+def test_a_city_and_state_without_a_zip_come_out_of_the_title(generated, expected):
+    """DEMONSTRATES the no-ZIP half, and that no doubled punctuation is left behind."""
+    assert se.without_address(generated) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # an issuing body on DWC forms, not an address - the replay caught the first cut taking it
+        "JANE ROE, M.D. STATE OF CALIFORNIA, DEPARTMENT OF INDUSTRIAL RELATIONS. RFA",
+        "JOHN DOE, P.A. STATE OF CALIFORNIA DWC FORM",
+        # an organisation is never taken for a city
+        "VALLEY MEDICAL GROUP, CA. MRI OF THE LUMBAR SPINE",
+        "CALIFORNIA HIGHWAY PATROL. JOB DESCRIPTION",
+    ],
+)
+def test_a_state_named_as_part_of_an_organisation_stays(title):
+    """GUARD: only a city standing before the abbreviation is an address."""
+    assert se.without_address(title) == title
+
+
 @pytest.mark.parametrize(
     "title",
     [
