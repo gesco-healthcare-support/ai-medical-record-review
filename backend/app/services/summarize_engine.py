@@ -15,7 +15,7 @@ import re
 from app.config import get_settings
 from app.errors import EmptyExtractionError, is_rate_limited
 from app.services.deposition_pages import transcript_page_offset
-from app.services.house_style import sentence_case_caps_runs
+from app.services.house_style import one_paragraph, sentence_case_caps_runs
 from app.services.llm import TextPart, get_provider
 from app.services.ocr import extract_pages_with_report
 from app.services.prompts import prompts
@@ -1496,6 +1496,8 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
             # The audit may reintroduce capitals while fixing something else, so the transform runs
             # over its output too - the verified text is what effective_text() delivers.
             verified_text = f"{doi_lead}{sentence_case_caps_runs(result['fixed_text'])}"
+            if not deposition:
+                verified_text = one_paragraph(verified_text)
         verify_issues = result["issues"]
         # The title is corrected INDEPENDENTLY of the body, including when the body rewrite was
         # rejected above: effective_title() and effective_text() fall back separately, and a wrong
@@ -1626,6 +1628,10 @@ def summarize_row(
     # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
     summary = sentence_case_caps_runs(summary)
+    # One paragraph, whatever the model sent - see `house_style.one_paragraph`. Not a deposition,
+    # which is grouped by page on purpose.
+    if not deposition:
+        summary = one_paragraph(summary)
 
     # The row IS the source of truth for the injury date. It was read once, per sub-document and in
     # isolation, at the END of segmentation (see segment_engine.run_segmentation), so a reviewer who

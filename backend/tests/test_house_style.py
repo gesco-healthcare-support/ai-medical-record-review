@@ -75,3 +75,87 @@ def test_the_number_in_a_measurement_is_never_touched():
     out = recase(given)
     assert "5 degrees" in out
     assert "Left ankle dorsiflexion" in out
+
+
+# --- one paragraph --------------------------------------------------------------------------
+# Adam Flake, 2026-09-24: "some strange formatting happening in the 06/18/26 PT evaluation report".
+# The delivered body broke the one-paragraph rule with line breaks and headings that introduced
+# nothing; the reviewer's own correction ran the content together inline with those headings gone.
+from app.services.house_style import one_paragraph  # noqa: E402
+
+_PT_EVAL_SHAPE = (
+    "**DOI**: 01/02/2026. **Subjective Findings**: pain 6/10.\n"
+    "**Objective Findings**:\n"
+    "**Range of Motion**:\n"
+    "Lumbar: flexion 50; extension 10\n"
+    "Cervical: within limits.\n"
+    "- Grip 40 lbs\n"
+    "- Pinch 12 lbs\n"
+    "**Diagnosis**: lumbar strain.\n"
+    "**Assessment**:"
+)
+
+
+def test_a_multi_line_summary_becomes_one_paragraph():
+    """DEMONSTRATES the fix on the reported shape: no line break survives, list markers go with
+    their break, and each join is punctuated so two items do not run into one clause."""
+    flat = one_paragraph(_PT_EVAL_SHAPE)
+    assert "\n" not in flat
+    assert flat == (
+        "**DOI**: 01/02/2026. **Subjective Findings**: pain 6/10. **Range of Motion**: "
+        "Lumbar: flexion 50; extension 10; Cervical: within limits. Grip 40 lbs; Pinch 12 lbs. "
+        "**Diagnosis**: lumbar strain."
+    )
+
+
+def test_a_heading_that_introduces_nothing_is_removed():
+    """DEMONSTRATES the empty-heading half, including one at the very end."""
+    flat = one_paragraph(_PT_EVAL_SHAPE)
+    assert "**Objective Findings**" not in flat
+    assert "**Assessment**" not in flat
+    assert one_paragraph("**Plan**: PT. **Work Status**:") == "**Plan**: PT."
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "**DOI**: 01/02/2026. **Diagnoses**: strain. **Treatment Plan**: PT twice weekly.",
+        "A single paragraph with no headings at all.",
+        "**Impression**: No acute fracture.",
+        "",
+    ],
+)
+def test_a_conforming_summary_passes_through_unchanged(text):
+    """GUARD: a summary already in house style is returned byte for byte."""
+    assert one_paragraph(text) == text
+
+
+def _stored(**fields):
+    from app.models import Summary
+
+    base = dict(title="A REPORT", text="", row_start=1, row_end=2, row_category="5")
+    base.update(fields)
+    return Summary(**base)
+
+
+def test_the_export_flattens_a_summary_stored_before_the_fix():
+    """DEMONSTRATES the export half: a multi-line body already on the box ships as one paragraph,
+    so stored records do not need re-running."""
+    from app.api.documents import _export_title_and_text
+
+    _, text = _export_title_and_text(_stored(text=_PT_EVAL_SHAPE))
+    assert "\n" not in text
+    assert "**Objective Findings**" not in text
+
+
+def test_the_export_leaves_a_deposition_and_a_reviewer_edit_alone():
+    """GUARD: a deposition is grouped by page on purpose, and a reviewer's own edit is theirs."""
+    from app.api.documents import _export_title_and_text
+
+    grouped = "Pages 1-3: testimony.\nPages 4-6: more testimony."
+    _, text = _export_title_and_text(_stored(text=grouped, row_category="9"))
+    assert text == grouped
+    _, text = _export_title_and_text(
+        _stored(text="Raw.\nBody.", edited_text="Line one.\nLine two.")
+    )
+    assert text == "Line one.\nLine two."
