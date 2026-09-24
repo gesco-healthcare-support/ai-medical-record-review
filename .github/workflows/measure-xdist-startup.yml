@@ -1,0 +1,83 @@
+name: measure-xdist-startup
+
+# THROWAWAY - never merged. Backlog item 3: where does the backend job's ~49s of startup under
+# pytest-xdist go? CI logs cannot say today, because pytest's stdout is block-buffered off a tty and
+# the header, "created: N/N workers" and "N workers [M items]" all flush in one instant.
+# PYTHONUNBUFFERED=1 makes each line flush as it is written, so GitHub's per-line timestamps split the
+# startup into controller boot, worker boot and collection. Four variants, each on its own runner:
+# serial, and 2, 3 and 4 workers. Everything else mirrors ci.yml's backend job exactly.
+# Triggers only on pushes to its own branch, so it can never run on main.
+on:
+  push:
+    branches: [ci/measure-xdist-startup]
+
+jobs:
+  backend-startup:
+    name: backend startup (${{ matrix.workers }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workers: ["serial", "2", "3", "4"]
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mrr
+          POSTGRES_PASSWORD: mrr_dev_only
+          POSTGRES_DB: mrr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mrr -d mrr"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install deps (core + docs; no torch)
+        run: uv sync --extra docs
+
+      - name: Migrate + run tests with coverage (unbuffered, timed)
+        env:
+          DATABASE_URL: postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr
+          SECRET_KEY: ci-test-secret
+          SECURITY_PASSWORD_SALT: ci-test-salt
+          ENVIRONMENT: dev
+          PYTHONUNBUFFERED: "1"
+          WORKERS: ${{ matrix.workers }}
+        run: |
+          uv run alembic upgrade head
+          echo "MARK pytest-start"
+          if [ "$WORKERS" = "serial" ]; then
+            uv run pytest --cov=app --cov-branch --cov-report=xml --cov-report=term-missing
+          else
+            uv run pytest -n "$WORKERS" --dist loadfile --cov=app --cov-branch --cov-report=xml --cov-report=term-missing
+          fi
+          echo "MARK pytest-end"
+
+      # Warm: the run above already compiled the bytecode, so this is the import alone, not a cold start.
+      - name: App import time (warm)
+        env:
+          DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci
+          SECRET_KEY: ci-import-smoke
+          SECURITY_PASSWORD_SALT: ci-import-smoke
+        run: uv run python -X importtime -c "import app.main" 2>&1 | grep -E '\|\s+app\.main$'
