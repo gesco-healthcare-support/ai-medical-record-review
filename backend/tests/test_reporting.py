@@ -541,8 +541,12 @@ def test_both_renderers_agree_that_the_summary_intro_is_bold():
     assert word_is_bold, "both renderers agree, but on NOT bold - the intended style is bold"
 
 
-def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
-    """`reporting.py` draws a distinction the PDF collapsed: four explicit LEFT assignments for
+def test_both_renderers_justify_the_opening_paragraph_and_the_bodies():
+    """The opening paragraph is JUSTIFIED in both renderers - the reviewers sent the correct form
+    on 2026-09-24, flush on both edges, beside ours. What #268 established still holds and is what
+    this pins: the two renderers must AGREE about it. History of that fix, kept below.
+
+    `reporting.py` drew a distinction the PDF collapsed: four explicit LEFT assignments for
     the letter paragraphs against one explicit JUSTIFY for the table bodies. `linked_pdf` set a
     blanket `p { text-align: justify }`, so the intro sentence shipped STRETCHED in the .pdf and
     ragged in the .docx - measured 14.5pt apart at the right edge of its first line.
@@ -552,7 +556,7 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
     other three were invisible. It is the third defect in this one sentence after #115 and #158.
 
     Geometry rather than CSS text, because the CSS is the thing under test: the justified bodies
-    reach the measure, so a ragged letter paragraph must fall SHORT of it. That is page-size
+    reach the measure, so a justified letter paragraph must reach it too. That is page-size
     independent, which a hardcoded x-coordinate would not be.
     """
     linked_pdf = pytest.importorskip("app.services.linked_pdf")
@@ -568,7 +572,7 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
         }
     ]
 
-    # Word: the letter paragraph is LEFT, the body cell is JUSTIFY.
+    # Word: the opening paragraph and the body cell are both JUSTIFY.
     doc = build_mrr_document(
         entries,
         num_pages=259,
@@ -579,7 +583,7 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
     )
     word_letter = _paragraph_named(doc, intro).alignment
     word_body = doc.tables[0].rows[0].cells[1].paragraphs[0].alignment
-    assert word_letter == WD_PARAGRAPH_ALIGNMENT.LEFT
+    assert word_letter == WD_PARAGRAPH_ALIGNMENT.JUSTIFY
     assert word_body == WD_PARAGRAPH_ALIGNMENT.JUSTIFY
 
     # PDF: same distinction, read off the rendered page.
@@ -612,8 +616,8 @@ def test_both_renderers_leave_the_letter_ragged_and_justify_only_the_bodies():
     assert body, "no wrapped body line to read the measure from"
     letter_right = intro_line["bbox"][2]
     body_right = max(line["bbox"][2] for line in body)  # justified, so this IS the measure
-    assert letter_right < body_right - 2, (
-        "the .pdf stretches the intro sentence to the measure while the .docx leaves it ragged "
+    assert abs(letter_right - body_right) <= 2, (
+        "the .docx justifies the opening paragraph but the .pdf leaves it ragged "
         f"(letter right edge {letter_right:.1f}, justified measure {body_right:.1f})"
     )
 

@@ -13,6 +13,7 @@ import pytest
 
 from tests.conftest import (
     _compose_postgres_ports,
+    _worker_database_url,
     _worker_email_prefix,
     _worker_redis_url,
     redis_port_is_shared,
@@ -59,10 +60,11 @@ def test_dev_password_is_never_overridden_by_the_env_file():
     assert ((env_pw if reads_env_password else "") or default_pw) == "mrr_dev_only"
 
 
-# Parallel runs (pytest-xdist in CI) share ONE Postgres and ONE Redis. Two things would otherwise let a
-# worker destroy another worker's test data mid-test: the cleanup deletes every user whose email starts
-# with the prefix, and the queue tests empty and count whole queues. Each worker therefore gets its own
-# prefix and its own Redis database, and a serial run keeps exactly what it had.
+# Parallel runs (pytest-xdist in CI) share ONE Postgres server and ONE Redis. Three things would otherwise
+# let a worker disturb another worker's test data mid-test: the cleanup deletes every user whose email
+# starts with the prefix, the queue tests empty and count whole queues, and some code reads a WHOLE table
+# (recover_orphans sweeps every active job). Each worker therefore gets its own prefix, its own Redis
+# database and its own Postgres database, and a serial run keeps exactly what it had.
 
 
 def test_a_serial_run_keeps_the_original_email_prefix():
@@ -103,3 +105,25 @@ def test_an_unrecognised_worker_id_is_refused_rather_than_guessed():
     # Guessing would put two workers on one database - the collision this exists to prevent.
     with pytest.raises(RuntimeError, match="PYTEST_XDIST_WORKER"):
         _worker_redis_url("redis://localhost:6379/0", {"PYTEST_XDIST_WORKER": "master"})
+
+
+_DB_URL = "postgresql+psycopg://mrr:dev-only-pw@localhost:5432/mrr?connect_timeout=5"
+
+
+def test_a_serial_run_keeps_the_original_database_url():
+    assert _worker_database_url(_DB_URL, {}) == _DB_URL, "a serial run changed its database URL"
+
+
+def test_each_worker_gets_its_own_database():
+    gw0 = _worker_database_url(_DB_URL, {"PYTEST_XDIST_WORKER": "gw0"})
+    # Only the database name changes - credentials, host, port and connect_timeout are kept.
+    assert gw0 == "postgresql+psycopg://mrr:dev-only-pw@localhost:5432/mrr_gw0?connect_timeout=5", (
+        "worker gw0 is not on its own database"
+    )
+    gw3 = _worker_database_url(_DB_URL, {"PYTEST_XDIST_WORKER": "gw3"})
+    assert gw3.split("?")[0].endswith("/mrr_gw3"), "worker gw3 is not on its own database"
+
+
+def test_an_unrecognised_worker_id_gets_no_database_guessed_for_it():
+    with pytest.raises(RuntimeError, match="PYTEST_XDIST_WORKER"):
+        _worker_database_url(_DB_URL, {"PYTEST_XDIST_WORKER": "master"})
