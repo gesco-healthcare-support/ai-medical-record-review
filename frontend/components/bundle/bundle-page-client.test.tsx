@@ -218,6 +218,22 @@ describe("BundlePageClient error handling", () => {
     expect(firm).toHaveValue("Acme");
   });
 
+  // A per-keystroke trim would turn "a b" into "ab" - see the same tests in header-bar.test.tsx.
+  // Evaluation type is the one field that ships prefilled, so it alone is cleared first.
+  it.each<[string, boolean]>([
+    ["Patient name", false],
+    ["Evaluation type (QME / AME)", true],
+    ["Attorney law firm", false],
+  ])("keeps a space typed into the export field %s", async (label, startsPrefilled) => {
+    const user = userEvent.setup();
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+    const box = await screen.findByLabelText(label);
+    if (startsPrefilled) await user.clear(box);
+    await user.type(box, "a b");
+    expect(box).toHaveValue("a b");
+  });
+
   it("shows the empty state rather than the table when nothing matches the preset", async () => {
     // The empty-vs-table branch was INERT: rendering the table unconditionally left every other test
     // in this file green. Pinned here because the matches card is about to move into its own

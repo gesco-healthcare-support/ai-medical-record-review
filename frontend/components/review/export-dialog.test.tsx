@@ -248,6 +248,21 @@ describe("ExportDialog page numbers", () => {
     expect(sent.lawfirm).toBe("Acme");
   });
 
+  // A per-keystroke trim would turn "a b" into "ab" - see the same tests in header-bar.test.tsx.
+  // Evaluation type is the one box that ships prefilled, so it alone is cleared first.
+  it.each<[string, boolean]>([
+    ["Patient name", false],
+    ["Evaluation type (QME / AME)", true],
+    ["Attorney law firm", false],
+  ])("keeps a space typed into %s", async (label, startsPrefilled) => {
+    const user = userEvent.setup();
+    open();
+    const box = screen.getByLabelText(label);
+    if (startsPrefilled) await user.clear(box);
+    await user.type(box, "a b");
+    expect(box).toHaveValue("a b");
+  });
+
   it("closes without exporting when Cancel is used", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetch();
