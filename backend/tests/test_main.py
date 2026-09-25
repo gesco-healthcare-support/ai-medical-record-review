@@ -152,6 +152,39 @@ async def test_a_failing_download_sweep_does_not_stop_the_app_serving(monkeypatc
             assert (await client.get("/health")).status_code == 200
 
 
+async def test_the_api_emits_app_info_lines_when_nothing_configured_logging(monkeypatch, capsys):
+    """WHEN the API starts with no logging configured, THE SYSTEM SHALL send app INFO lines to stdout (#390).
+
+    Measured 2026-09-25: under uvicorn's own default config the root logger is WARNING with no handler, so
+    every `app.*` INFO line the API wrote was dropped in production - the two startup counts above and every
+    download's outcome line included. The worker already configures this (`app/worker/__main__.py`).
+
+    The root logger's handlers are taken off and put back IN PLACE rather than swapped for a new list:
+    pytest attached its own capture handler to that list for this test and removes it from the same list
+    afterwards, so replacing the list would leave that handler behind for every later test."""
+    monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", lambda: None)
+    monkeypatch.setattr("app.worker.recovery.recover_orphans", lambda _session: 0)
+    monkeypatch.setattr("app.services.downloads.sweep", lambda: 0)
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    for handler in saved_handlers:
+        root.removeHandler(handler)
+    root.setLevel(logging.WARNING)
+    try:
+        async with LifespanManager(main.app):
+            logging.getLogger("app.probe").info("an app INFO line")
+        level_after_start = root.level
+    finally:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+        for handler in saved_handlers:
+            root.addHandler(handler)
+        root.setLevel(saved_level)
+
+    assert level_after_start == logging.INFO
+    assert "INFO app.probe an app INFO line" in capsys.readouterr().out
+
+
 async def test_an_unauthenticated_browser_navigation_becomes_a_redirect_to_login():
     """WHEN AuthRedirect propagates, THE SYSTEM SHALL answer 302 to /login.
 

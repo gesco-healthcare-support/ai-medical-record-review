@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
-import { downloadFile } from "@/lib/download";
+import { DOWNLOAD_INTERRUPTED, DOWNLOAD_NOT_PREPARED, downloadFile } from "@/lib/download";
 import { humanizeError } from "@/lib/errors";
 
 /** #389: an export's POST answers with WHERE to download the file it built, and the browser fetches that
@@ -30,6 +30,8 @@ function respond(status: number, body?: unknown) {
 beforeEach(() => {
   clicked = [];
   blob.mockClear();
+  // Every failure path logs (#390); silenced here so the run stays readable, asserted where it matters.
+  vi.spyOn(console, "error").mockImplementation(() => {});
   Object.defineProperty(URL, "createObjectURL", { value: vi.fn(() => "blob:x"), configurable: true });
   vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
     this: HTMLAnchorElement,
@@ -103,6 +105,72 @@ describe("downloadFile", () => {
     expect(clicked).toEqual([]);
   });
 
+  it("names an answer cut off after its headers as interrupted, not 'Export failed.'", async () => {
+    // #390: headers arrived, then the body could not be read - the case that used to fall through to the
+    // dialog's generic fallback and hide the cause.
+    const cut = {
+      status: 200,
+      ok: true,
+      headers: { get: (name: string) => (name.toLowerCase() === "content-length" ? "120" : null) },
+      blob,
+      json: async () => {
+        throw new TypeError("network error");
+      },
+    } as unknown as Response;
+    vi.stubGlobal("fetch", vi.fn(async () => cut));
+
+    const err = await downloadFile("/documents/doc-1/export", {}, "x").catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(humanizeError(err, { fallback: "Export failed." })).toBe(DOWNLOAD_INTERRUPTED);
+    expect(clicked).toEqual([]);
+    expect(console.error).toHaveBeenCalledWith("download failed", {
+      phase: "prepare",
+      status: 200,
+      expectedBytes: 120,
+    });
+  });
+
+  it("names a bare 502 or 504 from the proxy instead of 'Export failed.'", async () => {
+    // nginx's own error page is HTML, so there is no server sentence to show.
+    for (const status of [502, 504]) {
+      const html = {
+        status,
+        ok: false,
+        headers: { get: () => null },
+        json: async () => {
+          throw new SyntaxError("Unexpected token <");
+        },
+      } as unknown as Response;
+      vi.stubGlobal("fetch", vi.fn(async () => html));
+
+      const err = await downloadFile("/documents/doc-1/export/zip", {}, "x").catch((e: unknown) => e);
+
+      expect(humanizeError(err, { fallback: "Export failed." })).toBe(DOWNLOAD_NOT_PREPARED);
+    }
+  });
+
+  it("keeps the server's own sentence on a 502 that has one", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => respond(502, { detail: "The AI service did not answer." })));
+
+    const err = await downloadFile("/documents/doc-1/export", {}, "x").catch((e: unknown) => e);
+
+    expect(humanizeError(err, { fallback: "Export failed." })).toBe("The AI service did not answer.");
+  });
+
+  it("logs each failure's phase and status to the console, and never the file's name", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => respond(422, { detail: "One document could not be read." })));
+
+    await downloadFile("/documents/doc-1/export", {}, "fallback.docx").catch(() => undefined);
+
+    expect(console.error).toHaveBeenCalledWith("download failed", {
+      phase: "prepare",
+      status: 422,
+      expectedBytes: null,
+    });
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain(PREPARED.filename);
+  });
+
   it("reports a transport failure as status 0", async () => {
     vi.stubGlobal(
       "fetch",
@@ -115,5 +183,10 @@ describe("downloadFile", () => {
 
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(0);
+    expect(console.error).toHaveBeenCalledWith("download failed", {
+      phase: "prepare",
+      status: 0,
+      expectedBytes: null,
+    });
   });
 });
