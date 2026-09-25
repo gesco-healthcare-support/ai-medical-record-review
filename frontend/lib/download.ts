@@ -22,11 +22,16 @@
  * manager, which streams it straight to disk.
  */
 
-import { ApiError, errorFromResponse, signedOut } from "@/lib/api";
+import { ApiError, apiFetch, errorFromResponse, signedOut } from "@/lib/api";
 import { lacksServerMessage } from "@/lib/errors";
 
-/** What an export POST answers with: the prepared file's address, and the name to save it under. */
-type PreparedDownload = { url: string; filename?: string };
+/** What an export POST answers with: the prepared file's token and address, and the name to save it under.
+ *  Returned to the caller so the page can watch the download it handed to the browser (#390). */
+export type PreparedDownload = { token: string; url: string; filename?: string; size?: number };
+
+/** Where a handed-over download has got to, as the server saw it (#390): the page cannot see it itself. */
+export type DownloadState = "waiting" | "downloading" | "interrupted" | "complete" | "expired";
+export type DownloadStatus = { state: DownloadState; size: number };
 
 /** #390: the build answer's headers arrived but its body could not be read. */
 export const DOWNLOAD_INTERRUPTED = "The download was interrupted before it finished. Please try again.";
@@ -50,14 +55,15 @@ function reportFailure(status: number, resp?: Response): void {
  * POST `body` to `/api${path}`, then hand the file it prepared to the browser as a native download.
  *
  * Throws `ApiError` on every failure - status 0 for a transport failure, 401 after redirecting, the server's
- * own message otherwise - so a caller can hand the error straight to `humanizeError`. Resolves once the
- * download has been handed to the browser; the transfer itself belongs to the browser from there.
+ * own message otherwise - so a caller can hand the error straight to `humanizeError`. Resolves with the
+ * prepared download once it has been handed to the browser; the transfer itself belongs to the browser
+ * from there, and the caller can watch it with `fetchDownloadStatus`.
  */
 export async function downloadFile(
   path: string,
   body: unknown,
   fallbackName: string,
-): Promise<void> {
+): Promise<PreparedDownload> {
   let resp: Response;
   try {
     resp = await fetch(`/api${path}`, {
@@ -96,4 +102,11 @@ export async function downloadFile(
   link.href = prepared.url;
   link.download = prepared.filename || fallbackName;
   link.click();
+  return prepared;
+}
+
+/** The server's view of a download handed to the browser: `{state, size}`, never the filename (#390). */
+export function fetchDownloadStatus(prepared: PreparedDownload): Promise<DownloadStatus> {
+  // `url` is the browser's address (`/api/...`); apiFetch adds the `/api` itself.
+  return apiFetch<DownloadStatus>(`${prepared.url.replace(/^\/api/, "")}/status`);
 }

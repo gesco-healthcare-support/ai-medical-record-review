@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, FileText } from "lucide-react";
 import { useDocuments } from "@/hooks/use-documents";
+import { type DownloadWatch, useDownloadWatch } from "@/hooks/use-download-watch";
+import type { PreparedDownload } from "@/lib/download";
 import { extractHeader, getDocument } from "@/lib/review-api";
 import { humanizeError } from "@/lib/errors";
 import {
@@ -143,6 +145,7 @@ function BuildAside({
   summarize,
   pdfBusy,
   sumBusy,
+  watching,
   result,
 }: Readonly<{
   matchCount: number;
@@ -160,9 +163,11 @@ function BuildAside({
   summarize: () => void;
   pdfBusy: boolean;
   sumBusy: boolean;
+  /** A handed-over download is still being watched (#390): no second one until it is settled. */
+  watching: boolean;
   result: BundleResult;
 }>) {
-  const busy = matchCount === 0 || pdfBusy || sumBusy;
+  const busy = matchCount === 0 || pdfBusy || sumBusy || watching;
   return (
     <aside className="hd-card bundle-card">
       <div>
@@ -268,20 +273,29 @@ async function runBundleDownload(
   id: string | null,
   setBusy: (busy: boolean) => void,
   setResult: (result: BundleResult) => void,
-  labels: { pending: string; ok: string; failure: string },
-  action: (id: string) => Promise<void>,
-) {
-  if (!id) return;
+  labels: { pending: string; failure: string },
+  action: (id: string) => Promise<PreparedDownload>,
+): Promise<PreparedDownload | null> {
+  if (!id) return null;
   setBusy(true);
   setResult({ kind: "", msg: labels.pending });
   try {
-    await action(id);
-    setResult({ kind: "ok", msg: labels.ok });
+    // Resolving means the file was handed to the browser, not that it arrived: the caller watches it and
+    // the result line reports how it ended (#390).
+    return await action(id);
   } catch (err) {
     setResult({ kind: "err", msg: errMessage(err, labels.failure) });
+    return null;
   } finally {
     setBusy(false);
   }
+}
+
+/** The result line's style for what the watched download is doing. */
+function resultKind(tone: DownloadWatch["tone"]): BundleResult["kind"] {
+  if (tone === "ok") return "ok";
+  if (tone === "err") return "err";
+  return "";
 }
 
 export function BundlePageClient({
@@ -310,6 +324,12 @@ export function BundlePageClient({
   const [autoFilling, setAutoFilling] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [sumBusy, setSumBusy] = useState(false);
+  const [handedOver, setHandedOver] = useState<PreparedDownload | null>(null);
+  const watch = useDownloadWatch(handedOver);
+
+  useEffect(() => {
+    if (handedOver && watch.message) setResult({ kind: resultKind(watch.tone), msg: watch.message });
+  }, [handedOver, watch.message, watch.tone]);
   const [result, setResult] = useState<BundleResult>({ kind: "", msg: "" });
 
   // Reuse the record's persisted header: prefill the export fields when they are still empty, so a
@@ -377,6 +397,7 @@ export function BundlePageClient({
 
   function chooseAnother() {
     setSelectedId(null);
+    setHandedOver(null);
     setResult({ kind: "", msg: "" });
     setPatient("");
     setDob("");
@@ -405,30 +426,25 @@ export function BundlePageClient({
     }
   }
 
-  function downloadPdf() {
-    return runBundleDownload(
+  async function downloadPdf() {
+    setHandedOver(null);
+    const prepared = await runBundleDownload(
       selectedId,
       setPdfBusy,
       setResult,
-      {
-        pending: "Combining pages...",
-        ok: "Combined PDF downloaded.",
-        failure: "The download failed.",
-      },
+      { pending: "Combining pages...", failure: "The download failed." },
       (id) => downloadBundlePdf(id, config),
     );
+    if (prepared) setHandedOver(prepared);
   }
 
-  function summarize() {
-    return runBundleDownload(
+  async function summarize() {
+    setHandedOver(null);
+    const prepared = await runBundleDownload(
       selectedId,
       setSumBusy,
       setResult,
-      {
-        pending: "Preparing report...",
-        ok: "Word report downloaded.",
-        failure: "The report failed.",
-      },
+      { pending: "Preparing report...", failure: "The report failed." },
       (id) =>
         downloadBundleSummary(id, config, {
           patientName: patient,
@@ -437,6 +453,7 @@ export function BundlePageClient({
           lawfirm: firm,
         }),
     );
+    if (prepared) setHandedOver(prepared);
   }
 
   type BundleSlug = (typeof BUNDLE_TABS)[number]["value"];
@@ -621,6 +638,7 @@ export function BundlePageClient({
                   summarize={summarize}
                   pdfBusy={pdfBusy}
                   sumBusy={sumBusy}
+                  watching={watch.watching}
                   result={result}
                 />
               </div>

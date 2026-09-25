@@ -6,6 +6,19 @@ import type { ReactNode } from "react";
 import type { Row } from "@/lib/types";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// The watch's own timing is covered by hooks/use-download-watch.test.tsx. Here a handed-over download reads
+// as finished unless a test says otherwise, so these tests check only what the page does with the watch.
+vi.mock("@/hooks/use-download-watch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-download-watch")>();
+  return {
+    ...actual,
+    useDownloadWatch: vi.fn((prepared: unknown) =>
+      prepared
+        ? { message: actual.COMPLETE, tone: "ok", watching: false }
+        : { message: "", tone: "info", watching: false },
+    ),
+  };
+});
 vi.mock("@/hooks/use-documents", () => ({
   useDocuments: () => ({
     data: [
@@ -68,6 +81,7 @@ vi.mock("@/lib/review-api", () => ({
 import { ApiError } from "@/lib/api";
 import { getDocument } from "@/lib/review-api";
 import { BundlePageClient } from "@/components/bundle/bundle-page-client";
+import { COMPLETE, DOWNLOADING, useDownloadWatch } from "@/hooks/use-download-watch";
 
 function withClient(ui: ReactNode) {
   const client = new QueryClient({
@@ -77,6 +91,9 @@ function withClient(ui: ReactNode) {
     <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
   );
 }
+
+/** What a bundle POST answers with since #389; synthetic. */
+const PREPARED = { token: "tok", url: "/api/documents/b1/downloads/tok", filename: "b.pdf", size: 4 };
 
 const CONFIG = {
   label: "Diagnostic & Operative",
@@ -370,31 +387,54 @@ describe("BundlePageClient error handling", () => {
 /** The failure path above was covered; the success path was not, so nothing pinned that a finished
  *  download tells the reviewer it finished, or that the record id and bundle config reach the API. */
 describe("BundlePageClient success path", () => {
+  it("keeps both downloads off while a handed-over download is being watched (#390)", async () => {
+    const user = userEvent.setup();
+    const watch = vi.mocked(useDownloadWatch);
+    const original = watch.getMockImplementation();
+    watch.mockImplementation((prepared) =>
+      prepared
+        ? { message: DOWNLOADING, tone: "info", watching: true }
+        : { message: "", tone: "info", watching: false },
+    );
+    try {
+      downloadBundlePdf.mockResolvedValue(PREPARED);
+      withClient(<BundlePageClient config={CONFIG} />);
+      await user.click(await screen.findByRole("button", { name: "Select" }));
+      await user.click(await screen.findByRole("button", { name: /Download combined PDF/i }));
+
+      expect(await screen.findByText(DOWNLOADING)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Download combined PDF/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /Summarize to Word/i })).toBeDisabled();
+    } finally {
+      if (original) watch.mockImplementation(original);
+    }
+  });
+
+  // CHANGED EXPECTATION (#390), deliberately: these said "Combined PDF downloaded." / "Word report
+  // downloaded." the moment the link was handed to the browser - before anything had arrived. The line now
+  // reports what the server saw happen to the download, so "Download complete." means it finished.
   it("confirms a finished combined-PDF download", async () => {
     const user = userEvent.setup();
-    downloadBundlePdf.mockResolvedValue(undefined);
+    downloadBundlePdf.mockResolvedValue(PREPARED);
     withClient(<BundlePageClient config={CONFIG} />);
     await user.click(await screen.findByRole("button", { name: "Select" }));
     await user.click(
       await screen.findByRole("button", { name: /Download combined PDF/i }),
     );
-    expect(
-      await screen.findByText(/Combined PDF downloaded/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(COMPLETE)).toBeInTheDocument();
     expect(downloadBundlePdf).toHaveBeenCalledWith("b1", CONFIG);
+    expect(vi.mocked(useDownloadWatch)).toHaveBeenLastCalledWith(PREPARED);
   });
 
   it("sends the header fields with the Word report and confirms it", async () => {
     const user = userEvent.setup();
-    downloadBundleSummary.mockResolvedValue(undefined);
+    downloadBundleSummary.mockResolvedValue(PREPARED);
     withClient(<BundlePageClient config={CONFIG} />);
     await user.click(await screen.findByRole("button", { name: "Select" }));
     await user.click(
       await screen.findByRole("button", { name: /Summarize to Word/i }),
     );
-    expect(
-      await screen.findByText(/Word report downloaded/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(COMPLETE)).toBeInTheDocument();
     expect(downloadBundleSummary).toHaveBeenCalledWith(
       "b1",
       CONFIG,
