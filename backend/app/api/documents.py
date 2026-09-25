@@ -1721,6 +1721,12 @@ def _zip_filename(document: Document) -> str:
     return _deliverable_filename(document, "", "zip", fallback="record")
 
 
+# The 503 `_offer_download` raises, as every export route documents it. One constant, not a copy per route.
+_DOWNLOAD_STORE_UNAVAILABLE = {
+    "description": "The download store is unavailable, so the file could not be prepared."
+}
+
+
 def _offer_download(
     content: bytes, media_type: str, filename: str, document: Document, user: User
 ) -> dict:
@@ -1986,7 +1992,10 @@ def _record_accounting(session: Session, document: Document):
 
 @router.post(
     "/{document_id}/export",
-    responses={409: {"description": "There are no summaries to export yet."}},
+    responses={
+        409: {"description": "There are no summaries to export yet."},
+        503: _DOWNLOAD_STORE_UNAVAILABLE,
+    },
 )
 def export_document(
     payload: ExportPayload | None = None,
@@ -2002,7 +2011,10 @@ def export_document(
 
 @router.post(
     "/{document_id}/export/pdf",
-    responses={409: {"description": "There are no summaries to export yet."}},
+    responses={
+        409: {"description": "There are no summaries to export yet."},
+        503: _DOWNLOAD_STORE_UNAVAILABLE,
+    },
 )
 def export_document_pdf(
     payload: ExportPayload | None = None,
@@ -2018,7 +2030,7 @@ def export_document_pdf(
     return _offer_download(pdf_bytes, _PDF_MEDIA_TYPE, _linked_filename(document), document, user)
 
 
-@router.post("/{document_id}/export/memo")
+@router.post("/{document_id}/export/memo", responses={503: _DOWNLOAD_STORE_UNAVAILABLE})
 def export_document_memo(
     payload: ExportPayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -2046,7 +2058,10 @@ def export_document_memo(
 
 @router.post(
     "/{document_id}/export/zip",
-    responses={409: {"description": "There are no summaries to export yet."}},
+    responses={
+        409: {"description": "There are no summaries to export yet."},
+        503: _DOWNLOAD_STORE_UNAVAILABLE,
+    },
 )
 def export_document_zip(
     payload: ExportZipPayload | None = None,
@@ -2094,10 +2109,11 @@ def export_document_zip(
 
 @router.post(
     "/{document_id}/bundle/pdf",
-    # Both codes come from `_matched_rows`, which this handler calls.
+    # 400 and 409 come from `_matched_rows`, which this handler calls; 503 from `_offer_download`.
     responses={
         400: {"description": "The category list is empty."},
         409: {"description": "No sub-document in this record matches those categories."},
+        503: _DOWNLOAD_STORE_UNAVAILABLE,
     },
 )
 def bundle_pdf(
