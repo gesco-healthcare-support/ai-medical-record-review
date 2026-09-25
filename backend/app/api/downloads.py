@@ -39,15 +39,58 @@ logger = logging.getLogger(__name__)
 DOWNLOADS_UNAVAILABLE = "Downloads are unavailable right now. Please try again."
 
 
+class _Transfer:
+    """One GET as it is sent: its status, the size it declared, the body bytes sent, whether the last chunk
+    has gone, and whether the browser left before it did."""
+
+    def __init__(self, send: Send) -> None:
+        self._send = send
+        self.status: int | None = None
+        self.expected: int | None = None
+        self.sent = 0
+        self.finished = False
+        self.left_early = False
+
+    async def send(self, message: Message) -> None:
+        """Count what goes out, then send it."""
+        if message["type"] == "http.response.start":
+            self.status = message["status"]
+            headers = dict(message.get("headers", []))
+            if b"content-length" in headers:
+                self.expected = int(headers[b"content-length"])
+        elif message["type"] == "http.response.body":
+            self.sent += len(message.get("body", b""))
+            # Set BEFORE the send: the last chunk's send is what makes `receive()` report completion.
+            self.finished = not message.get("more_body", False)
+        await self._send(message)
+
+    async def watch_for_disconnect(self, receive: Receive, cancel_scope: anyio.CancelScope) -> None:
+        """Stop the send if the browser leaves before the last chunk. `receive()` also reports a disconnect once
+        the response is complete, so only one that comes first counts as leaving."""
+        message = await receive()
+        while message["type"] != "http.disconnect":
+            message = await receive()
+        if not self.finished:
+            self.left_early = True
+            cancel_scope.cancel()
+
+
+def _error_names(exc: BaseException) -> str:
+    """The error's TYPE names only - its message can hold a path, and a path holds the token. An anyio task
+    group wraps an error in an ExceptionGroup, so the names come from its members."""
+    if isinstance(exc, BaseExceptionGroup):
+        return ", ".join(sorted({_error_names(inner) for inner in exc.exceptions}))
+    return type(exc).__name__
+
+
 class _MeasuredFileResponse(FileResponse):
     """A `FileResponse` that logs what it delivered, and stops sending when the browser leaves (#390).
 
     Two facts about the stack make this necessary (read from the installed source, 2026-09-25): uvicorn's
     `send` returns SILENTLY once the client has gone, and starlette's `FileResponse` never listens for the
     disconnect - so a plain one reads the whole file into nothing and cannot tell a cut download from a whole
-    one. The disconnect arrives on `receive()`, which this watches in parallel, the way starlette's own
-    `StreamingResponse` does. `receive()` also reports a disconnect once the response is complete, so only one
-    that comes before the last chunk counts as the browser leaving."""
+    one. The disconnect arrives on `receive()`, which `_Transfer` watches in parallel, the way starlette's own
+    `StreamingResponse` does. One log line per GET: complete, interrupted, or failed (it raised)."""
 
     def __init__(self, path: str, *, document_id: str, token: str, **kwargs) -> None:
         super().__init__(path, **kwargs)
@@ -55,60 +98,32 @@ class _MeasuredFileResponse(FileResponse):
         self._token8 = token[:8]
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        progress = {"status": None, "expected": None, "sent": 0, "finished": False}
-        left_early = False
-
-        async def counting_send(message: Message) -> None:
-            if message["type"] == "http.response.start":
-                progress["status"] = message["status"]
-                for name, value in message.get("headers", []):
-                    if name.lower() == b"content-length":
-                        progress["expected"] = int(value)
-            elif message["type"] == "http.response.body":
-                progress["sent"] += len(message.get("body", b""))
-                # Set BEFORE the send: the last chunk's send is what makes `receive()` report completion.
-                progress["finished"] = not message.get("more_body", False)
-            await send(message)
-
+        transfer = _Transfer(send)
         started = time.monotonic()
-        async with anyio.create_task_group() as group:
+        try:
+            async with anyio.create_task_group() as group:
+                group.start_soon(transfer.watch_for_disconnect, receive, group.cancel_scope)
+                await super().__call__(scope, receive, transfer.send)
+                group.cancel_scope.cancel()
+        except (
+            Exception
+        ) as exc:  # not BaseException: a cancellation (a server shutdown) is not a failure
+            self._log(transfer, time.monotonic() - started, failure=_error_names(exc))
+            raise
+        self._log(transfer, time.monotonic() - started)
 
-            async def watch_for_disconnect() -> None:
-                nonlocal left_early
-                while True:
-                    message = await receive()
-                    if message["type"] == "http.disconnect":
-                        if not progress["finished"]:
-                            left_early = True
-                            group.cancel_scope.cancel()
-                        return
-
-            group.start_soon(watch_for_disconnect)
-            await super().__call__(scope, receive, counting_send)
-            group.cancel_scope.cancel()
-        self._log(progress, left_early, time.monotonic() - started)
-
-    def _log(self, progress: dict, left_early: bool, seconds: float) -> None:
-        expected = progress["expected"] if progress["expected"] is not None else "?"
-        fields = (
-            self._document_id,
-            self._token8,
-            progress["status"],
-            progress["sent"],
-            expected,
-            seconds,
+    def _log(self, transfer: _Transfer, seconds: float, failure: str | None = None) -> None:
+        expected = transfer.expected if transfer.expected is not None else "?"
+        what = (
+            f"document={self._document_id} token={self._token8} status={transfer.status} "
+            f"sent={transfer.sent} of {expected} bytes in {seconds:.1f}s"
         )
-        if left_early:
-            logger.warning(
-                "download interrupted: document=%s token=%s status=%s sent=%d of %s bytes in %.1fs, "
-                "client closed the connection",
-                *fields,
-            )
+        if failure:
+            logger.warning("download failed: %s (%s)", what, failure)
+        elif transfer.left_early:
+            logger.warning("download interrupted: %s, client closed the connection", what)
         else:
-            logger.info(
-                "download complete: document=%s token=%s status=%s sent=%d of %s bytes in %.1fs",
-                *fields,
-            )
+            logger.info("download complete: %s", what)
 
 
 @router.get(

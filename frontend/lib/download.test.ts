@@ -168,7 +168,10 @@ describe("downloadFile", () => {
       status: 422,
       expectedBytes: null,
     });
-    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain(PREPARED.filename);
+    const logged = JSON.stringify(vi.mocked(console.error).mock.calls);
+    // The caller's fallback is the only name in scope on this path; the server's is asserted for when one is.
+    expect(logged).not.toContain("fallback.docx");
+    expect(logged).not.toContain(PREPARED.filename);
   });
 
   it("reports a transport failure as status 0", async () => {

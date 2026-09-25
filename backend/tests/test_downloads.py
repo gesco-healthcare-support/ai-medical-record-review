@@ -586,3 +586,38 @@ async def test_a_download_turns_off_proxy_buffering_and_logs_ids_only(authed, ca
     )
     assert prepared["token"] not in lines[0]
     assert _PATIENT_LAST not in lines[0]
+
+
+async def test_a_get_that_raises_is_logged_as_failed_and_still_raises(tmp_path, caplog):
+    """IF a download GET raises part-way, THEN THE SYSTEM SHALL log it as failed at WARNING, naming only the
+    error's type, and let the error through (#390 amendment A1, 2026-09-25).
+
+    Before this, such a GET wrote no download line at all. The error's own text is never logged: it can
+    carry a path, and a path carries the token - which this test's error deliberately does."""
+    path = tmp_path / "file"
+    path.write_bytes(b"x" * (3 * 65536))
+    bodies = 0
+
+    async def send(message):
+        nonlocal bodies
+        if message["type"] == "http.response.body":
+            bodies += 1
+            if bodies == 2:
+                raise OSError(5, "I/O error", f"/uploads/1/downloads/{_TOKEN}")
+
+    async def receive():
+        await anyio.sleep_forever()
+
+    with caplog.at_level(logging.INFO, logger="app.api.downloads"):
+        with pytest.raises(Exception) as caught:
+            await _measured(path)(_scope(), receive, send)
+
+    error = caught.value
+    leaves = error.exceptions if isinstance(error, ExceptionGroup) else (error,)
+    assert any(isinstance(leaf, OSError) for leaf in leaves), "the error was swallowed"
+    lines = [r for r in caplog.records if r.name == "app.api.downloads"]
+    assert [r.levelno for r in lines] == [logging.WARNING], "a failed GET must not read as complete"
+    message = lines[0].getMessage()
+    assert message.startswith("download failed: document=doc-1 token=TTTTTTTT status=200 ")
+    assert message.endswith("(OSError)")
+    assert _TOKEN not in message
