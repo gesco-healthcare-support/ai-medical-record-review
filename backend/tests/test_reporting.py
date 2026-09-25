@@ -1803,3 +1803,54 @@ def test_with_no_count_at_all_the_memo_drops_the_clause():
     assert memo_opening(None, MemoDetails(lawfirm="Acme LLP")) == (
         "We have received medical records from Acme LLP."
     )
+
+
+# --- a body that keeps its line breaks keeps its paragraphs -----------------------------------
+# Only a deposition (or a reviewer's own edit) reaches the renderers with line breaks; each line is
+# a page group, and the grouping is how a reader finds the testimony.
+def test_a_multi_line_body_becomes_separate_paragraphs():
+    """DEMONSTRATES the shared half: every non-empty line is its own paragraph, one blank line
+    between them, whatever spacing the model used."""
+    from app.services.reporting import PARAGRAPH_BREAK, entry_body_segments
+
+    text = "On pages 1 to 10, asked.\n\n\n  On pages 11 to 20, stated.  \n"
+    joined = "".join(chunk for chunk, *_ in entry_body_segments(text))
+    assert joined == "On pages 1 to 10, asked." + PARAGRAPH_BREAK + "On pages 11 to 20, stated."
+
+
+def test_a_one_paragraph_body_is_unchanged():
+    """GUARD: the single-paragraph bodies every other category ships are not touched."""
+    from app.services.reporting import entry_body_segments
+
+    text = "**Diagnoses**: Lumbar strain. **Work Status**: Modified duty."
+    joined = "".join(chunk for chunk, *_ in entry_body_segments(text))
+    assert joined == "Diagnoses: Lumbar strain. Work Status: Modified duty."
+
+
+def test_the_word_document_separates_deposition_paragraphs():
+    """DEMONSTRATES the Word half: a blank line (two breaks) between page groups, where it used to
+    get a bare line break, so the .docx and the linked PDF show the same paragraphs."""
+    entries = [
+        {
+            "summaryDate": "01/02/2020",
+            "summaryTitle": "DEPOSITION OF A WITNESS",
+            "summaryText": "On pages 1 to 10, asked.\nOn pages 11 to 20, stated.",
+        }
+    ]
+    doc = build_mrr_document(
+        entries,
+        num_pages=20,
+        patient_name="Synthetic Patient",
+        patient_dob="-",
+        qme_or_ame="QME",
+        details=ReportDetails(lawfirm="Example Law Firm"),
+    )
+    body = next(
+        p
+        for t in doc.tables
+        for row in t.rows
+        for c in row.cells
+        for p in c.paragraphs
+        if "On pages 11 to 20" in p.text
+    )
+    assert body._p.xml.count("<w:br/>") == 2

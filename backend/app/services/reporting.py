@@ -700,6 +700,23 @@ def _label_key(label: str) -> str:
     return (label or "").lower().strip(" \t\r\n:.-")
 
 
+# A body that keeps its line breaks is a DEPOSITION (every other category is flattened to one
+# paragraph at generation and again at export) or a reviewer's own edit. Either way the breaks are
+# the structure: a deposition is one paragraph per page group, and that grouping is how a reader
+# finds the testimony. The linked PDF used to lose them - the body goes into HTML, where a newline
+# is just whitespace - so the senior reviewer read a whole transcript summary as one block and
+# asked for it "broken up into multiple paragraphs" (2026-09-25). Word kept them only as bare line
+# breaks. Both renderers now get the same thing: each non-empty line its own paragraph, separated
+# by a blank line, from this one place.
+PARAGRAPH_BREAK = "\n\n"
+
+
+def _paragraphed(text: str) -> str:
+    """``text`` with each non-empty line its own paragraph, joined by ``PARAGRAPH_BREAK``."""
+    lines = [line.strip() for line in (text or "").splitlines()]
+    return PARAGRAPH_BREAK.join(line for line in lines if line)
+
+
 def entry_body_segments(
     text: str, *, whole_bold: bool = False
 ) -> list[tuple[str, bool, bool, bool]]:
@@ -715,7 +732,10 @@ def entry_body_segments(
     guessing which bold spans are headings.
 
     ``whole_bold`` is the diagnostic tier (see DIAGNOSTIC_CATEGORY): every run is bold and the
-    labels keep their underline, so the two tiers above still read inside it."""
+    labels keep their underline, so the two tiers above still read inside it.
+
+    Line breaks come out as ``PARAGRAPH_BREAK`` - see `_paragraphed`."""
+    text = _paragraphed(text)
     segments: list[tuple[str, bool, bool, bool]] = []
     pos, carry_bold = 0, False
     for m in INLINE_EMPHASIS_RE.finditer(text or ""):

@@ -219,10 +219,15 @@ _F_ONE_PARAGRAPH = (
 # THE HUMAN CONVENTION IS ONE PAGE PER PARAGRAPH, NOT THREE. Measured twice: the median gap between
 # referenced pages is 1 (978 transitions), and re-measured 2026-08-06 across all 55 converted human
 # deliverables, 941 of 1,276 summary lines open with "On page N, lines A to B" while exactly ONE cites
-# a page RANGE. Three-page grouping is Adrian's instruction (2026-08-06), made with that measurement
-# in front of him. Recorded here so nobody later reads the divergence as a defect and "fixes" it back.
+# a page RANGE. Three-page grouping was Adrian's instruction (2026-08-06), made with that
+# measurement in front of him.
+#
+# TEN pages since 2026-09-25, on the senior reviewer's own instruction after reading delivered
+# depositions: "it needs to be broken up into multiple paragraphs like our current depos are, every
+# 10 pages or so." Part of what he saw was the linked PDF flattening every line break into one block
+# (fixed in `reporting.entry_body_segments`), but the paragraph size is his to set, and he set it.
 _F_DEPOSITION = (
-    "- Summarize this transcript in GROUPS OF THREE consecutive pages, one paragraph per group, each "
+    "- Summarize this transcript in GROUPS OF TEN consecutive pages, one paragraph per group, each "
     "beginning with the range of pages it covers. Do NOT merge the groups into one paragraph and do "
     "NOT write one paragraph per page: the grouping is what a reader relies on to locate testimony.\n"
 )

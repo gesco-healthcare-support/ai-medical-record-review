@@ -808,12 +808,13 @@ def test_the_preamble_is_assembled_per_category():
         assert "ordinary sentence case" in preamble
         assert "Bold ONLY the short point/section labels" in preamble
     # The paragraph rule and the deposition rule are mutually exclusive, never both. The deposition
-    # wording changed on 2026-08-06 from one line per page to groups of three, so this asserts the
+    # wording changed on 2026-08-06 from one line per page to groups of three, and on 2026-09-25 to
+    # groups of ten (the senior reviewer's instruction), so this asserts the
     # CURRENT rule - if it ever asserted both, the two would be contradicting each other in one
     # preamble, which is the defect the category-9 prompt already had.
     assert "ONE continuous paragraph" in treating
-    assert "GROUPS OF THREE" not in treating
-    assert "GROUPS OF THREE" in deposition
+    assert "GROUPS OF TEN" not in treating
+    assert "GROUPS OF TEN" in deposition
     assert "ONE continuous paragraph" not in deposition
     # And the point of the exercise: the laboratory prompt is materially shorter.
     assert len(lab) < len(treating) * 0.7
