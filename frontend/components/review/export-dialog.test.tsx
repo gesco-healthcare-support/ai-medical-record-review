@@ -361,6 +361,16 @@ describe("ExportDialog after the hand-off (#390)", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
+  it("keeps its status line on the page, empty, before there is anything to say", () => {
+    // A screen reader announces changes to a live region it is already watching; one that mounts together
+    // with its first sentence may be read late or not at all.
+    renderDialog();
+
+    const line = screen.getByRole("status");
+    expect(line.tagName).toBe("OUTPUT");
+    expect(line).toBeEmptyDOMElement();
+  });
+
   it("shows a problem in the error style", () => {
     watch.mockReturnValue({ message: "The download has not started.", tone: "err", watching: true });
     renderDialog();

@@ -17,6 +17,9 @@ import {
  * watching an interrupted download, because Chrome's Resume may complete it - and then says so, rather than
  * leaving a failure on screen that recovered. It stops at a final state, after 15 minutes, when the server no
  * longer has the record (404), or when the caller passes `null` or unmounts.
+ *
+ * KNOWN AND ACCEPTED (2026-09-25): COMPLETE means the server handed over the last byte, which can run a few
+ * megabytes ahead of what the browser has received (see `delivery_status` in backend/app/services/downloads.py).
  */
 
 export const DOWNLOADING = "Downloading...";

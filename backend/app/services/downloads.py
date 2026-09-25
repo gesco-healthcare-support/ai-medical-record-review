@@ -197,7 +197,13 @@ def delivery_status(token: str, *, user_id: int, document_id: str) -> dict | Non
 
     complete - the whole file has been sent from its first byte; downloading - a GET is running;
     interrupted - a GET ran and the file is not whole; expired - no GET came before the link expired;
-    waiting - no GET yet, and the link is still good."""
+    waiting - no GET yet, and the link is still good.
+
+    KNOWN AND ACCEPTED (Adrian, 2026-09-25): "complete" means the API handed the LAST BYTE to its connection,
+    not that the browser holds it. Buffers between the two (the socket, nginx) can hold megabytes - 17.0 MB
+    counted against 8.7 MB received in #390 PR 1's live check - so for a moment "complete" can be reported
+    while the browser is still receiving, and a browser that drops out in that window still reads "complete".
+    nginx's own download line (`completed=`) is the closer record of what arrived."""
     if not _TOKEN.fullmatch(token):
         return None
     try:

@@ -251,14 +251,10 @@ async def test_the_owner_sees_a_fetched_download_as_complete(authed):
 
     after = await client.get(f"{prepared['url']}/status")
 
-    assert before.status_code == 200 and before.json() == {
-        "state": "waiting",
-        "size": prepared["size"],
-    }
-    assert after.status_code == 200 and after.json() == {
-        "state": "complete",
-        "size": prepared["size"],
-    }
+    assert before.status_code == 200
+    assert before.json() == {"state": "waiting", "size": prepared["size"]}
+    assert after.status_code == 200
+    assert after.json() == {"state": "complete", "size": prepared["size"]}
 
 
 async def test_another_user_or_an_unknown_token_gets_404(authed):
@@ -281,7 +277,8 @@ async def test_another_user_or_an_unknown_token_gets_404(authed):
     await client.post("/api/auth/login", data={"username": email_b, "password": password_b})
     other = await client.get(f"{prepared['url']}/status")
 
-    assert unknown.status_code == 404 and unknown.json() == {"detail": "not found"}
+    assert unknown.status_code == 404
+    assert unknown.json() == {"detail": "not found"}
     assert other.status_code == 404
 
 
@@ -323,3 +320,30 @@ async def test_a_head_request_is_not_a_delivery():
     )
 
     assert _state(token) == "waiting"
+
+
+async def test_a_get_cancelled_from_outside_still_closes_its_delivery_record():
+    """IF a download GET is cancelled from outside part-way (a server shutting down, a task cancelled), THEN
+    THE SYSTEM SHALL still close its delivery record, so the download reads `interrupted` - not `downloading`
+    until the page's 15-minute limit.
+
+    The close runs in a SHIELDED `finally`: an unshielded await inside a cancelled scope is itself cancelled
+    before it runs, which is exactly what this test catches."""
+    token = _park(10 * 65536)["token"]
+    first_chunk = anyio.Event()
+
+    async def send(message):
+        if message["type"] == "http.response.body":
+            first_chunk.set()
+        await anyio.sleep(0)
+
+    async def receive():
+        await anyio.sleep_forever()
+
+    response = _MeasuredFileResponse(_parked_path(token), document_id="doc-1", token=token)
+    async with anyio.create_task_group() as outside:
+        outside.start_soon(response, _scope(), receive, send)
+        await first_chunk.wait()
+        outside.cancel_scope.cancel()
+
+    assert _state(token) == "interrupted"

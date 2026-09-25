@@ -247,12 +247,13 @@ export function ExportDialog({
 
 /** The footer's one sentence: an export error, else what the watched download is doing (#390). */
 function footerNote(error: string, watch: DownloadWatch) {
-  if (error) return <span className="error-text mr-auto">{error}</span>;
-  if (!watch.message) return null;
-  const tone = watch.tone === "err" ? "error-text" : "muted";
+  // ALWAYS on the page, empty when there is nothing to say: a screen reader announces changes to a live
+  // region it is already watching, and one that appears together with its first sentence is not reliably
+  // announced (#390 review). `<output>` is a live status region by itself - no `role` needed.
+  const problem = Boolean(error) || watch.tone === "err";
   return (
-    <span role="status" className={`${tone} mr-auto`}>
-      {watch.message}
-    </span>
+    <output className={`${problem ? "error-text" : "muted"} mr-auto`}>
+      {error || watch.message}
+    </output>
   );
 }
