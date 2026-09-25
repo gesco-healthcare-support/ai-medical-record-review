@@ -7,6 +7,7 @@ alembic/tooling can discover the metadata via `app.main`.
 """
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
@@ -24,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Send app logs to stdout at INFO, as the worker does (`app/worker/__main__.py`). uvicorn configures only
+    # its own loggers, so without this every `app.*` INFO line here was dropped - measured 2026-09-25 (#390).
+    # A no-op when the root logger already has handlers, so a test runner's own capture is left alone.
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stdout,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     # Refuse to serve against a model server we have not verified. DELIBERATELY NOT inside the try
     # below, and the distinction is the whole point: that block swallows so a Redis outage cannot
     # stop the web app serving, which is right for orphan recovery and wrong here. A PHI destination

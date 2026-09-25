@@ -16,11 +16,13 @@ import os
 import time
 from pathlib import Path
 
+import anyio
 import pytest
 from pypdf import PdfWriter
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import select
 
+from app.api.downloads import _MeasuredFileResponse
 from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
 from app.db import get_sessionmaker
@@ -450,3 +452,172 @@ async def test_no_log_line_carries_the_filename(authed, caplog):
     assert _PATIENT_LAST in prepared["filename"], "the test needs a filename carrying the name"
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert _PATIENT_LAST not in logged
+
+
+# --- #390: every download's outcome is measured and logged ----------------------------------------
+
+_TOKEN = (
+    "T" * 8 + "u" * 35
+)  # the shape `secrets.token_urlsafe(32)` gives; only the first 8 may be logged
+
+
+def _scope(headers: list[tuple[bytes, bytes]] | None = None) -> dict:
+    """A minimal ASGI http scope for driving a response directly, as uvicorn would."""
+    return {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": headers or [],
+        "http_version": "1.1",
+        "scheme": "http",
+        "server": ("test", 80),
+        "client": ("test", 1),
+        "root_path": "",
+        "extensions": {},
+    }
+
+
+def _measured(path) -> _MeasuredFileResponse:
+    return _MeasuredFileResponse(
+        str(path), media_type="application/octet-stream", document_id="doc-1", token=_TOKEN
+    )
+
+
+async def test_a_full_transfer_is_logged_as_complete(tmp_path, caplog):
+    """WHEN a download GET sends the whole file, THE SYSTEM SHALL log it as complete at INFO, with the bytes
+    sent, the expected size and the time taken."""
+    path = tmp_path / "file"
+    path.write_bytes(b"x" * (3 * 65536 + 10))
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    async def receive():
+        await anyio.sleep_forever()  # the browser never leaves
+
+    with caplog.at_level(logging.INFO, logger="app.api.downloads"):
+        await _measured(path)(_scope(), receive, send)
+
+    lines = [r for r in caplog.records if r.name == "app.api.downloads"]
+    assert [r.levelno for r in lines] == [logging.INFO]
+    message = lines[0].getMessage()
+    assert message.startswith("download complete: document=doc-1 token=TTTTTTTT status=200 ")
+    assert f"sent={3 * 65536 + 10} of {3 * 65536 + 10} bytes in " in message
+
+
+async def test_a_browser_that_leaves_early_is_logged_as_interrupted_and_stops_the_send(
+    tmp_path, caplog
+):
+    """IF the browser disconnects before the last byte, THEN THE SYSTEM SHALL stop reading the file and log
+    the download as interrupted at WARNING, with how much was sent.
+
+    Without the watcher, uvicorn's `send` returns silently after a disconnect (#390 research), so the loop
+    would read the whole file into nothing and the log would say it completed."""
+    chunks = 10
+    path = tmp_path / "file"
+    path.write_bytes(b"x" * (chunks * 65536 + 10))
+    two_chunks_out = anyio.Event()
+    bodies = 0
+
+    async def send(message):
+        nonlocal bodies
+        if message["type"] == "http.response.body":
+            bodies += 1
+            if bodies == 2:
+                two_chunks_out.set()
+        await anyio.sleep(0)  # a real socket write is a checkpoint too
+
+    async def receive():
+        await two_chunks_out.wait()
+        return {"type": "http.disconnect"}
+
+    with caplog.at_level(logging.INFO, logger="app.api.downloads"):
+        await _measured(path)(_scope(), receive, send)
+
+    assert bodies < chunks, "the send loop kept reading the file after the browser left"
+    lines = [r for r in caplog.records if r.name == "app.api.downloads"]
+    assert [r.levelno for r in lines] == [logging.WARNING]
+    message = lines[0].getMessage()
+    assert message.startswith("download interrupted: document=doc-1 token=TTTTTTTT status=200 ")
+    assert message.endswith(", client closed the connection")
+    assert f"of {chunks * 65536 + 10} bytes" in message
+
+
+async def test_a_range_request_is_measured_against_the_range(tmp_path, caplog):
+    """WHEN a download GET carries a Range header, THE SYSTEM SHALL measure it against that range (206)."""
+    path = tmp_path / "file"
+    path.write_bytes(b"x" * 1000)
+
+    async def send(message):
+        pass
+
+    async def receive():
+        await anyio.sleep_forever()
+
+    with caplog.at_level(logging.INFO, logger="app.api.downloads"):
+        await _measured(path)(_scope([(b"range", b"bytes=0-99")]), receive, send)
+
+    message = next(r.getMessage() for r in caplog.records if r.name == "app.api.downloads")
+    assert " status=206 sent=100 of 100 bytes in " in message
+
+
+async def test_a_download_turns_off_proxy_buffering_and_logs_ids_only(authed, caplog):
+    """WHEN the owner fetches a download, THE SYSTEM SHALL tell the proxy not to buffer it, and log it by
+    record id and the token's first 8 characters - never the whole token, never the filename.
+
+    `X-Accel-Buffering: no` is what lets the API see the browser at all: with nginx buffering (its default)
+    nginx takes the whole file at once and the API's count says nothing about the reviewer's download."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    _name_the_patient(doc_id)
+    prepared = await _prepare(client, doc_id)
+
+    with caplog.at_level(logging.INFO, logger="app.api.downloads"):
+        got = await client.get(prepared["url"])
+
+    assert got.headers["x-accel-buffering"] == "no"
+    lines = [r.getMessage() for r in caplog.records if r.name == "app.api.downloads"]
+    assert len(lines) == 1, lines
+    assert lines[0].startswith(
+        f"download complete: document={doc_id} token={prepared['token'][:8]} status=200 "
+    )
+    assert prepared["token"] not in lines[0]
+    assert _PATIENT_LAST not in lines[0]
+
+
+async def test_a_get_that_raises_is_logged_as_failed_and_still_raises(tmp_path, caplog):
+    """IF a download GET raises part-way, THEN THE SYSTEM SHALL log it as failed at WARNING, naming only the
+    error's type, and let the error through (#390 amendment A1, 2026-09-25).
+
+    Before this, such a GET wrote no download line at all. The error's own text is never logged: it can
+    carry a path, and a path carries the token - which this test's error deliberately does."""
+    path = tmp_path / "file"
+    path.write_bytes(b"x" * (3 * 65536))
+    bodies = 0
+
+    async def send(message):
+        nonlocal bodies
+        if message["type"] == "http.response.body":
+            bodies += 1
+            if bodies == 2:
+                raise OSError(5, "I/O error", f"/uploads/1/downloads/{_TOKEN}")
+
+    async def receive():
+        await anyio.sleep_forever()
+
+    response, scope = _measured(path), _scope()
+    with caplog.at_level(logging.INFO, logger="app.api.downloads"):
+        # The anyio task group delivers the error inside an ExceptionGroup (seen 2026-09-25).
+        with pytest.raises(ExceptionGroup) as caught:
+            await response(scope, receive, send)
+
+    assert caught.group_contains(OSError), "the error was swallowed or changed"
+    lines = [r for r in caplog.records if r.name == "app.api.downloads"]
+    assert [r.levelno for r in lines] == [logging.WARNING], "a failed GET must not read as complete"
+    message = lines[0].getMessage()
+    assert message.startswith("download failed: document=doc-1 token=TTTTTTTT status=200 ")
+    assert message.endswith("(OSError)")
+    assert _TOKEN not in message

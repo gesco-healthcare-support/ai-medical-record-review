@@ -23,9 +23,28 @@
  */
 
 import { ApiError, errorFromResponse, signedOut } from "@/lib/api";
+import { lacksServerMessage } from "@/lib/errors";
 
 /** What an export POST answers with: the prepared file's address, and the name to save it under. */
 type PreparedDownload = { url: string; filename?: string };
+
+/** #390: the build answer's headers arrived but its body could not be read. */
+export const DOWNLOAD_INTERRUPTED = "The download was interrupted before it finished. Please try again.";
+/** #390: the proxy itself answered 502/504 (the API restarting, or a build past nginx's time limit), so
+ *  there is no sentence of the server's own to show. */
+export const DOWNLOAD_NOT_PREPARED = "The server did not finish preparing the file. Please try again.";
+
+/** The detail a reviewer's own browser can hold when a download fails (#390): which phase, the HTTP status
+ *  (0 for no response at all), and the size the server declared. Never the body and never the filename -
+ *  the filename carries the patient's name. */
+function reportFailure(status: number, resp?: Response): void {
+  const length = resp?.headers.get("Content-Length");
+  console.error("download failed", {
+    phase: "prepare",
+    status,
+    expectedBytes: length ? Number(length) : null,
+  });
+}
 
 /**
  * POST `body` to `/api${path}`, then hand the file it prepared to the browser as a native download.
@@ -49,11 +68,29 @@ export async function downloadFile(
     });
   } catch {
     // Transport failure (offline, DNS, reset) - no HTTP status. Same shape apiFetch uses.
+    reportFailure(0);
     throw new ApiError("network", 0);
   }
-  if (resp.status === 401) throw signedOut();
-  if (!resp.ok) throw await errorFromResponse(resp, path);
-  const prepared = (await resp.json()) as PreparedDownload;
+  if (resp.status === 401) {
+    reportFailure(401, resp);
+    throw signedOut();
+  }
+  if (!resp.ok) {
+    reportFailure(resp.status, resp);
+    const err = await errorFromResponse(resp, path);
+    if ((resp.status === 502 || resp.status === 504) && lacksServerMessage(err)) {
+      throw new ApiError(DOWNLOAD_NOT_PREPARED, resp.status);
+    }
+    throw err;
+  }
+  let prepared: PreparedDownload;
+  try {
+    prepared = (await resp.json()) as PreparedDownload;
+  } catch {
+    // Headers arrived, the body did not: without this the dialog's generic fallback hid the cause (#390).
+    reportFailure(resp.status, resp);
+    throw new ApiError(DOWNLOAD_INTERRUPTED, resp.status);
+  }
   // A detached anchor: it needs no place in the document. Same-origin, so the session cookie goes with it.
   const link = document.createElement("a");
   link.href = prepared.url;
