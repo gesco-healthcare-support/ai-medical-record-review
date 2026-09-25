@@ -79,15 +79,14 @@ describe("ExportDialog page numbers", () => {
   afterEach(() => vi.restoreAllMocks());
 
   function mockFetch() {
+    // Since #389 the export POST answers with where to fetch the file, and the page clicks a link to it.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
       status: 200,
       headers: new Headers(),
-      blob: async () => new Blob(["x"]),
+      json: async () => ({ filename: "x.docx", url: "/api/documents/d1/downloads/tok" }),
     } as unknown as Response);
-    // jsdom implements neither of these; the download path calls both.
-    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
-    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    // jsdom does not navigate; a real click here would log "Not implemented: navigation".
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
     return fetchSpy;
   }
