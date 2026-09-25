@@ -608,13 +608,13 @@ async def test_a_get_that_raises_is_logged_as_failed_and_still_raises(tmp_path, 
     async def receive():
         await anyio.sleep_forever()
 
+    response, scope = _measured(path), _scope()
     with caplog.at_level(logging.INFO, logger="app.api.downloads"):
-        with pytest.raises(Exception) as caught:
-            await _measured(path)(_scope(), receive, send)
+        # The anyio task group delivers the error inside an ExceptionGroup (seen 2026-09-25).
+        with pytest.raises(ExceptionGroup) as caught:
+            await response(scope, receive, send)
 
-    error = caught.value
-    leaves = error.exceptions if isinstance(error, ExceptionGroup) else (error,)
-    assert any(isinstance(leaf, OSError) for leaf in leaves), "the error was swallowed"
+    assert caught.group_contains(OSError), "the error was swallowed or changed"
     lines = [r for r in caplog.records if r.name == "app.api.downloads"]
     assert [r.levelno for r in lines] == [logging.WARNING], "a failed GET must not read as complete"
     message = lines[0].getMessage()
