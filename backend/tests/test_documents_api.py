@@ -71,6 +71,20 @@ async def _upload(client, pages: int = 1) -> str:
     return resp.json()["id"]
 
 
+async def _download(client, url: str, json=None):
+    """POST an export, then fetch the file it prepared - the two requests a browser makes (#389).
+
+    A POST that does not succeed is returned as it is, so error-status tests still read the export's
+    own response. A successful one must answer with where to download, and the GET's response - the
+    file itself - is what comes back."""
+    resp = await client.post(url, json=json)
+    if resp.status_code != 200:
+        return resp
+    prepared = resp.json()
+    assert set(prepared) == {"token", "filename", "size", "url"}, prepared
+    return await client.get(prepared["url"])
+
+
 async def test_documents_require_auth(client):
     # No login -> the app-level gate denies (JSON client -> 401).
     assert (await client.get("/api/documents")).status_code == 401
@@ -881,8 +895,8 @@ async def test_summaries_empty_and_export_conflict(authed):
     client, _ = authed
     doc_id = await _upload(client, pages=1)
     assert (await client.get(f"/api/documents/{doc_id}/summaries")).json() == []
-    export = await client.post(
-        f"/api/documents/{doc_id}/export", json={"patientName": "Synthetic Patient"}
+    export = await _download(
+        client, f"/api/documents/{doc_id}/export", json={"patientName": "Synthetic Patient"}
     )
     assert export.status_code == 409  # no summaries to export yet
 
@@ -890,8 +904,8 @@ async def test_summaries_empty_and_export_conflict(authed):
 async def test_export_pdf_conflict_when_no_summaries(authed):
     client, _ = authed
     doc_id = await _upload(client, pages=1)
-    resp = await client.post(
-        f"/api/documents/{doc_id}/export/pdf", json={"patientName": "Synthetic Patient"}
+    resp = await _download(
+        client, f"/api/documents/{doc_id}/export/pdf", json={"patientName": "Synthetic Patient"}
     )
     assert resp.status_code == 409  # no summaries to export yet
 
@@ -921,8 +935,8 @@ async def test_export_pdf_returns_linked_pdf_with_working_links(authed):
         )
         session.commit()
 
-    resp = await client.post(
-        f"/api/documents/{doc_id}/export/pdf", json={"patientName": "Synthetic Patient"}
+    resp = await _download(
+        client, f"/api/documents/{doc_id}/export/pdf", json={"patientName": "Synthetic Patient"}
     )
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "application/pdf"
@@ -1366,18 +1380,19 @@ async def test_bundle_pdf_and_category_errors(authed):
         json={"rows": [{"start": 1, "end": 1, "category": _VALID_CATEGORY}]},
     )
 
-    ok = await client.post(
+    ok = await _download(
+        client,
         f"/api/documents/{doc_id}/bundle/pdf",
         json={"categories": [_VALID_CATEGORY], "label": "Diagnostic & Operative"},
     )
     assert ok.status_code == 200
     assert ok.headers["content-type"] == "application/pdf"
 
-    empty = await client.post(f"/api/documents/{doc_id}/bundle/pdf", json={"categories": []})
+    empty = await _download(client, f"/api/documents/{doc_id}/bundle/pdf", json={"categories": []})
     assert empty.status_code == 400  # non-empty list required
 
-    unmatched = await client.post(
-        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_OTHER_CATEGORY]}
+    unmatched = await _download(
+        client, f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_OTHER_CATEGORY]}
     )
     assert unmatched.status_code == 409  # nothing in this record matches
 
@@ -1407,8 +1422,8 @@ async def test_a_bundle_omits_a_copy_the_reviewer_resolved_away(authed):
             row.dupe_dismissed = False
         session.commit()
 
-    got = await client.post(
-        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    got = await _download(
+        client, f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
     )
 
     from pypdf import PdfReader
@@ -1445,8 +1460,8 @@ async def test_an_unresolved_cluster_keeps_every_member_in_the_bundle(authed):
             row.dupe_dismissed = False
         session.commit()
 
-    got = await client.post(
-        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    got = await _download(
+        client, f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
     )
 
     from pypdf import PdfReader
@@ -1474,8 +1489,8 @@ async def test_a_dismissed_cluster_keeps_both_copies_in_the_bundle(authed):
             row.dupe_dismissed = True
         session.commit()
 
-    got = await client.post(
-        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    got = await _download(
+        client, f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
     )
 
     from pypdf import PdfReader
@@ -1509,8 +1524,8 @@ async def test_an_unchecked_row_is_still_bundled(authed):
         },
     )
 
-    got = await client.post(
-        f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    got = await _download(
+        client, f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
     )
 
     from pypdf import PdfReader
@@ -1533,8 +1548,8 @@ async def test_bundle_summarize_ocr_unavailable_returns_friendly_503(authed, mon
         raise OcrUnavailableError("no tesseract")
 
     monkeypatch.setattr(se, "summarize_row", boom)
-    resp = await client.post(
-        f"/api/documents/{doc_id}/bundle/summarize", json={"categories": [_VALID_CATEGORY]}
+    resp = await _download(
+        client, f"/api/documents/{doc_id}/bundle/summarize", json={"categories": [_VALID_CATEGORY]}
     )
     assert resp.status_code == 503
     assert "OCR" in resp.json()["error"]  # friendly message, never the raw vendor error
@@ -1560,7 +1575,8 @@ async def test_bundle_summarize_happy_path_returns_docx(authed, monkeypatch):
         }
 
     monkeypatch.setattr(se, "summarize_row", fake)
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/bundle/summarize",
         json={"categories": [_VALID_CATEGORY], "patientName": "Synthetic Patient"},
     )
@@ -4077,10 +4093,10 @@ async def test_the_zip_carries_the_same_word_document_the_export_button_does(aut
     await _seed_one_summary(doc_id)
     fields = {"patientName": "Synthetic Patient", "lawfirm": "Example Law Firm"}
 
-    single = await client.post(f"/api/documents/{doc_id}/export", json=fields)
+    single = await _download(client, f"/api/documents/{doc_id}/export", json=fields)
     assert single.status_code == 200, single.text
 
-    zipped = await client.post(f"/api/documents/{doc_id}/export/zip", json=fields)
+    zipped = await _download(client, f"/api/documents/{doc_id}/export/zip", json=fields)
     assert zipped.status_code == 200, zipped.text
     assert zipped.headers["content-type"] == "application/zip"
 
@@ -4101,14 +4117,14 @@ async def test_the_zip_carries_the_same_word_document_the_export_button_does(aut
 def _assert_sent_whole(resp) -> None:
     """A download must go out as ONE body with its length declared.
 
-    Pins `_attachment` in api/documents.py, whose docstring carries the measurements. Every
+    Pins the GET in api/downloads.py (#389), whose docstring carries the measurements. Every
     download used to be `StreamingResponse(io.BytesIO(...))`, which iterates the buffer line by
     line: a 50.2 MB linked PDF trickled out over 25.6 s, and a tester's side cut it off at about
     5 s, every time, near 10.78 MB. Only a body sent whole can declare its length, so a missing
     `content-length` here is that regression coming back."""
     assert resp.status_code == 200, resp.text
     assert resp.headers.get("content-length") == str(len(resp.content)), (
-        "a download must be sent whole with its length declared - see `_attachment`"
+        "a download must be sent whole with its length declared - see api/downloads.py"
     )
 
 
@@ -4118,8 +4134,8 @@ async def test_a_record_download_is_sent_whole(authed, endpoint):
     client, _ = authed
     doc_id = await _upload(client, pages=2)
     await _seed_one_summary(doc_id)
-    resp = await client.post(
-        f"/api/documents/{doc_id}/{endpoint}", json={"patientName": "Synthetic Patient"}
+    resp = await _download(
+        client, f"/api/documents/{doc_id}/{endpoint}", json={"patientName": "Synthetic Patient"}
     )
     _assert_sent_whole(resp)
 
@@ -4147,8 +4163,8 @@ async def test_a_bundle_download_is_sent_whole(authed, monkeypatch, endpoint):
         }
 
     monkeypatch.setattr(se, "summarize_row", fake)
-    resp = await client.post(
-        f"/api/documents/{doc_id}/{endpoint}", json={"categories": [_VALID_CATEGORY]}
+    resp = await _download(
+        client, f"/api/documents/{doc_id}/{endpoint}", json={"categories": [_VALID_CATEGORY]}
     )
     _assert_sent_whole(resp)
 
@@ -4173,7 +4189,8 @@ async def test_a_bundle_that_matches_nothing_is_left_out_rather_than_failing_the
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY}]},
     )
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/export/zip",
         json={
             "patientName": "Synthetic Patient",
@@ -4196,7 +4213,8 @@ async def test_a_matching_bundle_rides_in_the_zip_under_its_own_label(authed):
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY}]},
     )
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/export/zip",
         json={
             "patientName": "Synthetic Patient",
@@ -4216,8 +4234,8 @@ async def test_the_zip_refuses_a_record_with_no_summaries(authed):
     hand over an archive holding nothing worth sending."""
     client, _ = authed
     doc_id = await _upload(client, pages=1)
-    resp = await client.post(
-        f"/api/documents/{doc_id}/export/zip", json={"patientName": "Synthetic Patient"}
+    resp = await _download(
+        client, f"/api/documents/{doc_id}/export/zip", json={"patientName": "Synthetic Patient"}
     )
     assert resp.status_code == 409
 
@@ -4232,7 +4250,7 @@ async def test_the_archive_is_named_after_the_patient_like_its_members(authed):
         doc.patient_last_name = "Lovelace"
         session.commit()
 
-    resp = await client.post(f"/api/documents/{doc_id}/export/zip", json={})
+    resp = await _download(client, f"/api/documents/{doc_id}/export/zip", json={})
     assert resp.status_code == 200, resp.text
     assert "Lovelace_Ada_Medical_Records.zip" in resp.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
@@ -4360,7 +4378,8 @@ async def test_the_export_writes_the_letter_paragraph_and_the_doctors_typeface(a
         session.query(User).filter(User.id == user_id).update({"name": "Jane Roe"})
         session.commit()
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/export",
         json={
             "patientName": "Pat",
@@ -4410,7 +4429,7 @@ async def test_an_account_with_no_display_name_omits_the_labor_code_claim(authed
         session.query(User).filter(User.id == user_id).update({"name": ""})
         session.commit()
 
-    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    resp = await _download(client, f"/api/documents/{doc_id}/export", json={})
     assert resp.status_code == 200, resp.text
     built = docxlib.Document(io.BytesIO(resp.content))
     intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
@@ -4447,14 +4466,14 @@ async def test_the_letter_states_the_cover_sheet_count_not_the_files_length(auth
     await _put_header(client, doc_id, pages_received="241")
     await _seed_one_summary(doc_id)
 
-    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    resp = await _download(client, f"/api/documents/{doc_id}/export", json={})
     assert resp.status_code == 200, resp.text
     built = docxlib.Document(io.BytesIO(resp.content))
     intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
     assert "241 pages of medical records" in intro
     assert "244" not in intro
 
-    pdf = await client.post(f"/api/documents/{doc_id}/export/pdf", json={})
+    pdf = await _download(client, f"/api/documents/{doc_id}/export/pdf", json={})
     assert pdf.status_code == 200, pdf.text
     assert "241 pages of medical records" in _pdf_text(pdf.content)
 
@@ -4468,7 +4487,7 @@ async def test_with_no_cover_sheet_count_the_letter_falls_back_to_the_file(authe
     doc_id = await _upload(client, pages=244)
     await _seed_one_summary(doc_id)
 
-    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    resp = await _download(client, f"/api/documents/{doc_id}/export", json={})
     assert resp.status_code == 200, resp.text
     built = docxlib.Document(io.BytesIO(resp.content))
     intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
@@ -4516,7 +4535,8 @@ async def test_the_diagnostics_download_opens_on_a_list_of_the_reports(authed):
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
     )
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/bundle/pdf",
         json={
             "categories": [_VALID_CATEGORY],
@@ -4549,7 +4569,8 @@ async def test_a_bundle_download_carries_the_patient_name(authed):
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
     )
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/bundle/pdf",
         json={
             "categories": [_VALID_CATEGORY],
@@ -4578,7 +4599,8 @@ async def test_a_bundle_from_a_client_that_sends_no_download_name_keeps_the_old_
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
     )
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/bundle/pdf",
         json={"categories": [_VALID_CATEGORY], "label": "diagnostic-operative"},
     )
@@ -4599,7 +4621,8 @@ async def test_the_archive_names_its_bundle_like_its_other_three_members(authed)
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
     )
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/export/zip",
         json={
             "bundles": [
@@ -4630,7 +4653,8 @@ async def test_a_bundle_asking_for_no_cover_page_does_not_get_one(authed):
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
     )
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/bundle/pdf",
         json={"categories": [_VALID_CATEGORY], "label": "depositions"},
     )
@@ -4652,7 +4676,8 @@ async def test_the_copy_in_the_folder_carries_the_same_cover_page(authed):
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
     )
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/export/zip",
         json={
             "patientName": "Synthetic Patient",
@@ -4681,7 +4706,8 @@ async def test_a_record_with_nothing_to_list_gets_no_empty_table(authed):
         json={"rows": [{"start": 1, "end": 2, "category": _VALID_CATEGORY, "include": True}]},
     )
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/bundle/pdf",
         json={
             "categories": [_VALID_CATEGORY],
@@ -4738,7 +4764,8 @@ async def test_the_memo_asks_for_nothing_the_record_already_holds(authed):
     await _one_summary(doc_id, user_id, "Jane Roe")
     await _rows(client, doc_id, [{"start": 1, "end": 8, "category": "1", "include": True}])
 
-    resp = await client.post(
+    resp = await _download(
+        client,
         f"/api/documents/{doc_id}/export/memo",
         json={"patientName": "Pat", "lawfirm": "Acme LLP"},
     )
@@ -4772,7 +4799,7 @@ async def test_the_memo_does_not_compare_the_cover_sheet_against_the_file(authed
     await _put_header(client, doc_id, pages_received="6")
     await _rows(client, doc_id, [{"start": 1, "end": 6, "category": "1", "include": True}])
 
-    resp = await client.post(f"/api/documents/{doc_id}/export/memo", json={})
+    resp = await _download(client, f"/api/documents/{doc_id}/export/memo", json={})
     assert resp.status_code == 200, resp.text
     text = [p.text for p in docxlib.Document(io.BytesIO(resp.content)).paragraphs if p.text.strip()]
     assert not any("cover sheet" in t for t in text)
@@ -4798,7 +4825,7 @@ async def test_the_letter_counts_the_pages_the_cover_sheet_states(authed):
     # now ships nothing at all rather than "exactly 8 pages were remarked upon" of 6 received.
     await _rows(client, doc_id, [{"start": 1, "end": 6, "category": "1", "include": True}])
 
-    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    resp = await _download(client, f"/api/documents/{doc_id}/export", json={})
     assert resp.status_code == 200, resp.text
     text = [p.text for p in docxlib.Document(io.BytesIO(resp.content)).paragraphs if p.text.strip()]
     assert any(t.startswith("Of the 6 pages received") for t in text)
@@ -4814,7 +4841,7 @@ async def test_with_no_cover_sheet_figure_the_letter_falls_back_to_the_file(auth
     await _one_summary(doc_id)
     await _rows(client, doc_id, [{"start": 1, "end": 8, "category": "1", "include": True}])
 
-    resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+    resp = await _download(client, f"/api/documents/{doc_id}/export", json={})
     assert resp.status_code == 200, resp.text
     text = [p.text for p in docxlib.Document(io.BytesIO(resp.content)).paragraphs if p.text.strip()]
     assert any(t.startswith("Of the 8 pages received") for t in text)
@@ -4828,8 +4855,10 @@ async def test_a_record_with_no_report_yet_still_has_a_memo(authed):
     doc_id = await _upload(client, pages=8)
     await _rows(client, doc_id, [{"start": 1, "end": 8, "category": "1", "include": True}])
 
-    assert (await client.post(f"/api/documents/{doc_id}/export", json={})).status_code == 409
-    assert (await client.post(f"/api/documents/{doc_id}/export/memo", json={})).status_code == 200
+    assert (await _download(client, f"/api/documents/{doc_id}/export", json={})).status_code == 409
+    assert (
+        await _download(client, f"/api/documents/{doc_id}/export/memo", json={})
+    ).status_code == 200
 
 
 async def test_the_zip_carries_the_same_memo_the_button_does(authed):
@@ -4847,9 +4876,9 @@ async def test_the_zip_carries_the_same_memo_the_button_does(authed):
     await _rows(client, doc_id, [{"start": 1, "end": 4, "category": "1", "include": True}])
     fields = {"patientName": "Synthetic Patient", "lawfirm": "Example Law Firm"}
 
-    single = await client.post(f"/api/documents/{doc_id}/export/memo", json=fields)
+    single = await _download(client, f"/api/documents/{doc_id}/export/memo", json=fields)
     assert single.status_code == 200, single.text
-    zipped = await client.post(f"/api/documents/{doc_id}/export/zip", json=fields)
+    zipped = await _download(client, f"/api/documents/{doc_id}/export/zip", json=fields)
     assert zipped.status_code == 200, zipped.text
 
     with zipfile.ZipFile(io.BytesIO(zipped.content)) as archive:
@@ -4875,7 +4904,7 @@ async def test_the_archive_counts_the_pages_the_cover_sheet_states(authed):
     await _one_summary(doc_id)
     await _rows(client, doc_id, [{"start": 1, "end": 6, "category": "1", "include": True}])
 
-    resp = await client.post(f"/api/documents/{doc_id}/export/zip", json={})
+    resp = await _download(client, f"/api/documents/{doc_id}/export/zip", json={})
     assert resp.status_code == 200, resp.text
     with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
         memo = archive.read("scan_memo.docx")
@@ -5077,8 +5106,8 @@ async def test_a_bundle_larger_than_the_cap_is_refused(authed, monkeypatch):
     )
     monkeypatch.setattr(get_settings(), "bundle_summarize_cap", 2)
 
-    resp = await client.post(
-        f"/api/documents/{doc_id}/bundle/summarize", json={"categories": [_VALID_CATEGORY]}
+    resp = await _download(
+        client, f"/api/documents/{doc_id}/bundle/summarize", json={"categories": [_VALID_CATEGORY]}
     )
 
     assert resp.status_code == 409

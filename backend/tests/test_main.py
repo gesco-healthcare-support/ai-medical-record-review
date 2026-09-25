@@ -114,6 +114,44 @@ async def test_stale_jobs_interrupted_at_startup_are_reported(monkeypatch, caplo
     )
 
 
+async def test_expired_downloads_are_swept_at_startup_and_reported(monkeypatch, caplog):
+    """WHEN the API starts, THE SYSTEM SHALL sweep expired prepared downloads and report how many (#389).
+
+    A prepared export is patient data at rest, deleted by a timer when its token expires. A restart
+    cancels those timers, so without this sweep the files a restart interrupted would stay on disk
+    until somebody happened to export again."""
+    monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", lambda: None)
+    monkeypatch.setattr("app.worker.recovery.recover_orphans", lambda _session: 0)
+    swept = []
+    monkeypatch.setattr("app.services.downloads.sweep", lambda: swept.append(1) or 2)
+
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        async with LifespanManager(main.app):
+            pass
+
+    assert swept, "the startup sweep did not run"
+    reported = [record.getMessage() for record in caplog.records]
+    assert any("2 stale file(s)" in message for message in reported), (
+        f"the swept count was not reported: {reported}"
+    )
+
+
+async def test_a_failing_download_sweep_does_not_stop_the_app_serving(monkeypatch):
+    """IF the startup download sweep fails, THEN THE SYSTEM SHALL still start and serve."""
+    monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", lambda: None)
+    monkeypatch.setattr("app.worker.recovery.recover_orphans", lambda _session: 0)
+
+    def sweep_fails():
+        raise OSError("the upload volume is unreadable")
+
+    monkeypatch.setattr("app.services.downloads.sweep", sweep_fails)
+
+    async with LifespanManager(main.app):
+        transport = ASGITransport(app=main.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.get("/health")).status_code == 200
+
+
 async def test_an_unauthenticated_browser_navigation_becomes_a_redirect_to_login():
     """WHEN AuthRedirect propagates, THE SYSTEM SHALL answer 302 to /login.
 
