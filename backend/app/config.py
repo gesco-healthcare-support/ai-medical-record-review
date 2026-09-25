@@ -172,6 +172,8 @@ class Settings(BaseSettings):
 
     # PHI at rest; keep off any network share.
     upload_folder: str = "./uploads"
+    # How long a prepared export stays downloadable before its file is deleted (app/services/downloads).
+    download_ttl_seconds: int = 300
     tesseract_cmd: str = ""
 
     # Gemini routing. Vertex is the BAA-covered path; required in production.

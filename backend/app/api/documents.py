@@ -18,12 +18,13 @@ import zipfile
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from rq.command import send_stop_job_command
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_owned_document
+from app.api.downloads import DOWNLOADS_UNAVAILABLE
 from app.auth.deps import current_active_user
 from app.config import get_settings
 from app.db import get_db
@@ -49,7 +50,7 @@ from app.schemas.documents import (
     SummarizeStartPayload,
     SummaryEditPayload,
 )
-from app.services import bundles, catalog
+from app.services import bundles, catalog, downloads
 from app.services.aggregate import merge_pdfs
 from app.services.audit import audit
 from app.services.classification import DEFAULT_ID, match_rules
@@ -1720,23 +1721,33 @@ def _zip_filename(document: Document) -> str:
     return _deliverable_filename(document, "", "zip", fallback="record")
 
 
-def _attachment(content: bytes, media_type: str, filename: str) -> Response:
-    """A finished file, sent as ONE body with its length declared. Every download goes through
-    here, so the next one cannot quietly go back to streaming.
+# The 503 `_offer_download` raises, as every export route documents it. One constant, not a copy per route.
+_DOWNLOAD_STORE_UNAVAILABLE = {
+    "description": "The download store is unavailable, so the file could not be prepared."
+}
 
-    NOT `StreamingResponse(io.BytesIO(...))`, which all six downloads used until 2026-09-22.
-    Each file here is fully built in memory before the response starts, so streaming saved
-    nothing - and iterating a BytesIO yields LINES, so a binary file went out in fragments. A
-    50.2 MB linked PDF took 260,433 of them and 25.6 s, measured on the server with no network
-    involved. Something on a tester's side dropped the connection at about 5 s, so every large
-    export stopped near 10.78 MB, while a 49.8 MB source PDF sent by `FileResponse` reached the
-    same browser in 0.36 s. One body goes out at link speed, and the declared length lets a
-    client tell a cut-off transfer from a complete one."""
-    return Response(
-        content,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+
+def _offer_download(
+    content: bytes, media_type: str, filename: str, document: Document, user: User
+) -> dict:
+    """Park a finished export and answer with where to download it (#389). Every export ends here.
+
+    The POST used to answer with the file itself, which the page held in a Blob - and Chrome cannot
+    page a large Blob to disk on a machine short of space, so on the shared reviewer host it cut
+    exports short (15.8 of 19.5 MB, 16.8 of 22.2, 16.2 of 37.0 on 2026-09-24). Now the file waits
+    behind a short-lived token and the browser fetches it with an ordinary link
+    (`app/api/downloads.py`), which streams to disk. Everything before this call - validation, the
+    audit entry, every error response - is unchanged."""
+    try:
+        return downloads.prepare(
+            user_id=user.id,
+            document_id=document.id,
+            content=content,
+            media_type=media_type,
+            filename=filename,
+        )
+    except downloads.DownloadsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=DOWNLOADS_UNAVAILABLE) from exc
 
 
 def _included_summaries(document: Document) -> list[Summary]:
@@ -1981,7 +1992,10 @@ def _record_accounting(session: Session, document: Document):
 
 @router.post(
     "/{document_id}/export",
-    responses={409: {"description": "There are no summaries to export yet."}},
+    responses={
+        409: {"description": "There are no summaries to export yet."},
+        503: _DOWNLOAD_STORE_UNAVAILABLE,
+    },
 )
 def export_document(
     payload: ExportPayload | None = None,
@@ -1992,12 +2006,15 @@ def export_document(
     payload = payload or ExportPayload()
     content = _mrr_docx_bytes(session, document, payload, user)
     audit(session, "export", user.id, document.id)
-    return _attachment(content, DOCX_MIMETYPE, _summary_filename(document))
+    return _offer_download(content, DOCX_MIMETYPE, _summary_filename(document), document, user)
 
 
 @router.post(
     "/{document_id}/export/pdf",
-    responses={409: {"description": "There are no summaries to export yet."}},
+    responses={
+        409: {"description": "There are no summaries to export yet."},
+        503: _DOWNLOAD_STORE_UNAVAILABLE,
+    },
 )
 def export_document_pdf(
     payload: ExportPayload | None = None,
@@ -2010,10 +2027,10 @@ def export_document_pdf(
     payload = payload or ExportPayload()
     pdf_bytes = _linked_pdf_bytes(session, document, payload, user)
     audit(session, "export_pdf", user.id, document.id)
-    return _attachment(pdf_bytes, _PDF_MEDIA_TYPE, _linked_filename(document))
+    return _offer_download(pdf_bytes, _PDF_MEDIA_TYPE, _linked_filename(document), document, user)
 
 
-@router.post("/{document_id}/export/memo")
+@router.post("/{document_id}/export/memo", responses={503: _DOWNLOAD_STORE_UNAVAILABLE})
 def export_document_memo(
     payload: ExportPayload | None = None,
     document: Document = Depends(get_owned_document),
@@ -2036,12 +2053,15 @@ def export_document_memo(
     payload = payload or ExportPayload()
     content = _memo_docx_bytes(session, document, payload, user)
     audit(session, "export_memo", user.id, document.id)
-    return _attachment(content, DOCX_MIMETYPE, _memo_filename(document))
+    return _offer_download(content, DOCX_MIMETYPE, _memo_filename(document), document, user)
 
 
 @router.post(
     "/{document_id}/export/zip",
-    responses={409: {"description": "There are no summaries to export yet."}},
+    responses={
+        409: {"description": "There are no summaries to export yet."},
+        503: _DOWNLOAD_STORE_UNAVAILABLE,
+    },
 )
 def export_document_zip(
     payload: ExportZipPayload | None = None,
@@ -2082,15 +2102,18 @@ def export_document_zip(
         for name, blob in members:
             archive.writestr(name, blob)
     audit(session, "export_zip", user.id, document.id)
-    return _attachment(buffer.getvalue(), "application/zip", _zip_filename(document))
+    return _offer_download(
+        buffer.getvalue(), "application/zip", _zip_filename(document), document, user
+    )
 
 
 @router.post(
     "/{document_id}/bundle/pdf",
-    # Both codes come from `_matched_rows`, which this handler calls.
+    # 400 and 409 come from `_matched_rows`, which this handler calls; 503 from `_offer_download`.
     responses={
         400: {"description": "The category list is empty."},
         409: {"description": "No sub-document in this record matches those categories."},
+        503: _DOWNLOAD_STORE_UNAVAILABLE,
     },
 )
 def bundle_pdf(
@@ -2110,7 +2133,7 @@ def bundle_pdf(
     )
     audit(session, "bundle_pdf", user.id, document.id)
     filename = _download_name(document, payload, "pdf")
-    return _attachment(buffer.getvalue(), _PDF_MEDIA_TYPE, filename)
+    return _offer_download(buffer.getvalue(), _PDF_MEDIA_TYPE, filename, document, user)
 
 
 @router.post(
@@ -2132,7 +2155,7 @@ def bundle_pdf(
             "description": "The request body is invalid, OR no readable text was found in the "
             "matching documents / the PDF could not be opened."
         },
-        503: {"description": "Text recognition (OCR) is unavailable on the server."},
+        503: {"description": "Text recognition (OCR), or the download store, is unavailable."},
     },
 )
 def bundle_summarize(
@@ -2178,4 +2201,4 @@ def bundle_summarize(
     docx.save(buffer)
     audit(session, "bundle_summarize", user.id, document.id)
     filename = _download_name(document, payload, "docx")
-    return _attachment(buffer.getvalue(), DOCX_MIMETYPE, filename)
+    return _offer_download(buffer.getvalue(), DOCX_MIMETYPE, filename, document, user)
