@@ -11,7 +11,8 @@ import {
 } from "@/components/ui/dialog";
 import { BUNDLES } from "@/lib/bundle-api";
 import type { HeaderFields } from "@/lib/review-api";
-import { downloadFile } from "@/lib/download";
+import { type DownloadWatch, useDownloadWatch } from "@/hooks/use-download-watch";
+import { downloadFile, type PreparedDownload } from "@/lib/download";
 import { humanizeError } from "@/lib/errors";
 
 const DEFAULT_QME = "PANEL QUALIFIED MEDICAL EVALUATION (ML-10*-)";
@@ -54,6 +55,15 @@ export function ExportDialog({
   const [withPages, setWithPages] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // The download handed to the browser, watched until its outcome is known (#390). The dialog stays open
+  // meanwhile - the page cannot see the download itself - and closing it stops the watching.
+  const [handedOver, setHandedOver] = useState<PreparedDownload | null>(null);
+  const watch = useDownloadWatch(handedOver);
+  const locked = busy || watch.watching;
+
+  useEffect(() => {
+    if (!open) setHandedOver(null);
+  }, [open]);
 
   // Prefill from Auto-fill header each time the dialog opens (without clobbering manual edits mid-
   // session: we only seed on open). Empty header fields leave the inputs blank.
@@ -76,12 +86,13 @@ export function ExportDialog({
   ) {
     setBusy(true);
     setError("");
+    setHandedOver(null);
     try {
       // Was its own fetch, which threw `export failed (500)` without reading the body - so the
       // server's actual reason (a 422 naming the document it could not read, a 503 naming the AI
       // outage) never reached this dialog, and a 401 RETURNED, closing nothing and reporting
       // nothing while the browser navigated away.
-      await downloadFile(
+      const prepared = await downloadFile(
         `/documents/${documentId}/${endpoint}`,
         {
           patientName: patient,
@@ -93,7 +104,7 @@ export function ExportDialog({
         },
         fallbackName,
       );
-      onOpenChange(false);
+      setHandedOver(prepared);
     } catch (err) {
       setError(humanizeError(err, { fallback: "Export failed." }));
     } finally {
@@ -175,7 +186,7 @@ export function ExportDialog({
           </label>
         </div>
         <DialogFooter className="flex-wrap">
-          {error ? <span className="error-text mr-auto">{error}</span> : null}
+          {footerNote(error, watch)}
           <button
             type="button"
             className="ev-btn ev-btn-ghost"
@@ -188,7 +199,7 @@ export function ExportDialog({
             type="button"
             className="ev-btn ev-btn-ghost"
             onClick={() => runExport("export", "summaries.docx")}
-            disabled={busy}
+            disabled={locked}
           >
             {busy ? "Preparing..." : "Export to Word"}
           </button>
@@ -196,7 +207,7 @@ export function ExportDialog({
             type="button"
             className="ev-btn ev-btn-ghost"
             onClick={() => runExport("export/memo", "memo.docx")}
-            disabled={busy}
+            disabled={locked}
           >
             {busy ? "Preparing..." : "Download memo"}
           </button>
@@ -204,7 +215,7 @@ export function ExportDialog({
             type="button"
             className="ev-btn ev-btn-primary"
             onClick={() => runExport("export/pdf", "record_linked.pdf")}
-            disabled={busy}
+            disabled={locked}
           >
             {busy ? "Preparing..." : "Export to linked PDF"}
           </button>
@@ -224,12 +235,24 @@ export function ExportDialog({
                 })),
               })
             }
-            disabled={busy}
+            disabled={locked}
           >
             {busy ? "Preparing..." : "Download all (.zip)"}
           </button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** The footer's one sentence: an export error, else what the watched download is doing (#390). */
+function footerNote(error: string, watch: DownloadWatch) {
+  if (error) return <span className="error-text mr-auto">{error}</span>;
+  if (!watch.message) return null;
+  const tone = watch.tone === "err" ? "error-text" : "muted";
+  return (
+    <span role="status" className={`${tone} mr-auto`}>
+      {watch.message}
+    </span>
   );
 }

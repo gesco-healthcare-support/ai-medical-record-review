@@ -46,6 +46,7 @@ vi.mock("@/lib/bundle-api", async (importOriginal) => ({
 
 import { DIAGNOSTIC_OPERATIVE } from "@/lib/bundle-api";
 import { BundlePageClient } from "@/components/bundle/bundle-page-client";
+import { DOWNLOADING } from "@/hooks/use-download-watch";
 
 function listItem(id: string, overrides: Partial<DocumentListItem> = {}): DocumentListItem {
   return {
@@ -243,8 +244,17 @@ describe("switching records", () => {
     const qme = screen.getByLabelText(/Evaluation type/) as HTMLInputElement;
     const defaultQme = qme.value;
     fireEvent.change(qme, { target: { value: "AME" } });
+    // CHANGED EXPECTATION (#390), deliberately: the message a download leaves used to be "Combined PDF
+    // downloaded.", shown the moment the link was handed over. The line now reports the watched download,
+    // which here never gets an answer, so it stays at DOWNLOADING - still a result message to carry over.
+    downloadBundlePdf.mockResolvedValueOnce({
+      token: "tok",
+      url: "/api/documents/alpha/downloads/tok",
+      filename: "a.pdf",
+      size: 4,
+    });
     await user.click(screen.getByRole("button", { name: /Download combined PDF/i }));
-    expect(await screen.findByText("Combined PDF downloaded.")).toBeInTheDocument();
+    expect(await screen.findByText(DOWNLOADING)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Choose another record" }));
     // waitFor around a query, not `await findByRole`: a findBy that times out throws its OWN error
@@ -277,7 +287,7 @@ describe("switching records", () => {
       "the edited QME type carried into the next record",
     ).toHaveValue(defaultQme);
     expect(
-      screen.queryByText("Combined PDF downloaded."),
+      screen.queryByText(DOWNLOADING),
       "the last record's result message carried into the next record",
     ).toBeNull();
   });
