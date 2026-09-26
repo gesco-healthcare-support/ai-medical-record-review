@@ -808,12 +808,13 @@ def test_the_preamble_is_assembled_per_category():
         assert "ordinary sentence case" in preamble
         assert "Bold ONLY the short point/section labels" in preamble
     # The paragraph rule and the deposition rule are mutually exclusive, never both. The deposition
-    # wording changed on 2026-08-06 from one line per page to groups of three, so this asserts the
+    # wording changed on 2026-08-06 from one line per page to groups of three, and on 2026-09-25 to
+    # groups of ten (the senior reviewer's instruction), so this asserts the
     # CURRENT rule - if it ever asserted both, the two would be contradicting each other in one
     # preamble, which is the defect the category-9 prompt already had.
     assert "ONE continuous paragraph" in treating
-    assert "GROUPS OF THREE" not in treating
-    assert "GROUPS OF THREE" in deposition
+    assert "GROUPS OF TEN" not in treating
+    assert "GROUPS OF TEN" in deposition
     assert "ONE continuous paragraph" not in deposition
     # And the point of the exercise: the laboratory prompt is materially shorter.
     assert len(lab) < len(treating) * 0.7
@@ -3239,3 +3240,21 @@ def test_a_job_description_gets_the_minimal_preamble():
     assert se._C_NORMAL_FINDINGS not in preamble
     assert preamble == se.build_preamble("16")
     assert preamble != se.build_preamble("999")
+
+
+def test_the_deposition_checker_expects_the_grouping_the_prompt_asks_for():
+    """GUARD: scripts/dev/verify_deposition_format.py still checked three-page steps after the prompt
+    moved to ten (Adrian's review of #412), so it would have called every correct deposition wrong.
+    Pinned to the prompt so the two cannot drift apart again."""
+    import importlib.util
+    from pathlib import Path
+
+    from app.services import prompts
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "dev" / "verify_deposition_format.py"
+    spec = importlib.util.spec_from_file_location("verify_deposition_format", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    words = {3: "THREE", 10: "TEN"}
+    assert f"GROUPS OF {words[module._GROUP_PAGES]}" in prompts.prompts["category_09"]
+    assert f"GROUPS OF {words[module._GROUP_PAGES]}" in se.build_preamble("9")
