@@ -412,6 +412,16 @@ services:
     depends_on:
       - api
 
+  # The documentation site: docs/ built with Material for MkDocs (docs-site/) and served by nginx.
+  # No host port - the proxy routes /docs/ here. Like every image in this file it is baked, so a
+  # docs change needs `docker compose build docs` and `up -d --force-recreate docs` to show.
+  docs:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: docs-site/Dockerfile
+    image: mrr-docs
+
   proxy:
     restart: unless-stopped
     image: nginx:1.27
@@ -422,6 +432,7 @@ services:
     depends_on:
       - api
       - web
+      - docs
 
 volumes:
   mrr_pgdata:

@@ -1,0 +1,82 @@
+# MRR AI documentation site. Source pages live in ../docs (plain Markdown that also reads well on
+# GitHub); this file only says how to build them. Build: `uv run mkdocs build --strict`.
+# Preview: `uv run mkdocs serve`. Full guide: docs/how-to/work-on-these-docs.md.
+site_name: MRR AI documentation
+site_description: How the AI Medical Record Review app works, how to run it, and how to change it.
+# Only the PATH matters: the box serves the site at /docs/ behind the app's nginx proxy, and the
+# 404 page builds its asset links from this path. The host is a placeholder.
+site_url: http://localhost:8080/docs/
+repo_url: https://github.com/gesco-healthcare-support/ai-medical-record-review
+repo_name: ai-medical-record-review
+edit_uri: edit/main/docs/
+docs_dir: ../docs
+site_dir: site
+
+# Every warning is an error: a broken link, a missing anchor or a page left out of `nav` fails the
+# build, locally and in CI. That is what keeps the site from rotting quietly.
+strict: true
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+# docs/plans/ and docs/backlog.md are local working files (gitignored) and never part of the site.
+exclude_docs: |
+  plans/
+  backlog.md
+  # TEMPORARY - pages written for the old layout, replaced and removed by the content change.
+  RUNBOOK.md
+  segmentation-approach-explained.md
+  how-to/add-a-category.md
+  explanation/categorization.md
+
+theme:
+  name: material
+  # System fonts: no request to Google Fonts from a reader's browser.
+  font: false
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md

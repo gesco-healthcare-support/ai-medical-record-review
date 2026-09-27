@@ -36,6 +36,9 @@ myenv/
 venv/
 env/
 
+# ---- Documentation site build output (docs-site/, rebuilt by `mkdocs build`) ----
+docs-site/site/
+
 # ---- Exploratory spikes (carry hardcoded key fallbacks and/or PHI sample paths) ----
 gemini_trial*.py
 diag_slice.py
