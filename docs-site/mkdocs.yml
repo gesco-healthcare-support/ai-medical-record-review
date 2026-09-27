@@ -25,11 +25,6 @@ validation:
 exclude_docs: |
   plans/
   backlog.md
-  # TEMPORARY - pages written for the old layout, replaced and removed by the content change.
-  RUNBOOK.md
-  segmentation-approach-explained.md
-  how-to/add-a-category.md
-  explanation/categorization.md
 
 theme:
   name: material
@@ -78,5 +73,55 @@ markdown_extensions:
   - pymdownx.tabbed:
       alternate_style: true
 
+# Every page must be listed (validation.omitted_files). Titles come from each page's own heading.
 nav:
   - Home: index.md
+  - Tutorials:
+      - tutorials/first-day.md
+  - How-to guides:
+      - Running it:
+          - how-to/run-the-app-locally.md
+          - how-to/run-the-tests.md
+          - how-to/deploy-to-the-server.md
+          - how-to/back-up-and-restore.md
+          - how-to/manage-users-and-admins.md
+          - how-to/diagnose-a-stuck-or-failed-job.md
+          - how-to/troubleshoot-a-summary.md
+          - how-to/switch-model-backends.md
+      - Changing it:
+          - how-to/add-or-change-a-category.md
+          - how-to/change-a-summary-prompt-or-rule.md
+          - how-to/create-a-database-migration.md
+          - how-to/add-an-api-route-or-export.md
+          - how-to/add-a-job-kind-or-stage.md
+          - how-to/extend-the-frontend.md
+          - how-to/work-on-these-docs.md
+  - Reference:
+      - reference/http-api.md
+      - reference/errors-and-messages.md
+      - reference/configuration.md
+      - reference/model-calls-by-stage.md
+      - reference/job-and-document-states.md
+      - reference/data-model.md
+      - reference/migrations.md
+      - reference/export-formats.md
+      - reference/compose-services.md
+      - reference/ci-and-merge-gates.md
+      - reference/scripts.md
+      - reference/frontend-routes-and-data.md
+      - reference/design-system.md
+      - reference/glossary.md
+  - Explanation:
+      - explanation/architecture.md
+      - explanation/pipeline-and-jobs.md
+      - explanation/ocr-and-page-text.md
+      - explanation/segmentation.md
+      - explanation/categorization.md
+      - explanation/duplicate-detection.md
+      - explanation/summarization.md
+      - explanation/deliverable-layout.md
+      - explanation/exports-and-downloads.md
+      - explanation/model-providers.md
+      - explanation/configuration-model.md
+      - explanation/auth-and-access.md
+      - explanation/frontend-workbench.md
