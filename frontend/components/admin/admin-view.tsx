@@ -32,9 +32,10 @@ function errMessage(err: unknown, fallback: string) {
   });
 }
 
-/** Admin console: the category catalog + per-category summary prompts, plus reprocessing a
- *  summarized record with the current prompts. is_admin gated (the API also 403s; this adds a
- *  friendly notice for a non-admin who deep-links). */
+/** Admin console: the category catalog + per-category summary prompts, plus reprocessing a record
+ *  (a summarize run: rows without a summary are written with the current prompts, and a summary
+ *  whose row is unchanged is kept). Gated on the user's `is_superuser` (the `is_admin` column); the
+ *  API also 403s, and this adds a friendly notice for a non-admin who deep-links. */
 export function AdminView() {
   const { data: user, isLoading: userLoading } = useCurrentUser();
   const { data: categories = [], isLoading } = useCategories();

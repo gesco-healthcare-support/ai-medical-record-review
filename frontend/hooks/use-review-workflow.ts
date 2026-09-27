@@ -61,10 +61,11 @@ function message(err: unknown, fallback: string) {
   });
 }
 
-/** The identify -> review (-> summaries) lifecycle shared by /records/[id] and the category-bundle
- *  pages: boot from persisted state, poll a running job every 1s, autosave rows. A null documentId
- *  is idle (the bundle picker before a document is chosen). When enableSummaries is false (bundle),
- *  a finished record opens the editor instead of the summaries step, and summaries are never shown. */
+/** The identify -> review (-> summaries) lifecycle of the /records/[id] workbench
+ *  (review-page-client, its only caller): boot from persisted state, poll a running job every 1s,
+ *  autosave rows. A null documentId is idle. `enableSummaries: false` makes a finished record open
+ *  the editor instead of the summaries step and never shows summaries; it and the idle state were
+ *  built for the category-bundle pages, which no longer use this hook. */
 export function useReviewWorkflow(
   documentId: string | null,
   options: { enableSummaries?: boolean } = {},

@@ -46,7 +46,7 @@ x-backend-env: &backend-env
   # 7.8/min. By Little's Law the saturation point for a 20 rpm budget is 20/60 * 15.4 = ~5
   # concurrent rows, so 5 fills the existing budget without raising it.
   #
-  # Do NOT push this far past the saturation point. rate_limit.acquire() abandons its wait after
+  # Do NOT push this far past the saturation point. llm/pacing.acquire() abandons its wait after
   # MAX_ACQUIRE_WAIT_S (300s) and proceeds anyway, so enough queued callers stop being rate limited
   # at all. At 3 summarize workers x 5 chains against 20 rpm the mean wait is ~30s, well inside it.
   #
@@ -344,7 +344,7 @@ services:
         UV_EXTRAS: "--extra docs"
         # The commit this image is built from, stamped onto every job row so a stored summary can be
         # traced to the code that produced it. Defaults to "unknown" so a local build is honestly
-        # labelled rather than mislabelled; deploy sets it (see docs/RUNBOOK.md).
+        # labelled rather than mislabelled; deploy sets it (see docs/how-to/deploy-to-the-server.md).
         GIT_SHA: ${GIT_SHA:-unknown}
     image: mrr-backend-web
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

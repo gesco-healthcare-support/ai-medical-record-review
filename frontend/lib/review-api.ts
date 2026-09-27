@@ -120,8 +120,10 @@ export type HeaderFields = {
   pages_received: string;
 };
 
-/** POST /api/documents/{id}/extract-header - re-extract the header from the record (Vertex). Does
- *  NOT persist; the caller populates the editable bar and the reviewer saves via saveHeader. */
+/** POST /api/documents/{id}/extract-header - re-extract the header from the record's first pages
+ *  (a model call) AND persist it: a field the extraction found overwrites the stored one, a field it
+ *  did not find keeps the stored value. The reply holds only the four detected fields (patient
+ *  first and last name, date of birth, law firm), not the whole header. */
 export function extractHeader(id: string) {
   return apiFetch<HeaderFields>(`/documents/${id}/extract-header`, { method: "POST" });
 }
