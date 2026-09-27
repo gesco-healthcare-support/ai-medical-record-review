@@ -225,6 +225,28 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks dir . --redact --no-banner --exit-code 1
 
+  # The documentation site (docs-site/), built exactly as the `docs` image builds it. --strict turns
+  # every warning into a failure: a broken link, a missing anchor, or a page under docs/ that is not
+  # in mkdocs.yml's nav. That is the check that stops the docs from drifting away from each other.
+  docs:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs-site
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install the site tooling (locked)
+        run: uv sync --frozen
+
+      - name: Build the site (strict)
+        run: uv run --frozen mkdocs build --strict
+
   # Coverage floor. A SEPARATE job so a shortfall reads as "coverage" rather than as a test job
   # failing. Two halves, one job - so the ruleset needs ONE check name to enforce both:
   #   backend   90, on coverage.py's branch-aware total (one number)
