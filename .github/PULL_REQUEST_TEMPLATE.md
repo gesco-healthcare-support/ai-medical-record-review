@@ -1,6 +1,7 @@
 <!--
-Gesco MRR AI PR template. Fill every section. See ~/.claude/rules/pr-format.md.
-Stack: Next.js (frontend/) + FastAPI (backend/), Postgres, Redis/RQ workers, Vertex/Gemini,
+Gesco MRR AI PR template. Fill every section.
+Stack: Next.js (frontend/) + FastAPI (backend/), Postgres, Redis/RQ workers, model calls through
+one provider seam (Gemini on Vertex by default; OpenAI and self-hosted vLLM by configuration),
 Tesseract + Poppler OCR.
 Title format (set above): <type>(<scope>): <subject>  -- 50 target, 72 hard cap, ASCII only, scope required.
 Scopes: see .claude/rules/commit-scopes.md - that file is the source of truth, and adding a
@@ -48,26 +49,27 @@ None
 None
 
 ## Documentation
-- [ ] Feature CLAUDE.md updated (if applicable)
-- [ ] docs/ updated (if applicable)
-- [ ] Prompt-engineering changelog updated (if prompts changed)
+- [ ] The folder's README.md / CLAUDE.md updated (if its rules or layout changed)
+- [ ] docs/ pages updated (a changed setting, route, table, migration, compose service or frontend route needs its reference row - the drift test checks)
+- [ ] `cd docs-site && uv run --frozen mkdocs build --strict` passes (if docs/ changed)
 - [ ] No new docs needed
 
 ## HIPAA / PHI Impact (STRICT -- this project handles raw PHI)
 <!--
-This project transmits raw medical record content to OpenAI and Gemini APIs.
+This project sends raw medical record content to model providers: Gemini on Vertex by default,
+and OpenAI or a self-hosted vLLM server when configured.
 Any change to prompts, logging, caching, OCR output handling, or response storage
 REQUIRES a narrative paragraph below covering:
 - What PHI flows through this change.
 - Where it is persisted (logs, cache, DB, temp files).
 - Retention policy for any new stored data.
-- Which third parties (OpenAI, Gemini) see the data and what their data-use terms say.
+- Which model provider or server sees the data and what its data-use terms say.
 -->
 - [ ] No real patient data used in tests, fixtures, or examples; synthetic only.
 - [ ] New logging does NOT capture raw PDF content, OCR output, or LLM prompt/response bodies.
 - [ ] If prompts were changed, they do NOT include PHI in system prompts or few-shot examples.
 - [ ] No new PHI persisted to disk beyond the documented upload-and-delete lifecycle.
-- [ ] Third-party data-use terms (OpenAI, Gemini) confirmed to match HIPAA BAA requirements for this data type.
+- [ ] The model providers' data-use terms (Vertex, OpenAI) or the self-hosted server's controls confirmed to match HIPAA BAA requirements for this data type.
 - [ ] If a BAA does not cover the API call path, the PR is blocked -- route through approved APIs only.
 
 ## Additional Notes

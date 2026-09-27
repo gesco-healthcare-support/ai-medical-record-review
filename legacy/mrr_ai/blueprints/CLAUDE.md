@@ -1,5 +1,7 @@
 # blueprints
 
+> **LEGACY - nothing here runs.** This describes the retired Flask app, archived under `legacy/`. The current backend is `backend/` (see the root `CLAUDE.md` and `backend/CLAUDE.md`). Do not follow these instructions for current code.
+
 HTTP routes grouped by area (26 routes total). Each module defines `bp = Blueprint(...)`
 and is registered in `__init__.py:register_blueprints`.
 

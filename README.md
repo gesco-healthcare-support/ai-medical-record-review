@@ -1,104 +1,71 @@
-# AI Medical Record Review (MRR AI)
+# MRR AI - AI Medical Record Review
 
-Turns a large scanned medical-record PDF (200-2600 pages) into a summarized Medical Record Review.
-A reviewer corrects the machine's work at every stage - the app is an assistant, not an autopilot.
+Turns a large scanned medical-record PDF (hundreds to a few thousand pages) into a reviewed,
+summarized Medical Record Review. The app finds the sub-documents in the record, categorizes them,
+lets a reviewer correct everything, checks for duplicates, summarizes each sub-document with a
+category-specific prompt, and exports the review. A reviewer corrects the machine's work at every
+stage: the app is an assistant, not an autopilot.
 
-> **PHI / HIPAA.** This app processes real patient medical records and sends content to a
-> BAA-covered Vertex endpoint. Never commit patient data: not PDFs, not OCR text, not page maps, not
-> Word deliverables - their **filenames alone carry patient surnames**. Sample and labelled data live
-> outside the repo. Stricter PHI review is required on every PR.
+> **Patient data.** This app processes real medical records. Never commit PDFs, OCR text, exports
+> or Word files - their filenames alone can carry patient surnames. Sample and labelled data live
+> outside the repository. Every pull request carries a PHI review section.
 
-## Pipeline
+## Documentation
 
-1. **Segment** the PDF into sub-documents (page ranges) - Gemini vision over overlapping windows.
-2. **Categorize** each sub-document - a rules -> embeddings -> Gemini-enum cascade.
-3. **Review & correct** - the reviewer fixes boundaries, categories and metadata, and chooses which
-   sub-documents to summarize.
-4. **Duplicate check** - started by the reviewer, over the rows they selected.
-5. **Summarize** each selected sub-document with a category-specific prompt.
-6. **Export** the assembled review.
+The full documentation is a searchable site built from [`docs/`](docs/index.md):
 
-Stages pass state through Postgres rows, not files. Jobs run on Redis/RQ workers.
+- on a running stack: <http://localhost:8080/docs/> (and `/docs/` on the server);
+- on GitHub: the Markdown files under [`docs/`](docs/index.md) read as they are;
+- locally while writing: see [`docs-site/README.md`](docs-site/README.md).
 
-## Layout
+Start with:
 
-| directory      | what                                                                                          |
-| -------------- | --------------------------------------------------------------------------------------------- |
-| `backend/`     | FastAPI app, SQLAlchemy + Alembic, RQ workers, prompts, tests                                 |
-| `frontend/`    | Next.js app; the review workbench is `/records/[id]`                                          |
-| `docs/`        | documentation - start at [`docs/INDEX.md`](docs/INDEX.md)                                     |
-| `experiments/` | segmentation research; `a1-segmentation/EXPERIMENT-LOG.md` is worth reading                   |
-| `legacy/`      | **the pre-rewrite Flask app. Nothing here runs** - see [`legacy/README.md`](legacy/README.md) |
+| if you want to | read |
+| --- | --- |
+| understand the system | [Architecture](docs/explanation/architecture.md) |
+| run it on your machine | [Run the app locally](docs/how-to/run-the-app-locally.md), then the [first-day tutorial](docs/tutorials/first-day.md) |
+| run the tests | [Run the tests](docs/how-to/run-the-tests.md) |
+| deploy it | [Deploy to the server](docs/how-to/deploy-to-the-server.md) and [Back up and restore](docs/how-to/back-up-and-restore.md) |
+| look something up | [Glossary](docs/reference/glossary.md), [HTTP API](docs/reference/http-api.md), [Configuration](docs/reference/configuration.md) |
 
-New here? Read [`CLAUDE.md`](CLAUDE.md) - it is written for AI assistants but it is the fastest
-orientation for a human too, and it lists the traps.
-
-## Run it
+## Quick start
 
 ```bash
-cp .env.example .env      # then fill it in
-docker compose up -d      # http://localhost:8080
-docker compose exec api alembic upgrade head   # first run, empty database
+cp deploy/env.docker.example .env               # then set SECRET_KEY and SECURITY_PASSWORD_SALT
+docker compose build
+docker compose up -d --wait postgres redis
+docker compose run --rm api alembic upgrade head   # create or update the schema
+docker compose up -d
 ```
 
-Vertex is the BAA-covered AI path and is required in production. A service-account key can be
-mounted at `secrets/vertex-sa.json`. `SECRET_KEY` and `SECURITY_PASSWORD_SALT` are required
-(sessions + password hashing) - generate each once per machine and keep them stable: rotating
-`SECRET_KEY` logs everyone out, and rotating the salt invalidates every stored password.
+Open <http://localhost:8080>. The details - which values are required, how to generate the
+secrets, how model credentials are supplied - are in
+[Run the app locally](docs/how-to/run-the-app-locally.md).
 
-```bash
-python -c "import secrets; print(secrets.token_hex(32))"
-```
+## Repository layout
 
-## Develop
+| path | what it is |
+| --- | --- |
+| [`backend/`](backend/README.md) | FastAPI API, RQ workers, SQLAlchemy models, Alembic migrations, the pipeline services and their tests. |
+| [`frontend/`](frontend/README.md) | Next.js app: the documents list, the record workbench, bundles and admin. |
+| [`deploy/`](deploy/README.md) | The nginx proxy config and the one-time server bootstrap script. |
+| [`docs/`](docs/index.md) | The documentation pages. |
+| [`docs-site/`](docs-site/README.md) | The tooling that builds `docs/` into the site. |
+| `docker-compose.yml` | The app stack (the same file runs locally and on the server). |
+| `docker-compose.dev.yml` | The throwaway test database and Redis for the backend suite. |
+| `deploy/env.docker.example`, `.env.example` | Environment templates: the first is the minimal set for the container stack, the second lists every tunable setting with its reasoning. |
+| [`experiments/`](experiments/a1-segmentation/README.md) | Segmentation research; `a1-segmentation/EXPERIMENT-LOG.md` records what was measured and rejected. |
+| [`legacy/`](legacy/README.md) | The pre-rewrite Flask app and its old docs. **Nothing there runs.** |
+| `pyproject.toml`, `uv.lock`, `serve.py` (repo root) | Leftovers of the Flask app. The backend's own project is `backend/pyproject.toml`; do not run `uv sync` or `pytest` from the repo root. |
 
-```bash
-cd backend && uv sync
-uv run ruff check . && uv run ruff format .
-uv run pyright                      # advisory
-```
+## Contributing
 
-```bash
-cd frontend && pnpm install
-pnpm test        # vitest
-pnpm typecheck
-```
+Changes arrive by pull request into `main`; direct pushes are blocked and every required CI check
+must pass. Commit messages and PR titles follow `<type>(<scope>): <subject>` with the scopes listed
+in [`.claude/rules/commit-scopes.md`](.claude/rules/commit-scopes.md). Update the docs in the same
+pull request as the code they describe - see
+[Work on these docs](docs/how-to/work-on-these-docs.md). The checks each pull request must pass are
+in [CI and merge gates](docs/reference/ci-and-merge-gates.md).
 
-### Tests
-
-The suite runs against a **separate throwaway database**, not the app's:
-
-```bash
-docker compose -f docker-compose.dev.yml up -d postgres   # test DB, port 5432
-cd backend && uv run alembic upgrade head && uv run pytest -q
-```
-
-Do **not** set `DATABASE_URL` to point at the app database (port 5433). The fixtures insert and
-delete rows; `backend/tests/conftest.py` refuses and explains why.
-
-### Things that catch people out
-
-- **The images are baked, not bind-mounted.** Editing `backend/` or `frontend/` does nothing to a
-  running container until you rebuild and recreate it.
-- **`docker compose up -d web` will report "Running" and not pick up a new image.** Use
-  `--force-recreate`, or a frontend change ships as a silent no-op.
-- **Seeding is one-shot.** `seed_catalog()` returns early once any category row exists, so editing a
-  seed constant changes nothing on an existing database - carry it in a migration instead.
-- **A 429 from Vertex is Dynamic Shared Quota**, not an exhausted allowance. Retry; there is nothing
-  to wait for.
-
-Pre-commit runs gitleaks, detect-private-key and a large-file check to keep secrets and patient PDFs
-out of git. CI runs backend tests, frontend tests, e2e, secret scanning and SonarCloud on every PR.
-
-## Deploy
-
-See [`docs/RUNBOOK.md`](docs/RUNBOOK.md). Back up the database before running migrations; the runbook
-has the exact commands.
-
-## Status
-
-Live and deployed. Recent work: per-call model tiering with prompt provenance, an additive-increase
-pacer for Vertex admission, date-first duplicate clustering, duplicate detection gated behind review
-and scoped to selected rows, deposition summaries in three-page groups with transcript page
-citations, a single injury-date read at segmentation, and a page-text store so each page is OCR'd
-once.
+AI coding assistants: read [`CLAUDE.md`](CLAUDE.md) first; each folder has its own `CLAUDE.md`
+with the rules for that area.
