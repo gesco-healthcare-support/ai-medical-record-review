@@ -8,7 +8,7 @@ Source of truth:
 - the three workflows in `.github/workflows/` (`ci.yml`, `guard-tests.yml`, `promotion-guard.yml`);
 - `.github/scripts/promotion_guard.py`;
 - `backend/scripts/ci/lint_new_migrations.py`;
-- `sonar-project.properties` and `.pre-commit-config.yaml`;
+- `sonar-project.properties`, `.pre-commit-config.yaml` and `.github/dependabot.yml`;
 - the repository rulesets (GitHub repository settings, not files in the repository).
 
 `backend/tests/test_docs_reference_drift.py` fails when a job in any workflow is missing from the
@@ -336,7 +336,8 @@ No other repository secret is referenced. The `SECRET_KEY`, `SECURITY_PASSWORD_S
 ## Pinned versions
 
 Every action is pinned to a full commit SHA, with its version in a comment beside the pin. A tag
-can be moved to different code; a SHA cannot. Pin a new action the same way. `workflow-lint` runs
+can be moved to different code; a SHA cannot. Pin a new action the same way; Dependabot keeps the
+pins current (next section). `workflow-lint` runs
 zizmor, which audits the workflows for unpinned actions among other problems.
 
 | Tool | Version | Where |
@@ -353,6 +354,25 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | zizmor | 1.30.1 | `workflow-lint` |
 | Squawk | `squawk-cli` 2.66.0 | `backend` (migration lint) |
 | Postgres, Redis service images | `postgres:16`, `redis:7` | `backend` |
+
+## Dependency updates (`.github/dependabot.yml`)
+
+Dependabot opens update pull requests into `main` every week. They pass the same required checks
+as any other pull request. Minor and patch updates are grouped into one pull request per
+ecosystem; a major update comes on its own. A new release waits 7 days (`cooldown`) before it is
+proposed; security updates are never delayed.
+
+| Ecosystem | Where | Commit prefix |
+| --- | --- | --- |
+| `uv` | `backend/`, `docs-site/` | `chore(tooling)` |
+| `npm` | `frontend/` | `chore(tooling)` |
+| `github-actions` | the workflows | `chore(ci)` |
+| `docker` | the Dockerfiles in `backend/`, `frontend/`, `docs-site/` | `chore(tooling)` |
+| `docker-compose` | the images `docker-compose.yml` pulls (postgres, redis, nginx) | `chore(tooling)` |
+
+The legacy Flask app at the repository root is left out; it is not deployed. A postgres major
+update (16 to 17) changes the on-disk data format, so never merge one without a dump-and-restore
+plan.
 
 ## Local hooks (`.pre-commit-config.yaml`)
 
