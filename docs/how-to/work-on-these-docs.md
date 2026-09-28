@@ -143,7 +143,8 @@ Keeping them useful to an agent:
   hold, the trap that already cost a bug, the command to run. Everything else is noise it re-reads
   on every visit.
 - **Cite code as `path` plus symbol.** The exact checks then catch a rename or deletion the moment
-  it happens.
+  it happens. Write the symbol exactly as the file spells it, case included: an environment
+  variable's upper-case name does not match the lower-case setting that reads it.
 - **When a rule stops being true, delete it.** A stale rule in CLAUDE.md is followed; a stale
   sentence on a page is only read.
 

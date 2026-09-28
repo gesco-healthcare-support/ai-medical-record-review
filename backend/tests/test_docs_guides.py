@@ -132,7 +132,8 @@ def test_the_symbol_enumeration_found_the_symbols():
 def test_every_cited_symbol_exists_in_its_file(doc, path, symbol):
     source = (REPO / path).read_text(encoding="utf-8", errors="replace")
     assert docs_guides.symbol_in_source(symbol, source), (
-        f"{doc} cites `{symbol}` in `{path}`, which no longer contains it. {FIX_HINT}"
+        f"{doc} cites `{symbol}` in `{path}`, which no longer contains it (the match is "
+        f"case-sensitive). {FIX_HINT}"
     )
 
 
