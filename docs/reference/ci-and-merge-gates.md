@@ -40,6 +40,7 @@ All jobs run on `ubuntu-latest`.
 | Job | Workflow | needs | What it runs | Fails when |
 | --- | --- | --- | --- | --- |
 | `backend` | `ci.yml` | - | Ruff lint and format check, an import smoke test, migration checks (one head; on pull requests, Squawk on the SQL of new migrations), migrations, `alembic check`, then the pytest suite with branch coverage, against Postgres and Redis service containers | Any lint or format finding, the import fails, a migration check fails, a migration fails, the models need a migration nobody wrote, or any test fails |
+| `backend-types` | `ci.yml` | - | pyright 1.1.414 in standard mode on `backend/app` (settings in `backend/pyproject.toml` `[tool.pyright]`); the error count goes to the job summary | Never blocks a merge: the job has `continue-on-error: true`, so it shows as failed while errors remain but fails neither the run nor any required check |
 | `frontend` | `ci.yml` | - | Typecheck, production build, Vitest with coverage | A type error, a build error, or any test fails |
 | `e2e` | `ci.yml` | - | Builds and starts the app stack with Compose (without workers), then Playwright | The app is not ready within the wait loop, or any spec fails |
 | `secret-scan` | `ci.yml` | - | gitleaks over the checked-out files | gitleaks reports a finding |
@@ -358,6 +359,7 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | gitleaks | 8.30.0 | `secret-scan` (and the pre-commit hook) |
 | actionlint | 1.7.12, checksum verified | `workflow-lint` |
 | zizmor | 1.30.1 | `workflow-lint` |
+| pyright | 1.1.414 | `backend-types` |
 | Squawk | `squawk-cli` 2.66.0 | `backend` (migration lint) |
 | Postgres, Redis service images | `postgres:16`, `redis:7` | `backend` |
 
