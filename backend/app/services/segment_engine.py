@@ -21,7 +21,7 @@ from app.services.gemini import (
     SEGMENTATION_SYSTEM,
     parse_segment_item,
 )
-from app.services.llm import DocumentPart, TextPart, provider_for_stage
+from app.services.llm import DocumentPart, Part, TextPart, provider_for_stage
 from app.services.ocr import extract_pages_with_report
 from app.services.pools import PoolTimeout, drain_pool
 from app.services.rasterise import page_image_parts
@@ -93,7 +93,7 @@ def _window_byte_bounds(settings) -> tuple[int, int | None]:
     return budget, _GEMINI_INLINE_PAGE_LIMIT
 
 
-def _window_parts(pdf_path, window_start, window_end, settings):
+def _window_parts(pdf_path, window_start, window_end, settings) -> list[Part]:
     """The window payload, which is a different SHAPE per backend rather than a different value.
 
     vLLM cannot carry an inline PDF at all: `llm/vllm.py` converts parts through
