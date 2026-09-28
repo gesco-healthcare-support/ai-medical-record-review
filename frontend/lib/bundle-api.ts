@@ -1,5 +1,5 @@
-/** Category-bundle downloads (Diagnostic & Operative / Depositions). Both stream a file, so they
- *  go through `downloadFile` (not the JSON apiFetch) to read the blob + Content-Disposition. */
+/** Category-bundle downloads (Diagnostic & Operative / Depositions). Both end in a file, so they
+ *  go through `downloadFile` (not the JSON apiFetch), which hands it to the browser to download. */
 
 import { downloadFile } from "@/lib/download";
 

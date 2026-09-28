@@ -14,6 +14,12 @@ const NOT_FOUND =
 // apiFetch's synthetic message when the server sent no detail/error body, e.g. "/documents/x failed (500)".
 const SYNTHETIC_FALLBACK = /failed \(\d+\)$/;
 
+/** True when the server's answer carried no sentence of its own - `errorFromResponse` then synthesized
+ *  "<path> failed (<status>)", which is never shown to a reviewer. */
+export function lacksServerMessage(err: ApiError): boolean {
+  return SYNTHETIC_FALLBACK.test(err.message);
+}
+
 /**
  * True when the request never reached the server - `apiFetch` and `downloadFile` both raise
  * `ApiError("network", 0)` for a transport failure, which has no HTTP status.

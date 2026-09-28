@@ -237,3 +237,47 @@ def test_the_running_header_carries_the_patient_name_and_dob(tmp_path):
     doc.close()
     assert "Synthetic Patient" in summary_text
     assert "01/01/1990" in summary_text
+
+
+# A deposition body is one paragraph per page group, and the linked PDF used to print it as ONE
+# block: the body goes into HTML, where a newline is only whitespace. The senior reviewer read a
+# whole transcript summary that way and asked for it "broken up into multiple paragraphs"
+# (2026-09-25).
+_DEPO = "On pages 1 to 10, asked a question.\nOn pages 11 to 20, stated an answer."
+
+
+def _line_starts(data) -> list[str]:
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    starts = []
+    for page in doc:
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                text = "".join(span["text"] for span in line["spans"]).strip()
+                if text:
+                    starts.append(text)
+    return starts
+
+
+def test_each_deposition_paragraph_starts_its_own_line(tmp_path):
+    """DEMONSTRATES the fix: the second page group opens a line of its own, not mid-sentence."""
+    source = _make_source(tmp_path, pages=2)
+    entries = [
+        {
+            "summaryDate": "01/01/2020",
+            "linkTitle": "DEPOSITION OF A WITNESS",
+            "summaryText": _DEPO,
+            "startPage": 1,
+        },
+    ]
+    data = build_linked_pdf(
+        source,
+        entries,
+        num_pages=2,
+        patient_name="Synthetic Patient",
+        patient_dob="-",
+        qme_or_ame="QME",
+        details=ReportDetails(lawfirm="Example Firm"),
+    )
+    starts = _line_starts(data)
+    assert any(s.startswith("On pages 11 to 20") for s in starts)
+    assert not any("asked a question. On pages 11" in s for s in starts)

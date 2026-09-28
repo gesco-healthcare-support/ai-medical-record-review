@@ -13,25 +13,27 @@ const CONFIG = {
   downloadName: "List of Diagnostic and Operative Reports",
 };
 
+/** What a bundle POST answers with since #389: where to fetch the file it built, and its name. */
+const PREPARED = {
+  token: "tok",
+  filename: "records 3-4.pdf",
+  size: 4,
+  url: "/api/documents/doc-1/downloads/tok",
+};
+
 let downloaded: string[] = [];
 
-function respond(status: number, headers: Record<string, string>, body?: unknown) {
+function respond(status: number, body: unknown = PREPARED) {
   return {
     status,
     ok: status >= 200 && status < 300,
-    headers: { get: (k: string) => headers[k] ?? null },
-    blob: async () => new Blob(["stub"]),
+    headers: { get: () => null },
     json: async () => body,
   } as unknown as Response;
 }
 
 beforeEach(() => {
   downloaded = [];
-  Object.defineProperty(URL, "createObjectURL", {
-    value: vi.fn(() => "blob:stub"),
-    configurable: true,
-  });
-  Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
   vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
     this: HTMLAnchorElement,
   ) {
@@ -42,19 +44,15 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("downloadBundlePdf", () => {
-  it("takes the filename the server sent in Content-Disposition", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        respond(200, { "Content-Disposition": 'attachment; filename="records 3-4.pdf"' }),
-      ),
-    );
+  it("takes the filename the server gave the prepared file", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => respond(200)));
     await downloadBundlePdf("doc-1", CONFIG);
     expect(downloaded).toEqual(["records 3-4.pdf"]);
   });
 
   it("falls back to the bundle slug when the server names nothing", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => respond(200, {})));
+    const { filename: _dropped, ...unnamed } = PREPARED;
+    vi.stubGlobal("fetch", vi.fn(async () => respond(200, unnamed)));
     await downloadBundlePdf("doc-1", CONFIG);
     expect(downloaded).toEqual(["diagnostic-operative.pdf"]);
   });
@@ -63,7 +61,7 @@ describe("downloadBundlePdf", () => {
     // DEMONSTRATES the reviewers' request from this side. The server prepends the patient name;
     // it can only do that for a bundle whose name it was told, so the field has to leave here.
     // `spyOn` rather than `stubGlobal` so the recorded call keeps fetch's argument types.
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200, {}));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200));
     await downloadBundlePdf("doc-1", CONFIG);
     const body = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
     expect(body.downloadName).toBe("List of Diagnostic and Operative Reports");
@@ -72,7 +70,7 @@ describe("downloadBundlePdf", () => {
   it("raises the server's own reason rather than a bare status code", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => respond(409, {}, { detail: "no matching documents in this record" })),
+      vi.fn(async () => respond(409, { detail: "no matching documents in this record" })),
     );
     await expect(downloadBundlePdf("doc-1", CONFIG)).rejects.toThrow(/no matching documents/);
     expect(downloaded).toEqual([]);
@@ -85,7 +83,7 @@ describe("downloadBundlePdf", () => {
     // tests, one broken delivery; this one covers the join between them.
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => respond(409, {}, { detail: "no matching documents in this record" })),
+      vi.fn(async () => respond(409, { detail: "no matching documents in this record" })),
     );
     await expect(downloadBundlePdf("doc-1", CONFIG)).rejects.toBeInstanceOf(ApiError);
 
@@ -98,7 +96,7 @@ describe("downloadBundlePdf", () => {
   it("rejects when the session has ended, rather than resolving", async () => {
     // A 401 redirected and RETURNED, so `runBundleDownload` saw a resolved promise and reported
     // "Combined PDF downloaded." while the browser was navigating to /login.
-    vi.stubGlobal("fetch", vi.fn(async () => respond(401, {}, {})));
+    vi.stubGlobal("fetch", vi.fn(async () => respond(401, {})));
     await expect(downloadBundlePdf("doc-1", CONFIG)).rejects.toThrow(/signed out/);
     expect(downloaded).toEqual([]);
   });
@@ -120,7 +118,7 @@ describe("downloadBundleSummary", () => {
     // The two bundle calls differ only in their action segment and in whether the header travels
     // with them. A summary bundle that posted to /pdf would return the concatenated source pages
     // instead of a written report - a plausible-looking file that is the wrong deliverable.
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200, {}));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200));
     // An earlier test in this file installs fetch via `stubGlobal`, which `restoreAllMocks` does
     // not undo - so `spyOn` hands back that same mock WITH its call history, and `calls[0]` would
     // be someone else's request. Cleared explicitly rather than indexing from the end, so the
