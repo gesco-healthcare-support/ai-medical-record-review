@@ -15,8 +15,8 @@ Two things about that are load-bearing:
   this exists to fix, with extra steps.
 * Lanes are enumerated ONCE, at startup. A user created afterwards has no lane on a running worker,
   so their jobs would sit unclaimed until it restarts. Acceptable while the tester set is fixed and
-  known; if the app gets real multi-tenant use, replace enumeration with fixed hashed lanes (option B
-  in docs/plans/2026-07-30-worker-queue-scaling.md) or re-read the user set periodically.
+  known; if the app gets real multi-tenant use, replace enumeration with a fixed set of hashed lanes
+  (each user's id hashed onto one of N queues) or re-read the user set periodically.
   **Restart the workers after adding a user.**
 """
 

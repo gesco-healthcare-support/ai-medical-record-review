@@ -192,10 +192,12 @@ def create_job(
         # change must keep the backend it started with, or one delivered document ends up written by
         # two vendors with no record of which wrote what.
         #
-        # ONLY the summarize kind is stamped. The other kinds still call google-genai directly and do
-        # not cross the provider seam until PR 2 and PR 3, so stamping them here would record an
-        # intention rather than an observation - and a column that says "vllm" about a call that went
-        # to Gemini is worse than one that says nothing.
+        # ONLY the summarize kind is stamped. When this was written the other kinds still called
+        # google-genai directly, so stamping them would have recorded an intention rather than an
+        # observation - and a column that says "vllm" about a call that went to Gemini is worse than
+        # one that says nothing. Every kind now crosses the provider seam, each stage routed on its
+        # own (Settings.backend_for), but no stamp was added for the other kinds: their `backend`
+        # stays NULL, meaning "not recorded".
         backend = settings.backend_for("summarize")
     job = Job(
         document_id=document_id,

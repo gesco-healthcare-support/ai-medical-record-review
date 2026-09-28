@@ -166,7 +166,9 @@ class Settings(BaseSettings):
     database_url: str  # e.g. postgresql+psycopg://mrr:...@localhost:5432/mrr  (required)
     redis_url: str = "redis://localhost:6379/0"
 
-    # Auth: cookie signing + the carried-over Flask-Security password salt (required).
+    # Auth (required): secret_key signs FastAPI-Users' password-reset and verification tokens -
+    # sessions are opaque database tokens, so it does not sign the session cookie; and the
+    # carried-over Flask-Security password salt, which every stored password hash depends on.
     secret_key: str
     security_password_salt: str
 
@@ -482,7 +484,7 @@ class Settings(BaseSettings):
     # 15.9h), so this is where the remaining wall-clock is.
     #
     # 5 RATHER THAN MORE, and the ceiling is not the reason to stop. The compose note names the real
-    # failure mode: `rate_limit.acquire()` abandons its wait after MAX_ACQUIRE_WAIT_S (300s) and
+    # failure mode: `llm/pacing.acquire()` abandons its wait after MAX_ACQUIRE_WAIT_S (300s) and
     # proceeds ANYWAY, so enough queued callers stop being rate limited at all. Its own arithmetic put
     # 3 summarize workers x 5 chains against 20 rpm at a ~30s mean wait, well inside the abandon
     # threshold - and at 60 rpm that wait is shorter still. Going past 5 leaves the regime the note

@@ -1,5 +1,7 @@
 # mrr_ai package
 
+> **LEGACY - nothing here runs.** This describes the retired Flask app, archived under `legacy/`. The current backend is `backend/` (see the root `CLAUDE.md` and `backend/CLAUDE.md`). Do not follow these instructions for current code.
+
 The Flask application, built by `create_app()` in `__init__.py`. Full picture:
 [../docs/architecture.md](../docs/architecture.md).
 

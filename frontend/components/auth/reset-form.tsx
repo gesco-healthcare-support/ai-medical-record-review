@@ -9,8 +9,10 @@ import { AuthShell } from "./auth-shell";
 import { AuthError } from "./auth-error";
 import { PasswordChecklist, passwordValid } from "./password-checklist";
 
-/** Consumes the reset token from the link (?token=...); email delivery is deferred, so in dev
- *  the token comes from the server log. */
+/** Consumes the reset token from the link (?token=...). No reset email is sent and the token is
+ *  never logged (backend/app/auth/users.py `on_after_forgot_password` logs only the user id), so
+ *  nothing in the app delivers such a link today: see docs/how-to/manage-users-and-admins.md for
+ *  how a password is reset. */
 export function ResetForm({ token, onSignIn }: Readonly<{ token: string; onSignIn: () => void }>) {
   const reset = useResetPassword();
   const [password, setPassword] = useState("");

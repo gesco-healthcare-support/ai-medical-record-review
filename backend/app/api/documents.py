@@ -1,7 +1,8 @@
 """Document-scoped JSON API (ported from the Flask documents_api blueprint).
 
-All 15 routes: 13 landed in P3b; segment/start + summarize/start landed in P4b (they enqueue RQ
-jobs via app.services.jobs, routed to the segment/summarize queues). Every id route depends on
+The /api/documents router (the prepared-download routes live in api/downloads.py). The job-start
+routes enqueue RQ jobs via app.services.jobs on the owner's segment/summarize lane; the full route
+list is docs/reference/http-api.md, which a drift test keeps in step. Every id route depends on
 get_owned_document -> 404 on a non-owner (IDOR guard). Handlers are sync `def` on the sync session
 (get_db); FastAPI runs them in its threadpool, so the OCR/Vertex work in resummarize/bundle-summarize
 blocks a worker thread, not the event loop. Logging is ids-only; original_filename is PHI, never

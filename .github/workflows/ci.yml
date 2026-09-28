@@ -360,8 +360,8 @@ jobs:
   # The frontend half landed in Phase 5 Task 9, once frontend coverage cleared 80 on all four - a
   # floor above today's number would make this permanently red, which teaches people to ignore it.
   #
-  # NOT YET A REQUIRED CHECK. Until `coverage-floor` is added to the `main` ruleset's required
-  # checks, this reports and blocks NOTHING - the same evaluate-mode gap the ruleset flip closes.
+  # A REQUIRED CHECK: the `main` ruleset (active) lists `coverage-floor` among its required status
+  # checks, so a shortfall blocks the merge. See docs/reference/ci-and-merge-gates.md.
   #
   # Fails CLOSED, mirroring the SonarCloud step below: a gate that reads a missing, empty or
   # unparseable report and reports success is worse than no gate, because it looks like protection.

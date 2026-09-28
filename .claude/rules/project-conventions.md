@@ -1,85 +1,60 @@
 # Project Conventions (MRR AI)
 
-Load-bearing, project-specific rules. The global `~/.claude` rules also apply, and `CLAUDE.md`
-carries the traps; this file is the conventions an assistant must not violate.
+Load-bearing conventions for any change in this repo. `CLAUDE.md` at the root carries the
+repo-wide rules and traps; each folder's `CLAUDE.md` carries that area's. This file holds the
+design conventions that cut across folders.
 
-Rewritten 2026-08-12. The previous version described the pre-rewrite Flask app - `create_app()` in
-`mrr_ai/`, blueprints, `state.py` globals, a single-process constraint and the CSV as the stage
-interface. All of that became wrong at #92, and one rule was actively dangerous: it forbade adding a
-multi-worker server, which is now the deployed architecture.
+- **Layering.** Routes are `APIRouter`s in `backend/app/api/`, included in `backend/app/main.py`.
+  Pipeline logic lives in `backend/app/services/` and never imports FastAPI; services take an
+  explicit SQLAlchemy `Session` where they need one. RQ job functions and queue routing are
+  `backend/app/worker/`. The frontend is Next.js App Router in `frontend/`; the workbench is
+  `frontend/components/review/`.
 
-- **Architecture:** FastAPI app in `backend/app/`. Routes are `APIRouter`s under
-  `backend/app/api/`, included in `backend/app/main.py`. Pipeline logic lives in
-  `backend/app/services/` and **must not import FastAPI** - services take an explicit
-  SQLAlchemy `Session` where they need one. RQ tasks and queue routing are
-  `backend/app/worker/`. The frontend is Next.js App Router in `frontend/`; the review workbench
-  is `frontend/components/review/`. `docs/architecture.md` describes the Flask app and is
-  marked **[LEGACY]** - do not follow it.
+- **State is Postgres and Redis, never process memory.** The app is multi-process by design:
+  `api`, `segment-worker` (3) and `summarize-worker` (3) are separate containers, built from two
+  images (`mrr-backend-web` for `api` and `summarize-worker`, `mrr-backend-classifier` for
+  `segment-worker`). Nothing may rely on in-process state surviving between requests or stages.
 
-- **State:** there are **no shared mutable globals**. State is Postgres (via SQLAlchemy) and
-  Redis (via RQ). The app is **multi-process by design** - `api`, `segment-worker` and
-  `summarize-worker` are separate containers off one image - so nothing may rely on
-  in-process state surviving between requests or between stages.
+- **Stages talk through rows.** Segmentation writes `segment_rows` (the machine's output, kept)
+  and `review_rows` (the reviewer's editable copy); summaries go to `summaries`. No file is passed
+  between stages, and no live code reads or writes the old page-map CSV.
 
-- **Thread safety is a real constraint, not a theoretical one.** Stages fan out over
-  `ThreadPoolExecutor` (`PIPELINE_WORKERS`, `CLASSIFY_WORKERS`, `SEGMENT_WINDOW_WORKERS`). A
-  SQLAlchemy `Session` is **not** thread-safe, so resolve every DB read *before* entering a
-  pool (see `worker/tasks.py` resolving prompts per category up front) or open a short-lived
-  session inside the worker (see `services/classification.py`). Module-level caches that a
-  pool touches need a lock - `classification.py` holds one for the catalog and another for
-  the embedding model.
+- **Thread safety is real.** Stages fan out over `ThreadPoolExecutor`s. A SQLAlchemy `Session` is
+  not thread-safe: resolve database reads before entering a pool (as `worker/tasks.py` resolves
+  prompts per category up front) or open a short-lived session inside the worker thread (as
+  `services/classification.py` does). A module-level cache a pool touches needs a lock.
 
-- **Stage interface: Postgres rows, not a CSV.** Segmentation writes `segment_rows` (the
-  immutable model output) and `review_rows` (the reviewer's editable copy). The 6-column
-  `start,end,category,doc_date,injury_date,manual_flag` shape still exists, but only as an
-  **export/import format** - `docs/reference/csv-contract.md` is marked **[LEGACY]**. Nothing
-  internal passes a CSV between stages.
+- **Model calls cross one seam.** Every call goes through `backend/app/services/llm/`, which picks
+  the backend (`gemini`, `openai` or `vllm`) per stage from `LLM_BACKEND` and
+  `LLM_BACKEND_OVERRIDES`; the default is `gemini`. With `ENVIRONMENT=prod` the app refuses to
+  boot unless Gemini traffic goes to Vertex (`GOOGLE_GENAI_USE_VERTEXAI=true`), OpenAI has its
+  zero-data-retention acknowledgement, and vLLM points at an approved origin. A change to any AI
+  path needs the PR template's HIPAA section filled in.
 
-- **PHI (strict).** Never commit PDFs, OCR text, page-map CSVs, patient names, or Word
-  deliverables - filenames alone carry surnames, which is why `.gitignore` blocks
-  `*.doc`/`*.docx` outside `docs/reference/`. `uploads/`, `secrets/` and experiment caches are
-  gitignored. Never log PDF, OCR or LLM bodies. **Vertex is the BAA-covered path and is
-  required in production** - `config.py` raises at startup if `ENVIRONMENT=prod` without
-  `GOOGLE_GENAI_USE_VERTEXAI=true`. OpenAI exists behind `SUMMARY_PROVIDER=openai` and
-  additionally requires a Zero Data Retention acknowledgement in prod; as of 2026-08-11 it is
-  out of the project by decision, so do not spend work there. Any change to an AI path needs
-  the PR template's HIPAA review section.
+- **Measurement over opinion.** Segmentation recall and summary quality are measured, not argued.
+  A document missed at segmentation is never summarized and nothing downstream surfaces it, so a
+  segmentation prompt or schema change needs a number. Read
+  `experiments/a1-segmentation/EXPERIMENT-LOG.md` first; the harnesses are in
+  `backend/scripts/eval/`. Prompt provenance is a fingerprint computed from the prompt text, so a
+  prompt change is recorded without anyone bumping a version constant.
 
-- **Measurement over opinion.** Segmentation recall and summarization prompt quality are both
-  measured, not argued. A document missed at segmentation is never summarized and nothing
-  downstream surfaces it, so treat any segmentation prompt or schema change as requiring a
-  number. Read `experiments/a1-segmentation/EXPERIMENT-LOG.md` before proposing a segmentation
-  approach - several obvious ideas are already measured and rejected. Prompt fingerprints are
-  computed from the prompt text, so **never hand-bump `PROMPT_VERSION`**; provenance moves on
-  its own.
+- **Prompt resolution.** `catalog.get_prompt` resolves: the category's database row, then its code
+  prompt in `services/prompts.py`, then the General (100) row, then the General code prompt. So a
+  `prompts.py` edit reaches every category without an admin-edited row. The category prompt is only
+  part of the system message: `summarize_engine` prepends shared rule blocks chosen by category.
 
-- **Prompt resolution has a trap.** `catalog.get_prompt` resolves DB row → **code prompt in
-  `services/prompts.py`** → general (100) row → general code prompt. So `prompts.py` is not
-  merely a seed: for any category with no `Prompt` row of its own, editing it changes
-  delivered output. Whether that holds on a given box is an empirical question - check
-  `SELECT role, category_id, length(text) FROM prompts` rather than assuming. A category
-  prompt is also only half the system message: `summarize_engine.build_preamble` prepends
-  shared rule blocks selected by category id.
+- **Secrets** come from `.env` (never committed; templates `deploy/env.docker.example` and
+  `.env.example`) and fail fast at startup. Service-account keys go in `secrets/`, which git
+  ignores apart from `.gitkeep`.
 
-- **Secrets:** via `.env`, fail-fast at startup; never hardcoded, never committed. See
-  `.env.example`. Service-account keys go in `secrets/` (gitignored, holds only `.gitkeep` in
-  git). Rotate anything that has been shared over email or chat.
+- **Tooling.** Backend: uv, Python 3.12, `uv sync --extra docs`; ruff for lint and format (both CI
+  gates). Frontend: pnpm, `pnpm typecheck`, `pnpm test` (vitest), `pnpm e2e` (Playwright). Do not
+  run prettier: the repo has no prettier config and running it reformats hundreds of lines.
 
-- **Tooling:** uv (`pyproject.toml` + `uv.lock`), Python 3.12. `uv sync --extra docs` is the
-  web/summarize tier and what CI runs - **torch-free, and the right choice for local dev**.
-  `--extra classifier` adds sentence-transformers/torch and is the segment worker only. Lint
-  and format = ruff (line length 100); types = pyright (advisory while untyped). Pre-commit
-  runs ruff, gitleaks, detect-private-key, a 1 MB large-file guard, and whitespace/EOF fixers.
-  Frontend: pnpm, `pnpm typecheck`, `pnpm test` (vitest), `pnpm e2e` (Playwright).
-  **Do not run prettier** - the repo has no prettier config and is not prettier-formatted, so
-  running it reformats hundreds of unrelated lines.
+- **Tests and gates.** Synthetic data only; mock the model providers and OCR. CI enforces coverage
+  floors (backend 90% branch-aware, frontend 80% on each of four metrics) in the `coverage-floor`
+  job, and SonarCloud's quality gate plus a zero-new-issues check in the `sonarcloud` job. Both are
+  required checks on `main`. Details: `docs/reference/ci-and-merge-gates.md`.
 
-- **Tests:** mock Vertex/Gemini and OCR; synthetic data only, never real records. The suite is
-  `backend/tests/` (`testpaths` is set, so a stray `scripts/*_test.py` is not collected).
-  There is **no `--cov-fail-under`** - coverage is reported to SonarCloud and the gate is its
-  server-side quality gate, enforced by `sonar.qualitygate.wait=true`. Do not quote a local
-  coverage floor as if CI enforced one.
-
-- **Workflow:** PR-based, always; never push to `main`. Commit messages and PR titles use the
-  scopes in `.claude/rules/commit-scopes.md` (source of truth - add a scope there in the PR
-  that needs it), and commit subjects end with the PR number.
+- **Workflow.** Pull requests only, squash-merged; commit messages and PR titles use the scopes in
+  `.claude/rules/commit-scopes.md`. Docs change in the same PR as the code they describe.
