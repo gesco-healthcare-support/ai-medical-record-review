@@ -19,7 +19,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7
+    image: redis:8
     # Persistence OFF: the queue carries only non-PHI job identifiers, and we do not want
     # PHI-adjacent job metadata written to an RDB/AOF file (HIPAA). See the plan's PHI scope.
     # A prepared export's `download:<token>` entry also holds its filename - a patient name -
