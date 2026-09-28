@@ -1,9 +1,15 @@
 # How to deploy to the server
 
-Use this to put a new commit of `main` on the in-house server. The server runs the same
-`docker-compose.yml` as a developer machine, from a plain git checkout; only its `.env` differs.
-The images contain the code, so pulling changes nothing until the images are rebuilt and the
-containers replaced.
+Use this to put the latest commit of a server's branch on that server. The production server
+deploys the `production` branch and the qwen server deploys `qwen`. Code reaches those branches
+only through pull requests, `main` -> `staging` -> `production` and `main` -> `qwen`, and the
+promotion guard refuses a pull request from any other branch; see
+[CI and merge gates](../reference/ci-and-merge-gates.md). So a server never deploys `main` or a
+hand-picked commit directly.
+
+Each server runs the same `docker-compose.yml` as a developer machine, from a plain git checkout;
+only its `.env` differs. The images contain the code, so pulling changes nothing until the images
+are rebuilt and the containers replaced.
 
 `<SERVER_HOST>` and `<SERVER_USER>` below are placeholders. Take the real values from the team's
 private notes; never write them into the repository.
@@ -16,7 +22,12 @@ private notes; never write them into the repository.
 - The checkout at `/home/<SERVER_USER>/mrr` with a filled-in `.env` and, for Vertex, the
   service-account key in `secrets/`. The settings themselves are described in
   [Configuration](../reference/configuration.md).
-- The commit you are deploying has passed CI on `main`.
+- The commit you are deploying has reached the server's branch through a merged promotion pull
+  request.
+- The checkout is on that branch: `git symbolic-ref --short HEAD` prints `production` (or `qwen`).
+  If it prints `fatal: ref HEAD is not a symbolic ref`, the checkout is on a bare commit; do the
+  [one-time move onto the branch](#move-a-checkout-from-a-bare-commit-onto-its-branch-one-time)
+  first.
 - Enough free disk space for a database dump and an archive of every uploaded record.
 
 ## Steps
@@ -64,6 +75,9 @@ has the details and the restore commands. Both files contain patient data.
 ```bash
 git pull --ff-only
 ```
+
+This updates the branch the checkout follows: `production` on the production server, `qwen` on the
+qwen server.
 
 ### 5. Build every image
 
@@ -184,15 +198,104 @@ the container the newer code started.
 After a code-only rollback the database is still at the newer revision, which the older code's
 migration folder does not contain, so do not run `alembic` until you are back on the newer code.
 
-Either way the checkout is now on a detached commit. When the fix is on `main`, return with
-`git checkout main` and deploy again from step 2.
+Either way the checkout is now on a bare (detached) commit, not a branch. When the fix has been
+promoted to the server's branch, return with `git switch production` (or `git switch qwen`) and
+deploy again from step 2.
+
+## Move a checkout from a bare commit onto its branch (one time)
+
+A server deployed with `git checkout <commit>` is left on a bare commit rather than a branch, and
+`git pull` cannot update it. Move it onto its branch once. Done this way the move changes no file,
+so nothing is rebuilt or restarted. The commands use `production`; on the qwen server use `qwen`
+throughout, whose promotion is `main` -> `qwen`.
+
+First make sure the checkout carries no local edit:
+
+```bash
+git status --porcelain --untracked-files=no
+```
+
+It must print nothing. If it lists a file, stop: the server carries a local edit (for example to
+`deploy/nginx.conf`) that is in no branch. Find out why it is there; an edit the server needs
+belongs in the repository, through a pull request, before this move.
+
+Record what is running, then compare it with the branch:
+
+```bash
+docker compose ps
+RUNNING=$(git rev-parse HEAD)
+echo "$RUNNING"
+git fetch origin
+git diff --quiet "$RUNNING" origin/production && echo SAME || echo DIFFERENT
+```
+
+Write down the commit `echo` prints: the undo below needs it, and `$RUNNING` is gone once the
+shell closes.
+
+- `SAME`: the branch holds exactly the files that are running. Continue below.
+- `DIFFERENT`: do not switch. Switching would change files under running containers, and
+  `deploy/nginx.conf` is mounted into the running proxy. Either promote by pull request until the
+  branch holds exactly the running code (possible when the running commit is the head of `staging`,
+  or of `main` with nothing newer on it), fetch and check again; or deploy the branch normally from
+  step 2, which changes the running code and is a deploy, not this move.
+
+Switch onto the branch:
+
+```bash
+git switch -c production --track origin/production
+```
+
+`-c` refuses when a local `production` branch already exists, so running this twice stops instead
+of moving the branch.
+
+Check the result:
+
+```bash
+git status -sb | head -1
+git status --porcelain --untracked-files=no
+docker compose ps
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/login
+```
+
+| Check | Expected |
+| --- | --- |
+| First line of `git status -sb` | `## production...origin/production` |
+| `git status --porcelain --untracked-files=no` | Nothing |
+| `docker compose ps` | The same containers, with the same creation times, as before the move |
+| `/login` | `200` |
+
+Then remove any other local branch, so the server can only deploy its own:
+
+```bash
+git branch --list
+git branch -D main
+```
+
+Run the second line only if the first lists `main`. With a leftover local `main`, one switch and a
+pull would put `main` on the server outside the promotion order. Nothing is lost: `main` is on
+GitHub, and `git branch --track main origin/main` recreates it.
+
+The running images keep the `build_sha` they were built with, while `git rev-parse --short HEAD`
+now prints the branch's merge commit. The files are the same; the next deploy rebuilds with the
+branch's hash, and the `build_sha` check under [Verify it worked](#verify-it-worked) matches again.
+
+To undo the move, return to the bare commit. The files are the same, so nothing changes:
+
+```bash
+git switch --detach "$RUNNING"
+```
+
+In a new shell, use the commit you wrote down instead of `$RUNNING`. If it was not written down,
+`git reflog` still has it: the line `checkout: moving from <commit> to production` names the
+commit the checkout was on before the move.
 
 ## If a step fails
 
 | Step | Failure | What to do |
 | --- | --- | --- |
 | 3 | The `test -s` line prints nothing | Do not continue. Find out why the dump or the archive is empty. |
-| 4 | `git pull --ff-only` refuses | The checkout has local commits or edits. Inspect with `git status`; the server should carry none. |
+| 4 | `git pull --ff-only` says `You are not currently on a branch` | The checkout is on a bare commit. Do the [one-time move onto the branch](#move-a-checkout-from-a-bare-commit-onto-its-branch-one-time), then pull. |
+| 4 | `git pull --ff-only` refuses for another reason | The checkout has local commits or edits. Inspect with `git status`; the server should carry none. |
 | 5 | A build fails | Nothing has changed yet; the old containers are still serving. Fix the cause or stop here. |
 | 6 | A migration fails | The old containers are still serving. `backend/alembic/env.py` runs the whole upgrade inside one transaction, so on Postgres a failure rolls back every migration in that run and `alembic_version` stays at the old revision. Fix forward, or roll back the code. |
 | 7 | A container keeps restarting | `docker compose logs <service>`. A worker exits at startup when a configured model backend fails its startup check. |
