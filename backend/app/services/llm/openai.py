@@ -322,7 +322,7 @@ class OpenAIProvider(DelegatingProvider):
             _observe(model, raw)
             return _to_response(raw.parse())
         genai_metrics.record(model, genai_metrics.OUTCOME_EXHAUSTED)
-        raise last
+        raise last or RuntimeError("the model call made no attempt")
 
     def generate_choice(
         self,
