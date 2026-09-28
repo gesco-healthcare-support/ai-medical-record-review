@@ -87,7 +87,7 @@ the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category set
 | 1, 2, 5, 6 | yes | no | no | yes | one paragraph |
 | 12, 13 | yes | no | yes | yes | one paragraph |
 | 3, 14 | no | yes | no | no | one paragraph |
-| 9 | no | no | no | no | groups of three pages |
+| 9 | no | no | no | no | groups of ten pages |
 | 4, 7, 8, 10, 11, 15, 16, 17 | no | no | no | no | one paragraph |
 | 100 | yes | yes | yes | no | one paragraph |
 | Any id not in `_KNOWN_CATEGORIES` | yes | yes | yes | yes | one paragraph |
@@ -336,10 +336,12 @@ stored summaries need no re-run.
 
 Category 9 differs at every step:
 
-- **Format.** Groups of three consecutive transcript pages, one paragraph per group, each opening
-  with its page range (`_F_DEPOSITION`). The measured human convention is one page per paragraph;
-  three-page grouping is the owner's instruction, made with that measurement in hand, and the comment
-  records it so nobody "fixes" it back.
+- **Format.** Groups of ten consecutive transcript pages, one paragraph per group, each opening
+  with its page range (`_F_DEPOSITION`, and the category 9 prompt in `prompts.py`). The measured
+  human convention is one page per paragraph. Groups of three were the owner's instruction
+  (2026-08-06), made with that measurement in hand; groups of ten are the senior reviewer's
+  instruction (2026-09-25) after reading delivered depositions. The comment above `_F_DEPOSITION`
+  records both, so nobody "fixes" the size back to either convention.
 - **Page numbers.** `backend/app/services/deposition_pages.py` `transcript_page_offset()` makes one
   `deposition`-stage model call over the first six pages to find the transcript's own printed page
   numbers (at least two pages must agree on one offset). The OCR markers are then labelled in
@@ -426,7 +428,7 @@ The Job also carries a fingerprint of the whole prompt set and the build commit.
 | Height and weight only; BMI kept | BMI appears only as a numbered diagnosis in the human corpus | All vitals |
 | Range-of-motion reference ranges allowed | Textbook values, not a claim about the patient | A strict no-inference rule |
 | Embedded review gets a tag, not a summary | The senior reviewer asked for a tag | Including the review |
-| Three-page deposition groups | Owner's instruction | The measured one-page convention |
+| Ten-page deposition groups | The senior reviewer's instruction (three pages before 2026-09-25, the owner's) | The measured one-page convention |
 
 ## Before you change it
 

@@ -153,6 +153,11 @@ they emphasise the same spans:
 on one line paired with the next line's bullet and italicised everything between; 3 of 3,017 stored
 summaries rendered differently from the web view for that reason.
 
+Every non-empty line of a body is its own paragraph in both renderers: `entry_body_segments()`
+first passes the text through `_paragraphed()`, which joins the lines with `PARAGRAPH_BREAK`. The
+linked PDF used to print a deposition as one block, because in its HTML a plain newline is
+whitespace.
+
 ### Date labels
 
 - `parsed_date()` accepts `MM/DD/YYYY`, `MM-DD-YYYY`, `MM.DD.YYYY`, `YYYY-MM-DD`, `MM/DD/YY`,

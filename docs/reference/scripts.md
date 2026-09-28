@@ -139,7 +139,7 @@ job travels with it.
 
 | Field | Value |
 | --- | --- |
-| Purpose | Summarize ONE real deposition sub-document and print only the structure of the result: paragraph count, how many paragraphs open with a page range, the cited page numbers, and whether consecutive paragraphs step by three pages. |
+| Purpose | Summarize ONE real deposition sub-document and print only the structure of the result: paragraph count, how many paragraphs open with a page range, the cited page numbers, and whether consecutive paragraphs step by the group size (`_GROUP_PAGES`, ten pages, pinned to the prompt by a test). |
 | Kind | Dev proof. |
 | Inputs | Positional `<document_id>` and `<row_start>`. `<row_start>` must be the first page of an existing `review_rows` row of that document (the live row, not a summary's `row_start` snapshot). |
 | Writes | Nothing (it calls `summarize_row()` directly, which is database-free). |

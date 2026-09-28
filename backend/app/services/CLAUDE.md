@@ -31,8 +31,11 @@ The pipeline modules. Model providers have their own rules in `llm/CLAUDE.md`.
 - The segment worker runs these modules from a different image (`mrr-backend-classifier`).
   After changing `classification.py`, `segment_engine.py`, `windows.py` or anything they import,
   rebuild `segment-worker` too, or you are testing the old code.
-- Depositions are summarized in three-page groups by the owner's decision, although the human
-  reviews use one page per paragraph. Do not change it without that decision.
+- Depositions are summarized in ten-page groups on the senior reviewer's instruction (they were
+  three-page before 2026-09-25), although the human reviews use one page per paragraph. The size
+  lives in three places: `_F_DEPOSITION`, the category 9 prompt, and `_GROUP_PAGES` in
+  `backend/scripts/dev/verify_deposition_format.py` (a test pins the last to the other two). Do not
+  change one without the others, or without that decision.
 
 ## Commands
 
