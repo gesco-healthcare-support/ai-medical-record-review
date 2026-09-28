@@ -325,6 +325,12 @@ No other repository secret is referenced. The `SECRET_KEY`, `SECURITY_PASSWORD_S
 `DATABASE_URL` values in `ci.yml` are throwaway test values written into the file, not secrets.
 `workflow-lint` and the promotion guard use the job's own read-only `github.token`.
 
+A workflow run that Dependabot triggers receives the repository's Dependabot secrets, not its
+Actions secrets; the job log's "Set up job" step shows `Secret source: Dependabot`. So `SONAR_TOKEN`
+must be stored twice: as an Actions secret and as a Dependabot secret (Settings > Secrets and
+variables > Dependabot). Without the Dependabot copy the scan runs with no token, stops with "Not
+authorized or project not found", and `sonarcloud` fails on every Dependabot pull request.
+
 ## Artifacts
 
 | Name | Produced by | Consumed by | Contents | Retention |
@@ -357,18 +363,20 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 
 ## Dependency updates (`.github/dependabot.yml`)
 
-Dependabot opens update pull requests into `main` every week. They pass the same required checks
-as any other pull request. Minor and patch updates are grouped into one pull request per
-ecosystem; a major update comes on its own. A new release waits 7 days (`cooldown`) before it is
-proposed; security updates are never delayed.
+Dependabot opens update pull requests into `main` every week. They are held to the same required
+checks as any other pull request, and `sonarcloud` fails on them until `SONAR_TOKEN` is also stored
+as a Dependabot secret (see [Secrets](#secrets)). For `uv`, `npm` and `github-actions`, minor and
+patch updates are grouped into one pull request per ecosystem. `docker` and `docker-compose` have no
+groups, so each of their updates comes on its own. A major update always comes on its own. A new
+release waits 7 days (`cooldown`) before it is proposed; security updates are never delayed.
 
-| Ecosystem | Where | Commit prefix |
-| --- | --- | --- |
-| `uv` | `backend/`, `docs-site/` | `chore(tooling)` |
-| `npm` | `frontend/` | `chore(tooling)` |
-| `github-actions` | the workflows | `chore(ci)` |
-| `docker` | the Dockerfiles in `backend/`, `frontend/`, `docs-site/` | `chore(tooling)` |
-| `docker-compose` | the images `docker-compose.yml` pulls (postgres, redis, nginx) | `chore(tooling)` |
+| Ecosystem | Where | Commit prefix | Minor and patch updates |
+| --- | --- | --- | --- |
+| `uv` | `backend/`, `docs-site/` | `chore(tooling)` | one grouped pull request |
+| `npm` | `frontend/` | `chore(tooling)` | one grouped pull request |
+| `github-actions` | the workflows | `chore(ci)` | one grouped pull request |
+| `docker` | the Dockerfiles in `backend/`, `frontend/`, `docs-site/` | `chore(tooling)` | one pull request each |
+| `docker-compose` | the images `docker-compose.yml` pulls (postgres, redis, nginx) | `chore(tooling)` | one pull request each |
 
 The legacy Flask app at the repository root is left out; it is not deployed. A postgres major
 update (16 to 17) changes the on-disk data format, so never merge one without a dump-and-restore
