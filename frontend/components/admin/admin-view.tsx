@@ -37,7 +37,12 @@ function errMessage(err: unknown, fallback: string) {
  *  friendly notice for a non-admin who deep-links). */
 export function AdminView() {
   const { data: user, isLoading: userLoading } = useCurrentUser();
-  const { data: categories = [], isLoading } = useCategories();
+  const {
+    data: categories = [],
+    isLoading,
+    isError: categoriesFailed,
+    refetch: refetchCategories,
+  } = useCategories();
   const { data: docs = [] } = useDocuments();
   const create = useCreateCategory();
   const update = useUpdateCategory();
@@ -138,7 +143,23 @@ export function AdminView() {
               </tr>
             </thead>
             <tbody>
-              {!isLoading && categories.length === 0 ? (
+              {/* A failed fetch leaves `categories` at its [] default; without this row the table
+                  would claim the catalog is empty, which it never is (the built-ins are served). */}
+              {!isLoading && categoriesFailed ? (
+                <tr className="hd-norows">
+                  <td colSpan={8} role="alert">
+                    Could not load the categories.{" "}
+                    <button
+                      type="button"
+                      className="ev-btn ev-btn-outline"
+                      onClick={() => void refetchCategories()}
+                    >
+                      Try again
+                    </button>
+                  </td>
+                </tr>
+              ) : null}
+              {!isLoading && !categoriesFailed && categories.length === 0 ? (
                 <tr className="hd-norows">
                   <td colSpan={8}>No categories yet.</td>
                 </tr>
