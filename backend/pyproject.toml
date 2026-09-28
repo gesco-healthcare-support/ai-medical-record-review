@@ -19,6 +19,7 @@ dependencies = [
     "redis>=5.2",
     "rq>=2.0",
     "fastapi-users[sqlalchemy]>=15.0.5",
+    "ujson==5.3.0",
 ]
 
 # Document processing the WEB tier needs (upload page-count, OCR, summarize, docx export,
