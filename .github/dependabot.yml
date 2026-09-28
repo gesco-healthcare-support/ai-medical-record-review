@@ -2,7 +2,8 @@
 # other pull request.
 #
 # - Titles follow the repo's commit format, <type>(<scope>): <subject>, with the scopes in
-#   .claude/rules/commit-scopes.md: `tooling` for dependencies and base images, `ci` for Actions.
+#   .claude/rules/commit-scopes.md: `tooling` for dependencies, base images and compose images,
+#   `ci` for Actions.
 #   Dependabot adds the colon itself after a prefix that ends in ")".
 # - Minor and patch updates are grouped into one pull request per ecosystem each week. A major
 #   update comes on its own, because it is a change to review by itself.
@@ -72,3 +73,18 @@ updates:
       default-days: 7
     commit-message:
       prefix: "chore(tooling)"
+
+  # The images the servers pull through docker-compose.yml (postgres, redis, nginx); the `docker`
+  # entry above reads Dockerfiles only. A postgres MAJOR update (16 -> 17) changes the on-disk data
+  # format, so never merge one without a dump-and-restore plan.
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(tooling)"
+    ignore:
+      # Built from this repository by compose, not pulled from a registry.
+      - dependency-name: "mrr-*"

@@ -18,8 +18,11 @@ rules on data and secrets below are not optional.
 - The promotion guard (`guard-into-<branch>`) refuses a pull request from any other source, so
   code reaches `production` only through `main` -> `staging` -> `production`.
 - A hotfix lands on `main` first. When it cannot wait for a full promotion, cherry-pick the commits
-  from `main` with `git cherry-pick -x` onto a `hotfix/*` branch and open it against `staging`; the
-  guard checks that every commit names a commit already on `main`.
+  from `main` with `git cherry-pick -x` onto a `hotfix/*` branch and open it against `staging`. The
+  guard checks that every commit is a plain cherry-pick naming a commit already on `main` AND makes
+  the same change as that commit, file by file. It refuses anything it cannot compare in full: a
+  file with no text diff (binary, or too large for the API), a commit whose file list may have been
+  cut off, or a pull request with too many commits to list.
 - A pull request into `main` must be up to date with `main` before it merges: merge `main` into
   your branch. Never use "Update branch" on a promotion pull request; it would merge the lower
   branch back into the upper one.
