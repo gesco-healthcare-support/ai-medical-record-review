@@ -112,6 +112,48 @@ describe("HeaderBar persistence", () => {
     expect(saveHeader).not.toHaveBeenCalled(); // detect alone persists; no manual Save needed
   });
 
+  it("keeps the five fields Auto-fill does not detect, in the saved header and the next Save", async () => {
+    // The server's reply carries ONLY the four detected fields (`_header_shape` in
+    // backend/app/api/documents.py). Replacing the form with it left the other five undefined,
+    // so a later manual Save sent a payload without them and HeaderPayload stored each as "" -
+    // the reviewer's attorney, doctor, letter and page count erased by an unrelated edit. The
+    // fixture above carries all nine keys, which is why this was never seen in a test.
+    const user = userEvent.setup();
+    const stored = {
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_dob: "",
+      law_firm: "",
+      attorney_name: "Reyes",
+      doctor: "Dr Vasquez",
+      letter_type: "advocacy",
+      letter_date: "06/07/2026",
+      pages_received: "412",
+    };
+    const reply = {
+      patient_first_name: "Jane",
+      patient_last_name: "Roe",
+      patient_dob: "01/02/1990",
+      law_firm: "Acme LLP",
+    };
+    const onSaved = vi.fn();
+    vi.mocked(extractHeader).mockResolvedValue(reply);
+    vi.mocked(saveHeader).mockResolvedValue(undefined);
+    render(
+      <HeaderBar documentId="d1" doctors={["Dr Vasquez"]} header={stored} onSaved={onSaved} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Auto-fill" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith({ ...stored, ...reply }));
+
+    await user.clear(screen.getByLabelText("Law firm"));
+    await user.type(screen.getByLabelText("Law firm"), "Acme");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(saveHeader).toHaveBeenCalled());
+    expect(vi.mocked(saveHeader).mock.calls[0][1]).toEqual({ ...stored, ...reply, law_firm: "Acme" });
+  });
+
   it("labels the button Re-detect once a header value is present", () => {
     render(
       <HeaderBar
