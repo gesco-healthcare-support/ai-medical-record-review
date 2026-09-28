@@ -147,15 +147,19 @@ export function AdminView() {
                   would claim the catalog is empty, which it never is (the built-ins are served). */}
               {!isLoading && categoriesFailed ? (
                 <tr className="hd-norows">
-                  <td colSpan={8} role="alert">
-                    Could not load the categories.{" "}
-                    <button
-                      type="button"
-                      className="ev-btn ev-btn-outline"
-                      onClick={() => void refetchCategories()}
-                    >
-                      Try again
-                    </button>
+                  <td colSpan={8}>
+                    {/* The alert role sits on an element inside the cell: a <td> keeps its own
+                        cell role, and overriding it breaks the table for assistive technology. */}
+                    <div role="alert">
+                      Could not load the categories.{" "}
+                      <button
+                        type="button"
+                        className="ev-btn ev-btn-outline"
+                        onClick={() => void refetchCategories()}
+                      >
+                        Try again
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ) : null}
