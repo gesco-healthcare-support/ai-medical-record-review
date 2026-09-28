@@ -261,8 +261,9 @@ GitHub never lets an account approve its own pull request. While both approval r
 approver must be neither the pull request's author nor the account that pushed its last commit.
 
 Because `main` requires an up-to-date branch, every merge into `main` makes the other open pull
-requests into it out of date. Merge `main` into each one (do not rebase: a rebase is a force push
-that also dismisses approvals), and let CI run again before it can merge.
+requests into it out of date. Merge `main` into each one. Do not rebase: that rewrites the
+branch's history and needs a force push. Either way the new commit dismisses existing approvals, so
+once CI has run the pull request needs approving again, by someone other than whoever pushed it.
 
 **Emergency merge.** No ruleset has a bypass. When a fix cannot wait for the rules, a repository
 admin sets that one ruleset to disabled, merges, and sets it back to active. The change shows in
