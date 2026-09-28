@@ -18,14 +18,23 @@ const reprocess = { mutateAsync: vi.fn(), isPending: false };
 // Mutable, so a test can change what the two queries return BETWEEN renders. That is the only way
 // to reach the `find` miss in `runReprocess`; see "stopped being summarized" below.
 const docs: { list: DocumentListItem[] } = { list: [] };
-const categories: { list: AdminCategory[] } = { list: [] };
+const categories: {
+  list: AdminCategory[] | undefined;
+  isError: boolean;
+  refetch: () => void;
+} = { list: [], isError: false, refetch: vi.fn() };
 
 vi.mock("@/hooks/use-current-user", () => ({
   useCurrentUser: () => ({ data: { is_superuser: true }, isLoading: false }),
 }));
 vi.mock("@/hooks/use-documents", () => ({ useDocuments: () => ({ data: docs.list }) }));
 vi.mock("@/hooks/use-admin", () => ({
-  useCategories: () => ({ data: categories.list, isLoading: false }),
+  useCategories: () => ({
+    data: categories.list,
+    isLoading: false,
+    isError: categories.isError,
+    refetch: categories.refetch,
+  }),
   useCreateCategory: () => create,
   useUpdateCategory: () => update,
   useReprocess: () => reprocess,
@@ -91,12 +100,31 @@ beforeEach(() => {
   // so without this a rejection set by one test would still be armed in the next.
   docs.list = [];
   categories.list = [category()];
+  categories.isError = false;
+  categories.refetch = vi.fn();
   create.mutateAsync.mockResolvedValue(undefined);
   update.mutateAsync.mockResolvedValue(undefined);
   reprocess.mutateAsync.mockResolvedValue(undefined);
 });
 
 afterEach(() => vi.clearAllMocks());
+
+describe("AdminView category list failure", () => {
+  it("says the categories could not be loaded, with a retry, instead of 'No categories yet'", async () => {
+    // A failed fetch left `categories` at its [] default, and the table then claimed the catalog
+    // was empty - the one statement about the catalog that is never true (the built-ins are
+    // always served, even on a fresh database).
+    const user = userEvent.setup();
+    categories.list = undefined;
+    categories.isError = true;
+    withClient(<AdminView />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/could not load the categories/i);
+    expect(screen.queryByText(/no categories yet/i)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(categories.refetch).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("AdminView error handling", () => {
   it("toasts a humanized message when toggling a category fails", async () => {
