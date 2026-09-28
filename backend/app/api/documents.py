@@ -701,8 +701,14 @@ def get_pdf(
     user: User = Depends(current_active_user),
 ):
     audit(session, "view_pdf", user.id, document.id)
-    # FileResponse serves conditional/range requests so the browser viewer can seek.
-    return FileResponse(document.stored_path, media_type=_PDF_MEDIA_TYPE)
+    # FileResponse serves conditional/range requests so the browser viewer can seek. This is the
+    # patient record itself: like a prepared download, no browser or proxy cache may keep a copy -
+    # reviewers work on shared remote-desktop hosts where a cache outlives the session.
+    return FileResponse(
+        document.stored_path,
+        media_type=_PDF_MEDIA_TYPE,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _dupe_groups(document: Document) -> dict[int, list[ReviewRow]]:

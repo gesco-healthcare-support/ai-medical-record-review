@@ -2230,6 +2230,38 @@ def test_a_failed_dispatch_marks_the_job_interrupted_instead_of_leaving_it_queue
         assert session.get(Document, doc_id).status == "interrupted"
 
 
+def test_a_failed_dedup_dispatch_leaves_the_document_status_alone(monkeypatch):
+    """WHEN a duplicate-check dispatch fails, THE SYSTEM SHALL interrupt the job, leave the
+    document's status as it was, and raise QueueUnavailable.
+
+    A duplicate check is advisory: it never moves the stage the UI shows (STATUS_ON_ENQUEUE["dedup"]
+    is None), and every other failure path moves a document only out of a stage its own job put it
+    in (INTERRUPTIBLE_DOCUMENT_STATUSES). This path alone set "interrupted" unconditionally, so a
+    Redis outage while re-checking duplicates flipped a finished record to Interrupted.
+    """
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("redis is down")
+
+    monkeypatch.setattr("app.worker.queues.queue_for", boom)
+
+    doc_id = _make_user_and_doc()
+    with get_sessionmaker()() as session:
+        session.get(Document, doc_id).status = "done"
+        session.commit()
+
+    with get_sessionmaker()() as session:
+        with pytest.raises(jobs.QueueUnavailable):
+            jobs.enqueue(session, doc_id, "dedup", model="m", prompt_version="1")
+
+    with get_sessionmaker()() as session:
+        job = session.scalars(
+            select(Job).where(Job.document_id == doc_id).order_by(Job.id.desc())
+        ).first()
+        assert job.state == "interrupted"
+        assert session.get(Document, doc_id).status == "done"
+
+
 def test_a_summarize_job_pins_all_three_models_at_creation():
     """WHEN a summarize job is created on the Gemini path with default settings, THE SYSTEM SHALL
     store the body, title and audit models on the job - so a config change mid-run cannot split one
