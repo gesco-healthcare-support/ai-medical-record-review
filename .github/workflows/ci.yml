@@ -59,6 +59,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # The PR's merge commit AND its first parent (the base), for the new-migration diff below.
+          fetch-depth: 2
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
@@ -80,6 +82,28 @@ jobs:
           SECURITY_PASSWORD_SALT: ci-import-smoke
         run: uv run python -c "from sqlalchemy.orm import configure_mappers; import app.main; configure_mappers(); print('import OK')"
 
+      # Two PRs that each add a migration both pass on their own and leave main with two heads, which
+      # `alembic upgrade head` then refuses on the box. Reading the heads needs no database.
+      - name: Migrations have exactly one head
+        run: |
+          heads=$(uv run --no-sync alembic heads)
+          echo "$heads"
+          if [ "$(printf '%s\n' "$heads" | grep -c .)" -ne 1 ]; then
+            echo "Expected exactly one Alembic head; add a merge revision."
+            exit 1
+          fi
+
+      # Squawk on the SQL of each migration this PR ADDS (scripts/ci/lint_new_migrations.py says why and how it
+      # is tuned). Offline rendering needs settings but no database, hence the placeholder values.
+      - name: Lint the SQL of new migrations (Squawk)
+        if: github.event_name == 'pull_request'
+        env:
+          DATABASE_URL: postgresql+psycopg://offline:offline@localhost:5432/offline
+          SECRET_KEY: ci-offline-sql-only
+          SECURITY_PASSWORD_SALT: ci-offline-sql-only
+          ENVIRONMENT: dev
+        run: uv run --no-sync python scripts/ci/lint_new_migrations.py HEAD^1
+
       - name: Migrate + run tests with coverage
         env:
           DATABASE_URL: postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr
@@ -96,6 +120,8 @@ jobs:
         # plain local `pytest` stays serial.
         run: |
           uv run alembic upgrade head
+          # Fails when the models need a migration nobody wrote (alembic 1.9+).
+          uv run alembic check
           uv run pytest -n 3 --dist loadfile --cov=app --cov-branch --cov-report=xml --cov-report=term-missing
 
       - name: Upload backend coverage
