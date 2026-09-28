@@ -25,7 +25,7 @@ from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
 from app.errors import TranscriptPagesUnreadableError
-from app.services.llm import DocumentPart, TextPart, provider_for_stage
+from app.services.llm import DocumentPart, Part, TextPart, provider_for_stage
 from app.services.rasterise import page_image_parts
 from app.worker.failures import JobCancelled
 
@@ -85,7 +85,7 @@ _SCHEMA = {
 }
 
 
-def _isolated_parts(pdf_path, start, last, settings):
+def _isolated_parts(pdf_path, start, last, settings) -> list[Part]:
     """This transcript's first pages, whose SHAPE differs per backend rather than its content.
 
     vLLM cannot carry an inline PDF at all: `llm/vllm.py` converts parts through
