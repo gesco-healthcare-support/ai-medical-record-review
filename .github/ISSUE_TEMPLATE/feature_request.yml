@@ -1,0 +1,27 @@
+name: Feature request
+description: A change or an addition to what the app does.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use synthetic data only. Never paste a patient's name or any other detail from a real record.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is hard, slow or impossible today, and who it affects.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should change
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
