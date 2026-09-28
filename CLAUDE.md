@@ -31,8 +31,13 @@ terms are in `docs/reference/glossary.md`.
   `.claude/rules/commit-scopes.md` (add a scope there in the PR that needs it).
 - **Docs change with the code.** A change to behaviour, a route, a setting, a table, a migration, a
   compose service or a frontend route updates the page that describes it in the same PR.
-  `backend/tests/test_docs_reference_drift.py` fails when a reference page falls behind. Conventions:
-  `docs/how-to/work-on-these-docs.md`.
+  `backend/tests/test_docs_reference_drift.py` fails when a reference page falls behind, and
+  `backend/tests/test_docs_guides.py` when a README misses a file or a doc cites a path or symbol
+  that no longer exists. Conventions: `docs/how-to/work-on-these-docs.md`.
+- **Before you finish, re-read the docs your change touches.** The Stop hook
+  (`.claude/hooks/docs-reminder.sh`) names the folder guides and pages to check. Update what the
+  change made wrong. If they are still right, run the `--reviewed <folder>` command it prints. Keep
+  each folder's README file list complete; keep CLAUDE.md to rules, traps and commands.
 - **Working files stay out of git.** `docs/plans/` and `docs/backlog.md` are gitignored on purpose;
   never stage anything in them. Never `git add -A`; stage by explicit path.
 

@@ -57,4 +57,5 @@ design conventions that cut across folders.
   required checks on `main`. Details: `docs/reference/ci-and-merge-gates.md`.
 
 - **Workflow.** Pull requests only, squash-merged; commit messages and PR titles use the scopes in
-  `.claude/rules/commit-scopes.md`. Docs change in the same PR as the code they describe.
+  `.claude/rules/commit-scopes.md`. Docs change in the same PR as the code they describe; the
+  guards that check it are in `docs/how-to/work-on-these-docs.md` ("How the docs stay current").

@@ -67,10 +67,46 @@ route missing from [Frontend routes and data](../reference/frontend-routes-and-d
 missing from the Jobs table of [CI and merge gates](../reference/ci-and-merge-gates.md). If you add
 one of those things, add its row in the same pull request.
 
+## How the docs stay current
+
+No check can tell that a sentence became false while every name in it stayed the same. So four
+guards work together: exact checks where a fact can be checked, a nudge to re-read where it cannot,
+and a weekly list as the backstop.
+
+"The docs that describe a file" is never kept by hand. For any code file it is:
+
+- the `README.md` and `CLAUDE.md` of the nearest folder above the file that has either; and
+- every page, README or CLAUDE.md that cites the file's path in backticks.
+
+A citation may be written from the repository root, from the citing file's own folder or any folder
+above it, or from the `backend/` or `frontend/` package root. The rules live in one place,
+`.github/scripts/docs_guides.py`, and every guard below uses it.
+
+| guard | where | when | what it does |
+| --- | --- | --- | --- |
+| Exact checks | `backend/tests/test_docs_guides.py`, in the required `backend` job | every pull request | Blocks the merge when a file in a folder is not named in that folder's README (`__init__.py`, dotfiles and lockfiles are exempt), when a doc cites a path that does not exist, when a "`path` `symbol`" citation names a symbol no longer in that file, or when a CLAUDE.md passes 200 lines. |
+| Docs to re-read | `docs-impact` job in `.github/workflows/docs-drift.yml` | every pull request | Warns only. For each changed code file (tests and lockfiles excluded) whose describing docs the pull request did not touch, it adds a warning annotation and lists the docs in the job summary. Re-read them; update any the change made wrong, or say in the pull request why none needed it. |
+| Weekly drift report | `docs-drift-report` job in the same workflow | Mondays 15:00 UTC, or run it by hand | Keeps one open issue, labelled `docs-drift`, listing every doc whose code has commits after the doc's own last commit. |
+| Stop hook | `.claude/hooks/docs-reminder.sh`, registered in `.claude/settings.json` | when a Claude Code agent is about to finish | Reminds the agent once about folders whose code it changed without touching their README, CLAUDE.md or citing pages. |
+
+To clear an entry in the weekly report, re-read the doc against its code. If it is wrong, fix it.
+If it is still right, change something in it anyway so the next report starts from that commit. The
+convention is a closing line `<!-- reviewed: YYYY-MM-DD -->` (added, or its date updated); it does
+not show on the site.
+
+When the Stop hook reminds an agent about a folder whose docs are still right, the agent records
+that it looked, and the reminder stays quiet until that folder's code changes again:
+
+```bash
+bash .claude/hooks/docs-reminder.sh --reviewed <folder>
+```
+
+The record is kept in `.git/docs-reviewed`, on that machine only.
+
 ## Conventions every page follows
 
 - **ASCII only.** No curly quotes, long dashes or arrows; write `-` and `->`.
-- **Point at code by path and symbol, never by line number.** `services/jobs.py` `enqueue()`
+- **Point at code by path and symbol, never by line number.** `backend/app/services/jobs.py` `enqueue()`
   survives an edit; `jobs.py:241` is wrong within a week.
 - **One home per fact.** If another page owns a topic, link to it instead of repeating it. Copies
   drift apart.
@@ -97,6 +133,19 @@ Every package has both files, and they serve different readers:
   are followed less reliably.
 
 When you change a folder's rules or layout, update both files in the same pull request.
+
+Keeping them useful to an agent:
+
+- **The file-by-file list belongs in the README, not the CLAUDE.md.** The exact checks keep the
+  README list complete. A second copy in CLAUDE.md would only drift and push the file towards its
+  size limit.
+- **Put in CLAUDE.md only what the agent cannot learn quickly from the code**: the rule that must
+  hold, the trap that already cost a bug, the command to run. Everything else is noise it re-reads
+  on every visit.
+- **Cite code as `path` plus symbol.** The exact checks then catch a rename or deletion the moment
+  it happens.
+- **When a rule stops being true, delete it.** A stale rule in CLAUDE.md is followed; a stale
+  sentence on a page is only read.
 
 ## Get a docs change onto the server
 
