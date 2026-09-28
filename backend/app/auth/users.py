@@ -24,7 +24,9 @@ _DIGIT = re.compile(r"\d")
 _SYMBOL = re.compile(r"[^A-Za-z0-9]")
 
 
-class UserManager(IntegerIDMixin, BaseUserManager[User, int]):
+# FastAPI-Users' UserProtocol declares plain str/bool attributes; pyright reads our typed
+# columns (Mapped[str]) as a different type, so User cannot match it for the checker only.
+class UserManager(IntegerIDMixin, BaseUserManager[User, int]):  # pyright: ignore[reportInvalidTypeArguments]
     def __init__(self, user_db) -> None:
         super().__init__(user_db, password_helper=MrrPasswordHelper())
         # Secrets for the reset-password / verification token JWTs (P2c). Read here, not at import,

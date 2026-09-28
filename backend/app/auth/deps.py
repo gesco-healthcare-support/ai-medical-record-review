@@ -14,7 +14,9 @@ from app.auth.backend import auth_backend
 from app.auth.users import get_user_manager
 from app.models import User
 
-fastapi_users = FastAPIUsers[User, int](get_user_manager, [auth_backend])
+# FastAPI-Users' UserProtocol declares plain str/bool attributes; pyright reads our typed
+# columns (Mapped[str]) as a different type, so User cannot match it for the checker only.
+fastapi_users = FastAPIUsers[User, int](get_user_manager, [auth_backend])  # pyright: ignore[reportInvalidTypeArguments]
 
 current_active_user = fastapi_users.current_user(active=True)
 current_superuser = fastapi_users.current_user(active=True, superuser=True)

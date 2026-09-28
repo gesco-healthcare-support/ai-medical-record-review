@@ -17,7 +17,9 @@ from app.models import AccessToken, User
 async def get_user_db(
     session: AsyncSession = Depends(get_async_db),
 ) -> AsyncIterator[SQLAlchemyUserDatabase]:
-    yield SQLAlchemyUserDatabase(session, User)
+    # FastAPI-Users' UserProtocol declares plain str/bool attributes; pyright reads our typed
+    # columns (Mapped[str]) as a different type, so User cannot match it for the checker only.
+    yield SQLAlchemyUserDatabase(session, User)  # pyright: ignore[reportArgumentType]
 
 
 async def get_access_token_db(
