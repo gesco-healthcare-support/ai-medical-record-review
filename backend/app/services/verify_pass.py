@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pdf2image import convert_from_path
 
 from app.config import get_settings
-from app.services.llm import ImagePart, TextPart, provider_for_stage
+from app.services.llm import ImagePart, Part, TextPart, provider_for_stage
 from app.services.ocr import extract_text_from_image
 from app.services.pools import PoolTimeout, drain_pool
 from app.worker.failures import JobCancelled
@@ -115,7 +115,7 @@ def _same_document(pdf_path, prev_row, row):
         # CONSEQUENCE, and it must not be quoted past this line: the oracle's measured 57.4%
         # precision / 49.0% recall were taken PROMPT-FIRST. This change invalidates them. Re-measure
         # before citing either number again.
-        parts = [ImagePart(data=_png_bytes(a_last), mime_type="image/png")]
+        parts: list[Part] = [ImagePart(data=_png_bytes(a_last), mime_type="image/png")]
         for image in fragment_images:
             parts.append(ImagePart(data=_png_bytes(image), mime_type="image/png"))
         parts.append(TextPart(prompt))

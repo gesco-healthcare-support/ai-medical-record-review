@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.errors import EmptyExtractionError, is_rate_limited
 from app.services.deposition_pages import transcript_page_offset
 from app.services.house_style import one_paragraph, sentence_case_caps_runs
-from app.services.llm import TextPart, get_provider
+from app.services.llm import Part, TextPart, get_provider
 from app.services.ocr import extract_pages_with_report
 from app.services.prompts import prompts
 from app.services.provenance import fingerprint, summary_prompt_fingerprint
@@ -654,7 +654,7 @@ def _generate(model, system_msg, contents, temperature, max_output_tokens=None):
     settings = get_settings()
     if max_output_tokens is None:
         max_output_tokens = settings.summary_max_output_tokens
-    parts = [TextPart(contents)] if isinstance(contents, str) else list(contents)
+    parts: list[Part] = [TextPart(contents)] if isinstance(contents, str) else list(contents)
     response = get_provider().generate_text(
         model=model,
         system=system_msg,
