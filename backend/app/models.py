@@ -614,6 +614,7 @@ class Category(Base):
     # and Depositions (9) seed to False (rarely summarized); distinct from auto_assign, which gates
     # whether the classifier may assign the category at all.
     summarize_default = Column(Boolean, nullable=False, default=True)
+    probe_unmigrated = Column(String(10), nullable=True)  # PROBE for #418: no migration on purpose
     updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
 
     def listing(self):
