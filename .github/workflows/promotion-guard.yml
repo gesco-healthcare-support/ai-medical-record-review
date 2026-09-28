@@ -1,0 +1,47 @@
+name: promotion guard
+
+# Enforces the order of the branch cascade - main -> staging -> production, with qwen fed from main - as a
+# required check on each promotion branch's ruleset. GitHub has no native "PRs into X must come from Y" rule.
+# The decision logic and its reasons live in .github/scripts/promotion_guard.py.
+#
+# Why pull_request_target: it always runs THIS file, and the script it checks out, from the default branch, so a
+# pull request cannot edit the guard that judges it (under pull_request the PR's own copy would run). The trigger's
+# danger is running untrusted PR code with a write token and secrets. This job does neither: it checks out only the
+# default branch's .github/scripts, never the PR's head; its token can only read (two API reads, for the hotfix
+# check); it uses no secrets; branch names and commit messages reach the script through env and are never run.
+#
+# One check name per target branch (guard-into-staging, guard-into-production, guard-into-qwen), each required only
+# by its own branch's ruleset. Check results belong to a COMMIT, not a PR: with one shared name, a wrong-direction PR
+# opened from main's head commit would put a failing check on that commit and block the right promotion too. And
+# `edited` re-runs the guard when a PR's base is changed; without it, a PR retargeted from staging to production kept
+# the pass it had earned for staging. Both were observed in live tests on a scratch repository on 2026-09-27.
+on:
+  pull_request_target:  # zizmor: ignore[dangerous-triggers] -- no PR code runs here; see the comment above
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
+
+jobs:
+  promotion-guard:
+    name: guard-into-${{ github.base_ref }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out the default branch's guard script (never the PR's code)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Check the promotion source
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/promotion_guard.py
