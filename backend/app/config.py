@@ -174,6 +174,9 @@ class Settings(BaseSettings):
     upload_folder: str = "./uploads"
     # How long a prepared export stays downloadable before its file is deleted (app/services/downloads).
     download_ttl_seconds: int = 300
+    # How long a download's delivery record (#390: waiting / downloading / interrupted / complete) is kept, and
+    # so how long the page may keep watching it. Longer than the link: a slow download outlives its link.
+    download_watch_seconds: int = 900
     tesseract_cmd: str = ""
 
     # Gemini routing. Vertex is the BAA-covered path; required in production.

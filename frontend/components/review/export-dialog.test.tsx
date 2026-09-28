@@ -2,7 +2,18 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// The watch's own timing is covered by hooks/use-download-watch.test.tsx; here it is a controlled value, so
+// these tests check only what the dialog does with it. Idle unless a test says otherwise.
+vi.mock("@/hooks/use-download-watch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-download-watch")>();
+  return {
+    ...actual,
+    useDownloadWatch: vi.fn(() => ({ message: "", tone: "info", watching: false })),
+  };
+});
+
 import { ExportDialog } from "@/components/review/export-dialog";
+import { COMPLETE, DOWNLOADING, useDownloadWatch } from "@/hooks/use-download-watch";
 
 describe("ExportDialog error handling", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -280,5 +291,104 @@ describe("ExportDialog page numbers", () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(fetchSpy).not.toHaveBeenCalled(); // dismissing is not a silent export
+  });
+});
+
+describe("ExportDialog after the hand-off (#390)", () => {
+  const PREPARED = { token: "tok", url: "/api/documents/d1/downloads/tok", filename: "x.docx", size: 4 };
+  const watch = vi.mocked(useDownloadWatch);
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    watch.mockReturnValue({ message: "", tone: "info", watching: false });
+  });
+
+  function handOver() {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => PREPARED,
+    } as unknown as Response);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  }
+
+  function renderDialog(onOpenChange = vi.fn(), open = true) {
+    return render(
+      <ExportDialog
+        open={open}
+        onOpenChange={onOpenChange}
+        documentId="d1"
+        includedCount={1}
+        excludedCount={0}
+      />,
+    );
+  }
+
+  it("stays open and watches the download it handed to the browser", async () => {
+    // It used to close the moment the link was clicked, so a download that failed later said nothing.
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    handOver();
+    renderDialog(onOpenChange);
+
+    await user.click(screen.getByRole("button", { name: "Download memo" }));
+
+    await vi.waitFor(() => expect(watch).toHaveBeenLastCalledWith(PREPARED));
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    // Cancel (and the dialog's own close button) stay usable: closing is how the reviewer stops watching.
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+
+  it("shows Downloading... with every export button disabled while it watches", () => {
+    watch.mockReturnValue({ message: DOWNLOADING, tone: "info", watching: true });
+    renderDialog();
+
+    expect(screen.getByRole("status")).toHaveTextContent(DOWNLOADING);
+    for (const name of ["Export to Word", "Download memo", "Export to linked PDF", "Download all (.zip)"]) {
+      expect(screen.getByRole("button", { name })).toBeDisabled();
+    }
+  });
+
+  it("keeps Download complete. on screen and the buttons usable again, without closing", () => {
+    const onOpenChange = vi.fn();
+    watch.mockReturnValue({ message: COMPLETE, tone: "ok", watching: false });
+    renderDialog(onOpenChange);
+
+    expect(screen.getByRole("status")).toHaveTextContent(COMPLETE);
+    expect(screen.getByRole("status")).not.toHaveClass("error-text");
+    expect(screen.getByRole("button", { name: "Download memo" })).toBeEnabled();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps its status line on the page, empty, before there is anything to say", () => {
+    // A screen reader announces changes to a live region it is already watching; one that mounts together
+    // with its first sentence may be read late or not at all.
+    renderDialog();
+
+    const line = screen.getByRole("status");
+    expect(line.tagName).toBe("OUTPUT");
+    expect(line).toBeEmptyDOMElement();
+  });
+
+  it("shows a problem in the error style", () => {
+    watch.mockReturnValue({ message: "The download has not started.", tone: "err", watching: true });
+    renderDialog();
+
+    expect(screen.getByRole("status")).toHaveClass("error-text");
+  });
+
+  it("stops watching when the dialog is closed", async () => {
+    const user = userEvent.setup();
+    handOver();
+    const { rerender } = renderDialog();
+    await user.click(screen.getByRole("button", { name: "Download memo" }));
+    await vi.waitFor(() => expect(watch).toHaveBeenLastCalledWith(PREPARED));
+
+    rerender(
+      <ExportDialog open={false} onOpenChange={vi.fn()} documentId="d1" includedCount={1} excludedCount={0} />,
+    );
+
+    await vi.waitFor(() => expect(watch).toHaveBeenLastCalledWith(null));
   });
 });

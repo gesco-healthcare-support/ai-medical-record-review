@@ -19,10 +19,12 @@ before the end. Never the filename (it carries the patient's name) and never the
 
 import logging
 import time
+from functools import partial
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
+from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 from starlette.types import Message, Receive, Scope, Send
 
@@ -40,29 +42,45 @@ DOWNLOADS_UNAVAILABLE = "Downloads are unavailable right now. Please try again."
 
 
 class _Transfer:
-    """One GET as it is sent: its status, the size it declared, the body bytes sent, whether the last chunk
-    has gone, and whether the browser left before it did."""
+    """One GET as it is sent: its status, the size it declared, where in the file it started, the body bytes
+    sent, whether the last chunk has gone, and whether the browser left before it did.
 
-    def __init__(self, send: Send) -> None:
+    `on_start` runs once the response starts sending the file (200 or 206) - where the delivery record the page
+    watches is opened (#390 PR 2); `recorded` says it ran, so the record is closed again at the end."""
+
+    def __init__(self, send: Send, on_start=None) -> None:
         self._send = send
+        self._on_start = on_start
         self.status: int | None = None
         self.expected: int | None = None
+        self.start = 0
         self.sent = 0
         self.finished = False
         self.left_early = False
+        self.recorded = False
 
     async def send(self, message: Message) -> None:
         """Count what goes out, then send it."""
         if message["type"] == "http.response.start":
-            self.status = message["status"]
-            headers = dict(message.get("headers", []))
-            if b"content-length" in headers:
-                self.expected = int(headers[b"content-length"])
+            self._observe_start(message)
+            if self._on_start is not None and self.status in (200, 206):
+                self.recorded = True
+                await self._on_start()
         elif message["type"] == "http.response.body":
             self.sent += len(message.get("body", b""))
             # Set BEFORE the send: the last chunk's send is what makes `receive()` report completion.
             self.finished = not message.get("more_body", False)
         await self._send(message)
+
+    def _observe_start(self, message: Message) -> None:
+        self.status = message["status"]
+        headers = dict(message.get("headers", []))
+        if b"content-length" in headers:
+            self.expected = int(headers[b"content-length"])
+        # A Chrome Resume is a 206 labelled "bytes <start>-<end>/<size>" (starlette, responses.py). Only a 206
+        # is parsed: a 416's "bytes */<size>" has no start.
+        if self.status == 206 and b"content-range" in headers:
+            self.start = int(headers[b"content-range"].split(b" ")[1].split(b"-")[0])
 
     async def watch_for_disconnect(self, receive: Receive, cancel_scope: anyio.CancelScope) -> None:
         """Stop the send if the browser leaves before the last chunk. `receive()` also reports a disconnect once
@@ -90,27 +108,57 @@ class _MeasuredFileResponse(FileResponse):
     `send` returns SILENTLY once the client has gone, and starlette's `FileResponse` never listens for the
     disconnect - so a plain one reads the whole file into nothing and cannot tell a cut download from a whole
     one. The disconnect arrives on `receive()`, which `_Transfer` watches in parallel, the way starlette's own
-    `StreamingResponse` does. One log line per GET: complete, interrupted, or failed (it raised)."""
+    `StreamingResponse` does. One log line per GET: complete, interrupted, or failed (it raised).
+
+    Each GET that sends the file (200 or 206; not a HEAD) also updates the download's delivery record, which the
+    page watches (#390 PR 2). A Redis failure there is logged and never interrupts the file."""
 
     def __init__(self, path: str, *, document_id: str, token: str, **kwargs) -> None:
         super().__init__(path, **kwargs)
         self._document_id = document_id
+        self._token = token
         self._token8 = token[:8]
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        transfer = _Transfer(send)
+        on_start = self._delivery_started if scope.get("method") == "GET" else None
+        transfer = _Transfer(send, on_start)
         started = time.monotonic()
         try:
             async with anyio.create_task_group() as group:
                 group.start_soon(transfer.watch_for_disconnect, receive, group.cancel_scope)
                 await super().__call__(scope, receive, transfer.send)
                 group.cancel_scope.cancel()
-        except (
-            Exception
-        ) as exc:  # not BaseException: a cancellation (a server shutdown) is not a failure
+        # Not BaseException: a cancellation (a server shutdown) is not a failure.
+        except Exception as exc:
             self._log(transfer, time.monotonic() - started, failure=_error_names(exc))
             raise
+        finally:
+            await self._delivery_finished(transfer)
         self._log(transfer, time.monotonic() - started)
+
+    async def _delivery_started(self) -> None:
+        await self._record(downloads.delivery_started, self._token)
+
+    async def _delivery_finished(self, transfer: _Transfer) -> None:
+        """Close this GET's entry in the delivery record. Shielded, so a GET that failed or was cancelled cannot
+        leave the download reading as `downloading`."""
+        if not transfer.recorded:
+            return
+        with anyio.CancelScope(shield=True):
+            await self._record(
+                downloads.delivery_finished, self._token, start=transfer.start, sent=transfer.sent
+            )
+
+    async def _record(self, update, *args, **kwargs) -> None:
+        try:
+            await anyio.to_thread.run_sync(partial(update, *args, **kwargs))
+        except RedisError as exc:
+            logger.warning(
+                "download delivery record not updated: document=%s token=%s (%s)",
+                self._document_id,
+                self._token8,
+                type(exc).__name__,
+            )
 
     def _log(self, transfer: _Transfer, seconds: float, failure: str | None = None) -> None:
         expected = transfer.expected if transfer.expected is not None else "?"
@@ -165,3 +213,31 @@ def download_file(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get(
+    "/{document_id}/downloads/{token}/status",
+    responses={
+        404: {
+            "description": "No such download for this user and record, or its record has expired."
+        },
+        503: {"description": "The download store is unavailable."},
+    },
+)
+def download_status(
+    token: str,
+    document: Document = Depends(get_owned_document),
+    user: User = Depends(current_active_user),
+):
+    """Where this download has got to, for the page watching it (#390): `{state, size}` - never the filename.
+
+    No audit row: this reads a few ids and offsets, not the file."""
+    try:
+        found = downloads.delivery_status(token, user_id=user.id, document_id=document.id)
+    except downloads.DownloadsUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=DOWNLOADS_UNAVAILABLE
+        ) from exc
+    if found is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+    return found

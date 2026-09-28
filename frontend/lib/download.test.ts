@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
-import { DOWNLOAD_INTERRUPTED, DOWNLOAD_NOT_PREPARED, downloadFile } from "@/lib/download";
+import {
+  DOWNLOAD_INTERRUPTED,
+  DOWNLOAD_NOT_PREPARED,
+  downloadFile,
+  fetchDownloadStatus,
+} from "@/lib/download";
 import { humanizeError } from "@/lib/errors";
 
 /** #389: an export's POST answers with WHERE to download the file it built, and the browser fetches that
@@ -172,6 +177,22 @@ describe("downloadFile", () => {
     // The caller's fallback is the only name in scope on this path; the server's is asserted for when one is.
     expect(logged).not.toContain("fallback.docx");
     expect(logged).not.toContain(PREPARED.filename);
+  });
+
+  it("returns the prepared download, so the page can watch it after the hand-off", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => respond(200, PREPARED)));
+
+    await expect(downloadFile("/documents/doc-1/export", {}, "x")).resolves.toEqual(PREPARED);
+  });
+
+  it("asks for a handed-over download's status at its own address", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(respond(200, { state: "complete", size: 4 }));
+    fetchSpy.mockClear();
+
+    await expect(fetchDownloadStatus(PREPARED)).resolves.toEqual({ state: "complete", size: 4 });
+    expect(String(fetchSpy.mock.calls[0][0])).toBe("/api/documents/doc-1/downloads/tok/status");
   });
 
   it("reports a transport failure as status 0", async () => {
