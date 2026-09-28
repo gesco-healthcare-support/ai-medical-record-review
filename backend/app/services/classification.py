@@ -886,7 +886,9 @@ def _encode(texts):
     global _model
     with _embed_lock:
         if _model is None:
-            from sentence_transformers import SentenceTransformer
+            # Installed only in the segment-worker (classifier) image, with PyTorch; the type
+            # check runs without that extra, so the import cannot resolve there.
+            from sentence_transformers import SentenceTransformer  # pyright: ignore[reportMissingImports]
 
             _model = SentenceTransformer(_EMBED_MODEL_NAME)
         return np.asarray(_model.encode(list(texts), normalize_embeddings=True))
