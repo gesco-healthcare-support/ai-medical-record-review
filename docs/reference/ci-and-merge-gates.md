@@ -5,8 +5,9 @@ each long-lived branch.
 
 Source of truth:
 
-- the three workflows in `.github/workflows/` (`ci.yml`, `guard-tests.yml`, `promotion-guard.yml`);
-- `.github/scripts/promotion_guard.py`;
+- the four workflows in `.github/workflows/` (`ci.yml`, `guard-tests.yml`, `promotion-guard.yml`,
+  `docs-drift.yml`);
+- `.github/scripts/promotion_guard.py` and `.github/scripts/docs_guides.py`;
 - `backend/scripts/ci/lint_new_migrations.py`;
 - `sonar-project.properties` and `.pre-commit-config.yaml`;
 - the repository rulesets (GitHub repository settings, not files in the repository).
@@ -21,6 +22,7 @@ Jobs table below.
 | `ci.yml` | `push` | Branches `main` and `qwen` | A pushed feature branch is already tested by its pull request; listing push branches avoids a second run. |
 | `ci.yml` | `pull_request` | None: every pull request, whatever its base branch | A base-branch filter would leave pull requests into unlisted branches with no CI at all. |
 | `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
+| `docs-drift.yml` | `pull_request`; `schedule` (Mondays 15:00 UTC); `workflow_dispatch` | None | Two docs guards that never block a merge: warnings on a pull request, and a weekly drift issue. See [How to work on these docs](../how-to/work-on-these-docs.md#how-the-docs-stay-current). |
 | `promotion-guard.yml` | `pull_request_target` (`opened`, `synchronize`, `reopened`, `edited`) | None; the check only matters on branches whose ruleset requires it | Runs the default branch's copy of the guard, so a pull request cannot edit the check that judges it. `edited` re-runs it when a pull request's base changes. |
 
 Every workflow gives its jobs a read-only token (`permissions: contents: read`, or none at the
@@ -29,9 +31,12 @@ are:
 
 - `osv-scan`: `security-events: write` (and `actions: read`), which its reusable workflow needs to
   upload results;
-- the promotion guard: `pull-requests: read`.
+- the promotion guard: `pull-requests: read`;
+- `docs-drift-report`: `issues: write`, to edit its one issue. It is the only job that writes, and it
+  runs only on the default branch (`schedule`, `workflow_dispatch`), never on pull request code.
 
-None of the workflows has a `schedule`, a `workflow_dispatch` or a `concurrency` group.
+Only `docs-drift.yml` has a `schedule` and a `workflow_dispatch`. No workflow has a `concurrency`
+group.
 
 ## Jobs
 
@@ -50,10 +55,12 @@ All jobs run on `ubuntu-latest`.
 | `coverage-floor` | `ci.yml` | `backend`, `frontend` | Reads both coverage reports and compares them with the floors | Either suite is below its floor, or a report is missing, empty or unreadable |
 | `sonarcloud` | `ci.yml` | `backend`, `frontend` | SonarCloud scan with both coverage reports, waiting for the quality gate; on pull requests, a check for new issues and hotspots | The quality gate fails, or (pull requests) the analysis cannot be proven current, or the pull request adds any issue or hotspot |
 | `guard-tests` | `guard-tests.yml` | - | The promotion guard's unit tests (`python3 -m unittest -v test_promotion_guard` in `.github/scripts/`) | Any test fails |
+| `docs-impact` | `docs-drift.yml` | - | Pull requests only. The docs rules' unit tests, then `python3 .github/scripts/docs_guides.py impact <base> <head>` | Its unit tests fail. The check itself never fails: a changed code file whose describing docs were not touched gets a warning annotation and a row in the job summary. |
+| `docs-drift-report` | `docs-drift.yml` | - | Weekly and by hand, never on a pull request. `python3 .github/scripts/docs_guides.py report`, then creates or edits the one open issue labelled `docs-drift` | The report or the `gh` call errors |
 | `promotion-guard` | `promotion-guard.yml` | - | Checks that a pull request into a promotion branch comes from the branch above it. Its check is named `guard-into-<base branch>`. | The pull request's head is not an allowed source for its base (see [Promotion order](#promotion-order)) |
 
 A job whose `needs` failed is skipped, not passed; the failed job is the one that blocks. A job that
-runs on pull requests only (`dependency-review`, `osv-scan`) is skipped on a push.
+runs on pull requests only (`dependency-review`, `osv-scan`, `docs-impact`) is skipped on a push.
 
 ### `backend`
 
@@ -159,7 +166,7 @@ unrelated pull request. Development tooling is out of scope because it is not sh
 ### `osv-scan`
 
 Pull requests only. A call to Google's reusable workflow
-`google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml` with
+`osv-scanner-reusable-pr.yml` from the `google/osv-scanner-action` repository, with
 `--lockfile=./backend/uv.lock` and `--lockfile=./frontend/pnpm-lock.yaml`. It scans the base and
 the head, and fails only on vulnerabilities the pull request introduces. It reads both lockfiles
 directly, so it also covers `uv.lock`. Its check name is `osv-scan / osv-scan`.
@@ -275,7 +282,7 @@ The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 | `guard-into-production` | GitHub Actions (`promotion-guard.yml`) | `production` |
 | `guard-into-qwen` | GitHub Actions (`promotion-guard.yml`) | `qwen` |
 
-`guard-tests` runs on every pull request but is not a required check. Adding a check to a
+`guard-tests`, `docs-impact` and `docs-drift-report` are not required checks. Adding a check to a
 branch's list is a change to that branch's ruleset, made by a repository admin.
 
 ### Promotion order
