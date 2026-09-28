@@ -49,7 +49,9 @@ def _inline_html(text: str, *, whole_bold: bool = False) -> str:
     so the classification is not repeated here."""
     out = []
     for chunk, bold, italic, underline in entry_body_segments(text, whole_bold=whole_bold):
-        esc = html.escape(chunk)
+        # A newline is only whitespace in HTML, which is how a deposition used to print as one
+        # block. Word turns the same "\n" into a line break, so both show the paragraph gap.
+        esc = html.escape(chunk).replace("\n", "<br/>")
         if underline:
             esc = f"<u>{esc}</u>"
         if italic:
