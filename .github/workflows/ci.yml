@@ -295,6 +295,40 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: uvx zizmor==1.30.1 --persona regular .github/workflows/
 
+  # Dependency gate, PR half 1. Fails a PR that ADDS or upgrades to a runtime dependency with a known high or
+  # critical vulnerability, using GitHub's advisory database and the PR's own dependency diff - so an advisory
+  # published against an OLD dependency never fails an unrelated PR. Runtime scope only: dev tooling is not
+  # shipped. PR-only; on a push this job is skipped.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime
+          comment-summary-in-pr: never
+
+  # Dependency gate, PR half 2. OSV-Scanner reads both lockfiles directly (uv.lock included, which GitHub's
+  # dependency graph does not list as a supported format), scans the base and the PR, and fails only on
+  # vulnerabilities the PR INTRODUCES. The reusable workflow's own job asks for security-events: write (it uploads
+  # its SARIF to code scanning), so this job must grant it; nothing else here gets it.
+  osv-scan:
+    if: github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+    with:
+      scan-args: |-
+        --lockfile=./backend/uv.lock
+        --lockfile=./frontend/pnpm-lock.yaml
+
   # Coverage floor. A SEPARATE job so a shortfall reads as "coverage" rather than as a test job
   # failing. Two halves, one job - so the ruleset needs ONE check name to enforce both:
   #   backend   90, on coverage.py's branch-aware total (one number)
