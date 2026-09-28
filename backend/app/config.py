@@ -562,8 +562,10 @@ class Settings(BaseSettings):
     # Within-request transient retries at the genai seam. Bumped 6 -> 8 so a brief shared-quota
     # 429 / 5xx burst rides out inside a single call on the NON-resumable paths (segmentation /
     # verify / classify, which have no pause/resume); a sustained outage still exhausts and fails
-    # the job with a friendly terminal message rather than hanging.
-    genai_max_retries: int = 8
+    # the job with a friendly terminal message rather than hanging. It counts ATTEMPTS, so it must
+    # be at least 1: at 0 the retry loop never runs and `raise last` raises None, a TypeError on
+    # every model call - refused at boot instead.
+    genai_max_retries: int = Field(default=8, ge=1)
     genai_retry_base_delay: float = 2.0
     genai_retry_max_delay: float = 30.0
 

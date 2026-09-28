@@ -30,7 +30,7 @@ function errMessage(err: unknown, fallback: string) {
  *  state. Upload does NOT start identification (a mis-clicked file must not spend model quota). */
 export function DocumentsView() {
   const router = useRouter();
-  const { data: docs = [], isLoading } = useDocuments();
+  const { data: docs = [], isLoading, isError, refetch } = useDocuments();
   const upload = useUploadDocument();
   const del = useDeleteDocument();
   const identify = useStartIdentification();
@@ -114,7 +114,17 @@ export function DocumentsView() {
         onChange={(e) => void uploadFile(e.target.files?.[0])}
       />
 
-      {!isLoading && docs.length === 0 ? (
+      {/* A failed fetch leaves `docs` at its [] default, and the first-run screen below would then
+          tell a reviewer with records that they have none. Say what happened instead. */}
+      {!isLoading && isError ? (
+        <div className="banner" role="alert">
+          Could not load your documents.{" "}
+          <button type="button" className="ev-btn ev-btn-outline" onClick={() => void refetch()}>
+            Try again
+          </button>
+        </div>
+      ) : null}
+      {!isLoading && !isError && docs.length === 0 ? (
         <EmptyState dragging={dragging} uploading={upload.isPending} onBrowse={pickFile} />
       ) : null}
       {!isLoading && docs.length > 0 ? (

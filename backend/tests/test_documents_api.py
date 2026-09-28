@@ -5303,6 +5303,43 @@ async def test_fetching_the_pdf_returns_it_and_records_the_view(authed):
     assert _audit_actions(doc_id).count("view_pdf") == 1
 
 
+async def test_the_source_pdf_is_never_cached(authed):
+    """WHEN the source PDF is served, THE SYSTEM SHALL send Cache-Control: no-store.
+
+    It is the patient record itself. The prepared-download route already refuses caching ("no
+    browser or proxy cache may keep a copy"); this one did not, and reviewers work on shared
+    remote-desktop hosts where a browser cache outlives the session.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+
+    resp = await client.get(f"/api/documents/{doc_id}/pdf")
+
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-store"
+
+
+async def test_a_queue_outage_answers_503_with_a_sentence(authed, monkeypatch):
+    """WHEN the job queue cannot be reached, THE SYSTEM SHALL answer a job-start route with 503
+    and a sentence the page can show, not a bare 500.
+
+    The route caught only JobConflict, so the dispatch failure surfaced as an unhandled 500 with no
+    body, and the page could only say "Could not start identification."
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("redis is down")
+
+    monkeypatch.setattr("app.worker.queues.queue_for", boom)
+
+    resp = await client.post(f"/api/documents/{doc_id}/segment/start")
+
+    assert resp.status_code == 503
+    assert "queue" in resp.json()["detail"].lower()
+
+
 async def test_setting_a_category_to_the_value_it_already_has_writes_no_audit_row(authed):
     """WHEN a category is set to its current value, THE SYSTEM SHALL write no audit row.
 

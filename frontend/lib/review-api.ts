@@ -120,12 +120,18 @@ export type HeaderFields = {
   pages_received: string;
 };
 
+/** The four header fields extraction detects - the whole reply of POST /extract-header. */
+export type DetectedHeaderFields = Pick<
+  HeaderFields,
+  "patient_first_name" | "patient_last_name" | "patient_dob" | "law_firm"
+>;
+
 /** POST /api/documents/{id}/extract-header - re-extract the header from the record's first pages
  *  (a model call) AND persist it: a field the extraction found overwrites the stored one, a field it
- *  did not find keeps the stored value. The reply holds only the four detected fields (patient
- *  first and last name, date of birth, law firm), not the whole header. */
+ *  did not find keeps the stored value. The reply is ONLY the four detected fields, so a caller
+ *  holding the whole header merges it in rather than replacing the header with it. */
 export function extractHeader(id: string) {
-  return apiFetch<HeaderFields>(`/documents/${id}/extract-header`, { method: "POST" });
+  return apiFetch<DetectedHeaderFields>(`/documents/${id}/extract-header`, { method: "POST" });
 }
 
 /** PUT /api/documents/{id}/header - persist the reviewer-edited report header. */

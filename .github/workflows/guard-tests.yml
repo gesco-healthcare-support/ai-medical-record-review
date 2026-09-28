@@ -1,0 +1,25 @@
+name: guard tests
+
+# Unit tests for the promotion guard's decisions, run on the pull request's OWN code. The guard itself
+# (promotion-guard.yml) always runs the default branch's copy, so this is the only place a change to it is tested
+# before it merges. No paths filter: a required check whose workflow is skipped by one stays pending and blocks the
+# merge, and this job takes seconds.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Promotion guard unit tests
+        working-directory: .github/scripts
+        run: python3 -m unittest -v test_promotion_guard
