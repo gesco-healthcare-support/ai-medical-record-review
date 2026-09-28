@@ -20,6 +20,8 @@ Jobs table below.
 | --- | --- | --- | --- |
 | `ci.yml` | `push` | Branches `main` and `qwen` | A pushed feature branch is already tested by its pull request; listing push branches avoids a second run. |
 | `ci.yml` | `pull_request` | None: every pull request, whatever its base branch | A base-branch filter would leave pull requests into unlisted branches with no CI at all. |
+| `codeql.yml` | `pull_request`; `push` to `main`; weekly `schedule` | None on pull requests | CodeQL static analysis of the Python, TypeScript and workflow code; results go to code scanning. |
+| `scorecard.yml` | `push` to `main`; weekly `schedule` | Default branch only (Scorecard publishes only from it) | OpenSSF Scorecard: publishes the score the README badge shows and uploads its findings to code scanning. |
 | `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
 | `promotion-guard.yml` | `pull_request_target` (`opened`, `synchronize`, `reopened`, `edited`) | None; the check only matters on branches whose ruleset requires it | Runs the default branch's copy of the guard, so a pull request cannot edit the check that judges it. `edited` re-runs it when a pull request's base changes. |
 
@@ -29,9 +31,13 @@ are:
 
 - `osv-scan`: `security-events: write` (and `actions: read`), which its reusable workflow needs to
   upload results;
+- `codeql.yml` `analyze`: `security-events: write`, to upload results to code scanning;
+- `scorecard.yml` `analysis`: `security-events: write` and `actions: read` for the upload, and
+  `id-token: write`, which Scorecard needs to publish a verified result;
 - the promotion guard: `pull-requests: read`.
 
-None of the workflows has a `schedule`, a `workflow_dispatch` or a `concurrency` group.
+`codeql.yml` and `scorecard.yml` also run on a weekly `schedule`. No workflow has a
+`workflow_dispatch` or a `concurrency` group.
 
 ## Jobs
 
@@ -40,6 +46,8 @@ All jobs run on `ubuntu-latest`.
 | Job | Workflow | needs | What it runs | Fails when |
 | --- | --- | --- | --- | --- |
 | `backend` | `ci.yml` | - | Ruff lint and format check, an import smoke test, migration checks (one head; on pull requests, Squawk on the SQL of new migrations), migrations, `alembic check`, then the pytest suite with branch coverage, against Postgres and Redis service containers | Any lint or format finding, the import fails, a migration check fails, a migration fails, the models need a migration nobody wrote, or any test fails |
+| `analyze` | `codeql.yml` | - | CodeQL (default query suite, `build-mode: none`) for `actions`, `javascript-typescript` and `python`, one matrix leg each | An analysis cannot run; findings themselves go to code scanning |
+| `analysis` | `scorecard.yml` | - | OpenSSF Scorecard, published, with its SARIF uploaded to code scanning | Scorecard cannot run or publish |
 | `frontend` | `ci.yml` | - | Typecheck, production build, Vitest with coverage | A type error, a build error, or any test fails |
 | `e2e` | `ci.yml` | - | Builds and starts the app stack with Compose (without workers), then Playwright | The app is not ready within the wait loop, or any spec fails |
 | `secret-scan` | `ci.yml` | - | gitleaks over the checked-out files | gitleaks reports a finding |
@@ -352,6 +360,8 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | `astral-sh/setup-uv` | v5.4.2 | `backend`, `docs`, `workflow-lint` |
 | `actions/setup-node` | v4.4.0, Node 24 | `frontend`, `e2e` |
 | `actions/upload-artifact`, `actions/download-artifact` | v5.0.0 | Coverage and report artifacts |
+| `github/codeql-action` (`init`, `analyze`, `upload-sarif`) | v4.38.2 | `analyze`, `analysis` |
+| `ossf/scorecard-action` | v2.4.4 | `analysis` |
 | `actions/dependency-review-action` | v5.0.0 | `dependency-review` |
 | `google/osv-scanner-action` reusable workflow | v2.6.0 | `osv-scan` |
 | `SonarSource/sonarqube-scan-action` | v8.2.0 | `sonarcloud` |
