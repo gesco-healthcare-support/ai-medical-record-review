@@ -50,7 +50,7 @@ All jobs run on `ubuntu-latest`.
 | `secret-scan` | `ci.yml` | - | gitleaks over the checked-out files | gitleaks reports a finding |
 | `docs` | `ci.yml` | - | Builds the documentation site strictly | Any MkDocs warning, including a link to a page that does not exist |
 | `workflow-lint` | `ci.yml` | - | actionlint and zizmor over `.github/workflows/` | A workflow syntax or expression error, or a zizmor security finding |
-| `dependency-review` | `ci.yml` | - | Pull requests only. GitHub's dependency review of the pull request's dependency changes | The pull request adds, or upgrades to, a runtime dependency with a known high or critical vulnerability |
+| `dependency-review` | `ci.yml` | - | Pull requests only. GitHub's dependency review of the pull request's dependency changes | The pull request adds, or upgrades to, a runtime dependency with a known high or critical vulnerability that GitHub's dependency graph reports. It can miss one, so `osv-scan` backs it up (see below). |
 | `osv-scan` | `ci.yml` | - | Pull requests only. OSV-Scanner over `backend/uv.lock` and `frontend/pnpm-lock.yaml`, base against head | The pull request introduces a known vulnerability |
 | `coverage-floor` | `ci.yml` | `backend`, `frontend` | Reads both coverage reports and compares them with the floors | Either suite is below its floor, or a report is missing, empty or unreadable |
 | `sonarcloud` | `ci.yml` | `backend`, `frontend` | SonarCloud scan with both coverage reports, waiting for the quality gate; on pull requests, a check for new issues and hotspots | The quality gate fails, or (pull requests) the analysis cannot be proven current, or the pull request adds any issue or hotspot |
@@ -163,6 +163,11 @@ Pull requests only. `actions/dependency-review-action` with `fail-on-severity: h
 dependency changes, so an advisory published against an existing dependency never fails an
 unrelated pull request. Development tooling is out of scope because it is not shipped.
 
+It is only as complete as GitHub's dependency graph. A test pull request (#419) added two known-vulnerable
+runtime dependencies: it flagged `ujson` in `backend/uv.lock` but not `lodash` 4.17.15 in
+`frontend/pnpm-lock.yaml`, although the graph's compare API rated that one runtime and high.
+`osv-scan` caught it. Treat the two jobs as a pair, not as duplicates.
+
 ### `osv-scan`
 
 Pull requests only. A call to Google's reusable workflow
@@ -252,14 +257,23 @@ gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets/<id>
 | Changes arrive by pull request | Required | Required |
 | Allowed merge method | Squash only | Merge commit only, so a promotion keeps the commits of the branch above |
 | Required approving reviews | 1 by design; set to 0 from 2026-09-28 to 2026-09-30 | 1 by design; set to 0 from 2026-09-28 to 2026-09-30 |
+| Approval must come after the most recent push, from someone other than the last pusher | Yes by design; off from 2026-09-28 to 2026-09-30 | Yes by design; off from 2026-09-28 to 2026-09-30 |
 | Stale approvals dismissed on a new push | Yes | Yes |
-| Branch must be up to date before merging | Not required | Not required |
+| Branch must be up to date before merging | Required | Not required, by design: "Update branch" on a promotion pull request would merge the lower branch back into the upper one |
 | Force push (non-fast-forward) | Blocked | Blocked |
 | Branch deletion | Blocked | Blocked |
 | Bypass | Nobody | Nobody |
 
-GitHub never lets an account approve its own pull request. While the approval count is 1, a pull
-request needs a second person's approval.
+GitHub never lets an account approve its own pull request. While both approval rules are on, the
+approver must be neither the pull request's author nor the account that pushed its last commit.
+
+Because `main` requires an up-to-date branch, every merge into `main` makes the other open pull
+requests into it out of date. Merge `main` into each one (do not rebase: a rebase is a force push
+that also dismisses approvals), and let CI run again before it can merge.
+
+**Emergency merge.** No ruleset has a bypass. When a fix cannot wait for the rules, a repository
+admin sets that one ruleset to disabled, merges, and sets it back to active. The change shows in
+the organisation audit log and the ruleset's history.
 
 The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 
@@ -274,10 +288,10 @@ The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 | `coverage-floor` | GitHub Actions (`ci.yml`) | all four branches |
 | `sonarcloud` | GitHub Actions (`ci.yml`) | all four branches |
 | `workflow-lint` | GitHub Actions (`ci.yml`) | all four branches |
-| `SonarCloud Code Analysis` | SonarCloud's own GitHub integration, from the analysis the `sonarcloud` job uploads | `main` |
-| `dependency-review` | GitHub Actions (`ci.yml`) | `main` |
-| `osv-scan / osv-scan` | GitHub Actions (`ci.yml`, reusable workflow) | `main` |
-| `docs` | GitHub Actions (`ci.yml`) | `main` |
+| `SonarCloud Code Analysis` | SonarCloud's own GitHub integration, from the analysis the `sonarcloud` job uploads | all four branches |
+| `dependency-review` | GitHub Actions (`ci.yml`) | all four branches |
+| `osv-scan / osv-scan` | GitHub Actions (`ci.yml`, reusable workflow) | all four branches |
+| `docs` | GitHub Actions (`ci.yml`) | `main` only, until `staging` and `qwen` contain the docs site |
 | `guard-into-staging` | GitHub Actions (`promotion-guard.yml`) | `staging` |
 | `guard-into-production` | GitHub Actions (`promotion-guard.yml`) | `production` |
 | `guard-into-qwen` | GitHub Actions (`promotion-guard.yml`) | `qwen` |
