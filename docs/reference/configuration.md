@@ -86,7 +86,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 
 | Env var | Type | Code default | Compose default | Container | Validation | Affects |
 | --- | --- | --- | --- | --- | --- | --- |
-| `GENAI_MAX_RETRIES` | int | `8` | `8` | yes | none | Total attempts (not retries) per logical model call, on all three backends |
+| `GENAI_MAX_RETRIES` | int | `8` | `8` | yes | At least 1; a lower value refuses startup | Total attempts (not retries) per logical model call, on all three backends |
 | `GENAI_RETRY_BASE_DELAY` | float | `2.0` | `2.0` | yes | none | Backoff base in seconds; each wait is uniform in `[0, min(GENAI_RETRY_MAX_DELAY, base x 2^attempt)]` |
 | `GENAI_RETRY_MAX_DELAY` | float | `30.0` | `30` | yes | none | Backoff ceiling in seconds; also caps a server-advised delay |
 | `GENAI_HTTP_TIMEOUT_MS` | int | `120000` | `120000` | yes | none | Gemini client timeout and the floor of the per-request deadline, which google-genai forwards to Vertex as the server deadline; OpenAI client timeout (divided by 1000, in seconds) |

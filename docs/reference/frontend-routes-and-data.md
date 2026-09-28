@@ -97,7 +97,7 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | `saveRows()` | `PUT /documents/{id}/rows` | `{rows: Row[]}` | `{ok, count}` | `useReviewWorkflow()` autosave |
 | `startSegment()` | `POST /documents/{id}/segment/start` | `{fresh}` (default false) | `{ok}` | `useReviewWorkflow()` `onStart()`, `restartCancelled()` |
 | `startSummarize()` | `POST /documents/{id}/summarize/start` | `{rows, fresh, skip_duplicate_check}` | `{ok}` | `useReviewWorkflow()` `onSummarize()`, `restartCancelled()` |
-| `extractHeader()` | `POST /documents/{id}/extract-header` | none | typed as `HeaderFields`; the server answers with `patient_first_name`, `patient_last_name`, `patient_dob`, `law_firm` | `HeaderBar`, `BundlePageClient` |
+| `extractHeader()` | `POST /documents/{id}/extract-header` | none | `DetectedHeaderFields`: only `patient_first_name`, `patient_last_name`, `patient_dob`, `law_firm`. `HeaderBar` merges the reply over the stored header rather than replacing it, so the other five fields keep their values. | `HeaderBar`, `BundlePageClient` |
 | `saveHeader()` | `PUT /documents/{id}/header` | `HeaderFields` | typed as `unknown` | `HeaderBar` |
 | `getSummaries()` | `GET /documents/{id}/summaries` | - | `SummaryItem[]` (all of them; paged in the browser) | `useSummaries()` |
 | `putSummary()` | `PUT /documents/{id}/summaries/{idx}` | any of `summaryTitle`, `summaryDate`, `summaryText`, `excluded`, `category` | `SummaryItem` | `useSaveSummary()` in `SummariesView` |

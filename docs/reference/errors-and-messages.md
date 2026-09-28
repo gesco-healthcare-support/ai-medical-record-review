@@ -16,7 +16,7 @@ There is no response envelope: errors, like successes, are bare bodies.
 
 | Shape | Status | Produced by |
 | --- | --- | --- |
-| `{"detail": "<sentence>"}` | 400, 401, 403, 404, 409, 503 | `HTTPException` raised by a route, by `get_owned_document` or by `enforce_auth`. |
+| `{"detail": "<sentence>"}` | 400, 401, 403, 404, 409, 503 | `HTTPException` raised by a route, by `get_owned_document` or by `enforce_auth`; and, for a job that could not be queued, the `QueueUnavailable` handler in `backend/app/main.py`. |
 | `{"detail": "<ERROR_CODE>"}` | 400 | FastAPI-Users routes (login, register, reset, user update). |
 | `{"detail": {"code": "<ERROR_CODE>", "reason": "<sentence>"}}` | 400 | FastAPI-Users, when the password rule fails. |
 | `{"detail": "<HTTP reason phrase>"}` | 403, 404, 405 | FastAPI-Users dependencies that raise without a detail (`"Forbidden"`, `"Not Found"`), and Starlette for an unknown path (`"Not Found"`) or method (`"Method Not Allowed"`). |
@@ -40,7 +40,7 @@ There is no response envelope: errors, like successes, are bare bodies.
 | 422 | Request validation failed (`{"detail": [...]}`), or a pipeline error that is a property of the document (`{"error": ...}`). |
 | 500 | A pipeline error with no specific mapping (`{"error": ...}`), or an unhandled exception (plain text). |
 | 502, 504 | Answered by nginx when the API cannot be reached (for example while it restarts) or does not answer within `proxy_read_timeout 300s` (`deploy/nginx.conf`). |
-| 503 | Text recognition is unavailable (`{"error": ...}`), or the download store (Redis) cannot be reached (`{"detail": ...}`). |
+| 503 | Text recognition is unavailable (`{"error": ...}`), the download store (Redis) cannot be reached (`{"detail": ...}`), or a job could not be handed to the queue (`{"detail": ...}`). |
 
 ## `detail` sentences sent by the routes
 
@@ -85,6 +85,7 @@ Route numbers (D1 to D27, A1 to A8) are those of the [HTTP API reference](http-a
 | 409 | `<N> matching documents exceeds the on-demand limit of <cap>; use the main Summaries flow for a record this large` | D25 |
 | 409 | `category <id> is used by <N> sub-document(s) and cannot be deactivated. Move those rows to another category first.` (singular `sub-document` when N is 1) | A4 |
 | 503 | `Downloads are unavailable right now. Please try again.` | D20 to D27 |
+| 503 | `The job queue is unavailable, so the run could not start. Try again later.` | D2, D11, D15, D16, A8: any route that starts a job, when the queue (Redis) cannot be reached. The job is marked `interrupted`, and the document too if it was mid-run; the cause is logged. |
 
 Row validation sentences (`validate_rows` in `backend/app/services/rows.py`). `<i>` is the 1-based
 position of the first failing row; validation stops at the first failure.
