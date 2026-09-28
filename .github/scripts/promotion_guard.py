@@ -28,6 +28,7 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from typing import Any
 
 ALLOWED_HEADS = {"staging": {"main"}, "production": {"staging"}, "qwen": {"main"}}
 HOTFIX_PREFIX = "hotfix/"
@@ -77,8 +78,8 @@ def decide_hotfix(commits: list[Commit], on_main: dict[str, bool]) -> tuple[bool
     return True, f"allowed: all {len(commits)} commit(s) are cherry-picks of commits on main"
 
 
-def _get(url: str, token: str) -> object:
-    """GET a GitHub API URL as JSON."""
+def _get(url: str, token: str) -> Any:
+    """GET a GitHub API URL as parsed JSON: a list for the commits endpoint, a dict for compare."""
     request = urllib.request.Request(
         url, headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     )
