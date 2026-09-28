@@ -209,14 +209,28 @@ A server deployed with `git checkout <commit>` is left on a bare commit rather t
 so nothing is rebuilt or restarted. The commands use `production`; on the qwen server use `qwen`
 throughout, whose promotion is `main` -> `qwen`.
 
+First make sure the checkout carries no local edit:
+
+```bash
+git status --porcelain --untracked-files=no
+```
+
+It must print nothing. If it lists a file, stop: the server carries a local edit (for example to
+`deploy/nginx.conf`) that is in no branch. Find out why it is there; an edit the server needs
+belongs in the repository, through a pull request, before this move.
+
 Record what is running, then compare it with the branch:
 
 ```bash
 docker compose ps
 RUNNING=$(git rev-parse HEAD)
+echo "$RUNNING"
 git fetch origin
 git diff --quiet "$RUNNING" origin/production && echo SAME || echo DIFFERENT
 ```
+
+Write down the commit `echo` prints: the undo below needs it, and `$RUNNING` is gone once the
+shell closes.
 
 - `SAME`: the branch holds exactly the files that are running. Continue below.
 - `DIFFERENT`: do not switch. Switching would change files under running containers, and
@@ -270,6 +284,10 @@ To undo the move, return to the bare commit. The files are the same, so nothing 
 ```bash
 git switch --detach "$RUNNING"
 ```
+
+In a new shell, use the commit you wrote down instead of `$RUNNING`. If it was not written down,
+`git reflog` still has it: the line `checkout: moving from <commit> to production` names the
+commit the checkout was on before the move.
 
 ## If a step fails
 
