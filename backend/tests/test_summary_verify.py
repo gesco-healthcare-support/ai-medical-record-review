@@ -432,3 +432,14 @@ def test_an_impairment_rating_states_the_method_for_every_body_part():
 
     for key in ("category_02", "category_13"):
         assert "For EACH body part rated, state HOW it was rated" in prompts.prompts[key], key
+
+
+def test_a_diagnostic_study_reports_every_finding_not_a_selection():
+    """Adam Flake, 2026-09-25, on a 07/07/23 MRI: "the MRI findings are not being completely
+    summarized ... not all the findings are included." That summary carried BOTH headings, so the
+    report-both rule alone did not cover it: the model kept a selection of the findings."""
+    from app.services import prompts
+
+    diagnostic = prompts.prompts["category_03"]
+    assert "Report EVERY finding the findings section states" in diagnostic
+    assert "report BOTH, every time" in diagnostic
