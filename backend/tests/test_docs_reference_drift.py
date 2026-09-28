@@ -3,8 +3,8 @@
 A reference page that falls behind the code is worse than none: it still reads as complete. Each
 test here enumerates one kind of thing from the code itself and asserts that its page in
 `docs/reference/` gives every one a ROW of its own, so adding a setting, an HTTP route, a migration,
-a compose service or a frontend page without its row fails CI and names what is missing. How to add
-the row: `docs/how-to/work-on-these-docs.md`.
+a compose service, a frontend page or a CI job without its row fails CI and names what is missing.
+How to add the row: `docs/how-to/work-on-these-docs.md`.
 
 Two things keep these tests honest, and both were found by breaking the pages on purpose:
 
@@ -190,4 +190,43 @@ def test_every_frontend_route_has_a_row_in_the_frontend_reference(route):
     assert f"`{route}`" in _column("frontend-routes-and-data.md", 0), (
         f"Frontend route {route} has no row in docs/reference/frontend-routes-and-data.md. "
         f"{FIX_HINT}"
+    )
+
+
+# --- CI jobs -> ci-and-merge-gates.md (the Jobs table: job, then its workflow file) ----------------
+
+
+def _workflow_jobs() -> list[tuple[str, str]]:
+    """(workflow file, job id) for every job in `.github/workflows/`, read without a YAML dependency:
+    the two-space-indented keys of the top-level `jobs:` block. The job id, not its display name:
+    `promotion-guard` reports as `guard-into-<branch>`, and the page names both."""
+    found = []
+    for path in sorted((REPO / ".github" / "workflows").glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        block = re.search(r"^jobs:[ \t]*\n(.*?)(?=^\S|\Z)", text, re.MULTILINE | re.DOTALL)
+        assert block, f"no top-level jobs: block in {path.name}"
+        for job in re.findall(r"^  ([a-z0-9][a-z0-9_-]*):[ \t]*$", block.group(1), re.MULTILINE):
+            found.append((path.name, job))
+    return found
+
+
+def test_the_workflow_enumeration_found_every_workflow():
+    jobs = _workflow_jobs()
+    assert ("ci.yml", "backend") in jobs
+    assert ("ci.yml", "sonarcloud") in jobs
+    assert ("promotion-guard.yml", "promotion-guard") in jobs
+
+
+@pytest.mark.parametrize(("workflow", "job"), _workflow_jobs())
+def test_every_ci_job_has_a_row_in_the_ci_reference(workflow, job):
+    """The row must name the job AND its workflow file, which only the Jobs table does: a job named
+    in the required-checks table or in prose does not count."""
+    rows = [
+        row
+        for row in _table_rows("ci-and-merge-gates.md")
+        if len(row) > 1 and row[0] == f"`{job}`" and row[1] == f"`{workflow}`"
+    ]
+    assert rows, (
+        f"CI job {job} ({workflow}) has no row in the Jobs table of "
+        f"docs/reference/ci-and-merge-gates.md. {FIX_HINT}"
     )
