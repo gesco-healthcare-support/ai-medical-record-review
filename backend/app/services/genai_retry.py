@@ -280,7 +280,7 @@ def generate_with_retry(client, **kwargs):
             if attempt < settings.genai_max_retries - 1:
                 _cancellable_sleep(_sleep_for(attempt, retry_after))
         genai_metrics.record(model, genai_metrics.OUTCOME_EXHAUSTED)
-        raise last
+        raise last or RuntimeError("the model call made no attempt")
     finally:
         # One Redis write per logical call rather than one per attempt: this is the latency path
         # being measured, so the accounting must not inflate it.
