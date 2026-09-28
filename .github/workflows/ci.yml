@@ -19,6 +19,11 @@ on:
     branches: [main, qwen]
   pull_request:
 
+# Least privilege: every job gets a read-only token unless it asks for more, and none does. Nothing here pushes,
+# comments or approves; artifacts travel on the Actions runtime token, not this one.
+permissions:
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -51,10 +56,14 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          # The PR's merge commit AND its first parent (the base), for the new-migration diff below.
+          fetch-depth: 2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
 
@@ -73,6 +82,28 @@ jobs:
           SECURITY_PASSWORD_SALT: ci-import-smoke
         run: uv run python -c "from sqlalchemy.orm import configure_mappers; import app.main; configure_mappers(); print('import OK')"
 
+      # Two PRs that each add a migration both pass on their own and leave main with two heads, which
+      # `alembic upgrade head` then refuses on the box. Reading the heads needs no database.
+      - name: Migrations have exactly one head
+        run: |
+          heads=$(uv run --no-sync alembic heads)
+          echo "$heads"
+          if [ "$(printf '%s\n' "$heads" | grep -c .)" -ne 1 ]; then
+            echo "Expected exactly one Alembic head; add a merge revision."
+            exit 1
+          fi
+
+      # Squawk on the SQL of each migration this PR ADDS (scripts/ci/lint_new_migrations.py says why and how it
+      # is tuned). Offline rendering needs settings but no database, hence the placeholder values.
+      - name: Lint the SQL of new migrations (Squawk)
+        if: github.event_name == 'pull_request'
+        env:
+          DATABASE_URL: postgresql+psycopg://offline:offline@localhost:5432/offline
+          SECRET_KEY: ci-offline-sql-only
+          SECURITY_PASSWORD_SALT: ci-offline-sql-only
+          ENVIRONMENT: dev
+        run: uv run --no-sync python scripts/ci/lint_new_migrations.py HEAD^1
+
       - name: Migrate + run tests with coverage
         env:
           DATABASE_URL: postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr
@@ -89,10 +120,12 @@ jobs:
         # plain local `pytest` stays serial.
         run: |
           uv run alembic upgrade head
+          # Fails when the models need a migration nobody wrote (alembic 1.9+).
+          uv run alembic check
           uv run pytest -n 3 --dist loadfile --cov=app --cov-branch --cov-report=xml --cov-report=term-missing
 
       - name: Upload backend coverage
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: backend-coverage
           path: backend/coverage.xml
@@ -104,9 +137,11 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
 
@@ -126,7 +161,7 @@ jobs:
         run: pnpm test:coverage
 
       - name: Upload frontend coverage
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           # Both files share the ancestor frontend/coverage, so they land at the artifact root
           # exactly as the single file did - the sonarcloud job's download + SF-path rewrite below
@@ -148,9 +183,11 @@ jobs:
       SECURITY_PASSWORD_SALT: ci-e2e-salt
       ENVIRONMENT: dev
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
 
@@ -174,7 +211,7 @@ jobs:
           # The web probe (nginx -> Next) alone does not prove uvicorn has bound :8000, and the
           # first E2E action POSTs to /api immediately. Require both: /login served AND the api's
           # /health OK (probed inside the container, since nginx routes / to web not the api).
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             web=$(curl -fsS -o /dev/null -w '%{http_code}' http://localhost:8080/login 2>/dev/null || true)
             if [ "$web" = "200" ] && docker compose exec -T api \
                  python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status == 200 else 1)" 2>/dev/null; then
@@ -199,7 +236,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: playwright-report
           path: frontend/playwright-report
@@ -212,8 +249,9 @@ jobs:
   secret-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       # The gitleaks GitHub Action requires a paid license for organizations; the
@@ -234,10 +272,12 @@ jobs:
       run:
         working-directory: docs-site
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
 
@@ -246,6 +286,72 @@ jobs:
 
       - name: Build the site (strict)
         run: uv run --frozen mkdocs build --strict
+
+  # Lints the workflows themselves: actionlint for syntax and expression mistakes, zizmor for security
+  # problems (injection, excess permissions, unpinned actions, dangerous triggers). The pipeline is an
+  # attack path - in March 2026, 76 of 77 trivy-action tags were force-pushed to credential stealers - so
+  # both tools are pinned: actionlint to a release checked against its published sha256, zizmor to an
+  # exact version.
+  workflow-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: actionlint (pinned release, checksum verified)
+        env:
+          VERSION: "1.7.12"
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${VERSION}_linux_amd64.tar.gz"
+          curl -sSL --fail -o "$tarball" "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${tarball}"
+          echo "${SHA256}  ${tarball}" | sha256sum --check --strict
+          tar -xzf "$tarball" actionlint
+          ./actionlint -color
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+
+      - name: zizmor (pinned)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uvx zizmor==1.30.1 --persona regular .github/workflows/
+
+  # Dependency gate, PR half 1. Fails a PR that ADDS or upgrades to a runtime dependency with a known high or
+  # critical vulnerability, using GitHub's advisory database and the PR's own dependency diff - so an advisory
+  # published against an OLD dependency never fails an unrelated PR. Runtime scope only: dev tooling is not
+  # shipped. PR-only; on a push this job is skipped.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime
+          comment-summary-in-pr: never
+
+  # Dependency gate, PR half 2. OSV-Scanner reads both lockfiles directly (uv.lock included, which GitHub's
+  # dependency graph does not list as a supported format), scans the base and the PR, and fails only on
+  # vulnerabilities the PR INTRODUCES. The reusable workflow's own job asks for security-events: write (it uploads
+  # its SARIF to code scanning), so this job must grant it; nothing else here gets it.
+  osv-scan:
+    if: github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+    with:
+      scan-args: |-
+        --lockfile=./backend/uv.lock
+        --lockfile=./frontend/pnpm-lock.yaml
 
   # Coverage floor. A SEPARATE job so a shortfall reads as "coverage" rather than as a test job
   # failing. Two halves, one job - so the ruleset needs ONE check name to enforce both:
@@ -274,7 +380,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download backend coverage
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: backend-coverage
           path: backend
@@ -313,7 +419,7 @@ jobs:
           PYEOF
 
       - name: Download frontend coverage
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: frontend-coverage
           path: frontend/coverage
@@ -373,18 +479,19 @@ jobs:
     needs: [backend, frontend]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0 # full history improves SonarCloud reporting relevance
 
       - name: Download backend coverage
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: backend-coverage
           path: backend
 
       - name: Download frontend coverage
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: frontend-coverage
           path: frontend/coverage
@@ -400,7 +507,7 @@ jobs:
           sed -i 's#^SF:#SF:frontend/#' frontend/coverage/lcov.info
 
       - name: SonarQube Cloud scan
-        uses: SonarSource/sonarqube-scan-action@v8.2.0
+        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 

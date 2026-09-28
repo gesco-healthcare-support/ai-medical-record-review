@@ -1,7 +1,8 @@
 """Verify the deposition format on ONE real sub-document, printing structure only.
 
-Checks what PR #82 claimed and never proved on real input: three-page grouping, a range opener per
-paragraph, and transcript page numbers rather than record page numbers.
+Checks what PR #82 claimed and never proved on real input: the page grouping, a range opener per
+paragraph, and transcript page numbers rather than record page numbers. The grouping is ten pages
+since 2026-09-25 (the senior reviewer's instruction, #412); it was three before that.
 
 PHI: this summarizes a real deposition, so the output is PHI. NOTHING from the model's text is
 printed - only counts, the page numbers cited, and boolean shape checks. The one exception is a
@@ -25,6 +26,9 @@ from app.services.summarize_engine import summarize_row
 
 _OPENER = re.compile(r"^\s*(On pages?\s+\d+\s*(?:to|and|-)\s*\d+)", re.IGNORECASE)
 _ANY_PAGE = re.compile(r"\bpages?\s+(\d+)", re.IGNORECASE)
+# The pages per paragraph the category 9 prompt asks for ("GROUPS OF TEN"). A test pins the two
+# together, so this check cannot drift back out of step with the prompt the way it did at three.
+_GROUP_PAGES = 10
 
 
 def main() -> int:
@@ -78,11 +82,12 @@ def main() -> int:
         if len(with_opener) > 14:
             print(f"  ... {len(with_opener) - 14} more")
 
-        # Grouping: consecutive openers should advance by three.
+        # Grouping: consecutive openers should advance by the group size the prompt asks for.
         starts = [int(_ANY_PAGE.search(m.group(1)).group(1)) for m in with_opener]
         steps = [b - a for a, b in zip(starts, starts[1:])]
         print(f"\nsteps between consecutive paragraph starts: {sorted(set(steps))}")
-        print(f"  all steps == 3: {all(s == 3 for s in steps) if steps else 'n/a'}")
+        grouped = all(s == _GROUP_PAGES for s in steps) if steps else "n/a"
+        print(f"  all steps == {_GROUP_PAGES}: {grouped}")
     return 0
 
 
