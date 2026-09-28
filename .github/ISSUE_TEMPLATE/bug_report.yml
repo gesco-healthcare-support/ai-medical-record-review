@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in the app does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use synthetic data only. Never paste a patient's name, date of birth or any other detail
+        from a real record, and never attach a real record, a screenshot of one, or its file name.
+        For a security problem, do not use this form: use the Security tab's "Report a vulnerability".
+  - type: checkboxes
+    id: no-patient-data
+    attributes:
+      label: Patient data
+      options:
+        - label: This report contains no patient data and no real personal information.
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it happened
+      options:
+        - Production
+        - qwen instance
+        - Local development
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build
+      description: The commit or build, if you know it.
+    validations:
+      required: false

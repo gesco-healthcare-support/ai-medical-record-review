@@ -1,0 +1,90 @@
+# Dependabot opens update pull requests into main, where they pass the same required checks as any
+# other pull request.
+#
+# - Titles follow the repo's commit format, <type>(<scope>): <subject>, with the scopes in
+#   .claude/rules/commit-scopes.md: `tooling` for dependencies, base images and compose images,
+#   `ci` for Actions.
+#   Dependabot adds the colon itself after a prefix that ends in ")".
+# - Minor and patch updates are grouped into one pull request per ecosystem each week. A major
+#   update comes on its own, because it is a change to review by itself.
+# - `cooldown` holds a new release for 7 days before it is proposed, so a version published by a
+#   compromised maintainer account is usually caught and pulled before it reaches a PR. It applies
+#   only to version updates; security updates are never delayed (GitHub's Dependabot options
+#   reference).
+# - The legacy Flask app at the repository root (pyproject.toml, uv.lock, legacy/) is left out:
+#   it is not deployed.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directories:
+      - "/backend"
+      - "/docs-site"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(tooling)"
+    groups:
+      python-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(tooling)"
+    groups:
+      frontend-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      frontend-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/backend"
+      - "/frontend"
+      - "/docs-site"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(tooling)"
+
+  # The images the servers pull through docker-compose.yml (postgres, redis, nginx); the `docker`
+  # entry above reads Dockerfiles only. A postgres MAJOR update (16 -> 17) changes the on-disk data
+  # format, so never merge one without a dump-and-restore plan.
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(tooling)"
+    ignore:
+      # Built from this repository by compose, not pulled from a registry.
+      - dependency-name: "mrr-*"
