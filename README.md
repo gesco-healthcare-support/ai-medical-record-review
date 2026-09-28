@@ -65,7 +65,9 @@ must pass. Commit messages and PR titles follow `<type>(<scope>): <subject>` wit
 in [`.claude/rules/commit-scopes.md`](.claude/rules/commit-scopes.md). Update the docs in the same
 pull request as the code they describe - see
 [Work on these docs](docs/how-to/work-on-these-docs.md). The checks each pull request must pass are
-in [CI and merge gates](docs/reference/ci-and-merge-gates.md).
+in [CI and merge gates](docs/reference/ci-and-merge-gates.md). The full contributor guide is
+[`CONTRIBUTING.md`](CONTRIBUTING.md); report a security problem as [`SECURITY.md`](SECURITY.md)
+says, never in a public issue.
 
 AI coding assistants: read [`CLAUDE.md`](CLAUDE.md) first; each folder has its own `CLAUDE.md`
 with the rules for that area.

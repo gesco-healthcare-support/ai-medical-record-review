@@ -57,7 +57,7 @@ Any state not in `job_outcome`'s table is bucketed `failed_unknown` (`backend/ap
 | From | To | Trigger | Writer | Through `mark_terminal` |
 | --- | --- | --- | --- | --- |
 | (none) | `queued` | Row inserted. | `create_job` | no |
-| `queued` | `interrupted` | RQ dispatch raised (for example Redis unreachable). | `enqueue` | no |
+| `queued` | `interrupted` | RQ dispatch raised (for example Redis unreachable). `enqueue` then raises `QueueUnavailable`, which the API answers with 503. | `enqueue` | no |
 | `queued` or `paused` | `running` | A work-horse starts the job, first run or scheduled resume. | `_run` | no (unconditional write) |
 | `running` | `done` | `work()` returned. | `_finalize_done` | no |
 | `running` | `error` | `work()` raised an exception that is not a control signal. | `_finalize_failed` | no |
@@ -136,7 +136,7 @@ newest `summarize` job when the newest job is another kind.
 | --- | --- | --- | --- |
 | Upload | `backend/app/api/documents.py` `create_document`, `aggregate_documents` | `uploaded` (column default) | New document. |
 | Job creation | `jobs.py` `create_job` | `STATUS_ON_ENQUEUE[kind]` | Skipped when `None` (dedup). |
-| Dispatch failure | `jobs.py` `enqueue` | `interrupted` | Always, when RQ dispatch raises. |
+| Dispatch failure | `jobs.py` `enqueue` | `interrupted` | When RQ dispatch raises, and only if the status is `segmenting` or `summarizing` (`INTERRUPTIBLE_DOCUMENT_STATUSES`). A failed dedup or classify dispatch leaves the status alone. |
 | Success | `tasks.py` `_finalize_done` | `STATUS_ON_DONE[kind]` | Skipped when `None`. |
 | Failure | `tasks.py` `_finalize_failed` | `error` | Only when the status is `segmenting` or `summarizing`. |
 | Pause that cannot be scheduled | `tasks.py` `_finalize_paused` | `interrupted` | Always, in that branch. |

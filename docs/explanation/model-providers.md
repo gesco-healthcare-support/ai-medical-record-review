@@ -230,7 +230,8 @@ Each backend has its own retry loop. OpenAI deliberately did not share the Gemin
 `genai_retry` would have put the only working pipeline at risk to save duplication in a provider
 nobody had run yet (`openai.py` module docstring). All three loops share these properties:
 
-- `GENAI_MAX_RETRIES` is the number of **attempts**, not retries (`range(genai_max_retries)`).
+- `GENAI_MAX_RETRIES` is the number of **attempts**, not retries (`range(genai_max_retries)`), and
+  must be at least 1: at 0 the loop would never run, so startup refuses it.
 - Backoff is full jitter: a uniform delay in `[0, min(GENAI_RETRY_MAX_DELAY, GENAI_RETRY_BASE_DELAY * 2^attempt)]`
   seconds.
 - Backoff sleeps poll the job's cancel flag in 1-second slices and raise `JobCancelled`, so the Stop

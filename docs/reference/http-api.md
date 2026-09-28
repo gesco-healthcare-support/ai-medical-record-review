@@ -128,7 +128,7 @@ Every path below starts with `/api/documents`. `{document_id}` is the document's
 | # | Method | Path | Auth | Request | Success | Other statuses | Audit |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | D1 | POST | `/api/documents` | Login | Multipart file field `pdf` | 201 `{id, page_count, sha256_duplicate}` | 400 | `upload` |
-| D2 | POST | `/api/documents/aggregate` | Login | Multipart file field `pdfs` (repeated, one per file), optional form field `name` | 201 `{id, page_count, records}` | 400 | `aggregate_upload` |
+| D2 | POST | `/api/documents/aggregate` | Login | Multipart file field `pdfs` (repeated, one per file), optional form field `name` | 201 `{id, page_count, records}` | 400, 503 | `aggregate_upload` |
 | D3 | GET | `/api/documents` | Login | none | 200 array of Document listing plus `rows_count` | none | none |
 | D4 | GET | `/api/documents/{document_id}` | Owner | none | 200 Document listing plus `rows`, `categories`, `doctors`, `letter_types` | none | none |
 | D5 | POST | `/api/documents/{document_id}/extract-header` | Owner | none | 200 `{patient_first_name, patient_last_name, patient_dob, law_firm}` | 422, 503, 500 `{"error"}` | none |
@@ -137,12 +137,12 @@ Every path below starts with `/api/documents`. `{document_id}` is the document's
 | D8 | GET | `/api/documents/{document_id}/pdf` | Owner | none | 200 `application/pdf`; 206 for a `Range` request | none | `view_pdf` |
 | D9 | GET | `/api/documents/{document_id}/status` | Owner | none | 200 `{status, job, unreviewed_duplicate_groups}` | none | none |
 | D10 | GET | `/api/documents/{document_id}/duplicates` | Owner | none | 200 `{clusters, job, stale, unreadable, checked}` | none | none |
-| D11 | POST | `/api/documents/{document_id}/dedup/start` | Owner | Optional JSON `DedupStartPayload` | 200 `{"ok": true}` | 409 | none |
+| D11 | POST | `/api/documents/{document_id}/dedup/start` | Owner | Optional JSON `DedupStartPayload` | 200 `{"ok": true}` | 409, 503 | none |
 | D12 | POST | `/api/documents/{document_id}/duplicates/{group}/resolve` | Owner | JSON `DuplicateResolvePayload` | 200 `{"ok": true}` | 400, 404, 409 | none |
 | D13 | PUT | `/api/documents/{document_id}/rows` | Owner | JSON `RowsPayload` | 200 `{ok, count, reopened}` | 400, 409 | `rows.edit` |
 | D14 | POST | `/api/documents/{document_id}/jobs/{job_id}/cancel` | Owner | Optional JSON `CancelPayload` | 200 Job progress plus `graceSeconds` | 404 | `job.cancel` |
-| D15 | POST | `/api/documents/{document_id}/segment/start` | Owner | Optional JSON `SegmentStartPayload` | 200 `{"ok": true}` | 409 | none |
-| D16 | POST | `/api/documents/{document_id}/summarize/start` | Owner | Optional JSON `SummarizeStartPayload` | 200 `{"ok": true}` | 400, 409 | `rows.edit`, `summarize.skip_duplicate_check` |
+| D15 | POST | `/api/documents/{document_id}/segment/start` | Owner | Optional JSON `SegmentStartPayload` | 200 `{"ok": true}` | 409, 503 | none |
+| D16 | POST | `/api/documents/{document_id}/summarize/start` | Owner | Optional JSON `SummarizeStartPayload` | 200 `{"ok": true}` | 400, 409, 503 | `rows.edit`, `summarize.skip_duplicate_check` |
 | D17 | GET | `/api/documents/{document_id}/summaries` | Owner | none | 200 array of Summary | none | none |
 | D18 | PUT | `/api/documents/{document_id}/summaries/{idx}` | Owner | Optional JSON `SummaryEditPayload` | 200 Summary | 400, 404, 409 | `summary.category`, `summary.edit` |
 | D19 | POST | `/api/documents/{document_id}/summaries/{idx}/resummarize` | Owner | Optional JSON `ResummarizePayload` | 200 Summary | 404, 409; 422, 503, 500 `{"error"}` | `resummarize` |
@@ -165,7 +165,7 @@ The `detail` string behind each 400, 404 and 409 is listed in
 | D5 | Synchronous model call over pages 1 to min(15, page count) (`extract_header` in `backend/app/services/extraction.py`). A field the extraction found overwrites the stored value; a field it did not find keeps the stored value. The response is the merged, stored view. Nothing is stored on a `PipelineError`. |
 | D6 | Writes all nine header fields; a field missing from the body is stored as empty. `letter_type` outside `advocacy`, `interrogatory`, `none` is stored as empty. `pages_received` is stored as a positive integer, or null when blank, non-numeric or not positive. |
 | D7 | Refused while the document has an active job. Deletes the document with its jobs, review rows, summaries and page texts (ORM cascade), commits, then removes the stored PDF (a failure is logged, not returned). Prepared export files of the document are not touched; they are deleted when their token expires. |
-| D8 | Serves the stored PDF with no `Content-Disposition` header, so the browser shows it inline. |
+| D8 | Serves the stored PDF with no `Content-Disposition` header, so the browser shows it inline, and with `Cache-Control: no-store`, so no browser or proxy cache keeps a copy of the patient record. |
 | D9 | `job` is the progress of the newest job of any kind, or null. When that job is not a summarize job, its `attention` is replaced by the newest summarize job's `attention`. `unreviewed_duplicate_groups` counts clusters with two or more included members and no dismissed member (advisory only). |
 | D10 | `clusters` holds groups of two or more rows, members sorted oldest date first. `job` is the newest dedup job's progress, or null. `checked` is true when any dedup job for the document has state `done`. `stale` is true when checked and an included row has no stored `source_text`. `unreadable` counts included rows whose stored text is blank (0 when not checked). `checked` and `stale` come from `duplicate_check_state`, the same function the summarize gate uses. |
 | D11 | `fresh: true` first clears `source_text` on every row of the document, so the run re-reads the pages. Enqueues a `dedup` job with model `CLASSIFY_MODEL`. Nothing else starts a dedup job. |
@@ -217,7 +217,7 @@ addition to the gate's 403 for `/api/admin` paths.
 | A5 | GET | `/api/admin/prompts/{category_id}` | Admin | none | 200 `{category_id, text, effective_text, builtin_text, custom}` | none | none |
 | A6 | PUT | `/api/admin/prompts/{category_id}` | Admin | JSON `PromptPut` | 200 `{category_id, text, custom: true}` | 400, 404 | `prompt.update` |
 | A7 | DELETE | `/api/admin/prompts/{category_id}` | Admin | none | 200 `{category_id, text: null, effective_text, custom: false}` | 404 | `prompt.revert` |
-| A8 | POST | `/api/admin/reprocess/{document_id}` | Admin | none | 200 `{"ok": true}` | 400, 404, 409 | `reprocess` |
+| A8 | POST | `/api/admin/reprocess/{document_id}` | Admin | none | 200 `{"ok": true}` | 400, 404, 409, 503 | `reprocess` |
 
 | # | Behaviour |
 | --- | --- |

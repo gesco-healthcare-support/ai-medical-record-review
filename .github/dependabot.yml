@@ -1,12 +1,14 @@
-# Dependabot opens update pull requests into main, where they pass the same required checks as any
-# other pull request.
+# Dependabot opens update pull requests into main, where they are held to the same required checks
+# as any other pull request. A run Dependabot triggers gets only Dependabot secrets, so SONAR_TOKEN
+# must also be stored as a Dependabot secret or `sonarcloud` fails on these pull requests.
 #
 # - Titles follow the repo's commit format, <type>(<scope>): <subject>, with the scopes in
 #   .claude/rules/commit-scopes.md: `tooling` for dependencies, base images and compose images,
 #   `ci` for Actions.
 #   Dependabot adds the colon itself after a prefix that ends in ")".
-# - Minor and patch updates are grouped into one pull request per ecosystem each week. A major
-#   update comes on its own, because it is a change to review by itself.
+# - For uv, npm and github-actions, minor and patch updates are grouped into one pull request per
+#   ecosystem each week. docker and docker-compose have no groups, so each of their updates comes
+#   on its own. A major update always comes on its own, because it is a change to review by itself.
 # - `cooldown` holds a new release for 7 days before it is proposed, so a version published by a
 #   compromised maintainer account is usually caught and pulled before it reaches a PR. It applies
 #   only to version updates; security updates are never delayed (GitHub's Dependabot options

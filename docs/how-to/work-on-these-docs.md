@@ -55,14 +55,16 @@ It must exit 0. Every warning is an error, so this fails on:
 - a relative link to a file outside `docs/`, such as a source file. Write code paths as backticked
   text instead: `backend/app/services/jobs.py`.
 
-CI runs the same command in the `docs` job on every pull request.
+CI runs the same command in the `docs` job on every pull request. It is a required check on `main`,
+so a warning blocks the merge.
 
 The backend suite also runs `backend/tests/test_docs_reference_drift.py`, which fails when a
 reference page falls behind the code: a setting missing from
 [Configuration](../reference/configuration.md), a route missing from
 [HTTP API](../reference/http-api.md), a migration missing from [Migrations](../reference/migrations.md),
-a compose service missing from [Compose services](../reference/compose-services.md), or a frontend
-route missing from [Frontend routes and data](../reference/frontend-routes-and-data.md). If you add
+a compose service missing from [Compose services](../reference/compose-services.md), a frontend
+route missing from [Frontend routes and data](../reference/frontend-routes-and-data.md), or a CI job
+missing from the Jobs table of [CI and merge gates](../reference/ci-and-merge-gates.md). If you add
 one of those things, add its row in the same pull request.
 
 ## Conventions every page follows
