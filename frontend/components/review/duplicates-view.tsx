@@ -13,7 +13,9 @@ import { SplitPane } from "./split-pane";
 /** Duplicates review (before summarization): each confirmed cluster lists its copies oldest-first
  *  beside the record's PDF, so the reviewer can read the pages before deciding; clicking a copy jumps
  *  the viewer to its first page. The reviewer keeps one copy (excluding the rest from summarization)
- *  or dismisses the cluster as not-duplicates. Advisory - it never blocks Summarize. `onResolved`
+ *  or dismisses the cluster as not-duplicates. Resolving clusters is advisory, but running the check
+ *  is not: Summarize is refused until a completed check covers the current rows, unless the
+ *  reviewer skips it (the skip is audited). `onResolved`
  *  lets the parent refresh the Review editor's rows so a later Summarize respects the exclusions. */
 /** The empty panel's two lines. `failed` is checked before the clean result deliberately: with no
  *  stored clusters, a check that died would otherwise read as "No duplicates", which is the one

@@ -263,6 +263,30 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks dir . --redact --no-banner --exit-code 1
 
+  # The documentation site (docs-site/), built exactly as the `docs` image builds it. --strict turns
+  # every warning into a failure: a broken link, a missing anchor, or a page under docs/ that is not
+  # in mkdocs.yml's nav. That is the check that stops the docs from drifting away from each other.
+  docs:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs-site
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+
+      - name: Install the site tooling (locked)
+        run: uv sync --frozen
+
+      - name: Build the site (strict)
+        run: uv run --frozen mkdocs build --strict
+
   # Lints the workflows themselves: actionlint for syntax and expression mistakes, zizmor for security
   # problems (injection, excess permissions, unpinned actions, dangerous triggers). The pipeline is an
   # attack path - in March 2026, 76 of 77 trivy-action tags were force-pushed to credential stealers - so
@@ -336,8 +360,8 @@ jobs:
   # The frontend half landed in Phase 5 Task 9, once frontend coverage cleared 80 on all four - a
   # floor above today's number would make this permanently red, which teaches people to ignore it.
   #
-  # NOT YET A REQUIRED CHECK. Until `coverage-floor` is added to the `main` ruleset's required
-  # checks, this reports and blocks NOTHING - the same evaluate-mode gap the ruleset flip closes.
+  # A REQUIRED CHECK: the `main` ruleset (active) lists `coverage-floor` among its required status
+  # checks, so a shortfall blocks the merge. See docs/reference/ci-and-merge-gates.md.
   #
   # Fails CLOSED, mirroring the SonarCloud step below: a gate that reads a missing, empty or
   # unparseable report and reports success is worse than no gate, because it looks like protection.

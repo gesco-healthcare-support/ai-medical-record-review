@@ -74,6 +74,12 @@ class JobConflict(Exception):
     """A job is already active for the document (the one-active-job invariant)."""
 
 
+class QueueUnavailable(RuntimeError):
+    """The job could not be handed to the queue (usually Redis is unreachable). The job row has
+    already been marked interrupted and nothing ran; `main.py` answers it with a 503 and a sentence
+    the page can show, rather than the bare 500 an unhandled error gives."""
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -186,10 +192,12 @@ def create_job(
         # change must keep the backend it started with, or one delivered document ends up written by
         # two vendors with no record of which wrote what.
         #
-        # ONLY the summarize kind is stamped. The other kinds still call google-genai directly and do
-        # not cross the provider seam until PR 2 and PR 3, so stamping them here would record an
-        # intention rather than an observation - and a column that says "vllm" about a call that went
-        # to Gemini is worse than one that says nothing.
+        # ONLY the summarize kind is stamped. When this was written the other kinds still called
+        # google-genai directly, so stamping them would have recorded an intention rather than an
+        # observation - and a column that says "vllm" about a call that went to Gemini is worse than
+        # one that says nothing. Every kind now crosses the provider seam, each stage routed on its
+        # own (Settings.backend_for), but no stamp was added for the other kinds: their `backend`
+        # stays NULL, meaning "not recorded".
         backend = settings.backend_for("summarize")
     job = Job(
         document_id=document_id,
@@ -274,12 +282,16 @@ def enqueue(
         # str(job.id); a resumable summarize pause reassigns it to the fresh scheduled resume.
         job.rq_job_id = rq_job.id
         session.commit()
-    except Exception:
+    except Exception as exc:
         job.state = "interrupted"
         job.finished_at = _utcnow()
         document = session.get(Document, document_id)
-        if document is not None:
+        # Only move the document out of a stage THIS job put it in, like every other failure path
+        # (tasks._finalize_failed, mark_terminal's document_status_only_when, recovery). A dedup
+        # sets no stage (STATUS_ON_ENQUEUE["dedup"] is None), so a failed re-check must leave a
+        # finished record finished rather than flip it to Interrupted.
+        if document is not None and document.status in INTERRUPTIBLE_DOCUMENT_STATUSES:
             document.status = "interrupted"
         session.commit()
-        raise
+        raise QueueUnavailable(f"job {job.id} ({kind}) could not be queued") from exc
     return job

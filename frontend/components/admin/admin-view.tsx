@@ -32,12 +32,18 @@ function errMessage(err: unknown, fallback: string) {
   });
 }
 
-/** Admin console: the category catalog + per-category summary prompts, plus reprocessing a
- *  summarized record with the current prompts. is_admin gated (the API also 403s; this adds a
- *  friendly notice for a non-admin who deep-links). */
+/** Admin console: the category catalog + per-category summary prompts, plus reprocessing a record
+ *  (a summarize run: rows without a summary are written with the current prompts, and a summary
+ *  whose row is unchanged is kept). Gated on the user's `is_superuser` (the `is_admin` column); the
+ *  API also 403s, and this adds a friendly notice for a non-admin who deep-links. */
 export function AdminView() {
   const { data: user, isLoading: userLoading } = useCurrentUser();
-  const { data: categories = [], isLoading } = useCategories();
+  const {
+    data: categories = [],
+    isLoading,
+    isError: categoriesFailed,
+    refetch: refetchCategories,
+  } = useCategories();
   const { data: docs = [] } = useDocuments();
   const create = useCreateCategory();
   const update = useUpdateCategory();
@@ -138,7 +144,27 @@ export function AdminView() {
               </tr>
             </thead>
             <tbody>
-              {!isLoading && categories.length === 0 ? (
+              {/* A failed fetch leaves `categories` at its [] default; without this row the table
+                  would claim the catalog is empty, which it never is (the built-ins are served). */}
+              {!isLoading && categoriesFailed ? (
+                <tr className="hd-norows">
+                  <td colSpan={8}>
+                    {/* The alert role sits on an element inside the cell: a <td> keeps its own
+                        cell role, and overriding it breaks the table for assistive technology. */}
+                    <div role="alert">
+                      Could not load the categories.{" "}
+                      <button
+                        type="button"
+                        className="ev-btn ev-btn-outline"
+                        onClick={() => void refetchCategories()}
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : null}
+              {!isLoading && !categoriesFailed && categories.length === 0 ? (
                 <tr className="hd-norows">
                   <td colSpan={8}>No categories yet.</td>
                 </tr>

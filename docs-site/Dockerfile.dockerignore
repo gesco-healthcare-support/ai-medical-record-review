@@ -1,0 +1,12 @@
+# Ignore file for docs-site/Dockerfile ONLY (BuildKit reads <Dockerfile>.dockerignore in place of
+# the root .dockerignore). The build context is the repo root, so admit just the pages and the
+# site tooling - never uploads, secrets, .env or anything else in the tree.
+*
+!docs/
+!docs-site/pyproject.toml
+!docs-site/uv.lock
+!docs-site/mkdocs.yml
+!docs-site/nginx.conf
+# Local working files that are gitignored and never part of the site.
+docs/plans/
+docs/backlog.md

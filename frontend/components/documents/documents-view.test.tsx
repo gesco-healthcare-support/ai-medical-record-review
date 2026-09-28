@@ -11,7 +11,12 @@ vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), succe
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
-const docsState: { data: unknown[]; isLoading: boolean } = { data: [], isLoading: false };
+const docsState: {
+  data: unknown[] | undefined;
+  isLoading: boolean;
+  isError?: boolean;
+  refetch?: () => void;
+} = { data: [], isLoading: false };
 const upload = { mutateAsync: vi.fn(), isPending: false };
 const del = { mutateAsync: vi.fn(), isPending: false };
 const identify = { mutateAsync: vi.fn(), isPending: false };
@@ -37,6 +42,26 @@ afterEach(() => {
   vi.clearAllMocks();
   docsState.data = [];
   docsState.isLoading = false;
+  docsState.isError = false;
+  docsState.refetch = undefined;
+});
+
+describe("DocumentsView list failure", () => {
+  it("says the list could not be loaded, with a retry, instead of the first-run screen", async () => {
+    // A failed fetch leaves `data` undefined, which defaulted to [] and rendered "Start your first
+    // review" - telling a reviewer with forty records that they had none.
+    const user = userEvent.setup();
+    const refetch = vi.fn();
+    docsState.data = undefined;
+    docsState.isError = true;
+    docsState.refetch = refetch;
+    render(<DocumentsView />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/could not load your documents/i);
+    expect(screen.queryByText(/start your first review/i)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 const doc = (over: Record<string, unknown> = {}) => ({

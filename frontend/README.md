@@ -1,26 +1,53 @@
-# MRR AI frontend (Next.js)
+# frontend - MRR AI web app (Next.js)
 
-Next.js (App Router) + TypeScript. Part of the re-platform
-(`docs/plans/2026-07-14-nextjs-fastapi-rewrite.md`); talks to the FastAPI backend same-origin.
+The browser app reviewers use: sign-in, the documents list, the record workbench at
+`/records/[id]` (review and correct, duplicates, summaries, beside the PDF), the category bundle
+pages and the admin console. It talks only to the backend's `/api/` on the same origin, so the
+HttpOnly session cookie works and there is no CORS.
 
-## Dev
+Stack: Next.js 15 (App Router, `output: "standalone"`), React 19, TypeScript, TanStack Query 5,
+Tailwind 4 with a hand-written design system (`app/evaluators-ds.css`), Radix-based primitives in
+`components/ui/`, a vendored pdf.js viewer in `public/pdfjs/`. Tests: vitest (jsdom) and
+Playwright.
+
+How it works: [Frontend workbench](../docs/explanation/frontend-workbench.md). Every route and API
+call: [Frontend routes and data](../docs/reference/frontend-routes-and-data.md).
+
+## Layout
+
+| path | what it is |
+| --- | --- |
+| [`app/`](app/README.md) | App Router routes, the root layout, providers and global styles. |
+| [`components/`](components/README.md) | UI by feature: `review/` (the workbench), `documents/`, `bundle/`, `admin/`, `auth/`, `app/` (shell), `ui/` (primitives). |
+| [`hooks/`](hooks/README.md) | Data and workflow hooks, including `use-review-workflow` which drives the workbench. |
+| [`lib/`](lib/README.md) | The API client (`api.ts`), per-area API functions, shared types, error wording, download handling. |
+| [`e2e/`](e2e/README.md) | Playwright specs that run against the full app stack. |
+| `public/` | Static files: the vendored pdf.js viewer and images. |
+| `Dockerfile` | Builds the standalone server image (`mrr-frontend`), Node 22. |
+
+## Develop
 
 ```bash
-corepack enable            # provides pnpm (pinned in package.json)
+corepack enable            # provides pnpm (version pinned in package.json)
 cd frontend
 pnpm install
 pnpm dev                   # http://localhost:3000
 ```
 
-`next.config.ts` proxies `/api/*` to the FastAPI backend (`API_ORIGIN`, default
-`http://localhost:8000`) so the browser sees one origin - the HttpOnly session cookie works and
-there is no CORS. In production a reverse proxy fronts both under one host.
+`next.config.ts` forwards `/api/*` to the backend at `API_ORIGIN` (default
+`http://127.0.0.1:8000` - 127.0.0.1 rather than localhost so Windows does not resolve it to IPv6).
+Run the backend as described in [`../backend/README.md`](../backend/README.md). In the Docker stack
+the nginx proxy routes `/api/` itself.
 
 ## Scripts
-- `pnpm dev` / `pnpm build` / `pnpm start`
-- `pnpm typecheck` - `tsc --noEmit`
 
-## Status
-P1c scaffold: App Router shell + the Evaluators design tokens (`app/globals.css`) + a
-same-origin API client (`lib/api.ts`). The real pages/components (My Documents, review editor,
-bundles, admin) are built in P7 against the stable API.
+| command | what it does |
+| --- | --- |
+| `pnpm dev` | Development server on :3000. |
+| `pnpm build` / `pnpm start` | Production build and server. |
+| `pnpm typecheck` | `tsc --noEmit`. |
+| `pnpm test` | vitest, once. `pnpm test:watch` to watch. |
+| `pnpm test:coverage` | vitest with coverage (CI requires 80% on statements, branches, functions and lines). |
+| `pnpm e2e` | Playwright against `E2E_BASE_URL` (default `http://localhost:8080`) - start the app stack first. |
+
+More: [Run the tests](../docs/how-to/run-the-tests.md), [Extend the frontend](../docs/how-to/extend-the-frontend.md).

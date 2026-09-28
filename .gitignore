@@ -19,11 +19,11 @@ all_data_temp.txt
 Record Reviews/
 *.doc
 *.docx
-# docs/reference holds the category taxonomy and the MRR steps guide - both already tracked,
-# both PHI-free, and CLAUDE.md points at them. Exempt so a future reference doc is not
+# legacy/docs/reference holds the 2025 category taxonomy and the MRR steps guide - both
+# tracked, both PHI-free, archived there from docs/reference. Exempt so the archive is not
 # silently swallowed by the blanket rule above.
-!docs/reference/*.doc
-!docs/reference/*.docx
+!legacy/docs/reference/*.doc
+!legacy/docs/reference/*.docx
 # Experiment spikes derive OCR text/labels from real records - keep caches out.
 experiments/**/cache/
 experiments/**/outputs/
@@ -35,6 +35,9 @@ experiments/**/outputs/
 myenv/
 venv/
 env/
+
+# ---- Documentation site build output (docs-site/, rebuilt by `mkdocs build`) ----
+docs-site/site/
 
 # ---- Exploratory spikes (carry hardcoded key fallbacks and/or PHI sample paths) ----
 gemini_trial*.py

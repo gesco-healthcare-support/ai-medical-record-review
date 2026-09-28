@@ -212,6 +212,10 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         # The shipped rule stands and the conflict is escalated. Reversing an eight-day-old decision
         # on the more ambiguous of two direct answers would move a document OUT of a category that
         # ships, and that direction loses content invisibly.
+        #
+        # RESOLVED 2026-09-13: asked directly, the answer was that referrals are not summarized, so
+        # the anchored referral rule in _RULES now answers 100 rather than 10 (see its comment).
+        # `medical referral` still stays out of this alternation: that rule claims it.
         r"\bdemographics?\b|\bface sheet\b|\bmedication list\b|\bw-?9\b"
         r"|taxpayer identification|provider list(?:ing)?\b|confirmed delivery"
         r"|\bsubpoenas?\b|\bcover sheet\b|separator sheet\b|\battestations?\b"
@@ -405,7 +409,8 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # four identical documents into three different categories.
         (r"utilization review|independent medical review|\bimr\b", "15"),
         # The return-to-work voucher -> 1, asked and answered 2026-08-21. See
-        # _RETURN_TO_WORK_VOUCHER above for why both tokens are required and why 1 is provisional.
+        # _RETURN_TO_WORK_VOUCHER above for why both tokens are required and why 1 is no longer
+        # provisional.
         #
         # Placed AFTER the evaluator rules so "AME Report - Return-to-Work & Voucher" stays 13, and
         # BEFORE rule 1's own pattern for no reason that matters - the observed titles match neither
