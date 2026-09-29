@@ -65,11 +65,11 @@ terms are in `docs/reference/glossary.md`.
 ## Commands
 
 ```bash
-# Backend (from backend/): deps, lint + format gate, tests against the TEST stack
+# Backend (from backend/): deps, lint + format + type gates, tests against the TEST stack
 docker compose -p mrrtest -f ../docker-compose.dev.yml up -d --wait postgres redis
 uv sync --extra docs                # bare `uv sync` omits required deps; --extra classifier = torch
 DATABASE_URL=postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr SECRET_KEY=dev-only-secret SECURITY_PASSWORD_SALT=dev-only-salt uv run alembic upgrade head
-uv run ruff check . && uv run ruff format --check .
+uv run ruff check . && uv run ruff format --check . && uvx pyright==1.1.414
 uv run pytest -q                    # do NOT export DATABASE_URL; conftest finds the test DB
 ```
 
