@@ -56,7 +56,7 @@ terms are in `docs/reference/glossary.md`.
 - **The category catalog is DB-first.** Once any `categories` row exists, `taxonomy.py` edits do not
   reach that database; carry them in a guarded migration. See
   `docs/how-to/add-or-change-a-category.md`.
-- **The repo root `pyproject.toml`, `uv.lock` and `serve.py` belong to the retired Flask app.**
+- **The repo root `pyproject.toml` and `serve.py` belong to the retired Flask app.**
   Work in `backend/`. Nothing in `legacy/` runs; do not read it as the current system.
 - **Segmentation recall matters most.** A sub-document missed at segmentation is never summarized
   and nothing downstream surfaces it. Treat any segmentation prompt or schema change as needing a
