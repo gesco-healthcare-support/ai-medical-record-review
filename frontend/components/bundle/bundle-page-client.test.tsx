@@ -116,6 +116,18 @@ describe("BundlePageClient error handling", () => {
     ).toBeInTheDocument();
   });
 
+  it("offers separate PDFs, not a combined one, for a bundle that asks for them", async () => {
+    // The reviewers asked for each deposition on its own, dated; a button promising a combined
+    // PDF would describe a file the server no longer hands over.
+    const user = userEvent.setup();
+    withClient(<BundlePageClient config={{ ...CONFIG, separateAs: "Deposition" }} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+    expect(
+      await screen.findByRole("button", { name: /Download separate PDFs/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Download combined PDF/i })).toBeNull();
+  });
+
   it("prefills the export fields from the record's persisted header", async () => {
     const user = userEvent.setup();
     vi.mocked(getDocument).mockResolvedValueOnce({
