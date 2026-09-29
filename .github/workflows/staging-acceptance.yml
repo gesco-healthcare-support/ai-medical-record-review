@@ -20,6 +20,12 @@ on:
 
 permissions: {}
 
+# Placeholders docker-compose.yml refuses to start without; nothing real is used. gitleaks' generic-api-key rule scores
+# the SECRET_KEY placeholder as a possible key, so that one line carries gitleaks' own allow marker.
+env:
+  SECRET_KEY: ci-acceptance-secret-key-that-is-at-least-32-bytes # gitleaks:allow (a placeholder, not a secret)
+  SECURITY_PASSWORD_SALT: ci-acceptance-salt
+
 jobs:
   acceptance:
     if: github.event_name == 'push'

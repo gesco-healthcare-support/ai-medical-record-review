@@ -21,11 +21,13 @@ readonly GRYPE_VERSION=0.119.0
 readonly GRYPE_SHA256=3fa2dc4b924621ab65404cf08d0b8438d896d80ab949c9d5a4ca283c36004c9b
 readonly ZAP_IMAGE=ghcr.io/zaproxy/zaproxy:2.17.0@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef
 
-# Production mode with placeholders. docker-compose.yml refuses to start without the two secrets; ENVIRONMENT=prod
-# requires GOOGLE_GENAI_USE_VERTEXAI=true. No step calls a model.
+# Production mode. docker-compose.yml refuses to start without the two secrets; the workflow sets placeholders for
+# them in its YAML `env:`, in one place, where the line gitleaks' generic-api-key rule flags carries its allow marker.
+# ENVIRONMENT=prod requires GOOGLE_GENAI_USE_VERTEXAI=true. No step calls a model.
+: "${SECRET_KEY:?set by the workflow: a placeholder, nothing real}"
+: "${SECURITY_PASSWORD_SALT:?set by the workflow: a placeholder, nothing real}"
+export SECRET_KEY SECURITY_PASSWORD_SALT
 export ENVIRONMENT=prod
-export SECRET_KEY=acceptance-placeholder-secret-key-of-40-bytes
-export SECURITY_PASSWORD_SALT=acceptance-placeholder-salt
 export GOOGLE_GENAI_USE_VERTEXAI=true
 export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-acceptance-no-model-calls}"
 export GIT_SHA="${GITHUB_SHA:-local}"
@@ -54,8 +56,9 @@ wait_ready() {
   return 1
 }
 
-echo "::group::1. Build the images once"
+echo "::group::1. Build the images once, and pull the ones the stack uses as published"
 compose build api web docs
+compose pull proxy postgres redis
 echo "::endgroup::"
 
 echo "::group::1. Scan the images (Grype $GRYPE_VERSION: fail on critical with a fix)"
@@ -63,10 +66,13 @@ curl -sSL --fail -o grype.tar.gz \
   "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
 echo "${GRYPE_SHA256}  grype.tar.gz" | sha256sum --check --strict
 tar -xzf grype.tar.gz grype
-for image in mrr-backend-web mrr-frontend mrr-docs; do
+# Every image the running stack is made of: the three built above and the three pulled by their pinned references
+# (the proxy is the first thing users reach). compose prints each as docker-compose.yml names it.
+mapfile -t images < <(compose config --images api web docs proxy postgres redis)
+for image in "${images[@]}"; do
   ./grype "docker:${image}" --only-fixed --fail-on critical
 done
-summary "- Image scan: no critical vulnerability with a fix in mrr-backend-web, mrr-frontend, mrr-docs"
+summary "- Image scan: no critical vulnerability with a fix in ${images[*]}"
 echo "::endgroup::"
 
 echo "::group::2. Upgrade test: production's schema and synthetic data"
@@ -95,7 +101,8 @@ chmod 777 zap-out # ZAP runs as its own user inside the container and writes its
 zap_status=0
 docker run --rm --network host -v "$PWD/zap-out:/zap/wrk:rw" "$ZAP_IMAGE" \
   zap-baseline.py -t "$BASE" -J zap.json -I || zap_status=$?
-# With -I, 0 = done and 2 = warnings only; 1 would be a FAIL rule; 3 = ZAP itself failed.
+# With -I, warnings also return 0; 1 would be a FAIL rule and 3 means ZAP itself failed. 2 (warnings, without -I)
+# cannot occur here, and is accepted in case a later ZAP version returns it.
 if [ "$zap_status" -ne 0 ] && [ "$zap_status" -ne 2 ]; then
   echo "ZAP exited $zap_status"
   exit 1
