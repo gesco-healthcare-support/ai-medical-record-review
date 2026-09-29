@@ -162,7 +162,8 @@ def create_job(
     title_model: str | None = None,
     audit_model: str | None = None,
 ) -> Job:
-    """Insert a queued Job + advance Document.status; raise JobConflict if one is already active.
+    """Insert a queued Job + advance Document.status; raise JobConflict if one is already active,
+    and LookupError if the document does not exist.
 
     The DB partial-unique index is the real guard - it survives a cross-process race the old
     in-process lock could not. Commits on success.
@@ -199,6 +200,12 @@ def create_job(
         # own (Settings.backend_for), but no stamp was added for the other kinds: their `backend`
         # stays NULL, meaning "not recorded".
         backend = settings.backend_for("summarize")
+    # Looked up BEFORE the job is added. A missing document used to reach the commit, and the
+    # handler below reported the foreign-key failure as "a job is already active" - false - for the
+    # kind that moves no status (dedup); every other kind died on an AttributeError instead.
+    document = session.get(Document, document_id)
+    if document is None:
+        raise LookupError(f"document {document_id} does not exist")
     job = Job(
         document_id=document_id,
         kind=kind,
@@ -212,7 +219,6 @@ def create_job(
         catalog_revision=catalog_revision,
     )
     session.add(job)
-    document = session.get(Document, document_id)
     enqueue_status = STATUS_ON_ENQUEUE[kind]
     if enqueue_status is not None:  # None = advisory (dedup): never moves the stage the UI shows
         document.status = enqueue_status
