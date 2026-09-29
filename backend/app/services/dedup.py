@@ -4,7 +4,9 @@ Two steps:
 - `cluster_rows` groups sub-documents whose OCR text is lexically near-identical (word-set Jaccard
   union-find - the cheap/instant/free candidate finder), and attaches a char-level difflib
   `similarity` per cluster so true re-scans (high) are distinguishable from a recurring form series
-  that merely shares boilerplate (low). Pure - no I/O.
+  that merely shares boilerplate (low). A pair sharing a known date and a known category or title
+  joins without the word-set test, so the same report in two formats reaches the confirm step.
+  Pure - no I/O.
 - `confirm_cluster` asks the cheapest model to adjudicate which candidate members are copies of the
   SAME document (vs different visits sharing a template). Text-only; no page images.
 """
@@ -193,6 +195,19 @@ def _min_difflib(texts):
     return round(min(ratios), 3) if ratios else 1.0
 
 
+def _same_dated_kind(i, j, dates, categories, titles) -> bool:
+    """Rows ``i`` and ``j`` carry the same KNOWN date and the same known category or title.
+
+    The pair `duplicate_gate`'s primary branch admits, tested on the pair rather than the cluster.
+    An absent value is unknown, never a match - two undated rows have told us nothing, and still go
+    through the word-set cut as before."""
+    if not dates[i] or dates[i] != dates[j]:
+        return False
+    same_category = bool(categories[i]) and categories[i] == categories[j]
+    same_title = bool(titles[i]) and titles[i] == titles[j]
+    return same_category or same_title
+
+
 def _union_pairs(items, jaccard_threshold, cross_date_override):
     """Join every qualifying pair, returning the two union-find structures ``cluster_rows`` reads.
 
@@ -205,6 +220,8 @@ def _union_pairs(items, jaccard_threshold, cross_date_override):
     n = len(items)
     sigs = [_sig(it.get("text")) for it in items]
     dates = [_norm(it.get("date")) for it in items]
+    categories = [_norm(it.get("category")) for it in items]
+    titles = [_norm(it.get("title")) for it in items]
     # TWO structures over the same rows. `parent` is the cluster itself, joined by either branch.
     # `strong` is joined by the CONTENT branch alone, and is what `content_joined` is read from
     # below. It has to be a second structure rather than a tally taken while unioning, because a
@@ -215,8 +232,21 @@ def _union_pairs(items, jaccard_threshold, cross_date_override):
 
     for i in range(n):
         for j in range(i + 1, n):
-            # Jaccard first for every pair, same date or not: it is a set intersection, and it is the
-            # cheap gate that keeps the quadratic difflib below off pairs that share nothing.
+            # A pair that shares a known date AND a known category or title is exactly what
+            # `duplicate_gate`'s primary branch admits, so it goes to the confirm step whatever its
+            # words look like. It used to meet the word-set cut below first, and that cut dropped a
+            # report delivered twice in DIFFERENT FORMATS - the state PR-2 form and a clinic's own
+            # letter of the same visit - because the same facts in different wording share few
+            # words. The lead client reviewer reported exactly that; measured over the corpus, only
+            # 18% of same-date same-category pairs ever reached the gate (issue #234). The cut
+            # guards the quadratic difflib below, which this branch never calls. Precision is the
+            # confirm step's: the model reads both and decides, and nothing is auto-accepted here -
+            # dissimilar text never clears `dupe_model_override`, so it cannot skip that call.
+            if _same_dated_kind(i, j, dates, categories, titles):
+                parent[_find(parent, i)] = _find(parent, j)
+                continue
+            # Jaccard first for every other pair, same date or not: it is a set intersection, and it
+            # is the cheap gate that keeps the quadratic difflib below off pairs that share nothing.
             if _jaccard(sigs[i], sigs[j]) < jaccard_threshold:
                 continue
             if dates[i] == dates[j]:
