@@ -38,8 +38,13 @@ are:
 - `scorecard.yml` `analysis`: `security-events: write` and `actions: read` for the upload, and
   `id-token: write`, which Scorecard needs to publish a verified result;
 - the promotion guard: `pull-requests: read`;
-- `docs-drift-report`: `issues: write`, to edit its one issue. It is the only job that writes, and it
-  runs only on the default branch (`schedule`, `workflow_dispatch`), never on pull request code.
+- `docs-drift-report`: `issues: write`, to edit its one issue. It is the only job that writes to the
+  repository itself, and it runs only on the default branch (`schedule`, `workflow_dispatch`), never on
+  pull request code.
+
+The `security-events: write` grants only upload scan results to code scanning. Of those jobs, `analyze` and
+`osv-scan` run on pull requests, and neither executes pull-request code: CodeQL uses `build-mode: none`, and
+OSV-Scanner only reads the lockfiles.
 
 `docs-drift.yml`, `codeql.yml` and `scorecard.yml` run on a weekly `schedule` (Mondays: 15:00,
 06:17 and 07:23 UTC). Only `docs-drift.yml` has a `workflow_dispatch`. No workflow has a
