@@ -5,8 +5,9 @@ each long-lived branch.
 
 Source of truth:
 
-- the three workflows in `.github/workflows/` (`ci.yml`, `guard-tests.yml`, `promotion-guard.yml`);
-- `.github/scripts/promotion_guard.py`;
+- the four workflows in `.github/workflows/` (`ci.yml`, `guard-tests.yml`, `promotion-guard.yml`,
+  `docs-drift.yml`);
+- `.github/scripts/promotion_guard.py` and `.github/scripts/docs_guides.py`;
 - `backend/scripts/ci/lint_new_migrations.py`;
 - `sonar-project.properties`, `.pre-commit-config.yaml` and `.github/dependabot.yml`;
 - the repository rulesets (GitHub repository settings, not files in the repository).
@@ -23,6 +24,7 @@ Jobs table below.
 | `codeql.yml` | `pull_request`; `push` to `main`; weekly `schedule` | None on pull requests | CodeQL static analysis of the Python, TypeScript and workflow code; results go to code scanning. |
 | `scorecard.yml` | `push` to `main`; weekly `schedule` | Default branch only (Scorecard publishes only from it) | OpenSSF Scorecard: publishes the score the README badge shows and uploads its findings to code scanning. |
 | `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
+| `docs-drift.yml` | `pull_request`; `schedule` (Mondays 15:00 UTC); `workflow_dispatch` | None | Two docs guards that never block a merge: warnings on a pull request, and a weekly drift issue. See [How to work on these docs](../how-to/work-on-these-docs.md#how-the-docs-stay-current). |
 | `promotion-guard.yml` | `pull_request_target` (`opened`, `synchronize`, `reopened`, `edited`) | None; the check only matters on branches whose ruleset requires it | Runs the default branch's copy of the guard, so a pull request cannot edit the check that judges it. `edited` re-runs it when a pull request's base changes. |
 
 Every workflow gives its jobs a read-only token (`permissions: contents: read`, or none at the
@@ -34,10 +36,13 @@ are:
 - `codeql.yml` `analyze`: `security-events: write`, to upload results to code scanning;
 - `scorecard.yml` `analysis`: `security-events: write` and `actions: read` for the upload, and
   `id-token: write`, which Scorecard needs to publish a verified result;
-- the promotion guard: `pull-requests: read`.
+- the promotion guard: `pull-requests: read`;
+- `docs-drift-report`: `issues: write`, to edit its one issue. It is the only job that writes, and it
+  runs only on the default branch (`schedule`, `workflow_dispatch`), never on pull request code.
 
-`codeql.yml` and `scorecard.yml` also run on a weekly `schedule`. No workflow has a
-`workflow_dispatch` or a `concurrency` group.
+`docs-drift.yml`, `codeql.yml` and `scorecard.yml` run on a weekly `schedule` (Mondays: 15:00,
+06:17 and 07:23 UTC). Only `docs-drift.yml` has a `workflow_dispatch`. No workflow has a
+`concurrency` group.
 
 ## Jobs
 
@@ -46,8 +51,7 @@ All jobs run on `ubuntu-latest`.
 | Job | Workflow | needs | What it runs | Fails when |
 | --- | --- | --- | --- | --- |
 | `backend` | `ci.yml` | - | Ruff lint and format check, an import smoke test, migration checks (one head; on pull requests, Squawk on the SQL of new migrations), migrations, `alembic check`, then the pytest suite with branch coverage, against Postgres and Redis service containers | Any lint or format finding, the import fails, a migration check fails, a migration fails, the models need a migration nobody wrote, or any test fails |
-| `analyze` | `codeql.yml` | - | CodeQL (default query suite, `build-mode: none`) for `actions`, `javascript-typescript` and `python`, one matrix leg each | An analysis cannot run; findings themselves go to code scanning |
-| `analysis` | `scorecard.yml` | - | OpenSSF Scorecard, published, with its SARIF uploaded to code scanning | Scorecard cannot run or publish |
+| `backend-types` | `ci.yml` | - | pyright 1.1.414 in standard mode on `backend/app` (settings in `backend/pyproject.toml` `[tool.pyright]`); the error count goes to the job summary | Never blocks a merge: the job has `continue-on-error: true`, so it shows as failed while errors remain but fails neither the run nor any required check |
 | `frontend` | `ci.yml` | - | Typecheck, production build, Vitest with coverage | A type error, a build error, or any test fails |
 | `e2e` | `ci.yml` | - | Builds and starts the app stack with Compose (without workers), then Playwright | The app is not ready within the wait loop, or any spec fails |
 | `secret-scan` | `ci.yml` | - | gitleaks over the checked-out files | gitleaks reports a finding |
@@ -57,11 +61,15 @@ All jobs run on `ubuntu-latest`.
 | `osv-scan` | `ci.yml` | - | Pull requests only. OSV-Scanner over `backend/uv.lock` and `frontend/pnpm-lock.yaml`, base against head | The pull request introduces a known vulnerability |
 | `coverage-floor` | `ci.yml` | `backend`, `frontend` | Reads both coverage reports and compares them with the floors | Either suite is below its floor, or a report is missing, empty or unreadable |
 | `sonarcloud` | `ci.yml` | `backend`, `frontend` | SonarCloud scan with both coverage reports, waiting for the quality gate; on pull requests, a check for new issues and hotspots | The quality gate fails, or (pull requests) the analysis cannot be proven current, or the pull request adds any issue or hotspot |
+| `analyze` | `codeql.yml` | - | CodeQL (default query suite, `build-mode: none`) for `actions`, `javascript-typescript` and `python`, one matrix leg each | An analysis cannot run; findings themselves go to code scanning |
+| `analysis` | `scorecard.yml` | - | OpenSSF Scorecard, published, with its SARIF uploaded to code scanning | Scorecard cannot run or publish |
 | `guard-tests` | `guard-tests.yml` | - | The promotion guard's unit tests (`python3 -m unittest -v test_promotion_guard` in `.github/scripts/`) | Any test fails |
+| `docs-impact` | `docs-drift.yml` | - | Pull requests only. The docs rules' unit tests, then `python3 .github/scripts/docs_guides.py impact <base> <head>` | Its unit tests fail. The check itself never fails: a changed code file whose describing docs were not touched gets a warning annotation and a row in the job summary. |
+| `docs-drift-report` | `docs-drift.yml` | - | Weekly and by hand, never on a pull request. `python3 .github/scripts/docs_guides.py report`, then creates or edits the one open issue labelled `docs-drift` | The report or the `gh` call errors |
 | `promotion-guard` | `promotion-guard.yml` | - | Checks that a pull request into a promotion branch comes from the branch above it. Its check is named `guard-into-<base branch>`. | The pull request's head is not an allowed source for its base (see [Promotion order](#promotion-order)) |
 
 A job whose `needs` failed is skipped, not passed; the failed job is the one that blocks. A job that
-runs on pull requests only (`dependency-review`, `osv-scan`) is skipped on a push.
+runs on pull requests only (`dependency-review`, `osv-scan`, `docs-impact`) is skipped on a push.
 
 ### `backend`
 
@@ -172,7 +180,7 @@ runtime dependencies: it flagged `ujson` in `backend/uv.lock` but not `lodash` 4
 ### `osv-scan`
 
 Pull requests only. A call to Google's reusable workflow
-`google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml` with
+`osv-scanner-reusable-pr.yml` from the `google/osv-scanner-action` repository, with
 `--lockfile=./backend/uv.lock` and `--lockfile=./frontend/pnpm-lock.yaml`. It scans the base and
 the head, and fails only on vulnerabilities the pull request introduces. It reads both lockfiles
 directly, so it also covers `uv.lock`. Its check name is `osv-scan / osv-scan`.
@@ -298,7 +306,7 @@ The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 | `guard-into-production` | GitHub Actions (`promotion-guard.yml`) | `production` |
 | `guard-into-qwen` | GitHub Actions (`promotion-guard.yml`) | `qwen` |
 
-`guard-tests` runs on every pull request but is not a required check. Adding a check to a
+`guard-tests`, `docs-impact` and `docs-drift-report` are not required checks. Adding a check to a
 branch's list is a change to that branch's ruleset, made by a repository admin.
 
 ### Promotion order
@@ -368,6 +376,7 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | gitleaks | 8.30.0 | `secret-scan` (and the pre-commit hook) |
 | actionlint | 1.7.12, checksum verified | `workflow-lint` |
 | zizmor | 1.30.1 | `workflow-lint` |
+| pyright | 1.1.414 | `backend-types` |
 | Squawk | `squawk-cli` 2.66.0 | `backend` (migration lint) |
 | Postgres, Redis service images | `postgres:16`, `redis:7` | `backend` |
 

@@ -56,7 +56,7 @@ secrets, how model credentials are supplied - are in
 | `docker-compose.yml` | The app stack (the same file runs locally and on the server). |
 | `docker-compose.dev.yml` | The throwaway test database and Redis for the backend suite. |
 | `deploy/env.docker.example`, `.env.example` | Environment templates: the first is the minimal set for the container stack, the second lists every tunable setting with its reasoning. |
-| [`experiments/`](experiments/a1-segmentation/README.md) | Segmentation research; `a1-segmentation/EXPERIMENT-LOG.md` records what was measured and rejected. |
+| [`experiments/`](experiments/a1-segmentation/README.md) | Segmentation research; `experiments/a1-segmentation/EXPERIMENT-LOG.md` records what was measured and rejected. |
 | [`legacy/`](legacy/README.md) | The pre-rewrite Flask app and its old docs. **Nothing there runs.** |
 | `pyproject.toml`, `uv.lock`, `serve.py` (repo root) | Leftovers of the Flask app. The backend's own project is `backend/pyproject.toml`; do not run `uv sync` or `pytest` from the repo root. |
 
