@@ -58,6 +58,7 @@ The API answers `GET http://127.0.0.1:8000/health`. A worker runs with
 ```bash
 cd backend
 uv run ruff check . && uv run ruff format --check .    # both are CI gates
+uvx pyright==1.1.414                                   # type check of app/, a CI gate too
 uv run pytest -q                                        # do not export DATABASE_URL
 ```
 
