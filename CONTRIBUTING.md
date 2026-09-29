@@ -37,7 +37,8 @@ The rules and every required check are listed in
 - The title becomes the commit on `main`, so it follows the commit format
   `<type>(<scope>): <subject>`: imperative, ASCII, no trailing period, at most 72 characters.
   Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `perf`, `test`, `style`, `ci`, `build`.
-  Scopes: [.claude/rules/commit-scopes.md](.claude/rules/commit-scopes.md).
+  Scopes: [.claude/rules/commit-scopes.md](.claude/rules/commit-scopes.md). The `pr-title` check
+  enforces this on pull requests into `main`; Dependabot's titles are exempt from the length limit only.
 - Fill in every section of the pull request template, including HIPAA / PHI Impact.
 - Keep a pull request to one purpose. Documentation changes in the same pull request as the code
   it describes.
