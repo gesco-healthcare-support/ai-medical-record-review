@@ -10,7 +10,7 @@ and carried as the Job row.
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -129,6 +129,13 @@ def mark_terminal(
     changed = session.execute(
         update(Job).where(Job.id == job.id, Job.state.in_(ACTIVE_STATES)).values(**values)
     )
+    # An ORM UPDATE with WHERE criteria returns a CursorResult, which carries rowcount. SQLAlchemy
+    # 2.0.44 types Session.execute as a plain Result because RETURNING and bulk updates do not; if an
+    # edit here ever turns this into one of those, fail by name rather than read a missing count.
+    if not isinstance(changed, CursorResult):
+        raise TypeError(
+            f"expected a CursorResult from the job UPDATE, got {type(changed).__name__}"
+        )
     if not changed.rowcount:
         session.rollback()  # someone else finalized it first; leave their outcome alone
         return False
