@@ -265,6 +265,18 @@ def test_one_active_job_per_document_conflicts():
         jobs.create_job(session_b, doc_id, "summarize", model="m", prompt_version="1")
 
 
+def test_a_job_for_a_missing_document_is_refused_not_reported_as_a_conflict():
+    # WHEN create_job is called for a document id that does not exist, THE SYSTEM SHALL raise
+    # LookupError naming the id and SHALL NOT add a job. `dedup` is the load-bearing kind: it moves
+    # no document status, so nothing touched the missing row before the commit, and the foreign-key
+    # failure came back through `except IntegrityError` as a false "a job is already active".
+    missing_id = str(uuid.uuid4())
+    with get_sessionmaker()() as session:
+        with pytest.raises(LookupError, match=missing_id):
+            jobs.create_job(session, missing_id, "dedup", model="m", prompt_version="1")
+        assert session.scalars(select(Job).where(Job.document_id == missing_id)).first() is None
+
+
 def test_run_marks_done_and_advances_status():
     doc_id = _make_user_and_doc()
     with get_sessionmaker()() as session:

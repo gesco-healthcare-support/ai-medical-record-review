@@ -1868,7 +1868,7 @@ def isolated_catalog(monkeypatch):
     between - including the `global` assignments `_encode` and `_refresh_locked` make, which a
     cleanup line in the test body would miss on any failure path.
     """
-    for name in ("_model", "_category_ids", "_category_matrix", "_catalog_categories"):
+    for name in ("_model", "_category_index", "_catalog_categories"):
         monkeypatch.setattr(classification, name, None)
     monkeypatch.setattr(classification, "_catalog_version_seen", None)
     monkeypatch.setattr(classification, "_catalog_text_cache", "")
@@ -1975,7 +1975,7 @@ def test_dropping_the_cache_rebuilds_the_matrix(monkeypatch):
     matrix would classify against the old category set after a catalog migration ships.
 
     PROBING THIS ONE NEEDS A TWO-LINE MUTATION, which is worth knowing before concluding it is
-    inert. `_category_matrix = None` appears in BOTH `reset_catalog_cache` and `_refresh_locked`
+    inert. `_category_index = None` appears in BOTH `reset_catalog_cache` and `_refresh_locked`
     and either alone is sufficient, so deleting one reads as a no-op. Deleting both fails this test
     by name - measured 2026-09-17.
     """

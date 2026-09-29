@@ -6,6 +6,8 @@ explicit Session (the Flask version used the request-scoped db.session) - the pl
 where a service reads the DB. The classifier's caches invalidate off catalog_version() separately.
 """
 
+from typing import Literal, overload
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -70,6 +72,12 @@ def summarize_default_for(session: Session, category_id) -> bool:
     return True
 
 
+# A summary prompt always resolves (row, then code, then the general prompt - see get_prompt), so
+# the "summary" signature returns str; only the other roles can come back None.
+@overload
+def get_prompt(session: Session, role: Literal["summary"], category_id) -> str: ...
+@overload
+def get_prompt(session: Session, role: str, category_id) -> str | None: ...
 def get_prompt(session: Session, role: str, category_id) -> str | None:
     """The current prompt text for (role, category_id).
 
