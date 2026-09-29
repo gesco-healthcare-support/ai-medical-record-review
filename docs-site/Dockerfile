@@ -23,6 +23,6 @@ COPY docs-site/mkdocs.yml ./
 COPY docs /src/docs
 RUN uv run --frozen mkdocs build --strict --site-dir /out
 
-FROM nginx:1.27@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d
+FROM nginx:1.30@sha256:b972f831f200b19ef0767938224f9711e74cd783718738cd7405d5cabf75c442
 COPY docs-site/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /out /usr/share/nginx/html/docs
