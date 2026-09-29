@@ -53,7 +53,7 @@ runs locally and on the server; only `.env` differs.
 flowchart TB
     browser["Browser"] -->|":8080"| proxy
     subgraph compose["docker compose project 'mrr'"]
-        proxy["proxy<br/>nginx:1.27"]
+        proxy["proxy<br/>nginx:1.30"]
         web["web<br/>Next.js server (mrr-frontend)"]
         api["api<br/>FastAPI + uvicorn (mrr-backend-web)"]
         docs["docs<br/>this site, nginx (mrr-docs)"]

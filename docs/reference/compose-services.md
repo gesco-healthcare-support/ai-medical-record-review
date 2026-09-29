@@ -22,7 +22,7 @@ Source of truth: `docker-compose.yml`, `docker-compose.dev.yml`, `deploy/nginx.c
 | `segment-worker` | `mrr-backend-classifier` | Context `./backend`; args `UV_EXTRAS="--extra docs --extra classifier"`, `GIT_SHA=${GIT_SHA:-unknown}` | `python -m app.worker segment` | None | `mrr_uploads:/app/uploads`; `./secrets:/secrets:ro` | None | `postgres` (`service_healthy`), `redis` (`service_started`) | 3 (`deploy.replicas`) | `unless-stopped` |
 | `summarize-worker` | `mrr-backend-web` | Context `./backend`; args `UV_EXTRAS="--extra docs"`, `GIT_SHA=${GIT_SHA:-unknown}` | `python -m app.worker summarize` | None | `mrr_uploads:/app/uploads`; `./secrets:/secrets:ro` | None | `postgres` (`service_healthy`), `redis` (`service_started`) | 3 (`deploy.replicas`) | `unless-stopped` |
 | `web` | `mrr-frontend` | Context `./frontend` | Image default: `node server.js` | None | None | None | `api` | 1 | `unless-stopped` |
-| `proxy` | `nginx:1.27` (pulled) | - | Image default | `8080:80` | `./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro` | None | `api`, `web`, `docs` | 1 | `unless-stopped` |
+| `proxy` | `nginx:1.30` (pulled) | - | Image default | `8080:80` | `./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro` | None | `api`, `web`, `docs` | 1 | `unless-stopped` |
 | `docs` | `mrr-docs` | Context `.` (repository root); Dockerfile `docs-site/Dockerfile` | Image default (nginx) | None | None | None | - | 1 | `unless-stopped` |
 
 No service defines `profiles`, networks, resource limits or a `stop_grace_period`; all services
@@ -91,7 +91,7 @@ files to find the test database's port and password.
 | `mrr-docs` | `docs-site/Dockerfile`, context `.` | None | `docs` |
 | `postgres:16` | Pulled | - | `postgres` (both stacks) |
 | `redis:7` | Pulled | - | `redis` (both stacks) |
-| `nginx:1.27` | Pulled | - | `proxy` |
+| `nginx:1.30` | Pulled | - | `proxy` |
 
 The two backend images are built from the same Dockerfile and the same code. They differ only in
 the optional dependency sets installed, which is why `docker compose build api` does not update
@@ -127,7 +127,7 @@ the optional dependency sets installed, which is why `docker compose build api` 
 
 | Item | Value |
 | --- | --- |
-| Stages | Build on `python:3.12-slim` with `uv` 0.11.2, then serve on `nginx:1.27` |
+| Stages | Build on `python:3.12-slim` with `uv` 0.11.2, then serve on `nginx:1.30` |
 | Build stage | `uv sync --frozen`, then `mkdocs build --strict` of the `docs/` folder |
 | Runtime contents | The built site under `/usr/share/nginx/html/docs` |
 | Build context filter | `docs-site/Dockerfile.dockerignore` (the root `.dockerignore` excludes `docs` and `*.md`) |
