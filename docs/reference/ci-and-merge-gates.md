@@ -32,7 +32,7 @@ Jobs table below.
 | `promotion-guard.yml` | `pull_request_target` (`opened`, `synchronize`, `reopened`, `edited`) | None; the check only matters on branches whose ruleset requires it | Runs the default branch's copy of the guard, so a pull request cannot edit the check that judges it. `edited` re-runs it when a pull request's base changes. |
 
 Every workflow gives its jobs a read-only token (`permissions: contents: read`, or none at the
-workflow level with per-job grants). No job pushes, comments or approves. The only extra grants
+workflow level with per-job grants). No job pushes code, comments or approves. The only extra grants
 are:
 
 - `osv-scan`: `security-events: write` (and `actions: read`), which its reusable workflow needs to
@@ -41,17 +41,24 @@ are:
 - `scorecard.yml` `analysis`: `security-events: write` and `actions: read` for the upload, and
   `id-token: write`, which Scorecard needs to publish a verified result;
 - the promotion guard: `pull-requests: read`;
-- `docs-drift-report`: `issues: write`, to edit its one issue. It is the only job that writes to the
-  repository itself, and it runs only on the default branch (`schedule`, `workflow_dispatch`), never on
-  pull request code.
+- `acceptance` (pushes to `staging` only, never the dry run): `packages: write`, to push the accepted
+  images to `ghcr.io`, and `id-token: write` with `attestations: write`, to sign and store their
+  attestations;
+- `release-policy`: `packages: read`, to pull the accepted images;
+- `release` (pushes to `production` only): `contents: write`, to create the tag and the GitHub Release,
+  with `packages: read`, `attestations: read` and `actions: read` (the staging run's SBOM artifact);
+- `docs-drift-report`: `issues: write`, to edit its one issue. It runs only on the default branch
+  (`schedule`, `workflow_dispatch`), never on pull request code. It and `release` are the only jobs
+  that write to the repository itself.
 
 The `security-events: write` grants only upload scan results to code scanning. Of those jobs, `analyze` and
 `osv-scan` run on pull requests, and neither executes pull-request code: CodeQL uses `build-mode: none`, and
 OSV-Scanner only reads the lockfiles.
 
 `docs-drift.yml`, `codeql.yml` and `scorecard.yml` run on a weekly `schedule` (Mondays: 15:00,
-06:17 and 07:23 UTC). Only `docs-drift.yml` has a `workflow_dispatch`. No workflow has a
-`concurrency` group.
+06:17 and 07:23 UTC). Only `docs-drift.yml` has a `workflow_dispatch`. The `acceptance` job and
+`release.yml` have a `concurrency` group that queues runs rather than cancelling them, so two staging
+pushes or two releases never overlap.
 
 ## Jobs
 
@@ -268,6 +275,7 @@ model call, a synthetic account on the reserved `.invalid` domain, and the synth
 | Upgrade test, production phase | Builds production's api (`.github/scripts/compose.production-code.yml`), migrates an empty database to production's head, starts it, then `acceptance_seed.py seed` registers a synthetic account, uploads the sample PDF and writes three review rows through the API. It runs under staging's `docker-compose.yml`, with staging's `web` image; only the api is production's, so a compose change between the branches is exercised in staging's form only. |
 | Upgrade test, staging phase | Staging's `alembic upgrade head`, then `alembic check`; starts staging's stack with `ENVIRONMENT=prod`; `acceptance_seed.py verify` reads the document and its rows back through the API |
 | ZAP baseline | `ghcr.io/zaproxy/zaproxy:2.17.0` (pinned by digest), `zap-baseline.py` against `http://localhost:8080`; fails on any High-risk alert and lists every alert in the job summary |
+| Push and attest (the `acceptance` job only, after the script passes) | Pushes `mrr-backend-web`, `mrr-frontend` and `mrr-docs`, as built and scanned, to `ghcr.io/gesco-healthcare-support/<name>:<commit SHA>`; Syft 1.52.0 (checksum verified) writes an SPDX SBOM of each; `actions/attest-build-provenance` and `actions/attest-sbom` attach a signed provenance and SBOM attestation to each image's digest in the registry; the SBOMs are kept as the workflow artifact `sboms` (90 days) for the release. The dry run pushes nothing. |
 
 The stage does not call a model yet. Adding one real Vertex call, with keyless Workload Identity Federation limited
 to this repository's pushes to `staging`, is the next step once that access exists in Google Cloud.
@@ -298,6 +306,13 @@ the previous tag (`.github/scripts/release_version.py`): any breaking change (`!
 `BREAKING CHANGE:` footer) bumps the major number, otherwise any `feat` bumps the minor number, otherwise the patch.
 The first release is `v0.1.0`, and the rule applies literally on `0.x`, so the first breaking change moves the version
 to `v1.0.0`. Tags matching `v*` can never be moved or deleted (the tag ruleset).
+
+Images are built once. The staging `acceptance` job pushes the images it tested to `ghcr.io`, tagged with the
+staging commit, with their attestations. A promotion merges that commit into `production` with a merge commit, so the
+`release` job finds it as `HEAD^2`, verifies each image's attestation (`gh attestation verify`), and lists the image
+digests in the release notes, with the three SBOM files attached. Nothing is rebuilt between staging and the release.
+The packages are private and linked to this repository by the `org.opencontainers.image.source` label that each
+Dockerfile's final stage sets.
 
 The release policy blocks a pull request into `production` when an image it would release has a Critical or High
 vulnerability, unless `.github/release-exceptions.json` holds a reviewed exception for that vulnerability in that
@@ -458,6 +473,9 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | hadolint | 2.15.1, checksum verified | `container-lint` |
 | Grype | 0.119.0, checksum verified | `acceptance` |
 | ZAP | `ghcr.io/zaproxy/zaproxy:2.17.0`, pinned by digest | `acceptance` |
+| Syft | 1.52.0, checksum verified | `acceptance` (SBOMs) |
+| `actions/attest-build-provenance` | v4.2.2 | `acceptance` |
+| `actions/attest-sbom` | v4.1.0 | `acceptance` |
 | actionlint | 1.7.12, checksum verified | `workflow-lint` |
 | zizmor | 1.30.1 | `workflow-lint` |
 | pyright | 1.1.414 | `backend` |
