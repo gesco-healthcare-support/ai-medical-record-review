@@ -512,6 +512,10 @@ Every `action` value written by the repository:
 | `aggregate_upload` | `backend/app/api/documents.py` (aggregate upload) |
 | `delete` | `backend/app/api/documents.py` `delete_document()` |
 | `view_pdf` | `backend/app/api/documents.py` (PDF view) |
+| `view_record` | `backend/app/api/documents.py` (an admin opening another account's record) |
+| `header.edit`, `header.extract` | `backend/app/api/documents.py` (header save and detection; `detail` names the fields, never their values) |
+| `segment.start`, `dedup.start` | `backend/app/api/documents.py` (job start) |
+| `duplicates.resolve` | `backend/app/api/documents.py` (duplicate group resolution) |
 | `rows.edit` | `backend/app/api/documents.py` (row save; `detail` carries the boundary counts) |
 | `job.cancel` | `backend/app/api/documents.py` (cancel) |
 | `summarize.skip_duplicate_check` | `backend/app/api/documents.py` (summarize start without a current duplicate check) |

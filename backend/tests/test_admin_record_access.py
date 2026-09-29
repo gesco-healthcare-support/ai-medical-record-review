@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from app.auth.password import MrrPasswordHelper
 from app.db import get_sessionmaker
-from app.models import AuditLog, Document, Job, User
+from app.models import AuditLog, Document, Job, ReviewRow, User
 from app.services.seed_catalog import constants_categories
 from tests.conftest import unique_test_email
 
@@ -200,3 +200,111 @@ async def test_an_admin_lists_the_active_accounts_to_pick_from(client, cast):
         "email": cast["owner_email"],
     }
     assert off_id not in by_id
+
+
+# --- every change an admin makes is recorded under the admin ----------------------------------
+
+
+def _actors(doc_id: str, action: str) -> set[int]:
+    with get_sessionmaker()() as session:
+        return set(
+            session.scalars(
+                select(AuditLog.user_id).where(
+                    AuditLog.document_id == doc_id, AuditLog.action == action
+                )
+            ).all()
+        )
+
+
+def _audit_details(doc_id: str, action: str) -> list[str | None]:
+    with get_sessionmaker()() as session:
+        return list(
+            session.scalars(
+                select(AuditLog.detail).where(
+                    AuditLog.document_id == doc_id, AuditLog.action == action
+                )
+            ).all()
+        )
+
+
+async def test_an_admins_header_edit_is_recorded_under_the_admin(client, cast):
+    await _login(client, cast["admin_email"])
+    resp = await client.put(
+        f"/api/documents/{cast['doc_id']}/header",
+        json={
+            "patient_first_name": "Synthetic",
+            "patient_last_name": "Patient",
+            "patient_dob": "",
+            "law_firm": "",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert _actors(cast["doc_id"], "header.edit") == {cast["admin_id"]}
+    # Field names only: the values are the patient's details and never go in the audit log.
+    (detail,) = _audit_details(cast["doc_id"], "header.edit")
+    assert detail == "changed=patient_first_name,patient_last_name"
+    assert "Synthetic" not in detail
+
+
+async def test_an_admins_header_detection_is_recorded_under_the_admin(client, cast, monkeypatch):
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "extract_header",
+        lambda pdf_path, pages: {
+            "first_name": "Synthetic",
+            "last_name": "",
+            "dob": "",
+            "lawfirm": "",
+        },
+    )
+    await _login(client, cast["admin_email"])
+    resp = await client.post(f"/api/documents/{cast['doc_id']}/extract-header")
+    assert resp.status_code == 200, resp.text
+    assert _actors(cast["doc_id"], "header.extract") == {cast["admin_id"]}
+    assert _audit_details(cast["doc_id"], "header.extract") == ["filled=patient_first_name"]
+
+
+async def test_an_admins_duplicate_resolution_is_recorded_under_the_admin(client, cast):
+    with get_sessionmaker()() as session:
+        for idx, (start, end) in enumerate(((1, 1), (2, 2))):
+            session.add(
+                ReviewRow(
+                    document_id=cast["doc_id"],
+                    idx=idx,
+                    start=start,
+                    end=end,
+                    category=_CATEGORY,
+                    dupe_group=1,
+                )
+            )
+        session.commit()
+    await _login(client, cast["admin_email"])
+    resp = await client.post(
+        f"/api/documents/{cast['doc_id']}/duplicates/1/resolve", json={"action": "dismiss"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert _actors(cast["doc_id"], "duplicates.resolve") == {cast["admin_id"]}
+    assert _audit_details(cast["doc_id"], "duplicates.resolve") == ["group=1 action=dismiss"]
+
+
+@pytest.mark.parametrize("kind", ["segment", "dedup"])
+async def test_a_job_an_admin_starts_is_audited_under_the_admin(client, cast, kind):
+    await _login(client, cast["admin_email"])
+    resp = await client.post(f"/api/documents/{cast['doc_id']}/{kind}/start", json={})
+    assert resp.status_code in (200, 202), resp.text
+    assert _actors(cast["doc_id"], f"{kind}.start") == {cast["admin_id"]}
+
+
+async def test_an_admin_opening_another_reviewers_record_is_recorded(client, cast):
+    await _login(client, cast["admin_email"])
+    assert (await client.get(f"/api/documents/{cast['doc_id']}")).status_code == 200
+    assert _actors(cast["doc_id"], "view_record") == {cast["admin_id"]}
+
+
+async def test_an_owner_reading_their_own_record_writes_no_view_row(client, cast):
+    """GUARD: only cross-account reads are new, so only they are recorded."""
+    await _login(client, cast["owner_email"])
+    assert (await client.get(f"/api/documents/{cast['doc_id']}")).status_code == 200
+    assert _actors(cast["doc_id"], "view_record") == set()

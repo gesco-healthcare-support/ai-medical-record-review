@@ -130,18 +130,18 @@ Every path below starts with `/api/documents`. `{document_id}` is the document's
 | D1 | POST | `/api/documents` | Login | Multipart file field `pdf` | 201 `{id, page_count, sha256_duplicate}` | 400 | `upload` |
 | D2 | POST | `/api/documents/aggregate` | Login | Multipart file field `pdfs` (repeated, one per file), optional form field `name` | 201 `{id, page_count, records}` | 400, 503 | `aggregate_upload` |
 | D3 | GET | `/api/documents` | Login | query `owner` (int, optional; honoured for an admin only) | 200 array of Document listing plus `rows_count` | none | none |
-| D4 | GET | `/api/documents/{document_id}` | Owner | none | 200 Document listing plus `rows`, `categories`, `doctors`, `letter_types`, `owner` | none | none |
-| D5 | POST | `/api/documents/{document_id}/extract-header` | Owner | none | 200 `{patient_first_name, patient_last_name, patient_dob, law_firm}` | 422, 503, 500 `{"error"}` | none |
-| D6 | PUT | `/api/documents/{document_id}/header` | Owner | JSON `HeaderPayload` | 200 Document listing | none | none |
+| D4 | GET | `/api/documents/{document_id}` | Owner | none | 200 Document listing plus `rows`, `categories`, `doctors`, `letter_types`, `owner` | none | `view_record` when an admin opens another account's record |
+| D5 | POST | `/api/documents/{document_id}/extract-header` | Owner | none | 200 `{patient_first_name, patient_last_name, patient_dob, law_firm}` | 422, 503, 500 `{"error"}` | `header.extract` |
+| D6 | PUT | `/api/documents/{document_id}/header` | Owner | JSON `HeaderPayload` | 200 Document listing | none | `header.edit` |
 | D7 | DELETE | `/api/documents/{document_id}` | Owner (not admin) | none | 200 `{"ok": true}` | 404, 409 | `delete` |
 | D8 | GET | `/api/documents/{document_id}/pdf` | Owner | none | 200 `application/pdf`; 206 for a `Range` request | none | `view_pdf` |
 | D9 | GET | `/api/documents/{document_id}/status` | Owner | none | 200 `{status, job, unreviewed_duplicate_groups}` | none | none |
 | D10 | GET | `/api/documents/{document_id}/duplicates` | Owner | none | 200 `{clusters, job, stale, unreadable, checked}` | none | none |
-| D11 | POST | `/api/documents/{document_id}/dedup/start` | Owner | Optional JSON `DedupStartPayload` | 200 `{"ok": true}` | 409, 503 | none |
-| D12 | POST | `/api/documents/{document_id}/duplicates/{group}/resolve` | Owner | JSON `DuplicateResolvePayload` | 200 `{"ok": true}` | 400, 404, 409 | none |
+| D11 | POST | `/api/documents/{document_id}/dedup/start` | Owner | Optional JSON `DedupStartPayload` | 200 `{"ok": true}` | 409, 503 | `dedup.start` |
+| D12 | POST | `/api/documents/{document_id}/duplicates/{group}/resolve` | Owner | JSON `DuplicateResolvePayload` | 200 `{"ok": true}` | 400, 404, 409 | `duplicates.resolve` |
 | D13 | PUT | `/api/documents/{document_id}/rows` | Owner | JSON `RowsPayload` | 200 `{ok, count, reopened}` | 400, 409 | `rows.edit` |
 | D14 | POST | `/api/documents/{document_id}/jobs/{job_id}/cancel` | Owner | Optional JSON `CancelPayload` | 200 Job progress plus `graceSeconds` | 404 | `job.cancel` |
-| D15 | POST | `/api/documents/{document_id}/segment/start` | Owner | Optional JSON `SegmentStartPayload` | 200 `{"ok": true}` | 409, 503 | none |
+| D15 | POST | `/api/documents/{document_id}/segment/start` | Owner | Optional JSON `SegmentStartPayload` | 200 `{"ok": true}` | 409, 503 | `segment.start` |
 | D16 | POST | `/api/documents/{document_id}/summarize/start` | Owner | Optional JSON `SummarizeStartPayload` | 200 `{"ok": true}` | 400, 409, 503 | `rows.edit`, `summarize.skip_duplicate_check` |
 | D17 | GET | `/api/documents/{document_id}/summaries` | Owner | none | 200 array of Summary | none | none |
 | D18 | PUT | `/api/documents/{document_id}/summaries/{idx}` | Owner | Optional JSON `SummaryEditPayload` | 200 Summary | 400, 404, 409 | `summary.category`, `summary.edit` |
@@ -330,7 +330,13 @@ the action, the document id where there is one, and `detail`.
 | `upload` | D1 | none |
 | `aggregate_upload` | D2 | none |
 | `delete` | D7 | none |
+| `view_record` | D4, only when an admin opens a record they do not own | none |
+| `header.extract` | D5 | `filled=<field names>` (names only, never values) |
+| `header.edit` | D6 | `changed=<field names>` (names only, never values) |
 | `view_pdf` | D8 | none |
+| `dedup.start` | D11 | none |
+| `duplicates.resolve` | D12 | `group=<n> action=<action>` |
+| `segment.start` | D15 | none |
 | `rows.edit` | D13, D16 when `rows` is sent | `rows A->B (merges M, splits S, pages P->Q)` |
 | `job.cancel` | D14, active job only | `job <id> kind <kind> state <state> force <bool>` |
 | `summarize.skip_duplicate_check` | D16 | `never checked` or `stale check` |

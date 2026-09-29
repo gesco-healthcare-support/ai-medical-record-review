@@ -148,7 +148,9 @@ records at once.
   that one account's records. A non-admin's `owner` is ignored, not refused.
 - What an admin does on another account's record is recorded under the admin: every audit row takes
   the acting user, and a job records who started it (`jobs.requested_by`), which the worker's own
-  audit row for a re-segment uses. The record stays with its owner.
+  audit row for a re-segment uses. The header, duplicate resolution and job-start routes all
+  audit, and an admin opening a record they do not own writes a `view_record` row. The record
+  stays with its owner.
 - Deleting stays owner-only, even for an admin (`delete_document`): deleting is not fixing, and it
   cannot be undone.
 - A prepared export's token is bound to both the user and the document that made it

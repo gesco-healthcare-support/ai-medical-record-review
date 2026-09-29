@@ -576,7 +576,12 @@ def _editor_row(row: ReviewRow) -> dict:
 def get_document(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
+    # An admin opening another reviewer's record leaves a row under the admin, so who looked at
+    # which record is on file. An owner reading their own record is not audited, as before.
+    if document.user_id != user.id:
+        audit(session, "view_record", user.id, document.id)
     payload = document.listing()
     payload["rows"] = [_editor_row(row) for row in document.review_rows]
     payload["categories"] = catalog.get_category_options(session)
@@ -606,6 +611,7 @@ def _header_shape(data: dict) -> dict:
 def extract_header_route(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Re-extract {patient_first_name, patient_last_name, patient_dob, law_firm} from the record's
     first pages (Vertex) AND persist them onto the document, so a single detect is available
@@ -638,9 +644,26 @@ def extract_header_route(
         else:
             shape[field] = getattr(document, field) or ""
     session.commit()
+    # Field names only, never the values: they are the patient's name and date of birth.
+    filled = sorted(field for field, found in _header_shape(data).items() if found)
+    audit(session, "header.extract", user.id, document.id, detail="filled=" + ",".join(filled))
     # The MERGED view, so the two callers show what is stored rather than the raw extraction - a
     # kept field would otherwise vanish from the form while surviving in the database.
     return shape
+
+
+# Every document column `put_header` writes, for the audit's "which fields changed".
+_HEADER_FIELDS = (
+    "patient_first_name",
+    "patient_last_name",
+    "patient_dob",
+    "law_firm",
+    "attorney_name",
+    "doctor",
+    "letter_type",
+    "letter_date",
+    "pages_received",
+)
 
 
 def _pages_received(raw: str) -> int | None:
@@ -667,8 +690,10 @@ def put_header(
     payload: HeaderPayload,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Persist the reviewer-edited report header on the document."""
+    before = {field: getattr(document, field) for field in _HEADER_FIELDS}
     document.patient_first_name = payload.patient_first_name
     document.patient_last_name = payload.patient_last_name
     document.patient_dob = payload.patient_dob
@@ -683,6 +708,10 @@ def put_header(
     document.letter_date = payload.letter_date
     document.pages_received = _pages_received(payload.pages_received)
     session.commit()
+    # Which fields changed, by name - never the values, which are the patient's details.
+    # An unset field and a blank one are the same "nothing", so "" over None is not a change.
+    changed = sorted(f for f in _HEADER_FIELDS if (getattr(document, f) or "") != (before[f] or ""))
+    audit(session, "header.edit", user.id, document.id, detail="changed=" + ",".join(changed))
     return document.listing()
 
 
@@ -948,6 +977,7 @@ def dedup_start(
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
+    audit(session, "dedup.start", user.id, document.id)
     return {"ok": True}
 
 
@@ -1059,6 +1089,7 @@ def resolve_duplicate(
     payload: DuplicateResolvePayload,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Resolve one cluster: keep_one (mark the primary, exclude the rest) or dismiss (not duplicates)."""
     members = [r for r in document.review_rows if r.dupe_group == group]
@@ -1080,6 +1111,13 @@ def resolve_duplicate(
             detail="action must be 'keep_one', 'dismiss' or 'remove_member'",
         )
     session.commit()
+    audit(
+        session,
+        "duplicates.resolve",
+        user.id,
+        document.id,
+        detail=f"group={group} action={payload.action}",
+    )
     return {"ok": True}
 
 
@@ -1192,6 +1230,7 @@ def segment_start(
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
+    audit(session, "segment.start", user.id, document.id)
     return {"ok": True}
 
 
