@@ -23,6 +23,7 @@ Jobs table below.
 | `ci.yml` | `pull_request` | None: every pull request, whatever its base branch | A base-branch filter would leave pull requests into unlisted branches with no CI at all. |
 | `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
 | `pr-title.yml` | `pull_request` (`opened`, `edited`, `synchronize`, `reopened`) | Base branch `main` only | A squash merge makes the title main's commit subject. Only main's ruleset requires the check, so the filter leaves no required check waiting on another branch; `edited` re-runs it after a retitle. |
+| `staging-acceptance.yml` | `push` to `staging`; `pull_request` | Pull requests only when they change the stage's own files (the workflow, `.github/scripts/staging_acceptance.sh`, `acceptance_seed.py`, `compose.production-code.yml`) | The acceptance stage tests each commit that lands on `staging`; the pull-request run is a dry run of a change to the stage. Neither is a required check, so the paths filter cannot leave a merge waiting. |
 | `docs-drift.yml` | `pull_request`; `schedule` (Mondays 15:00 UTC); `workflow_dispatch` | None | Two docs guards that never block a merge: warnings on a pull request, and a weekly drift issue. See [How to work on these docs](../how-to/work-on-these-docs.md#how-the-docs-stay-current). |
 | `promotion-guard.yml` | `pull_request_target` (`opened`, `synchronize`, `reopened`, `edited`) | None; the check only matters on branches whose ruleset requires it | Runs the default branch's copy of the guard, so a pull request cannot edit the check that judges it. `edited` re-runs it when a pull request's base changes. |
 
@@ -56,8 +57,10 @@ All jobs run on `ubuntu-latest`.
 | `osv-scan` | `ci.yml` | - | Pull requests only. OSV-Scanner over `backend/uv.lock` and `frontend/pnpm-lock.yaml`, base against head | The pull request introduces a known vulnerability |
 | `coverage-floor` | `ci.yml` | `backend`, `frontend` | Reads both coverage reports and compares them with the floors | Either suite is below its floor, or a report is missing, empty or unreadable |
 | `sonarcloud` | `ci.yml` | `backend`, `frontend` | SonarCloud scan with both coverage reports, waiting for the quality gate; on pull requests, a check for new issues and hotspots | The quality gate fails, or (pull requests) the analysis cannot be proven current, or the pull request adds any issue or hotspot |
-| `guard-tests` | `guard-tests.yml` | - | The promotion guard's and the PR title check's unit tests (`python3 -m unittest -v test_promotion_guard`, then `test_pr_title`, in `.github/scripts/`) | Any test fails |
+| `guard-tests` | `guard-tests.yml` | - | Unit tests for the promotion guard, the PR title check and the acceptance seed script (`python3 -m unittest -v test_promotion_guard`, `test_pr_title`, `test_acceptance_seed`, in `.github/scripts/`) | Any test fails |
 | `pr-title` | `pr-title.yml` | - | Pull requests into `main` only. `python3 .github/scripts/pr_title.py`, with the title and author passed as environment variables | The title does not read `<type>(<scope>): <subject>`, uses an unlisted type or scope, is not ASCII, ends with a period, or is over 72 characters (the length limit does not apply to Dependabot) |
+| `acceptance` | `staging-acceptance.yml` | - | Pushes to `staging` only, in the `staging` environment. `.github/scripts/staging_acceptance.sh` (see [`acceptance`](#acceptance)) | An image has a critical vulnerability with a fix, the upgrade or `alembic check` fails, the seeded data does not read back, the stack does not come up, or ZAP reports a High-risk alert. On success the environment records a deployment for the commit. |
+| `acceptance-dry-run` | `staging-acceptance.yml` | - | Pull requests that change the stage. The same script, without the environment, so it records nothing | As `acceptance` |
 | `docs-impact` | `docs-drift.yml` | - | Pull requests only. The docs rules' unit tests, then `python3 .github/scripts/docs_guides.py impact <base> <head>` | Its unit tests fail. The check itself never fails: a changed code file whose describing docs were not touched gets a warning annotation and a row in the job summary. |
 | `docs-drift-report` | `docs-drift.yml` | - | Weekly and by hand, never on a pull request. `python3 .github/scripts/docs_guides.py report`, then creates or edits the one open issue labelled `docs-drift` | The report or the `gh` call errors |
 | `promotion-guard` | `promotion-guard.yml` | - | Checks that a pull request into a promotion branch comes from the branch above it. Its check is named `guard-into-<base branch>`. | The pull request's head is not an allowed source for its base (see [Promotion order](#promotion-order)) |
@@ -235,6 +238,23 @@ request's code), then runs `python3 .github/scripts/promotion_guard.py`. The rul
 under [Promotion order](#promotion-order). The decision logic is in the script and its docstring;
 the workflow file explains why `pull_request_target` is safe here.
 
+### `acceptance`
+
+Runs after each merge into `staging`, on that commit, from `.github/scripts/staging_acceptance.sh`. Production's
+code is checked out into `production-code/` for the upgrade test. Nothing real is used: placeholder secrets, no
+model call, a synthetic account on the reserved `.invalid` domain, and the synthetic `frontend/e2e/fixtures/sample.pdf`.
+
+| Step | What it does |
+| --- | --- |
+| Build once | `docker compose -p mrrci build api web docs` |
+| Image scan | Grype 0.119.0 (checksum verified) on `mrr-backend-web`, `mrr-frontend` and `mrr-docs`, `--only-fixed --fail-on critical` |
+| Upgrade test, production phase | Builds production's api (`.github/scripts/compose.production-code.yml`), migrates an empty database to production's head, starts it, then `acceptance_seed.py seed` registers a synthetic account, uploads the sample PDF and writes three review rows through the API |
+| Upgrade test, staging phase | Staging's `alembic upgrade head`, then `alembic check`; starts staging's stack with `ENVIRONMENT=prod`; `acceptance_seed.py verify` reads the document and its rows back through the API |
+| ZAP baseline | `ghcr.io/zaproxy/zaproxy:2.17.0` (pinned by digest), `zap-baseline.py` against `http://localhost:8080`; fails on any High-risk alert and lists every alert in the job summary |
+
+The stage does not call a model yet. Adding one real Vertex call, with keyless Workload Identity Federation limited
+to this repository's pushes to `staging`, is the next step once that access exists in Google Cloud.
+
 ## SonarCloud project settings (`sonar-project.properties`)
 
 | Property | Value |
@@ -337,6 +357,12 @@ The hotfix check:
 
 So a fix always lands on `main` first.
 
+## Environments
+
+| Environment | Deployment branches | Used by | Why |
+| --- | --- | --- | --- |
+| `staging` | `staging` only | `acceptance` | A passing run records a deployment for the commit it tested. Production's ruleset is to require a successful `staging` deployment on a promotion pull request's head commit, which is staging's latest commit; that rule is added after the stage's first green run on `staging`. |
+
 ## Secrets
 
 | Name | Used by | Purpose |
@@ -379,6 +405,8 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | `SonarSource/sonarqube-scan-action` | v8.2.0 | `sonarcloud` |
 | gitleaks | 8.30.0 | `secret-scan` (and the pre-commit hook) |
 | hadolint | 2.15.1, checksum verified | `container-lint` |
+| Grype | 0.119.0, checksum verified | `acceptance` |
+| ZAP | `ghcr.io/zaproxy/zaproxy:2.17.0`, pinned by digest | `acceptance` |
 | actionlint | 1.7.12, checksum verified | `workflow-lint` |
 | zizmor | 1.30.1 | `workflow-lint` |
 | pyright | 1.1.414 | `backend` |
