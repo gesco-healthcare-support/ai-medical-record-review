@@ -23,6 +23,8 @@ Jobs table below.
 | `ci.yml` | `pull_request` | None: every pull request, whatever its base branch | A base-branch filter would leave pull requests into unlisted branches with no CI at all. |
 | `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
 | `pr-title.yml` | `pull_request` (`opened`, `edited`, `synchronize`, `reopened`) | Base branch `main` only | A squash merge makes the title main's commit subject. Only main's ruleset requires the check, so the filter leaves no required check waiting on another branch; `edited` re-runs it after a retitle. |
+| `release-policy.yml` | `pull_request` | Base branch `production` only | The production release policy on the images staging accepted. Only production's ruleset requires it, so the filter leaves no required check waiting elsewhere. |
+| `release.yml` | `push` to `production` | - | Tags and publishes each merge into production. |
 | `docs-drift.yml` | `pull_request`; `schedule` (Mondays 15:00 UTC); `workflow_dispatch` | None | Two docs guards that never block a merge: warnings on a pull request, and a weekly drift issue. See [How to work on these docs](../how-to/work-on-these-docs.md#how-the-docs-stay-current). |
 | `promotion-guard.yml` | `pull_request_target` (`opened`, `synchronize`, `reopened`, `edited`) | None; the check only matters on branches whose ruleset requires it | Runs the default branch's copy of the guard, so a pull request cannot edit the check that judges it. `edited` re-runs it when a pull request's base changes. |
 
@@ -56,8 +58,10 @@ All jobs run on `ubuntu-latest`.
 | `osv-scan` | `ci.yml` | - | Pull requests only. OSV-Scanner over `backend/uv.lock` and `frontend/pnpm-lock.yaml`, base against head | The pull request introduces a known vulnerability |
 | `coverage-floor` | `ci.yml` | `backend`, `frontend` | Reads both coverage reports and compares them with the floors | Either suite is below its floor, or a report is missing, empty or unreadable |
 | `sonarcloud` | `ci.yml` | `backend`, `frontend` | SonarCloud scan with both coverage reports, waiting for the quality gate; on pull requests, a check for new issues and hotspots | The quality gate fails, or (pull requests) the analysis cannot be proven current, or the pull request adds any issue or hotspot |
-| `guard-tests` | `guard-tests.yml` | - | The promotion guard's and the PR title check's unit tests (`python3 -m unittest -v test_promotion_guard`, then `test_pr_title`, in `.github/scripts/`) | Any test fails |
+| `guard-tests` | `guard-tests.yml` | - | The promotion guard's and the PR title check's unit tests (`python3 -m unittest -v test_promotion_guard`, then `test_pr_title`, in `.github/scripts/`) | Any test fails. It also runs the release version and release policy tests (`test_release_version`, `test_release_policy`). |
 | `pr-title` | `pr-title.yml` | - | Pull requests into `main` only. `python3 .github/scripts/pr_title.py`, with the title and author passed as environment variables | The title does not read `<type>(<scope>): <subject>`, uses an unlisted type or scope, is not ASCII, ends with a period, or is over 72 characters (the length limit does not apply to Dependabot) |
+| `release-policy` | `release-policy.yml` | - | Pull requests into `production` only. Pulls the three images staging accepted for the pull request's head commit from `ghcr.io`, scans each with Grype, then `python3 .github/scripts/release_policy.py` | An image is missing (staging has not accepted the commit), an image has a Critical or High vulnerability without an exception, or an exception has expired or is incomplete |
+| `release` | `release.yml` | - | Pushes to `production` only. Verifies the accepted images' attestations, computes the next version, creates the tag and a GitHub Release (see [Releases](#releases)) | HEAD is not a promotion merge, an image or its attestation is missing, no successful staging run exists for the commit, or the tag or release cannot be created |
 | `docs-impact` | `docs-drift.yml` | - | Pull requests only. The docs rules' unit tests, then `python3 .github/scripts/docs_guides.py impact <base> <head>` | Its unit tests fail. The check itself never fails: a changed code file whose describing docs were not touched gets a warning annotation and a row in the job summary. |
 | `docs-drift-report` | `docs-drift.yml` | - | Weekly and by hand, never on a pull request. `python3 .github/scripts/docs_guides.py report`, then creates or edits the one open issue labelled `docs-drift` | The report or the `gh` call errors |
 | `promotion-guard` | `promotion-guard.yml` | - | Checks that a pull request into a promotion branch comes from the branch above it. Its check is named `guard-into-<base branch>`. | The pull request's head is not an allowed source for its base (see [Promotion order](#promotion-order)) |
@@ -253,6 +257,23 @@ the workflow file explains why `pull_request_target` is safe here.
 
 The analysis is CI-based. SonarCloud's Automatic Analysis must stay disabled for the project, or
 the CI scan fails with "running CI analysis while Automatic Analysis is enabled".
+
+## Releases
+
+Each merge into `production` is a release. Its version is a semantic version computed from the commit messages since
+the previous tag (`.github/scripts/release_version.py`): any breaking change (`!` before the colon, or a
+`BREAKING CHANGE:` footer) bumps the major number, otherwise any `feat` bumps the minor number, otherwise the patch.
+The first release is `v0.1.0`, and the rule applies literally on `0.x`, so the first breaking change moves the version
+to `v1.0.0`. Tags matching `v*` can never be moved or deleted (the tag ruleset).
+
+The release policy blocks a pull request into `production` when an image it would release has a Critical or High
+vulnerability, unless `.github/release-exceptions.json` holds a reviewed exception for that vulnerability in that
+package. An exception has four fields, all required, and fails the check once its expiry date has passed:
+
+```json
+{"exceptions": [{"vulnerability": "CVE-2026-0001", "package": "openssl", "reason": "no fixed release yet",
+  "expires": "2026-10-31"}]}
+```
 
 ## Branches and merge rules
 
