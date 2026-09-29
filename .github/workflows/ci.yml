@@ -520,6 +520,10 @@ jobs:
   # coverage reports produced by the backend + frontend jobs.
   sonarcloud:
     needs: [backend, frontend]
+    # Pull requests (any base) and pushes to main only. The SonarCloud plan analyses only the main branch: a push to
+    # qwen failed with "not allowed to access data from non main branches" on every run, while pull-request analysis
+    # into qwen works (#438). A required check still runs on every pull request, so nothing is left waiting.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
