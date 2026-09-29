@@ -75,6 +75,12 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
+      # pyright in standard mode on app/ (settings: backend/pyproject.toml [tool.pyright]); any error fails the job,
+      # and so the required `backend` check. Pinned like zizmor: a new release can add checks, which should arrive
+      # as a reviewed bump rather than a red build nobody changed.
+      - name: Type check (pyright)
+        run: uvx pyright==1.1.414
+
       - name: Import smoke (models map, app builds)
         env:
           DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci
@@ -130,38 +136,6 @@ jobs:
           name: backend-coverage
           path: backend/coverage.xml
           retention-days: 1
-
-  # Reports pyright's errors on backend/app without blocking a merge. The count is brought to zero one
-  # cause per pull request; at zero the check becomes a required step of `backend`. pyright is pinned
-  # like zizmor: a new release can add checks, which should arrive as a reviewed bump.
-  backend-types:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
-        with:
-          enable-cache: true
-
-      - name: Install deps (core + docs; no torch)
-        run: uv sync --extra docs
-
-      - name: pyright (report only)
-        run: |
-          set +e
-          uvx pyright==1.1.414 > pyright.txt
-          status=$?
-          cat pyright.txt
-          echo "### pyright on backend/app (report only)" >> "$GITHUB_STEP_SUMMARY"
-          tail -n 1 pyright.txt >> "$GITHUB_STEP_SUMMARY"
-          exit "$status"
 
   frontend:
     runs-on: ubuntu-latest
@@ -323,6 +297,38 @@ jobs:
 
       - name: Build the site (strict)
         run: uv run --frozen mkdocs build --strict
+
+  # Lints what the images are built from: hadolint over the three Dockerfiles CI and the servers build (legacy/ is
+  # not built), then Compose's own validation of both compose files. hadolint is pinned like actionlint below: a
+  # release binary checked against its published sha256. Its settings, and the one rule skipped and why, are in
+  # .hadolint.yaml, which it reads from the repository root.
+  container-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: hadolint (pinned release, checksum verified)
+        env:
+          VERSION: "2.15.1"
+          SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+        run: |
+          set -euo pipefail
+          curl -sSL --fail -o hadolint "https://github.com/hadolint/hadolint/releases/download/v${VERSION}/hadolint-linux-x86_64"
+          echo "${SHA256}  hadolint" | sha256sum --check --strict
+          chmod +x hadolint
+          ./hadolint backend/Dockerfile frontend/Dockerfile docs-site/Dockerfile
+
+      # `config` parses each file, interpolates it and checks it against the Compose spec, starting nothing.
+      # docker-compose.yml refuses to interpolate without its two required secrets, so CI passes placeholders.
+      - name: Compose files
+        env:
+          SECRET_KEY: ci-compose-check
+          SECURITY_PASSWORD_SALT: ci-compose-check
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.dev.yml config --quiet
 
   # Lints the workflows themselves: actionlint for syntax and expression mistakes, zizmor for security
   # problems (injection, excess permissions, unpinned actions, dangerous triggers). The pipeline is an

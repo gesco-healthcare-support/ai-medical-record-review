@@ -63,7 +63,7 @@ target-version = "py312"
 
 [tool.pyright]
 # Type-check the application code only (Adrian, 2026-09-28): the tests are exercised by pytest.
-# Standard mode is pyright's default; CI runs it report-only (`backend-types`) until the count is 0.
+# Standard mode is pyright's default. CI runs it as a step of the required `backend` job (any error fails).
 include = ["app"]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
