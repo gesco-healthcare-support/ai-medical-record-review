@@ -22,6 +22,7 @@ Jobs table below.
 | `ci.yml` | `push` | Branches `main` and `qwen` | A pushed feature branch is already tested by its pull request; listing push branches avoids a second run. |
 | `ci.yml` | `pull_request` | None: every pull request, whatever its base branch | A base-branch filter would leave pull requests into unlisted branches with no CI at all. |
 | `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
+| `pr-title.yml` | `pull_request` (`opened`, `edited`, `synchronize`, `reopened`) | Base branch `main` only | A squash merge makes the title main's commit subject. Only main's ruleset requires the check, so the filter leaves no required check waiting on another branch; `edited` re-runs it after a retitle. |
 | `docs-drift.yml` | `pull_request`; `schedule` (Mondays 15:00 UTC); `workflow_dispatch` | None | Two docs guards that never block a merge: warnings on a pull request, and a weekly drift issue. See [How to work on these docs](../how-to/work-on-these-docs.md#how-the-docs-stay-current). |
 | `promotion-guard.yml` | `pull_request_target` (`opened`, `synchronize`, `reopened`, `edited`) | None; the check only matters on branches whose ruleset requires it | Runs the default branch's copy of the guard, so a pull request cannot edit the check that judges it. `edited` re-runs it when a pull request's base changes. |
 
@@ -49,12 +50,14 @@ All jobs run on `ubuntu-latest`.
 | `e2e` | `ci.yml` | - | Builds and starts the app stack with Compose (without workers), then Playwright | The app is not ready within the wait loop, or any spec fails |
 | `secret-scan` | `ci.yml` | - | gitleaks over the checked-out files | gitleaks reports a finding |
 | `docs` | `ci.yml` | - | Builds the documentation site strictly | Any MkDocs warning, including a link to a page that does not exist |
+| `container-lint` | `ci.yml` | - | hadolint 2.15.1 over `backend/Dockerfile`, `frontend/Dockerfile` and `docs-site/Dockerfile` (settings in `.hadolint.yaml`), then `docker compose config --quiet` on `docker-compose.yml` and `docker-compose.dev.yml` | A hadolint finding, or a compose file that does not parse, interpolate or match the Compose specification |
 | `workflow-lint` | `ci.yml` | - | actionlint and zizmor over `.github/workflows/` | A workflow syntax or expression error, or a zizmor security finding |
 | `dependency-review` | `ci.yml` | - | Pull requests only. GitHub's dependency review of the pull request's dependency changes | The pull request adds, or upgrades to, a runtime dependency with a known high or critical vulnerability that GitHub's dependency graph reports. It can miss one, so `osv-scan` backs it up (see below). |
 | `osv-scan` | `ci.yml` | - | Pull requests only. OSV-Scanner over `backend/uv.lock` and `frontend/pnpm-lock.yaml`, base against head | The pull request introduces a known vulnerability |
 | `coverage-floor` | `ci.yml` | `backend`, `frontend` | Reads both coverage reports and compares them with the floors | Either suite is below its floor, or a report is missing, empty or unreadable |
 | `sonarcloud` | `ci.yml` | `backend`, `frontend` | SonarCloud scan with both coverage reports, waiting for the quality gate; on pull requests, a check for new issues and hotspots | The quality gate fails, or (pull requests) the analysis cannot be proven current, or the pull request adds any issue or hotspot |
-| `guard-tests` | `guard-tests.yml` | - | The promotion guard's unit tests (`python3 -m unittest -v test_promotion_guard` in `.github/scripts/`) | Any test fails |
+| `guard-tests` | `guard-tests.yml` | - | The promotion guard's and the PR title check's unit tests (`python3 -m unittest -v test_promotion_guard`, then `test_pr_title`, in `.github/scripts/`) | Any test fails |
+| `pr-title` | `pr-title.yml` | - | Pull requests into `main` only. `python3 .github/scripts/pr_title.py`, with the title and author passed as environment variables | The title does not read `<type>(<scope>): <subject>`, uses an unlisted type or scope, is not ASCII, ends with a period, or is over 72 characters (the length limit does not apply to Dependabot) |
 | `docs-impact` | `docs-drift.yml` | - | Pull requests only. The docs rules' unit tests, then `python3 .github/scripts/docs_guides.py impact <base> <head>` | Its unit tests fail. The check itself never fails: a changed code file whose describing docs were not touched gets a warning annotation and a row in the job summary. |
 | `docs-drift-report` | `docs-drift.yml` | - | Weekly and by hand, never on a pull request. `python3 .github/scripts/docs_guides.py report`, then creates or edits the one open issue labelled `docs-drift` | The report or the `gh` call errors |
 | `promotion-guard` | `promotion-guard.yml` | - | Checks that a pull request into a promotion branch comes from the branch above it. Its check is named `guard-into-<base branch>`. | The pull request's head is not an allowed source for its base (see [Promotion order](#promotion-order)) |
@@ -146,6 +149,14 @@ Working directory `docs-site/`.
 | Install uv | `astral-sh/setup-uv` with cache |
 | Install | `uv sync --frozen` |
 | Build | `uv run --frozen mkdocs build --strict` |
+
+### `container-lint`
+
+| Step | Command |
+| --- | --- |
+| Checkout | `actions/checkout` |
+| hadolint | Downloads hadolint 2.15.1 (`hadolint-linux-x86_64`), checks it against its published SHA-256, then `./hadolint backend/Dockerfile frontend/Dockerfile docs-site/Dockerfile`. It reads `.hadolint.yaml` from the repository root, which skips one rule, DL3008 (exact apt package versions), with the reason. `legacy/Dockerfile` is not built, so it is not linted. |
+| Compose files | `docker compose -f docker-compose.yml config --quiet`, then the same for `docker-compose.dev.yml`. `SECRET_KEY` and `SECURITY_PASSWORD_SALT` are set to placeholders, because `docker-compose.yml` refuses to interpolate without them. |
 
 ### `workflow-lint`
 
@@ -295,6 +306,8 @@ The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 | `coverage-floor` | GitHub Actions (`ci.yml`) | all four branches |
 | `sonarcloud` | GitHub Actions (`ci.yml`) | all four branches |
 | `workflow-lint` | GitHub Actions (`ci.yml`) | all four branches |
+| `container-lint` | GitHub Actions (`ci.yml`) | `main`; `staging`, `production` and `qwen` once each branch contains the job (after its next promotion), so the check can always report |
+| `pr-title` | GitHub Actions (`pr-title.yml`) | `main` only |
 | `SonarCloud Code Analysis` | SonarCloud's own GitHub integration, from the analysis the `sonarcloud` job uploads | all four branches |
 | `dependency-review` | GitHub Actions (`ci.yml`) | all four branches |
 | `osv-scan / osv-scan` | GitHub Actions (`ci.yml`, reusable workflow) | all four branches |
@@ -369,6 +382,7 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | `google/osv-scanner-action` reusable workflow | v2.6.0 | `osv-scan` |
 | `SonarSource/sonarqube-scan-action` | v8.2.0 | `sonarcloud` |
 | gitleaks | 8.30.0 | `secret-scan` (and the pre-commit hook) |
+| hadolint | 2.15.1, checksum verified | `container-lint` |
 | actionlint | 1.7.12, checksum verified | `workflow-lint` |
 | zizmor | 1.30.1 | `workflow-lint` |
 | pyright | 1.1.414 | `backend` |
@@ -381,7 +395,9 @@ Dependabot opens update pull requests into `main` every week. They are held to t
 checks as any other pull request, and `sonarcloud` fails on them until `SONAR_TOKEN` is also stored
 as a Dependabot secret (see [Secrets](#secrets)). For `uv`, `npm` and `github-actions`, minor and
 patch updates are grouped into one pull request per ecosystem. `docker` and `docker-compose` have no
-groups, so each of their updates comes on its own. A major update always comes on its own. A new
+groups, so each of their updates comes on its own. The images in the Dockerfiles and compose files are
+pinned by digest (`name:tag@sha256:<digest>`), and those updates move the tag and the digest together.
+Dependabot never adds a digest to an image that has none, so pin a new image the same way. A major update always comes on its own. A new
 release waits 7 days (`cooldown`) before it is proposed; security updates are never delayed.
 
 | Ecosystem | Where | Commit prefix | Minor and patch updates |

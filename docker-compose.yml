@@ -314,7 +314,7 @@ x-backend-env: &backend-env
 services:
   postgres:
     restart: unless-stopped
-    image: postgres:16
+    image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
     environment:
       POSTGRES_USER: mrr
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mrr_local_only}
@@ -331,7 +331,7 @@ services:
 
   redis:
     restart: unless-stopped
-    image: redis:7
+    image: redis:7@sha256:c6eabf748fc7a61dbb5a705c78bcf3d6377b1127a97d0ce965c11c44ba46896f
     # Persistence OFF: no RDB/AOF on disk (HIPAA). The queue carries only non-PHI job ids, but a prepared
     # export's `download:<token>` entry holds its filename - a patient name - for 5 minutes (#389).
     command: ["redis-server", "--save", "", "--appendonly", "no"]
@@ -424,7 +424,7 @@ services:
 
   proxy:
     restart: unless-stopped
-    image: nginx:1.27
+    image: nginx:1.27@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d
     ports:
       - "8080:80"
     volumes:

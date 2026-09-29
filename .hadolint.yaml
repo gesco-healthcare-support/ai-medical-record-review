@@ -1,0 +1,7 @@
+# hadolint settings for the Dockerfiles CI lints (backend/, frontend/, docs-site/; legacy/ is not built).
+# CI: the `container-lint` job in .github/workflows/ci.yml, with hadolint pinned there.
+ignored:
+  # DL3008 asks for exact apt package versions (tesseract-ocr, poppler-utils in backend/Dockerfile). Debian's
+  # mirrors drop a superseded point release, so an exact pin breaks the next rebuild. The base image is pinned by
+  # digest, which already fixes the Debian release, and security fixes arrive when the image is rebuilt.
+  - DL3008

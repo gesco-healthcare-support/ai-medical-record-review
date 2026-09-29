@@ -1,0 +1,29 @@
+name: pr title
+
+# A squash merge makes a pull request's title main's commit subject, so pull requests into main must be titled in the
+# commit format (rules and reasons: .github/scripts/pr_title.py). Only main's ruleset requires this check, so the
+# branch filter cannot leave a required check waiting anywhere: promotions into staging, production and qwen merge
+# with a merge commit and carry commits already checked on their way into main. `edited` re-runs it when the title
+# changes. The title reaches the script through the environment, never pasted into the shell.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check the title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: python3 .github/scripts/pr_title.py
