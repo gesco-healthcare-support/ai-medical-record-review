@@ -26,7 +26,7 @@ def merge_pdfs(sources: list[tuple[str, bytes]]) -> tuple[bytes, list[dict]]:
             reader = PdfReader(io.BytesIO(data))
             num_pages = len(reader.pages)
         except Exception:
-            num_pages = 0
+            continue  # unreadable: skipped, as the docstring says
         if num_pages <= 0:
             continue
         for page in reader.pages:
