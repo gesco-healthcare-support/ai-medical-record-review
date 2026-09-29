@@ -1,0 +1,72 @@
+name: docs drift
+
+# Two of the guards that keep the docs in step with the code (docs/how-to/work-on-these-docs.md, "How the
+# docs stay current"). Both use .github/scripts/docs_guides.py, and neither can block a merge:
+#
+# - docs-impact, on every pull request: lists code the pull request changed without touching any doc that
+#   describes it, as warning annotations and a job summary. Warn-only by decision (2026-09-28).
+# - docs-drift-report, weekly and on demand: keeps ONE open issue, labelled docs-drift, listing every doc
+#   whose code changed after the doc last did - the backstop for whatever a pull request waved through.
+#
+# The exact checks (README file lists, cited paths and symbols, CLAUDE.md size) run in the backend suite
+# (backend/tests/test_docs_guides.py), so they block through the required `backend` check instead.
+on:
+  pull_request:
+  schedule:
+    - cron: "0 15 * * 1"  # Mondays 15:00 UTC, 08:00 Pacific
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-impact:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # the merge base with the base branch
+
+      - name: Unit tests of the docs rules
+        working-directory: .github/scripts
+        run: python3 -m unittest -v test_docs_guides
+
+      - name: Docs to re-read (warnings only)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/docs_guides.py impact "$BASE_SHA" "$HEAD_SHA"
+
+  docs-drift-report:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # The one job in this repository that writes: it edits a single issue. It checks out no pull request
+    # code and runs only on the default branch (schedule and workflow_dispatch).
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # each doc is compared with the commits since its own last change
+
+      - name: Build the report
+        run: python3 .github/scripts/docs_guides.py report > "$RUNNER_TEMP/docs-drift.md"
+
+      - name: Create or update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Documentation drift report
+        run: |
+          set -euo pipefail
+          gh label create docs-drift --color BFD4F2 \
+            --description "Docs whose code changed after the doc last did" --force
+          number=$(gh issue list --label docs-drift --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file "$RUNNER_TEMP/docs-drift.md"
+          else
+            gh issue create --title "$TITLE" --label docs-drift --body-file "$RUNNER_TEMP/docs-drift.md"
+          fi

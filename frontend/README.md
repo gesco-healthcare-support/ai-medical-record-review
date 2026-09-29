@@ -24,6 +24,13 @@ call: [Frontend routes and data](../docs/reference/frontend-routes-and-data.md).
 | [`e2e/`](e2e/README.md) | Playwright specs that run against the full app stack. |
 | `public/` | Static files: the vendored pdf.js viewer and images. |
 | `Dockerfile` | Builds the standalone server image (`mrr-frontend`), Node 22. |
+| `package.json` | Dependencies and the pnpm scripts listed below. The lockfile is `pnpm-lock.yaml`. |
+| `tsconfig.json` | TypeScript settings: strict mode, the `@/*` path alias. |
+| `components.json` | shadcn/ui settings used when adding a primitive with `pnpm exec shadcn add`. |
+| `postcss.config.mjs` | PostCSS with the Tailwind v4 plugin. |
+| `vitest.config.mts` | Vitest: jsdom, the `@/*` alias, one shared worker, coverage settings. |
+| `vitest.setup.ts` | Runs before every test file: jest-dom matchers, cleanup, module-cache reset. |
+| `playwright.config.ts` | Playwright: the specs in `e2e/` against a running stack (`E2E_BASE_URL`). |
 
 ## Develop
 

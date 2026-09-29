@@ -25,6 +25,9 @@ shared `conftest.py`.
 | `test_classification.py` | The categorization model call uses the classify model by default and honours an override. |
 | `test_classify_prompt_ab.py` | The categorization prompt A/B script's control arm. |
 | `test_cli.py` | The admin command-line tool (`app/cli.py`). |
+| `test_config_bounds.py` | Settings with a lower bound (for example `GENAI_MAX_RETRIES` at least 1) refuse to boot below it. |
+| `test_docs_reference_drift.py` | The reference pages give every setting, route, migration, compose service, frontend page and CI job a row of its own. |
+| `test_docs_guides.py` | Every file is named in its folder's README, every path and symbol a doc cites exists, every CLAUDE.md stays at 200 lines or fewer. |
 | `test_compose_passthrough.py` | Settings that must be settable from `.env` are named in `docker-compose.yml`, documented in `.env.example`, and share their defaults with `app/config.py`. |
 | `test_conftest_db_selection.py` | `conftest.py`'s own port and password pairing and its per-worker isolation. |
 | `test_date_in_source.py` | The eval check of whether a row's date appears in its pages. |
