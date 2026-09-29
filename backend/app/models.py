@@ -156,7 +156,9 @@ class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
 
     __tablename__ = "access_token"
 
-    user_id: Mapped[int] = mapped_column(
+    # The base declares `user_id: ID` for type checkers only (no column at runtime); a mapped column
+    # cannot match that declared type, and queries use this as a column, so the override is ignored.
+    user_id: Mapped[int] = mapped_column(  # pyright: ignore[reportIncompatibleVariableOverride]
         Integer, ForeignKey(_FK_USER_ID, ondelete="cascade"), nullable=False
     )
 
