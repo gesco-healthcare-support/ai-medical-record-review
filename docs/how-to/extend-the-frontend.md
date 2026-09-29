@@ -21,8 +21,9 @@ pnpm install
 - For end-to-end tests, the app running behind the proxy on port 8080. See
   [how to run the app locally](run-the-app-locally.md).
 
-There is no ESLint or Prettier setup in `frontend/`. The static check is the TypeScript compiler
-(`pnpm typecheck`); SonarCloud analyses the code in CI (see the
+ESLint checks `frontend/` (`pnpm lint`; config `eslint.config.mjs`, Next's core-web-vitals and
+TypeScript rules), and any error or warning fails CI. There is no Prettier setup. The other static
+check is the TypeScript compiler (`pnpm typecheck`); SonarCloud analyses the code in CI (see the
 [CI and merge gates reference](../reference/ci-and-merge-gates.md)).
 
 ## Add a page route
@@ -233,6 +234,10 @@ Playwright specs live in `frontend/e2e/*.spec.ts` and run against a live stack, 
 ## Verify it worked
 
 From `frontend/`:
+
+```bash
+pnpm lint
+```
 
 ```bash
 pnpm typecheck

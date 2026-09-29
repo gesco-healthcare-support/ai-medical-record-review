@@ -183,6 +183,11 @@ jobs:
       - name: Install deps
         run: pnpm install --frozen-lockfile
 
+      # ESLint (Next's core-web-vitals + typescript rules); any error or warning fails the job, and so the
+      # required `frontend` check. Config: frontend/eslint.config.mjs.
+      - name: Lint
+        run: pnpm lint
+
       - name: Typecheck
         run: pnpm typecheck
 
@@ -369,9 +374,9 @@ jobs:
           fail-on-scopes: runtime
           comment-summary-in-pr: never
 
-  # Dependency gate, PR half 2. OSV-Scanner reads both lockfiles directly (uv.lock included, which GitHub's
-  # dependency graph does not list as a supported format), scans the base and the PR, and fails only on
-  # vulnerabilities the PR INTRODUCES. The reusable workflow's own job asks for security-events: write (it uploads
+  # Dependency gate, PR half 2: a second source behind dependency-review, which can miss an advisory. OSV-Scanner
+  # reads both lockfiles directly (backend/uv.lock, frontend/pnpm-lock.yaml) and checks them against OSV.dev rather
+  # than GitHub's dependency graph, scans the base and the PR, and fails only on vulnerabilities the PR INTRODUCES. The reusable workflow's own job asks for security-events: write (it uploads
   # its SARIF to code scanning), so this job must grant it; nothing else here gets it.
   osv-scan:
     if: github.event_name == 'pull_request'

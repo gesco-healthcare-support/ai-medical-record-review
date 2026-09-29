@@ -26,6 +26,7 @@ call: [Frontend routes and data](../docs/reference/frontend-routes-and-data.md).
 | `Dockerfile` | Builds the standalone server image (`mrr-frontend`), Node 22. |
 | `package.json` | Dependencies and the pnpm scripts listed below. The lockfile is `pnpm-lock.yaml`. |
 | `tsconfig.json` | TypeScript settings: strict mode, the `@/*` path alias. |
+| `eslint.config.mjs` | ESLint: Next's core-web-vitals and TypeScript rules; skips the vendored pdf.js build in `public/pdfjs/`. |
 | `components.json` | shadcn/ui settings used when adding a primitive with `pnpm exec shadcn add`. |
 | `postcss.config.mjs` | PostCSS with the Tailwind v4 plugin. |
 | `vitest.config.mts` | Vitest: jsdom, the `@/*` alias, one shared worker, coverage settings. |
@@ -52,6 +53,7 @@ the nginx proxy routes `/api/` itself.
 | --- | --- |
 | `pnpm dev` | Development server on :3000. |
 | `pnpm build` / `pnpm start` | Production build and server. |
+| `pnpm lint` | ESLint; fails on any error or warning (CI runs it). |
 | `pnpm typecheck` | `tsc --noEmit`. |
 | `pnpm test` | vitest, once. `pnpm test:watch` to watch. |
 | `pnpm test:coverage` | vitest with coverage (CI requires 80% on statements, branches, functions and lines). |

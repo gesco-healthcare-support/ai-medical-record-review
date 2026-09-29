@@ -23,6 +23,11 @@ function trimMarkupTools(doc: Document) {
   }
 }
 
+/** The vendored pdf.js viewer's URL for `file` (already URL-encoded), opened at `page`. */
+function viewerSrc(file: string, page: number): string {
+  return `/pdfjs/web/viewer.html?file=${file}#page=${page}`;
+}
+
 /**
  * PDF pane: the vendored pdf.js viewer (public/pdfjs) in an iframe, with its default UI hidden so
  * only the pages show in a dark well under a slim "Page N of M" header. Row-click navigation calls
@@ -36,7 +41,6 @@ export const PdfViewer = forwardRef<PdfViewerHandle, { documentId: string; filen
     const lastPage = useRef(1);
     const [pageInfo, setPageInfo] = useState({ page: 1, total: 0 });
     const file = encodeURIComponent(`/api/documents/${documentId}/pdf`);
-    const srcFor = (page: number) => `/pdfjs/web/viewer.html?file=${file}#page=${page}`;
 
     function viewerApp(): PdfViewerApp | null {
       try {
@@ -81,7 +85,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, { documentId: string; filen
           if (page === lastPage.current) return; // not ready: don't reload the iframe for a no-op
           lastPage.current = page;
           const frame = frameRef.current;
-          if (frame) frame.src = srcFor(page); // viewer not ready yet: (re)load opened at the page
+          if (frame) frame.src = viewerSrc(file, page); // viewer not ready yet: (re)load opened at the page
         },
       }),
       [file],
@@ -113,7 +117,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, { documentId: string; filen
             {pageInfo.total ? ` of ${pageInfo.total}` : ""}
           </span>
         </div>
-        <iframe id="pdfFrame" ref={frameRef} title="PDF viewer" src={srcFor(1)} onLoad={onLoad} />
+        <iframe id="pdfFrame" ref={frameRef} title="PDF viewer" src={viewerSrc(file, 1)} onLoad={onLoad} />
       </div>
     );
   },
