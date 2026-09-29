@@ -198,7 +198,7 @@ export function ExportDialog({
           <button
             type="button"
             className="ev-btn ev-btn-ghost"
-            onClick={() => runExport("export", "summaries.docx")}
+            onClick={() => runExport("export", "MRR.docx")}
             disabled={locked}
           >
             {busy ? "Preparing..." : "Export to Word"}
@@ -232,6 +232,7 @@ export function ExportDialog({
                   categories: b.categories,
                   coverHeading: b.coverHeading,
                   downloadName: b.downloadName,
+                  separateAs: b.separateAs,
                 })),
               })
             }

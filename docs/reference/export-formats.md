@@ -20,7 +20,7 @@ download (see [Response](#response)), not with the file.
 | `/api/documents/{document_id}/export/pdf` | Linked PDF: letter followed by the whole source record | `application/pdf` | `export_pdf` | yes |
 | `/api/documents/{document_id}/export/memo` | Covering memo, Word | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | `export_memo` | no |
 | `/api/documents/{document_id}/export/zip` | ZIP archive of the letter, linked PDF, memo and bundle PDFs | `application/zip` | `export_zip` | yes |
-| `/api/documents/{document_id}/bundle/pdf` | Combined PDF of category-matched sub-documents, optional cover page | `application/pdf` | `bundle_pdf` | no |
+| `/api/documents/{document_id}/bundle/pdf` | Combined PDF of category-matched sub-documents, optional cover page; with `separateAs`, one PDF per sub-document (a zip when there are several) | `application/pdf`, or `application/zip` for several separate PDFs | `bundle_pdf` | no |
 | `/api/documents/{document_id}/bundle/summarize` | Word letter summarizing only the category-matched sub-documents | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | `bundle_summarize` | no |
 
 "Included summaries" means summaries whose `excluded` flag is false.
@@ -71,6 +71,7 @@ Body of `/export/zip`: every `ExportPayload` field plus:
 | `categories` | list | `[]` | Categories to match, compared as strings; empty skips the bundle |
 | `coverHeading` | string or null | `null` | Heading of a cover list page; absent or blank means no cover |
 | `downloadName` | string or null | `null` | Filename suffix after the patient name |
+| `separateAs` | string or null | `null` | When set, one member PDF per matched sub-document instead of one combined PDF (see [Separate documents](#separate-documents)) |
 
 ### `BundlePayload`
 
@@ -82,6 +83,7 @@ Body of `/bundle/pdf` and `/bundle/summarize`.
 | `label` | string or null | `null` | both | Legacy filename slug when `downloadName` is absent |
 | `coverHeading` | string or null | `null` | `/bundle/pdf` | Heading of a cover list page |
 | `downloadName` | string or null | `null` | both | Filename suffix after the patient name |
+| `separateAs` | string or null | `null` | `/bundle/pdf` | When set, one PDF per matched sub-document: the PDF itself for one match, a zip named like the combined file for several (see [Separate documents](#separate-documents)) |
 | `model` | string or null | `null` | `/bundle/summarize` | Body model; default `Settings.model_for("body")` |
 | `patientName` | string | `""` | `/bundle/summarize` | `RE:` header line |
 | `patientdob` | string | `""` | `/bundle/summarize` | `DOB:` header line |
@@ -92,10 +94,10 @@ Body of `/bundle/pdf` and `/bundle/summarize`.
 
 Defined once in `frontend/lib/bundle-api.ts` and sent by both the bundle pages and the zip request.
 
-| Preset | `label` | `categories` | `coverHeading` | `downloadName` | Page |
-| --- | --- | --- | --- | --- | --- |
-| Diagnostic & Operative | `diagnostic-operative` | `["3", "8"]` | `LIST OF DIAGNOSTIC AND OPERATIVE REPORTS` | `List of Diagnostic and Operative Reports` | `/diagnostics` |
-| Depositions | `depositions` | `["9"]` | none | `Depositions` | `/depositions` |
+| Preset | `label` | `categories` | `coverHeading` | `downloadName` | `separateAs` | Page |
+| --- | --- | --- | --- | --- | --- | --- |
+| Diagnostic & Operative | `diagnostic-operative` | `["3", "8"]` | `LIST OF DIAGNOSTIC AND OPERATIVE REPORTS` | `List of Diagnostic and Operative Reports` | none | `/diagnostics` |
+| Depositions | `depositions` | `["9"]` | none | `Depositions` | `Deposition` | `/depositions` |
 
 ## Response
 
@@ -120,20 +122,42 @@ fallback name.
 
 | Deliverable | With a patient name | Without a patient name | Fallback |
 | --- | --- | --- | --- |
-| MRR Word letter | `<Last>_<First>_Medical_Records_summary.docx` | `<stem>_summary.docx` | `summaries.docx` |
+| MRR Word letter | `<Last>_<First>_Medical_Records_MRR.docx` | `<stem>_MRR.docx` | `summaries.docx` |
 | Linked PDF | `<Last>_<First>_Medical_Records_linked.pdf` | `<stem>_linked.pdf` | `record.pdf` |
 | Memo | `<Last>_<First>_Medical_Records_memo.docx` | `<stem>_memo.docx` | `memo.docx` |
 | Zip | `<Last>_<First>_Medical_Records.zip` | `<stem>.zip` | `record.zip` |
 | Bundle PDF, `downloadName` given | `<Last>_<First>_Medical_Records_<downloadName>.pdf` | `<stem>_<downloadName>.pdf` | `records.pdf` |
 | Bundle report, `downloadName` given | `<Last>_<First>_Medical_Records_<downloadName>.docx` | `<stem>_<downloadName>.docx` | `records.docx` |
 | Bundle PDF or report, no `downloadName` | `<slug>.pdf` or `<slug>.docx` | same | `records.pdf` or `records.docx` |
+| Several separate PDFs from `/bundle/pdf` | the Bundle PDF name above with `.zip` | same | same |
 
 - In `<downloadName>` spaces become `_` before sanitising.
 - `<slug>` is `label` lower-cased with every run of characters outside `[a-z0-9]` replaced by `-` and
   leading or trailing `-` removed; a missing or empty label gives `records`.
 - Zip members carry the same names as the single-file routes.
-- If the JSON response has no filename, the frontend saves under its own fallback: `summaries.docx`,
+- If the JSON response has no filename, the frontend saves under its own fallback: `MRR.docx`,
   `record_linked.pdf`, `memo.docx`, `record.zip`, `<preset slug>.pdf`, `<preset slug>.docx`.
+
+## Separate documents
+
+A bundle sent with `separateAs` (the Depositions preset sends `Deposition`) gives one PDF per matched
+sub-document, in record order, each holding only that sub-document's pages and no cover page.
+`_separate_filename()` names each `<separateAs> of <who> <MM-DD-YY>.pdf`:
+
+- `<who>` is the text after the last `deposition of`, `depo of` or `transcript of` pair in the
+  row's title, less those words ("Continued Deposition of John Doe" and "Transcript of the
+  Deposition of John Doe" both give `John Doe`; "Deposition of Custodian of Records" gives
+  `Custodian of Records`). A title in
+  capitals is title-cased. Nothing else in a title is read as a name: "Deposition Summary" or
+  "Deposition Transcript Volume 2" describe the document, not a person. A title with no name after
+  `of` (most deposition titles are the bare word "Deposition") gives the patient's first and last
+  name instead; with neither, the name is `<separateAs> <MM-DD-YY>.pdf`.
+- `<MM-DD-YY>` is the row's date; an undated row is named without one.
+- Every character outside `[A-Za-z0-9 .,'&()-]` is dropped. Spaces are kept.
+- A name already used in the same download gets ` (2)`, ` (3)` before `.pdf`.
+
+The reviewers asked for this ("download them each separately and have them dated"). The file names
+carry no `<Last>_<First>_Medical_Records` prefix, matching their example.
 
 ## Zip members
 
@@ -144,7 +168,7 @@ fallback name.
 | 1 | MRR Word letter | Always (the route answers 409 without included summaries) |
 | 2 | Linked PDF | Always |
 | 3 | Memo | Always |
-| 4 onward | One bundle PDF per `bundles` entry, in request order, with its cover page when `coverHeading` is set | The entry's `categories` is non-empty and matches at least one row; otherwise the entry is skipped |
+| 4 onward | One bundle PDF per `bundles` entry, in request order, with its cover page when `coverHeading` is set. An entry with `separateAs` adds one PDF per matched sub-document instead, named as in [Separate documents](#separate-documents), with no cover page | The entry's `categories` is non-empty and matches at least one row; otherwise the entry is skipped |
 
 The bundle report is never a member.
 

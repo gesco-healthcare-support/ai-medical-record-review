@@ -129,6 +129,13 @@ function MatchesCard({
  *
  * Takes the header state rather than owning it, because `autoFill` writes all four fields at once
  * from the record and the parent is what holds that. */
+/** The PDF button's text. A bundle that asks for one file per document (depositions: the reviewers
+ *  wanted "each separately and ... dated") must not promise a combined PDF. */
+function pdfLabel(separate: boolean, busy: boolean) {
+  if (separate) return busy ? "Preparing files..." : "Download separate PDFs";
+  return busy ? "Combining pages..." : "Download combined PDF";
+}
+
 function BuildAside({
   matchCount,
   autoFill,
@@ -147,6 +154,7 @@ function BuildAside({
   sumBusy,
   watching,
   result,
+  separate,
 }: Readonly<{
   matchCount: number;
   autoFill: () => void;
@@ -166,6 +174,7 @@ function BuildAside({
   /** A handed-over download is still being watched (#390): no second one until it is settled. */
   watching: boolean;
   result: BundleResult;
+  separate: boolean;
 }>) {
   const busy = matchCount === 0 || pdfBusy || sumBusy || watching;
   return (
@@ -244,7 +253,7 @@ function BuildAside({
           onClick={downloadPdf}
           disabled={busy}
         >
-          {pdfBusy ? "Combining pages..." : "Download combined PDF"}
+          {pdfLabel(separate, pdfBusy)}
         </button>
         <button
           type="button"
@@ -479,8 +488,9 @@ export function BundlePageClient({
                 <h1>{config.label} builder</h1>
                 <p className="bnd-lead">
                   Pick a record you have already identified. You will see the{" "}
-                  {config.label} documents in it, then download a combined PDF
-                  or summarize just those to Word.
+                  {config.label} documents in it, then download{" "}
+                  {config.separateAs ? "each one as its own PDF" : "a combined PDF"} or
+                  summarize just those to Word.
                 </p>
               </div>
               {tabs}
@@ -635,6 +645,7 @@ export function BundlePageClient({
                   firm={firm}
                   setFirm={setFirm}
                   downloadPdf={downloadPdf}
+                  separate={Boolean(config.separateAs)}
                   summarize={summarize}
                   pdfBusy={pdfBusy}
                   sumBusy={sumBusy}

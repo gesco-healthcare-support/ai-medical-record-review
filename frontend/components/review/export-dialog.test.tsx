@@ -219,6 +219,9 @@ describe("ExportDialog page numbers", () => {
         categories: ["9"],
         coverHeading: undefined,
         downloadName: "Depositions",
+        // The reviewers asked for each deposition on its own, dated - so this bundle asks the
+        // server for one file per document, and Diagnostic & Operative does not.
+        separateAs: "Deposition",
       },
     ]);
   });

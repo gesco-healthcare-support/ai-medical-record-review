@@ -76,6 +76,7 @@ from app.services.reporting import (
     build_memo_document,
     build_mrr_document,
     is_diagnostic,
+    parsed_date,
     record_accounting,
 )
 from app.services.rows import validate_rows
@@ -1748,6 +1749,93 @@ def _download_name(document: Document, spec, ext: str) -> str:
     return _deliverable_filename(document, name.replace(" ", "_"), ext, fallback="records")
 
 
+# A separately-downloaded document keeps SPACES in its name - the reviewers wrote the name they want,
+# "Deposition of <name> 12-04-25" - but nothing that breaks a Content-Disposition header or a Windows
+# path, and ASCII only for the same reason.
+_SEPARATE_NAME_DROP = re.compile(r"[^A-Za-z0-9 .,'&()-]+")
+# A title names the deponent only after a "<kind> of" pair ("Deposition of John Doe", "Continued
+# Deposition of John Doe", "Transcript of the Deposition of John Doe"), where <kind> is deposition,
+# depo or transcript. Everything else in a title describes the DOCUMENT - "Summary", "Volume 2" -
+# and must never be read as a name: taking whatever was left once a few words were stripped
+# produced "Deposition of Summary", and taking the words after the FIRST "of" produced "the of John
+# Doe" from "Transcript of the Deposition of John Doe". So the name is the words after the LAST such
+# pair, less the kind words; a title with no such pair falls back to the patient. The pair, not a
+# bare "of", because a name can hold one ("Deposition of Custodian of Records"). Plain word
+# matching rather than a regex: nothing to backtrack over, whatever a title holds.
+_TITLE_KIND_WORDS = frozenset({"deposition", "depo", "transcript"})
+
+
+def _words_after_of(title: str) -> list[str]:
+    """The words after the last "<kind> of" pair (any case), less the document-kind words."""
+    words = title.split()
+    bare = [w.lower().strip(".,;:") for w in words]
+    pairs = [
+        i for i in range(len(bare) - 1) if bare[i] in _TITLE_KIND_WORDS and bare[i + 1] == "of"
+    ]
+    if not pairs:
+        return []
+    after = range(pairs[-1] + 2, len(words))
+    return [words[i] for i in after if bare[i] not in _TITLE_KIND_WORDS]
+
+
+def _separate_who(row: dict, document: Document) -> str:
+    """Whose document this is: the name after "of" in its own title, else the patient's.
+
+    A title in capitals ("DEPOSITION OF JOHN DOE") is title-cased so the filename reads like the
+    reviewers' example; a title already in mixed case is kept as written."""
+    title = (row.get("title") or "").strip()
+    rest = " ".join(_words_after_of("" if title == "-" else title))
+    if rest:
+        return rest.title() if rest.isupper() else rest
+    names = (document.patient_first_name, document.patient_last_name)
+    return " ".join(n.strip() for n in names if n and n.strip())
+
+
+def _separate_filename(row: dict, document: Document, kind: str) -> str:
+    """`<kind> of <who> <MM-DD-YY>.pdf`, dropping whichever part the record does not state.
+
+    The date is the row's own, in the two-digit-year shape every other date in the deliverable
+    now uses. An undated row is named without one rather than with "Undated" or "-"."""
+    who = _separate_who(row, document)
+    name = f"{kind} of {who}" if who else kind
+    when = parsed_date({"summaryDate": row.get("date") or ""})
+    if when:
+        name = f"{name} {when:%m-%d-%y}"
+    safe = " ".join(_SEPARATE_NAME_DROP.sub("", name).split()) or "document"
+    return f"{safe}.pdf"
+
+
+def _separate_members(
+    document: Document, matched: list[dict], kind: str
+) -> list[tuple[str, bytes]]:
+    """One PDF per matched row, in record order, each named for itself.
+
+    Two rows can legitimately produce the same name - one person deposed twice on an undated
+    transcript - so a repeat gets " (2)", " (3)" rather than overwriting the first inside a zip."""
+    members: list[tuple[str, bytes]] = []
+    seen: dict[str, int] = {}
+    for row in matched:
+        name = _separate_filename(row, document, kind)
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:
+            name = f"{name[: -len('.pdf')]} ({seen[name]}).pdf"
+        members.append((name, bundles.build_bundle_pdf(document.stored_path, [row]).getvalue()))
+    return members
+
+
+def _zip_bytes(members: list[tuple[str, bytes]]) -> bytes:
+    """`members` as one archive.
+
+    ZIP_STORED, not DEFLATED: every member is already a compressed container - a .docx IS a zip,
+    and PDF content streams are deflated - so compressing again costs CPU proportional to a whole
+    source record and saves close to nothing."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        for name, blob in members:
+            archive.writestr(name, blob)
+    return buffer.getvalue()
+
+
 def _letter_pages(document: Document) -> int:
     """How many pages the letter says arrived: the cover sheet's count where one was entered.
 
@@ -1784,7 +1872,9 @@ def _deliverable_filename(document: Document, suffix: str, ext: str, *, fallback
 
 
 def _summary_filename(document: Document) -> str:
-    return _deliverable_filename(document, "summary", "docx", fallback="summaries")
+    # "MRR", not "summary": the reviewers asked for the name the deliverables they receive from
+    # outside use, so the Word document says what it is.
+    return _deliverable_filename(document, "MRR", "docx", fallback="summaries")
 
 
 def _linked_filename(document: Document) -> str:
@@ -1999,6 +2089,10 @@ def _bundle_members(session: Session, document: Document, specs) -> list[tuple[s
         matched = bundles.matched_rows(rows, spec.categories) if spec.categories else []
         if not matched:
             continue
+        kind = (getattr(spec, "separateAs", None) or "").strip()
+        if kind:
+            members.extend(_separate_members(document, matched, kind))
+            continue
         pdf = bundles.build_bundle_pdf(
             document.stored_path, matched, cover=_bundle_cover(session, document, spec, matched)
         )
@@ -2167,17 +2261,9 @@ def export_document_zip(
         (_memo_filename(document), _memo_docx_bytes(session, document, payload, user)),
     ]
     members.extend(_bundle_members(session, document, payload.bundles))
-
-    buffer = io.BytesIO()
-    # ZIP_STORED, not DEFLATED: every member is already a compressed container - a .docx IS
-    # a zip, and PDF content streams are deflated - so compressing again costs CPU
-    # proportional to a whole source record and saves close to nothing.
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
-        for name, blob in members:
-            archive.writestr(name, blob)
     audit(session, "export_zip", user.id, document.id)
     return _offer_download(
-        buffer.getvalue(), "application/zip", _zip_filename(document), document, user
+        _zip_bytes(members), "application/zip", _zip_filename(document), document, user
     )
 
 
@@ -2202,6 +2288,17 @@ def bundle_pdf(
     button hands over and the one inside the folder are not two different documents."""
     payload = payload or BundlePayload()
     matched = _matched_rows(session, document, payload.categories)
+    kind = (payload.separateAs or "").strip()
+    if kind:
+        # One file per document. A single match is handed over as that PDF; several as a zip
+        # named like the combined download would have been.
+        members = _separate_members(document, matched, kind)
+        audit(session, "bundle_pdf", user.id, document.id)
+        if len(members) == 1:
+            name, blob = members[0]
+            return _offer_download(blob, _PDF_MEDIA_TYPE, name, document, user)
+        filename = _download_name(document, payload, "zip")
+        return _offer_download(_zip_bytes(members), "application/zip", filename, document, user)
     buffer = bundles.build_bundle_pdf(
         document.stored_path, matched, cover=_bundle_cover(session, document, payload, matched)
     )
