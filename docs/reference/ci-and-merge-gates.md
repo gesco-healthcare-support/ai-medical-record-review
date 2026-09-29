@@ -312,9 +312,11 @@ gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets/<id>
 | Bypass | Repository admins, through a pull request only (see Admin bypass) | Repository admins, through a pull request only |
 
 **Code scanning.** The CodeQL rule blocks a pull request while CodeQL is still analysing it, and when
-the analysis finds a security alert of high or critical severity whose lines are all in the pull
-request's diff. Other alerts, and alerts on lines the pull request does not change, never block it.
-Code scanning judges a pull request against an analysis of the branch it merges into, so a branch
+CodeQL reports a new security alert of high or critical severity for it. An alert counts as new when
+any part of it is in the pull request's changes: for a data-flow alert that includes the source of the
+flow, so a pull request can be blocked by an alert whose flagged line it does not change (a new test
+that calls a flagged function is enough). Medium and lower security alerts, and alerts that are not
+security alerts, never block it. Code scanning judges a pull request against an analysis of the branch it merges into, so a branch
 gets the rule only after `codeql.yml` has analysed a push to it; until then a pull request into it
 could not be judged. Every commit on `staging`, `production` and `qwen` has come through `main`,
 where the rule applies.
