@@ -17,7 +17,7 @@ Source of truth: `docker-compose.yml`, `docker-compose.dev.yml`, `deploy/nginx.c
 | Service | Image | Build | Command | Host ports | Volumes and mounts | Healthcheck | depends_on | Replicas | Restart |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `postgres` | `postgres:16` (pulled) | - | Image default | `5433:5432` | `mrr_pgdata:/var/lib/postgresql/data` | `pg_isready -U mrr -d mrr`, every 5 s, timeout 3 s, 10 retries | - | 1 | `unless-stopped` |
-| `redis` | `redis:7` (pulled) | - | `redis-server --save "" --appendonly no` | None | None | None | - | 1 | `unless-stopped` |
+| `redis` | `redis:7-alpine` (pulled) | - | `redis-server --save "" --appendonly no` | None | None | None | - | 1 | `unless-stopped` |
 | `api` | `mrr-backend-web` | Context `./backend`; args `UV_EXTRAS="--extra docs"`, `GIT_SHA=${GIT_SHA:-unknown}` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` | None | `mrr_uploads:/app/uploads`; `./instance:/app/instance:ro`; `./secrets:/secrets:ro` | None | `postgres` (`service_healthy`), `redis` (`service_started`) | 1 | `unless-stopped` |
 | `segment-worker` | `mrr-backend-classifier` | Context `./backend`; args `UV_EXTRAS="--extra docs --extra classifier"`, `GIT_SHA=${GIT_SHA:-unknown}` | `python -m app.worker segment` | None | `mrr_uploads:/app/uploads`; `./secrets:/secrets:ro` | None | `postgres` (`service_healthy`), `redis` (`service_started`) | 3 (`deploy.replicas`) | `unless-stopped` |
 | `summarize-worker` | `mrr-backend-web` | Context `./backend`; args `UV_EXTRAS="--extra docs"`, `GIT_SHA=${GIT_SHA:-unknown}` | `python -m app.worker summarize` | None | `mrr_uploads:/app/uploads`; `./secrets:/secrets:ro` | None | `postgres` (`service_healthy`), `redis` (`service_started`) | 3 (`deploy.replicas`) | `unless-stopped` |
@@ -76,7 +76,7 @@ Tesseract on `PATH`.
 | Service | Image | Command | Host ports | Volumes | Healthcheck | Environment | Restart |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `postgres` | `postgres:16` | Image default | `5432:5432` | `mrr_pgdata:/var/lib/postgresql/data` | `pg_isready -U mrr -d mrr`, every 5 s, timeout 3 s, 10 retries | `POSTGRES_USER=mrr`, `POSTGRES_PASSWORD=mrr_dev_only` (literal), `POSTGRES_DB=mrr` | None |
-| `redis` | `redis:7` | `redis-server --save "" --appendonly no` | `6379:6379` | None | None | None | None |
+| `redis` | `redis:7-alpine` | `redis-server --save "" --appendonly no` | `6379:6379` | None | None | None | None |
 
 No builds, no `depends_on`, no replicas settings. `backend/tests/conftest.py` reads both Compose
 files to find the test database's port and password.
@@ -90,7 +90,7 @@ files to find the test database's port and password.
 | `mrr-frontend` | `frontend/Dockerfile`, context `./frontend` | None | `web` |
 | `mrr-docs` | `docs-site/Dockerfile`, context `.` | None | `docs` |
 | `postgres:16` | Pulled | - | `postgres` (both stacks) |
-| `redis:7` | Pulled | - | `redis` (both stacks) |
+| `redis:7-alpine` | Pulled | - | `redis` (both stacks) |
 | `nginx:1.30` | Pulled | - | `proxy` |
 
 The two backend images are built from the same Dockerfile and the same code. They differ only in
