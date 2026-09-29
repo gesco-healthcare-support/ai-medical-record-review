@@ -802,8 +802,9 @@ _catalog_lock = threading.Lock()
 _catalog_version_seen = None
 _catalog_categories = None
 _catalog_text_cache = ""
-_category_ids = None
-_category_matrix = None
+# The embedded category set as ONE value, (ids, matrix): built together and dropped together, so
+# it can never be half-built.
+_category_index = None
 
 _model = None
 # SentenceTransformer.encode is not documented as thread-safe and classify() runs on a thread
@@ -813,14 +814,12 @@ _embed_lock = threading.Lock()
 
 def reset_catalog_cache():
     """Drop the cached catalog + embedding matrix so the next classify reloads from the DB."""
-    global _catalog_version_seen, _catalog_categories, _catalog_text_cache
-    global _category_ids, _category_matrix
+    global _catalog_version_seen, _catalog_categories, _catalog_text_cache, _category_index
     with _catalog_lock:
         _catalog_version_seen = None
         _catalog_categories = None
         _catalog_text_cache = ""
-        _category_ids = None
-        _category_matrix = None
+        _category_index = None
 
 
 def _catalog_version():
@@ -853,20 +852,21 @@ def _corpus(category):
     return f"{category['name']}. {category['description']} Examples: " + "; ".join(examples)
 
 
-def _refresh_locked():
-    """Reload the catalog if its revision changed. Caller must hold ``_catalog_lock``."""
-    global _catalog_version_seen, _catalog_categories, _catalog_text_cache
-    global _category_ids, _category_matrix
+def _refresh_locked() -> list[dict]:
+    """Reload the catalog if its revision changed, and return the current categories. Caller must
+    hold ``_catalog_lock``."""
+    global _catalog_version_seen, _catalog_categories, _catalog_text_cache, _category_index
     version = _catalog_version()
-    if version != _catalog_version_seen or _catalog_categories is None:
+    categories = _catalog_categories
+    if version != _catalog_version_seen or categories is None:
         categories = _auto_assign_categories()
         _catalog_categories = categories
         _catalog_text_cache = "\n".join(
             f"- {c['id']}: {c['name']} - {c['description']}" for c in categories
         )
-        _category_ids = None  # force the embedding matrix to rebuild for the new set
-        _category_matrix = None
+        _category_index = None  # force the embedding matrix to rebuild for the new set
         _catalog_version_seen = version
+    return categories
 
 
 def _catalog_text():
@@ -877,8 +877,7 @@ def _catalog_text():
 
 def _allowed_ids():
     with _catalog_lock:
-        _refresh_locked()
-        return [c["id"] for c in _catalog_categories]
+        return [c["id"] for c in _refresh_locked()]
 
 
 def _encode(texts):
@@ -896,13 +895,14 @@ def _encode(texts):
 
 def _category_vectors():
     """Return (ids, matrix) of encoded category corpora, rebuilt when the catalog changes."""
-    global _category_ids, _category_matrix
+    global _category_index
     with _catalog_lock:
-        _refresh_locked()
-        if _category_matrix is None:
-            _category_ids = [c["id"] for c in _catalog_categories]
-            _category_matrix = _encode([_corpus(c) for c in _catalog_categories])
-        return _category_ids, _category_matrix
+        categories = _refresh_locked()
+        index = _category_index
+        if index is None:
+            index = ([c["id"] for c in categories], _encode([_corpus(c) for c in categories]))
+            _category_index = index
+        return index
 
 
 def embed_classify(text):
@@ -997,12 +997,12 @@ def classify(title, page_text=None):
         embed_category = None
     llm_category = llm_classify(text)
 
-    if embed_category is None and llm_category is None:
-        return Classification(DEFAULT_ID, "low", "no-signal", needs_review=True)
+    if embed_category is None:
+        if llm_category is None:
+            return Classification(DEFAULT_ID, "low", "no-signal", needs_review=True)
+        return Classification(llm_category, "low", "llm-only", needs_review=True)
     if llm_category is None:
         return Classification(embed_category, "low", "embedding-only", needs_review=True)
-    if embed_category is None:
-        return Classification(llm_category, "low", "llm-only", needs_review=True)
     if llm_category == embed_category:
         return Classification(llm_category, "high", "llm+embedding", needs_review=False)
     return Classification(llm_category, "low", "llm-disagree", needs_review=True)
