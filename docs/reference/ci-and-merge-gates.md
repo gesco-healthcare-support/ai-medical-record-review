@@ -50,8 +50,7 @@ All jobs run on `ubuntu-latest`.
 
 | Job | Workflow | needs | What it runs | Fails when |
 | --- | --- | --- | --- | --- |
-| `backend` | `ci.yml` | - | Ruff lint and format check, an import smoke test, migration checks (one head; on pull requests, Squawk on the SQL of new migrations), migrations, `alembic check`, then the pytest suite with branch coverage, against Postgres and Redis service containers | Any lint or format finding, the import fails, a migration check fails, a migration fails, the models need a migration nobody wrote, or any test fails |
-| `backend-types` | `ci.yml` | - | pyright 1.1.414 in standard mode on `backend/app` (settings in `backend/pyproject.toml` `[tool.pyright]`); the error count goes to the job summary | Never blocks a merge: the job has `continue-on-error: true`, so it shows as failed while errors remain but fails neither the run nor any required check |
+| `backend` | `ci.yml` | - | Ruff lint and format check, a pyright type check of `app/`, an import smoke test, migration checks (one head; on pull requests, Squawk on the SQL of new migrations), migrations, `alembic check`, then the pytest suite with branch coverage, against Postgres and Redis service containers | Any lint or format finding, a pyright error, the import fails, a migration check fails, a migration fails, the models need a migration nobody wrote, or any test fails |
 | `frontend` | `ci.yml` | - | ESLint, typecheck, production build, Vitest with coverage | Any lint error or warning, a type error, a build error, or any test fails |
 | `e2e` | `ci.yml` | - | Builds and starts the app stack with Compose (without workers), then Playwright | The app is not ready within the wait loop, or any spec fails |
 | `secret-scan` | `ci.yml` | - | gitleaks over the checked-out files | gitleaks reports a finding |
@@ -86,6 +85,7 @@ Working directory `backend/`. Service containers:
 | Install uv | `astral-sh/setup-uv` with cache |
 | Install dependencies | `uv sync --extra docs` (no PyTorch) |
 | Lint and format | `uv run ruff check .` then `uv run ruff format --check .` |
+| Type check | `uvx pyright==1.1.414`: standard mode on `app/`, settings in `backend/pyproject.toml` `[tool.pyright]` |
 | Import smoke | `uv run python -c "from sqlalchemy.orm import configure_mappers; import app.main; configure_mappers(); print('import OK')"` |
 | One migration head | `uv run --no-sync alembic heads` must print exactly one head. Two pull requests that each add a migration pass on their own and leave `main` with two heads, which `alembic upgrade head` refuses. |
 | Lint new migrations | Pull requests only. `uv run --no-sync python scripts/ci/lint_new_migrations.py HEAD^1` renders the SQL of each migration the pull request adds (offline, no database) and runs Squawk on it. The rules left out, and why, are in the script's docstring. |
@@ -377,7 +377,7 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | gitleaks | 8.30.0 | `secret-scan` (and the pre-commit hook) |
 | actionlint | 1.7.12, checksum verified | `workflow-lint` |
 | zizmor | 1.30.1 | `workflow-lint` |
-| pyright | 1.1.414 | `backend-types` |
+| pyright | 1.1.414 | `backend` |
 | Squawk | `squawk-cli` 2.66.0 | `backend` (migration lint) |
 | Postgres, Redis service images | `postgres:16`, `redis:7` | `backend` |
 
