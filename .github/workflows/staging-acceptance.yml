@@ -1,0 +1,72 @@
+name: staging acceptance
+
+# The acceptance stage (steps in .github/scripts/staging_acceptance.sh; reference in docs/reference/ci-and-merge-gates.md).
+# After each merge into staging, it tests that exact commit as it would run: images built once and scanned, an upgrade
+# from production's schema holding synthetic data, the production-mode stack, a ZAP baseline scan. On success the
+# `staging` environment records a deployment for the commit, and production's ruleset requires one on the commit a
+# promotion proposes - so nothing reaches production that this stage has not passed.
+#
+# The dry-run job runs the same script on a pull request that changes the stage, with no environment (it records
+# nothing) and no cloud access. It is not a required check, so its paths filter cannot leave a merge waiting.
+on:
+  push:
+    branches: [staging]
+  pull_request:
+    paths:
+      - .github/workflows/staging-acceptance.yml
+      - .github/scripts/staging_acceptance.sh
+      - .github/scripts/acceptance_seed.py
+      - .github/scripts/compose.production-code.yml
+
+permissions: {}
+
+# Placeholders docker-compose.yml refuses to start without; nothing real is used. gitleaks' generic-api-key rule scores
+# the SECRET_KEY placeholder as a possible key, so that one line carries gitleaks' own allow marker.
+env:
+  SECRET_KEY: ci-acceptance-secret-key-that-is-at-least-32-bytes # gitleaks:allow (a placeholder, not a secret)
+  SECURITY_PASSWORD_SALT: ci-acceptance-salt
+
+jobs:
+  acceptance:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: staging-acceptance
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check out production's code (for the upgrade test)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: production
+          path: production-code
+          persist-credentials: false
+
+      - name: Acceptance stage
+        run: bash .github/scripts/staging_acceptance.sh
+
+  acceptance-dry-run:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check out production's code (for the upgrade test)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: production
+          path: production-code
+          persist-credentials: false
+
+      - name: Acceptance stage (dry run; records no deployment)
+        run: bash .github/scripts/staging_acceptance.sh

@@ -14,7 +14,7 @@ import {
   startSummarize,
   type HeaderFields,
 } from "@/lib/review-api";
-import type { CategoryOption, FailedRow, JobKind, Row } from "@/lib/types";
+import type { CategoryOption, FailedRow, JobKind, RecordOwner, Row } from "@/lib/types";
 import {
   applyServerRowChanges,
   rowErrors,
@@ -92,6 +92,8 @@ export function useReviewWorkflow(
   };
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [doctors, setDoctors] = useState<string[]>([]);
+  // Whose record this is, so the page can say so when an admin has opened another reviewer's.
+  const [owner, setOwner] = useState<RecordOwner | null>(null);
   const [totalPages, setTotalPages] = useState(0);
   // Mirrored for the same reason as `rows` and `saveState`: the unmount flush below validates
   // against it, and the boot effect's cleanup closure was created BEFORE boot set it - so
@@ -438,6 +440,7 @@ export function useReviewWorkflow(
       applyTotalPages(detail.page_count);
       setCategories(detail.categories || []);
       setDoctors(detail.doctors || []);
+      setOwner(detail.owner ?? null);
       // The document switch. Whatever the previous document left in the touched set describes rows
       // that are gone; carrying it into this one is the leak.
       replaceRows(detail.rows || []);
@@ -597,6 +600,7 @@ export function useReviewWorkflow(
     rows,
     categories,
     doctors,
+    owner,
     totalPages,
     filename,
     banner,

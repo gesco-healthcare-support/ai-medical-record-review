@@ -1,6 +1,6 @@
 # HTTP API reference
 
-Every HTTP route the FastAPI backend serves - 46 routes in six routers - with its auth level,
+Every HTTP route the FastAPI backend serves - 47 routes in six routers - with its auth level,
 request, response, status codes and audit action.
 
 Source of truth: `backend/app/main.py`, `backend/app/api/documents.py`,
@@ -27,7 +27,7 @@ Auth levels used in the tables below:
 | --- | --- | --- |
 | Public | Path is on the gate's allowlist (`_PUBLIC_EXACT`, `_PUBLIC_PREFIXES` in `backend/app/auth/deps.py`). No session needed. | - |
 | Login | Any signed-in, active user (`enforce_auth` in `backend/app/auth/deps.py`, attached to the whole app in `backend/app/main.py`). | 401 `{"detail": "Not authenticated"}`; 302 to `/login` instead when the `Accept` header contains `text/html` and not `application/json`. |
-| Owner | Login, and the `{document_id}` in the path belongs to the caller (`get_owned_document` in `backend/app/api/deps.py`). | 404 `{"detail": "not found"}` - the same answer as an id that does not exist. |
+| Owner | Login, and the `{document_id}` in the path belongs to the caller, or the caller is an admin (`get_owned_document` in `backend/app/api/deps.py`). | 404 `{"detail": "not found"}` - the same answer as an id that does not exist. |
 | Admin | Login, and the user's `is_admin` column is true (FastAPI-Users calls it `is_superuser`). | 403 `{"detail": "Admin only"}` from the gate on `/api/admin/...`; 403 `{"detail": "Forbidden"}` from FastAPI-Users on `/api/users/{id}`. |
 
 Every route that is not Public can also answer 401 (or 302). Every route with a typed path parameter,
@@ -43,8 +43,8 @@ columns list only the statuses beyond those.
 | users | `backend/app/auth/routes.py` `users_router` | `/api/users` | 5 |
 | documents | `backend/app/api/documents.py` `router` | `/api/documents` | 25 |
 | downloads | `backend/app/api/downloads.py` `router` | `/api/documents` | 2 |
-| admin | `backend/app/api/admin.py` `router` | `/api/admin` | 8 |
-| Total | | | 46 |
+| admin | `backend/app/api/admin.py` `router` | `/api/admin` | 9 |
+| Total | | | 47 |
 
 FastAPI also generates `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` on the API
 process. They are not counted above and are public by prefix.
@@ -129,19 +129,19 @@ Every path below starts with `/api/documents`. `{document_id}` is the document's
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | D1 | POST | `/api/documents` | Login | Multipart file field `pdf` | 201 `{id, page_count, sha256_duplicate}` | 400 | `upload` |
 | D2 | POST | `/api/documents/aggregate` | Login | Multipart file field `pdfs` (repeated, one per file), optional form field `name` | 201 `{id, page_count, records}` | 400, 503 | `aggregate_upload` |
-| D3 | GET | `/api/documents` | Login | none | 200 array of Document listing plus `rows_count` | none | none |
-| D4 | GET | `/api/documents/{document_id}` | Owner | none | 200 Document listing plus `rows`, `categories`, `doctors`, `letter_types` | none | none |
-| D5 | POST | `/api/documents/{document_id}/extract-header` | Owner | none | 200 `{patient_first_name, patient_last_name, patient_dob, law_firm}` | 422, 503, 500 `{"error"}` | none |
-| D6 | PUT | `/api/documents/{document_id}/header` | Owner | JSON `HeaderPayload` | 200 Document listing | none | none |
-| D7 | DELETE | `/api/documents/{document_id}` | Owner | none | 200 `{"ok": true}` | 409 | `delete` |
+| D3 | GET | `/api/documents` | Login | query `owner` (int, optional; honoured for an admin only) | 200 array of Document listing plus `rows_count` | none | none |
+| D4 | GET | `/api/documents/{document_id}` | Owner | none | 200 Document listing plus `rows`, `categories`, `doctors`, `letter_types`, `owner` | none | `view_record` when an admin opens another account's record |
+| D5 | POST | `/api/documents/{document_id}/extract-header` | Owner | none | 200 `{patient_first_name, patient_last_name, patient_dob, law_firm}` | 422, 503, 500 `{"error"}` | `header.extract` |
+| D6 | PUT | `/api/documents/{document_id}/header` | Owner | JSON `HeaderPayload` | 200 Document listing | none | `header.edit` |
+| D7 | DELETE | `/api/documents/{document_id}` | Owner (not admin) | none | 200 `{"ok": true}` | 404, 409 | `delete` |
 | D8 | GET | `/api/documents/{document_id}/pdf` | Owner | none | 200 `application/pdf`; 206 for a `Range` request | none | `view_pdf` |
 | D9 | GET | `/api/documents/{document_id}/status` | Owner | none | 200 `{status, job, unreviewed_duplicate_groups}` | none | none |
 | D10 | GET | `/api/documents/{document_id}/duplicates` | Owner | none | 200 `{clusters, job, stale, unreadable, checked}` | none | none |
-| D11 | POST | `/api/documents/{document_id}/dedup/start` | Owner | Optional JSON `DedupStartPayload` | 200 `{"ok": true}` | 409, 503 | none |
-| D12 | POST | `/api/documents/{document_id}/duplicates/{group}/resolve` | Owner | JSON `DuplicateResolvePayload` | 200 `{"ok": true}` | 400, 404, 409 | none |
+| D11 | POST | `/api/documents/{document_id}/dedup/start` | Owner | Optional JSON `DedupStartPayload` | 200 `{"ok": true}` | 409, 503 | `dedup.start` |
+| D12 | POST | `/api/documents/{document_id}/duplicates/{group}/resolve` | Owner | JSON `DuplicateResolvePayload` | 200 `{"ok": true}` | 400, 404, 409 | `duplicates.resolve` |
 | D13 | PUT | `/api/documents/{document_id}/rows` | Owner | JSON `RowsPayload` | 200 `{ok, count, reopened}` | 400, 409 | `rows.edit` |
 | D14 | POST | `/api/documents/{document_id}/jobs/{job_id}/cancel` | Owner | Optional JSON `CancelPayload` | 200 Job progress plus `graceSeconds` | 404 | `job.cancel` |
-| D15 | POST | `/api/documents/{document_id}/segment/start` | Owner | Optional JSON `SegmentStartPayload` | 200 `{"ok": true}` | 409, 503 | none |
+| D15 | POST | `/api/documents/{document_id}/segment/start` | Owner | Optional JSON `SegmentStartPayload` | 200 `{"ok": true}` | 409, 503 | `segment.start` |
 | D16 | POST | `/api/documents/{document_id}/summarize/start` | Owner | Optional JSON `SummarizeStartPayload` | 200 `{"ok": true}` | 400, 409, 503 | `rows.edit`, `summarize.skip_duplicate_check` |
 | D17 | GET | `/api/documents/{document_id}/summaries` | Owner | none | 200 array of Summary | none | none |
 | D18 | PUT | `/api/documents/{document_id}/summaries/{idx}` | Owner | Optional JSON `SummaryEditPayload` | 200 Summary | 400, 404, 409 | `summary.category`, `summary.edit` |
@@ -160,11 +160,11 @@ The `detail` string behind each 400, 404 and 409 is listed in
 | --- | --- |
 | D1 | Streams the upload to `<UPLOAD_FOLDER>/<user_id>/<document_id>.pdf` in 1 MiB chunks. The file is valid when pypdf can count at least one page (`get_pdf_page_count` in `backend/app/services/pdf.py`); the extension and MIME type are not checked. An invalid file is deleted. `sha256_duplicate` is true when the same user already has a document with the same SHA-256; it never blocks the upload. `original_filename` is the upload name passed through `safe_name` (`backend/app/services/files.py`). The document starts in status `uploaded`; no job is started. |
 | D2 | Reads every file into memory and merges the readable PDFs in upload order (`merge_pdfs` in `backend/app/services/aggregate.py`); unreadable files are skipped. `records` is `[{filename, start, end, pages}]`, one per merged file. Stores the merged PDF like D1, names the document `name` (trimmed, first 512 characters) or `aggregated-records.pdf`, and creates one review row per source file with category `100`, placeholders `-` and `include` set from category 100's default. Source filenames are not stored. Then enqueues a `classify` job with model `GENAI_MODEL`. |
-| D3 | The caller's documents only, newest first. Three SQL queries whatever the count. |
-| D4 | `rows` are Editor rows. `categories` is `[{id, name}]` for active categories (`catalog.get_category_options`). `doctors` and `letter_types` come from `reporting.DOCTORS` and `reporting.LETTER_TYPES` in `backend/app/services/reporting.py`. |
+| D3 | The caller's documents only, newest first. An admin may pass `owner` to list that account's documents instead; for anyone else `owner` is ignored (their own list, never an error). Three SQL queries whatever the count. |
+| D4 | `rows` are Editor rows. `categories` is `[{id, name}]` for active categories (`catalog.get_category_options`). `doctors` and `letter_types` come from `reporting.DOCTORS` and `reporting.LETTER_TYPES` in `backend/app/services/reporting.py`. `owner` is `{id, name}` of the account that owns the record, so the workbench can say so when an admin has opened another reviewer's record. |
 | D5 | Synchronous model call over pages 1 to min(15, page count) (`extract_header` in `backend/app/services/extraction.py`). A field the extraction found overwrites the stored value; a field it did not find keeps the stored value. The response is the merged, stored view. Nothing is stored on a `PipelineError`. |
 | D6 | Writes all nine header fields; a field missing from the body is stored as empty. `letter_type` outside `advocacy`, `interrogatory`, `none` is stored as empty. `pages_received` is stored as a positive integer, or null when blank, non-numeric or not positive. |
-| D7 | Refused while the document has an active job. Deletes the document with its jobs, review rows, summaries and page texts (ORM cascade), commits, then removes the stored PDF (a failure is logged, not returned). Prepared export files of the document are not touched; they are deleted when their token expires. |
+| D7 | Only the owner may delete, even an admin (404, as for someone else's record): an admin can open and fix another reviewer's record, but deleting is not fixing. Refused while the document has an active job. Deletes the document with its jobs, review rows, summaries and page texts (ORM cascade), commits, then removes the stored PDF (a failure is logged, not returned). Prepared export files of the document are not touched; they are deleted when their token expires. |
 | D8 | Serves the stored PDF with no `Content-Disposition` header, so the browser shows it inline, and with `Cache-Control: no-store`, so no browser or proxy cache keeps a copy of the patient record. |
 | D9 | `job` is the progress of the newest job of any kind, or null. When that job is not a summarize job, its `attention` is replaced by the newest summarize job's `attention`. `unreviewed_duplicate_groups` counts clusters with two or more included members and no dismissed member (advisory only). |
 | D10 | `clusters` holds groups of two or more rows, members sorted oldest date first. `job` is the newest dedup job's progress, or null. `checked` is true when any dedup job for the document has state `done`. `stale` is true when checked and an included row has no stored `source_text`. `unreadable` counts included rows whose stored text is blank (0 when not checked). `checked` and `stale` come from `duplicate_check_state`, the same function the summarize gate uses. |
@@ -218,6 +218,7 @@ addition to the gate's 403 for `/api/admin` paths.
 | A6 | PUT | `/api/admin/prompts/{category_id}` | Admin | JSON `PromptPut` | 200 `{category_id, text, custom: true}` | 400, 404 | `prompt.update` |
 | A7 | DELETE | `/api/admin/prompts/{category_id}` | Admin | none | 200 `{category_id, text: null, effective_text, custom: false}` | 404 | `prompt.revert` |
 | A8 | POST | `/api/admin/reprocess/{document_id}` | Admin | none | 200 `{"ok": true}` | 400, 404, 409, 503 | `reprocess` |
+| A9 | GET | `/api/admin/users` | Admin | none | 200 array of `{id, name, email}` | none | none |
 
 | # | Behaviour |
 | --- | --- |
@@ -227,6 +228,7 @@ addition to the gate's 403 for `/api/admin` paths.
 | A5 | Accepts any `category_id`. `text` is the custom prompt row or null; `effective_text` is what summaries use now (`catalog.get_prompt`); `builtin_text` is what a revert would restore; `custom` says whether a custom row exists. |
 | A6 | Writes the built-ins first when the table is empty (as A3), then 404 for an unknown category. The text is trimmed and must not be empty. Creates the custom row with revision 1, or replaces its text and adds 1 to its revision. Bumps the catalog revision, audits. |
 | A7 | Deletes the custom prompt row, so the category resolves its prompt from code again. Bumps the catalog revision, audits. |
+| A9 | The active accounts, ordered by name then email, for the records page's "Show records for" choice. Switched-off accounts are left out. Id, name and email only. |
 | A8 | Acts on any owner's document (no ownership check). 400 when no review row is included. Enqueues a `summarize` job with `Settings.model_for("body")` and without clearing summaries; the summarize worker keeps every summary whose `(start, end, category)` still matches an included row and summarizes only the rows without one (`_reconcile_summaries` in `backend/app/worker/tasks.py`). The duplicate-check gate of D16 is not applied. |
 
 ## Request bodies
@@ -328,7 +330,13 @@ the action, the document id where there is one, and `detail`.
 | `upload` | D1 | none |
 | `aggregate_upload` | D2 | none |
 | `delete` | D7 | none |
+| `view_record` | D4, only when an admin opens a record they do not own | none |
+| `header.extract` | D5 | `filled=<field names>` (names only, never values) |
+| `header.edit` | D6 | `changed=<field names>` (names only, never values) |
 | `view_pdf` | D8 | none |
+| `dedup.start` | D11 | none |
+| `duplicates.resolve` | D12 | `group=<n> action=<action>` |
+| `segment.start` | D15 | none |
 | `rows.edit` | D13, D16 when `rows` is sent | `rows A->B (merges M, splits S, pages P->Q)` |
 | `job.cancel` | D14, active job only | `job <id> kind <kind> state <state> force <bool>` |
 | `summarize.skip_duplicate_check` | D16 | `never checked` or `stale check` |

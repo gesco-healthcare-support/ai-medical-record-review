@@ -4,6 +4,12 @@ import type { CategoryInput } from "@/lib/admin-api";
 
 const CATEGORIES_KEY = ["admin", "categories"] as const;
 
+/** The accounts an admin can pick on the records page. Fetched only for an admin (`enabled`):
+ *  the route answers 403 to anyone else, and asking would only put an error in the console. */
+export function useAccounts(enabled: boolean) {
+  return useQuery({ queryKey: ["admin", "users"], queryFn: api.listAccounts, enabled });
+}
+
 /** The category catalog (admin view). */
 export function useCategories() {
   return useQuery({ queryKey: CATEGORIES_KEY, queryFn: api.listCategories });

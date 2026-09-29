@@ -7,12 +7,12 @@ row rules live in `frontend/lib/review-rows.ts`.
 
 | File | What it is |
 | --- | --- |
-| `review-page-client.tsx` | `ReviewPageClient`: the header bar (back link, record name and counts, tabs, per-tab actions, progress bar with two-stage Stop), the banners, the duplicate-check gate on Summarize, and the tab body |
+| `review-page-client.tsx` | `ReviewPageClient`: the header bar (back link, record name and counts, tabs, per-tab actions, progress bar with two-stage Stop), the banners (including the note an admin sees on another reviewer's record), the duplicate-check gate on Summarize, and the tab body |
 | `review-editor.tsx` | `ReviewEditor`: the Review & correct toolbar (Insert document, Apply suggested merges, Could not identify filter, first validation error) over a `SplitPane` of `RowsTable` and `PdfViewer`; merge, split, insert and delete |
 | `rows-table.tsx` | `RowsTable` and `categoryOptions()`: two table rows per document (title line with chips and actions, fields line with start, end, category, date, injury date, review flag and summarize), gap strips for skipped pages |
 | `header-bar.tsx` | `HeaderBar`: the nine report-header fields, Auto-fill or Re-detect, and Save |
 | `duplicates-view.tsx` | `DuplicatesView`: duplicate clusters beside the PDF with keep, remove-one and dismiss actions, and the stale, never-checked, failed and unreadable banners |
-| `summaries-view.tsx` | `SummariesView` and `displayTitle()`: summary cards (edit, re-draft, in export, category), chips, the collapsed check findings, paging, and the Export button |
+| `summaries-view.tsx` | `SummariesView` and `displayTitle()`: summary cards (edit, re-draft, in export, category), chips, the collapsed check findings, the search box and order choice (`SummaryFinder`), paging, and the Export button |
 | `export-dialog.tsx` | `ExportDialog`: Word, memo, linked PDF and zip exports, handed to the browser and watched |
 | `pdf-viewer.tsx` | `PdfViewer`: the vendored pdf.js viewer in a same-origin iframe, with a `jumpTo(page)` handle and a "Page N of M" header |
 | `split-pane.tsx` | `SplitPane`: a resizable two-pane layout whose left width persists in `localStorage` |

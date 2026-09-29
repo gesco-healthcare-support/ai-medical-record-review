@@ -1,5 +1,7 @@
 # MRR AI - AI Medical Record Review
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gesco-healthcare-support/ai-medical-record-review/badge)](https://scorecard.dev/viewer/?uri=github.com/gesco-healthcare-support/ai-medical-record-review)
+
 Turns a large scanned medical-record PDF (hundreds to a few thousand pages) into a reviewed,
 summarized Medical Record Review. The app finds the sub-documents in the record, categorizes them,
 lets a reviewer correct everything, checks for duplicates, summarizes each sub-document with a

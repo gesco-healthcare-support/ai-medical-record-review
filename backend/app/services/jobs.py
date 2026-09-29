@@ -168,6 +168,7 @@ def create_job(
     catalog_revision: int | None = None,
     title_model: str | None = None,
     audit_model: str | None = None,
+    requested_by: int | None = None,
 ) -> Job:
     """Insert a queued Job + advance Document.status; raise JobConflict if one is already active,
     and LookupError if the document does not exist.
@@ -224,6 +225,7 @@ def create_job(
         prompt_fingerprint=job_prompt_fingerprint(session, kind),
         build_sha=settings.build_sha,
         catalog_revision=catalog_revision,
+        requested_by=requested_by,
     )
     session.add(job)
     enqueue_status = STATUS_ON_ENQUEUE[kind]
@@ -247,6 +249,7 @@ def enqueue(
     catalog_revision: int | None = None,
     title_model: str | None = None,
     audit_model: str | None = None,
+    requested_by: int | None = None,
 ) -> Job:
     """create_job + dispatch to the kind's RQ queue. If the dispatch fails (e.g. Redis down), the
     job is marked interrupted rather than left stuck queued.
@@ -268,6 +271,7 @@ def enqueue(
         catalog_revision=catalog_revision,
         title_model=title_model,
         audit_model=audit_model,
+        requested_by=requested_by,
     )
     try:
         # RQ job id == the DB job id, so heartbeat orphan recovery can correlate the two.
