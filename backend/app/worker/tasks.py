@@ -1028,8 +1028,9 @@ def _seed_row_text(session, document_id: str, rows) -> None:
             continue
         pages = range(int(row["start"]), int(row["end"]) + 1)
         covered = [stored_pages.get(page) for page in pages]
-        if covered and all(pt is not None and pt.extract_ok for pt in covered):
-            row["source_text"] = "".join(pt.text or "" for pt in covered)
+        readable = [pt for pt in covered if pt is not None and pt.extract_ok]
+        if covered and len(readable) == len(covered):
+            row["source_text"] = "".join(pt.text or "" for pt in readable)
 
 
 def _reconcile_summaries(session, document_id: str, wanted: set) -> dict[tuple, Summary]:

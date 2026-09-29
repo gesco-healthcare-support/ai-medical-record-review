@@ -402,13 +402,14 @@ def create_document(
     sha256 = _sha256(stored_path)
     # A duplicate upload is a WARNING, never a block: re-running a case is legitimate.
     duplicate = (
+        # COUNT always returns a row; `or 0` only tells the type checker so.
         session.scalar(
             select(func.count())
             .select_from(Document)
             .where(Document.user_id == user.id, Document.sha256 == sha256)
         )
-        > 0
-    )
+        or 0
+    ) > 0
 
     document = Document(
         id=document_id,
@@ -782,7 +783,7 @@ def get_status(
         select(Job).where(Job.document_id == document.id).order_by(Job.id.desc())
     ).first()
     job = latest.progress() if latest else None
-    if job is not None and latest.kind != "summarize":
+    if latest is not None and job is not None and latest.kind != "summarize":
         newest_summarize = session.scalars(
             select(Job)
             .where(Job.document_id == document.id, Job.kind == "summarize")
@@ -1704,7 +1705,7 @@ def _deliverable_filename(document: Document, suffix: str, ext: str, *, fallback
     parts = [
         p.strip()
         for p in (document.patient_last_name, document.patient_first_name)
-        if (p or "").strip()
+        if p and p.strip()
     ]
     tail = [suffix] if suffix else []
     if parts:
