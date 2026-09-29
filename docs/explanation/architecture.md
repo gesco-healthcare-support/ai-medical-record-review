@@ -60,7 +60,7 @@ flowchart TB
         seg["segment-worker x3<br/>RQ (mrr-backend-classifier)"]
         sum["summarize-worker x3<br/>RQ (mrr-backend-web)"]
         pg[("postgres:16<br/>volume mrr_pgdata")]
-        redis[("redis:7<br/>no persistence")]
+        redis[("redis:7-alpine<br/>no persistence")]
         uploads[("volume mrr_uploads<br/>/app/uploads")]
     end
     proxy -->|"/api/*"| api

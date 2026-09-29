@@ -85,7 +85,7 @@ Working directory `backend/`. Service containers:
 | Service | Image | Settings |
 | --- | --- | --- |
 | `postgres` | `postgres:16` | `POSTGRES_USER=mrr`, `POSTGRES_PASSWORD=mrr_dev_only`, `POSTGRES_DB=mrr`; port 5432; health check `pg_isready -U mrr -d mrr` |
-| `redis` | `redis:7` | Port 6379; health check `redis-cli ping` |
+| `redis` | `redis:7-alpine` | Port 6379; health check `redis-cli ping` |
 
 | Step | Command |
 | --- | --- |
@@ -404,7 +404,7 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | zizmor | 1.30.1 | `workflow-lint` |
 | pyright | 1.1.414 | `backend` |
 | Squawk | `squawk-cli` 2.66.0 | `backend` (migration lint) |
-| Postgres, Redis service images | `postgres:16`, `redis:7` | `backend` |
+| Postgres, Redis service images | `postgres:16`, `redis:7-alpine` | `backend` |
 
 ## Dependency updates (`.github/dependabot.yml`)
 
