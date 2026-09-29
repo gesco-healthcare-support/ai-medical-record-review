@@ -531,7 +531,9 @@ def list_documents(
             .join(Document, Document.id == ReviewRow.document_id)
             .where(Document.user_id == user.id)
             .group_by(ReviewRow.document_id)
-        ).all()
+        )
+        .tuples()
+        .all()
     )
     return [doc.listing() | {"rows_count": counts.get(doc.id, 0)} for doc in documents]
 

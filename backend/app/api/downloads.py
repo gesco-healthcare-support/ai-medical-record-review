@@ -22,6 +22,7 @@ import time
 from functools import partial
 
 import anyio
+from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from redis.exceptions import RedisError
@@ -151,7 +152,7 @@ class _MeasuredFileResponse(FileResponse):
 
     async def _record(self, update, *args, **kwargs) -> None:
         try:
-            await anyio.to_thread.run_sync(partial(update, *args, **kwargs))
+            await to_thread.run_sync(partial(update, *args, **kwargs))
         except RedisError as exc:
             logger.warning(
                 "download delivery record not updated: document=%s token=%s (%s)",

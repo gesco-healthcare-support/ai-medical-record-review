@@ -360,7 +360,7 @@ def record_accounting(
         title = (row.title or "").strip()
         if title:
             excluded.append(title)
-    seen: dict[str, None] = {}
+    seen: dict[str, str | None] = {}
     for title in excluded:
         # Case-folded for de-duplication only; the FIRST spelling is what ships, because the
         # reference list is lower case prose and a title may legitimately carry an acronym.
