@@ -5392,6 +5392,37 @@ def test_a_title_that_names_the_deponent_is_named_for_them_not_the_patient():
     )
 
 
+@pytest.mark.parametrize(
+    "title",
+    ["Deposition Summary", "Deposition Transcript Volume 2", "DEPOSITION VOLUME II", "Depo"],
+)
+def test_a_word_that_describes_the_document_is_never_taken_for_a_name(title):
+    """Only the words after "of" can be a name. Taking whatever was left once a few words were
+    stripped named a file "Deposition of Summary" - in a document the client receives."""
+    row = {"title": title, "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition")
+        == "Deposition of Ada Lovelace 12-04-25.pdf"
+    )
+
+
+def test_the_name_after_of_is_kept_whatever_comes_before_it():
+    row = {"title": "Continued Deposition of John Doe", "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition") == "Deposition of John Doe 12-04-25.pdf"
+    )
+
+
+def test_a_title_that_says_of_deposition_names_no_one_and_falls_back_to_the_patient():
+    """A title seen on the test instance puts the name first: "<name> of Deposition". Nothing
+    after "of" is a name there, so the patient is used rather than an empty "Deposition of"."""
+    row = {"title": "Transcript of Deposition", "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition")
+        == "Deposition of Ada Lovelace 12-04-25.pdf"
+    )
+
+
 def test_an_undated_deposition_is_named_without_a_date_not_with_a_placeholder():
     row = {"title": "Deposition", "date": "-"}
     assert _separate_filename(row, _patient(), "Deposition") == "Deposition of Ada Lovelace.pdf"

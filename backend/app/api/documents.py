@@ -1689,18 +1689,23 @@ def _download_name(document: Document, spec, ext: str) -> str:
 # "Deposition of <name> 12-04-25" - but nothing that breaks a Content-Disposition header or a Windows
 # path, and ASCII only for the same reason.
 _SEPARATE_NAME_DROP = re.compile(r"[^A-Za-z0-9 .,'&()-]+")
-# Words a title uses to say WHAT the document is rather than whose it is. Most deposition titles are
-# the bare word "Deposition"; a few name the deponent, and that name is what is left.
-_TITLE_KIND_WORDS = re.compile(r"(?i)\b(?:deposition|depo|transcript|of)\b")
+# A title names the deponent only after "of" ("Deposition of John Doe", "Continued Deposition of
+# John Doe"). Everything else in a title describes the DOCUMENT - "Summary", "Transcript",
+# "Volume 2" - and must never be read as a name: taking whatever was left once a few words were
+# stripped produced "Deposition of Summary". So the name is the text after the first "of", less any
+# word that says what the document is, and a title with no "of" falls back to the patient.
+_DEPONENT_AFTER_OF = re.compile(r"(?i)\bof\b\s+(.+)$")
+_TITLE_KIND_WORDS = re.compile(r"(?i)\b(?:deposition|depo|transcript)\b")
 
 
 def _separate_who(row: dict, document: Document) -> str:
-    """Whose document this is: the name its own title carries, else the patient's.
+    """Whose document this is: the name after "of" in its own title, else the patient's.
 
     A title in capitals ("DEPOSITION OF JOHN DOE") is title-cased so the filename reads like the
     reviewers' example; a title already in mixed case is kept as written."""
     title = (row.get("title") or "").strip()
-    rest = " ".join(_TITLE_KIND_WORDS.sub(" ", "" if title == "-" else title).split())
+    after_of = _DEPONENT_AFTER_OF.search("" if title == "-" else title)
+    rest = " ".join(_TITLE_KIND_WORDS.sub(" ", after_of.group(1)).split()) if after_of else ""
     if rest:
         return rest.title() if rest.isupper() else rest
     names = (document.patient_first_name, document.patient_last_name)

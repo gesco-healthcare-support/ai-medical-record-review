@@ -144,10 +144,12 @@ A bundle sent with `separateAs` (the Depositions preset sends `Deposition`) give
 sub-document, in record order, each holding only that sub-document's pages and no cover page.
 `_separate_filename()` names each `<separateAs> of <who> <MM-DD-YY>.pdf`:
 
-- `<who>` is what the row's title says after removing the words `deposition`, `depo`, `transcript`
-  and `of`. A title in capitals is title-cased. A title with nothing left (most deposition titles are
-  the bare word "Deposition") gives the patient's first and last name instead; with neither, the
-  name is `<separateAs> <MM-DD-YY>.pdf`.
+- `<who>` is the text after the first word `of` in the row's title, less the words `deposition`,
+  `depo` and `transcript` ("Continued Deposition of John Doe" gives `John Doe`). A title in
+  capitals is title-cased. Nothing else in a title is read as a name: "Deposition Summary" or
+  "Deposition Transcript Volume 2" describe the document, not a person. A title with no name after
+  `of` (most deposition titles are the bare word "Deposition") gives the patient's first and last
+  name instead; with neither, the name is `<separateAs> <MM-DD-YY>.pdf`.
 - `<MM-DD-YY>` is the row's date; an undated row is named without one.
 - Every character outside `[A-Za-z0-9 .,'&()-]` is dropped. Spaces are kept.
 - A name already used in the same download gets ` (2)`, ` (3)` before `.pdf`.
