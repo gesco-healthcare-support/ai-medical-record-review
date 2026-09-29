@@ -420,6 +420,12 @@ changed since they were written; those will be regenerated, so it asks for confi
 
 - A reading column of cards, 20 per page (paged in the browser), beside the PDF, with the report header
   on top and an Export button that is disabled when no summary is included.
+- A search box and an Order choice sit above the cards (`frontend/lib/summary-order.ts`). The search
+  keeps the summaries whose title, text or date contain every word typed, ignoring case; the count
+  line then adds "N matching". Order is page order (as the server sends them, the default) or date
+  order, oldest first, undated last as in the export, ties in page order. Paging applies to what is
+  showing, so a match is on the first page of the results. The lead client reviewer asked for an
+  easier way to find a summary to fix.
 - Clicking a card's title or its meta line jumps the viewer to the summary's first page.
 - The card strips display markers from the stored strings: a leading `[ManualCheck]` and trailing
   `(Pages X-Y)` and `[Diagnostic Study]` from the title, and a leading `**DOI**:` prefix from the body,

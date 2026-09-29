@@ -12,7 +12,7 @@ row rules live in `frontend/lib/review-rows.ts`.
 | `rows-table.tsx` | `RowsTable` and `categoryOptions()`: two table rows per document (title line with chips and actions, fields line with start, end, category, date, injury date, review flag and summarize), gap strips for skipped pages |
 | `header-bar.tsx` | `HeaderBar`: the nine report-header fields, Auto-fill or Re-detect, and Save |
 | `duplicates-view.tsx` | `DuplicatesView`: duplicate clusters beside the PDF with keep, remove-one and dismiss actions, and the stale, never-checked, failed and unreadable banners |
-| `summaries-view.tsx` | `SummariesView` and `displayTitle()`: summary cards (edit, re-draft, in export, category), chips, the collapsed check findings, paging, and the Export button |
+| `summaries-view.tsx` | `SummariesView` and `displayTitle()`: summary cards (edit, re-draft, in export, category), chips, the collapsed check findings, the search box and order choice (`SummaryFinder`), paging, and the Export button |
 | `export-dialog.tsx` | `ExportDialog`: Word, memo, linked PDF and zip exports, handed to the browser and watched |
 | `pdf-viewer.tsx` | `PdfViewer`: the vendored pdf.js viewer in a same-origin iframe, with a `jumpTo(page)` handle and a "Page N of M" header |
 | `split-pane.tsx` | `SplitPane`: a resizable two-pane layout whose left width persists in `localStorage` |
