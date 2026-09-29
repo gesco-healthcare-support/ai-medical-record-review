@@ -5423,6 +5423,39 @@ def test_a_title_that_says_of_deposition_names_no_one_and_falls_back_to_the_pati
     )
 
 
+@pytest.mark.parametrize(
+    ("title", "who"),
+    [
+        ("Transcript of the Deposition of John Doe", "John Doe"),
+        ("Transcript of Deposition of John Doe", "John Doe"),
+        ("TRANSCRIPT OF THE DEPOSITION OF JOHN DOE", "John Doe"),
+        ("Deposition Transcript of John Doe", "John Doe"),
+    ],
+)
+def test_a_second_of_before_the_name_is_not_read_as_part_of_it(title, who):
+    """The first "of" can belong to "Transcript of", so reading after it named a file
+    "Deposition of the of John Doe". The name follows the LAST "<kind> of" pair."""
+    row = {"title": title, "date": "12/04/2025"}
+    assert _separate_filename(row, _patient(), "Deposition") == f"Deposition of {who} 12-04-25.pdf"
+
+
+def test_a_name_that_holds_an_of_is_kept_whole():
+    """Guards against a "words after the last of" shortcut, which would give "Records"."""
+    row = {"title": "Deposition of Custodian of Records", "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition")
+        == "Deposition of Custodian of Records 12-04-25.pdf"
+    )
+
+
+def test_an_of_that_follows_no_deposition_word_names_no_one():
+    row = {"title": "Summary of Deposition", "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition")
+        == "Deposition of Ada Lovelace 12-04-25.pdf"
+    )
+
+
 def test_an_undated_deposition_is_named_without_a_date_not_with_a_placeholder():
     row = {"title": "Deposition", "date": "-"}
     assert _separate_filename(row, _patient(), "Deposition") == "Deposition of Ada Lovelace.pdf"

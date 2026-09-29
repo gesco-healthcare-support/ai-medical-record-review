@@ -144,8 +144,10 @@ A bundle sent with `separateAs` (the Depositions preset sends `Deposition`) give
 sub-document, in record order, each holding only that sub-document's pages and no cover page.
 `_separate_filename()` names each `<separateAs> of <who> <MM-DD-YY>.pdf`:
 
-- `<who>` is the text after the first word `of` in the row's title, less the words `deposition`,
-  `depo` and `transcript` ("Continued Deposition of John Doe" gives `John Doe`). A title in
+- `<who>` is the text after the last `deposition of`, `depo of` or `transcript of` pair in the
+  row's title, less those words ("Continued Deposition of John Doe" and "Transcript of the
+  Deposition of John Doe" both give `John Doe`; "Deposition of Custodian of Records" gives
+  `Custodian of Records`). A title in
   capitals is title-cased. Nothing else in a title is read as a name: "Deposition Summary" or
   "Deposition Transcript Volume 2" describe the document, not a person. A title with no name after
   `of` (most deposition titles are the bare word "Deposition") gives the patient's first and last

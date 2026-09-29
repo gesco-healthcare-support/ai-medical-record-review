@@ -1689,23 +1689,29 @@ def _download_name(document: Document, spec, ext: str) -> str:
 # "Deposition of <name> 12-04-25" - but nothing that breaks a Content-Disposition header or a Windows
 # path, and ASCII only for the same reason.
 _SEPARATE_NAME_DROP = re.compile(r"[^A-Za-z0-9 .,'&()-]+")
-# A title names the deponent only after "of" ("Deposition of John Doe", "Continued Deposition of
-# John Doe"). Everything else in a title describes the DOCUMENT - "Summary", "Transcript",
-# "Volume 2" - and must never be read as a name: taking whatever was left once a few words were
-# stripped produced "Deposition of Summary". So the name is the words after the first "of", less any
-# word that says what the document is, and a title with no "of" falls back to the patient. Plain
-# word matching rather than a regex: nothing to backtrack over, whatever a title holds.
+# A title names the deponent only after a "<kind> of" pair ("Deposition of John Doe", "Continued
+# Deposition of John Doe", "Transcript of the Deposition of John Doe"), where <kind> is deposition,
+# depo or transcript. Everything else in a title describes the DOCUMENT - "Summary", "Volume 2" -
+# and must never be read as a name: taking whatever was left once a few words were stripped
+# produced "Deposition of Summary", and taking the words after the FIRST "of" produced "the of John
+# Doe" from "Transcript of the Deposition of John Doe". So the name is the words after the LAST such
+# pair, less the kind words; a title with no such pair falls back to the patient. The pair, not a
+# bare "of", because a name can hold one ("Deposition of Custodian of Records"). Plain word
+# matching rather than a regex: nothing to backtrack over, whatever a title holds.
 _TITLE_KIND_WORDS = frozenset({"deposition", "depo", "transcript"})
 
 
 def _words_after_of(title: str) -> list[str]:
-    """The words after the first standalone "of" (any case), less the document-kind words."""
+    """The words after the last "<kind> of" pair (any case), less the document-kind words."""
     words = title.split()
-    lowered = [w.lower() for w in words]
-    if "of" not in lowered:
+    bare = [w.lower().strip(".,;:") for w in words]
+    pairs = [
+        i for i in range(len(bare) - 1) if bare[i] in _TITLE_KIND_WORDS and bare[i + 1] == "of"
+    ]
+    if not pairs:
         return []
-    after = words[lowered.index("of") + 1 :]
-    return [w for w in after if w.lower().strip(".,;:") not in _TITLE_KIND_WORDS]
+    after = range(pairs[-1] + 2, len(words))
+    return [words[i] for i in after if bare[i] not in _TITLE_KIND_WORDS]
 
 
 def _separate_who(row: dict, document: Document) -> str:
