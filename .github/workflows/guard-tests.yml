@@ -28,3 +28,9 @@ jobs:
       - name: PR title check unit tests
         working-directory: .github/scripts
         run: python3 -m unittest -v test_pr_title
+
+      # The staging acceptance stage's seed script (staging-acceptance.yml): its pure parts are tested here, on every
+      # pull request, because the stage itself runs only after a merge into staging.
+      - name: Acceptance seed unit tests
+        working-directory: .github/scripts
+        run: python3 -m unittest -v test_acceptance_seed
