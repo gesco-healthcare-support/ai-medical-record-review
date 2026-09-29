@@ -21,7 +21,7 @@ Jobs table below.
 | --- | --- | --- | --- |
 | `ci.yml` | `push` | Branches `main` and `qwen` | A pushed feature branch is already tested by its pull request; listing push branches avoids a second run. |
 | `ci.yml` | `pull_request` | None: every pull request, whatever its base branch | A base-branch filter would leave pull requests into unlisted branches with no CI at all. |
-| `codeql.yml` | `pull_request`; `push` to `main`; weekly `schedule` | None on pull requests | CodeQL static analysis of the Python, TypeScript and workflow code; results go to code scanning. |
+| `codeql.yml` | `pull_request`; `push` to `main`, `staging`, `production` and `qwen`; weekly `schedule` | None on pull requests | CodeQL static analysis of the Python, TypeScript and workflow code; results go to code scanning. Pushes to every protected branch are analysed because code scanning judges a pull request against an analysis of the branch it merges into. |
 | `scorecard.yml` | `push` to `main`; weekly `schedule` | Default branch only (Scorecard publishes only from it) | OpenSSF Scorecard: publishes the score the README badge shows and uploads its findings to code scanning. |
 | `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
 | `pr-title.yml` | `pull_request` (`opened`, `edited`, `synchronize`, `reopened`) | Base branch `main` only | A squash merge makes the title main's commit subject. Only main's ruleset requires the check, so the filter leaves no required check waiting on another branch; `edited` re-runs it after a retitle. |
@@ -288,7 +288,16 @@ gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets/<id>
 | Branch must be up to date before merging | Required | Not required, by design: "Update branch" on a promotion pull request would merge the lower branch back into the upper one |
 | Force push (non-fast-forward) | Blocked | Blocked |
 | Branch deletion | Blocked | Blocked |
+| CodeQL results before merging (see Code scanning) | Required: security alerts of high or critical severity block | Not yet: each branch gets the same rule once it has a CodeQL analysis of its own, after its next promotion |
 | Bypass | Repository admins, through a pull request only (see Admin bypass) | Repository admins, through a pull request only |
+
+**Code scanning.** The CodeQL rule blocks a pull request while CodeQL is still analysing it, and when
+the analysis finds a security alert of high or critical severity whose lines are all in the pull
+request's diff. Other alerts, and alerts on lines the pull request does not change, never block it.
+Code scanning judges a pull request against an analysis of the branch it merges into, so a branch
+gets the rule only after `codeql.yml` has analysed a push to it; until then a pull request into it
+could not be judged. Every commit on `staging`, `production` and `qwen` has come through `main`,
+where the rule applies.
 
 GitHub never lets an account approve its own pull request, and the approver must not be the account
 that pushed the pull request's last commit either. So whoever merges `main` into a pull request

@@ -5,9 +5,11 @@ name: codeql
 # results": CodeQL, security alerts high or higher) can then block a pull request that adds such an
 # alert on a line it changes. `pull_request` carries no branch filter, for the same reason as ci.yml:
 # a base-branch filter would let pull requests into staging, production or qwen skip the scan.
+# Pushes to those three are analysed too: code scanning judges a pull request against an analysis
+# of the branch it merges into, so each branch needs one before its ruleset can require the rule.
 on:
   push:
-    branches: [main]
+    branches: [main, staging, production, qwen]
   pull_request:
   schedule:
     - cron: "17 6 * * 1"
