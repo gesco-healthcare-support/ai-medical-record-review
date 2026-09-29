@@ -1692,10 +1692,20 @@ _SEPARATE_NAME_DROP = re.compile(r"[^A-Za-z0-9 .,'&()-]+")
 # A title names the deponent only after "of" ("Deposition of John Doe", "Continued Deposition of
 # John Doe"). Everything else in a title describes the DOCUMENT - "Summary", "Transcript",
 # "Volume 2" - and must never be read as a name: taking whatever was left once a few words were
-# stripped produced "Deposition of Summary". So the name is the text after the first "of", less any
-# word that says what the document is, and a title with no "of" falls back to the patient.
-_DEPONENT_AFTER_OF = re.compile(r"(?i)\bof\b\s+(.+)$")
-_TITLE_KIND_WORDS = re.compile(r"(?i)\b(?:deposition|depo|transcript)\b")
+# stripped produced "Deposition of Summary". So the name is the words after the first "of", less any
+# word that says what the document is, and a title with no "of" falls back to the patient. Plain
+# word matching rather than a regex: nothing to backtrack over, whatever a title holds.
+_TITLE_KIND_WORDS = frozenset({"deposition", "depo", "transcript"})
+
+
+def _words_after_of(title: str) -> list[str]:
+    """The words after the first standalone "of" (any case), less the document-kind words."""
+    words = title.split()
+    lowered = [w.lower() for w in words]
+    if "of" not in lowered:
+        return []
+    after = words[lowered.index("of") + 1 :]
+    return [w for w in after if w.lower().strip(".,;:") not in _TITLE_KIND_WORDS]
 
 
 def _separate_who(row: dict, document: Document) -> str:
@@ -1704,8 +1714,7 @@ def _separate_who(row: dict, document: Document) -> str:
     A title in capitals ("DEPOSITION OF JOHN DOE") is title-cased so the filename reads like the
     reviewers' example; a title already in mixed case is kept as written."""
     title = (row.get("title") or "").strip()
-    after_of = _DEPONENT_AFTER_OF.search("" if title == "-" else title)
-    rest = " ".join(_TITLE_KIND_WORDS.sub(" ", after_of.group(1)).split()) if after_of else ""
+    rest = " ".join(_words_after_of("" if title == "-" else title))
     if rest:
         return rest.title() if rest.isupper() else rest
     names = (document.patient_first_name, document.patient_last_name)
