@@ -275,7 +275,7 @@ gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets/<id>
 | Branch must be up to date before merging | Required | Not required, by design: "Update branch" on a promotion pull request would merge the lower branch back into the upper one |
 | Force push (non-fast-forward) | Blocked | Blocked |
 | Branch deletion | Blocked | Blocked |
-| Bypass | Repository admins, through a pull request only (see Emergency merge) | Repository admins, through a pull request only |
+| Bypass | Repository admins, through a pull request only (see Admin bypass) | Repository admins, through a pull request only |
 
 GitHub never lets an account approve its own pull request, and the approver must not be the account
 that pushed the pull request's last commit either. So whoever merges `main` into a pull request
@@ -287,11 +287,13 @@ requests into it out of date. Merge `main` into each one. Do not rebase: that re
 branch's history and needs a force push. Either way the new commit dismisses existing approvals, so
 once CI has run the pull request needs approving again, by someone other than whoever pushed it.
 
-**Emergency merge.** Every branch ruleset lists the repository admin role as a bypass actor, in
+**Admin bypass.** Every branch ruleset lists the repository admin role as a bypass actor, in
 pull-request mode. An admin can merge a pull request that has not met the rules (in the CLI,
 `gh pr merge <number> --admin`); direct pushes stay blocked for everyone. A bypass skips every rule
-in the ruleset, required status checks and approvals included, so keep it for a fix that cannot
-wait. GitHub records each bypass in the repository's rule insights and the audit log.
+in the ruleset, required status checks and approvals included, so first confirm that every required
+check is green. With a single maintainer it is the normal way to merge that maintainer's own pull
+requests, because GitHub never lets an author approve their own; with two or more maintainers, keep it
+for a fix that cannot wait. GitHub records each bypass in the repository's rule insights and the audit log.
 
 The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 
