@@ -48,7 +48,7 @@ design conventions that cut across folders.
   ignores apart from `.gitkeep`.
 
 - **Tooling.** Backend: uv, Python 3.12, `uv sync --extra docs`; ruff for lint and format (both CI
-  gates). Frontend: pnpm, `pnpm typecheck`, `pnpm test` (vitest), `pnpm e2e` (Playwright). Do not
+  gates). Frontend: pnpm, `pnpm lint` (ESLint), `pnpm typecheck`, `pnpm test` (vitest), `pnpm e2e` (Playwright). Do not
   run prettier: the repo has no prettier config and running it reformats hundreds of lines.
 
 - **Tests and gates.** Synthetic data only; mock the model providers and OCR. CI enforces coverage

@@ -76,7 +76,7 @@ uv run pytest -q                    # do NOT export DATABASE_URL; conftest finds
 ```bash
 # Frontend (from frontend/)
 corepack enable && pnpm install
-pnpm typecheck && pnpm test         # vitest; `pnpm e2e` needs the app stack on :8080
+pnpm lint && pnpm typecheck && pnpm test   # vitest; `pnpm e2e` needs the app stack on :8080
 ```
 
 ```bash

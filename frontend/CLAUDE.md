@@ -13,7 +13,7 @@ and `e2e/`.
 - User-facing copy is plain and neutral: say what happened and what to do. No reassurance, no
   promises about speed.
 - Do not run prettier: the repository has no prettier config and is not prettier-formatted, so it
-  would reformat hundreds of unrelated lines. `pnpm typecheck` and the tests are the gates.
+  would reformat hundreds of unrelated lines. `pnpm lint`, `pnpm typecheck` and the tests are the gates.
 - Tests share ONE jsdom worker (`vitest.config.mts`). Restore anything you change on `window`,
   `document`, prototypes or environment stubs, and turn fake timers off, or a later file fails.
 - A test file named after a component is not proof its behaviour is covered: if a component has a
@@ -28,6 +28,7 @@ and `e2e/`.
 ```bash
 cd frontend
 pnpm install
+pnpm lint                           # ESLint; any warning fails CI
 pnpm typecheck
 pnpm test                           # all vitest files
 pnpm test -- components/review      # a subset

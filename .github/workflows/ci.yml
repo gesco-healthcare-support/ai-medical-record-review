@@ -183,6 +183,11 @@ jobs:
       - name: Install deps
         run: pnpm install --frozen-lockfile
 
+      # ESLint (Next's core-web-vitals + typescript rules); any error or warning fails the job, and so the
+      # required `frontend` check. Config: frontend/eslint.config.mjs.
+      - name: Lint
+        run: pnpm lint
+
       - name: Typecheck
         run: pnpm typecheck
 

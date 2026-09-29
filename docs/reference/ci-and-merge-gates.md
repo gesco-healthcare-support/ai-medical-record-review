@@ -46,7 +46,7 @@ All jobs run on `ubuntu-latest`.
 | --- | --- | --- | --- | --- |
 | `backend` | `ci.yml` | - | Ruff lint and format check, an import smoke test, migration checks (one head; on pull requests, Squawk on the SQL of new migrations), migrations, `alembic check`, then the pytest suite with branch coverage, against Postgres and Redis service containers | Any lint or format finding, the import fails, a migration check fails, a migration fails, the models need a migration nobody wrote, or any test fails |
 | `backend-types` | `ci.yml` | - | pyright 1.1.414 in standard mode on `backend/app` (settings in `backend/pyproject.toml` `[tool.pyright]`); the error count goes to the job summary | Never blocks a merge: the job has `continue-on-error: true`, so it shows as failed while errors remain but fails neither the run nor any required check |
-| `frontend` | `ci.yml` | - | Typecheck, production build, Vitest with coverage | A type error, a build error, or any test fails |
+| `frontend` | `ci.yml` | - | ESLint, typecheck, production build, Vitest with coverage | Any lint error or warning, a type error, a build error, or any test fails |
 | `e2e` | `ci.yml` | - | Builds and starts the app stack with Compose (without workers), then Playwright | The app is not ready within the wait loop, or any spec fails |
 | `secret-scan` | `ci.yml` | - | gitleaks over the checked-out files | gitleaks reports a finding |
 | `docs` | `ci.yml` | - | Builds the documentation site strictly | Any MkDocs warning, including a link to a page that does not exist |
@@ -98,6 +98,7 @@ Working directory `frontend/`.
 | Node | `actions/setup-node`, Node 24 |
 | pnpm | `corepack enable` |
 | Install | `pnpm install --frozen-lockfile` |
+| Lint | `pnpm lint` (ESLint, `--max-warnings 0`) |
 | Typecheck | `pnpm typecheck` |
 | Build | `pnpm build` |
 | Test | `pnpm test:coverage` |
