@@ -258,25 +258,29 @@ gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets/<id>
 | --- | --- | --- |
 | Changes arrive by pull request | Required | Required |
 | Allowed merge method | Squash only | Merge commit only, so a promotion keeps the commits of the branch above |
-| Required approving reviews | 1 by design; set to 0 from 2026-09-28 to 2026-09-30 | 1 by design; set to 0 from 2026-09-28 to 2026-09-30 |
-| Approval must come after the most recent push, from someone other than the last pusher | Yes by design; off from 2026-09-28 to 2026-09-30 | Yes by design; off from 2026-09-28 to 2026-09-30 |
+| Required approving reviews | 1 | 1 |
+| Approval must come after the most recent push, from someone other than the last pusher | Yes | Yes |
 | Stale approvals dismissed on a new push | Yes | Yes |
 | Branch must be up to date before merging | Required | Not required, by design: "Update branch" on a promotion pull request would merge the lower branch back into the upper one |
 | Force push (non-fast-forward) | Blocked | Blocked |
 | Branch deletion | Blocked | Blocked |
-| Bypass | Nobody | Nobody |
+| Bypass | Repository admins, through a pull request only (see Emergency merge) | Repository admins, through a pull request only |
 
-GitHub never lets an account approve its own pull request. While both approval rules are on, the
-approver must be neither the pull request's author nor the account that pushed its last commit.
+GitHub never lets an account approve its own pull request, and the approver must not be the account
+that pushed the pull request's last commit either. So whoever merges `main` into a pull request
+becomes its last pusher and cannot approve it. When that is the reviewer, only a third account can
+approve, so the pull request's author should be the one who merges `main` in.
 
 Because `main` requires an up-to-date branch, every merge into `main` makes the other open pull
 requests into it out of date. Merge `main` into each one. Do not rebase: that rewrites the
 branch's history and needs a force push. Either way the new commit dismisses existing approvals, so
 once CI has run the pull request needs approving again, by someone other than whoever pushed it.
 
-**Emergency merge.** No ruleset has a bypass. When a fix cannot wait for the rules, a repository
-admin sets that one ruleset to disabled, merges, and sets it back to active. The change shows in
-the organisation audit log and the ruleset's history.
+**Emergency merge.** Every branch ruleset lists the repository admin role as a bypass actor, in
+pull-request mode. An admin can merge a pull request that has not met the rules (in the CLI,
+`gh pr merge <number> --admin`); direct pushes stay blocked for everyone. A bypass skips every rule
+in the ruleset, required status checks and approvals included, so keep it for a fix that cannot
+wait. GitHub records each bypass in the repository's rule insights and the audit log.
 
 The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 
