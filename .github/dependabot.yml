@@ -13,7 +13,7 @@
 #   compromised maintainer account is usually caught and pulled before it reaches a PR. It applies
 #   only to version updates; security updates are never delayed (GitHub's Dependabot options
 #   reference).
-# - The legacy Flask app at the repository root (pyproject.toml, uv.lock, legacy/) is left out:
+# - The legacy Flask app at the repository root (pyproject.toml, legacy/) is left out:
 #   it is not deployed.
 version: 2
 updates:
