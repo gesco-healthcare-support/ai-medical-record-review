@@ -46,7 +46,7 @@ The worker entry point is `backend/app/worker/tasks.py` `dedup_document()`. The 
 flowchart TD
     A["Rows with include = true"] --> B["Snapshot clusters the reviewer dismissed"]
     B --> C["Read each row's text once<br/>(page-text store, saved as source_text)"]
-    C --> D["cluster_rows: candidate clusters<br/>Jaccard pre-filter, date join,<br/>cross-date join on high similarity"]
+    C --> D["cluster_rows: candidate clusters<br/>same date + category/title join,<br/>Jaccard pre-filter, date join,<br/>cross-date join on high similarity"]
     D --> E{"duplicate_gate passes?"}
     E -->|no| X["Rejected, no model call"]
     E -->|yes| F{"similarity >= dupe_model_override?"}
@@ -77,10 +77,20 @@ so a run that could not read part of the record does not present as a clean resu
 
 For every pair of rows:
 
+0. **Same known date and same category or title: join, whatever the wording.** If both rows carry
+   the same known date and the same known category or title, the pair joins without the word-set
+   test. This is exactly the pair the gate's primary rule admits (section 4). The lead client reviewer
+   reported duplicates missed when one report arrives in two formats, for example the state PR-2
+   form and a clinic's own letter of the same visit: the same facts in different wording share few
+   words, so the pre-filter used to drop the pair before the gate saw it. Measured over the corpus,
+   only 18% of same-date same-category pairs got past it (issue #234). The confirm step still
+   decides: dissimilar text never clears `dupe_model_override`, so these always get a model call.
+   On the live box (2026-09-29) this is at most about five extra candidates per record, the largest
+   ten documents. An unknown date is never a match here.
 1. **Word-set pre-filter.** Each text becomes a set of lowercase alphanumeric tokens of two or more
    characters, after date masking (below). A pair whose Jaccard overlap is below
    `dupe_jaccard_threshold` (0.70) is skipped. This is a cheap set intersection that keeps the
-   expensive comparison off pairs that share nothing.
+   expensive comparison off pairs that share nothing. It applies to every pair step 0 did not join.
 2. **Same date: join.** If both rows carry the same normalized date, the pair joins a cluster.
    Unknown dates (`""`, `-`, `n/a`, `none`, `unknown`) count as one shared "unknown" bucket here,
    which is what records built by aggregate upload (where every row's date is `-`) need.
@@ -185,7 +195,7 @@ until the end, a run that fails or is cancelled part-way leaves the previous clu
 
 | Setting | Default | What it decides |
 | --- | --- | --- |
-| `dupe_jaccard_threshold` | 0.70 | Which pairs are compared at all |
+| `dupe_jaccard_threshold` | 0.70 | Which pairs are compared at all, except a pair sharing a known date and a known category or title (step 0) |
 | `dupe_similarity_override` | 0.90 | Whether rows with different dates may join, and the gate's content escape hatch |
 | `dupe_model_override` | 0.95 | Whether a candidate is accepted without the confirm call |
 
