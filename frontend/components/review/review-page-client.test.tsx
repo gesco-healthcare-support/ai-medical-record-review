@@ -15,6 +15,9 @@ const startDedupMock = vi.fn().mockResolvedValue({ ok: true });
 
 vi.mock("@/hooks/use-review-workflow", () => ({ useReviewWorkflow: vi.fn() }));
 vi.mock("@/hooks/use-summaries", () => ({ useSummaries: () => sumState }));
+// The signed-in user; a test sets `meState.data` to see the admin note on someone else's record.
+const meState: { data: { id: number } | undefined } = { data: { id: 1 } };
+vi.mock("@/hooks/use-current-user", () => ({ useCurrentUser: () => meState }));
 vi.mock("@/hooks/use-duplicates", () => ({
   useDuplicates: () => dupState,
   useStartDedup: () => ({ mutateAsync: startDedupMock, isPending: false }),
@@ -107,6 +110,7 @@ const gotoDuplicates = () =>
   fireEvent.click(screen.getByRole("tab", { name: /Duplicates/ }));
 
 beforeEach(() => {
+  meState.data = { id: 1 };
   dupState.data = undefined;
   sumState.data = [];
   startDedupMock.mockClear();
@@ -967,5 +971,29 @@ describe("ReviewPageClient navigation", () => {
     // Both tabs render the header bar from this one value, so a save that does not come back up
     // leaves the other tab showing the pre-save state.
     expect(setHeader).toHaveBeenCalledWith({ patient_last_name: "Roe" });
+  });
+});
+
+describe("ReviewPageClient on another reviewer's record", () => {
+  it("tells an admin whose record they are working on", () => {
+    // DEMONSTRATES: an admin fixing a reviewer's record must never mistake it for their own.
+    mockWf({ owner: { id: 7, name: "Brian" } });
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.getByText(/working on Brian's record/i)).toBeInTheDocument();
+    expect(screen.getByText(/recorded under your name/i)).toBeInTheDocument();
+  });
+
+  it("shows nothing on the reviewer's own record", () => {
+    // GUARD: a reviewer's own page is unchanged.
+    mockWf({ owner: { id: 1, name: "Adam" } });
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.queryByText(/working on/i)).toBeNull();
+  });
+
+  it("shows nothing when the server does not say whose record it is", () => {
+    // GUARD: a server from before the field sends no owner.
+    mockWf({ owner: null });
+    render(<ReviewPageClient documentId="d1" />);
+    expect(screen.queryByText(/working on/i)).toBeNull();
   });
 });

@@ -319,6 +319,7 @@ One pipeline run. The row is also the provenance stamp for the run. Values of `k
 | `prompt_fingerprint` | String(16) | yes | - | 12-hex-character hash of the prompt set as resolved (DB-first) at job creation (`backend/app/services/provenance.py` `job_prompt_fingerprint()`). Provenance NULL: jobs before the column, or the hash could not be computed. | `b6d19f4c30a7` |
 | `build_sha` | String(40) | yes | - | The commit the image was built from (`Settings.build_sha`, from the `GIT_SHA` build argument); `'unknown'` when built without it. Provenance NULL: jobs created before 2026-08-11. | `c5d81f6a3b70` |
 | `catalog_revision` | Integer | yes | - | `catalog_meta.revision` when the job was created (`0` when there is no meta row). | `73abdcd5ef01` |
+| `requested_by` | Integer | yes | - | The user who started the job, where the route knew it: an admin can start one on another reviewer's record. The worker's `segment.rows_replaced` audit row names this user. Provenance NULL: jobs before the column, and jobs the system queues itself (read it as the owner). A plain integer, not a foreign key. | `f5c8d2a19e47` |
 | `rq_job_id` | String(64) | yes | - | The CURRENT RQ job id. Changes when a paused summarize run is resumed; orphan recovery correlates by it. | `c2d5e8f1a3b7` |
 | `attempts` | Integer | no | ORM `0`, server `'0'` | Pause and resume count. Observability only. | `c2d5e8f1a3b7` |
 | `attention` | JSON | yes | - | Set when a run ends `needs_attention`: `{"rows": [...], "message": str}`, the sub-documents that could not be summarized (index, page range, reason; no PHI). NULL = no such rows. | `c2d5e8f1a3b7` |
@@ -511,6 +512,10 @@ Every `action` value written by the repository:
 | `aggregate_upload` | `backend/app/api/documents.py` (aggregate upload) |
 | `delete` | `backend/app/api/documents.py` `delete_document()` |
 | `view_pdf` | `backend/app/api/documents.py` (PDF view) |
+| `view_record` | `backend/app/api/documents.py` (an admin opening another account's record) |
+| `header.edit`, `header.extract` | `backend/app/api/documents.py` (header save and detection; `detail` names the fields, never their values) |
+| `segment.start`, `dedup.start` | `backend/app/api/documents.py` (job start) |
+| `duplicates.resolve` | `backend/app/api/documents.py` (duplicate group resolution) |
 | `rows.edit` | `backend/app/api/documents.py` (row save; `detail` carries the boundary counts) |
 | `job.cancel` | `backend/app/api/documents.py` (cancel) |
 | `summarize.skip_duplicate_check` | `backend/app/api/documents.py` (summarize start without a current duplicate check) |

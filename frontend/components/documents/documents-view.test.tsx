@@ -21,13 +21,29 @@ const upload = { mutateAsync: vi.fn(), isPending: false };
 const del = { mutateAsync: vi.fn(), isPending: false };
 const identify = { mutateAsync: vi.fn(), isPending: false };
 const aggregate = { mutateAsync: vi.fn(), isPending: false };
+// Who the list was asked for: `useDocuments(owner)` receives the reviewer an admin picked.
+const docsArgs: unknown[] = [];
 vi.mock("@/hooks/use-documents", () => ({
-  useDocuments: () => docsState,
+  useDocuments: (owner?: unknown) => {
+    docsArgs.push(owner);
+    return docsState;
+  },
   useUploadDocument: () => upload,
   useDeleteDocument: () => del,
   useStartIdentification: () => identify,
   useAggregateDocuments: () => aggregate,
 }));
+
+// A plain reviewer unless a test says otherwise, so every test written before admins could pick a
+// reviewer still sees exactly the page it always did.
+const me: { data: { id: number; is_superuser: boolean } | undefined } = {
+  data: { id: 1, is_superuser: false },
+};
+const accountsState: { data: { id: number; name: string; email: string }[] | undefined } = {
+  data: undefined,
+};
+vi.mock("@/hooks/use-current-user", () => ({ useCurrentUser: () => me }));
+vi.mock("@/hooks/use-admin", () => ({ useAccounts: () => accountsState }));
 
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api";
@@ -44,6 +60,10 @@ afterEach(() => {
   docsState.isLoading = false;
   docsState.isError = false;
   docsState.refetch = undefined;
+  docsArgs.length = 0;
+  me.data = { id: 1, is_superuser: false };
+  accountsState.data = undefined;
+  sessionStorage.clear();
 });
 
 describe("DocumentsView list failure", () => {
@@ -241,5 +261,82 @@ describe("DocumentsView navigation", () => {
     await user.click(screen.getByRole("button", { name: /Upload split records/ }));
 
     expect(screen.getByRole("heading", { name: /Upload split records/ })).toBeInTheDocument();
+  });
+});
+
+describe("DocumentsView for an admin", () => {
+  const ACCOUNTS = [
+    { id: 1, name: "Adam", email: "adam@example.com" },
+    { id: 7, name: "Brian", email: "brian@example.com" },
+  ];
+
+  it("shows no reviewer picker to a reviewer who is not an admin", () => {
+    // GUARD: the page a reviewer sees is unchanged.
+    docsState.data = [doc()];
+    render(<DocumentsView />);
+    expect(screen.queryByLabelText("Show records for")).toBeNull();
+    expect(docsArgs.at(-1)).toBeNull();
+  });
+
+  it("starts an admin on their own records", () => {
+    me.data = { id: 1, is_superuser: true };
+    accountsState.data = ACCOUNTS;
+    docsState.data = [doc()];
+    render(<DocumentsView />);
+    expect(screen.getByLabelText("Show records for")).toHaveValue("");
+    expect(screen.getByRole("heading", { name: "My documents" })).toBeInTheDocument();
+    expect(docsArgs.at(-1)).toBeNull();
+  });
+
+  it("lists the other reviewers, not the admin themselves", () => {
+    me.data = { id: 1, is_superuser: true };
+    accountsState.data = ACCOUNTS;
+    render(<DocumentsView />);
+    const names = screen.getAllByRole("option").map((o) => o.textContent);
+    expect(names).toEqual(["My records", "Brian"]);
+  });
+
+  it("shows one reviewer's records once the admin picks them", async () => {
+    // DEMONSTRATES the request: pick a user, see that user's records only.
+    const user = userEvent.setup();
+    me.data = { id: 1, is_superuser: true };
+    accountsState.data = ACCOUNTS;
+    docsState.data = [doc()];
+    render(<DocumentsView />);
+    await user.selectOptions(screen.getByLabelText("Show records for"), "7");
+    expect(docsArgs.at(-1)).toBe(7);
+    expect(screen.getByRole("heading", { name: "Brian's documents" })).toBeInTheDocument();
+    expect(screen.getByText(/recorded under your name/i)).toBeInTheDocument();
+  });
+
+  it("offers no upload while viewing another reviewer's records", async () => {
+    // An upload would land in the admin's own list, not the one on screen.
+    const user = userEvent.setup();
+    me.data = { id: 1, is_superuser: true };
+    accountsState.data = ACCOUNTS;
+    docsState.data = [doc()];
+    render(<DocumentsView />);
+    await user.selectOptions(screen.getByLabelText("Show records for"), "7");
+    expect(screen.queryByRole("button", { name: /upload a record/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /upload split records/i })).toBeNull();
+  });
+
+  it("remembers the reviewer picked when the admin comes back to the list", () => {
+    sessionStorage.setItem("mrr.records.owner", "7");
+    me.data = { id: 1, is_superuser: true };
+    accountsState.data = ACCOUNTS;
+    render(<DocumentsView />);
+    expect(screen.getByLabelText("Show records for")).toHaveValue("7");
+  });
+
+  it("says so when the reviewer picked has no records", async () => {
+    const user = userEvent.setup();
+    me.data = { id: 1, is_superuser: true };
+    accountsState.data = ACCOUNTS;
+    docsState.data = [];
+    render(<DocumentsView />);
+    await user.selectOptions(screen.getByLabelText("Show records for"), "7");
+    expect(screen.getByText("Brian has no records.")).toBeInTheDocument();
+    expect(screen.queryByText(/start your first review/i)).toBeNull();
   });
 });

@@ -332,6 +332,13 @@ class Job(Base):
     # inferred value would later be indistinguishable from a recorded one.
     build_sha: Mapped[str | None] = mapped_column(String(40))
     catalog_revision: Mapped[int | None] = mapped_column(Integer)
+    # The user who started the job, where the route knew it. Not the owner: an admin can start a job
+    # on another reviewer's record, and the worker's own audit rows (a re-segment that replaces rows)
+    # must name who asked. NULL on jobs created before the column existed and on jobs the system
+    # starts itself (the classify job a combined upload queues) - read NULL as "the owner", which is
+    # what those jobs always were. A plain integer, not a foreign key: it is provenance, and a user
+    # row that is ever removed must not take job history with it.
+    requested_by: Mapped[int | None] = mapped_column(Integer)
     # Resumable summarize (item 7): the CURRENT RQ job id (differs from the db id after a delayed
     # requeue, so orphan recovery correlates by this); the pause/resume cycle count (observability
     # only - transient 429s retry forever); and, when a run ends `needs_attention`, the reason +
