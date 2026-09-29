@@ -21,6 +21,10 @@ export type BundleConfig = {
   // client reads, "LIST OF DIAGNOSTIC AND OPERATIVE REPORTS" would need title-casing rules that
   // guess at connectives, and `depositions` has no heading to derive from at all.
   downloadName: string;
+  // When set, the bundle downloads ONE PDF PER DOCUMENT instead of one combined PDF, each named
+  // `<separateAs> of <who> <MM-DD-YY>.pdf`. The reviewers asked for this for depositions: "if it
+  // could download them each separately and have them dated". Several come back as a zip.
+  separateAs?: string;
 };
 
 /** The two bundles the app offers, defined ONCE.
@@ -43,6 +47,7 @@ export const DEPOSITIONS: BundleConfig = {
   slug: "depositions",
   categories: ["9"],
   downloadName: "Depositions",
+  separateAs: "Deposition",
 };
 
 export const BUNDLES: BundleConfig[] = [DIAGNOSTIC_OPERATIVE, DEPOSITIONS];
@@ -73,6 +78,7 @@ export function downloadBundlePdf(documentId: string, config: BundleConfig) {
       label: config.slug,
       coverHeading: config.coverHeading,
       downloadName: config.downloadName,
+      separateAs: config.separateAs,
     },
     `${config.slug}.pdf`,
   );
