@@ -23,3 +23,8 @@ jobs:
       - name: Promotion guard unit tests
         working-directory: .github/scripts
         run: python3 -m unittest -v test_promotion_guard
+
+      # The PR title check (pr-title.yml) runs the script from the pull request itself, so its tests live here too.
+      - name: PR title check unit tests
+        working-directory: .github/scripts
+        run: python3 -m unittest -v test_pr_title
