@@ -10,7 +10,8 @@ Python 3.12, FastAPI, SQLAlchemy 2, Alembic, RQ on Redis, uv. Folder-specific ru
   Flask app).
 - `uv sync --extra docs` is the environment for development and CI. Add `--extra classifier` only
   to exercise the segment worker's categorizer (it pulls torch).
-- Both CI gates must pass: `uv run ruff check .` AND `uv run ruff format --check .`. After any
+- The CI gates must pass: `uv run ruff check .`, `uv run ruff format --check .` AND
+  `uvx pyright==1.1.414` (type check of `app/`). After any
   scripted rewrite, run `uv run ruff format .` - the formatter is a separate gate from the linter.
 - Services (`app/services/`) must not import FastAPI. Routes call services; services take an
   explicit SQLAlchemy `Session` where they need one.
@@ -34,6 +35,7 @@ docker compose -p mrrtest -f ../docker-compose.dev.yml up -d --wait postgres red
 uv sync --extra docs
 DATABASE_URL=postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr SECRET_KEY=dev-only-secret SECURITY_PASSWORD_SALT=dev-only-salt uv run alembic upgrade head
 uv run ruff check . && uv run ruff format --check .
+uvx pyright==1.1.414                            # type check of app/
 uv run pytest -q                                # full suite; CI adds -n 3 --dist loadfile
 uv run pytest -q tests/test_jobs.py -k cancel   # a subset
 ```
