@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 
 
+def _text(value: bytes | str) -> str:
+    """A Redis reply as text. `get_redis()` returns bytes; redis-py types replies as bytes or str because
+    whether they are decoded depends on the client's `decode_responses`, which it cannot know statically."""
+    return value.decode() if isinstance(value, bytes) else value
+
+
 class DownloadsUnavailable(Exception):
     """The download store (Redis) could not be reached, so nothing was prepared or found."""
 
@@ -214,7 +220,7 @@ def delivery_status(token: str, *, user_id: int, document_id: str) -> dict | Non
         raise DownloadsUnavailable from exc
     if not raw:
         return None
-    record = {key.decode(): value.decode() for key, value in raw.items()}
+    record = {_text(key): _text(value) for key, value in raw.items()}
     if int(record["user_id"]) != user_id or record["document_id"] != document_id:
         return None
     size = int(record["size"])
