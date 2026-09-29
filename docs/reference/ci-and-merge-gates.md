@@ -21,6 +21,8 @@ Jobs table below.
 | --- | --- | --- | --- |
 | `ci.yml` | `push` | Branches `main` and `qwen` | A pushed feature branch is already tested by its pull request; listing push branches avoids a second run. |
 | `ci.yml` | `pull_request` | None: every pull request, whatever its base branch | A base-branch filter would leave pull requests into unlisted branches with no CI at all. |
+| `codeql.yml` | `pull_request`; `push` to `main`; weekly `schedule` | None on pull requests | CodeQL static analysis of the Python, TypeScript and workflow code; results go to code scanning. |
+| `scorecard.yml` | `push` to `main`; weekly `schedule` | Default branch only (Scorecard publishes only from it) | OpenSSF Scorecard: publishes the score the README badge shows and uploads its findings to code scanning. |
 | `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
 | `pr-title.yml` | `pull_request` (`opened`, `edited`, `synchronize`, `reopened`) | Base branch `main` only | A squash merge makes the title main's commit subject. Only main's ruleset requires the check, so the filter leaves no required check waiting on another branch; `edited` re-runs it after a retitle. |
 | `docs-drift.yml` | `pull_request`; `schedule` (Mondays 15:00 UTC); `workflow_dispatch` | None | Two docs guards that never block a merge: warnings on a pull request, and a weekly drift issue. See [How to work on these docs](../how-to/work-on-these-docs.md#how-the-docs-stay-current). |
@@ -32,12 +34,21 @@ are:
 
 - `osv-scan`: `security-events: write` (and `actions: read`), which its reusable workflow needs to
   upload results;
+- `codeql.yml` `analyze`: `security-events: write`, to upload results to code scanning;
+- `scorecard.yml` `analysis`: `security-events: write` and `actions: read` for the upload, and
+  `id-token: write`, which Scorecard needs to publish a verified result;
 - the promotion guard: `pull-requests: read`;
-- `docs-drift-report`: `issues: write`, to edit its one issue. It is the only job that writes, and it
-  runs only on the default branch (`schedule`, `workflow_dispatch`), never on pull request code.
+- `docs-drift-report`: `issues: write`, to edit its one issue. It is the only job that writes to the
+  repository itself, and it runs only on the default branch (`schedule`, `workflow_dispatch`), never on
+  pull request code.
 
-Only `docs-drift.yml` has a `schedule` and a `workflow_dispatch`. No workflow has a `concurrency`
-group.
+The `security-events: write` grants only upload scan results to code scanning. Of those jobs, `analyze` and
+`osv-scan` run on pull requests, and neither executes pull-request code: CodeQL uses `build-mode: none`, and
+OSV-Scanner only reads the lockfiles.
+
+`docs-drift.yml`, `codeql.yml` and `scorecard.yml` run on a weekly `schedule` (Mondays: 15:00,
+06:17 and 07:23 UTC). Only `docs-drift.yml` has a `workflow_dispatch`. No workflow has a
+`concurrency` group.
 
 ## Jobs
 
@@ -56,6 +67,8 @@ All jobs run on `ubuntu-latest`.
 | `osv-scan` | `ci.yml` | - | Pull requests only. OSV-Scanner over `backend/uv.lock` and `frontend/pnpm-lock.yaml`, base against head | The pull request introduces a known vulnerability |
 | `coverage-floor` | `ci.yml` | `backend`, `frontend` | Reads both coverage reports and compares them with the floors | Either suite is below its floor, or a report is missing, empty or unreadable |
 | `sonarcloud` | `ci.yml` | `backend`, `frontend` | Pull requests and pushes to `main` only (the SonarCloud plan analyses no other branch). SonarCloud scan with both coverage reports, waiting for the quality gate; on pull requests, a check for new issues and hotspots | The quality gate fails, or (pull requests) the analysis cannot be proven current, or the pull request adds any issue or hotspot |
+| `analyze` | `codeql.yml` | - | CodeQL (default query suite, `build-mode: none`) for `actions`, `javascript-typescript` and `python`, one matrix leg each | An analysis cannot run; findings themselves go to code scanning |
+| `analysis` | `scorecard.yml` | - | OpenSSF Scorecard, published, with its SARIF uploaded to code scanning | Scorecard cannot run or publish |
 | `guard-tests` | `guard-tests.yml` | - | The promotion guard's and the PR title check's unit tests (`python3 -m unittest -v test_promotion_guard`, then `test_pr_title`, in `.github/scripts/`) | Any test fails |
 | `pr-title` | `pr-title.yml` | - | Pull requests into `main` only. `python3 .github/scripts/pr_title.py`, with the title and author passed as environment variables | The title does not read `<type>(<scope>): <subject>`, uses an unlisted type or scope, is not ASCII, ends with a period, or is over 72 characters (the length limit does not apply to Dependabot) |
 | `docs-impact` | `docs-drift.yml` | - | Pull requests only. The docs rules' unit tests, then `python3 .github/scripts/docs_guides.py impact <base> <head>` | Its unit tests fail. The check itself never fails: a changed code file whose describing docs were not touched gets a warning annotation and a row in the job summary. |
@@ -374,6 +387,8 @@ zizmor, which audits the workflows for unpinned actions among other problems.
 | `astral-sh/setup-uv` | v5.4.2 | `backend`, `docs`, `workflow-lint` |
 | `actions/setup-node` | v4.4.0, Node 24 | `frontend`, `e2e` |
 | `actions/upload-artifact`, `actions/download-artifact` | v5.0.0 | Coverage and report artifacts |
+| `github/codeql-action` (`init`, `analyze`, `upload-sarif`) | v4.38.2 | `analyze`, `analysis` |
+| `ossf/scorecard-action` | v2.4.4 | `analysis` |
 | `actions/dependency-review-action` | v5.0.0 | `dependency-review` |
 | `google/osv-scanner-action` reusable workflow | v2.6.0 | `osv-scan` |
 | `SonarSource/sonarqube-scan-action` | v8.2.0 | `sonarcloud` |

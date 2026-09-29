@@ -1,0 +1,47 @@
+name: scorecard
+
+# OpenSSF Scorecard scores the repository's security practices every week and on each push to main,
+# publishes the result (the README badge reads it) and uploads the findings to code scanning.
+# Publishing is verified by the Scorecard service, which rejects a workflow with top-level env or
+# defaults, workflow-level write permissions, or any action outside its short allowed list (checkout,
+# upload-artifact, codeql-action/upload-sarif, scorecard-action): keep this file to that shape.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 7 * * 1"
+
+permissions: {}
+
+jobs:
+  analysis:
+    name: scorecard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Keep the results
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: results.sarif
