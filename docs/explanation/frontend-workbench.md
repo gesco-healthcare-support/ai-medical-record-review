@@ -486,7 +486,7 @@ The export dialog offers four outputs from the same fields:
 
 | Button | Endpoint | Fallback file name |
 | --- | --- | --- |
-| Export to Word | `POST /api/documents/{id}/export` | `summaries.docx` |
+| Export to Word | `POST /api/documents/{id}/export` | `MRR.docx` |
 | Download memo | `POST /api/documents/{id}/export/memo` | `memo.docx` |
 | Export to linked PDF | `POST /api/documents/{id}/export/pdf` | `record_linked.pdf` |
 | Download all (.zip) | `POST /api/documents/{id}/export/zip`, with every entry of `BUNDLES` | `record.zip` |

@@ -7,7 +7,7 @@ one PDF or a Word report summarizing just those documents. One component serves 
 
 | File | What it is |
 | --- | --- |
-| `bundle-page-client.tsx` | `BundlePageClient`: the record picker (the reviewer's records, newest first), the selected record's pane (`loading`, `failed`, `unidentified` or `ready`), the matched documents table, and the build aside with Auto-fill, patient, DOB, evaluation type, law firm, "Download combined PDF" and "Summarize to Word" |
+| `bundle-page-client.tsx` | `BundlePageClient`: the record picker (the reviewer's records, newest first), the selected record's pane (`loading`, `failed`, `unidentified` or `ready`), the matched documents table, and the build aside with Auto-fill, patient, DOB, evaluation type, law firm, "Download combined PDF" (or "Download separate PDFs" for a bundle with `separateAs`) and "Summarize to Word" |
 | `bundle-page-client.test.tsx` | Error messages, header prefill, duplicate-aware matching, the empty and failed panes, downloads being watched |
 | `bundle-page-client.flow.test.tsx` | Picking and switching records, Auto-fill, labels in the matches table, switching bundles with the tabs |
 

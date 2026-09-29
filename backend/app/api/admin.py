@@ -100,6 +100,19 @@ def whoami(user: User = Depends(current_superuser)):
     return {"email": user.email, "is_admin": bool(user.is_superuser)}
 
 
+@router.get("/users")
+def list_users(session: Session = Depends(get_db)):
+    """The active accounts an admin can pick from to open their records, by name then email.
+
+    Feeds the records page's "Show records for" choice. Switched-off accounts are left out: they
+    cannot be working on a record, and listing them would offer a test account nobody should be
+    opening. Id, name and email only - never anything about the account's password or logins."""
+    users = session.scalars(
+        select(User).where(User.active.is_(True)).order_by(User.name, User.email)
+    ).all()
+    return [{"id": u.id, "name": u.name or "", "email": u.email} for u in users]
+
+
 @router.get("/categories")
 def list_categories(session: Session = Depends(get_db)):
     """Every category the app actually uses, whether or not it has a row yet.

@@ -765,3 +765,76 @@ def test_group_similarity_scores_only_its_own_members():
 
     assert pair > 0.99  # the two copies are near-identical
     assert whole < 0.5  # the candidate's own figure is dragged down by the third member
+
+
+# --- The same report in two formats (the lead client reviewer, 2026-09-29) -------------------------
+# "It struggles when there are two reports that are in different formats, but otherwise have the same
+# information. For Example: A PR-2 report that has one document in the official California PR-2
+# forms, and then a document from Concentra." The same facts in different wording share few words,
+# so the word-set cut dropped the pair before the gate that was written for it ever saw it (#234).
+
+_STATE_FORM = (
+    "primary treating physician progress report pr-2 state of california division of workers "
+    "compensation check the box that applies periodic report patient complaints lumbar spine"
+)
+_CLINIC_LETTER = (
+    "dear adjuster we saw your client today in follow up she continues with low back discomfort "
+    "our assessment and plan follow as discussed with the patient during the visit"
+)
+
+
+def _row(idx, text, date="09/12/2026", category="1", title="Progress Report"):
+    return {"idx": idx, "text": text, "date": date, "category": category, "title": title}
+
+
+def test_the_premise_the_two_formats_share_too_few_words_for_the_word_cut():
+    """GUARD on the fixtures: without this the tests below could pass for the wrong reason."""
+    sig = dedup._sig
+    assert dedup._jaccard(sig(_STATE_FORM), sig(_CLINIC_LETTER)) < 0.70
+
+
+def test_one_report_in_two_formats_on_one_date_reaches_the_duplicate_check():
+    """DEMONSTRATES the request: same date, same category, different wording -> one candidate."""
+    items = [_row(0, _STATE_FORM, title="PR-2"), _row(1, _CLINIC_LETTER, title="Office Note")]
+    clusters = dedup.cluster_rows(items)
+    assert len(clusters) == 1
+    members = clusters[0]["members"]
+    assert {m["idx"] for m in members} == {0, 1}
+    assert dedup.duplicate_gate(members, clusters[0]["similarity"])
+
+
+def test_a_shared_title_is_enough_when_the_categories_disagree():
+    items = [_row(0, _STATE_FORM, category="1"), _row(1, _CLINIC_LETTER, category="5")]
+    assert len(dedup.cluster_rows(items)) == 1
+
+
+def test_different_documents_on_one_date_are_still_not_paired():
+    """GUARD: sharing a date alone admits nothing - a lab result and a progress note on the same
+    visit day are two documents, and the reviewers asked for them kept separate."""
+    items = [
+        _row(0, _STATE_FORM, category="1", title="PR-2"),
+        _row(1, _CLINIC_LETTER, category="14", title="Laboratory Results"),
+    ]
+    assert dedup.cluster_rows(items) == []
+
+
+def test_undated_rows_in_different_formats_are_still_not_paired():
+    """GUARD: an unknown date is unknown, never a match, so undated rows keep the word-set test."""
+    items = [_row(0, _STATE_FORM, date="-"), _row(1, _CLINIC_LETTER, date="-")]
+    assert dedup.cluster_rows(items) == []
+
+
+def test_a_recurring_form_on_different_dates_is_still_not_paired():
+    """GUARD: the dominant false positive - repeat visits to one provider on a shared form."""
+    items = [_row(0, _STATE_FORM, date="09/12/2026"), _row(1, _CLINIC_LETTER, date="09/19/2026")]
+    assert dedup.cluster_rows(items) == []
+
+
+def test_a_candidate_in_two_formats_is_sent_to_the_model_not_accepted_on_text():
+    """Its text is dissimilar, so it can never clear `dupe_model_override` and skip the confirm
+    call: the model reads both and decides. Nothing is auto-accepted by this change."""
+    from app.config import get_settings
+
+    items = [_row(0, _STATE_FORM, title="PR-2"), _row(1, _CLINIC_LETTER, title="Office Note")]
+    [cluster] = dedup.cluster_rows(items)
+    assert cluster["similarity"] < get_settings().dupe_model_override

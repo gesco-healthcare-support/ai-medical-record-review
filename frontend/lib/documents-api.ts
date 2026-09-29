@@ -1,9 +1,12 @@
 import { apiFetch } from "@/lib/api";
 import type { DocumentListItem } from "@/lib/types";
 
-/** GET /api/documents - the landing list (owner-scoped, newest first, with active_job + rows_count). */
-export function listDocuments() {
-  return apiFetch<DocumentListItem[]>("/documents");
+/** GET /api/documents - the landing list (owner-scoped, newest first, with active_job + rows_count).
+ *  `owner` asks for another reviewer's records; the server honours it for an admin only and
+ *  returns the caller's own list to anyone else. */
+export function listDocuments(owner?: number | null) {
+  const query = owner == null ? "" : `?owner=${encodeURIComponent(String(owner))}`;
+  return apiFetch<DocumentListItem[]>(`/documents${query}`);
 }
 
 /** POST /api/documents - single-PDF upload (multipart field "pdf"). Does NOT start identification. */

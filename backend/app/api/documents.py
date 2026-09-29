@@ -76,6 +76,7 @@ from app.services.reporting import (
     build_memo_document,
     build_mrr_document,
     is_diagnostic,
+    parsed_date,
     record_accounting,
 )
 from app.services.rows import validate_rows
@@ -499,12 +500,20 @@ def aggregate_documents(
 
 @router.get("")
 def list_documents(
+    owner: int | None = None,
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
+    """The records one user owns: the caller's own, or - for an admin only - the reviewer `owner`.
+
+    An admin picks a reviewer to see just that reviewer's records, rather than everyone's at once
+    (the lead reviewer's request: "select a user and see docs related to that user only"). For
+    anyone else `owner` is IGNORED rather than refused, so a non-admin sending it gets their own
+    list and learns nothing about another account."""
+    owner_id = owner if owner is not None and user.is_superuser else user.id
     documents = session.scalars(
         select(Document)
-        .where(Document.user_id == user.id)
+        .where(Document.user_id == owner_id)
         .order_by(Document.created_at.desc())
         # `listing()` reads `active_job`, which iterates `self.jobs` - a lazy relationship, so
         # without this the comprehension below fires ONE query per document. Measured by counting
@@ -529,7 +538,7 @@ def list_documents(
         session.execute(
             select(ReviewRow.document_id, func.count(ReviewRow.id))
             .join(Document, Document.id == ReviewRow.document_id)
-            .where(Document.user_id == user.id)
+            .where(Document.user_id == owner_id)
             .group_by(ReviewRow.document_id)
         )
         .tuples()
@@ -568,7 +577,12 @@ def _editor_row(row: ReviewRow) -> dict:
 def get_document(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
+    # An admin opening another reviewer's record leaves a row under the admin, so who looked at
+    # which record is on file. An owner reading their own record is not audited, as before.
+    if document.user_id != user.id:
+        audit(session, "view_record", user.id, document.id)
     payload = document.listing()
     payload["rows"] = [_editor_row(row) for row in document.review_rows]
     payload["categories"] = catalog.get_category_options(session)
@@ -577,6 +591,10 @@ def get_document(
     # the two drifting. The frontend never holds its own copy.
     payload["doctors"] = list(DOCTORS)
     payload["letter_types"] = list(LETTER_TYPES)
+    # Whose record this is, so the workbench can say so when an admin has opened another
+    # reviewer's record. Name and id only; the email stays out of the page.
+    owner = session.get(User, document.user_id)
+    payload["owner"] = {"id": document.user_id, "name": (owner.name if owner else None) or ""}
     return payload
 
 
@@ -594,6 +612,7 @@ def _header_shape(data: dict) -> dict:
 def extract_header_route(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Re-extract {patient_first_name, patient_last_name, patient_dob, law_firm} from the record's
     first pages (Vertex) AND persist them onto the document, so a single detect is available
@@ -626,9 +645,26 @@ def extract_header_route(
         else:
             shape[field] = getattr(document, field) or ""
     session.commit()
+    # Field names only, never the values: they are the patient's name and date of birth.
+    filled = sorted(field for field, found in _header_shape(data).items() if found)
+    audit(session, "header.extract", user.id, document.id, detail="filled=" + ",".join(filled))
     # The MERGED view, so the two callers show what is stored rather than the raw extraction - a
     # kept field would otherwise vanish from the form while surviving in the database.
     return shape
+
+
+# Every document column `put_header` writes, for the audit's "which fields changed".
+_HEADER_FIELDS = (
+    "patient_first_name",
+    "patient_last_name",
+    "patient_dob",
+    "law_firm",
+    "attorney_name",
+    "doctor",
+    "letter_type",
+    "letter_date",
+    "pages_received",
+)
 
 
 def _pages_received(raw: str) -> int | None:
@@ -655,8 +691,10 @@ def put_header(
     payload: HeaderPayload,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Persist the reviewer-edited report header on the document."""
+    before = {field: getattr(document, field) for field in _HEADER_FIELDS}
     document.patient_first_name = payload.patient_first_name
     document.patient_last_name = payload.patient_last_name
     document.patient_dob = payload.patient_dob
@@ -671,18 +709,30 @@ def put_header(
     document.letter_date = payload.letter_date
     document.pages_received = _pages_received(payload.pages_received)
     session.commit()
+    # Which fields changed, by name - never the values, which are the patient's details.
+    # An unset field and a blank one are the same "nothing", so "" over None is not a change.
+    changed = sorted(f for f in _HEADER_FIELDS if (getattr(document, f) or "") != (before[f] or ""))
+    audit(session, "header.edit", user.id, document.id, detail="changed=" + ",".join(changed))
     return document.listing()
 
 
 @router.delete(
     "/{document_id}",
-    responses={409: {"description": "A job is running for this document."}},
+    responses={
+        404: {"description": "No such document, or it is not the caller's own (admins included)."},
+        409: {"description": "A job is running for this document."},
+    },
 )
 def delete_document(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
+    # Owner-only, even for an admin. `get_owned_document` lets an admin open and fix another
+    # reviewer's record; deleting it is not fixing it, and a delete cannot be undone. Same 404 the
+    # guard answers, so this reveals nothing the guard would not.
+    if document.user_id != user.id:
+        raise HTTPException(status_code=404, detail="not found")
     if document.active_job is not None:
         raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     stored_path = document.stored_path
@@ -899,6 +949,7 @@ def dedup_start(
     payload: DedupStartPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Manually (re)run duplicate clustering. 409 if a job is already active for this document.
 
@@ -923,9 +974,11 @@ def dedup_start(
             model=get_settings().classify_model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            requested_by=user.id,
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
+    audit(session, "dedup.start", user.id, document.id)
     return {"ok": True}
 
 
@@ -1037,6 +1090,7 @@ def resolve_duplicate(
     payload: DuplicateResolvePayload,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Resolve one cluster: keep_one (mark the primary, exclude the rest) or dismiss (not duplicates)."""
     members = [r for r in document.review_rows if r.dupe_group == group]
@@ -1058,6 +1112,13 @@ def resolve_duplicate(
             detail="action must be 'keep_one', 'dismiss' or 'remove_member'",
         )
     session.commit()
+    audit(
+        session,
+        "duplicates.resolve",
+        user.id,
+        document.id,
+        detail=f"group={group} action={payload.action}",
+    )
     return {"ok": True}
 
 
@@ -1150,6 +1211,7 @@ def segment_start(
     payload: SegmentStartPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Enqueue a segmentation job on the `segment` queue. The DB one-active-job index -> 409.
 
@@ -1165,9 +1227,11 @@ def segment_start(
             model=get_settings().genai_model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            requested_by=user.id,
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
+    audit(session, "segment.start", user.id, document.id)
     return {"ok": True}
 
 
@@ -1279,6 +1343,7 @@ def summarize_start(
             model=model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            requested_by=user.id,
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
@@ -1684,6 +1749,93 @@ def _download_name(document: Document, spec, ext: str) -> str:
     return _deliverable_filename(document, name.replace(" ", "_"), ext, fallback="records")
 
 
+# A separately-downloaded document keeps SPACES in its name - the reviewers wrote the name they want,
+# "Deposition of <name> 12-04-25" - but nothing that breaks a Content-Disposition header or a Windows
+# path, and ASCII only for the same reason.
+_SEPARATE_NAME_DROP = re.compile(r"[^A-Za-z0-9 .,'&()-]+")
+# A title names the deponent only after a "<kind> of" pair ("Deposition of John Doe", "Continued
+# Deposition of John Doe", "Transcript of the Deposition of John Doe"), where <kind> is deposition,
+# depo or transcript. Everything else in a title describes the DOCUMENT - "Summary", "Volume 2" -
+# and must never be read as a name: taking whatever was left once a few words were stripped
+# produced "Deposition of Summary", and taking the words after the FIRST "of" produced "the of John
+# Doe" from "Transcript of the Deposition of John Doe". So the name is the words after the LAST such
+# pair, less the kind words; a title with no such pair falls back to the patient. The pair, not a
+# bare "of", because a name can hold one ("Deposition of Custodian of Records"). Plain word
+# matching rather than a regex: nothing to backtrack over, whatever a title holds.
+_TITLE_KIND_WORDS = frozenset({"deposition", "depo", "transcript"})
+
+
+def _words_after_of(title: str) -> list[str]:
+    """The words after the last "<kind> of" pair (any case), less the document-kind words."""
+    words = title.split()
+    bare = [w.lower().strip(".,;:") for w in words]
+    pairs = [
+        i for i in range(len(bare) - 1) if bare[i] in _TITLE_KIND_WORDS and bare[i + 1] == "of"
+    ]
+    if not pairs:
+        return []
+    after = range(pairs[-1] + 2, len(words))
+    return [words[i] for i in after if bare[i] not in _TITLE_KIND_WORDS]
+
+
+def _separate_who(row: dict, document: Document) -> str:
+    """Whose document this is: the name after "of" in its own title, else the patient's.
+
+    A title in capitals ("DEPOSITION OF JOHN DOE") is title-cased so the filename reads like the
+    reviewers' example; a title already in mixed case is kept as written."""
+    title = (row.get("title") or "").strip()
+    rest = " ".join(_words_after_of("" if title == "-" else title))
+    if rest:
+        return rest.title() if rest.isupper() else rest
+    names = (document.patient_first_name, document.patient_last_name)
+    return " ".join(n.strip() for n in names if n and n.strip())
+
+
+def _separate_filename(row: dict, document: Document, kind: str) -> str:
+    """`<kind> of <who> <MM-DD-YY>.pdf`, dropping whichever part the record does not state.
+
+    The date is the row's own, in the two-digit-year shape every other date in the deliverable
+    now uses. An undated row is named without one rather than with "Undated" or "-"."""
+    who = _separate_who(row, document)
+    name = f"{kind} of {who}" if who else kind
+    when = parsed_date({"summaryDate": row.get("date") or ""})
+    if when:
+        name = f"{name} {when:%m-%d-%y}"
+    safe = " ".join(_SEPARATE_NAME_DROP.sub("", name).split()) or "document"
+    return f"{safe}.pdf"
+
+
+def _separate_members(
+    document: Document, matched: list[dict], kind: str
+) -> list[tuple[str, bytes]]:
+    """One PDF per matched row, in record order, each named for itself.
+
+    Two rows can legitimately produce the same name - one person deposed twice on an undated
+    transcript - so a repeat gets " (2)", " (3)" rather than overwriting the first inside a zip."""
+    members: list[tuple[str, bytes]] = []
+    seen: dict[str, int] = {}
+    for row in matched:
+        name = _separate_filename(row, document, kind)
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:
+            name = f"{name[: -len('.pdf')]} ({seen[name]}).pdf"
+        members.append((name, bundles.build_bundle_pdf(document.stored_path, [row]).getvalue()))
+    return members
+
+
+def _zip_bytes(members: list[tuple[str, bytes]]) -> bytes:
+    """`members` as one archive.
+
+    ZIP_STORED, not DEFLATED: every member is already a compressed container - a .docx IS a zip,
+    and PDF content streams are deflated - so compressing again costs CPU proportional to a whole
+    source record and saves close to nothing."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        for name, blob in members:
+            archive.writestr(name, blob)
+    return buffer.getvalue()
+
+
 def _letter_pages(document: Document) -> int:
     """How many pages the letter says arrived: the cover sheet's count where one was entered.
 
@@ -1720,7 +1872,9 @@ def _deliverable_filename(document: Document, suffix: str, ext: str, *, fallback
 
 
 def _summary_filename(document: Document) -> str:
-    return _deliverable_filename(document, "summary", "docx", fallback="summaries")
+    # "MRR", not "summary": the reviewers asked for the name the deliverables they receive from
+    # outside use, so the Word document says what it is.
+    return _deliverable_filename(document, "MRR", "docx", fallback="summaries")
 
 
 def _linked_filename(document: Document) -> str:
@@ -1935,6 +2089,10 @@ def _bundle_members(session: Session, document: Document, specs) -> list[tuple[s
         matched = bundles.matched_rows(rows, spec.categories) if spec.categories else []
         if not matched:
             continue
+        kind = (getattr(spec, "separateAs", None) or "").strip()
+        if kind:
+            members.extend(_separate_members(document, matched, kind))
+            continue
         pdf = bundles.build_bundle_pdf(
             document.stored_path, matched, cover=_bundle_cover(session, document, spec, matched)
         )
@@ -2103,17 +2261,9 @@ def export_document_zip(
         (_memo_filename(document), _memo_docx_bytes(session, document, payload, user)),
     ]
     members.extend(_bundle_members(session, document, payload.bundles))
-
-    buffer = io.BytesIO()
-    # ZIP_STORED, not DEFLATED: every member is already a compressed container - a .docx IS
-    # a zip, and PDF content streams are deflated - so compressing again costs CPU
-    # proportional to a whole source record and saves close to nothing.
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
-        for name, blob in members:
-            archive.writestr(name, blob)
     audit(session, "export_zip", user.id, document.id)
     return _offer_download(
-        buffer.getvalue(), "application/zip", _zip_filename(document), document, user
+        _zip_bytes(members), "application/zip", _zip_filename(document), document, user
     )
 
 
@@ -2138,6 +2288,17 @@ def bundle_pdf(
     button hands over and the one inside the folder are not two different documents."""
     payload = payload or BundlePayload()
     matched = _matched_rows(session, document, payload.categories)
+    kind = (payload.separateAs or "").strip()
+    if kind:
+        # One file per document. A single match is handed over as that PDF; several as a zip
+        # named like the combined download would have been.
+        members = _separate_members(document, matched, kind)
+        audit(session, "bundle_pdf", user.id, document.id)
+        if len(members) == 1:
+            name, blob = members[0]
+            return _offer_download(blob, _PDF_MEDIA_TYPE, name, document, user)
+        filename = _download_name(document, payload, "zip")
+        return _offer_download(_zip_bytes(members), "application/zip", filename, document, user)
     buffer = bundles.build_bundle_pdf(
         document.stored_path, matched, cover=_bundle_cover(session, document, payload, matched)
     )

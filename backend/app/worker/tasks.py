@@ -621,14 +621,16 @@ def segment_document(job_id) -> None:
         # rows at all if the process then died. Here the same commit carries the new row set, which
         # `_run` would otherwise only commit at the very end.
         #
-        # Attributed to `document.user_id`: `get_owned_document` is an owner-only guard with no admin
-        # bypass, so whoever asked for this re-segment IS the owner. Not a stand-in for a requester
-        # we do not have.
+        # Attributed to whoever asked for this re-segment. That used to be `document.user_id`, on the
+        # grounds that `get_owned_document` had no admin bypass so the requester WAS the owner; it
+        # has one now (an admin can fix another reviewer's record), so the job records who started
+        # it. NULL - a job created before that column, or one the system queued itself - falls back
+        # to the owner, which is what those jobs always were.
         if lost["rows"]:
             audit(
                 session,
                 "segment.rows_replaced",
-                document.user_id,
+                job.requested_by or document.user_id,
                 document.id,
                 detail=_replaced_rows_detail(lost, had_baseline=bool(prior)),
             )
