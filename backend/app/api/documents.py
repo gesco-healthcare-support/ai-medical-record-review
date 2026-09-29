@@ -499,12 +499,20 @@ def aggregate_documents(
 
 @router.get("")
 def list_documents(
+    owner: int | None = None,
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
+    """The records one user owns: the caller's own, or - for an admin only - the reviewer `owner`.
+
+    An admin picks a reviewer to see just that reviewer's records, rather than everyone's at once
+    (the lead reviewer's request: "select a user and see docs related to that user only"). For
+    anyone else `owner` is IGNORED rather than refused, so a non-admin sending it gets their own
+    list and learns nothing about another account."""
+    owner_id = owner if owner is not None and user.is_superuser else user.id
     documents = session.scalars(
         select(Document)
-        .where(Document.user_id == user.id)
+        .where(Document.user_id == owner_id)
         .order_by(Document.created_at.desc())
         # `listing()` reads `active_job`, which iterates `self.jobs` - a lazy relationship, so
         # without this the comprehension below fires ONE query per document. Measured by counting
@@ -529,7 +537,7 @@ def list_documents(
         session.execute(
             select(ReviewRow.document_id, func.count(ReviewRow.id))
             .join(Document, Document.id == ReviewRow.document_id)
-            .where(Document.user_id == user.id)
+            .where(Document.user_id == owner_id)
             .group_by(ReviewRow.document_id)
         )
         .tuples()
@@ -577,6 +585,10 @@ def get_document(
     # the two drifting. The frontend never holds its own copy.
     payload["doctors"] = list(DOCTORS)
     payload["letter_types"] = list(LETTER_TYPES)
+    # Whose record this is, so the workbench can say so when an admin has opened another
+    # reviewer's record. Name and id only; the email stays out of the page.
+    owner = session.get(User, document.user_id)
+    payload["owner"] = {"id": document.user_id, "name": (owner.name if owner else None) or ""}
     return payload
 
 
@@ -683,6 +695,11 @@ def delete_document(
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
+    # Owner-only, even for an admin. `get_owned_document` lets an admin open and fix another
+    # reviewer's record; deleting it is not fixing it, and a delete cannot be undone. Same 404 the
+    # guard answers, so this reveals nothing the guard would not.
+    if document.user_id != user.id:
+        raise HTTPException(status_code=404, detail="not found")
     if document.active_job is not None:
         raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     stored_path = document.stored_path
@@ -899,6 +916,7 @@ def dedup_start(
     payload: DedupStartPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Manually (re)run duplicate clustering. 409 if a job is already active for this document.
 
@@ -923,6 +941,7 @@ def dedup_start(
             model=get_settings().classify_model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            requested_by=user.id,
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
@@ -1150,6 +1169,7 @@ def segment_start(
     payload: SegmentStartPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Enqueue a segmentation job on the `segment` queue. The DB one-active-job index -> 409.
 
@@ -1165,6 +1185,7 @@ def segment_start(
             model=get_settings().genai_model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            requested_by=user.id,
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
@@ -1279,6 +1300,7 @@ def summarize_start(
             model=model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            requested_by=user.id,
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)

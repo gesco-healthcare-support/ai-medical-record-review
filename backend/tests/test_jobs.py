@@ -3276,7 +3276,7 @@ class TestSegmentRowsReplacedIsRecorded:
             "suggest_merge": False,
         }
 
-    def _segment(self, monkeypatch, doc_id, rows):
+    def _segment(self, monkeypatch, doc_id, rows, requested_by=None):
         """Run one segmentation generation producing `rows`, with OCR and the model stubbed out."""
         import app.services.page_text as page_text_mod
         import app.services.segment_engine as se
@@ -3288,7 +3288,9 @@ class TestSegmentRowsReplacedIsRecorded:
             lambda pdf_path, total_pages, progress=None, page_text_fn=None: rows,
         )
         with get_sessionmaker()() as session:
-            job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+            job_id = jobs.create_job(
+                session, doc_id, "segment", model="m", prompt_version="1", requested_by=requested_by
+            ).id
         segment_document(job_id)
         return job_id
 
@@ -3363,6 +3365,33 @@ class TestSegmentRowsReplacedIsRecorded:
         assert len(events) == 1
         assert events[0].detail == "rows 2->0 (recategorized 0, respanned 0)"
 
+    def test_an_admin_re_segmenting_someone_elses_record_is_recorded_as_the_admin(
+        self, monkeypatch
+    ):
+        """An admin can open and re-identify another reviewer's record. The rows it destroys are
+        that reviewer's corrections, and the trail must say who destroyed them - the admin, not the
+        owner whose name used to be written here unconditionally."""
+        doc_id = _make_user_and_doc(page_count=2)
+        with get_sessionmaker()() as session:
+            admin = User(
+                email=unique_test_email(),
+                name="Admin",
+                password=MrrPasswordHelper().hash("Str0ng#pw1"),
+                active=True,
+                is_admin=True,
+            )
+            session.add(admin)
+            session.commit()
+            admin_id = admin.id
+            owner_id = session.get(Document, doc_id).user_id
+        rows = [self._row(1, "1"), self._row(2, "100")]
+        self._segment(monkeypatch, doc_id, rows)
+        self._segment(monkeypatch, doc_id, rows, requested_by=admin_id)
+
+        event = self._events(doc_id)[0]
+        assert event.user_id == admin_id
+        assert event.user_id != owner_id
+
     def test_the_event_is_attributed_to_the_owner_and_carries_no_title(self, monkeypatch):
         doc_id = _make_user_and_doc(page_count=2)
         rows = [self._row(1, "1"), self._row(2, "100")]
@@ -3372,8 +3401,8 @@ class TestSegmentRowsReplacedIsRecorded:
         with get_sessionmaker()() as session:
             owner_id = session.get(Document, doc_id).user_id
         event = self._events(doc_id)[0]
-        # get_owned_document is an owner-only guard with no admin bypass, so the owner IS whoever
-        # asked for the re-segment.
+        # A job with no recorded requester - every job before the column, and the ones the system
+        # queues itself - is attributed to the owner, which is what those jobs always were.
         assert event.user_id == owner_id
         # Titles carry physician names and must never reach the audit table.
         assert "A" not in event.detail

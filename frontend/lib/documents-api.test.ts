@@ -77,6 +77,16 @@ describe("uploading", () => {
   });
 });
 
+describe("listing another reviewer's records", () => {
+  it("asks for them by owner, and for your own with no owner", async () => {
+    // The admin picker sends the chosen reviewer; the server decides whether to honour it.
+    await listDocuments(7);
+    expect(lastCall().url).toBe("/api/documents?owner=7");
+    await listDocuments(null);
+    expect(lastCall().url).toBe("/api/documents");
+  });
+});
+
 describe("the plain document calls", () => {
   it("each address their own path and method", async () => {
     await listDocuments();

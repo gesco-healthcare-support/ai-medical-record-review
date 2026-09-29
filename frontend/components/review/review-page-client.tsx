@@ -5,8 +5,10 @@ import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { couldNotIdentify, rowErrors } from "@/lib/review-rows";
 import { humanizeError } from "@/lib/errors";
+import type { RecordOwner } from "@/lib/types";
 import { useReviewWorkflow } from "@/hooks/use-review-workflow";
 import { useSummaries } from "@/hooks/use-summaries";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import { useDuplicates, useStartDedup } from "@/hooks/use-duplicates";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
 import { BackLink } from "@/components/app/back-link";
@@ -374,12 +376,22 @@ function ReviewBody({
   );
 }
 
+/** The note an admin sees on another reviewer's record, or null on one's own. Says whose record it
+ *  is, so it is never mistaken for the admin's own, and that the admin's changes carry their name -
+ *  which is true: every change is recorded under whoever made it. */
+function ownerNote(owner: RecordOwner | null, meId: number | undefined): string | null {
+  if (!owner || meId === undefined || owner.id === meId) return null;
+  const whose = owner.name ? `${owner.name}'s` : "another reviewer's";
+  return `You are working on ${whose} record. Anything you change is recorded under your name.`;
+}
+
 /** Every banner the review page can show, in the order it shows them.
  *
  *  Extracted from the page component for one reason: six conditionals nested inside a 500-line
  *  function dominated its complexity, and a conditional costs more the deeper it sits. Kept in this
  *  file rather than given its own, per the decision recorded in the cleanup plan. */
 function ReviewBanners({
+  note,
   wf,
   tab,
   unresolvedDupes,
@@ -391,6 +403,7 @@ function ReviewBanners({
   onRestart,
   onReviewDuplicates,
 }: Readonly<{
+  note: string | null;
   wf: ReturnType<typeof useReviewWorkflow>;
   tab: Tab;
   unresolvedDupes: number;
@@ -404,6 +417,7 @@ function ReviewBanners({
 }>) {
   return (
     <>
+      {note ? <output className="banner-info">{note}</output> : null}
       {wf.banner ? <div className="banner">{wf.banner}</div> : null}
       {/* The post-stop choice lives HERE rather than in the progress bar, because that bar unmounts
           the moment the job stops being active and so cannot host it. */}
@@ -486,6 +500,7 @@ export function ReviewPageClient({
   documentId,
 }: Readonly<{ documentId: string }>) {
   const wf = useReviewWorkflow(documentId);
+  const { data: me } = useCurrentUser();
   const { data: summaries = [] } = useSummaries(documentId);
   const { data: dupData } = useDuplicates(documentId);
   const recheck = useStartDedup(documentId);
@@ -807,6 +822,7 @@ export function ReviewPageClient({
       </header>
 
       <ReviewBanners
+        note={ownerNote(wf.owner, me?.id)}
         wf={wf}
         tab={tab}
         unresolvedDupes={unresolvedDupes}

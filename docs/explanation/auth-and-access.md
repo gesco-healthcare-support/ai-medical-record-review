@@ -35,7 +35,7 @@ flowchart TD
     I -- yes --> R
     H -- no --> R
     R --> K{Route takes a document_id?}
-    K -- yes --> L{get_owned_document: exists and owned by the user?}
+    K -- yes --> L{get_owned_document: exists, and owned by the user or the user is an admin?}
     L -- no --> M[404 not found]
     L -- yes --> N[Handler runs]
     K -- no --> N
@@ -133,15 +133,24 @@ register, reset and user update, so the API enforces what the sign-up form shows
 
 ### Per-user isolation
 
-Records are private to the account that uploaded them. There is no sharing and no team view, and
-being an admin does not grant access to other users' records.
+Records are private to the account that uploaded them, with one exception: an admin can open and
+fix any account's record. The client's lead reviewer asked for it, to correct a mistake after the
+reviewer who made it has left. There is no sharing between reviewers and no view of everyone's
+records at once.
 
-- `get_owned_document` (`backend/app/api/deps.py`) loads the document by id and compares
-  `document.user_id` with the caller's id. A missing document and someone else's document get the
-  same 404 `not found`, so a caller cannot learn whether an id exists. Every route with a
-  `{document_id}` in its path depends on it, except the admin reprocess route.
+- `get_owned_document` (`backend/app/api/deps.py`) loads the document by id and admits the caller
+  when `document.user_id` is the caller's id or the caller is an admin. A missing document and
+  someone else's document get the same 404 `not found`, so a non-admin cannot learn whether an id
+  exists. Every route with a `{document_id}` in its path depends on it, except the admin reprocess
+  route.
 - The listing route filters on `Document.user_id` (`list_documents` in
-  `backend/app/api/documents.py`).
+  `backend/app/api/documents.py`): the caller's own records, or, for an admin who passes `owner`,
+  that one account's records. A non-admin's `owner` is ignored, not refused.
+- What an admin does on another account's record is recorded under the admin: every audit row takes
+  the acting user, and a job records who started it (`jobs.requested_by`), which the worker's own
+  audit row for a re-segment uses. The record stays with its owner.
+- Deleting stays owner-only, even for an admin (`delete_document`): deleting is not fixing, and it
+  cannot be undone.
 - A prepared export's token is bound to both the user and the document that made it
   (`lookup` and `delivery_status` in `backend/app/services/downloads.py`). A mismatch is the same
   404 as an unknown token.

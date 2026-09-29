@@ -7,7 +7,7 @@ row rules live in `frontend/lib/review-rows.ts`.
 
 | File | What it is |
 | --- | --- |
-| `review-page-client.tsx` | `ReviewPageClient`: the header bar (back link, record name and counts, tabs, per-tab actions, progress bar with two-stage Stop), the banners, the duplicate-check gate on Summarize, and the tab body |
+| `review-page-client.tsx` | `ReviewPageClient`: the header bar (back link, record name and counts, tabs, per-tab actions, progress bar with two-stage Stop), the banners (including the note an admin sees on another reviewer's record), the duplicate-check gate on Summarize, and the tab body |
 | `review-editor.tsx` | `ReviewEditor`: the Review & correct toolbar (Insert document, Apply suggested merges, Could not identify filter, first validation error) over a `SplitPane` of `RowsTable` and `PdfViewer`; merge, split, insert and delete |
 | `rows-table.tsx` | `RowsTable` and `categoryOptions()`: two table rows per document (title line with chips and actions, fields line with start, end, category, date, injury date, review flag and summarize), gap strips for skipped pages |
 | `header-bar.tsx` | `HeaderBar`: the nine report-header fields, Auto-fill or Re-detect, and Save |
