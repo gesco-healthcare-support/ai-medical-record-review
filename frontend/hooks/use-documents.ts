@@ -4,11 +4,15 @@ import type { DocumentListItem } from "@/lib/types";
 
 const DOCS_KEY = ["documents"] as const;
 
-/** The documents list. Polls every 2s while any record has an active job, then stops. */
-export function useDocuments() {
+/** The documents list. Polls every 2s while any record has an active job, then stops.
+ *
+ *  `owner` (an admin looking at another reviewer's records) gets its own cache entry under the
+ *  same prefix, so the mutations below, which invalidate `["documents"]`, refresh it too. With no
+ *  owner the key is exactly what it always was. */
+export function useDocuments(owner?: number | null) {
   return useQuery({
-    queryKey: DOCS_KEY,
-    queryFn: api.listDocuments,
+    queryKey: owner == null ? DOCS_KEY : [...DOCS_KEY, "owner", owner],
+    queryFn: () => api.listDocuments(owner),
     refetchInterval: (query) => {
       const docs = (query.state.data ?? []) as DocumentListItem[];
       return docs.some((doc) => doc.active_job) ? 2000 : false;

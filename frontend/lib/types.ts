@@ -210,7 +210,16 @@ export type DuplicatesResponse = {
 };
 
 /** GET /api/documents/{id} - the full editor payload (listing + rows + category options). */
+/** Whose record it is (GET /api/documents/{id}). Shown when an admin opens another reviewer's record. */
+export type RecordOwner = { id: number; name: string };
+
+/** One account an admin can pick on the records page (GET /api/admin/users). */
+export type AdminAccount = { id: number; name: string; email: string };
+
 export type DocumentDetail = {
+  // Optional: a server from before this field sends none, and the page then simply shows no
+  // "whose record" note rather than failing.
+  owner?: RecordOwner;
   id: string;
   original_filename: string;
   page_count: number;

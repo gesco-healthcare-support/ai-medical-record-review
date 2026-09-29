@@ -14,6 +14,7 @@ shared `conftest.py`.
 | `conftest.py` | Shared setup, not tests: finds the test database from the Compose files and refuses the app database, gives each parallel worker its own database, Redis database and account prefix, hashes test passwords at argon2's cheapest cost, deletes test accounts around every test, and provides the `client`, `seeded_user` and `lanes()` helpers. |
 | `test_ab_stats.py` | The aggregation used by the segmentation boundary A/B script (`scripts/eval/ab_stats.py`). |
 | `test_admin_api.py` | The `/api/admin` routes: categories, prompts, reprocess, admin-only access. |
+| `test_admin_record_access.py` | An admin opening and fixing another reviewer's record: the ownership guard, the `owner` list filter, audit attribution, owner-only delete, the accounts list. |
 | `test_auth_gate.py` | The deny-by-default authentication gate and its public-path allowlist. |
 | `test_auth_integration.py` | Login, logout, the registration rules and the password-reset routes, against the database. |
 | `test_backend_provenance.py` | Which model backend answered a call is recorded beside which model did. |

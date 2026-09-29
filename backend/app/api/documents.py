@@ -500,12 +500,20 @@ def aggregate_documents(
 
 @router.get("")
 def list_documents(
+    owner: int | None = None,
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
+    """The records one user owns: the caller's own, or - for an admin only - the reviewer `owner`.
+
+    An admin picks a reviewer to see just that reviewer's records, rather than everyone's at once
+    (the lead reviewer's request: "select a user and see docs related to that user only"). For
+    anyone else `owner` is IGNORED rather than refused, so a non-admin sending it gets their own
+    list and learns nothing about another account."""
+    owner_id = owner if owner is not None and user.is_superuser else user.id
     documents = session.scalars(
         select(Document)
-        .where(Document.user_id == user.id)
+        .where(Document.user_id == owner_id)
         .order_by(Document.created_at.desc())
         # `listing()` reads `active_job`, which iterates `self.jobs` - a lazy relationship, so
         # without this the comprehension below fires ONE query per document. Measured by counting
@@ -530,7 +538,7 @@ def list_documents(
         session.execute(
             select(ReviewRow.document_id, func.count(ReviewRow.id))
             .join(Document, Document.id == ReviewRow.document_id)
-            .where(Document.user_id == user.id)
+            .where(Document.user_id == owner_id)
             .group_by(ReviewRow.document_id)
         )
         .tuples()
@@ -569,7 +577,12 @@ def _editor_row(row: ReviewRow) -> dict:
 def get_document(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
+    # An admin opening another reviewer's record leaves a row under the admin, so who looked at
+    # which record is on file. An owner reading their own record is not audited, as before.
+    if document.user_id != user.id:
+        audit(session, "view_record", user.id, document.id)
     payload = document.listing()
     payload["rows"] = [_editor_row(row) for row in document.review_rows]
     payload["categories"] = catalog.get_category_options(session)
@@ -578,6 +591,10 @@ def get_document(
     # the two drifting. The frontend never holds its own copy.
     payload["doctors"] = list(DOCTORS)
     payload["letter_types"] = list(LETTER_TYPES)
+    # Whose record this is, so the workbench can say so when an admin has opened another
+    # reviewer's record. Name and id only; the email stays out of the page.
+    owner = session.get(User, document.user_id)
+    payload["owner"] = {"id": document.user_id, "name": (owner.name if owner else None) or ""}
     return payload
 
 
@@ -595,6 +612,7 @@ def _header_shape(data: dict) -> dict:
 def extract_header_route(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Re-extract {patient_first_name, patient_last_name, patient_dob, law_firm} from the record's
     first pages (Vertex) AND persist them onto the document, so a single detect is available
@@ -627,9 +645,26 @@ def extract_header_route(
         else:
             shape[field] = getattr(document, field) or ""
     session.commit()
+    # Field names only, never the values: they are the patient's name and date of birth.
+    filled = sorted(field for field, found in _header_shape(data).items() if found)
+    audit(session, "header.extract", user.id, document.id, detail="filled=" + ",".join(filled))
     # The MERGED view, so the two callers show what is stored rather than the raw extraction - a
     # kept field would otherwise vanish from the form while surviving in the database.
     return shape
+
+
+# Every document column `put_header` writes, for the audit's "which fields changed".
+_HEADER_FIELDS = (
+    "patient_first_name",
+    "patient_last_name",
+    "patient_dob",
+    "law_firm",
+    "attorney_name",
+    "doctor",
+    "letter_type",
+    "letter_date",
+    "pages_received",
+)
 
 
 def _pages_received(raw: str) -> int | None:
@@ -656,8 +691,10 @@ def put_header(
     payload: HeaderPayload,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Persist the reviewer-edited report header on the document."""
+    before = {field: getattr(document, field) for field in _HEADER_FIELDS}
     document.patient_first_name = payload.patient_first_name
     document.patient_last_name = payload.patient_last_name
     document.patient_dob = payload.patient_dob
@@ -672,18 +709,30 @@ def put_header(
     document.letter_date = payload.letter_date
     document.pages_received = _pages_received(payload.pages_received)
     session.commit()
+    # Which fields changed, by name - never the values, which are the patient's details.
+    # An unset field and a blank one are the same "nothing", so "" over None is not a change.
+    changed = sorted(f for f in _HEADER_FIELDS if (getattr(document, f) or "") != (before[f] or ""))
+    audit(session, "header.edit", user.id, document.id, detail="changed=" + ",".join(changed))
     return document.listing()
 
 
 @router.delete(
     "/{document_id}",
-    responses={409: {"description": "A job is running for this document."}},
+    responses={
+        404: {"description": "No such document, or it is not the caller's own (admins included)."},
+        409: {"description": "A job is running for this document."},
+    },
 )
 def delete_document(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
+    # Owner-only, even for an admin. `get_owned_document` lets an admin open and fix another
+    # reviewer's record; deleting it is not fixing it, and a delete cannot be undone. Same 404 the
+    # guard answers, so this reveals nothing the guard would not.
+    if document.user_id != user.id:
+        raise HTTPException(status_code=404, detail="not found")
     if document.active_job is not None:
         raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     stored_path = document.stored_path
@@ -900,6 +949,7 @@ def dedup_start(
     payload: DedupStartPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Manually (re)run duplicate clustering. 409 if a job is already active for this document.
 
@@ -924,9 +974,11 @@ def dedup_start(
             model=get_settings().classify_model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            requested_by=user.id,
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
+    audit(session, "dedup.start", user.id, document.id)
     return {"ok": True}
 
 
@@ -1038,6 +1090,7 @@ def resolve_duplicate(
     payload: DuplicateResolvePayload,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Resolve one cluster: keep_one (mark the primary, exclude the rest) or dismiss (not duplicates)."""
     members = [r for r in document.review_rows if r.dupe_group == group]
@@ -1059,6 +1112,13 @@ def resolve_duplicate(
             detail="action must be 'keep_one', 'dismiss' or 'remove_member'",
         )
     session.commit()
+    audit(
+        session,
+        "duplicates.resolve",
+        user.id,
+        document.id,
+        detail=f"group={group} action={payload.action}",
+    )
     return {"ok": True}
 
 
@@ -1151,6 +1211,7 @@ def segment_start(
     payload: SegmentStartPayload | None = None,
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
 ):
     """Enqueue a segmentation job on the `segment` queue. The DB one-active-job index -> 409.
 
@@ -1166,9 +1227,11 @@ def segment_start(
             model=get_settings().genai_model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            requested_by=user.id,
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
+    audit(session, "segment.start", user.id, document.id)
     return {"ok": True}
 
 
@@ -1280,6 +1343,7 @@ def summarize_start(
             model=model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            requested_by=user.id,
         )
     except JobConflict:
         raise HTTPException(status_code=409, detail=_JOB_ALREADY_RUNNING_DETAIL)
