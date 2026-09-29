@@ -688,7 +688,10 @@ def put_header(
 
 @router.delete(
     "/{document_id}",
-    responses={409: {"description": "A job is running for this document."}},
+    responses={
+        404: {"description": "No such document, or it is not the caller's own (admins included)."},
+        409: {"description": "A job is running for this document."},
+    },
 )
 def delete_document(
     document: Document = Depends(get_owned_document),

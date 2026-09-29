@@ -85,31 +85,116 @@ export function OwnerPicker({
   );
 }
 
-/** My documents: the documents table + upload (button / browse / drag-drop) + first-run empty
- *  state. Upload does NOT start identification (a mis-clicked file must not spend model quota). */
-export function DocumentsView() {
-  const router = useRouter();
+function accountName(accounts: AdminAccount[] | undefined, id: number | null) {
+  return accounts?.find((a) => a.id === id)?.name || "this reviewer";
+}
+
+/** Whose records the page shows. Everyone but an admin always sees their own; an admin can pick
+ *  another reviewer, remembered for the tab. */
+function useRecordsOwner() {
   const { data: me } = useCurrentUser();
   const isAdmin = Boolean(me?.is_superuser);
   const accounts = useAccounts(isAdmin);
-  const [ownerId, setOwnerIdState] = useState<number | null>(null);
+  const [ownerId, setOwnerId] = useState<number | null>(null);
   useEffect(() => {
-    if (isAdmin) setOwnerIdState(readSavedOwner());
+    if (isAdmin) setOwnerId(readSavedOwner());
   }, [isAdmin]);
-  function setOwnerId(id: number | null) {
-    setOwnerIdState(id);
+  const choose = (id: number | null) => {
+    setOwnerId(id);
     saveOwner(id);
-  }
+  };
   // Another reviewer's records. Uploading and deleting are left out while viewing them: an
   // upload would land in the admin's own list, not this one, and deleting is not fixing (the
   // server refuses it too).
   const viewingOther = isAdmin && ownerId !== null && ownerId !== me?.id;
-  const ownerName = viewingOther
-    ? accounts.data?.find((a) => a.id === ownerId)?.name || "this reviewer"
-    : null;
-  const { data: docs = [], isLoading, isError, refetch } = useDocuments(
-    viewingOther ? ownerId : null,
+  return {
+    meId: me?.id,
+    isAdmin,
+    accounts: accounts.data ?? [],
+    ownerId: viewingOther ? ownerId : null,
+    choose,
+    viewingOther,
+    ownerName: viewingOther ? accountName(accounts.data, ownerId) : null,
+  };
+}
+
+type RecordsOwner = ReturnType<typeof useRecordsOwner>;
+
+/** The admin's picker, and the note while another reviewer's records are showing. */
+function OwnerBar({ owner }: Readonly<{ owner: RecordsOwner }>) {
+  if (!owner.isAdmin) return null;
+  return (
+    <section className="hd-column">
+      <OwnerPicker
+        meId={owner.meId}
+        accounts={owner.accounts}
+        value={owner.ownerId}
+        onChange={owner.choose}
+      />
+      {owner.viewingOther ? (
+        <output className="banner-info">
+          You are viewing {owner.ownerName}&apos;s records. Anything you change is recorded under
+          your name.
+        </output>
+      ) : null}
+    </section>
   );
+}
+
+/** An empty list: the first-run upload screen for one's own records, a plain line for someone
+ *  else's (whose records cannot be uploaded to from here). */
+function NoRecords({
+  owner,
+  dragging,
+  uploading,
+  onBrowse,
+}: Readonly<{ owner: RecordsOwner; dragging: boolean; uploading: boolean; onBrowse: () => void }>) {
+  if (owner.viewingOther) {
+    return (
+      <section className="hd-column">
+        <p>{owner.ownerName} has no records.</p>
+      </section>
+    );
+  }
+  return <EmptyState dragging={dragging} uploading={uploading} onBrowse={onBrowse} />;
+}
+
+/** The list heading, with the upload buttons on one's own records only. */
+function ListHeader({
+  owner,
+  uploading,
+  onSplit,
+  onPick,
+}: Readonly<{ owner: RecordsOwner; uploading: boolean; onSplit: () => void; onPick: () => void }>) {
+  return (
+    <div className="hd-header">
+      <h1>{owner.viewingOther ? `${owner.ownerName}'s documents` : "My documents"}</h1>
+      {owner.viewingOther ? null : (
+        <div className="flex flex-wrap gap-2.5">
+          <button type="button" className="ev-btn ev-btn-outline ev-btn-lg" onClick={onSplit}>
+            Upload split records
+          </button>
+          <button
+            type="button"
+            className="ev-btn ev-btn-primary ev-btn-lg"
+            onClick={onPick}
+            disabled={uploading}
+          >
+            {uploading ? "Uploading..." : "Upload a record"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** My documents: the documents table + upload (button / browse / drag-drop) + first-run empty
+ *  state. Upload does NOT start identification (a mis-clicked file must not spend model quota). */
+export function DocumentsView() {
+  const router = useRouter();
+  const owner = useRecordsOwner();
+  const viewingOther = owner.viewingOther;
+  const { data: docs = [], isLoading, isError, refetch } = useDocuments(owner.ownerId);
   const upload = useUploadDocument();
   const del = useDeleteDocument();
   const identify = useStartIdentification();
@@ -193,25 +278,10 @@ export function DocumentsView() {
         onChange={(e) => void uploadFile(e.target.files?.[0])}
       />
 
+      <OwnerBar owner={owner} />
+
       {/* A failed fetch leaves `docs` at its [] default, and the first-run screen below would then
           tell a reviewer with records that they have none. Say what happened instead. */}
-      {isAdmin ? (
-        <section className="hd-column">
-          <OwnerPicker
-            meId={me?.id}
-            accounts={accounts.data ?? []}
-            value={viewingOther ? ownerId : null}
-            onChange={setOwnerId}
-          />
-          {viewingOther ? (
-            <output className="banner-info">
-              You are viewing {ownerName}&apos;s records. Anything you change is recorded under
-              your name.
-            </output>
-          ) : null}
-        </section>
-      ) : null}
-
       {!isLoading && isError ? (
         <div className="banner" role="alert">
           Could not load your documents.{" "}
@@ -220,38 +290,22 @@ export function DocumentsView() {
           </button>
         </div>
       ) : null}
-      {!isLoading && !isError && docs.length === 0 && !viewingOther ? (
-        <EmptyState dragging={dragging} uploading={upload.isPending} onBrowse={pickFile} />
-      ) : null}
-      {!isLoading && !isError && docs.length === 0 && viewingOther ? (
-        <section className="hd-column">
-          <p>{ownerName} has no records.</p>
-        </section>
+      {!isLoading && !isError && docs.length === 0 ? (
+        <NoRecords
+          owner={owner}
+          dragging={dragging}
+          uploading={upload.isPending}
+          onBrowse={pickFile}
+        />
       ) : null}
       {!isLoading && docs.length > 0 ? (
         <section className="hd-column">
-          <div className="hd-header">
-            <h1>{viewingOther ? `${ownerName}'s documents` : "My documents"}</h1>
-            {viewingOther ? null : (
-              <div className="flex flex-wrap gap-2.5">
-                <button
-                  type="button"
-                  className="ev-btn ev-btn-outline ev-btn-lg"
-                  onClick={() => setSplitOpen(true)}
-                >
-                  Upload split records
-                </button>
-                <button
-                  type="button"
-                  className="ev-btn ev-btn-primary ev-btn-lg"
-                  onClick={pickFile}
-                  disabled={upload.isPending}
-                >
-                  {upload.isPending ? "Uploading..." : "Upload a record"}
-                </button>
-              </div>
-            )}
-          </div>
+          <ListHeader
+            owner={owner}
+            uploading={upload.isPending}
+            onSplit={() => setSplitOpen(true)}
+            onPick={pickFile}
+          />
           <DocumentsTable
             docs={docs}
             onOpen={(id) => router.push(`/records/${id}`)}
