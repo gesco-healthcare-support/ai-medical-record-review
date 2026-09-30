@@ -5,7 +5,8 @@ database with STAGING's migrations, starts staging's code and runs `verify`. See
 keeps this script independent of the schema: it creates what a reviewer would - an account, one uploaded record, its
 review rows - by the same routes the frontend uses.
 
-All data is synthetic: an address on the reserved `.invalid` domain, the repository's synthetic sample PDF
+All data is synthetic: an address on `example.com`, reserved for documentation (RFC 2606; the app's email validator
+rejects special-use names such as `.invalid` and `.test` with a 422), the repository's synthetic sample PDF
 (frontend/e2e/fixtures/sample.pdf), and invented row titles. Standard library only, so it runs on the bare runner.
 
     python3 acceptance_seed.py seed   --base http://localhost:8080 --pdf <path> --state <file>
@@ -28,7 +29,7 @@ _COMPARED = ("start", "end", "category", "title")
 def register_body() -> dict:
     """A synthetic account. The password meets app/auth/users.py validate_password (8+, a number, a symbol)."""
     return {
-        "email": f"acceptance-{secrets.token_hex(4)}@example.invalid",
+        "email": f"acceptance-{secrets.token_hex(4)}@example.com",
         "password": f"Acceptance#{secrets.token_hex(6)}9",
         "name": "Acceptance Stage",
     }
