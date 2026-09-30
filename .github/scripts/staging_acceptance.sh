@@ -73,6 +73,13 @@ for image in "${images[@]}"; do
   ./grype "docker:${image}" --only-fixed --fail-on critical
 done
 summary "- Image scan: no critical vulnerability with a fix in ${images[*]}"
+# Early warning, never a failure here: what release-policy.yml will say when a promotion proposes this commit, for the
+# three images it would release (every Critical, and every High with a fix, unless an exception covers it).
+for name in mrr-backend-web mrr-frontend mrr-docs; do
+  ./grype "docker:${name}" -q -o json > "grype-release-${name}.json"
+done
+python3 .github/scripts/release_policy.py --report-only --exceptions .github/release-exceptions.json \
+  grype-release-*.json
 echo "::endgroup::"
 
 echo "::group::2. Upgrade test: production's schema and synthetic data"
