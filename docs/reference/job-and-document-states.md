@@ -155,7 +155,7 @@ At most one job in `queued`, `running` or `paused` per document.
 | Where | Code | Effect |
 | --- | --- | --- |
 | Database | Partial unique index `uq_one_active_job_per_document` on `jobs.document_id` where `state IN ('queued', 'running', 'paused')` (`backend/app/models.py` `Job.__table_args__`; migrations `009991f2eda1` and `c2d5e8f1a3b7`) | A second active row fails to insert. This is the enforcement. |
-| Job creation | `jobs.py` `create_job` | `IntegrityError` on commit -> rollback -> `JobConflict`. |
+| Job creation | `jobs.py` `create_job` | `IntegrityError` on commit -> rollback -> `JobConflict`. A document id that does not exist raises `LookupError` before any row is added (the start routes never reach it: `get_owned_document` has already answered 404). |
 | Start routes | `segment_start`, `dedup_start`, `summarize_start` in `backend/app/api/documents.py`; `reprocess` in `backend/app/api/admin.py` | `JobConflict` -> HTTP 409. |
 | Individual-records upload | `aggregate_documents` | `JobConflict` is ignored; a new document cannot already have a job. |
 

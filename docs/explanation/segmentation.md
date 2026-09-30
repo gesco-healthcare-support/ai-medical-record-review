@@ -442,3 +442,5 @@ measurement, not an opinion.
   [Model providers](model-providers.md).
 - [Job and document states](../reference/job-and-document-states.md).
 - [Configuration reference](../reference/configuration.md).
+
+<!-- reviewed: 2026-09-30 -->

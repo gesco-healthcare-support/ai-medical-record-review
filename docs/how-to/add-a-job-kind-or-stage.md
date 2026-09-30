@@ -101,9 +101,12 @@ pauses has to schedule its own resume the way `_finalize_paused` does for summar
 ### 5. Add the start route
 
 In `backend/app/api/documents.py`, add a route modelled on `segment_start`: take the document with
-`Depends(get_owned_document)`, call `enqueue(session, document.id, "<kind>", model=...,
-prompt_version=PROMPT_VERSION, catalog_revision=catalog.catalog_version(session))`, and map
-`JobConflict` to HTTP 409 with `_JOB_ALREADY_RUNNING_DETAIL`. `jobs.kind` is `String(16)`, so keep
+`Depends(get_owned_document)` and the caller with `Depends(current_active_user)`, call
+`enqueue(session, document.id, "<kind>", model=..., prompt_version=PROMPT_VERSION,
+catalog_revision=catalog.catalog_version(session), requested_by=user.id)`, and map `JobConflict` to
+HTTP 409 with `_JOB_ALREADY_RUNNING_DETAIL`. `requested_by` records who started the job: an admin
+may start one on another reviewer's record, and the worker's audit rows name that user (without it
+they name the owner). `jobs.kind` is `String(16)`, so keep
 the kind name short. General route conventions are in
 [How to add an API route or export](add-an-api-route-or-export.md).
 

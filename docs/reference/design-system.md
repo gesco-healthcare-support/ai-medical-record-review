@@ -244,3 +244,5 @@ conflicts with `tailwind-merge`.
 - [The record workbench](../explanation/frontend-workbench.md)
 - [How to extend the frontend](../how-to/extend-the-frontend.md)
 - [Frontend routes and data reference](frontend-routes-and-data.md)
+
+<!-- reviewed: 2026-09-30 -->

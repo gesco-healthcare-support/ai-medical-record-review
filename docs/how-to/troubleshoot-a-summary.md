@@ -125,3 +125,5 @@ INFO, the per-row failure lines are WARNING. Numbers in angle brackets vary.
 - [Model calls by stage](../reference/model-calls-by-stage.md)
 - [Configuration](../reference/configuration.md)
 - [Data model](../reference/data-model.md)
+
+<!-- reviewed: 2026-09-30 -->

@@ -57,3 +57,5 @@ Most modules have a `backend/tests/test_<module>.py`. Run one area with, for exa
 cd backend
 uv run pytest -q tests/test_classification.py tests/test_segment_engine.py
 ```
+
+<!-- reviewed: 2026-09-30 -->

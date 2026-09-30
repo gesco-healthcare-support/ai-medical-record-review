@@ -237,3 +237,5 @@ more peak memory per concurrent row. See [Model providers](model-providers.md).
 - [Configuration reference](../reference/configuration.md)
 - [Data model reference](../reference/data-model.md)
 - [How to diagnose a stuck or failed job](../how-to/diagnose-a-stuck-or-failed-job.md)
+
+<!-- reviewed: 2026-09-30 -->

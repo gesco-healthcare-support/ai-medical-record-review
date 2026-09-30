@@ -93,3 +93,5 @@ application one.
   `docs/explanation/pipeline-and-jobs.md` in the same PR.
 - Add or update a stage label in `frontend/hooks/use-review-workflow.ts` `STAGE_LABELS`.
 - New error message -> `failures._ERROR_CAUSES`, or `job_health` reports it as `failed_unknown`.
+
+<!-- reviewed: 2026-09-30 -->

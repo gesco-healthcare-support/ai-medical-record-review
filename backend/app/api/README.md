@@ -7,7 +7,7 @@ Sign-in, registration and user routes live in `../auth/`; request bodies live in
 | File | Purpose |
 | --- | --- |
 | `__init__.py` | Package docstring only. |
-| `deps.py` | `get_owned_document`: loads a document by id and answers 404 unless it belongs to the caller. Every document route depends on it. |
+| `deps.py` | `get_owned_document`: loads a document by id and answers 404 unless it belongs to the caller or the caller is an admin. Every document route depends on it (delete adds its own owner-only check). |
 | `documents.py` | 25 routes under `/api/documents`: upload (single and multi-file), list, get, header, delete, PDF, status, duplicates, rows, job start and cancel, summaries, exports and category bundles. Also the shared export builders, `_pipeline_error_response` and `_offer_download`. |
 | `downloads.py` | 2 routes: the GET that sends a prepared export file, and its delivery status. `_MeasuredFileResponse` logs each transfer and updates the delivery record. |
 | `admin.py` | 8 admin-only routes under `/api/admin`: whoami, categories, per-category summary prompts, reprocess. |

@@ -56,3 +56,5 @@ uv run python scripts/<name>.py --help
 ```
 
 Subfolders have their own instructions: `dev/CLAUDE.md`, `eval/CLAUDE.md`.
+
+<!-- reviewed: 2026-09-30 -->

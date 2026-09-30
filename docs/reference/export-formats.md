@@ -249,3 +249,5 @@ Every setting: [Configuration](configuration.md).
 - [Deliverable layout](../explanation/deliverable-layout.md)
 - [How to add an API route or export](../how-to/add-an-api-route-or-export.md)
 - [HTTP API](http-api.md)
+
+<!-- reviewed: 2026-09-30 -->

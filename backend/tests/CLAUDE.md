@@ -88,3 +88,5 @@ branches, one total).
   own that port.
 - A test never seen failing proves nothing: break the behaviour once, watch the test fail for the
   right reason, restore.
+
+<!-- reviewed: 2026-09-30 -->

@@ -26,3 +26,5 @@ docker compose build docs && docker compose up -d --force-recreate docs proxy   
 
 Writing conventions (Diataxis, ASCII, no hosts or PHI, path + symbol instead of line numbers):
 `docs/how-to/work-on-these-docs.md`.
+
+<!-- reviewed: 2026-09-30 -->

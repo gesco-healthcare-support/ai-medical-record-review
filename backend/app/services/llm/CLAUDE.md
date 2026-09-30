@@ -129,3 +129,5 @@ uv run pytest tests/test_llm_provider.py tests/test_llm_openai.py tests/test_llm
 - `docs/reference/configuration.md`
 - `docs/explanation/configuration-model.md`
 - `docs/how-to/switch-model-backends.md`
+
+<!-- reviewed: 2026-09-30 -->

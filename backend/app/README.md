@@ -35,3 +35,5 @@ Reference: [Configuration](../../docs/reference/configuration.md),
 [Data model](../../docs/reference/data-model.md),
 [HTTP API](../../docs/reference/http-api.md),
 [Errors and messages](../../docs/reference/errors-and-messages.md).
+
+<!-- reviewed: 2026-09-30 -->
