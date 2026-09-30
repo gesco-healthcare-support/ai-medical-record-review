@@ -6,7 +6,7 @@
 - The reviewers need a new downloadable deliverable (a new export).
 
 The backend's routers are in `backend/app/api/`; the rules below keep a new route inside the same
-contracts as the 46 existing ones ([HTTP API reference](../reference/http-api.md)).
+contracts as the 47 existing ones ([HTTP API reference](../reference/http-api.md)).
 
 ## Prerequisites
 
