@@ -54,6 +54,11 @@ PY="P:/MRR_AI_Source/mrr-line_source/.venv/Scripts/python.exe"
 "$PY" src/train_eval.py    # step 2: train + evaluate -> outputs/results.csv
 ```
 
+The repository no longer defines an environment for the experiments. Until 2026-09-30 the retired Flask app's root
+`pyproject.toml` carried an `experiment` dependency group for spikes run from the root: `google-cloud-documentai>=3.15.0`,
+`google-cloud-storage>=3.12.0`, `markitdown>=0.1.6` and `markitdown-ocr>=0.1.0`. That file was removed with the Flask
+app (it is in git history); install these by hand in a throwaway venv if a spike needs them again.
+
 ## Caveats
 
 - Scanned input -> features come from imperfect OCR, so A1 quality is coupled to

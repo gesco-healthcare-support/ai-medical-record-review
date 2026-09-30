@@ -2,8 +2,8 @@ name: CI
 
 # main IS the Next.js + FastAPI rewrite (backend/ + frontend/). This workflow tests that stack:
 # the backend suite on real Postgres + Redis with coverage, the frontend unit/component suite,
-# and a Playwright E2E pass over the core non-AI flows against the docker-compose app. The legacy
-# Flask app (mrr_ai/) is being phased out and is no longer covered here.
+# and a Playwright E2E pass over the core non-AI flows against the docker-compose app.
+# (The pre-rewrite Flask app was removed on 2026-09-30.)
 # `pull_request` carries NO `branches` filter on purpose. That key filters on the pull
 # request's BASE, not its head, so any PR targeting a branch not listed gets NO CI AT ALL -
 # it reports mergeable against an empty check set. That is not hypothetical and it is not
@@ -298,8 +298,8 @@ jobs:
       - name: Build the site (strict)
         run: uv run --frozen mkdocs build --strict
 
-  # Lints what the images are built from: hadolint over the three Dockerfiles CI and the servers build (legacy/ is
-  # not built), then Compose's own validation of both compose files. hadolint is pinned like actionlint below: a
+  # Lints what the images are built from: hadolint over the three Dockerfiles CI and the servers build,
+  # then Compose's own validation of both compose files. hadolint is pinned like actionlint below: a
   # release binary checked against its published sha256. Its settings, and the one rule skipped and why, are in
   # .hadolint.yaml, which it reads from the repository root.
   container-lint:
