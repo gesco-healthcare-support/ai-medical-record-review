@@ -1,4 +1,5 @@
 import { apiFetch } from "@/lib/api";
+import type { AdminAccount } from "@/lib/types";
 
 /** A category row from /api/admin/categories (Category.listing() + has_summary_prompt). */
 export type AdminCategory = {
@@ -64,6 +65,11 @@ export function putPrompt(id: string, text: string) {
 /** DELETE /api/admin/prompts/{id}: drop the custom row so the built-in (code) prompt applies. */
 export function deletePrompt(id: string) {
   return apiFetch<PromptInfo>(`/admin/prompts/${id}`, { method: "DELETE" });
+}
+
+/** The active accounts an admin can pick from to open their records. */
+export function listAccounts() {
+  return apiFetch<AdminAccount[]>("/admin/users");
 }
 
 /** Re-summarize any owner's document with the current prompts (admin-scoped). */

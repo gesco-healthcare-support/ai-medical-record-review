@@ -1,5 +1,7 @@
 # tests
 
+> **LEGACY - nothing here runs.** This describes the retired Flask app, archived under `legacy/`. The current backend is `backend/` (see the root `CLAUDE.md` and `backend/CLAUDE.md`). Do not follow these instructions for current code.
+
 pytest + the Flask test client. External services (OpenAI, Gemini, Tesseract/Poppler) are
 **mocked** - no API keys or network needed.
 

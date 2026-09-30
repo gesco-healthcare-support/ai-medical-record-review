@@ -82,6 +82,11 @@ class BundlePayload(BaseModel):
     # Operative Reports". Optional: a client that predates it falls back to the old
     # slug-only filename rather than failing, which is the contract every field here has.
     downloadName: str | None = None
+    # When set, one PDF per matched sub-document instead of one combined PDF, each named
+    # "<separateAs> of <who> <MM-DD-YY>.pdf" - e.g. "Deposition of <name> 12-04-25.pdf". The
+    # reviewers asked for this for depositions: a record can hold several and they want each
+    # one on its own, dated. More than one match comes back as a zip; exactly one as that PDF.
+    separateAs: str | None = None
     model: str | None = None
     patientName: str = ""
     patientdob: str = ""
@@ -128,6 +133,7 @@ class ZipBundle(BaseModel):
     # standalone download is - three of the four members already carried the patient name and
     # the bundle did not.
     downloadName: str | None = None
+    separateAs: str | None = None  # see BundlePayload
 
 
 class ExportZipPayload(ExportPayload):

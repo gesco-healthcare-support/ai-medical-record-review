@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # One-time server bootstrap: back up the existing data, then replace snap Docker with the official
-# Docker Engine (apt) and put adityag in the docker group. Run ONCE as root on the Sarhad box:
+# Docker Engine (apt) and put the account that runs the app in the docker group. Run ONCE as root
+# on the server, from that account:
 #
-#   ssh -t adityag@192.168.100.58 "sudo bash -s" < deploy/server-bootstrap.sh
+#   ssh -t <SERVER_USER>@<SERVER_HOST> "sudo bash -s" < deploy/server-bootstrap.sh
+#
+# The account is taken from SUDO_USER (the user who ran sudo), or from APP_USER if set. The app's
+# checkout is expected at /home/<account>/mrr.
 #
 # It is backup-first: if the DB or uploads dump is missing/empty, it ABORTS before anything
 # destructive (nothing is removed until the backups are verified on disk). After it prints
 # BOOTSTRAP_OK, the rest of the deploy (git clone + restore + rebuild) runs over SSH with no sudo,
-# because adityag is then in the docker group.
+# because the account is then in the docker group.
 set -euo pipefail
 
-REPO=/home/adityag/mrr
+APP_USER="${APP_USER:-${SUDO_USER:?run this through sudo from the account that runs the app, or set APP_USER}}"
+REPO="/home/${APP_USER}/mrr"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-BK="/home/adityag/mrr-backup-${STAMP}"
+BK="/home/${APP_USER}/mrr-backup-${STAMP}"
 
 echo "== [1/6] Back up current data (from snap Docker) -> ${BK} =="
 mkdir -p "${BK}"
@@ -50,9 +55,9 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-echo "== [5/6] Enable Docker + add adityag to the docker group =="
+echo "== [5/6] Enable Docker + add ${APP_USER} to the docker group =="
 systemctl enable --now docker
-usermod -aG docker adityag
+usermod -aG docker "${APP_USER}"
 
 echo "== [6/6] Done =="
 docker --version

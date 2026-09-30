@@ -1,144 +1,106 @@
-# CLAUDE.md - AI Medical Record Review (MRR AI)
+# CLAUDE.md - MRR AI (AI Medical Record Review)
 
-Project memory for Claude Code. The global rules in `~/.claude/` apply; this file adds
-project-specific context.
+Instructions for AI coding agents working anywhere in this repository. Each folder has its own
+`CLAUDE.md` with the rules for that area; Claude Code loads it when you read files there.
 
 ## What this is
 
-Turns a large scanned medical-record PDF (200-2600 pages) into a summarized Medical Record Review.
-A reviewer corrects the machine's work at every stage - the app is an assistant, not an autopilot.
+A FastAPI + RQ/Redis + Postgres backend (`backend/`) and a Next.js frontend (`frontend/`) that turn
+a scanned medical-record PDF into a reviewed, summarized Medical Record Review. Pipeline: upload ->
+identify (page text/OCR, segment, categorize, boundary verify, injury dates) -> reviewer corrects
+-> duplicate check -> summarize (draft + audit) -> export.
 
-**Pipeline:** upload -> **segment** (find sub-document boundaries) -> **categorize** ->
-reviewer corrects -> **duplicate check** -> **summarize** -> export.
+Full documentation: `docs/` (site built by `docs-site/`). Start at `docs/explanation/architecture.md`;
+terms are in `docs/reference/glossary.md`.
 
-- **Frontend:** `frontend/` - Next.js (App Router), pnpm, vitest. The review workbench is
-  `/records/[id]`.
-- **Backend:** `backend/` - FastAPI (uvicorn), SQLAlchemy + Alembic, Postgres, Redis + RQ workers,
-  uv for dependencies.
-- **AI:** google-genai against **Vertex** (the BAA-covered path). Segmentation and classification on
-  flash tiers; summary bodies on a pro tier. OpenAI exists behind a config flag and is not the
-  default - see `backend/app/services/llm/`.
-- **OCR:** pytesseract + Poppler, in the backend image.
-- **Gates:** ruff (lint + format), pyright (advisory), pre-commit + gitleaks, GitHub Actions CI,
-  SonarCloud.
+## Non-negotiable rules
 
-## Read this before you change anything
+- **Patient data.** Real medical records. Never commit PDFs, OCR text, exports, `.doc`/`.docx`
+  deliverables or anything derived from a real record; never log a filename, patient field, OCR
+  text, prompt or model response. Tests and examples use synthetic data only. Never open
+  `Record Reviews/`, `uploads/`, `instance/`, `secrets/` or a real `.env`.
+- **The repository is public.** No hostnames, IP addresses, server account names, emails, people's
+  names or secrets in any committed file. Use placeholders (`<SERVER_HOST>`).
+- **Model providers are a compliance boundary.** Every model call goes through the provider seam in
+  `backend/app/services/llm/`; never call a vendor SDK directly from app code. Do not weaken the
+  boot guards in `backend/app/config.py` (Vertex required in production, OpenAI zero-data-retention
+  acknowledgement, vLLM origin allowlist).
+- **Pull requests only.** `main` is protected: changes arrive by squash-merged PR with all required
+  checks green. Never push to `main`.
+- **Commit and PR titles:** `<type>(<scope>): <subject>`, imperative, ASCII, <= 72 chars, scope from
+  `.claude/rules/commit-scopes.md` (add a scope there in the PR that needs it).
+- **Docs change with the code.** A change to behaviour, a route, a setting, a table, a migration, a
+  compose service or a frontend route updates the page that describes it in the same PR.
+  `backend/tests/test_docs_reference_drift.py` fails when a reference page falls behind, and
+  `backend/tests/test_docs_guides.py` when a README misses a file or a doc cites a path or symbol
+  that no longer exists. Conventions: `docs/how-to/work-on-these-docs.md`.
+- **Before you finish, re-read the docs your change touches.** The Stop hook
+  (`.claude/hooks/docs-reminder.sh`) names the folder guides and pages to check. Update what the
+  change made wrong. If they are still right, run the `--reviewed <folder>` command it prints. Keep
+  each folder's README file list complete; keep CLAUDE.md to rules, traps and commands.
+- **Working files stay out of git.** `docs/plans/` and `docs/backlog.md` are gitignored on purpose;
+  never stage anything in them. Never `git add -A`; stage by explicit path.
 
-**`legacy/` is the pre-rewrite Flask app and nothing in it runs.** It was moved there on 2026-08-11
-because both humans and AI assistants kept reading it as the current system. It still contains four
-`CLAUDE.md` files describing that old app, and a stale copy of the segmentation prompt. See
-`legacy/README.md`.
+## Traps that apply everywhere
 
-If a doc, comment or `CLAUDE.md` mentions Flask, port 5010, `app.py`, blueprints, templates, or a
-page-map CSV passed between stages, it is describing the legacy app.
-
-## Where things live
-
-| what                     | where                                                                                     |
-| ------------------------ | ----------------------------------------------------------------------------------------- |
-| FastAPI routers          | `backend/app/api/`                                                                        |
-| Pipeline stages          | `backend/app/services/` (`segment_engine`, `classification`, `dedup`, `summarize_engine`) |
-| RQ tasks + queue routing | `backend/app/worker/`                                                                     |
-| Prompts                  | `backend/app/services/prompts.py` (per category) + `gemini.py` (segmentation)             |
-| DB models / migrations   | `backend/app/models.py`, `backend/alembic/versions/`                                      |
-| Backend tests            | `backend/tests/`                                                                          |
-| Review workbench UI      | `frontend/components/review/`                                                             |
-| Segmentation research    | `experiments/a1-segmentation/`                                                            |
-
-## Things that will bite you
-
-- **Two databases.** `docker-compose.yml` = the APP on host port **5433** (real data).
-  `docker-compose.dev.yml` = the throwaway TEST database on **5432**. Run the app against the first
-  and the suite against the second. `backend/tests/conftest.py` refuses to run against the app
-  database and will tell you so; do not set `DATABASE_URL` to get around it.
-- **The backend image is baked, not bind-mounted.** Editing `backend/` does nothing to a running
-  container until you build and recreate. The frontend is the same.
-- **There are TWO backend images, and `build api` only rebuilds one.** `api` and `summarize-worker`
-  run `mrr-backend-web` (`--extra docs`); `segment-worker` runs `mrr-backend-classifier`
-  (`--extra docs --extra classifier`, the torch one). So `docker compose build api` leaves the
-  segment worker on whatever it had, and `--force-recreate` restarts it from that stale image
-  without complaint. Anything the segment worker owns - `classification.py`, `segment_engine.py`,
-  `windows.py` - then appears not to work: measured 2026-08-17, `match_rules` returned the fixed
-  answer in `api` and the old one in `segment-worker`, same call, because the classifier image was
-  five days old. Name every service you changed.
-- **A fresh test database needs `alembic upgrade head`** before the suite will run, or every
-  DB-touching test errors with `relation "user" does not exist`.
-- **Seeding is one-shot.** `seed_catalog()` returns early once any `Category` row exists, so editing
-  a seed constant changes nothing on a database that already exists. Carry such changes in a
-  migration - see `a9c4e13f70b2` and `f1a83b5c60d2` for the pattern and the trap.
-- **A 429 from Vertex is Dynamic Shared Quota**, not an exhausted allowance. It means capacity was
-  unavailable at that moment; retry rather than wait for a reset.
-- **Segmentation recall is the metric that matters most.** A document missed at segmentation is never
-  summarized and nothing downstream surfaces it. Over-segmentation is visible to the reviewer and
-  fixable; under-segmentation is not. Treat any change to the segmentation prompt or schema as
-  requiring a measurement, not an opinion.
-
-## PHI / HIPAA (strict)
-
-- Real patient records are PHI. **Never** commit PDFs, OCR text, page-map CSVs, patient names, or
-  Word deliverables - their filenames alone carry surnames, which is why `.gitignore` blocks
-  `*.doc`/`*.docx` outside `docs/reference/`.
-- Sample and labelled data live outside the repo on `P:`; `uploads/` and experiment caches are
-  gitignored.
-- gitleaks + detect-private-key + large-file pre-commit hooks guard every commit.
-- Secrets via `.env` (never committed; see `.env.example`).
-- Vertex is the BAA-covered path and is required in production. OpenAI additionally requires Zero
-  Data Retention acknowledged on the org before any PHI may go near it.
+- **Two databases.** `docker-compose.yml` is the app (Postgres on host port **5433**, real data).
+  `docker-compose.dev.yml` is the throwaway test database (**5432**) and Redis (6379). The backend
+  suite refuses to run against the app database - do not set `DATABASE_URL` to get around it.
+- **Images are baked, not bind-mounted.** Editing code changes nothing in a running container
+  until you rebuild and `--force-recreate`. There are TWO backend images: `api` and
+  `summarize-worker` run `mrr-backend-web`; `segment-worker` runs `mrr-backend-classifier` (torch).
+  `docker compose build api` does NOT rebuild the segment worker. Name every service you changed.
+- **A setting reaches a container only if `docker-compose.yml` names it.** Setting it in `.env`
+  is not enough. Most settings are deliberately not passed; see
+  `docs/explanation/configuration-model.md` before adding one.
+- **The category catalog is DB-first.** Once any `categories` row exists, `taxonomy.py` edits do not
+  reach that database; carry them in a guarded migration. See
+  `docs/how-to/add-or-change-a-category.md`.
+- **The repo root `pyproject.toml` and `serve.py` belong to the retired Flask app.**
+  Work in `backend/`. Nothing in `legacy/` runs; do not read it as the current system.
+- **Segmentation recall matters most.** A sub-document missed at segmentation is never summarized
+  and nothing downstream surfaces it. Treat any segmentation prompt or schema change as needing a
+  measurement; read `experiments/a1-segmentation/EXPERIMENT-LOG.md` first.
 
 ## Commands
 
 ```bash
-docker compose up -d                                   # the app -> http://localhost:8080
-docker compose -f docker-compose.dev.yml up -d postgres # the TEST database (port 5432)
+# Backend (from backend/): deps, lint + format + type gates, tests against the TEST stack
+docker compose -p mrrtest -f ../docker-compose.dev.yml up -d --wait postgres redis
+uv sync --extra docs                # bare `uv sync` omits required deps; --extra classifier = torch
+DATABASE_URL=postgresql+psycopg://mrr:mrr_dev_only@localhost:5432/mrr SECRET_KEY=dev-only-secret SECURITY_PASSWORD_SALT=dev-only-salt uv run alembic upgrade head
+uv run ruff check . && uv run ruff format --check . && uvx pyright==1.1.414
+uv run pytest -q                    # do NOT export DATABASE_URL; conftest finds the test DB
 ```
 
 ```bash
-cd backend && uv sync
-uv run alembic upgrade head
-uv run pytest -q                                       # do NOT export DATABASE_URL
-uv run ruff check . && uv run ruff format .
+# Frontend (from frontend/)
+corepack enable && pnpm install
+pnpm lint && pnpm typecheck && pnpm test   # vitest; `pnpm e2e` needs the app stack on :8080
 ```
 
 ```bash
-cd frontend && pnpm install
-pnpm test          # vitest
-pnpm typecheck
+# App stack (from the repo root) and the docs site
+docker compose build && docker compose up -d --wait postgres redis
+docker compose run --rm api alembic upgrade head
+docker compose up -d                # http://localhost:8080 ; docs at /docs/
+cd docs-site && uv run --frozen mkdocs build --strict
 ```
 
-After changing backend code, rebuild before expecting a container to see it:
+Details and the CI gates: `docs/how-to/run-the-tests.md`, `docs/reference/ci-and-merge-gates.md`.
 
-```bash
-# Build BOTH backend images. `build api` alone rebuilds mrr-backend-web only, so the segment
-# worker (mrr-backend-classifier) keeps running old code and the change silently does not apply.
-docker compose build api segment-worker summarize-worker
-docker compose up -d --force-recreate api segment-worker summarize-worker
-```
+## Where things live
 
-Only touched a service on `mrr-backend-web` (api, summarize-worker)? `docker compose build api` is
-enough. Touched anything the segment worker runs - categorization, segmentation, windowing - and you
-need `build segment-worker` too, or you are testing the previous image.
-
-## Key references
-
-- `docs/INDEX.md` - the documentation map (Diataxis: explanation / how-to / reference).
-- `docs/RUNBOOK.md` - run and deploy.
-- `docs/decisions/` - ADRs. These are HISTORICAL records; several describe the Flask app and are
-  correct as history. Do not rewrite them to match the present.
-- `.claude/rules/commit-scopes.md` - the allowed commit/PR scopes. Source of truth; add a scope there
-  in the PR that needs it.
-- `docs/reference/Categories ...docx` - the category taxonomy.
-- `experiments/a1-segmentation/EXPERIMENT-LOG.md` - what has been tried on segmentation and what
-  failed. Read before proposing a segmentation approach; several obvious ideas are already measured
-  and rejected there.
-
-## Status
-
-The Next.js + FastAPI rewrite is live and deployed. Recent work: per-call model tiering and prompt
-provenance, an additive-increase pacer for Vertex admission, date-first duplicate clustering,
-duplicate detection gated behind the review phase and scoped to included rows, deposition summaries
-in three-page groups with transcript page citations, one injury-date read at segmentation, and a
-page-text store so each page is OCR'd once.
-
-Known gaps: `docs/research/` and some `docs/prompts/` files are historical and describe the legacy
-pipeline; the segmentation experiment harness only recently started importing the live prompt rather
-than a legacy copy.
+| area | code | agent rules |
+| --- | --- | --- |
+| HTTP API and auth | `backend/app/api/`, `backend/app/auth/`, `backend/app/schemas/` | the `CLAUDE.md` in each |
+| Pipeline services | `backend/app/services/` | `backend/app/services/CLAUDE.md` |
+| Model providers | `backend/app/services/llm/` | `backend/app/services/llm/CLAUDE.md` |
+| Jobs and workers | `backend/app/worker/` | `backend/app/worker/CLAUDE.md` |
+| Settings | `backend/app/config.py` | `backend/app/CLAUDE.md` |
+| Models and migrations | `backend/app/models.py`, `backend/alembic/` | `backend/alembic/CLAUDE.md` |
+| Scripts | `backend/scripts/` | `backend/scripts/CLAUDE.md` |
+| Backend tests | `backend/tests/` | `backend/tests/CLAUDE.md` |
+| Frontend | `frontend/app/`, `components/`, `hooks/`, `lib/` | `frontend/CLAUDE.md` and each folder's |
+| Proxy and server bootstrap | `deploy/` | `deploy/CLAUDE.md` |
+| Docs site | `docs/`, `docs-site/` | `docs-site/CLAUDE.md` |

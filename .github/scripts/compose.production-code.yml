@@ -1,0 +1,8 @@
+# Compose override for the staging acceptance stage's upgrade test (.github/scripts/staging_acceptance.sh).
+# It builds the api from PRODUCTION's code, which the workflow checks out into ./production-code, under an image name
+# of its own so it never replaces staging's `mrr-backend-web`. Everything else comes from docker-compose.yml.
+services:
+  api:
+    build:
+      context: ./production-code/backend
+    image: mrr-backend-web-production

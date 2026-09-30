@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
-import { downloadBundlePdf, downloadBundleSummary } from "@/lib/bundle-api";
+import {
+  DEPOSITIONS,
+  DIAGNOSTIC_OPERATIVE,
+  downloadBundlePdf,
+  downloadBundleSummary,
+} from "@/lib/bundle-api";
 import { humanizeError } from "@/lib/errors";
 
 /** The category-bundle download had no tests at all, despite owning the filename the reviewer ends
@@ -65,6 +70,17 @@ describe("downloadBundlePdf", () => {
     await downloadBundlePdf("doc-1", CONFIG);
     const body = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
     expect(body.downloadName).toBe("List of Diagnostic and Operative Reports");
+  });
+
+  it("asks for one file per deposition, and one combined file for diagnostics", async () => {
+    // DEMONSTRATES the reviewers' request: "if it could download them each separately and have
+    // them dated". Only depositions asks; the diagnostic bundle keeps its single PDF.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200));
+    await downloadBundlePdf("doc-1", DEPOSITIONS);
+    await downloadBundlePdf("doc-1", DIAGNOSTIC_OPERATIVE);
+    const bodies = fetchSpy.mock.calls.map((c) => JSON.parse(String(c[1]?.body)));
+    expect(bodies[0].separateAs).toBe("Deposition");
+    expect(bodies[1].separateAs).toBeUndefined();
   });
 
   it("raises the server's own reason rather than a bare status code", async () => {

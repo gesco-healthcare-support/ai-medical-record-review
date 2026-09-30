@@ -360,7 +360,7 @@ def record_accounting(
         title = (row.title or "").strip()
         if title:
             excluded.append(title)
-    seen: dict[str, None] = {}
+    seen: dict[str, str | None] = {}
     for title in excluded:
         # Case-folded for de-duplication only; the FIRST spelling is what ships, because the
         # reference list is lower case prose and a title may legitimately carry an acronym.
@@ -1115,10 +1115,13 @@ def build_mrr_document(
     # reference documents put it in. Bold, because they bold all three of these sentences
     # while leaving the type list beneath plain; that contrast is the whole of the house
     # style here and rendering the list bold too would lose it.
-    exclusion_text, duplicates_text = accounting_sentences(details.accounting)
-    if exclusion_text:
+    accounting = details.accounting
+    exclusion_text, duplicates_text = accounting_sentences(accounting)
+    # accounting_sentences returns "" for no accounting, so this check never changes the outcome;
+    # it tells the type checker what that function already guarantees.
+    if exclusion_text and accounting is not None:
         _letter_paragraph(doc, exclusion_text, bold=True, font=font)
-        for document_type in details.accounting.excluded_types:
+        for document_type in accounting.excluded_types:
             _letter_paragraph(doc, document_type, font=font)
     if duplicates_text:
         _letter_paragraph(doc, duplicates_text, bold=True, font=font)

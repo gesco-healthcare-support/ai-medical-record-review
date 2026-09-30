@@ -1,0 +1,190 @@
+name: staging acceptance
+
+# The acceptance stage (steps in .github/scripts/staging_acceptance.sh; reference in docs/reference/ci-and-merge-gates.md).
+# After each merge into staging, it tests that exact commit as it would run: images built once and scanned, an upgrade
+# from production's schema holding synthetic data, the production-mode stack, a ZAP baseline scan. On success the
+# `staging` environment records a deployment for the commit, and production's ruleset requires one on the commit a
+# promotion proposes - so nothing reaches production that this stage has not passed.
+#
+# Two jobs on a staging push, so the write permissions never share a job with third-party code. `acceptance` runs the
+# stage (third-party images and binaries: ZAP, Grype, Syft, the app itself) with a read-only token, then hands the three
+# images it built and scanned, and their SBOMs, to `publish` as a short-lived artifact. `publish` runs only Docker and
+# GitHub's own actions: it pushes those exact images to ghcr.io, tagged with the commit, with a build-provenance and an
+# SBOM attestation each; release-policy.yml scans those images and release.yml verifies the attestations (build once).
+#
+# The dry-run job runs the same script on a pull request that changes the stage, with no environment (it records
+# nothing), no cloud access and no write access. It is not a required check, so its paths filter cannot leave a
+# merge waiting.
+on:
+  push:
+    branches: [staging]
+  pull_request:
+    paths:
+      - .github/workflows/staging-acceptance.yml
+      - .github/scripts/staging_acceptance.sh
+      - .github/scripts/acceptance_seed.py
+      - .github/scripts/compose.production-code.yml
+      - .github/scripts/release_policy.py
+
+permissions: {}
+
+# Placeholders docker-compose.yml refuses to start without; nothing real is used. gitleaks' generic-api-key rule scores
+# the SECRET_KEY placeholder as a possible key, so that one line carries gitleaks' own allow marker.
+env:
+  SECRET_KEY: ci-acceptance-secret-key-that-is-at-least-32-bytes # gitleaks:allow (a placeholder, not a secret)
+  SECURITY_PASSWORD_SALT: ci-acceptance-salt
+
+jobs:
+  acceptance:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: staging-acceptance
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check out production's code (for the upgrade test)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: production
+          path: production-code
+          persist-credentials: false
+
+      - name: Acceptance stage
+        run: bash .github/scripts/staging_acceptance.sh
+
+      # Reached only when the stage passed. The images are the ones the stage built and scanned (compose down keeps
+      # images); the SBOMs are made here, where no write permission exists, and travel with them.
+      - name: Generate the SBOMs (Syft, checksum-verified)
+        env:
+          SYFT_VERSION: 1.52.0
+          SYFT_SHA256: caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
+        run: |
+          set -euo pipefail
+          tarball="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl -sSL --fail -o "$tarball" "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/${tarball}"
+          echo "${SYFT_SHA256}  ${tarball}" | sha256sum --check --strict
+          tar -xzf "$tarball" syft
+          mkdir -p accepted/sboms
+          for name in mrr-backend-web mrr-frontend mrr-docs; do
+            ./syft "docker:$name" -o "spdx-json=accepted/sboms/$name.spdx.json"
+          done
+
+      - name: Save the accepted images
+        run: docker save mrr-backend-web mrr-frontend mrr-docs -o accepted/images.tar
+
+      - name: Hand the images and SBOMs to the publish job
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: accepted-images
+          path: accepted/
+          retention-days: 1
+
+  publish:
+    needs: acceptance
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: staging-publish
+      cancel-in-progress: false
+    permissions:
+      packages: write # push the accepted images to ghcr.io
+      id-token: write # sign the attestations (Sigstore)
+      attestations: write # store the attestations
+    env:
+      REGISTRY: ghcr.io/gesco-healthcare-support
+    steps:
+      - name: Receive the accepted images and SBOMs
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: accepted-images
+          path: accepted
+
+      # Tagged with the full commit SHA that release-policy.yml and release.yml look up.
+      - name: Push the accepted images to ghcr.io
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          docker load -i accepted/images.tar
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          for name in mrr-backend-web mrr-frontend mrr-docs; do
+            docker tag "$name" "$REGISTRY/$name:$GITHUB_SHA"
+            docker push "$REGISTRY/$name:$GITHUB_SHA"
+            digest=$(docker buildx imagetools inspect "$REGISTRY/$name:$GITHUB_SHA" --format '{{json .Manifest}}' \
+              | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")
+            echo "${name//-/_}=$digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Attest build provenance (mrr-backend-web)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-backend-web
+          subject-digest: ${{ steps.push.outputs.mrr_backend_web }}
+          push-to-registry: true
+
+      - name: Attest the SBOM (mrr-backend-web)
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-backend-web
+          subject-digest: ${{ steps.push.outputs.mrr_backend_web }}
+          sbom-path: accepted/sboms/mrr-backend-web.spdx.json
+          push-to-registry: true
+
+      - name: Attest build provenance (mrr-frontend)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-frontend
+          subject-digest: ${{ steps.push.outputs.mrr_frontend }}
+          push-to-registry: true
+
+      - name: Attest the SBOM (mrr-frontend)
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-frontend
+          subject-digest: ${{ steps.push.outputs.mrr_frontend }}
+          sbom-path: accepted/sboms/mrr-frontend.spdx.json
+          push-to-registry: true
+
+      - name: Attest build provenance (mrr-docs)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-docs
+          subject-digest: ${{ steps.push.outputs.mrr_docs }}
+          push-to-registry: true
+
+      - name: Attest the SBOM (mrr-docs)
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-docs
+          subject-digest: ${{ steps.push.outputs.mrr_docs }}
+          sbom-path: accepted/sboms/mrr-docs.spdx.json
+          push-to-registry: true
+
+  acceptance-dry-run:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check out production's code (for the upgrade test)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: production
+          path: production-code
+          persist-credentials: false
+
+      - name: Acceptance stage (dry run; records no deployment)
+        run: bash .github/scripts/staging_acceptance.sh
