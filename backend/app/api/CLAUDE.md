@@ -9,8 +9,10 @@ HTTP routers for documents, downloads and admin. Full contracts:
   (`app/auth/deps.py`) already covers every route. A public route is made public only by adding
   its exact path to `_PUBLIC_EXACT` there.
 - Any route with a record id takes `document: Document = Depends(get_owned_document)` and the path
-  parameter is named exactly `document_id` (the dependency reads that name). A foreign or missing
-  record is 404 `not found`, never 403. `admin.reprocess` is the only route without ownership.
+  parameter is named exactly `document_id` (the dependency reads that name). A missing record, or
+  another user's record for a non-admin, is 404 `not found`, never 403; an admin passes (they may
+  open and fix any reviewer's record), except on delete, which stays owner-only.
+  `admin.reprocess` is the only route without ownership.
 - Handlers are sync `def` on `Depends(get_db)` (sync session). Do not switch them to `async def`
   or to the async session; the async session is for FastAPI-Users only.
 - Define every helper ABOVE the route decorator. A function placed between `@router...` and the

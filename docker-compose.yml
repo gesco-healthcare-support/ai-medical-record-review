@@ -3,9 +3,10 @@
 # server - only .env changes (ENVIRONMENT=prod + TLS on the proxy). The dev-only Postgres/Redis
 # for host-process development live in docker-compose.dev.yml; THIS file is the complete app.
 #
-# The one external call is Vertex AI (LLM/VLM inference); everything else runs on your metal.
+# The only external calls are the model provider's (Gemini on Vertex AI by default; see
+# docs/explanation/model-providers.md); everything else runs on your metal.
 #
-# Setup / runbook: see docs/plans/2026-07-16-p8-local-stack.md.
+# Setup / runbook: docs/how-to/run-the-app-locally.md and docs/how-to/deploy-to-the-server.md.
 name: mrr
 
 x-backend-env: &backend-env

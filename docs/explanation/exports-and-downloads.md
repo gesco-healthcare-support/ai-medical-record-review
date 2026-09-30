@@ -261,3 +261,5 @@ failed native download otherwise shows only in the reviewer's browser.
 - [Configuration](../reference/configuration.md)
 - [HTTP API](../reference/http-api.md)
 - [Frontend workbench](frontend-workbench.md)
+
+<!-- reviewed: 2026-09-30 -->

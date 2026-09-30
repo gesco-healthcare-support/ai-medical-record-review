@@ -305,3 +305,5 @@ before expecting the container to show a frontend change; see
 - [How to run the tests](run-the-tests.md)
 - [How to add an API route or export](add-an-api-route-or-export.md)
 - [HTTP API reference](../reference/http-api.md)
+
+<!-- reviewed: 2026-09-30 -->

@@ -226,3 +226,5 @@ bundle export pass `verify=False`.
 - [Categorization](../explanation/categorization.md)
 - [Duplicate detection](../explanation/duplicate-detection.md)
 - [How to switch model backends](../how-to/switch-model-backends.md)
+
+<!-- reviewed: 2026-09-30 -->

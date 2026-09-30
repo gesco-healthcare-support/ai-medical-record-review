@@ -82,3 +82,5 @@ uv run pytest -q
 ```
 
 Never run `upgrade` or `downgrade` against the server or the app database without the user's go.
+
+<!-- reviewed: 2026-09-30 -->

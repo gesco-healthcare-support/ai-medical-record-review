@@ -69,3 +69,5 @@ docker compose exec proxy nginx -t
 Recreate the proxy after every edit, not just restart-and-hope: `nginx.conf` is a single-file bind
 mount, and an editor that saves by replacing the file leaves a running container reading the old
 copy.
+
+<!-- reviewed: 2026-09-30 -->

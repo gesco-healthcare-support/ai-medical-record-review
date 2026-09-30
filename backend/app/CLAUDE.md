@@ -53,3 +53,5 @@ uv run ruff check . && uv run ruff format --check .
 uv run pytest -q tests/test_openai_config_guards.py tests/test_llm_preflight.py tests/test_compose_passthrough.py
 python -m app.cli admin grant someone@example.com      # inside the api container
 ```
+
+<!-- reviewed: 2026-09-30 -->

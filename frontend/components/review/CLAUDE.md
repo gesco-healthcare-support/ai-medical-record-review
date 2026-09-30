@@ -68,3 +68,5 @@ pnpm build
 - `docs/explanation/frontend-workbench.md`
 - `docs/reference/frontend-routes-and-data.md`
 - `docs/how-to/extend-the-frontend.md` (row field, header field, summary flag)
+
+<!-- reviewed: 2026-09-30 -->

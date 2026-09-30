@@ -150,3 +150,5 @@ Both CI jobs start from an empty database, so every category-inserting revision 
 - [How to create a database migration](../how-to/create-a-database-migration.md)
 - [How to add or change a category](../how-to/add-or-change-a-category.md)
 - [How to back up and restore](../how-to/back-up-and-restore.md)
+
+<!-- reviewed: 2026-09-30 -->

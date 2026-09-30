@@ -5,7 +5,7 @@
 Every uploaded record is a patient's medical file. The app therefore has to answer three questions
 on every request: is this a signed-in, active user; may this user see this record; and, for the
 catalog screens, is this user an admin. The answers live in `backend/app/auth/` (who you are) and
-`backend/app/api/deps.py` (what you own), and they are wired so that a route written tomorrow is
+`backend/app/api/deps.py` (which records you may open), and they are wired so that a route written tomorrow is
 protected without anyone remembering to protect it.
 
 Accounts were migrated from an earlier Flask-Security app, so the password scheme had to verify

@@ -40,3 +40,5 @@ pnpm typecheck
 - `docs/how-to/add-or-change-a-category.md`
 - `docs/how-to/change-a-summary-prompt-or-rule.md`
 - `docs/reference/frontend-routes-and-data.md`
+
+<!-- reviewed: 2026-09-30 -->

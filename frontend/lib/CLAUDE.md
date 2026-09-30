@@ -68,3 +68,5 @@ pnpm typecheck
 
 - `docs/reference/frontend-routes-and-data.md` (calls, types, error mapping)
 - `docs/explanation/frontend-workbench.md` (row rules, downloads)
+
+<!-- reviewed: 2026-09-30 -->

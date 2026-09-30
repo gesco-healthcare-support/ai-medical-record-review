@@ -509,3 +509,5 @@ Approaches the comments record as considered and rejected:
 - [Summarization](summarization.md)
 - [Segmentation](segmentation.md)
 - [How to diagnose a stuck or failed job](../how-to/diagnose-a-stuck-or-failed-job.md)
+
+<!-- reviewed: 2026-09-30 -->

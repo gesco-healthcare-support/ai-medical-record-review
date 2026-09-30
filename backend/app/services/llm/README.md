@@ -69,3 +69,5 @@ uv run pytest tests/test_llm_provider.py tests/test_llm_openai.py tests/test_llm
   model, thinking, output cap and failure behaviour
 - [Configuration reference](../../../../docs/reference/configuration.md): every setting
 - [How to switch model backends](../../../../docs/how-to/switch-model-backends.md)
+
+<!-- reviewed: 2026-09-30 -->

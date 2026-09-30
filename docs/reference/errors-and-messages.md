@@ -290,3 +290,5 @@ and the declared size - never the file name.
 - [How to add an API route or export](../how-to/add-an-api-route-or-export.md)
 - [How to diagnose a stuck or failed job](../how-to/diagnose-a-stuck-or-failed-job.md)
 - [Exports and downloads](../explanation/exports-and-downloads.md)
+
+<!-- reviewed: 2026-09-30 -->

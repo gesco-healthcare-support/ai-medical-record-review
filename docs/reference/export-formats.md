@@ -11,7 +11,7 @@ Source of truth: `backend/app/api/documents.py` (export and bundle routes, `_del
 ## Routes
 
 All export routes are `POST`, take an optional JSON body, require a signed-in session, and act only
-on a record the signed-in user owns. Each writes one audit event and answers with a prepared
+on a record the signed-in user owns, or on any record for an admin (`get_owned_document`). Each writes one audit event and answers with a prepared
 download (see [Response](#response)), not with the file.
 
 | Route | Output | Media type | Audit event | Needs included summaries |
@@ -249,3 +249,5 @@ Every setting: [Configuration](configuration.md).
 - [Deliverable layout](../explanation/deliverable-layout.md)
 - [How to add an API route or export](../how-to/add-an-api-route-or-export.md)
 - [HTTP API](http-api.md)
+
+<!-- reviewed: 2026-09-30 -->

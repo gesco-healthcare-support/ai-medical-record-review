@@ -346,3 +346,5 @@ Environment variables read by the frontend (`API_ORIGIN`, `E2E_BASE_URL`, `CI`) 
 - [How to extend the frontend](../how-to/extend-the-frontend.md)
 - [HTTP API reference](http-api.md)
 - [Design system reference](design-system.md)
+
+<!-- reviewed: 2026-09-30 -->
