@@ -359,7 +359,7 @@ gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets/<id>
 | Branch must be up to date before merging | Required | Not required, by design: "Update branch" on a promotion pull request would merge the lower branch back into the upper one |
 | Force push (non-fast-forward) | Blocked | Blocked |
 | Branch deletion | Blocked | Blocked |
-| CodeQL results before merging (see Code scanning) | Required: security alerts of high or critical severity block | `staging`, `production`: required (added 2026-09-30, after each branch's first CodeQL analysis). `qwen`: not yet, until its next promotion |
+| CodeQL results before merging (see Code scanning) | Required: security alerts of high or critical severity block | Required (added 2026-09-30, after each branch's first CodeQL analysis) |
 | A successful `staging` deployment of the pull request's head commit | - | `production` only (added 2026-09-30, after the first green staging run; see Environments) |
 | Bypass | Repository admins, through a pull request only (see Admin bypass) | Repository admins, through a pull request only |
 
@@ -370,8 +370,8 @@ flow, so a pull request can be blocked by an alert whose flagged line it does no
 that calls a flagged function is enough). Medium and lower security alerts, and alerts that are not
 security alerts, never block it. Code scanning judges a pull request against an analysis of the branch it merges into, so a branch
 gets the rule only after `codeql.yml` has analysed a push to it; until then a pull request into it
-could not be judged. `staging` and `production` have the rule since 2026-09-30; `qwen` gets it after its next
-promotion. Every commit on those branches has come through `main`, where the rule applies.
+could not be judged. `staging`, `production` and `qwen` have the rule since 2026-09-30, each added after
+its first analysis. Every commit on those branches has come through `main`, where the rule applies.
 
 GitHub never lets an account approve its own pull request, and the approver must not be the account
 that pushed the pull request's last commit either. So whoever merges `main` into a pull request
@@ -404,7 +404,7 @@ The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 | `coverage-floor` | GitHub Actions (`ci.yml`) | all four branches |
 | `sonarcloud` | GitHub Actions (`ci.yml`) | all four branches |
 | `workflow-lint` | GitHub Actions (`ci.yml`) | all four branches |
-| `container-lint` | GitHub Actions (`ci.yml`) | `main`, `staging`, `production`; `qwen` once it contains the job (after its next promotion), so the check can always report |
+| `container-lint` | GitHub Actions (`ci.yml`) | all four branches |
 | `pr-title` | GitHub Actions (`pr-title.yml`) | `main` only |
 | `SonarCloud Code Analysis` | SonarCloud's own GitHub integration, from the analysis the `sonarcloud` job uploads | all four branches |
 | `dependency-review` | GitHub Actions (`ci.yml`) | all four branches |
