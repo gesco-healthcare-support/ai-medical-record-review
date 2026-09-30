@@ -6,8 +6,7 @@ Python 3.12, FastAPI, SQLAlchemy 2, Alembic, RQ on Redis, uv. Folder-specific ru
 
 ## Rules
 
-- Run everything from `backend/`, never the repo root (the root `pyproject.toml` is the retired
-  Flask app).
+- Run everything from `backend/`; there is no Python project at the repo root.
 - `uv sync --extra docs` is the environment for development and CI. Add `--extra classifier` only
   to exercise the segment worker's categorizer (it pulls torch).
 - The CI gates must pass: `uv run ruff check .`, `uv run ruff format --check .` AND

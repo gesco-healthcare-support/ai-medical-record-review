@@ -57,8 +57,8 @@ secrets, how model credentials are supplied - are in
 | `docker-compose.dev.yml` | The throwaway test database and Redis for the backend suite. |
 | `deploy/env.docker.example`, `.env.example` | Environment templates: the first is the minimal set for the container stack, the second lists every tunable setting with its reasoning. |
 | [`experiments/`](experiments/a1-segmentation/README.md) | Segmentation research; `experiments/a1-segmentation/EXPERIMENT-LOG.md` records what was measured and rejected. |
-| [`legacy/`](legacy/README.md) | The pre-rewrite Flask app and its old docs. **Nothing there runs.** |
-| `pyproject.toml`, `serve.py` (repo root) | Leftovers of the Flask app. The backend's own project is `backend/pyproject.toml`; do not run `uv sync` or `pytest` from the repo root. |
+| [`legacy/`](legacy/README.md) | Documents kept from the pre-rewrite Flask app: its old docs and decision records, and the business source material (category taxonomy, MRR steps). The app's code was removed on 2026-09-30. |
+| `ruff.toml` (repo root) | Ruff settings for the Python outside `backend/` (the scripts in `.github/scripts`). The backend's own project is `backend/pyproject.toml`; there is no Python project at the repo root. |
 
 ## Contributing
 

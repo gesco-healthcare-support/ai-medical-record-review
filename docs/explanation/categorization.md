@@ -14,8 +14,8 @@ unticked for summarization by default, so the document silently reaches no deliv
 
 The first categorizer was a single fuzzy string match of the title against a list of known
 document-type names. It sent many rows to General and was confused by section-heading names in
-that list. It was replaced by the cascade described here; the old code survives only under
-`legacy/`.
+that list. It was replaced by the cascade described here; the old code survives only in git history (the
+Flask app was removed on 2026-09-30).
 
 ## Where it runs
 

@@ -184,7 +184,7 @@ Working directory `docs-site/`.
 | Step | Command |
 | --- | --- |
 | Checkout | `actions/checkout` |
-| hadolint | Downloads hadolint 2.15.1 (`hadolint-linux-x86_64`), checks it against its published SHA-256, then `./hadolint backend/Dockerfile frontend/Dockerfile docs-site/Dockerfile`. It reads `.hadolint.yaml` from the repository root, which skips one rule, DL3008 (exact apt package versions), with the reason. `legacy/Dockerfile` is not built, so it is not linted. |
+| hadolint | Downloads hadolint 2.15.1 (`hadolint-linux-x86_64`), checks it against its published SHA-256, then `./hadolint backend/Dockerfile frontend/Dockerfile docs-site/Dockerfile`. It reads `.hadolint.yaml` from the repository root, which skips one rule, DL3008 (exact apt package versions), with the reason. |
 | Compose files | `docker compose -f docker-compose.yml config --quiet`, then the same for `docker-compose.dev.yml`. `SECRET_KEY` and `SECURITY_PASSWORD_SALT` are set to placeholders, because `docker-compose.yml` refuses to interpolate without them. |
 
 ### `workflow-lint`
@@ -297,7 +297,7 @@ to this repository's pushes to `staging`, is the next step once that access exis
 | `sonar.python.coverage.reportPaths` | `backend/coverage.xml` |
 | `sonar.javascript.lcov.reportPaths` | `frontend/coverage/lcov.info` |
 | `sonar.coverage.exclusions` | `frontend/app/**` |
-| `sonar.exclusions` | `mrr_ai/**`, `experiments/**`, `frontend/.next/**`, `frontend/node_modules/**`, `frontend/public/pdfjs/**`, `frontend/e2e/**`, `**/*.test.ts`, `**/*.test.tsx`, `**/__pycache__/**` |
+| `sonar.exclusions` | `experiments/**`, `frontend/.next/**`, `frontend/node_modules/**`, `frontend/public/pdfjs/**`, `frontend/e2e/**`, `**/*.test.ts`, `**/*.test.tsx`, `**/__pycache__/**` |
 | `sonar.cpd.exclusions` | `backend/tests/**` |
 | `sonar.qualitygate.wait` | `true` |
 
@@ -518,14 +518,14 @@ release waits 7 days (`cooldown`) before it is proposed; security updates are ne
 | `docker` | the Dockerfiles in `backend/`, `frontend/`, `docs-site/` | `chore(tooling)` | one pull request each |
 | `docker-compose` | the images `docker-compose.yml` pulls (postgres, redis, nginx) | `chore(tooling)` | one pull request each |
 
-The legacy Flask app at the repository root is left out; it is not deployed. A postgres major
+No entry covers the repository root: the retired Flask app that lived there was removed on 2026-09-30. A postgres major
 update (16 to 17) changes the on-disk data format, so never merge one without a dump-and-restore
 plan.
 
 ## Local hooks (`.pre-commit-config.yaml`)
 
 Run on each developer's machine once installed; CI does not run pre-commit. Files under
-`mrr_ai/static/vendor/` and `frontend/public/pdfjs/` are skipped by every hook.
+`frontend/public/pdfjs/` are skipped by every hook.
 
 | Hook | Source and version | What it checks |
 | --- | --- | --- |
