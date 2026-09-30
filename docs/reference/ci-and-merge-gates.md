@@ -266,7 +266,8 @@ the workflow file explains why `pull_request_target` is safe here.
 
 Runs after each merge into `staging`, on that commit, from `.github/scripts/staging_acceptance.sh`. Production's
 code is checked out into `production-code/` for the upgrade test. Nothing real is used: placeholder secrets, no
-model call, a synthetic account on the reserved `.invalid` domain, and the synthetic `frontend/e2e/fixtures/sample.pdf`.
+model call, a synthetic account on `example.com` (reserved for documentation; the app's email validator rejects
+special-use names such as `.invalid`), and the synthetic `frontend/e2e/fixtures/sample.pdf`.
 
 | Step | What it does |
 | --- | --- |

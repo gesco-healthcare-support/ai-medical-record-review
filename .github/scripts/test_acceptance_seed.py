@@ -25,8 +25,16 @@ class RequestBodiesTest(unittest.TestCase):
         self.assertGreaterEqual(len(body["password"]), 8)
         self.assertRegex(body["password"], r"\d")
         self.assertRegex(body["password"], r"[^A-Za-z0-9]")
-        self.assertTrue(body["email"].endswith(".invalid"), "a synthetic address on a reserved domain")
         self.assertIn("name", body)
+
+    def test_the_synthetic_address_is_one_the_app_accepts(self):
+        # The backend validates addresses with email-validator, which rejects special-use top-level names with a
+        # 422 on /api/auth/register. Its list in 2.3.0 (SPECIAL_USE_DOMAIN_NAMES), copied because this test runs on
+        # the standard library only. example.com is reserved for documentation (RFC 2606), so it stays synthetic.
+        rejected_by_email_validator = {"arpa", "invalid", "local", "localhost", "onion", "test"}
+        email = register_body()["email"]
+        self.assertNotIn(email.rsplit(".", 1)[-1], rejected_by_email_validator)
+        self.assertTrue(email.endswith("@example.com"), "a synthetic address on the documentation domain")
 
     def test_the_rows_are_valid_for_a_three_page_record(self):
         rows = rows_payload()["rows"]
