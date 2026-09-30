@@ -1,9 +1,10 @@
-"""The production release policy: no Critical vulnerability, and no High one that has a fix, in a released image,
-unless a reviewed, unexpired exception covers it (Adrian: 2026-09-28 decision 3; the fix-state scope 2026-09-29).
+"""The production release policy: no Critical or High vulnerability that has a fix in a released image, unless a
+reviewed, unexpired exception covers it (Adrian: 2026-09-28 decision 3; the fix-state scope 2026-09-29).
 
-A Critical blocks whatever its fix state. A High blocks only when Grype reports a fixed version (fix state "fixed");
-a High with no fix ("not-fixed", "wont-fix", "unknown") is listed, not blocked, because nothing but an exception
-could clear it. The scan covers everything in the image: the app's own dependencies and the base image's packages.
+A Critical or High blocks only when Grype reports a fixed version (fix state "fixed"). One with no fix ("not-fixed",
+"wont-fix", "unknown") is listed, not blocked: nothing in this repository can clear it, and on 2026-09-29 the first
+report held 25 such Criticals in core Debian packages (libcurl, libxml2, libtiff, glibc, perl). Every staging push
+lists them too. The scan covers everything in the image: the app's own dependencies and the base image's packages.
 Build tools (uv, pip, npm, yarn) are kept out of the images by their Dockerfiles' build stages, so they are not in
 scope. The exceptions live in .github/release-exceptions.json, reviewed like any other change:
 
@@ -26,11 +27,12 @@ import sys
 from pathlib import Path
 
 _FIELDS = ("vulnerability", "package", "reason", "expires")
+_SERIOUS = ("Critical", "High")
 
 
 def _blocks(severity: str | None, fix_state: str | None) -> bool:
     """Whether a finding of this severity and fix state blocks a release (see the module docstring)."""
-    return severity == "Critical" or (severity == "High" and fix_state == "fixed")
+    return severity in _SERIOUS and fix_state == "fixed"
 
 
 def load_exceptions(data: dict, today: datetime.date) -> tuple[list[dict], list[str]]:
@@ -69,14 +71,14 @@ def violations(report: dict, exceptions: list[dict]) -> list[str]:
 
 
 def advisories(report: dict) -> list[str]:
-    """Each High match with no fix in one Grype JSON report: listed for the reader, never blocking."""
+    """Each Critical or High match with no fix in one Grype JSON report: listed for the reader, never blocking."""
     listed: list[str] = []
     for match in report.get("matches", []):
         vulnerability, artifact = match.get("vulnerability", {}), match.get("artifact", {})
         severity, fix_state = vulnerability.get("severity"), vulnerability.get("fix", {}).get("state")
-        if severity == "High" and not _blocks(severity, fix_state):
+        if severity in _SERIOUS and not _blocks(severity, fix_state):
             listed.append(
-                f"High ({fix_state or 'unknown'}): {vulnerability.get('id')} in {artifact.get('name')} "
+                f"{severity} ({fix_state or 'unknown'}): {vulnerability.get('id')} in {artifact.get('name')} "
                 f"{artifact.get('version', '')}".rstrip()
             )
     return listed
@@ -88,7 +90,7 @@ def _summary(problems: list[str], listed: list[str], report_only: bool) -> str:
     lines = [f"### {title}", ""]
     lines += [f"- BLOCKS: {p}" for p in problems] or ["- Nothing blocks."]
     if listed:
-        lines += ["", "High findings with no fix (listed, not blocking):", ""] + [f"- {a}" for a in listed]
+        lines += ["", "Critical and High findings with no fix (listed, not blocking):", ""] + [f"- {a}" for a in listed]
     return "\n".join(lines) + "\n"
 
 

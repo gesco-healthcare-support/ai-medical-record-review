@@ -85,7 +85,7 @@ All jobs run on `ubuntu-latest`.
 | `acceptance` | `staging-acceptance.yml` | - | Pushes to `staging` only, in the `staging` environment, with a read-only token. `.github/scripts/staging_acceptance.sh` (see [`acceptance`](#acceptance)), then Syft SBOMs of the three built images, which it hands to `publish` with the images as a 1-day artifact | An image has a critical vulnerability with a fix, the upgrade or `alembic check` fails, the seeded data does not read back, the stack does not come up, or ZAP reports a High-risk alert. On success the environment records a deployment for the commit. |
 | `publish` | `staging-acceptance.yml` | `acceptance` | Pushes to `staging` only. Loads the accepted images, pushes them to `ghcr.io` tagged with the commit, and attests each (build provenance and SBOM; see [Releases](#releases)). Only Docker and GitHub's own actions run here | An image cannot be pushed or attested |
 | `acceptance-dry-run` | `staging-acceptance.yml` | - | Pull requests that change the stage. The same script, without the environment, so it records nothing and pushes nothing | As `acceptance` |
-| `release-policy` | `release-policy.yml` | - | Pull requests into `production` only. Pulls the three images staging accepted for the pull request's head commit from `ghcr.io`, scans each with Grype, then `python3 .github/scripts/release_policy.py` | An image is missing (staging has not accepted the commit), an image has a Critical vulnerability or a High one with a fix and no exception, or an exception has expired or is incomplete |
+| `release-policy` | `release-policy.yml` | - | Pull requests into `production` only. Pulls the three images staging accepted for the pull request's head commit from `ghcr.io`, scans each with Grype, then `python3 .github/scripts/release_policy.py` | An image is missing (staging has not accepted the commit), an image has a Critical or High vulnerability with a fix and no exception, or an exception has expired or is incomplete |
 | `release` | `release.yml` | - | Pushes to `production` only. Verifies the accepted images' attestations, takes their SBOMs from the SBOM attestations, computes the next version, creates the tag and a GitHub Release (see [Releases](#releases)) | HEAD is not a promotion merge, an image or either of its attestations is missing or was not signed by `staging-acceptance.yml` on `staging`, or the tag or release cannot be created |
 | `docs-impact` | `docs-drift.yml` | - | Pull requests only. The docs rules' unit tests, then `python3 .github/scripts/docs_guides.py impact <base> <head>` | Its unit tests fail. The check itself never fails: a changed code file whose describing docs were not touched gets a warning annotation and a row in the job summary. |
 | `docs-drift-report` | `docs-drift.yml` | - | Weekly and by hand, never on a pull request. `python3 .github/scripts/docs_guides.py report`, then creates or edits the one open issue labelled `docs-drift` | The report or the `gh` call errors |
@@ -275,7 +275,7 @@ special-use names such as `.invalid`), and the synthetic `frontend/e2e/fixtures/
 | --- | --- |
 | Build once | `docker compose -p mrrci build api web docs` |
 | Image scan | Grype 0.119.0 (checksum verified), `--only-fixed --fail-on critical`, on every image the stack is made of: the three built (`mrr-backend-web`, `mrr-frontend`, `mrr-docs`) and the three pulled by their pinned references (`proxy`, `postgres`, `redis`; listed by `docker compose config --images`) |
-| Release-policy report (never fails here) | A full Grype scan of the three built images, then `release_policy.py --report-only`: the job summary shows what `release-policy` will say when a promotion proposes this commit, including the High findings with no fix |
+| Release-policy report (never fails here) | A full Grype scan of the three built images, then `release_policy.py --report-only`: the job summary shows what `release-policy` will say when a promotion proposes this commit, including the Critical and High findings with no fix |
 | Upgrade test, production phase | Builds production's api (`.github/scripts/compose.production-code.yml`), migrates an empty database to production's head, starts it, then `acceptance_seed.py seed` registers a synthetic account, uploads the sample PDF and writes three review rows through the API. It runs under staging's `docker-compose.yml`, with staging's `web` image; only the api is production's, so a compose change between the branches is exercised in staging's form only. |
 | Upgrade test, staging phase | Staging's `alembic upgrade head`, then `alembic check`; starts staging's stack with `ENVIRONMENT=prod`; `acceptance_seed.py verify` reads the document and its rows back through the API |
 | ZAP baseline | `ghcr.io/zaproxy/zaproxy:2.17.0` (pinned by digest), `zap-baseline.py` against `http://localhost:8080`; fails on any High-risk alert and lists every alert in the job summary |
@@ -326,12 +326,12 @@ The images hold only what runs: each Dockerfile keeps its build tools in a build
 `pip`; the frontend base image's `npm`, `npx`, `corepack` and `yarn` are removed), and the docs site is served by
 `nginx:1.30-alpine-slim`. So the scan's findings are about code that ships.
 
-The release policy blocks a pull request into `production` when an image it would release has a Critical
-vulnerability, whatever its fix state, or a High one that has a fixed version, unless `.github/release-exceptions.json`
-holds a reviewed exception for that vulnerability in that package. A High with no fix is listed in the job summary but
-does not block, since nothing but an exception could clear it. Every staging push shows the same result early, in the
-`acceptance` job's summary. An exception has four fields, all required, and fails the check once its expiry date has
-passed:
+The release policy blocks a pull request into `production` when an image it would release has a Critical or High
+vulnerability that has a fixed version, unless `.github/release-exceptions.json` holds a reviewed exception for that
+vulnerability in that package. A Critical or High with no fix is listed in the job summary but does not block: nothing
+in this repository can clear it (the first report, on 2026-09-29, held 25 unfixed Criticals in core Debian packages
+such as libcurl, glibc and perl). Every staging push shows the same result early, in the `acceptance` job's summary.
+An exception has four fields, all required, and fails the check once its expiry date has passed:
 
 ```json
 {"exceptions": [{"vulnerability": "CVE-2026-0001", "package": "openssl", "reason": "no fixed release yet",

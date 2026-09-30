@@ -74,7 +74,7 @@ for image in "${images[@]}"; do
 done
 summary "- Image scan: no critical vulnerability with a fix in ${images[*]}"
 # Early warning, never a failure here: what release-policy.yml will say when a promotion proposes this commit, for the
-# three images it would release (every Critical, and every High with a fix, unless an exception covers it).
+# three images it would release (every Critical or High with a fix, unless an exception covers it).
 for name in mrr-backend-web mrr-frontend mrr-docs; do
   ./grype "docker:${name}" -q -o json > "grype-release-${name}.json"
 done

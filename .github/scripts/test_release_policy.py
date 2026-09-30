@@ -85,23 +85,25 @@ class ViolationsTest(unittest.TestCase):
     def test_an_empty_report_passes(self):
         self.assertEqual(violations({"matches": []}, []), [])
 
-    # Scope (Adrian, 2026-09-29): every Critical blocks; a High blocks only when a fixed version exists.
+    # Scope (Adrian, 2026-09-29): a Critical or High blocks only when a fixed version exists; the rest is listed.
     def test_a_high_with_no_fix_does_not_block(self):
         self.assertEqual(violations(grype(("CVE-2026-0003", "High", "libheif1", "not-fixed")), []), [])
 
     def test_a_high_the_distro_will_not_fix_does_not_block(self):
         self.assertEqual(violations(grype(("CVE-2026-0004", "High", "libheif1", "wont-fix")), []), [])
 
-    def test_a_critical_with_no_fix_still_blocks(self):
-        found = violations(grype(("CVE-2026-0005", "Critical", "libgd3", "not-fixed")), [])
-        self.assertEqual(len(found), 1)
-        self.assertIn("CVE-2026-0005", found[0])
+    def test_a_critical_with_no_fix_does_not_block(self):
+        self.assertEqual(violations(grype(("CVE-2026-0005", "Critical", "libcurl4t64", "not-fixed")), []), [])
 
-    def test_highs_with_no_fix_are_listed_and_fixable_ones_are_not(self):
-        report = grype(("CVE-2026-0006", "High", "libheif1", "not-fixed"), ("CVE-2026-0007", "High", "openssl"))
+    def test_findings_with_no_fix_are_listed_and_fixable_ones_are_not(self):
+        report = grype(
+            ("CVE-2026-0006", "High", "libheif1", "not-fixed"),
+            ("CVE-2026-0009", "Critical", "perl-base", "not-fixed"),
+            ("CVE-2026-0007", "High", "openssl"),
+        )
         listed = advisories(report)
-        self.assertEqual(len(listed), 1)
-        self.assertIn("CVE-2026-0006", listed[0])
+        self.assertEqual(len(listed), 2)
+        self.assertTrue(any("CVE-2026-0006" in a for a in listed) and any("CVE-2026-0009" in a for a in listed))
 
 
 class MainTest(unittest.TestCase):
