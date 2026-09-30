@@ -313,7 +313,8 @@ on a running stack and readable as Markdown on GitHub.
 
 As of 2026-09-30:
 
-- In use by reviewers on an internal server.
+- Deployed on an internal server; the procedure is in
+  [Deploy to the server](docs/how-to/deploy-to-the-server.md).
 - First release [`v0.1.0`](https://github.com/gesco-healthcare-support/ai-medical-record-review/releases/tag/v0.1.0)
   was cut on 2026-09-30 through the staging acceptance stage.
 - Known issues and requested features are tracked in
