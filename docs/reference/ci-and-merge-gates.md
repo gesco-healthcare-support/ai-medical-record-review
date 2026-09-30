@@ -309,7 +309,7 @@ the CI scan fails with "running CI analysis while Automatic Analysis is enabled"
 Each merge into `production` is a release. Its version is a semantic version computed from the commit messages since
 the previous tag (`.github/scripts/release_version.py`): any breaking change (`!` before the colon, or a
 `BREAKING CHANGE:` footer) bumps the major number, otherwise any `feat` bumps the minor number, otherwise the patch.
-The first release is `v0.1.0`, and the rule applies literally on `0.x`, so the first breaking change moves the version
+The first release was `v0.1.0` (2026-09-30, production `a9fc6e0` from staging `3cfee61`), and the rule applies literally on `0.x`, so the first breaking change moves the version
 to `v1.0.0`. Tags matching `v*` can never be moved or deleted (the tag ruleset).
 
 Images are built once. The staging `publish` job pushes the images `acceptance` tested to `ghcr.io`, tagged with the
@@ -359,7 +359,8 @@ gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets/<id>
 | Branch must be up to date before merging | Required | Not required, by design: "Update branch" on a promotion pull request would merge the lower branch back into the upper one |
 | Force push (non-fast-forward) | Blocked | Blocked |
 | Branch deletion | Blocked | Blocked |
-| CodeQL results before merging (see Code scanning) | Required: security alerts of high or critical severity block | Not yet: each branch gets the same rule once it has a CodeQL analysis of its own, after its next promotion |
+| CodeQL results before merging (see Code scanning) | Required: security alerts of high or critical severity block | `staging`, `production`: required (added 2026-09-30, after each branch's first CodeQL analysis). `qwen`: not yet, until its next promotion |
+| A successful `staging` deployment of the pull request's head commit | - | `production` only (added 2026-09-30, after the first green staging run; see Environments) |
 | Bypass | Repository admins, through a pull request only (see Admin bypass) | Repository admins, through a pull request only |
 
 **Code scanning.** The CodeQL rule blocks a pull request while CodeQL is still analysing it, and when
@@ -369,8 +370,8 @@ flow, so a pull request can be blocked by an alert whose flagged line it does no
 that calls a flagged function is enough). Medium and lower security alerts, and alerts that are not
 security alerts, never block it. Code scanning judges a pull request against an analysis of the branch it merges into, so a branch
 gets the rule only after `codeql.yml` has analysed a push to it; until then a pull request into it
-could not be judged. Every commit on `staging`, `production` and `qwen` has come through `main`,
-where the rule applies.
+could not be judged. `staging` and `production` have the rule since 2026-09-30; `qwen` gets it after its next
+promotion. Every commit on those branches has come through `main`, where the rule applies.
 
 GitHub never lets an account approve its own pull request, and the approver must not be the account
 that pushed the pull request's last commit either. So whoever merges `main` into a pull request
@@ -403,12 +404,13 @@ The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 | `coverage-floor` | GitHub Actions (`ci.yml`) | all four branches |
 | `sonarcloud` | GitHub Actions (`ci.yml`) | all four branches |
 | `workflow-lint` | GitHub Actions (`ci.yml`) | all four branches |
-| `container-lint` | GitHub Actions (`ci.yml`) | `main`; `staging`, `production` and `qwen` once each branch contains the job (after its next promotion), so the check can always report |
+| `container-lint` | GitHub Actions (`ci.yml`) | `main`, `staging`, `production`; `qwen` once it contains the job (after its next promotion), so the check can always report |
 | `pr-title` | GitHub Actions (`pr-title.yml`) | `main` only |
 | `SonarCloud Code Analysis` | SonarCloud's own GitHub integration, from the analysis the `sonarcloud` job uploads | all four branches |
 | `dependency-review` | GitHub Actions (`ci.yml`) | all four branches |
 | `osv-scan / osv-scan` | GitHub Actions (`ci.yml`, reusable workflow) | all four branches |
 | `docs` | GitHub Actions (`ci.yml`) | `main` only, until `staging` and `qwen` contain the docs site |
+| `release-policy` | GitHub Actions (`release-policy.yml`) | `production` (since 2026-09-30, after it first reported on a promotion) |
 | `guard-into-staging` | GitHub Actions (`promotion-guard.yml`) | `staging` |
 | `guard-into-production` | GitHub Actions (`promotion-guard.yml`) | `production` |
 | `guard-into-qwen` | GitHub Actions (`promotion-guard.yml`) | `qwen` |
@@ -442,7 +444,7 @@ So a fix always lands on `main` first.
 
 | Environment | Deployment branches | Used by | Why |
 | --- | --- | --- | --- |
-| `staging` | `staging` only | `acceptance` | A passing run records a deployment for the commit it tested. Production's ruleset is to require a successful `staging` deployment on a promotion pull request's head commit, which is staging's latest commit; that rule is added after the stage's first green run on `staging`. |
+| `staging` | `staging` only | `acceptance` | A passing run records a deployment for the commit it tested. Production's ruleset requires a successful `staging` deployment on a promotion pull request's head commit, which is staging's latest commit (since 2026-09-30, after the stage's first green run on `staging`). |
 
 ## Secrets
 
