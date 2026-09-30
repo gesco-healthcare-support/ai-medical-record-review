@@ -73,5 +73,5 @@ Source of truth: the code named in each entry.
 | term | meaning |
 | --- | --- |
 | **Reviewer** | A signed-in user who uploads and reviews records. Sees only their own records. |
-| **Admin** | A user with the admin flag (`is_admin`, exposed as `is_superuser`). Can edit the catalog and reprocess records. Granted only with the CLI. See [Manage users and admins](../how-to/manage-users-and-admins.md). |
+| **Admin** | A user with the admin flag (`is_admin`, exposed as `is_superuser`). Can edit the catalog, reprocess records, and open and fix any reviewer's record (not delete it). Granted only with the CLI. See [Manage users and admins](../how-to/manage-users-and-admins.md). |
 | **Operator** | Whoever runs the server: deploys, backs up, reads logs. Not a role in the app. |
