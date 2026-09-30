@@ -4,10 +4,13 @@ name: staging acceptance
 # After each merge into staging, it tests that exact commit as it would run: images built once and scanned, an upgrade
 # from production's schema holding synthetic data, the production-mode stack, a ZAP baseline scan. On success the
 # `staging` environment records a deployment for the commit, and production's ruleset requires one on the commit a
-# promotion proposes - so nothing reaches production that this stage has not passed.
+# promotion proposes - so nothing reaches production that this stage has not passed. A passing commit's three
+# built images are then pushed to ghcr.io, tagged with the commit, with an SBOM and build-provenance attestation
+# each; release-policy.yml scans those exact images and release.yml verifies the attestations (build once).
 #
 # The dry-run job runs the same script on a pull request that changes the stage, with no environment (it records
-# nothing) and no cloud access. It is not a required check, so its paths filter cannot leave a merge waiting.
+# nothing), no cloud access and no write access. It is not a required check, so its paths filter cannot leave a
+# merge waiting.
 on:
   push:
     branches: [staging]
@@ -36,6 +39,11 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      packages: write # push the accepted images to ghcr.io
+      id-token: write # sign the attestations (Sigstore)
+      attestations: write # store the attestations
+    env:
+      REGISTRY: ghcr.io/gesco-healthcare-support
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -50,6 +58,92 @@ jobs:
 
       - name: Acceptance stage
         run: bash .github/scripts/staging_acceptance.sh
+
+      # Reached only when the stage passed. The images pushed are the ones the stage built and scanned (compose
+      # down keeps images), tagged with the full commit SHA that release-policy.yml and release.yml look up.
+      - name: Push the accepted images to ghcr.io
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          for name in mrr-backend-web mrr-frontend mrr-docs; do
+            docker tag "$name" "$REGISTRY/$name:$GITHUB_SHA"
+            docker push "$REGISTRY/$name:$GITHUB_SHA"
+            digest=$(docker buildx imagetools inspect "$REGISTRY/$name:$GITHUB_SHA" --format '{{json .Manifest}}' \
+              | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")
+            echo "${name//-/_}=$digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Generate the SBOMs (Syft, checksum-verified)
+        env:
+          SYFT_VERSION: 1.52.0
+          SYFT_SHA256: caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
+        run: |
+          set -euo pipefail
+          tarball="syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl -sSL --fail -o "$tarball" "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/${tarball}"
+          echo "${SYFT_SHA256}  ${tarball}" | sha256sum --check --strict
+          tar -xzf "$tarball" syft
+          mkdir -p sboms
+          for name in mrr-backend-web mrr-frontend mrr-docs; do
+            ./syft "docker:$name" -o "spdx-json=sboms/$name.spdx.json"
+          done
+
+      - name: Attest build provenance (mrr-backend-web)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-backend-web
+          subject-digest: ${{ steps.push.outputs.mrr_backend_web }}
+          push-to-registry: true
+
+      - name: Attest the SBOM (mrr-backend-web)
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-backend-web
+          subject-digest: ${{ steps.push.outputs.mrr_backend_web }}
+          sbom-path: sboms/mrr-backend-web.spdx.json
+          push-to-registry: true
+
+      - name: Attest build provenance (mrr-frontend)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-frontend
+          subject-digest: ${{ steps.push.outputs.mrr_frontend }}
+          push-to-registry: true
+
+      - name: Attest the SBOM (mrr-frontend)
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-frontend
+          subject-digest: ${{ steps.push.outputs.mrr_frontend }}
+          sbom-path: sboms/mrr-frontend.spdx.json
+          push-to-registry: true
+
+      - name: Attest build provenance (mrr-docs)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-docs
+          subject-digest: ${{ steps.push.outputs.mrr_docs }}
+          push-to-registry: true
+
+      - name: Attest the SBOM (mrr-docs)
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ghcr.io/gesco-healthcare-support/mrr-docs
+          subject-digest: ${{ steps.push.outputs.mrr_docs }}
+          sbom-path: sboms/mrr-docs.spdx.json
+          push-to-registry: true
+
+      # release.yml downloads this artifact (name `sboms`) from the staging run of the commit it releases.
+      - name: Keep the SBOMs for the release
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: sboms
+          path: sboms/
+          retention-days: 90
 
   acceptance-dry-run:
     if: github.event_name == 'pull_request'
