@@ -1,0 +1,4 @@
+# Shell scripts always check out with LF. bash stops at a CRLF line ending ($'\r': command not found), and a
+# Windows checkout with core.autocrlf=true would otherwise convert them - which would break the Claude Code
+# Stop hook (.claude/hooks/docs-reminder.sh) on every Windows machine.
+*.sh text eol=lf

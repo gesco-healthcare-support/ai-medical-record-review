@@ -1,0 +1,15 @@
+# Repo-wide ruff settings for Python outside backend/ (backend/pyproject.toml has its own): the scripts in
+# .github/scripts, which the pre-commit ruff hooks lint with the nearest config - this file. Moved unchanged from
+# the retired Flask app's root pyproject.toml when that was removed, so no Python package manifest remains at the
+# root for dependency tooling to resolve.
+target-version = "py312"
+line-length = 100
+# Archived research spike; preserved as-is, not maintained to lint standard.
+extend-exclude = ["experiments"]
+
+[lint]
+# Errors, pyflakes, import-sort, pyupgrade, bugbear.
+select = ["E", "F", "I", "UP", "B"]
+# The formatter owns line length; E501 mostly flags long string literals it cannot wrap, so linting it is noise
+# (Ruff's own recommendation).
+ignore = ["E501"]

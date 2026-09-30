@@ -7,6 +7,7 @@ import { humanizeError } from "@/lib/errors";
 import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summaries";
 import { categoryOptions } from "@/components/review/rows-table";
 import { categoryWasGuessed } from "@/lib/review-rows";
+import { findSummaries, orderSummaries, type SummaryOrder } from "@/lib/summary-order";
 import type { CategoryOption, SummaryItem } from "@/lib/types";
 import type { HeaderFields } from "@/lib/review-api";
 import { ExportDialog } from "./export-dialog";
@@ -220,6 +221,57 @@ function SummaryChips({
  *  Review & correct - clicking a card jumps the viewer to that summary's first source page so the
  *  reviewer can check it against the record. The same editable report header as Review & correct sits
  *  on top (shared via onHeaderSaved), and the Export dialog prefills from it. */
+/** Search and order for the list: the lead reviewer asked for an easier way to find a specific
+ *  summary when going back to fix one - a search, or date order rather than page order. */
+function SummaryFinder({
+  query,
+  onQuery,
+  order,
+  onOrder,
+}: Readonly<{
+  query: string;
+  onQuery: (q: string) => void;
+  order: SummaryOrder;
+  onOrder: (o: SummaryOrder) => void;
+}>) {
+  return (
+    <div className="flex flex-wrap items-end gap-2.5">
+      <label className="rc-hb-field">
+        <span className="ev-lbl">Search summaries</span>
+        <input
+          type="search"
+          className="ev-inp"
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          placeholder="Doctor, facility, report, date..."
+        />
+      </label>
+      <label className="rc-hb-field">
+        <span className="ev-lbl">Order</span>
+        <select
+          className="ev-inp"
+          value={order}
+          onChange={(e) => onOrder(e.target.value as SummaryOrder)}
+        >
+          <option value="pages">Page order</option>
+          <option value="date">Date order</option>
+        </select>
+      </label>
+    </div>
+  );
+}
+
+/** The count line under the heading: how many summaries, how many excluded, and - while a search
+ *  is narrowing the list - how many match. */
+function countLineFor(summaries: SummaryItem[], shown: number, searching: boolean) {
+  if (!summaries.length) return "";
+  const excluded = summaries.filter((s) => s.excluded).length;
+  const noun = summaries.length === 1 ? "summary" : "summaries";
+  const excludedNote = excluded ? ` · ${excluded} excluded from export` : "";
+  const matchNote = searching ? ` · ${shown} matching` : "";
+  return `${summaries.length} ${noun}${excludedNote}${matchNote}`;
+}
+
 export function SummariesView({
   documentId,
   filename,
@@ -251,6 +303,8 @@ export function SummariesView({
   const pdfRef = useRef<PdfViewerHandle>(null);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [page, setPage] = useState(0);
+  const [query, setQuery] = useState("");
+  const [order, setOrder] = useState<SummaryOrder>("pages");
   const [editingIdx, setEditingIdx] = useState(-1);
   const [saveMsg, setSaveMsg] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
@@ -340,14 +394,23 @@ export function SummariesView({
 
   const excludedCount = summaries.filter((s) => s.excluded).length;
   const includedCount = summaries.length - excludedCount;
-  const summaryNoun = summaries.length === 1 ? "summary" : "summaries";
-  const excludedNote = excludedCount ? ` · ${excludedCount} excluded from export` : "";
-  const countLine = summaries.length
-    ? `${summaries.length} ${summaryNoun}` + excludedNote
-    : "";
-  const pageCount = Math.max(1, Math.ceil(summaries.length / PAGE_SIZE));
+  // What the list shows: the search narrows it, the order sorts it, and the pager pages THAT - so
+  // a match on page 4 of the full list is on page 1 of the results.
+  const shown = orderSummaries(findSummaries(summaries, query), order);
+  const countLine = countLineFor(summaries, shown.length, query.trim() !== "");
+  const pageCount = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
   const curPage = Math.min(page, pageCount - 1);
-  const pageItems = summaries.slice(curPage * PAGE_SIZE, curPage * PAGE_SIZE + PAGE_SIZE);
+  const pageItems = shown.slice(curPage * PAGE_SIZE, curPage * PAGE_SIZE + PAGE_SIZE);
+  function onQuery(next: string) {
+    setQuery(next);
+    setPage(0);
+    setEditingIdx(-1);
+  }
+  function onOrder(next: SummaryOrder) {
+    setOrder(next);
+    setPage(0);
+    setEditingIdx(-1);
+  }
 
   const column = (
     <div className="rce-splitcol">
@@ -387,6 +450,12 @@ export function SummariesView({
           </div>
         ) : null}
         {!isLoading && summaries.length > 0 ? (
+          <SummaryFinder query={query} onQuery={onQuery} order={order} onOrder={onOrder} />
+        ) : null}
+        {!isLoading && summaries.length > 0 && shown.length === 0 ? (
+          <p className="muted">No summaries match that search.</p>
+        ) : null}
+        {!isLoading && shown.length > 0 ? (
           <div className="summary-list">
             {pageItems.map((item) => {
               const { title, text, doi } = parseDisplay(item);
@@ -541,7 +610,7 @@ export function SummariesView({
             <span>
               Page {curPage + 1} of {pageCount} · {curPage * PAGE_SIZE + 1}
               {"–"}
-              {Math.min((curPage + 1) * PAGE_SIZE, summaries.length)} of {summaries.length}
+              {Math.min((curPage + 1) * PAGE_SIZE, shown.length)} of {shown.length}
             </span>
             <button
               type="button"

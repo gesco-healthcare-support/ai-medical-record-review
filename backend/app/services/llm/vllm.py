@@ -300,4 +300,4 @@ class VLLMProvider(DelegatingProvider):
             pacing.record_success(_PROVIDER, model)
             return _to_response(completion)
         genai_metrics.record(model, genai_metrics.OUTCOME_EXHAUSTED)
-        raise last
+        raise last or RuntimeError("the model call made no attempt")

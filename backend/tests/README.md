@@ -14,6 +14,7 @@ shared `conftest.py`.
 | `conftest.py` | Shared setup, not tests: finds the test database from the Compose files and refuses the app database, gives each parallel worker its own database, Redis database and account prefix, hashes test passwords at argon2's cheapest cost, deletes test accounts around every test, and provides the `client`, `seeded_user` and `lanes()` helpers. |
 | `test_ab_stats.py` | The aggregation used by the segmentation boundary A/B script (`scripts/eval/ab_stats.py`). |
 | `test_admin_api.py` | The `/api/admin` routes: categories, prompts, reprocess, admin-only access. |
+| `test_admin_record_access.py` | An admin opening and fixing another reviewer's record: the ownership guard, the `owner` list filter, audit attribution, owner-only delete, the accounts list. |
 | `test_auth_gate.py` | The deny-by-default authentication gate and its public-path allowlist. |
 | `test_auth_integration.py` | Login, logout, the registration rules and the password-reset routes, against the database. |
 | `test_backend_provenance.py` | Which model backend answered a call is recorded beside which model did. |
@@ -25,6 +26,9 @@ shared `conftest.py`.
 | `test_classification.py` | The categorization model call uses the classify model by default and honours an override. |
 | `test_classify_prompt_ab.py` | The categorization prompt A/B script's control arm. |
 | `test_cli.py` | The admin command-line tool (`app/cli.py`). |
+| `test_config_bounds.py` | Settings with a lower bound (for example `GENAI_MAX_RETRIES` at least 1) refuse to boot below it. |
+| `test_docs_reference_drift.py` | The reference pages give every setting, route, migration, compose service, frontend page and CI job a row of its own. |
+| `test_docs_guides.py` | Every file is named in its folder's README, every path and symbol a doc cites exists, every CLAUDE.md stays at 200 lines or fewer. |
 | `test_compose_passthrough.py` | Settings that must be settable from `.env` are named in `docker-compose.yml`, documented in `.env.example`, and share their defaults with `app/config.py`. |
 | `test_conftest_db_selection.py` | `conftest.py`'s own port and password pairing and its per-worker isolation. |
 | `test_date_in_source.py` | The eval check of whether a row's date appears in its pages. |

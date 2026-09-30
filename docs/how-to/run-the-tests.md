@@ -98,12 +98,15 @@ any `psql` session, other pytest run or host-run API on it first.
 
 ### 5. Run the lint gates
 
-CI fails on either of these, and they are separate checks:
+CI fails on any of these, and they are separate checks:
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
+uvx pyright==1.1.414
 ```
+
+pyright type-checks `app/` only, with the settings in `pyproject.toml` `[tool.pyright]`.
 
 Run `uv run ruff format .` to apply the formatting.
 
@@ -124,6 +127,7 @@ pnpm test
 | `pnpm test:watch` | Vitest in watch mode. |
 | `pnpm test:coverage` | One run with coverage; writes `coverage/lcov.info` and `coverage/coverage-summary.json`. |
 | `pnpm exec vitest run components/review/stepper.test.tsx` | One file. |
+| `pnpm lint` | ESLint over the app's code (config `eslint.config.mjs`); any error or warning fails it. CI runs it. |
 | `pnpm typecheck` | TypeScript check (`tsc --noEmit`). CI runs it. |
 | `pnpm build` | The production build. CI runs it. |
 

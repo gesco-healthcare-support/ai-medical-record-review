@@ -1,37 +1,98 @@
 # CI and merge gates reference
 
-Every CI job, what it runs, what fails it, and what a pull request needs before it can merge into
-`main`.
+Every CI job, what it runs and what fails it, and what a pull request needs before it can merge into
+each long-lived branch.
 
-Source of truth: `.github/workflows/ci.yml`, `sonar-project.properties`,
-`.pre-commit-config.yaml`, and the repository ruleset for `main` (GitHub repository settings, not a
-file in the repository).
+Source of truth:
 
-## Triggers
+- the four workflows in `.github/workflows/` (`ci.yml`, `guard-tests.yml`, `promotion-guard.yml`,
+  `docs-drift.yml`);
+- `.github/scripts/promotion_guard.py` and `.github/scripts/docs_guides.py`;
+- `backend/scripts/ci/lint_new_migrations.py`;
+- `sonar-project.properties`, `.pre-commit-config.yaml` and `.github/dependabot.yml`;
+- the repository rulesets (GitHub repository settings, not files in the repository).
 
-| Event | Filter | Why |
-| --- | --- | --- |
-| `push` | Branches `main` and `qwen` | A pushed feature branch is already tested by its pull request; listing push branches avoids a second run. |
-| `pull_request` | None: every pull request, whatever its base branch | A base-branch filter would leave pull requests into unlisted branches with no CI at all. |
+`backend/tests/test_docs_reference_drift.py` fails when a job in any workflow is missing from the
+Jobs table below.
 
-The workflow has no `schedule`, no `workflow_dispatch`, no `concurrency` group and no
-`permissions` block.
+## Workflows and triggers
+
+| Workflow | Event | Filter | Why |
+| --- | --- | --- | --- |
+| `ci.yml` | `push` | Branches `main` and `qwen` | A pushed feature branch is already tested by its pull request; listing push branches avoids a second run. |
+| `ci.yml` | `pull_request` | None: every pull request, whatever its base branch | A base-branch filter would leave pull requests into unlisted branches with no CI at all. |
+| `codeql.yml` | `pull_request`; `push` to `main`, `staging`, `production` and `qwen`; weekly `schedule` | None on pull requests | CodeQL static analysis of the Python, TypeScript and workflow code; results go to code scanning. Pushes to every protected branch are analysed because code scanning judges a pull request against an analysis of the branch it merges into. |
+| `scorecard.yml` | `push` to `main`; weekly `schedule` | Default branch only (Scorecard publishes only from it) | OpenSSF Scorecard: publishes the score the README badge shows and uploads its findings to code scanning. |
+| `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
+| `pr-title.yml` | `pull_request` (`opened`, `edited`, `synchronize`, `reopened`) | Base branch `main` only | A squash merge makes the title main's commit subject. Only main's ruleset requires the check, so the filter leaves no required check waiting on another branch; `edited` re-runs it after a retitle. |
+| `staging-acceptance.yml` | `push` to `staging`; `pull_request` | Pull requests only when they change the stage's own files (the workflow, `.github/scripts/staging_acceptance.sh`, `acceptance_seed.py`, `compose.production-code.yml`, `release_policy.py`) | The acceptance stage tests each commit that lands on `staging`, then publishes its images; the pull-request run is a dry run of a change to the stage. None is a required check, so the paths filter cannot leave a merge waiting. |
+| `release-policy.yml` | `pull_request` | Base branch `production` only | The production release policy on the images staging accepted. Only production's ruleset requires it, so the filter leaves no required check waiting elsewhere. |
+| `release.yml` | `push` to `production` | - | Tags and publishes each merge into production. |
+| `docs-drift.yml` | `pull_request`; `schedule` (Mondays 15:00 UTC); `workflow_dispatch` | None | Two docs guards that never block a merge: warnings on a pull request, and a weekly drift issue. See [How to work on these docs](../how-to/work-on-these-docs.md#how-the-docs-stay-current). |
+| `promotion-guard.yml` | `pull_request_target` (`opened`, `synchronize`, `reopened`, `edited`) | None; the check only matters on branches whose ruleset requires it | Runs the default branch's copy of the guard, so a pull request cannot edit the check that judges it. `edited` re-runs it when a pull request's base changes. |
+
+Every workflow gives its jobs a read-only token (`permissions: contents: read`, or none at the
+workflow level with per-job grants). No job pushes code, comments or approves. The only extra grants
+are:
+
+- `osv-scan`: `security-events: write` (and `actions: read`), which its reusable workflow needs to
+  upload results;
+- `codeql.yml` `analyze`: `security-events: write`, to upload results to code scanning;
+- `scorecard.yml` `analysis`: `security-events: write` and `actions: read` for the upload, and
+  `id-token: write`, which Scorecard needs to publish a verified result;
+- the promotion guard: `pull-requests: read`;
+- `publish` (pushes to `staging` only, after `acceptance` passes): `packages: write`, to push the
+  accepted images to `ghcr.io`, and `id-token: write` with `attestations: write`, to sign and store
+  their attestations. It runs only Docker and GitHub's own actions; the stage's third-party tools (ZAP,
+  Grype, Syft, the app containers) run in `acceptance`, which keeps a read-only token;
+- `release-policy`: `packages: read`, to pull the accepted images;
+- `release` (pushes to `production` only): `contents: write`, to create the tag and the GitHub Release,
+  with `packages: read` and `attestations: read`;
+- `docs-drift-report`: `issues: write`, to edit its one issue. It runs only on the default branch
+  (`schedule`, `workflow_dispatch`), never on pull request code. It and `release` are the only jobs
+  that write to the repository itself.
+
+The `security-events: write` grants only upload scan results to code scanning. Of those jobs, `analyze` and
+`osv-scan` run on pull requests, and neither executes pull-request code: CodeQL uses `build-mode: none`, and
+OSV-Scanner only reads the lockfiles.
+
+`docs-drift.yml`, `codeql.yml` and `scorecard.yml` run on a weekly `schedule` (Mondays: 15:00,
+06:17 and 07:23 UTC). Only `docs-drift.yml` has a `workflow_dispatch`. The `acceptance` and `publish`
+jobs and `release.yml` have a `concurrency` group that queues runs rather than cancelling them, so two
+staging pushes or two releases never overlap.
 
 ## Jobs
 
 All jobs run on `ubuntu-latest`.
 
-| Job | needs | What it runs | Fails when |
-| --- | --- | --- | --- |
-| `backend` | - | Ruff lint and format check, an import smoke test, migrations, then the pytest suite with branch coverage, against Postgres and Redis service containers | Any lint or format finding, the import fails, a migration fails, or any test fails |
-| `frontend` | - | Typecheck, production build, Vitest with coverage | A type error, a build error, or any test fails |
-| `e2e` | - | Builds and starts the app stack with Compose (without workers), then Playwright | The app is not ready within the wait loop, or any spec fails |
-| `secret-scan` | - | gitleaks over the checked-out files | gitleaks reports a finding |
-| `coverage-floor` | `backend`, `frontend` | Reads both coverage reports and compares them with the floors | Either suite is below its floor, or a report is missing, empty or unreadable |
-| `sonarcloud` | `backend`, `frontend` | SonarCloud scan with both coverage reports, waiting for the quality gate; on pull requests, a check for new issues and hotspots | The quality gate fails, or (pull requests) the analysis cannot be proven current, or the pull request adds any issue or hotspot |
-| `docs` | - | Builds the documentation site strictly | Any MkDocs warning, including a link to a page that does not exist |
+| Job | Workflow | needs | What it runs | Fails when |
+| --- | --- | --- | --- | --- |
+| `backend` | `ci.yml` | - | Ruff lint and format check, a pyright type check of `app/`, an import smoke test, migration checks (one head; on pull requests, Squawk on the SQL of new migrations), migrations, `alembic check`, then the pytest suite with branch coverage, against Postgres and Redis service containers | Any lint or format finding, a pyright error, the import fails, a migration check fails, a migration fails, the models need a migration nobody wrote, or any test fails |
+| `frontend` | `ci.yml` | - | ESLint, typecheck, production build, Vitest with coverage | Any lint error or warning, a type error, a build error, or any test fails |
+| `e2e` | `ci.yml` | - | Builds and starts the app stack with Compose (without workers), then Playwright | The app is not ready within the wait loop, or any spec fails |
+| `secret-scan` | `ci.yml` | - | gitleaks over the checked-out files | gitleaks reports a finding |
+| `docs` | `ci.yml` | - | Builds the documentation site strictly | Any MkDocs warning, including a link to a page that does not exist |
+| `container-lint` | `ci.yml` | - | hadolint 2.15.1 over `backend/Dockerfile`, `frontend/Dockerfile` and `docs-site/Dockerfile` (settings in `.hadolint.yaml`), then `docker compose config --quiet` on `docker-compose.yml` and `docker-compose.dev.yml` | A hadolint finding, or a compose file that does not parse, interpolate or match the Compose specification |
+| `workflow-lint` | `ci.yml` | - | actionlint and zizmor over `.github/workflows/` | A workflow syntax or expression error, or a zizmor security finding |
+| `dependency-review` | `ci.yml` | - | Pull requests only. GitHub's dependency review of the pull request's dependency changes | The pull request adds, or upgrades to, a runtime dependency with a known high or critical vulnerability that GitHub's dependency graph reports. It can miss one, so `osv-scan` backs it up (see below). |
+| `osv-scan` | `ci.yml` | - | Pull requests only. OSV-Scanner over `backend/uv.lock` and `frontend/pnpm-lock.yaml`, base against head | The pull request introduces a known vulnerability |
+| `coverage-floor` | `ci.yml` | `backend`, `frontend` | Reads both coverage reports and compares them with the floors | Either suite is below its floor, or a report is missing, empty or unreadable |
+| `sonarcloud` | `ci.yml` | `backend`, `frontend` | Pull requests and pushes to `main` only (the SonarCloud plan analyses no other branch). SonarCloud scan with both coverage reports, waiting for the quality gate; on pull requests, a check for new issues and hotspots | The quality gate fails, or (pull requests) the analysis cannot be proven current, or the pull request adds any issue or hotspot |
+| `analyze` | `codeql.yml` | - | CodeQL (default query suite, `build-mode: none`) for `actions`, `javascript-typescript` and `python`, one matrix leg each | An analysis cannot run; findings themselves go to code scanning |
+| `analysis` | `scorecard.yml` | - | OpenSSF Scorecard, published, with its SARIF uploaded to code scanning | Scorecard cannot run or publish |
+| `guard-tests` | `guard-tests.yml` | - | The promotion guard's, the PR title check's, the acceptance seed script's and the release scripts' unit tests (`python3 -m unittest -v test_promotion_guard`, then `test_pr_title`, then `test_acceptance_seed`, then `test_release_version test_release_policy`, in `.github/scripts/`) | Any test fails |
+| `pr-title` | `pr-title.yml` | - | Pull requests into `main` only. `python3 .github/scripts/pr_title.py`, with the title and author passed as environment variables | The title does not read `<type>(<scope>): <subject>`, uses an unlisted type or scope, is not ASCII, ends with a period, or is over 72 characters (the length limit does not apply to Dependabot) |
+| `acceptance` | `staging-acceptance.yml` | - | Pushes to `staging` only, in the `staging` environment, with a read-only token. `.github/scripts/staging_acceptance.sh` (see [`acceptance`](#acceptance)), then Syft SBOMs of the three built images, which it hands to `publish` with the images as a 1-day artifact | An image has a critical vulnerability with a fix, the upgrade or `alembic check` fails, the seeded data does not read back, the stack does not come up, or ZAP reports a High-risk alert. On success the environment records a deployment for the commit. |
+| `publish` | `staging-acceptance.yml` | `acceptance` | Pushes to `staging` only. Loads the accepted images, pushes them to `ghcr.io` tagged with the commit, and attests each (build provenance and SBOM; see [Releases](#releases)). Only Docker and GitHub's own actions run here | An image cannot be pushed or attested |
+| `acceptance-dry-run` | `staging-acceptance.yml` | - | Pull requests that change the stage. The same script, without the environment, so it records nothing and pushes nothing | As `acceptance` |
+| `release-policy` | `release-policy.yml` | - | Pull requests into `production` only. Pulls the three images staging accepted for the pull request's head commit from `ghcr.io`, scans each with Grype, then `python3 .github/scripts/release_policy.py` | An image is missing (staging has not accepted the commit), an image has a Critical or High vulnerability with a fix and no exception, or an exception has expired or is incomplete |
+| `release` | `release.yml` | - | Pushes to `production` only. Verifies the accepted images' attestations, takes their SBOMs from the SBOM attestations, computes the next version, creates the tag and a GitHub Release (see [Releases](#releases)) | HEAD is not a promotion merge, an image or either of its attestations is missing or was not signed by `staging-acceptance.yml` on `staging`, or the tag or release cannot be created |
+| `docs-impact` | `docs-drift.yml` | - | Pull requests only. The docs rules' unit tests, then `python3 .github/scripts/docs_guides.py impact <base> <head>` | Its unit tests fail. The check itself never fails: a changed code file whose describing docs were not touched gets a warning annotation and a row in the job summary. |
+| `docs-drift-report` | `docs-drift.yml` | - | Weekly and by hand, never on a pull request. `python3 .github/scripts/docs_guides.py report`, then creates or edits the one open issue labelled `docs-drift` | The report or the `gh` call errors |
+| `promotion-guard` | `promotion-guard.yml` | - | Checks that a pull request into a promotion branch comes from the branch above it. Its check is named `guard-into-<base branch>`. | The pull request's head is not an allowed source for its base (see [Promotion order](#promotion-order)) |
 
-A job whose `needs` failed is skipped, not passed; the failed job is the one that blocks.
+A job whose `needs` failed is skipped, not passed; the failed job is the one that blocks. A job that
+runs on pull requests only (`dependency-review`, `osv-scan`, `docs-impact`) is skipped on a push.
 
 ### `backend`
 
@@ -40,17 +101,24 @@ Working directory `backend/`. Service containers:
 | Service | Image | Settings |
 | --- | --- | --- |
 | `postgres` | `postgres:16` | `POSTGRES_USER=mrr`, `POSTGRES_PASSWORD=mrr_dev_only`, `POSTGRES_DB=mrr`; port 5432; health check `pg_isready -U mrr -d mrr` |
-| `redis` | `redis:7` | Port 6379; health check `redis-cli ping` |
+| `redis` | `redis:7-alpine` | Port 6379; health check `redis-cli ping` |
 
 | Step | Command |
 | --- | --- |
-| Checkout | `actions/checkout@v5` |
-| Install uv | `astral-sh/setup-uv@v5` with cache |
+| Checkout | `actions/checkout` with `fetch-depth: 2`, so the migration lint can compare with the parent commit |
+| Install uv | `astral-sh/setup-uv` with cache |
 | Install dependencies | `uv sync --extra docs` (no PyTorch) |
 | Lint and format | `uv run ruff check .` then `uv run ruff format --check .` |
+| Type check | `uvx pyright==1.1.414`: standard mode on `app/`, settings in `backend/pyproject.toml` `[tool.pyright]` |
 | Import smoke | `uv run python -c "from sqlalchemy.orm import configure_mappers; import app.main; configure_mappers(); print('import OK')"` |
-| Migrate and test | `uv run alembic upgrade head` then `uv run pytest -n 3 --dist loadfile --cov=app --cov-branch --cov-report=xml --cov-report=term-missing` |
+| One migration head | `uv run --no-sync alembic heads` must print exactly one head. Two pull requests that each add a migration pass on their own and leave `main` with two heads, which `alembic upgrade head` refuses. |
+| Lint new migrations | Pull requests only. `uv run --no-sync python scripts/ci/lint_new_migrations.py HEAD^1` renders the SQL of each migration the pull request adds (offline, no database) and runs Squawk on it. The rules left out, and why, are in the script's docstring. |
+| Migrate and test | `uv run alembic upgrade head`, then `uv run alembic check` (fails when the models need a migration nobody wrote), then `uv run pytest -n 3 --dist loadfile --cov=app --cov-branch --cov-report=xml --cov-report=term-missing` |
 | Upload coverage | Artifact `backend-coverage` (`backend/coverage.xml`) |
+
+A new migration must render offline (`alembic upgrade <down>:<rev> --sql`). One that reads rows must
+skip those reads when `context.is_offline_mode()` is true, or the lint step fails and says so. See
+[How to create a database migration](../how-to/create-a-database-migration.md).
 
 ### `frontend`
 
@@ -58,10 +126,11 @@ Working directory `frontend/`.
 
 | Step | Command |
 | --- | --- |
-| Checkout | `actions/checkout@v5` |
-| Node | `actions/setup-node@v4`, Node 24 |
+| Checkout | `actions/checkout` |
+| Node | `actions/setup-node`, Node 24 |
 | pnpm | `corepack enable` |
 | Install | `pnpm install --frozen-lockfile` |
+| Lint | `pnpm lint` (ESLint, `--max-warnings 0`) |
 | Typecheck | `pnpm typecheck` |
 | Build | `pnpm build` |
 | Test | `pnpm test:coverage` |
@@ -69,7 +138,8 @@ Working directory `frontend/`.
 
 ### `e2e`
 
-The segment and summarize workers and Vertex are not started, so the AI flows are not covered.
+The segment and summarize workers and the model providers are not started, so the AI flows are not
+covered.
 
 | Step | Command |
 | --- | --- |
@@ -90,11 +160,63 @@ With `CI` set, Playwright forbids `test.only` and retries a failed spec once.
 
 | Step | Command |
 | --- | --- |
-| Checkout | `actions/checkout@v5` with `fetch-depth: 0` |
+| Checkout | `actions/checkout` with `fetch-depth: 0` |
 | Scan | Downloads the gitleaks 8.30.0 Linux binary from the gitleaks GitHub releases, then `./gitleaks dir . --redact --no-banner --exit-code 1` |
 
-The gitleaks binary is used rather than the gitleaks GitHub Action because the Action needs a paid
-licence for organisations.
+`gitleaks dir .` scans the files as they are at the checked-out commit, not the git history. The
+gitleaks binary is used rather than the gitleaks GitHub Action because the Action needs a paid
+licence for organisations. GitHub's own secret scanning and push protection are also enabled on the
+repository.
+
+### `docs`
+
+Working directory `docs-site/`.
+
+| Step | Command |
+| --- | --- |
+| Checkout | `actions/checkout` |
+| Install uv | `astral-sh/setup-uv` with cache |
+| Install | `uv sync --frozen` |
+| Build | `uv run --frozen mkdocs build --strict` |
+
+### `container-lint`
+
+| Step | Command |
+| --- | --- |
+| Checkout | `actions/checkout` |
+| hadolint | Downloads hadolint 2.15.1 (`hadolint-linux-x86_64`), checks it against its published SHA-256, then `./hadolint backend/Dockerfile frontend/Dockerfile docs-site/Dockerfile`. It reads `.hadolint.yaml` from the repository root, which skips one rule, DL3008 (exact apt package versions), with the reason. |
+| Compose files | `docker compose -f docker-compose.yml config --quiet`, then the same for `docker-compose.dev.yml`. `SECRET_KEY` and `SECURITY_PASSWORD_SALT` are set to placeholders, because `docker-compose.yml` refuses to interpolate without them. |
+
+### `workflow-lint`
+
+| Step | Command |
+| --- | --- |
+| Checkout | `actions/checkout` |
+| actionlint | Downloads actionlint 1.7.12, checks the tarball against its published SHA-256, then `./actionlint -color` |
+| zizmor | `uvx zizmor==1.30.1 --persona regular .github/workflows/` |
+
+Both tools are pinned to exact versions because the CI pipeline is itself an attack path: a
+compromised action or linter runs with the job's token.
+
+### `dependency-review`
+
+Pull requests only. `actions/dependency-review-action` with `fail-on-severity: high`,
+`fail-on-scopes: runtime` and `comment-summary-in-pr: never`. It judges only the pull request's own
+dependency changes, so an advisory published against an existing dependency never fails an
+unrelated pull request. Development tooling is out of scope because it is not shipped.
+
+It is only as complete as GitHub's dependency graph. A test pull request (#419) added two known-vulnerable
+runtime dependencies: it flagged `ujson` in `backend/uv.lock` but not `lodash` 4.17.15 in
+`frontend/pnpm-lock.yaml`, although the graph's compare API rated that one runtime and high.
+`osv-scan` caught it. Treat the two jobs as a pair, not as duplicates.
+
+### `osv-scan`
+
+Pull requests only. A call to Google's reusable workflow
+`osv-scanner-reusable-pr.yml` from the `google/osv-scanner-action` repository, with
+`--lockfile=./backend/uv.lock` and `--lockfile=./frontend/pnpm-lock.yaml`. It scans the base and
+the head, and fails only on vulnerabilities the pull request introduces. It reads both lockfiles
+directly, so it also covers `uv.lock`. Its check name is `osv-scan / osv-scan`.
 
 ### `coverage-floor`
 
@@ -115,7 +237,7 @@ The floors are the `FLOOR` environment values of the two steps in `ci.yml`.
 | Checkout | Full history (`fetch-depth: 0`) |
 | Download coverage | Both artifacts |
 | Normalise paths | Rewrites `<source>app</source>` to `<source>backend/app</source>` in `coverage.xml`, and prefixes each `SF:` line of `lcov.info` with `frontend/`, so SonarCloud can match the reports to files from the repository root |
-| Scan | `SonarSource/sonarqube-scan-action@v8.2.0` with `SONAR_TOKEN`. `sonar.qualitygate.wait=true` makes the step fail when the quality gate fails. |
+| Scan | `SonarSource/sonarqube-scan-action` v8.2.0 with `SONAR_TOKEN`. `sonar.qualitygate.wait=true` makes the step fail when the quality gate fails. |
 | New-issue check | Pull requests only. See below. |
 
 The new-issue check runs in order and stops at the first failure:
@@ -132,16 +254,36 @@ Every call uses `curl --fail-with-body`, so an HTTP error fails the step. The jo
 issue and hotspot with its rule, file and message. To pass, fix each one or mark it in SonarCloud
 with a reason, then re-run the job.
 
-### `docs`
+### `guard-tests` and `promotion-guard`
 
-Working directory `docs-site/`.
+`guard-tests` runs the unit tests in `.github/scripts/test_promotion_guard.py` against the pull
+request's own code. It is the only place a change to the guard is tested before it merges.
 
-| Step | Command |
+`promotion-guard` checks out only the default branch's `.github/scripts/` (never the pull
+request's code), then runs `python3 .github/scripts/promotion_guard.py`. The rules it applies are
+under [Promotion order](#promotion-order). The decision logic is in the script and its docstring;
+the workflow file explains why `pull_request_target` is safe here.
+
+### `acceptance`
+
+Runs after each merge into `staging`, on that commit, from `.github/scripts/staging_acceptance.sh`. Production's
+code is checked out into `production-code/` for the upgrade test. Nothing real is used: placeholder secrets, no
+model call, a synthetic account on `example.com` (reserved for documentation; the app's email validator rejects
+special-use names such as `.invalid`), and the synthetic `frontend/e2e/fixtures/sample.pdf`.
+
+| Step | What it does |
 | --- | --- |
-| Checkout | Repository checkout |
-| Install uv | uv setup |
-| Install | `uv sync --frozen` |
-| Build | `uv run mkdocs build --strict` |
+| Build once | `docker compose -p mrrci build api web docs` |
+| Image scan | Grype 0.119.0 (checksum verified), `--only-fixed --fail-on critical`, on every image the stack is made of: the three built (`mrr-backend-web`, `mrr-frontend`, `mrr-docs`) and the three pulled by their pinned references (`proxy`, `postgres`, `redis`; listed by `docker compose config --images`) |
+| Release-policy report (never fails here) | A full Grype scan of the three built images, then `release_policy.py --report-only`: the job summary shows what `release-policy` will say when a promotion proposes this commit, including the Critical and High findings with no fix |
+| Upgrade test, production phase | Builds production's api (`.github/scripts/compose.production-code.yml`), migrates an empty database to production's head, starts it, then `acceptance_seed.py seed` registers a synthetic account, uploads the sample PDF and writes three review rows through the API. It runs under staging's `docker-compose.yml`, with staging's `web` image; only the api is production's, so a compose change between the branches is exercised in staging's form only. |
+| Upgrade test, staging phase | Staging's `alembic upgrade head`, then `alembic check`; starts staging's stack with `ENVIRONMENT=prod`; `acceptance_seed.py verify` reads the document and its rows back through the API |
+| ZAP baseline | `ghcr.io/zaproxy/zaproxy:2.17.0` (pinned by digest), `zap-baseline.py` against `http://localhost:8080`; fails on any High-risk alert and lists every alert in the job summary |
+| SBOMs and hand-over (`acceptance`, after the script passes) | Syft 1.52.0 (checksum verified) writes an SPDX SBOM of `mrr-backend-web`, `mrr-frontend` and `mrr-docs`; `docker save` of the three images; both go to the `publish` job as the artifact `accepted-images` (1 day) |
+| Push and attest (`publish`) | `docker load`, then pushes the images, as built and scanned, to `ghcr.io/gesco-healthcare-support/<name>:<commit SHA>`; `actions/attest-build-provenance` and `actions/attest-sbom` attach a signed provenance and SBOM attestation to each image's digest in the registry. The dry run has neither step. |
+
+The stage does not call a model yet. Adding one real Vertex call, with keyless Workload Identity Federation limited
+to this repository's pushes to `staging`, is the next step once that access exists in Google Cloud.
 
 ## SonarCloud project settings (`sonar-project.properties`)
 
@@ -155,41 +297,154 @@ Working directory `docs-site/`.
 | `sonar.python.coverage.reportPaths` | `backend/coverage.xml` |
 | `sonar.javascript.lcov.reportPaths` | `frontend/coverage/lcov.info` |
 | `sonar.coverage.exclusions` | `frontend/app/**` |
-| `sonar.exclusions` | `mrr_ai/**`, `experiments/**`, `frontend/.next/**`, `frontend/node_modules/**`, `frontend/public/pdfjs/**`, `frontend/e2e/**`, `**/*.test.ts`, `**/*.test.tsx`, `**/__pycache__/**` |
+| `sonar.exclusions` | `experiments/**`, `frontend/.next/**`, `frontend/node_modules/**`, `frontend/public/pdfjs/**`, `frontend/e2e/**`, `**/*.test.ts`, `**/*.test.tsx`, `**/__pycache__/**` |
 | `sonar.cpd.exclusions` | `backend/tests/**` |
 | `sonar.qualitygate.wait` | `true` |
 
 The analysis is CI-based. SonarCloud's Automatic Analysis must stay disabled for the project, or
 the CI scan fails with "running CI analysis while Automatic Analysis is enabled".
 
-## Merge rules for `main`
+## Releases
 
-Set in the repository ruleset, not in `ci.yml`. Values as read from GitHub:
+Each merge into `production` is a release. Its version is a semantic version computed from the commit messages since
+the previous tag (`.github/scripts/release_version.py`): any breaking change (`!` before the colon, or a
+`BREAKING CHANGE:` footer) bumps the major number, otherwise any `feat` bumps the minor number, otherwise the patch.
+The first release was `v0.1.0` (2026-09-30, production `a9fc6e0` from staging `3cfee61`), and the rule applies literally on `0.x`, so the first breaking change moves the version
+to `v1.0.0`. Tags matching `v*` can never be moved or deleted (the tag ruleset).
 
-| Rule | Setting |
-| --- | --- |
-| Changes arrive by pull request | Required |
-| Required approving reviews | 0 |
-| Allowed merge method | Squash only |
-| Branch must be up to date with `main` before merging | Not required |
-| Force push (non-fast-forward) | Blocked |
-| Branch deletion | Blocked |
+Images are built once. The staging `publish` job pushes the images `acceptance` tested to `ghcr.io`, tagged with the
+staging commit, with their attestations. A promotion merges that commit into `production` with a merge commit, so the
+`release` job finds it as `HEAD^2` and verifies each image's provenance and SBOM attestations with `gh attestation
+verify`, requiring both to have been signed by `.github/workflows/staging-acceptance.yml` running on
+`refs/heads/staging` (`--signer-workflow`, `--source-ref`). The SBOM files attached to the release are the SBOM
+attestations' own signed content (`--predicate-type https://spdx.dev/Document/v2.3`), so a release depends on no
+workflow artifact and has no time limit after staging. The release notes list the image digests. Nothing is rebuilt
+between staging and the release. The packages are private and linked to this repository by the
+`org.opencontainers.image.source` label that each Dockerfile's final stage sets.
+
+The images hold only what runs: each Dockerfile keeps its build tools in a build stage (the backend's `uv`, `uvx` and
+`pip`; the frontend base image's `npm`, `npx`, `corepack` and `yarn` are removed), and the docs site is served by
+`nginx:1.30-alpine-slim`. So the scan's findings are about code that ships.
+
+The release policy blocks a pull request into `production` when an image it would release has a Critical or High
+vulnerability that has a fixed version, unless `.github/release-exceptions.json` holds a reviewed exception for that
+vulnerability in that package. A Critical or High with no fix is listed in the job summary but does not block: nothing
+in this repository can clear it (the first report, on 2026-09-29, held 25 unfixed Criticals in core Debian packages
+such as libcurl, glibc and perl). Every staging push shows the same result early, in the `acceptance` job's summary.
+An exception has four fields, all required, and fails the check once its expiry date has passed:
+
+```json
+{"exceptions": [{"vulnerability": "CVE-2026-0001", "package": "openssl", "reason": "no fixed release yet",
+  "expires": "2026-10-31"}]}
+```
+
+## Branches and merge rules
+
+Code moves `main` -> `staging` -> `production`, and `qwen` is fed from `main`. Each branch has
+its own repository ruleset, and release tags `v*` have one too. The rules live in GitHub's
+settings, not in any file. Read the live values with:
+
+```bash
+gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets --jq '.[] | "\(.id) \(.name)"'
+gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets/<id>
+```
+
+| Rule | `main` | `staging`, `production`, `qwen` |
+| --- | --- | --- |
+| Changes arrive by pull request | Required | Required |
+| Allowed merge method | Squash only | Merge commit only, so a promotion keeps the commits of the branch above |
+| Required approving reviews | 1 | 1 |
+| Approval must come after the most recent push, from someone other than the last pusher | Yes | Yes |
+| Stale approvals dismissed on a new push | Yes | Yes |
+| Branch must be up to date before merging | Required | Not required, by design: "Update branch" on a promotion pull request would merge the lower branch back into the upper one |
+| Force push (non-fast-forward) | Blocked | Blocked |
+| Branch deletion | Blocked | Blocked |
+| CodeQL results before merging (see Code scanning) | Required: security alerts of high or critical severity block | `staging`, `production`: required (added 2026-09-30, after each branch's first CodeQL analysis). `qwen`: not yet, until its next promotion |
+| A successful `staging` deployment of the pull request's head commit | - | `production` only (added 2026-09-30, after the first green staging run; see Environments) |
+| Bypass | Repository admins, through a pull request only (see Admin bypass) | Repository admins, through a pull request only |
+
+**Code scanning.** The CodeQL rule blocks a pull request while CodeQL is still analysing it, and when
+CodeQL reports a new security alert of high or critical severity for it. An alert counts as new when
+any part of it is in the pull request's changes: for a data-flow alert that includes the source of the
+flow, so a pull request can be blocked by an alert whose flagged line it does not change (a new test
+that calls a flagged function is enough). Medium and lower security alerts, and alerts that are not
+security alerts, never block it. Code scanning judges a pull request against an analysis of the branch it merges into, so a branch
+gets the rule only after `codeql.yml` has analysed a push to it; until then a pull request into it
+could not be judged. `staging` and `production` have the rule since 2026-09-30; `qwen` gets it after its next
+promotion. Every commit on those branches has come through `main`, where the rule applies.
+
+GitHub never lets an account approve its own pull request, and the approver must not be the account
+that pushed the pull request's last commit either. So whoever merges `main` into a pull request
+becomes its last pusher and cannot approve it. When that is the reviewer, only a third account can
+approve, so the pull request's author should be the one who merges `main` in.
+
+Because `main` requires an up-to-date branch, every merge into `main` makes the other open pull
+requests into it out of date. Merge `main` into each one. Do not rebase: that rewrites the
+branch's history and needs a force push. Either way the new commit dismisses existing approvals, so
+once CI has run the pull request needs approving again, by someone other than whoever pushed it.
+
+**Admin bypass.** Every branch ruleset lists the repository admin role as a bypass actor, in
+pull-request mode. An admin can merge a pull request that has not met the rules (in the CLI,
+`gh pr merge <number> --admin`); direct pushes stay blocked for everyone. A bypass skips every rule
+in the ruleset, required status checks and approvals included, so first confirm that every required
+check is green. With a single maintainer it is the normal way to merge that maintainer's own pull
+requests, because GitHub never lets an author approve their own; with two or more maintainers, keep it
+for a fix that cannot wait. GitHub records each bypass in the repository's rule insights and the audit log.
+
+The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 
 ### Required status checks
 
-| Check | Posted by |
-| --- | --- |
-| `backend` | GitHub Actions (`ci.yml`) |
-| `frontend` | GitHub Actions (`ci.yml`) |
-| `e2e` | GitHub Actions (`ci.yml`) |
-| `secret-scan` | GitHub Actions (`ci.yml`) |
-| `coverage-floor` | GitHub Actions (`ci.yml`) |
-| `sonarcloud` | GitHub Actions (`ci.yml`) |
-| `SonarCloud Code Analysis` | SonarCloud's own GitHub integration, from the analysis the `sonarcloud` job uploads |
+| Check | Posted by | Required on |
+| --- | --- | --- |
+| `backend` | GitHub Actions (`ci.yml`) | all four branches |
+| `frontend` | GitHub Actions (`ci.yml`) | all four branches |
+| `e2e` | GitHub Actions (`ci.yml`) | all four branches |
+| `secret-scan` | GitHub Actions (`ci.yml`) | all four branches |
+| `coverage-floor` | GitHub Actions (`ci.yml`) | all four branches |
+| `sonarcloud` | GitHub Actions (`ci.yml`) | all four branches |
+| `workflow-lint` | GitHub Actions (`ci.yml`) | all four branches |
+| `container-lint` | GitHub Actions (`ci.yml`) | `main`, `staging`, `production`; `qwen` once it contains the job (after its next promotion), so the check can always report |
+| `pr-title` | GitHub Actions (`pr-title.yml`) | `main` only |
+| `SonarCloud Code Analysis` | SonarCloud's own GitHub integration, from the analysis the `sonarcloud` job uploads | all four branches |
+| `dependency-review` | GitHub Actions (`ci.yml`) | all four branches |
+| `osv-scan / osv-scan` | GitHub Actions (`ci.yml`, reusable workflow) | all four branches |
+| `docs` | GitHub Actions (`ci.yml`) | `main` only, until `staging` and `qwen` contain the docs site |
+| `release-policy` | GitHub Actions (`release-policy.yml`) | `production` (since 2026-09-30, after it first reported on a promotion) |
+| `guard-into-staging` | GitHub Actions (`promotion-guard.yml`) | `staging` |
+| `guard-into-production` | GitHub Actions (`promotion-guard.yml`) | `production` |
+| `guard-into-qwen` | GitHub Actions (`promotion-guard.yml`) | `qwen` |
 
-A job that is not in this list, such as `docs`, still runs and reports on every pull request but
-does not block a merge. Adding a job to the list is a change to the ruleset, made by a repository
-admin.
+`guard-tests`, `docs-impact` and `docs-drift-report` are not required checks. Adding a check to a
+branch's list is a change to that branch's ruleset, made by a repository admin.
+
+### Promotion order
+
+`promotion_guard.py` allows, and only from this repository (a fork can name a branch `main` too):
+
+| Base | Allowed head |
+| --- | --- |
+| `staging` | `main`, or a `hotfix/*` branch that passes the hotfix check |
+| `production` | `staging` |
+| `qwen` | `main` |
+| any other base | anything; no ruleset requires the check there |
+
+The hotfix check:
+
+- Every commit in the pull request must be a plain (one-parent) cherry-pick, made with `git
+  cherry-pick -x`.
+- Its `(cherry picked from commit <sha>)` trailer must name a commit already on `main`.
+- It must make the same change as that commit: per file, the same added and removed lines.
+- Anything the check cannot compare is refused: a binary file, a file list the API may have cut
+  short, or a pull request over 100 commits.
+
+So a fix always lands on `main` first.
+
+## Environments
+
+| Environment | Deployment branches | Used by | Why |
+| --- | --- | --- | --- |
+| `staging` | `staging` only | `acceptance` | A passing run records a deployment for the commit it tested. Production's ruleset requires a successful `staging` deployment on a promotion pull request's head commit, which is staging's latest commit (since 2026-09-30, after the stage's first green run on `staging`). |
 
 ## Secrets
 
@@ -199,6 +454,13 @@ admin.
 
 No other repository secret is referenced. The `SECRET_KEY`, `SECURITY_PASSWORD_SALT` and
 `DATABASE_URL` values in `ci.yml` are throwaway test values written into the file, not secrets.
+`workflow-lint` and the promotion guard use the job's own read-only `github.token`.
+
+A workflow run that Dependabot triggers receives the repository's Dependabot secrets, not its
+Actions secrets; the job log's "Set up job" step shows `Secret source: Dependabot`. So `SONAR_TOKEN`
+must be stored twice: as an Actions secret and as a Dependabot secret (Settings > Secrets and
+variables > Dependabot). Without the Dependabot copy the scan runs with no token, stops with "Not
+authorized or project not found", and `sonarcloud` fails on every Dependabot pull request.
 
 ## Artifacts
 
@@ -210,20 +472,62 @@ No other repository secret is referenced. The `SECRET_KEY`, `SECURITY_PASSWORD_S
 
 ## Pinned versions
 
+Every action is pinned to a full commit SHA, with its version in a comment beside the pin. A tag
+can be moved to different code; a SHA cannot. Pin a new action the same way; Dependabot keeps the
+pins current (next section). `workflow-lint` runs
+zizmor, which audits the workflows for unpinned actions among other problems.
+
 | Tool | Version | Where |
 | --- | --- | --- |
-| `actions/checkout` | v5 | All jobs |
-| `astral-sh/setup-uv` | v5 | `backend`, `docs` |
-| `actions/setup-node` | v4, Node 24 | `frontend`, `e2e` |
-| `actions/upload-artifact`, `actions/download-artifact` | v5 | Coverage and report artifacts |
+| `actions/checkout` | v5.1.0 | All jobs; always with `persist-credentials: false` |
+| `astral-sh/setup-uv` | v5.4.2 | `backend`, `docs`, `workflow-lint` |
+| `actions/setup-node` | v4.4.0, Node 24 | `frontend`, `e2e` |
+| `actions/upload-artifact`, `actions/download-artifact` | v5.0.0 | Coverage and report artifacts |
+| `github/codeql-action` (`init`, `analyze`, `upload-sarif`) | v4.38.2 | `analyze`, `analysis` |
+| `ossf/scorecard-action` | v2.4.4 | `analysis` |
+| `actions/dependency-review-action` | v5.0.0 | `dependency-review` |
+| `google/osv-scanner-action` reusable workflow | v2.6.0 | `osv-scan` |
 | `SonarSource/sonarqube-scan-action` | v8.2.0 | `sonarcloud` |
 | gitleaks | 8.30.0 | `secret-scan` (and the pre-commit hook) |
-| Postgres, Redis service images | `postgres:16`, `redis:7` | `backend` |
+| hadolint | 2.15.1, checksum verified | `container-lint` |
+| Grype | 0.119.0, checksum verified | `acceptance` |
+| ZAP | `ghcr.io/zaproxy/zaproxy:2.17.0`, pinned by digest | `acceptance` |
+| Syft | 1.52.0, checksum verified | `acceptance` (SBOMs) |
+| `actions/attest-build-provenance` | v4.2.2 | `acceptance` |
+| `actions/attest-sbom` | v4.1.0 | `acceptance` |
+| actionlint | 1.7.12, checksum verified | `workflow-lint` |
+| zizmor | 1.30.1 | `workflow-lint` |
+| pyright | 1.1.414 | `backend` |
+| Squawk | `squawk-cli` 2.66.0 | `backend` (migration lint) |
+| Postgres, Redis service images | `postgres:16`, `redis:7-alpine` | `backend` |
+
+## Dependency updates (`.github/dependabot.yml`)
+
+Dependabot opens update pull requests into `main` every week. They are held to the same required
+checks as any other pull request, and `sonarcloud` fails on them until `SONAR_TOKEN` is also stored
+as a Dependabot secret (see [Secrets](#secrets)). For `uv`, `npm` and `github-actions`, minor and
+patch updates are grouped into one pull request per ecosystem. `docker` and `docker-compose` have no
+groups, so each of their updates comes on its own. The images in the Dockerfiles and compose files are
+pinned by digest (`name:tag@sha256:<digest>`), and those updates move the tag and the digest together.
+Dependabot never adds a digest to an image that has none, so pin a new image the same way. A major update always comes on its own. A new
+release waits 7 days (`cooldown`) before it is proposed; security updates are never delayed.
+
+| Ecosystem | Where | Commit prefix | Minor and patch updates |
+| --- | --- | --- | --- |
+| `uv` | `backend/`, `docs-site/` | `chore(tooling)` | one grouped pull request |
+| `npm` | `frontend/` | `chore(tooling)` | one grouped pull request |
+| `github-actions` | the workflows | `chore(ci)` | one grouped pull request |
+| `docker` | the Dockerfiles in `backend/`, `frontend/`, `docs-site/` | `chore(tooling)` | one pull request each |
+| `docker-compose` | the images `docker-compose.yml` pulls (postgres, redis, nginx) | `chore(tooling)` | one pull request each |
+
+No entry covers the repository root: the retired Flask app that lived there was removed on 2026-09-30. A postgres major
+update (16 to 17) changes the on-disk data format, so never merge one without a dump-and-restore
+plan.
 
 ## Local hooks (`.pre-commit-config.yaml`)
 
 Run on each developer's machine once installed; CI does not run pre-commit. Files under
-`mrr_ai/static/vendor/` and `frontend/public/pdfjs/` are skipped by every hook.
+`frontend/public/pdfjs/` are skipped by every hook.
 
 | Hook | Source and version | What it checks |
 | --- | --- | --- |
@@ -241,5 +545,6 @@ Run on each developer's machine once installed; CI does not run pre-commit. File
 ## Related pages
 
 - [How to run the tests](../how-to/run-the-tests.md)
+- [How to create a database migration](../how-to/create-a-database-migration.md)
 - [How to work on these docs](../how-to/work-on-these-docs.md)
 - [Compose services](../reference/compose-services.md)

@@ -10,7 +10,7 @@ and carried as the Job row.
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -129,6 +129,13 @@ def mark_terminal(
     changed = session.execute(
         update(Job).where(Job.id == job.id, Job.state.in_(ACTIVE_STATES)).values(**values)
     )
+    # An ORM UPDATE with WHERE criteria returns a CursorResult, which carries rowcount. SQLAlchemy
+    # 2.0.44 types Session.execute as a plain Result because RETURNING and bulk updates do not; if an
+    # edit here ever turns this into one of those, fail by name rather than read a missing count.
+    if not isinstance(changed, CursorResult):
+        raise TypeError(
+            f"expected a CursorResult from the job UPDATE, got {type(changed).__name__}"
+        )
     if not changed.rowcount:
         session.rollback()  # someone else finalized it first; leave their outcome alone
         return False
@@ -161,8 +168,10 @@ def create_job(
     catalog_revision: int | None = None,
     title_model: str | None = None,
     audit_model: str | None = None,
+    requested_by: int | None = None,
 ) -> Job:
-    """Insert a queued Job + advance Document.status; raise JobConflict if one is already active.
+    """Insert a queued Job + advance Document.status; raise JobConflict if one is already active,
+    and LookupError if the document does not exist.
 
     The DB partial-unique index is the real guard - it survives a cross-process race the old
     in-process lock could not. Commits on success.
@@ -199,6 +208,12 @@ def create_job(
         # own (Settings.backend_for), but no stamp was added for the other kinds: their `backend`
         # stays NULL, meaning "not recorded".
         backend = settings.backend_for("summarize")
+    # Looked up BEFORE the job is added. A missing document used to reach the commit, and the
+    # handler below reported the foreign-key failure as "a job is already active" - false - for the
+    # kind that moves no status (dedup); every other kind died on an AttributeError instead.
+    document = session.get(Document, document_id)
+    if document is None:
+        raise LookupError(f"document {document_id} does not exist")
     job = Job(
         document_id=document_id,
         kind=kind,
@@ -210,9 +225,9 @@ def create_job(
         prompt_fingerprint=job_prompt_fingerprint(session, kind),
         build_sha=settings.build_sha,
         catalog_revision=catalog_revision,
+        requested_by=requested_by,
     )
     session.add(job)
-    document = session.get(Document, document_id)
     enqueue_status = STATUS_ON_ENQUEUE[kind]
     if enqueue_status is not None:  # None = advisory (dedup): never moves the stage the UI shows
         document.status = enqueue_status
@@ -234,6 +249,7 @@ def enqueue(
     catalog_revision: int | None = None,
     title_model: str | None = None,
     audit_model: str | None = None,
+    requested_by: int | None = None,
 ) -> Job:
     """create_job + dispatch to the kind's RQ queue. If the dispatch fails (e.g. Redis down), the
     job is marked interrupted rather than left stuck queued.
@@ -255,6 +271,7 @@ def enqueue(
         catalog_revision=catalog_revision,
         title_model=title_model,
         audit_model=audit_model,
+        requested_by=requested_by,
     )
     try:
         # RQ job id == the DB job id, so heartbeat orphan recovery can correlate the two.

@@ -198,7 +198,7 @@ def _note_client_error(exc, model) -> float | None:
     return _retry_delay_seconds(exc)
 
 
-def generate_with_retry(client, **kwargs):
+def generate_with_retry(client, *, model: str, **kwargs):
     """Call client.models.generate_content, retrying transient failures. Client passed explicitly
     so route/worker modules keep a single patchable client seam.
 
@@ -207,7 +207,6 @@ def generate_with_retry(client, **kwargs):
     """
     settings = get_settings()
     _apply_thinking_default(kwargs.get("config"))
-    model = kwargs.get("model")
     est_tokens = kwargs.pop("_est_tokens", 1)
     # The deadline SCALES with the request. `est_tokens` is already here for the pacer, so the size
     # signal costs nothing - and it is the whole fix for large records: a fixed limit is safe only
@@ -239,7 +238,7 @@ def generate_with_retry(client, **kwargs):
                 )
             retry_after = None
             try:
-                response = client.models.generate_content(**kwargs)
+                response = client.models.generate_content(model=model, **kwargs)
             except errors.ServerError as exc:  # 5xx incl. 503 high-demand
                 genai_metrics.record(model, genai_metrics.OUTCOME_SERVER_ERROR)
                 # A deadline 504 is OUR limit (the deadline above, which google-genai forwards to
@@ -280,7 +279,7 @@ def generate_with_retry(client, **kwargs):
             if attempt < settings.genai_max_retries - 1:
                 _cancellable_sleep(_sleep_for(attempt, retry_after))
         genai_metrics.record(model, genai_metrics.OUTCOME_EXHAUSTED)
-        raise last
+        raise last or RuntimeError("the model call made no attempt")
     finally:
         # One Redis write per logical call rather than one per attempt: this is the latency path
         # being measured, so the accounting must not inflate it.

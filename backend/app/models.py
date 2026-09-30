@@ -12,6 +12,7 @@ match the source schema.
 """
 
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyBaseAccessTokenTable
 from sqlalchemy import (
@@ -93,45 +94,52 @@ roles_users = Table(
 class Role(Base):
     __tablename__ = "role"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(80), unique=True, nullable=False)
-    description = Column(String(255))
-    permissions = Column(Text)
-    update_datetime = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255))
+    permissions: Mapped[str | None] = mapped_column(Text)
+    update_datetime: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+    )
 
 
 class User(Base):
     __tablename__ = "user"
 
-    id = Column(Integer, primary_key=True)
-    email = Column(String(255), unique=True, nullable=False)
-    username = Column(String(255), unique=True)
-    password = Column(String(255))  # argon2id hash, carried over from Flask-Security
-    active = Column(Boolean, nullable=False, default=True)
-    fs_uniquifier = Column(String(64), unique=True, nullable=False, default=_uniquifier)
-    fs_webauthn_user_handle = Column(String(64))
-    confirmed_at = Column(DateTime)
-    last_login_at = Column(DateTime)
-    current_login_at = Column(DateTime)
-    last_login_ip = Column(String(64))
-    current_login_ip = Column(String(64))
-    login_count = Column(Integer)
-    tf_primary_method = Column(String(64))
-    tf_totp_secret = Column(String(255))
-    tf_phone_number = Column(String(128))
-    mf_recovery_codes = Column(Text)
-    us_totp_secrets = Column(Text)
-    us_phone_number = Column(String(128))
-    create_datetime = Column(DateTime, nullable=False, default=_utcnow)
-    update_datetime = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(255), unique=True)
+    # argon2id hash, carried over from Flask-Security
+    password: Mapped[str | None] = mapped_column(String(255))
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    fs_uniquifier: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, default=_uniquifier
+    )
+    fs_webauthn_user_handle: Mapped[str | None] = mapped_column(String(64))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+    current_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_login_ip: Mapped[str | None] = mapped_column(String(64))
+    current_login_ip: Mapped[str | None] = mapped_column(String(64))
+    login_count: Mapped[int | None] = mapped_column(Integer)
+    tf_primary_method: Mapped[str | None] = mapped_column(String(64))
+    tf_totp_secret: Mapped[str | None] = mapped_column(String(255))
+    tf_phone_number: Mapped[str | None] = mapped_column(String(128))
+    mf_recovery_codes: Mapped[str | None] = mapped_column(Text)
+    us_totp_secrets: Mapped[str | None] = mapped_column(Text)
+    us_phone_number: Mapped[str | None] = mapped_column(String(128))
+    create_datetime: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    update_datetime: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+    )
     # Project-added columns.
-    name = Column(String(255))
-    is_admin = Column(Boolean, nullable=False, default=False)
+    name: Mapped[str | None] = mapped_column(String(255))
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # FastAPI-Users requires an is_verified attribute; registration is non-confirmable so this
     # stays False and is never gated on (we depend on current_active_user, not _verified).
-    is_verified = Column(Boolean, nullable=False, default=False)
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    roles = relationship("Role", secondary=roles_users)
+    roles: Mapped[list["Role"]] = relationship("Role", secondary=roles_users)
 
     # FastAPI-Users reads/writes these attribute names; map them onto the existing fsqla columns
     # so the migrated data is reused verbatim (superuser == our admin flag). Synonyms are writable,
@@ -148,7 +156,9 @@ class AccessToken(SQLAlchemyBaseAccessTokenTable[int], Base):
 
     __tablename__ = "access_token"
 
-    user_id: Mapped[int] = mapped_column(
+    # The base declares `user_id: ID` for type checkers only (no column at runtime); a mapped column
+    # cannot match that declared type, and queries use this as a column, so the override is ignored.
+    user_id: Mapped[int] = mapped_column(  # pyright: ignore[reportIncompatibleVariableOverride]
         Integer, ForeignKey(_FK_USER_ID, ondelete="cascade"), nullable=False
     )
 
@@ -161,43 +171,48 @@ ROW_FIELDS = ("start", "end", "category", "title", "date", "injury_date", "flag"
 class Document(Base):
     __tablename__ = "documents"
 
-    id = Column(String(36), primary_key=True, default=_uuid)
-    user_id = Column(Integer, ForeignKey(_FK_USER_ID), nullable=False, index=True)
-    original_filename = Column(String(512), nullable=False)  # PHI-bearing: never log
-    stored_path = Column(String(1024), nullable=False)
-    sha256 = Column(String(64), nullable=False, index=True)
-    page_count = Column(Integer, nullable=False)
-    status = Column(String(16), nullable=False, default="uploaded")
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
-    updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey(_FK_USER_ID), nullable=False, index=True
+    )
+    # PHI-bearing: never log
+    original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    stored_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="uploaded")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+    )
     # Report-header fields: auto-extracted on identify, reviewer-editable (all nullable).
-    patient_first_name = Column(String(255))
-    patient_last_name = Column(String(255))
-    patient_dob = Column(String(32))
-    law_firm = Column(String(512))
+    patient_first_name: Mapped[str | None] = mapped_column(String(255))
+    patient_last_name: Mapped[str | None] = mapped_column(String(255))
+    patient_dob: Mapped[str | None] = mapped_column(String(32))
+    law_firm: Mapped[str | None] = mapped_column(String(512))
     # The PERSON the records came from. `law_firm` is the company, and the delivered sentence
     # wants both - "from <person>, of <firm>". One free-text box held both until now, so an
     # existing value stays in `law_firm` and this is simply empty, which renders as it always did.
-    attorney_name = Column(String(255))
+    attorney_name: Mapped[str | None] = mapped_column(String(255))
     # Which evaluator the report is for. Drives the Word font; see reporting.DOCTOR_FONTS.
-    doctor = Column(String(255))
+    doctor: Mapped[str | None] = mapped_column(String(255))
     # The covering letter that came with the records: reporting.LETTER_TYPES.
-    letter_type = Column(String(32))
-    letter_date = Column(String(32))
+    letter_type: Mapped[str | None] = mapped_column(String(32))
+    letter_date: Mapped[str | None] = mapped_column(String(32))
     # Pages RECEIVED, which is not `page_count`. The reviewers attach their own pages to the
     # PDF before it reaches us, so the file is reliably 2-3 pages longer than what arrived -
     # measured against four human deliverables: 311/309, 293/290, 244/241, 229/226. Their own
     # cover sheet carries the real figure and this is where it goes. NULL means nobody has
     # said, and every consumer falls back to `page_count` exactly as before.
-    pages_received = Column(Integer)
+    pages_received: Mapped[int | None] = mapped_column(Integer)
 
-    jobs = relationship(
+    jobs: Mapped[list["Job"]] = relationship(
         "Job", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Job.id"
     )
-    review_rows = relationship(
+    review_rows: Mapped[list["ReviewRow"]] = relationship(
         "ReviewRow", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="ReviewRow.idx"
     )
-    summaries = relationship(
+    summaries: Mapped[list["Summary"]] = relationship(
         "Summary", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Summary.idx"
     )
     # WITHOUT THIS, A DOCUMENT THAT HAS BEEN OCR'd CANNOT BE DELETED AT ALL.
@@ -219,7 +234,9 @@ class Document(Base):
     # against a live PHI database, and the volume is small enough that loading the rows to
     # delete them is not worth a second mechanism - the widest document on the box holds 668
     # page rows, and the whole table is 37 MB across 90 documents.
-    page_texts = relationship("PageText", backref="document", cascade=_CASCADE_DELETE_ORPHAN)
+    page_texts: Mapped[list["PageText"]] = relationship(
+        "PageText", backref="document", cascade=_CASCADE_DELETE_ORPHAN
+    )
 
     @property
     def active_job(self):
@@ -274,23 +291,25 @@ class Job(Base):
         ),
     )
 
-    id = Column(Integer, primary_key=True)
-    document_id = Column(String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True)
-    kind = Column(String(16), nullable=False)
-    state = Column(String(16), nullable=False, default="queued")
-    stage = Column(String(32), nullable=False, default="starting")
-    current = Column(Integer, nullable=False, default=0)
-    total = Column(Integer, nullable=False, default=0)
-    error = Column(Text)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    stage: Mapped[str] = mapped_column(String(32), nullable=False, default="starting")
+    current: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
     # `model` is the BODY model for a summarize job (and the only model for every other kind).
     # `title_model` / `audit_model` are the other two summarize calls, resolved ONCE here at job
     # creation via Settings.model_for, so a job resumed after a config change cannot switch models
     # mid-document. NULL on jobs created before 2026-08-06 and on non-summarize kinds, so read them
     # as `job.title_model or job.model` - which is exactly what those older jobs actually used. No
     # backfill: an invented value would later be indistinguishable from a recorded one.
-    model = Column(String(64), nullable=False)
-    title_model = Column(String(64))
-    audit_model = Column(String(64))
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    title_model: Mapped[str | None] = mapped_column(String(64))
+    audit_model: Mapped[str | None] = mapped_column(String(64))
     # WHICH BACKEND answered, beside which model did. A model name stopped being sufficient once a
     # second backend could serve one: the served name is the same for every pod we stand up, so it
     # says nothing about where the record actually went.
@@ -299,36 +318,45 @@ class Job(Base):
     # from the same `summarize` stage, so a backend triple would hold one value three times - and a
     # per-call backend is recoverable from this plus the model columns, which already say whether
     # each call ran. NULL means the row predates the column, which is a different fact from "Gemini".
-    backend = Column(String(16))
+    backend: Mapped[str | None] = mapped_column(String(16))
     # `prompt_version` is a HAND-MAINTAINED constant and went unbumped through a dozen prompt PRs.
     # `prompt_fingerprint` hashes the prompt text AS RESOLVED (DB-first, code fallback), so it moves
     # on its own. Prefer the fingerprint; prompt_version stays readable for historical rows.
-    prompt_version = Column(String(16), nullable=False)
-    prompt_fingerprint = Column(String(16))
+    prompt_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    prompt_fingerprint: Mapped[str | None] = mapped_column(String(16))
     # The commit the image was built from. Completes the provenance pair: `prompt_fingerprint` says
     # WHICH PROMPT ran, `build_sha` says WHICH CODE ran - and the code half matters because the
     # prompt a row was generated from is assembled by templates the fingerprint does not hash, plus
     # per-row blocks appended after it is computed. "unknown" when the image was built without the
     # GIT_SHA arg; NULL on every job created before 2026-08-11, which is not backfilled because an
     # inferred value would later be indistinguishable from a recorded one.
-    build_sha = Column(String(40))
-    catalog_revision = Column(Integer)
+    build_sha: Mapped[str | None] = mapped_column(String(40))
+    catalog_revision: Mapped[int | None] = mapped_column(Integer)
+    # The user who started the job, where the route knew it. Not the owner: an admin can start a job
+    # on another reviewer's record, and the worker's own audit rows (a re-segment that replaces rows)
+    # must name who asked. NULL on jobs created before the column existed and on jobs the system
+    # starts itself (the classify job a combined upload queues) - read NULL as "the owner", which is
+    # what those jobs always were. A plain integer, not a foreign key: it is provenance, and a user
+    # row that is ever removed must not take job history with it.
+    requested_by: Mapped[int | None] = mapped_column(Integer)
     # Resumable summarize (item 7): the CURRENT RQ job id (differs from the db id after a delayed
     # requeue, so orphan recovery correlates by this); the pause/resume cycle count (observability
     # only - transient 429s retry forever); and, when a run ends `needs_attention`, the reason +
     # the sub-documents that could not be summarized (non-PHI: idx + page range + a friendly reason).
-    rq_job_id = Column(String(64))
-    attempts = Column(Integer, nullable=False, server_default="0", default=0)
-    attention = Column(JSON)
+    rq_job_id: Mapped[str | None] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    attention: Mapped[Any | None] = mapped_column(JSON)
     # The reviewer pressed Stop. The worker also learns this from a Redis key, because the retry
     # backoff has no session - but this column is the durable record: it survives a Redis flush and
     # distinguishes a job that was ASKED to stop from one that died and was reaped.
-    cancel_requested = Column(Boolean, nullable=False, server_default="false", default=False)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
-    started_at = Column(DateTime)
-    finished_at = Column(DateTime)
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
 
-    segment_rows = relationship(
+    segment_rows: Mapped[list["SegmentRow"]] = relationship(
         "SegmentRow", backref="job", cascade=_CASCADE_DELETE_ORPHAN, order_by="SegmentRow.idx"
     )
 
@@ -354,24 +382,25 @@ class Job(Base):
 class SegmentRow(Base):
     __tablename__ = "segment_rows"
 
-    id = Column(Integer, primary_key=True)
-    job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False, index=True)
-    idx = Column(Integer, nullable=False)
-    start = Column(Integer, nullable=False)
-    end = Column(Integer, nullable=False)
-    category = Column(String(8), nullable=False)
-    title = Column(String(512), nullable=False, default="-")
-    date = Column(String(16), nullable=False, default="-")
-    injury_date = Column(Text, nullable=False, default="-")  # multi-DOI: "MM/DD/YYYY, MM/DD/YYYY"
-    flag = Column(String(4), nullable=False, default="-")
-    suggest_merge = Column(Boolean, nullable=False, default=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer, ForeignKey("jobs.id"), nullable=False, index=True)
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    start: Mapped[int] = mapped_column(Integer, nullable=False)
+    end: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(8), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="-")
+    date: Mapped[str] = mapped_column(String(16), nullable=False, default="-")
+    # multi-DOI: "MM/DD/YYYY, MM/DD/YYYY"
+    injury_date: Mapped[str] = mapped_column(Text, nullable=False, default="-")
+    flag: Mapped[str] = mapped_column(String(4), nullable=False, default="-")
+    suggest_merge: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Which cascade path decided this row's category (classification.Classification.method):
     # rules | empty | no-signal | embedding-only | llm-only | llm+embedding | llm-disagree,
     # plus "timeout" for a row the categorization pool never finished. NULL means the row
     # predates this column or the editor created it - never "we checked and could not tell",
     # which is what `no-signal` means. The review filter treats NULL as "show", so a row that
     # was never backfilled behaves exactly as it did before.
-    method = Column(String(32))
+    method: Mapped[str | None] = mapped_column(String(32))
 
     def as_row(self):
         row = {field: getattr(self, field) for field in ROW_FIELDS}
@@ -382,38 +411,41 @@ class SegmentRow(Base):
 class ReviewRow(Base):
     __tablename__ = "review_rows"
 
-    id = Column(Integer, primary_key=True)
-    document_id = Column(String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True)
-    idx = Column(Integer, nullable=False)
-    start = Column(Integer, nullable=False)
-    end = Column(Integer, nullable=False)
-    category = Column(String(8), nullable=False)
-    title = Column(String(512), nullable=False, default="-")
-    date = Column(String(16), nullable=False, default="-")
-    injury_date = Column(Text, nullable=False, default="-")  # multi-DOI: "MM/DD/YYYY, MM/DD/YYYY"
-    flag = Column(String(4), nullable=False, default="-")
-    suggest_merge = Column(Boolean, nullable=False, default=False)
-    include = Column(Boolean, nullable=False, default=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True
+    )
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    start: Mapped[int] = mapped_column(Integer, nullable=False)
+    end: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(8), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="-")
+    date: Mapped[str] = mapped_column(String(16), nullable=False, default="-")
+    # multi-DOI: "MM/DD/YYYY, MM/DD/YYYY"
+    injury_date: Mapped[str] = mapped_column(Text, nullable=False, default="-")
+    flag: Mapped[str] = mapped_column(String(4), nullable=False, default="-")
+    suggest_merge: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    include: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Which cascade path decided this row's category (classification.Classification.method):
     # rules | empty | no-signal | embedding-only | llm-only | llm+embedding | llm-disagree,
     # plus "timeout" for a row the categorization pool never finished. NULL means the row
     # predates this column or the editor created it - never "we checked and could not tell",
     # which is what `no-signal` means. The review filter treats NULL as "show", so a row that
     # was never backfilled behaves exactly as it did before.
-    method = Column(String(32))
+    method: Mapped[str | None] = mapped_column(String(32))
     # Duplicate clustering (pre-summarize): the dedup job stores each row's full OCR text once
     # (reused by the Duplicates view + the AI-confirm call), and groups confirmed re-scans of the
     # same document under a per-document `dupe_group` int (null = singleton). The reviewer marks one
     # copy `dupe_primary` and dismisses false clusters (`dupe_dismissed`).
-    source_text = Column(Text)
-    dupe_group = Column(Integer, index=True)
-    dupe_primary = Column(Boolean, nullable=False, default=False)
-    dupe_dismissed = Column(Boolean, nullable=False, default=False)
+    source_text: Mapped[str | None] = mapped_column(Text)
+    dupe_group: Mapped[int | None] = mapped_column(Integer, index=True)
+    dupe_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    dupe_dismissed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # The cluster's lowest pairwise character similarity (0-1), stored on every member: ~1.0 means
     # re-scans of ONE document, a low value means a recurring form series that merely shares a
     # template (measured on real records: 1.000 vs 0.219). Null for a singleton row, or for a row
     # grouped before this column existed.
-    dupe_similarity = Column(Float)
+    dupe_similarity: Mapped[float | None] = mapped_column(Float)
 
     def as_row(self):
         row = {field: getattr(self, field) for field in ROW_FIELDS}
@@ -432,30 +464,32 @@ class ReviewRow(Base):
 class Summary(Base):
     __tablename__ = "summaries"
 
-    id = Column(Integer, primary_key=True)
-    document_id = Column(String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True)
-    job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
-    idx = Column(Integer, nullable=False)
-    title = Column(String(512), nullable=False)
-    date = Column(String(16), nullable=False, default="-")
-    text = Column(Text, nullable=False)
-    source_text = Column(Text)
-    edited_title = Column(String(512))
-    edited_date = Column(String(16))
-    edited_text = Column(Text)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True
+    )
+    job_id: Mapped[int] = mapped_column(Integer, ForeignKey("jobs.id"), nullable=False)
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    date: Mapped[str] = mapped_column(String(16), nullable=False, default="-")
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_text: Mapped[str | None] = mapped_column(Text)
+    edited_title: Mapped[str | None] = mapped_column(String(512))
+    edited_date: Mapped[str | None] = mapped_column(String(16))
+    edited_text: Mapped[str | None] = mapped_column(Text)
     # Faithfulness verify pass: `verified` = the pass ran; `verified_text` / `verified_title` = the
     # AI-corrected body and header (each set only when the pass found something to fix);
     # `verify_issues` = the list of {type, detail} it fixed. The raw `text` and `title` stay
     # immutable (training data); display precedence is edited > verified > raw for BOTH.
-    verified = Column(Boolean, nullable=False, default=False)
-    verified_text = Column(Text)
-    verified_title = Column(String(512))
-    verify_issues = Column(JSON)
-    excluded = Column(Boolean, nullable=False, default=False)
-    manual_check = Column(Boolean, nullable=False, default=False)
-    row_start = Column(Integer, nullable=False)
-    row_end = Column(Integer, nullable=False)
-    row_category = Column(String(8), nullable=False)
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    verified_text: Mapped[str | None] = mapped_column(Text)
+    verified_title: Mapped[str | None] = mapped_column(String(512))
+    verify_issues: Mapped[Any | None] = mapped_column(JSON)
+    excluded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    manual_check: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    row_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    row_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    row_category: Mapped[str] = mapped_column(String(8), nullable=False)
     # PROVENANCE, per summary row. Job-level provenance is not enough once the three summarize calls
     # run on different models: one column cannot describe three, and a job spans many categories so
     # one prompt hash cannot describe every row either.
@@ -467,16 +501,16 @@ class Summary(Base):
     # CUTOFF: rows written before 2026-08-06 have NULL here and are unattributable. Date them against
     # deploy history and know that is what you are doing. Deliberately not backfilled - inferring
     # from timestamps would later be indistinguishable from recorded data.
-    model = Column(String(64))
-    title_model = Column(String(64))
-    audit_model = Column(String(64))
+    model: Mapped[str | None] = mapped_column(String(64))
+    title_model: Mapped[str | None] = mapped_column(String(64))
+    audit_model: Mapped[str | None] = mapped_column(String(64))
     # Which backend answered this row. Per ROW as well as per job, because a job records what it
     # STARTED with and this records what actually answered. One column rather than three: the calls
     # above can differ in MODEL but all resolve their backend from the same `summarize` stage.
     # NULL means the row predates the column, never "Gemini".
-    backend = Column(String(16))
-    prompt_fingerprint = Column(String(16))
-    audit_fingerprint = Column(String(16))
+    backend: Mapped[str | None] = mapped_column(String(16))
+    prompt_fingerprint: Mapped[str | None] = mapped_column(String(16))
+    audit_fingerprint: Mapped[str | None] = mapped_column(String(16))
     # At least one of this row's pages could not be READ - extraction FAILED, as distinct from a page
     # that read cleanly and holds no words (see page_texts.extract_ok for why that difference is kept
     # alive). The body then carries a deterministic notice naming those pages, so an unreadable page
@@ -488,7 +522,7 @@ class Summary(Base):
     # A flag rather than a `model` sentinel: NULL there already means "unattributable, written before
     # 2026-08-06", so it cannot also mean "no model wrote this", and `model` is what the pro-vs-flash
     # quality work groups by.
-    unreadable = Column(Boolean, nullable=False, default=False)
+    unreadable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # An excluded "review of medical records" block sits immediately after this row, and this row is
     # the evaluation it belongs to - so the body carries a deterministic sentence naming those pages.
     # The senior reviewer asked for the exclusion to STAY and for a tag to say it happened, rather
@@ -497,7 +531,7 @@ class Summary(Base):
     # Only ever set on a row that was really summarized, so unlike `unreadable` this never pairs with
     # `model IS NULL`; a tagged row with no model would mean the tag reached a notice-only row, which
     # is a defect rather than a state worth reading.
-    embedded_review = Column(Boolean, nullable=False, default=False)
+    embedded_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # When this row was last written. Reviewer edits land in edited_* in place, so unlike a ReviewRow
     # (which _store_rows deletes and recreates wholesale, making a timestamp meaningless there) a
     # Summary survives its own edits and can carry one.
@@ -510,7 +544,7 @@ class Summary(Base):
     # NULL on every row written before 2026-08-26, and deliberately NOT backfilled - an inferred
     # timestamp would later be indistinguishable from a recorded one, which is the same reason
     # `model`, `title_model` and `build_sha` were left alone above.
-    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     def effective_title(self):
         # Same precedence as effective_text: reviewer edit, then the AI-verified correction, then
@@ -604,17 +638,19 @@ class Summary(Base):
 class Category(Base):
     __tablename__ = "categories"
 
-    id = Column(String(8), primary_key=True)
-    name = Column(String(255), nullable=False)
-    description = Column(Text, nullable=False, default="")
-    examples = Column(JSON, nullable=False, default=list)
-    active = Column(Boolean, nullable=False, default=True)
-    auto_assign = Column(Boolean, nullable=False, default=True)
+    id: Mapped[str] = mapped_column(String(8), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    examples: Mapped[Any] = mapped_column(JSON, nullable=False, default=list)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    auto_assign: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Whether documents in this category are checked for summarization BY DEFAULT. Only General
     # (100) seeds to False; Depositions (9) did too until migration a9c4e13f70b2 turned it on.
     # Distinct from auto_assign, which gates whether the classifier may assign the category at all.
-    summarize_default = Column(Boolean, nullable=False, default=True)
-    updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    summarize_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+    )
 
     def listing(self):
         return {
@@ -631,12 +667,14 @@ class Category(Base):
 class Prompt(Base):
     __tablename__ = "prompts"
 
-    id = Column(Integer, primary_key=True)
-    role = Column(String(32), nullable=False)
-    category_id = Column(String(8))
-    text = Column(Text, nullable=False)
-    revision = Column(Integer, nullable=False, default=1)
-    updated_at = Column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    category_id: Mapped[str | None] = mapped_column(String(8))
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+    )
 
     __table_args__ = (UniqueConstraint("role", "category_id", name="uq_prompt_role_category"),)
 
@@ -644,22 +682,24 @@ class Prompt(Base):
 class CatalogMeta(Base):
     __tablename__ = "catalog_meta"
 
-    id = Column(Integer, primary_key=True)
-    revision = Column(Integer, nullable=False, default=1)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey(_FK_USER_ID), nullable=False, index=True)
-    action = Column(String(32), nullable=False)
-    document_id = Column(String(36))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey(_FK_USER_ID), nullable=False, index=True
+    )
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    document_id: Mapped[str | None] = mapped_column(String(36))
     # What CHANGED, when the action alone does not say it - e.g. a category edit needs the id it came
     # from as well as the one it went to. Free text rather than JSON: nothing queries this yet, and a
     # human reading a row is the only consumer a write-only trail can have.
-    detail = Column(Text)
-    at = Column(DateTime, nullable=False, default=_utcnow)
+    detail: Mapped[str | None] = mapped_column(Text)
+    at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
 
 class PageText(Base):
@@ -683,17 +723,19 @@ class PageText(Base):
     __tablename__ = "page_texts"
     __table_args__ = (UniqueConstraint("document_id", "page", name="uq_page_texts_document_page"),)
 
-    id = Column(Integer, primary_key=True)
-    document_id = Column(String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True)
-    page = Column(Integer, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True
+    )
+    page: Mapped[int] = mapped_column(Integer, nullable=False)
     # PHI-bearing, exactly like review_rows.source_text: never log, never leave the box.
-    text = Column(Text, nullable=False, default="")
-    ocr_engine = Column(String(32), nullable=False, default="tesseract")
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ocr_engine: Mapped[str] = mapped_column(String(32), nullable=False, default="tesseract")
     # Whether extraction SUCCEEDED, as distinct from succeeding and finding nothing. Empty text has
     # two very different causes: a page that errored (often transient, worth retrying) and a page that
     # is genuinely blank - a film, a photo, a separator sheet - which will never yield words. The
     # duplicate check already reports that difference to the reviewer, and blank-page RATE is the
     # headline metric for comparing OCR engines, so collapsing both into "" would lose both.
-    extract_ok = Column(Boolean, nullable=False, default=True)
-    char_count = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    extract_ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)

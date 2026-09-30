@@ -2,8 +2,8 @@ name: CI
 
 # main IS the Next.js + FastAPI rewrite (backend/ + frontend/). This workflow tests that stack:
 # the backend suite on real Postgres + Redis with coverage, the frontend unit/component suite,
-# and a Playwright E2E pass over the core non-AI flows against the docker-compose app. The legacy
-# Flask app (mrr_ai/) is being phased out and is no longer covered here.
+# and a Playwright E2E pass over the core non-AI flows against the docker-compose app.
+# (The pre-rewrite Flask app was removed on 2026-09-30.)
 # `pull_request` carries NO `branches` filter on purpose. That key filters on the pull
 # request's BASE, not its head, so any PR targeting a branch not listed gets NO CI AT ALL -
 # it reports mergeable against an empty check set. That is not hypothetical and it is not
@@ -47,7 +47,7 @@ jobs:
           --health-timeout 3s
           --health-retries 10
       redis:
-        image: redis:7
+        image: redis:7-alpine
         ports:
           - 6379:6379
         options: >-
@@ -74,6 +74,12 @@ jobs:
         run: |
           uv run ruff check .
           uv run ruff format --check .
+
+      # pyright in standard mode on app/ (settings: backend/pyproject.toml [tool.pyright]); any error fails the job,
+      # and so the required `backend` check. Pinned like zizmor: a new release can add checks, which should arrive
+      # as a reviewed bump rather than a red build nobody changed.
+      - name: Type check (pyright)
+        run: uvx pyright==1.1.414
 
       - name: Import smoke (models map, app builds)
         env:
@@ -150,6 +156,11 @@ jobs:
 
       - name: Install deps
         run: pnpm install --frozen-lockfile
+
+      # ESLint (Next's core-web-vitals + typescript rules); any error or warning fails the job, and so the
+      # required `frontend` check. Config: frontend/eslint.config.mjs.
+      - name: Lint
+        run: pnpm lint
 
       - name: Typecheck
         run: pnpm typecheck
@@ -287,6 +298,38 @@ jobs:
       - name: Build the site (strict)
         run: uv run --frozen mkdocs build --strict
 
+  # Lints what the images are built from: hadolint over the three Dockerfiles CI and the servers build,
+  # then Compose's own validation of both compose files. hadolint is pinned like actionlint below: a
+  # release binary checked against its published sha256. Its settings, and the one rule skipped and why, are in
+  # .hadolint.yaml, which it reads from the repository root.
+  container-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: hadolint (pinned release, checksum verified)
+        env:
+          VERSION: "2.15.1"
+          SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+        run: |
+          set -euo pipefail
+          curl -sSL --fail -o hadolint "https://github.com/hadolint/hadolint/releases/download/v${VERSION}/hadolint-linux-x86_64"
+          echo "${SHA256}  hadolint" | sha256sum --check --strict
+          chmod +x hadolint
+          ./hadolint backend/Dockerfile frontend/Dockerfile docs-site/Dockerfile
+
+      # `config` parses each file, interpolates it and checks it against the Compose spec, starting nothing.
+      # docker-compose.yml refuses to interpolate without its two required secrets, so CI passes placeholders.
+      - name: Compose files
+        env:
+          SECRET_KEY: ci-compose-check
+          SECURITY_PASSWORD_SALT: ci-compose-check
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.dev.yml config --quiet
+
   # Lints the workflows themselves: actionlint for syntax and expression mistakes, zizmor for security
   # problems (injection, excess permissions, unpinned actions, dangerous triggers). The pipeline is an
   # attack path - in March 2026, 76 of 77 trivy-action tags were force-pushed to credential stealers - so
@@ -337,9 +380,9 @@ jobs:
           fail-on-scopes: runtime
           comment-summary-in-pr: never
 
-  # Dependency gate, PR half 2. OSV-Scanner reads both lockfiles directly (uv.lock included, which GitHub's
-  # dependency graph does not list as a supported format), scans the base and the PR, and fails only on
-  # vulnerabilities the PR INTRODUCES. The reusable workflow's own job asks for security-events: write (it uploads
+  # Dependency gate, PR half 2: a second source behind dependency-review, which can miss an advisory. OSV-Scanner
+  # reads both lockfiles directly (backend/uv.lock, frontend/pnpm-lock.yaml) and checks them against OSV.dev rather
+  # than GitHub's dependency graph, scans the base and the PR, and fails only on vulnerabilities the PR INTRODUCES. The reusable workflow's own job asks for security-events: write (it uploads
   # its SARIF to code scanning), so this job must grant it; nothing else here gets it.
   osv-scan:
     if: github.event_name == 'pull_request'
@@ -477,6 +520,10 @@ jobs:
   # coverage reports produced by the backend + frontend jobs.
   sonarcloud:
     needs: [backend, frontend]
+    # Pull requests (any base) and pushes to main only. The SonarCloud plan analyses only the main branch: a push to
+    # qwen failed with "not allowed to access data from non main branches" on every run, while pull-request analysis
+    # into qwen works (#438). A required check still runs on every pull request, so nothing is left waiting.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0

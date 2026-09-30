@@ -21,8 +21,9 @@ pnpm install
 - For end-to-end tests, the app running behind the proxy on port 8080. See
   [how to run the app locally](run-the-app-locally.md).
 
-There is no ESLint or Prettier setup in `frontend/`. The static check is the TypeScript compiler
-(`pnpm typecheck`); SonarCloud analyses the code in CI (see the
+ESLint checks `frontend/` (`pnpm lint`; config `eslint.config.mjs`, Next's core-web-vitals and
+TypeScript rules), and any error or warning fails CI. There is no Prettier setup. The other static
+check is the TypeScript compiler (`pnpm typecheck`); SonarCloud analyses the code in CI (see the
 [CI and merge gates reference](../reference/ci-and-merge-gates.md)).
 
 ## Add a page route
@@ -103,7 +104,9 @@ There is no ESLint or Prettier setup in `frontend/`. The static check is the Typ
 
 1. Add a `BundleConfig` to `frontend/lib/bundle-api.ts` and append it to `BUNDLES`. Give it `label`,
     a URL-safe `slug`, `categories` (category ids as strings), `downloadName`, and `coverHeading` only
-    if the combined PDF should start with a list page. The backend keeps no copy of this list; the
+    if the combined PDF should start with a list page. Set `separateAs` (for example `"Deposition"`)
+    instead when each document should download as its own dated PDF, as Depositions does; the page
+    button then reads "Download separate PDFs". The backend keeps no copy of this list; the
     bundle and zip endpoints receive these values.
 2. Create a route page that passes the config, copying `frontend/app/diagnostics/page.tsx`.
 3. Add a tab to `BUNDLE_TABS` in `frontend/components/bundle/bundle-page-client.tsx`, with `value`
@@ -233,6 +236,10 @@ Playwright specs live in `frontend/e2e/*.spec.ts` and run against a live stack, 
 ## Verify it worked
 
 From `frontend/`:
+
+```bash
+pnpm lint
+```
 
 ```bash
 pnpm typecheck

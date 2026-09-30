@@ -265,6 +265,18 @@ def test_one_active_job_per_document_conflicts():
         jobs.create_job(session_b, doc_id, "summarize", model="m", prompt_version="1")
 
 
+def test_a_job_for_a_missing_document_is_refused_not_reported_as_a_conflict():
+    # WHEN create_job is called for a document id that does not exist, THE SYSTEM SHALL raise
+    # LookupError naming the id and SHALL NOT add a job. `dedup` is the load-bearing kind: it moves
+    # no document status, so nothing touched the missing row before the commit, and the foreign-key
+    # failure came back through `except IntegrityError` as a false "a job is already active".
+    missing_id = str(uuid.uuid4())
+    with get_sessionmaker()() as session:
+        with pytest.raises(LookupError, match=missing_id):
+            jobs.create_job(session, missing_id, "dedup", model="m", prompt_version="1")
+        assert session.scalars(select(Job).where(Job.document_id == missing_id)).first() is None
+
+
 def test_run_marks_done_and_advances_status():
     doc_id = _make_user_and_doc()
     with get_sessionmaker()() as session:
@@ -3264,7 +3276,7 @@ class TestSegmentRowsReplacedIsRecorded:
             "suggest_merge": False,
         }
 
-    def _segment(self, monkeypatch, doc_id, rows):
+    def _segment(self, monkeypatch, doc_id, rows, requested_by=None):
         """Run one segmentation generation producing `rows`, with OCR and the model stubbed out."""
         import app.services.page_text as page_text_mod
         import app.services.segment_engine as se
@@ -3276,7 +3288,9 @@ class TestSegmentRowsReplacedIsRecorded:
             lambda pdf_path, total_pages, progress=None, page_text_fn=None: rows,
         )
         with get_sessionmaker()() as session:
-            job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+            job_id = jobs.create_job(
+                session, doc_id, "segment", model="m", prompt_version="1", requested_by=requested_by
+            ).id
         segment_document(job_id)
         return job_id
 
@@ -3351,6 +3365,33 @@ class TestSegmentRowsReplacedIsRecorded:
         assert len(events) == 1
         assert events[0].detail == "rows 2->0 (recategorized 0, respanned 0)"
 
+    def test_an_admin_re_segmenting_someone_elses_record_is_recorded_as_the_admin(
+        self, monkeypatch
+    ):
+        """An admin can open and re-identify another reviewer's record. The rows it destroys are
+        that reviewer's corrections, and the trail must say who destroyed them - the admin, not the
+        owner whose name used to be written here unconditionally."""
+        doc_id = _make_user_and_doc(page_count=2)
+        with get_sessionmaker()() as session:
+            admin = User(
+                email=unique_test_email(),
+                name="Admin",
+                password=MrrPasswordHelper().hash("Str0ng#pw1"),
+                active=True,
+                is_admin=True,
+            )
+            session.add(admin)
+            session.commit()
+            admin_id = admin.id
+            owner_id = session.get(Document, doc_id).user_id
+        rows = [self._row(1, "1"), self._row(2, "100")]
+        self._segment(monkeypatch, doc_id, rows)
+        self._segment(monkeypatch, doc_id, rows, requested_by=admin_id)
+
+        event = self._events(doc_id)[0]
+        assert event.user_id == admin_id
+        assert event.user_id != owner_id
+
     def test_the_event_is_attributed_to_the_owner_and_carries_no_title(self, monkeypatch):
         doc_id = _make_user_and_doc(page_count=2)
         rows = [self._row(1, "1"), self._row(2, "100")]
@@ -3360,8 +3401,8 @@ class TestSegmentRowsReplacedIsRecorded:
         with get_sessionmaker()() as session:
             owner_id = session.get(Document, doc_id).user_id
         event = self._events(doc_id)[0]
-        # get_owned_document is an owner-only guard with no admin bypass, so the owner IS whoever
-        # asked for the re-segment.
+        # A job with no recorded requester - every job before the column, and the ones the system
+        # queues itself - is attributed to the owner, which is what those jobs always were.
         assert event.user_id == owner_id
         # Titles carry physician names and must never reach the audit table.
         assert "A" not in event.detail

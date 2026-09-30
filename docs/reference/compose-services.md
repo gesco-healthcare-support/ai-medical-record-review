@@ -17,12 +17,12 @@ Source of truth: `docker-compose.yml`, `docker-compose.dev.yml`, `deploy/nginx.c
 | Service | Image | Build | Command | Host ports | Volumes and mounts | Healthcheck | depends_on | Replicas | Restart |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `postgres` | `postgres:16` (pulled) | - | Image default | `5433:5432` | `mrr_pgdata:/var/lib/postgresql/data` | `pg_isready -U mrr -d mrr`, every 5 s, timeout 3 s, 10 retries | - | 1 | `unless-stopped` |
-| `redis` | `redis:7` (pulled) | - | `redis-server --save "" --appendonly no` | None | None | None | - | 1 | `unless-stopped` |
+| `redis` | `redis:7-alpine` (pulled) | - | `redis-server --save "" --appendonly no` | None | None | None | - | 1 | `unless-stopped` |
 | `api` | `mrr-backend-web` | Context `./backend`; args `UV_EXTRAS="--extra docs"`, `GIT_SHA=${GIT_SHA:-unknown}` | `uvicorn app.main:app --host 0.0.0.0 --port 8000` | None | `mrr_uploads:/app/uploads`; `./instance:/app/instance:ro`; `./secrets:/secrets:ro` | None | `postgres` (`service_healthy`), `redis` (`service_started`) | 1 | `unless-stopped` |
 | `segment-worker` | `mrr-backend-classifier` | Context `./backend`; args `UV_EXTRAS="--extra docs --extra classifier"`, `GIT_SHA=${GIT_SHA:-unknown}` | `python -m app.worker segment` | None | `mrr_uploads:/app/uploads`; `./secrets:/secrets:ro` | None | `postgres` (`service_healthy`), `redis` (`service_started`) | 3 (`deploy.replicas`) | `unless-stopped` |
 | `summarize-worker` | `mrr-backend-web` | Context `./backend`; args `UV_EXTRAS="--extra docs"`, `GIT_SHA=${GIT_SHA:-unknown}` | `python -m app.worker summarize` | None | `mrr_uploads:/app/uploads`; `./secrets:/secrets:ro` | None | `postgres` (`service_healthy`), `redis` (`service_started`) | 3 (`deploy.replicas`) | `unless-stopped` |
 | `web` | `mrr-frontend` | Context `./frontend` | Image default: `node server.js` | None | None | None | `api` | 1 | `unless-stopped` |
-| `proxy` | `nginx:1.27` (pulled) | - | Image default | `8080:80` | `./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro` | None | `api`, `web`, `docs` | 1 | `unless-stopped` |
+| `proxy` | `nginx:1.30` (pulled) | - | Image default | `8080:80` | `./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro` | None | `api`, `web`, `docs` | 1 | `unless-stopped` |
 | `docs` | `mrr-docs` | Context `.` (repository root); Dockerfile `docs-site/Dockerfile` | Image default (nginx) | None | None | None | - | 1 | `unless-stopped` |
 
 No service defines `profiles`, networks, resource limits or a `stop_grace_period`; all services
@@ -76,7 +76,7 @@ Tesseract on `PATH`.
 | Service | Image | Command | Host ports | Volumes | Healthcheck | Environment | Restart |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `postgres` | `postgres:16` | Image default | `5432:5432` | `mrr_pgdata:/var/lib/postgresql/data` | `pg_isready -U mrr -d mrr`, every 5 s, timeout 3 s, 10 retries | `POSTGRES_USER=mrr`, `POSTGRES_PASSWORD=mrr_dev_only` (literal), `POSTGRES_DB=mrr` | None |
-| `redis` | `redis:7` | `redis-server --save "" --appendonly no` | `6379:6379` | None | None | None | None |
+| `redis` | `redis:7-alpine` | `redis-server --save "" --appendonly no` | `6379:6379` | None | None | None | None |
 
 No builds, no `depends_on`, no replicas settings. `backend/tests/conftest.py` reads both Compose
 files to find the test database's port and password.
@@ -90,8 +90,8 @@ files to find the test database's port and password.
 | `mrr-frontend` | `frontend/Dockerfile`, context `./frontend` | None | `web` |
 | `mrr-docs` | `docs-site/Dockerfile`, context `.` | None | `docs` |
 | `postgres:16` | Pulled | - | `postgres` (both stacks) |
-| `redis:7` | Pulled | - | `redis` (both stacks) |
-| `nginx:1.27` | Pulled | - | `proxy` |
+| `redis:7-alpine` | Pulled | - | `redis` (both stacks) |
+| `nginx:1.30` | Pulled | - | `proxy` |
 
 The two backend images are built from the same Dockerfile and the same code. They differ only in
 the optional dependency sets installed, which is why `docker compose build api` does not update
@@ -101,12 +101,11 @@ the optional dependency sets installed, which is why `docker compose build api` 
 
 | Item | Value |
 | --- | --- |
-| Base | `python:3.12-slim` |
-| Package manager | `uv` 0.11.2, copied from `ghcr.io/astral-sh/uv:0.11.2` |
-| System packages | `tesseract-ocr`, `poppler-utils` |
-| Dependency install | `uv sync --locked --no-dev ${UV_EXTRAS}` from `pyproject.toml` and `uv.lock` |
-| Embedding model | `all-MiniLM-L6-v2` downloaded at build time, only when `UV_EXTRAS` contains `classifier` |
-| Environment | `UV_COMPILE_BYTECODE=1`, `UV_LINK_MODE=copy`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_HOME=/opt/hf-cache`, `PATH=/app/.venv/bin:$PATH`, `PYTHONPATH=/app`, `BUILD_SHA=$GIT_SHA` |
+| Stages | `build` then the final stage, both `python:3.12-slim` (the same digest, so the venv's interpreter path matches) |
+| Build stage | `uv` 0.11.2 (copied from `ghcr.io/astral-sh/uv:0.11.2`) runs `uv sync --locked --no-dev ${UV_EXTRAS}` from `pyproject.toml` and `uv.lock` into `/app/.venv`, with `UV_COMPILE_BYTECODE=1`, `UV_LINK_MODE=copy` |
+| Embedding model | `all-MiniLM-L6-v2` downloaded in the build stage into `/opt/hf-cache`, only when `UV_EXTRAS` contains `classifier` |
+| Final stage | `tesseract-ocr`, `poppler-utils`; the build stage's `/app/.venv` and `/opt/hf-cache`; the app code. No `uv`, `uvx` or `pip` (pip is uninstalled): build tools stay in the build stage |
+| Environment | `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_HOME=/opt/hf-cache`, `PATH=/app/.venv/bin:$PATH`, `PYTHONPATH=/app`, `BUILD_SHA=$GIT_SHA` |
 | Build args | `UV_EXTRAS` (default `--extra docs`), `GIT_SHA` (default `unknown`, declared last so a new commit does not invalidate the dependency layers) |
 | Working directory | `/app` (the contents of `backend/`, minus the paths in `backend/.dockerignore`, which include `tests`, `.env` and `uploads`) |
 | Exposed port | 8000 |
@@ -118,7 +117,7 @@ the optional dependency sets installed, which is why `docker compose build api` 
 | --- | --- |
 | Stages | `build` then `runtime`, both `node:22-slim` |
 | Build stage | `corepack enable`, `pnpm install --frozen-lockfile`, `pnpm build` |
-| Runtime contents | `.next/standalone`, `.next/static`, `public/` |
+| Runtime contents | `.next/standalone`, `.next/static`, `public/`; the base image's npm, npx, corepack and yarn are removed (the server needs only `node`) |
 | Environment | `NODE_ENV=production`, `HOSTNAME=0.0.0.0`, `PORT=3000` |
 | Exposed port | 3000 |
 | Default command | `node server.js` |
@@ -127,7 +126,7 @@ the optional dependency sets installed, which is why `docker compose build api` 
 
 | Item | Value |
 | --- | --- |
-| Stages | Build on `python:3.12-slim` with `uv` 0.11.2, then serve on `nginx:1.27` |
+| Stages | Build on `python:3.12-slim` with `uv` 0.11.2, then serve on `nginx:1.30-alpine-slim` (nginx only, without the njs and image-filter modules) |
 | Build stage | `uv sync --frozen`, then `mkdocs build --strict` of the `docs/` folder |
 | Runtime contents | The built site under `/usr/share/nginx/html/docs` |
 | Build context filter | `docs-site/Dockerfile.dockerignore` (the root `.dockerignore` excludes `docs` and `*.md`) |

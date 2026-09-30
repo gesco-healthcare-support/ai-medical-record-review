@@ -3,7 +3,7 @@
 # On the LAN server these become locally-installed services (no cloud); this file is dev-only.
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
     environment:
       POSTGRES_USER: mrr
       POSTGRES_PASSWORD: mrr_dev_only
@@ -19,7 +19,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     # Persistence OFF: the queue carries only non-PHI job identifiers, and we do not want
     # PHI-adjacent job metadata written to an RDB/AOF file (HIPAA). See the plan's PHI scope.
     # A prepared export's `download:<token>` entry also holds its filename - a patient name -

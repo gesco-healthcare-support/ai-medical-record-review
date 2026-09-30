@@ -1,5 +1,7 @@
 # MRR AI - AI Medical Record Review
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gesco-healthcare-support/ai-medical-record-review/badge)](https://scorecard.dev/viewer/?uri=github.com/gesco-healthcare-support/ai-medical-record-review)
+
 Turns a large scanned medical-record PDF (hundreds to a few thousand pages) into a reviewed,
 summarized Medical Record Review. The app finds the sub-documents in the record, categorizes them,
 lets a reviewer correct everything, checks for duplicates, summarizes each sub-document with a
@@ -54,9 +56,9 @@ secrets, how model credentials are supplied - are in
 | `docker-compose.yml` | The app stack (the same file runs locally and on the server). |
 | `docker-compose.dev.yml` | The throwaway test database and Redis for the backend suite. |
 | `deploy/env.docker.example`, `.env.example` | Environment templates: the first is the minimal set for the container stack, the second lists every tunable setting with its reasoning. |
-| [`experiments/`](experiments/a1-segmentation/README.md) | Segmentation research; `a1-segmentation/EXPERIMENT-LOG.md` records what was measured and rejected. |
-| [`legacy/`](legacy/README.md) | The pre-rewrite Flask app and its old docs. **Nothing there runs.** |
-| `pyproject.toml`, `uv.lock`, `serve.py` (repo root) | Leftovers of the Flask app. The backend's own project is `backend/pyproject.toml`; do not run `uv sync` or `pytest` from the repo root. |
+| [`experiments/`](experiments/a1-segmentation/README.md) | Segmentation research; `experiments/a1-segmentation/EXPERIMENT-LOG.md` records what was measured and rejected. |
+| [`legacy/`](legacy/README.md) | Documents kept from the pre-rewrite Flask app: its old docs and decision records, and the business source material (category taxonomy, MRR steps). The app's code was removed on 2026-09-30. |
+| `ruff.toml` (repo root) | Ruff settings for the Python outside `backend/` (the scripts in `.github/scripts`). The backend's own project is `backend/pyproject.toml`; there is no Python project at the repo root. |
 
 ## Contributing
 
@@ -65,7 +67,9 @@ must pass. Commit messages and PR titles follow `<type>(<scope>): <subject>` wit
 in [`.claude/rules/commit-scopes.md`](.claude/rules/commit-scopes.md). Update the docs in the same
 pull request as the code they describe - see
 [Work on these docs](docs/how-to/work-on-these-docs.md). The checks each pull request must pass are
-in [CI and merge gates](docs/reference/ci-and-merge-gates.md).
+in [CI and merge gates](docs/reference/ci-and-merge-gates.md). The full contributor guide is
+[`CONTRIBUTING.md`](CONTRIBUTING.md); report a security problem as [`SECURITY.md`](SECURITY.md)
+says, never in a public issue.
 
 AI coding assistants: read [`CLAUDE.md`](CLAUDE.md) first; each folder has its own `CLAUDE.md`
 with the rules for that area.

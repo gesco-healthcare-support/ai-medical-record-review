@@ -78,7 +78,7 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 
 | Function | Method and path | Body | Response type | Used by |
 | --- | --- | --- | --- | --- |
-| `listDocuments()` | `GET /documents` | - | `DocumentListItem[]` (the caller's own records, newest first) | `useDocuments()` in `DocumentsView`, `BundlePageClient`, `AdminView` |
+| `listDocuments(owner?)` | `GET /documents`, or `GET /documents?owner=<id>` | - | `DocumentListItem[]` (the caller's own records, newest first; for an admin with `owner`, that account's) | `useDocuments()` in `DocumentsView`, `BundlePageClient`, `AdminView`; `useDocuments(owner)` in `DocumentsView` for an admin who picked a reviewer |
 | `uploadDocument()` | `POST /documents` | multipart field `pdf` | `{id, page_count, sha256_duplicate}` | `useUploadDocument()` in `DocumentsView`; does not start identification |
 | `aggregateDocuments()` | `POST /documents/aggregate` | multipart `name` (only when non-blank), one `pdfs` field per file in order | `{id, page_count, records}` | `useAggregateDocuments()` in `SplitUploadDialog` |
 | `deleteDocument()` | `DELETE /documents/{id}` | - | `{ok}` | `useDeleteDocument()` in `DocumentsView` |
@@ -97,7 +97,7 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | `saveRows()` | `PUT /documents/{id}/rows` | `{rows: Row[]}` | `{ok, count}` | `useReviewWorkflow()` autosave |
 | `startSegment()` | `POST /documents/{id}/segment/start` | `{fresh}` (default false) | `{ok}` | `useReviewWorkflow()` `onStart()`, `restartCancelled()` |
 | `startSummarize()` | `POST /documents/{id}/summarize/start` | `{rows, fresh, skip_duplicate_check}` | `{ok}` | `useReviewWorkflow()` `onSummarize()`, `restartCancelled()` |
-| `extractHeader()` | `POST /documents/{id}/extract-header` | none | typed as `HeaderFields`; the server answers with `patient_first_name`, `patient_last_name`, `patient_dob`, `law_firm` | `HeaderBar`, `BundlePageClient` |
+| `extractHeader()` | `POST /documents/{id}/extract-header` | none | `DetectedHeaderFields`: only `patient_first_name`, `patient_last_name`, `patient_dob`, `law_firm`. `HeaderBar` merges the reply over the stored header rather than replacing it, so the other five fields keep their values. | `HeaderBar`, `BundlePageClient` |
 | `saveHeader()` | `PUT /documents/{id}/header` | `HeaderFields` | typed as `unknown` | `HeaderBar` |
 | `getSummaries()` | `GET /documents/{id}/summaries` | - | `SummaryItem[]` (all of them; paged in the browser) | `useSummaries()` |
 | `putSummary()` | `PUT /documents/{id}/summaries/{idx}` | any of `summaryTitle`, `summaryDate`, `summaryText`, `excluded`, `category` | `SummaryItem` | `useSaveSummary()` in `SummariesView` |
@@ -107,6 +107,7 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 
 | Function | Method and path | Body | Response type | Used by |
 | --- | --- | --- | --- | --- |
+| `listAccounts()` | `GET /admin/users` | - | `AdminAccount[]` (`{id, name, email}`, active accounts) | `useAccounts(enabled)` in `DocumentsView`, fetched only for an admin |
 | `listCategories()` | `GET /admin/categories` | - | `AdminCategory[]` | `useCategories()` in `AdminView` |
 | `createCategory()` | `POST /admin/categories` | `CategoryInput` plus `id` | `AdminCategory` | `useCreateCategory()` in `AdminView` via `CategoryDialog` |
 | `updateCategory()` | `PATCH /admin/categories/{id}` | partial `CategoryInput` | `AdminCategory` | `useUpdateCategory()` (edit, activate, deactivate) |
@@ -138,6 +139,8 @@ TanStack Query holds all server state that is not the workbench's row buffer.
 | --- | --- | --- | --- | --- |
 | `["current-user"]` | `useCurrentUser()` | `GET /users/me` | No retry, 5 minute stale time | `useLogin()` success invalidates; sign out clears the whole cache |
 | `["documents"]` | `useDocuments()` | `GET /documents` | Every 2000 ms while any record has an `active_job`, otherwise none | Upload, aggregate, delete and start identification invalidate |
+| `["documents", "owner", <id>]` | `useDocuments(owner)` | `GET /documents?owner=<id>` | As above | The same mutations: they invalidate the `["documents"]` prefix |
+| `["admin", "users"]` | `useAccounts(enabled)` | `GET /admin/users` | None | None |
 | `["duplicates", id]` | `useDuplicates()` (`duplicatesKey()`) | `GET /documents/{id}/duplicates` | Every 2000 ms while the latest dedup job is `queued` or `running`, otherwise none | Resolve and start dedup invalidate |
 | `["summaries", id]` | `useSummaries()` (`summariesKey()`) | `GET /documents/{id}/summaries` | None | Save and re-draft patch the item in place; every settled summarize run invalidates |
 | `["admin", "categories"]` | `useCategories()` | `GET /admin/categories` | None | Create, update, prompt save and prompt revert invalidate |

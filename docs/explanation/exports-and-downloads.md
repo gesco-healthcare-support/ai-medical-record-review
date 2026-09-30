@@ -18,7 +18,7 @@ browser. Route payloads, filenames and error codes are listed in
 | Linked PDF | Export dialog, "Export to linked PDF" | `POST .../export/pdf` | `_linked_pdf_bytes()` -> `backend/app/services/linked_pdf.py` `build_linked_pdf()` |
 | Covering memo | Export dialog, "Download memo" | `POST .../export/memo` | `_memo_docx_bytes()` -> `reporting.py` `build_memo_document()` |
 | Archive of all of them | Export dialog, "Download all (.zip)" | `POST .../export/zip` | The three builders above plus `_bundle_members()` |
-| Bundle PDF | `/diagnostics` or `/depositions`, "Download combined PDF" | `POST .../bundle/pdf` | `backend/app/services/bundles.py` `build_bundle_pdf()` and `build_cover_pdf()` |
+| Bundle PDF | `/diagnostics`, "Download combined PDF"; `/depositions`, "Download separate PDFs" | `POST .../bundle/pdf` | `backend/app/services/bundles.py` `build_bundle_pdf()` and `build_cover_pdf()` |
 | Bundle report | `/diagnostics` or `/depositions`, "Summarize to Word" | `POST .../bundle/summarize` | `bundles.py` `bundle_summary_entries()` -> `build_mrr_document()` |
 
 The export dialog is `frontend/components/review/export-dialog.tsx`; the two bundle pages share
@@ -71,7 +71,8 @@ one, else the PDF's own page count (`_letter_pages()`).
   needs no summaries: a record still being worked has a memo.
 - **Archive.** The zip route calls the same three builder functions its sibling routes call, so each
   member is the file that route would hand over, then adds one combined PDF per requested bundle that
-  matches at least one row. It is written `ZIP_STORED` because every member is already compressed.
+  matches at least one row, or one PDF per matched sub-document for a bundle sent with `separateAs`
+  (the Depositions preset). It is written `ZIP_STORED` because every member is already compressed.
   The bundle report is deliberately left out: it makes model calls per row and would outlive the
   request.
 - **Bundle PDF.** `bundles.py` `matched_rows()` selects the rows in the requested categories minus
@@ -80,7 +81,11 @@ one, else the PDF's own page count (`_letter_pages()`).
   data migration unticked every deposition row in bulk and an `include` filter would empty the
   Depositions bundle for older records. The matched rows' pages are concatenated in record order with
   pypdf; out-of-range pages are skipped. When the request carries a cover heading, a list page built
-  by `build_cover_pdf()` goes in front, unless every cell of it would be empty.
+  by `build_cover_pdf()` goes in front, unless every cell of it would be empty. A request carrying
+  `separateAs` (Depositions) instead gets one PDF per matched row, named
+  `Deposition of <who> <MM-DD-YY>.pdf`, handed over as that PDF for one match or as a zip for several;
+  the reviewers asked for each deposition on its own, dated. See `export-formats.md`, "Separate
+  documents".
 - **Bundle report.** Synchronous, and refused with 409 above `BUNDLE_SUMMARIZE_CAP` (40) matched
   rows. Each matched row is summarized fresh with its category prompt and the audit turned off; a
   row with no readable text, or whose transcript page numbers could not be read, is skipped and

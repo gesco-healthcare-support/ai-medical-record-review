@@ -53,14 +53,14 @@ runs locally and on the server; only `.env` differs.
 flowchart TB
     browser["Browser"] -->|":8080"| proxy
     subgraph compose["docker compose project 'mrr'"]
-        proxy["proxy<br/>nginx:1.27"]
+        proxy["proxy<br/>nginx:1.30"]
         web["web<br/>Next.js server (mrr-frontend)"]
         api["api<br/>FastAPI + uvicorn (mrr-backend-web)"]
         docs["docs<br/>this site, nginx (mrr-docs)"]
         seg["segment-worker x3<br/>RQ (mrr-backend-classifier)"]
         sum["summarize-worker x3<br/>RQ (mrr-backend-web)"]
         pg[("postgres:16<br/>volume mrr_pgdata")]
-        redis[("redis:7<br/>no persistence")]
+        redis[("redis:7-alpine<br/>no persistence")]
         uploads[("volume mrr_uploads<br/>/app/uploads")]
     end
     proxy -->|"/api/*"| api
@@ -157,7 +157,7 @@ patient; and never add a place where content persists without documenting its li
 
 | layer | choice | why, as recorded in the code and history |
 | --- | --- | --- |
-| Backend | Python 3.12, FastAPI, SQLAlchemy 2, Alembic, pydantic-settings | The rewrite replaced a Flask app (archived under `legacy/`) with a typed API and a separate frontend. |
+| Backend | Python 3.12, FastAPI, SQLAlchemy 2, Alembic, pydantic-settings | The rewrite replaced a Flask app (removed on 2026-09-30; it is in git history) with a typed API and a separate frontend. |
 | Jobs | RQ on Redis, per-user lanes, a round-robin worker | Long AI stages must not run inside a web request; per-user lanes stop one reviewer's backlog from queueing everyone else's. |
 | Database | PostgreSQL 16 | Partial unique indexes enforce one active job per document; the whole pipeline passes state through rows, not files. |
 | OCR | Tesseract through Poppler, in the backend image | Most records are scans without a usable text layer. See [OCR and page text](ocr-and-page-text.md). |
