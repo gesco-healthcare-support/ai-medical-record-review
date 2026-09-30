@@ -101,12 +101,11 @@ the optional dependency sets installed, which is why `docker compose build api` 
 
 | Item | Value |
 | --- | --- |
-| Base | `python:3.12-slim` |
-| Package manager | `uv` 0.11.2, copied from `ghcr.io/astral-sh/uv:0.11.2` |
-| System packages | `tesseract-ocr`, `poppler-utils` |
-| Dependency install | `uv sync --locked --no-dev ${UV_EXTRAS}` from `pyproject.toml` and `uv.lock` |
-| Embedding model | `all-MiniLM-L6-v2` downloaded at build time, only when `UV_EXTRAS` contains `classifier` |
-| Environment | `UV_COMPILE_BYTECODE=1`, `UV_LINK_MODE=copy`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_HOME=/opt/hf-cache`, `PATH=/app/.venv/bin:$PATH`, `PYTHONPATH=/app`, `BUILD_SHA=$GIT_SHA` |
+| Stages | `build` then the final stage, both `python:3.12-slim` (the same digest, so the venv's interpreter path matches) |
+| Build stage | `uv` 0.11.2 (copied from `ghcr.io/astral-sh/uv:0.11.2`) runs `uv sync --locked --no-dev ${UV_EXTRAS}` from `pyproject.toml` and `uv.lock` into `/app/.venv`, with `UV_COMPILE_BYTECODE=1`, `UV_LINK_MODE=copy` |
+| Embedding model | `all-MiniLM-L6-v2` downloaded in the build stage into `/opt/hf-cache`, only when `UV_EXTRAS` contains `classifier` |
+| Final stage | `tesseract-ocr`, `poppler-utils`; the build stage's `/app/.venv` and `/opt/hf-cache`; the app code. No `uv`, `uvx` or `pip` (pip is uninstalled): build tools stay in the build stage |
+| Environment | `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_HOME=/opt/hf-cache`, `PATH=/app/.venv/bin:$PATH`, `PYTHONPATH=/app`, `BUILD_SHA=$GIT_SHA` |
 | Build args | `UV_EXTRAS` (default `--extra docs`), `GIT_SHA` (default `unknown`, declared last so a new commit does not invalidate the dependency layers) |
 | Working directory | `/app` (the contents of `backend/`, minus the paths in `backend/.dockerignore`, which include `tests`, `.env` and `uploads`) |
 | Exposed port | 8000 |
@@ -118,7 +117,7 @@ the optional dependency sets installed, which is why `docker compose build api` 
 | --- | --- |
 | Stages | `build` then `runtime`, both `node:22-slim` |
 | Build stage | `corepack enable`, `pnpm install --frozen-lockfile`, `pnpm build` |
-| Runtime contents | `.next/standalone`, `.next/static`, `public/` |
+| Runtime contents | `.next/standalone`, `.next/static`, `public/`; the base image's npm, npx, corepack and yarn are removed (the server needs only `node`) |
 | Environment | `NODE_ENV=production`, `HOSTNAME=0.0.0.0`, `PORT=3000` |
 | Exposed port | 3000 |
 | Default command | `node server.js` |
@@ -127,7 +126,7 @@ the optional dependency sets installed, which is why `docker compose build api` 
 
 | Item | Value |
 | --- | --- |
-| Stages | Build on `python:3.12-slim` with `uv` 0.11.2, then serve on `nginx:1.30` |
+| Stages | Build on `python:3.12-slim` with `uv` 0.11.2, then serve on `nginx:1.30-alpine-slim` (nginx only, without the njs and image-filter modules) |
 | Build stage | `uv sync --frozen`, then `mkdocs build --strict` of the `docs/` folder |
 | Runtime contents | The built site under `/usr/share/nginx/html/docs` |
 | Build context filter | `docs-site/Dockerfile.dockerignore` (the root `.dockerignore` excludes `docs` and `*.md`) |

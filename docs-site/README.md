@@ -9,7 +9,7 @@ at `/docs/` behind the app's proxy.
 | --- | --- |
 | `mkdocs.yml` | Site configuration: theme, Markdown extensions, strict validation and the `nav` (every page must be listed). |
 | `pyproject.toml`, `uv.lock` | The pinned build tooling (mkdocs 1.6.1, mkdocs-material 9.7.7). |
-| `Dockerfile` | Two stages: build the site with `--strict`, then serve it from `nginx:1.30`. Build context is the repo root. |
+| `Dockerfile` | Two stages: build the site with `--strict`, then serve it from `nginx:1.30-alpine-slim` (nginx only). Build context is the repo root. |
 | `Dockerfile.dockerignore` | The ignore file BuildKit uses for this Dockerfile only: admits `docs/` and this folder's build files, nothing else. |
 | `nginx.conf` | nginx inside the `docs` container. |
 

@@ -2,10 +2,12 @@ name: release
 
 # On each merge into production, publish what shipped. A promotion merges with a merge commit, whose second parent is
 # staging's tip: the commit whose images the staging stage built, scanned, attested and pushed to ghcr.io. This job
-# verifies those attestations, computes the next semantic version from the commit messages
-# (.github/scripts/release_version.py: breaking -> major, feat -> minor, else patch; first release v0.1.0), and
-# creates the tag and a GitHub Release: the image digests, then GitHub's generated notes, with each image's SBOM
-# attached. Release tags can never be moved or deleted (the `v*` tag ruleset).
+# verifies those attestations - signed by staging-acceptance.yml running on refs/heads/staging, nothing else - takes
+# each image's SBOM from its signed SBOM attestation (so a release has no dependency on an expiring artifact),
+# computes the next semantic version from the commit messages (.github/scripts/release_version.py: breaking -> major,
+# feat -> minor, else patch; first release v0.1.0), and creates the tag and a GitHub Release: the image digests, then
+# GitHub's generated notes, with each image's SBOM attached. Release tags can never be moved or deleted (the `v*` tag
+# ruleset).
 on:
   push:
     branches: [production]
@@ -23,9 +25,11 @@ jobs:
       contents: write # the tag and the release
       packages: read
       attestations: read
-      actions: read # the staging run's SBOM artifact
     env:
       REGISTRY: ghcr.io/gesco-healthcare-support
+      # The one workflow and ref allowed to have signed the attestations a release relies on.
+      SIGNER: ${{ github.repository }}/.github/workflows/staging-acceptance.yml
+      SIGNER_REF: refs/heads/staging
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -42,13 +46,16 @@ jobs:
           fi
           echo "ACCEPTED=$(git rev-parse 'HEAD^2')" >> "$GITHUB_ENV"
 
-      - name: Verify the accepted images and their attestations
+      # Provenance (the default predicate) and the SPDX SBOM, each required to come from the staging stage's workflow
+      # on staging. The SBOM file attached to the release is the signed attestation's own predicate.
+      - name: Verify the accepted images and their attestations, and take their SBOMs
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
           echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          mkdir -p sboms
           {
             echo "Images (built, scanned and attested by the staging stage at $ACCEPTED):"
             echo
@@ -58,7 +65,14 @@ jobs:
           for name in mrr-backend-web mrr-frontend mrr-docs; do
             digest=$(docker buildx imagetools inspect "$REGISTRY/$name:$ACCEPTED" --format '{{json .Manifest}}' \
               | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")
-            gh attestation verify "oci://$REGISTRY/$name@$digest" -R "$GITHUB_REPOSITORY"
+            image="oci://$REGISTRY/$name@$digest"
+            gh attestation verify "$image" -R "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER" --source-ref "$SIGNER_REF"
+            gh attestation verify "$image" -R "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER" --source-ref "$SIGNER_REF" \
+              --predicate-type https://spdx.dev/Document/v2.3 --format json \
+              --jq '.[0].verificationResult.statement.predicate' > "sboms/$name.spdx.json"
+            test -s "sboms/$name.spdx.json"
             echo "| \`$REGISTRY/$name\` | \`$digest\` |" >> release-notes.md
           done
           echo >> release-notes.md
@@ -74,19 +88,6 @@ jobs:
           fi
           echo "Previous release: ${last:-none}; this release: $version"
           echo "VERSION=$version" >> "$GITHUB_ENV"
-
-      - name: Get the SBOMs the staging stage made
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          run_id=$(gh run list --workflow staging-acceptance.yml --commit "$ACCEPTED" --event push --status success \
-            --limit 1 --json databaseId --jq '.[0].databaseId')
-          if [ -z "$run_id" ]; then
-            echo "No successful staging stage run for $ACCEPTED."
-            exit 1
-          fi
-          gh run download "$run_id" -n sboms -D sboms
 
       - name: Tag and publish the release
         env:

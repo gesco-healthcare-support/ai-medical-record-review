@@ -25,7 +25,7 @@ Jobs table below.
 | `scorecard.yml` | `push` to `main`; weekly `schedule` | Default branch only (Scorecard publishes only from it) | OpenSSF Scorecard: publishes the score the README badge shows and uploads its findings to code scanning. |
 | `guard-tests.yml` | `pull_request`; `push` to `main` | None on pull requests | Tests the promotion guard's own code before it merges; the guard itself always runs the default branch's copy. |
 | `pr-title.yml` | `pull_request` (`opened`, `edited`, `synchronize`, `reopened`) | Base branch `main` only | A squash merge makes the title main's commit subject. Only main's ruleset requires the check, so the filter leaves no required check waiting on another branch; `edited` re-runs it after a retitle. |
-| `staging-acceptance.yml` | `push` to `staging`; `pull_request` | Pull requests only when they change the stage's own files (the workflow, `.github/scripts/staging_acceptance.sh`, `acceptance_seed.py`, `compose.production-code.yml`) | The acceptance stage tests each commit that lands on `staging`; the pull-request run is a dry run of a change to the stage. Neither is a required check, so the paths filter cannot leave a merge waiting. |
+| `staging-acceptance.yml` | `push` to `staging`; `pull_request` | Pull requests only when they change the stage's own files (the workflow, `.github/scripts/staging_acceptance.sh`, `acceptance_seed.py`, `compose.production-code.yml`, `release_policy.py`) | The acceptance stage tests each commit that lands on `staging`, then publishes its images; the pull-request run is a dry run of a change to the stage. None is a required check, so the paths filter cannot leave a merge waiting. |
 | `release-policy.yml` | `pull_request` | Base branch `production` only | The production release policy on the images staging accepted. Only production's ruleset requires it, so the filter leaves no required check waiting elsewhere. |
 | `release.yml` | `push` to `production` | - | Tags and publishes each merge into production. |
 | `docs-drift.yml` | `pull_request`; `schedule` (Mondays 15:00 UTC); `workflow_dispatch` | None | Two docs guards that never block a merge: warnings on a pull request, and a weekly drift issue. See [How to work on these docs](../how-to/work-on-these-docs.md#how-the-docs-stay-current). |
@@ -41,12 +41,13 @@ are:
 - `scorecard.yml` `analysis`: `security-events: write` and `actions: read` for the upload, and
   `id-token: write`, which Scorecard needs to publish a verified result;
 - the promotion guard: `pull-requests: read`;
-- `acceptance` (pushes to `staging` only, never the dry run): `packages: write`, to push the accepted
-  images to `ghcr.io`, and `id-token: write` with `attestations: write`, to sign and store their
-  attestations;
+- `publish` (pushes to `staging` only, after `acceptance` passes): `packages: write`, to push the
+  accepted images to `ghcr.io`, and `id-token: write` with `attestations: write`, to sign and store
+  their attestations. It runs only Docker and GitHub's own actions; the stage's third-party tools (ZAP,
+  Grype, Syft, the app containers) run in `acceptance`, which keeps a read-only token;
 - `release-policy`: `packages: read`, to pull the accepted images;
 - `release` (pushes to `production` only): `contents: write`, to create the tag and the GitHub Release,
-  with `packages: read`, `attestations: read` and `actions: read` (the staging run's SBOM artifact);
+  with `packages: read` and `attestations: read`;
 - `docs-drift-report`: `issues: write`, to edit its one issue. It runs only on the default branch
   (`schedule`, `workflow_dispatch`), never on pull request code. It and `release` are the only jobs
   that write to the repository itself.
@@ -56,9 +57,9 @@ The `security-events: write` grants only upload scan results to code scanning. O
 OSV-Scanner only reads the lockfiles.
 
 `docs-drift.yml`, `codeql.yml` and `scorecard.yml` run on a weekly `schedule` (Mondays: 15:00,
-06:17 and 07:23 UTC). Only `docs-drift.yml` has a `workflow_dispatch`. The `acceptance` job and
-`release.yml` have a `concurrency` group that queues runs rather than cancelling them, so two staging
-pushes or two releases never overlap.
+06:17 and 07:23 UTC). Only `docs-drift.yml` has a `workflow_dispatch`. The `acceptance` and `publish`
+jobs and `release.yml` have a `concurrency` group that queues runs rather than cancelling them, so two
+staging pushes or two releases never overlap.
 
 ## Jobs
 
@@ -81,10 +82,11 @@ All jobs run on `ubuntu-latest`.
 | `analysis` | `scorecard.yml` | - | OpenSSF Scorecard, published, with its SARIF uploaded to code scanning | Scorecard cannot run or publish |
 | `guard-tests` | `guard-tests.yml` | - | The promotion guard's, the PR title check's, the acceptance seed script's and the release scripts' unit tests (`python3 -m unittest -v test_promotion_guard`, then `test_pr_title`, then `test_acceptance_seed`, then `test_release_version test_release_policy`, in `.github/scripts/`) | Any test fails |
 | `pr-title` | `pr-title.yml` | - | Pull requests into `main` only. `python3 .github/scripts/pr_title.py`, with the title and author passed as environment variables | The title does not read `<type>(<scope>): <subject>`, uses an unlisted type or scope, is not ASCII, ends with a period, or is over 72 characters (the length limit does not apply to Dependabot) |
-| `acceptance` | `staging-acceptance.yml` | - | Pushes to `staging` only, in the `staging` environment. `.github/scripts/staging_acceptance.sh` (see [`acceptance`](#acceptance)), then pushes the three built images to `ghcr.io` with SBOM and build-provenance attestations (see [Releases](#releases)) | An image has a critical vulnerability with a fix, the upgrade or `alembic check` fails, the seeded data does not read back, the stack does not come up, ZAP reports a High-risk alert, or an image cannot be pushed or attested. On success the environment records a deployment for the commit. |
-| `acceptance-dry-run` | `staging-acceptance.yml` | - | Pull requests that change the stage. The same script, without the environment, so it records nothing and pushes nothing | As `acceptance`, without the push |
-| `release-policy` | `release-policy.yml` | - | Pull requests into `production` only. Pulls the three images staging accepted for the pull request's head commit from `ghcr.io`, scans each with Grype, then `python3 .github/scripts/release_policy.py` | An image is missing (staging has not accepted the commit), an image has a Critical or High vulnerability without an exception, or an exception has expired or is incomplete |
-| `release` | `release.yml` | - | Pushes to `production` only. Verifies the accepted images' attestations, computes the next version, creates the tag and a GitHub Release (see [Releases](#releases)) | HEAD is not a promotion merge, an image or its attestation is missing, no successful staging run exists for the commit, or the tag or release cannot be created |
+| `acceptance` | `staging-acceptance.yml` | - | Pushes to `staging` only, in the `staging` environment, with a read-only token. `.github/scripts/staging_acceptance.sh` (see [`acceptance`](#acceptance)), then Syft SBOMs of the three built images, which it hands to `publish` with the images as a 1-day artifact | An image has a critical vulnerability with a fix, the upgrade or `alembic check` fails, the seeded data does not read back, the stack does not come up, or ZAP reports a High-risk alert. On success the environment records a deployment for the commit. |
+| `publish` | `staging-acceptance.yml` | `acceptance` | Pushes to `staging` only. Loads the accepted images, pushes them to `ghcr.io` tagged with the commit, and attests each (build provenance and SBOM; see [Releases](#releases)). Only Docker and GitHub's own actions run here | An image cannot be pushed or attested |
+| `acceptance-dry-run` | `staging-acceptance.yml` | - | Pull requests that change the stage. The same script, without the environment, so it records nothing and pushes nothing | As `acceptance` |
+| `release-policy` | `release-policy.yml` | - | Pull requests into `production` only. Pulls the three images staging accepted for the pull request's head commit from `ghcr.io`, scans each with Grype, then `python3 .github/scripts/release_policy.py` | An image is missing (staging has not accepted the commit), an image has a Critical vulnerability or a High one with a fix and no exception, or an exception has expired or is incomplete |
+| `release` | `release.yml` | - | Pushes to `production` only. Verifies the accepted images' attestations, takes their SBOMs from the SBOM attestations, computes the next version, creates the tag and a GitHub Release (see [Releases](#releases)) | HEAD is not a promotion merge, an image or either of its attestations is missing or was not signed by `staging-acceptance.yml` on `staging`, or the tag or release cannot be created |
 | `docs-impact` | `docs-drift.yml` | - | Pull requests only. The docs rules' unit tests, then `python3 .github/scripts/docs_guides.py impact <base> <head>` | Its unit tests fail. The check itself never fails: a changed code file whose describing docs were not touched gets a warning annotation and a row in the job summary. |
 | `docs-drift-report` | `docs-drift.yml` | - | Weekly and by hand, never on a pull request. `python3 .github/scripts/docs_guides.py report`, then creates or edits the one open issue labelled `docs-drift` | The report or the `gh` call errors |
 | `promotion-guard` | `promotion-guard.yml` | - | Checks that a pull request into a promotion branch comes from the branch above it. Its check is named `guard-into-<base branch>`. | The pull request's head is not an allowed source for its base (see [Promotion order](#promotion-order)) |
@@ -273,10 +275,12 @@ special-use names such as `.invalid`), and the synthetic `frontend/e2e/fixtures/
 | --- | --- |
 | Build once | `docker compose -p mrrci build api web docs` |
 | Image scan | Grype 0.119.0 (checksum verified), `--only-fixed --fail-on critical`, on every image the stack is made of: the three built (`mrr-backend-web`, `mrr-frontend`, `mrr-docs`) and the three pulled by their pinned references (`proxy`, `postgres`, `redis`; listed by `docker compose config --images`) |
+| Release-policy report (never fails here) | A full Grype scan of the three built images, then `release_policy.py --report-only`: the job summary shows what `release-policy` will say when a promotion proposes this commit, including the High findings with no fix |
 | Upgrade test, production phase | Builds production's api (`.github/scripts/compose.production-code.yml`), migrates an empty database to production's head, starts it, then `acceptance_seed.py seed` registers a synthetic account, uploads the sample PDF and writes three review rows through the API. It runs under staging's `docker-compose.yml`, with staging's `web` image; only the api is production's, so a compose change between the branches is exercised in staging's form only. |
 | Upgrade test, staging phase | Staging's `alembic upgrade head`, then `alembic check`; starts staging's stack with `ENVIRONMENT=prod`; `acceptance_seed.py verify` reads the document and its rows back through the API |
 | ZAP baseline | `ghcr.io/zaproxy/zaproxy:2.17.0` (pinned by digest), `zap-baseline.py` against `http://localhost:8080`; fails on any High-risk alert and lists every alert in the job summary |
-| Push and attest (the `acceptance` job only, after the script passes) | Pushes `mrr-backend-web`, `mrr-frontend` and `mrr-docs`, as built and scanned, to `ghcr.io/gesco-healthcare-support/<name>:<commit SHA>`; Syft 1.52.0 (checksum verified) writes an SPDX SBOM of each; `actions/attest-build-provenance` and `actions/attest-sbom` attach a signed provenance and SBOM attestation to each image's digest in the registry; the SBOMs are kept as the workflow artifact `sboms` (90 days) for the release. The dry run pushes nothing. |
+| SBOMs and hand-over (`acceptance`, after the script passes) | Syft 1.52.0 (checksum verified) writes an SPDX SBOM of `mrr-backend-web`, `mrr-frontend` and `mrr-docs`; `docker save` of the three images; both go to the `publish` job as the artifact `accepted-images` (1 day) |
+| Push and attest (`publish`) | `docker load`, then pushes the images, as built and scanned, to `ghcr.io/gesco-healthcare-support/<name>:<commit SHA>`; `actions/attest-build-provenance` and `actions/attest-sbom` attach a signed provenance and SBOM attestation to each image's digest in the registry. The dry run has neither step. |
 
 The stage does not call a model yet. Adding one real Vertex call, with keyless Workload Identity Federation limited
 to this repository's pushes to `staging`, is the next step once that access exists in Google Cloud.
@@ -308,16 +312,26 @@ the previous tag (`.github/scripts/release_version.py`): any breaking change (`!
 The first release is `v0.1.0`, and the rule applies literally on `0.x`, so the first breaking change moves the version
 to `v1.0.0`. Tags matching `v*` can never be moved or deleted (the tag ruleset).
 
-Images are built once. The staging `acceptance` job pushes the images it tested to `ghcr.io`, tagged with the
+Images are built once. The staging `publish` job pushes the images `acceptance` tested to `ghcr.io`, tagged with the
 staging commit, with their attestations. A promotion merges that commit into `production` with a merge commit, so the
-`release` job finds it as `HEAD^2`, verifies each image's attestation (`gh attestation verify`), and lists the image
-digests in the release notes, with the three SBOM files attached. Nothing is rebuilt between staging and the release.
-The packages are private and linked to this repository by the `org.opencontainers.image.source` label that each
-Dockerfile's final stage sets.
+`release` job finds it as `HEAD^2` and verifies each image's provenance and SBOM attestations with `gh attestation
+verify`, requiring both to have been signed by `.github/workflows/staging-acceptance.yml` running on
+`refs/heads/staging` (`--signer-workflow`, `--source-ref`). The SBOM files attached to the release are the SBOM
+attestations' own signed content (`--predicate-type https://spdx.dev/Document/v2.3`), so a release depends on no
+workflow artifact and has no time limit after staging. The release notes list the image digests. Nothing is rebuilt
+between staging and the release. The packages are private and linked to this repository by the
+`org.opencontainers.image.source` label that each Dockerfile's final stage sets.
 
-The release policy blocks a pull request into `production` when an image it would release has a Critical or High
-vulnerability, unless `.github/release-exceptions.json` holds a reviewed exception for that vulnerability in that
-package. An exception has four fields, all required, and fails the check once its expiry date has passed:
+The images hold only what runs: each Dockerfile keeps its build tools in a build stage (the backend's `uv`, `uvx` and
+`pip`; the frontend base image's `npm`, `npx`, `corepack` and `yarn` are removed), and the docs site is served by
+`nginx:1.30-alpine-slim`. So the scan's findings are about code that ships.
+
+The release policy blocks a pull request into `production` when an image it would release has a Critical
+vulnerability, whatever its fix state, or a High one that has a fixed version, unless `.github/release-exceptions.json`
+holds a reviewed exception for that vulnerability in that package. A High with no fix is listed in the job summary but
+does not block, since nothing but an exception could clear it. Every staging push shows the same result early, in the
+`acceptance` job's summary. An exception has four fields, all required, and fails the check once its expiry date has
+passed:
 
 ```json
 {"exceptions": [{"vulnerability": "CVE-2026-0001", "package": "openssl", "reason": "no fixed release yet",
