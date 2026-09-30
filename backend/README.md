@@ -65,3 +65,5 @@ uv run pytest -q                                        # do not export DATABASE
 The suite needs the test stack above and refuses to run against the app database. Full
 instructions, the coverage floor and the test layout: [Run the tests](../docs/how-to/run-the-tests.md)
 and [`tests/README.md`](tests/README.md).
+
+<!-- reviewed: 2026-09-30 -->

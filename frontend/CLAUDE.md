@@ -38,3 +38,5 @@ pnpm e2e                            # needs `docker compose up -d` on :8080
 
 Docs: `docs/explanation/frontend-workbench.md`, `docs/reference/frontend-routes-and-data.md`,
 `docs/reference/design-system.md`, `docs/how-to/extend-the-frontend.md`.
+
+<!-- reviewed: 2026-09-30 -->

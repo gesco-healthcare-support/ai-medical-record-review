@@ -38,3 +38,5 @@ pnpm typecheck
 
 - `docs/reference/frontend-routes-and-data.md` (Bundles)
 - `docs/how-to/extend-the-frontend.md` (Add a category bundle)
+
+<!-- reviewed: 2026-09-30 -->

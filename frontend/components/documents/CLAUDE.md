@@ -46,3 +46,5 @@ pnpm exec playwright test e2e/documents.spec.ts
 
 - `docs/reference/frontend-routes-and-data.md`
 - `docs/reference/job-and-document-states.md`
+
+<!-- reviewed: 2026-09-30 -->

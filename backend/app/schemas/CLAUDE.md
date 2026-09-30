@@ -41,3 +41,5 @@ uv run pytest tests/test_documents_api.py tests/test_admin_api.py -q
 ## Docs to update with a change here
 
 The "Request bodies" tables in `docs/reference/http-api.md`.
+
+<!-- reviewed: 2026-09-30 -->

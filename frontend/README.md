@@ -60,3 +60,5 @@ the nginx proxy routes `/api/` itself.
 | `pnpm e2e` | Playwright against `E2E_BASE_URL` (default `http://localhost:8080`) - start the app stack first. |
 
 More: [Run the tests](../docs/how-to/run-the-tests.md), [Extend the frontend](../docs/how-to/extend-the-frontend.md).
+
+<!-- reviewed: 2026-09-30 -->

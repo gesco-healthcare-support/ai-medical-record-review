@@ -263,3 +263,5 @@ and PDF renderers together on these rules.
 - [Summarization](summarization.md)
 - [How to change a summary prompt or rule](../how-to/change-a-summary-prompt-or-rule.md)
 - [Duplicate detection](duplicate-detection.md)
+
+<!-- reviewed: 2026-09-30 -->

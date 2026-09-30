@@ -173,3 +173,5 @@ plus one config file, moving to another generator does not touch the pages. Keep
 
 - [Architecture](../explanation/architecture.md) - what the pages describe.
 - [CI and merge gates](../reference/ci-and-merge-gates.md) - where the `docs` job sits among the checks.
+
+<!-- reviewed: 2026-09-30 -->

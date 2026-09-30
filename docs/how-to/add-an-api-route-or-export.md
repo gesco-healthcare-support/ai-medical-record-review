@@ -6,7 +6,7 @@
 - The reviewers need a new downloadable deliverable (a new export).
 
 The backend's routers are in `backend/app/api/`; the rules below keep a new route inside the same
-contracts as the 46 existing ones ([HTTP API reference](../reference/http-api.md)).
+contracts as the 47 existing ones ([HTTP API reference](../reference/http-api.md)).
 
 ## Prerequisites
 
@@ -55,7 +55,10 @@ contracts as the 46 existing ones ([HTTP API reference](../reference/http-api.md
     - The path parameter must be named `document_id`: `get_owned_document` reads a parameter of
       that name. Under any other name FastAPI treats `document_id` as a missing query parameter
       and answers 422.
-    - `get_owned_document` answers 404 `not found` for a missing or foreign id. Do not add a 403.
+    - `get_owned_document` answers 404 `not found` for a missing id, and for another user's id
+      unless the caller is an admin (admins may open and fix any reviewer's record). Do not add a
+      403. A route an admin must not use on someone else's record (delete is the one today)
+      checks `document.user_id == user.id` itself and answers the same 404.
     - Refuse with 409 while a job is active if the route writes rows or summaries; a finishing job
       would overwrite them.
 

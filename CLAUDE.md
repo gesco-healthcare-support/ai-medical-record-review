@@ -104,3 +104,5 @@ Details and the CI gates: `docs/how-to/run-the-tests.md`, `docs/reference/ci-and
 | Frontend | `frontend/app/`, `components/`, `hooks/`, `lib/` | `frontend/CLAUDE.md` and each folder's |
 | Proxy and server bootstrap | `deploy/` | `deploy/CLAUDE.md` |
 | Docs site | `docs/`, `docs-site/` | `docs-site/CLAUDE.md` |
+
+<!-- reviewed: 2026-09-30 -->

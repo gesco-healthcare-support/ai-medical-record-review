@@ -38,3 +38,5 @@ pnpm exec playwright test e2e/auth.spec.ts
 
 - `docs/explanation/auth-and-access.md`
 - `docs/reference/frontend-routes-and-data.md` (Login views, client error handling)
+
+<!-- reviewed: 2026-09-30 -->

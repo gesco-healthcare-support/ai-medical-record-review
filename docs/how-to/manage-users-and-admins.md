@@ -170,11 +170,15 @@ module docstring), so a user created after the workers started has jobs that no 
 
 - Nothing is deleted. The rows stay in `documents` (and their rows, summaries and jobs), and the
   PDFs stay under `<UPLOAD_FOLDER>/<user_id>/` on the `mrr_uploads` volume.
-- No other account can open them, admins included: every document route checks ownership and
-  answers 404 to anyone else. Nothing in the app transfers a record to another user.
+- Other reviewers cannot open them: every document route answers 404 to anyone but the owner or
+  an admin (`get_owned_document` in `backend/app/api/deps.py`).
+- An admin can open and fix them. The records page's "Show records for" list offers active
+  accounts only (`GET /api/admin/users`), so reach a deactivated user's records through
+  `GET /api/documents?owner=<USER_ID>` or by the record's id. Deleting one stays with its owner,
+  admins included. Nothing in the app transfers a record to another user.
 - Jobs that were already queued still run.
-- An admin can still start a summarize run on one of them by id
-  (`POST /api/admin/reprocess/{document_id}`), without being able to read it.
+- An admin can also start a summarize run on one of them by id
+  (`POST /api/admin/reprocess/{document_id}`).
 - Reactivating the account restores the user's access to all of them.
 - To remove the records, the owner deletes each one from the documents list while the account is
   active (`DELETE /api/documents/{document_id}` removes the database rows and the stored PDF).

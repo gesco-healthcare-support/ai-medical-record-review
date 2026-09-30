@@ -459,3 +459,5 @@ The Job also carries a fingerprint of the whole prompt set and the build commit.
 - [Deliverable layout](deliverable-layout.md)
 - [Model calls by stage](../reference/model-calls-by-stage.md)
 - [Configuration](../reference/configuration.md)
+
+<!-- reviewed: 2026-09-30 -->

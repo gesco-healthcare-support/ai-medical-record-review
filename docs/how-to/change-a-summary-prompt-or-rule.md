@@ -172,3 +172,5 @@ If the tests fail after your edit:
 - [How to run the tests](run-the-tests.md)
 - [How to deploy to the server](deploy-to-the-server.md)
 - [Data model](../reference/data-model.md)
+
+<!-- reviewed: 2026-09-30 -->

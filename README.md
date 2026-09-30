@@ -73,3 +73,5 @@ says, never in a public issue.
 
 AI coding assistants: read [`CLAUDE.md`](CLAUDE.md) first; each folder has its own `CLAUDE.md`
 with the rules for that area.
+
+<!-- reviewed: 2026-09-30 -->

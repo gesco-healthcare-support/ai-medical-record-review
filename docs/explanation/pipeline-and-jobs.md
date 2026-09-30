@@ -156,7 +156,11 @@ resumes and RQ's registries do not survive a Redis restart; the `jobs` table in 
 - `create_job` inserts the `queued` row, stamps provenance and moves the document to its
   in-progress status. Provenance is `model` as the caller passed it; for summarize jobs also the
   title model, audit model and backend, resolved once so a resumed job keeps them; the prompt
-  fingerprint; `build_sha`; and the catalog revision. A second active job for the same document
+  fingerprint; `build_sha`; and the catalog revision. It also records `requested_by`, the user who
+  started the job (an admin can start one on another reviewer's record), which the worker's audit
+  rows name. Only the three start routes (`segment_start`, `dedup_start`, `summarize_start`) pass
+  it; it is NULL for the admin reprocess route, the individual-records upload's classify job and
+  jobs from before the column, and the worker then names the owner. A second active job for the same document
   violates the database's partial unique index, which surfaces as `JobConflict` and then HTTP 409.
 - `enqueue` calls `create_job`, then puts `worker_fn(kind)` with the single argument `job.id` on the
   owner's lane, with the RQ job id set to the DB job id, a size-aware `job_timeout`
