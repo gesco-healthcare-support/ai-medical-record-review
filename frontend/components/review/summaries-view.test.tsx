@@ -844,3 +844,74 @@ describe("SummariesView verify issues", () => {
     expect(screen.queryByText(/Flagged, not applied/i)).not.toBeInTheDocument();
   });
 });
+
+describe("SummariesView finding a summary", () => {
+  // The lead reviewer: "when trying to go back and fix something I want an easier way to be able to
+  // find specific summaries" - a search, or date order rather than page order.
+  const entry = (idx: number, summaryTitle: string, summaryDate: string, start: number) => ({
+    idx,
+    summaryTitle,
+    summaryDate,
+    summaryText: `Body ${idx}.`,
+    manualCheck: false,
+    excluded: false,
+    edited: false,
+    verified: true,
+    verifyChanged: false,
+    verifyIssues: [],
+    row: { start, end: start, category: "1" },
+  });
+  const ENTRIES = [
+    entry(0, "DR. SMITH. MRI OF THE LUMBAR SPINE", "03/15/26", 1),
+    entry(1, "DR. JONES. PROGRESS REPORT", "01/05/26", 2),
+    entry(2, "DR. SMITH. PROGRESS REPORT", "02/10/26", 3),
+  ];
+  const titles = () =>
+    screen.getAllByText(/^DR\. /).map((el) => el.textContent);
+  const renderView = () => {
+    summariesState.error = null;
+    summariesState.isLoading = false;
+    summariesState.data = ENTRIES;
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+  };
+
+  it("shows the entries in page order until asked otherwise", () => {
+    // GUARD: the tab opens exactly as it did.
+    renderView();
+    expect(screen.getByLabelText("Order")).toHaveValue("pages");
+    expect(titles()).toEqual([
+      "DR. SMITH. MRI OF THE LUMBAR SPINE",
+      "DR. JONES. PROGRESS REPORT",
+      "DR. SMITH. PROGRESS REPORT",
+    ]);
+  });
+
+  it("puts them in date order, oldest first", () => {
+    renderView();
+    fireEvent.change(screen.getByLabelText("Order"), { target: { value: "date" } });
+    expect(titles()).toEqual([
+      "DR. JONES. PROGRESS REPORT",
+      "DR. SMITH. PROGRESS REPORT",
+      "DR. SMITH. MRI OF THE LUMBAR SPINE",
+    ]);
+  });
+
+  it("narrows the list to the summaries matching every word searched", () => {
+    renderView();
+    fireEvent.change(screen.getByLabelText("Search summaries"), {
+      target: { value: "smith progress" },
+    });
+    expect(titles()).toEqual(["DR. SMITH. PROGRESS REPORT"]);
+    expect(screen.getByText(/1 matching/)).toBeInTheDocument();
+  });
+
+  it("says so when nothing matches, rather than showing an empty list", () => {
+    renderView();
+    fireEvent.change(screen.getByLabelText("Search summaries"), {
+      target: { value: "no such doctor" },
+    });
+    expect(screen.getByText("No summaries match that search.")).toBeInTheDocument();
+  });
+});

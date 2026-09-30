@@ -1,0 +1,10 @@
+{
+  "exceptions": [
+    {
+      "vulnerability": "CVE-2026-82049",
+      "package": "python",
+      "reason": "Python 3.12.14 in the backend image; Grype lists the fix only in the 3.14 line. 3.12 still receives security releases. At expiry: take a 3.12 release that fixes it, or move the backend to a newer Python. Approved by Adrian 2026-09-29.",
+      "expires": "2026-11-28"
+    }
+  ]
+}

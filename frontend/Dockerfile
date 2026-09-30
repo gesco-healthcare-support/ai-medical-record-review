@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Next.js production image. Stage 1 installs deps + builds; stage 2 runs the minimal standalone
 # server emitted by next.config.ts `output: "standalone"`.
-FROM node:22-slim AS build
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS build
 WORKDIR /app
 RUN corepack enable
 # Lockfile first for a cacheable install layer.
@@ -10,7 +10,13 @@ RUN corepack pnpm install --frozen-lockfile
 COPY . .
 RUN corepack pnpm build
 
-FROM node:22-slim AS runtime
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runtime
+# Links the image to this repository in ghcr.io (see backend/Dockerfile).
+LABEL org.opencontainers.image.source="https://github.com/gesco-healthcare-support/ai-medical-record-review"
+# The base image ships the package managers (npm, npx, corepack, yarn); the standalone server needs
+# only `node`, and the release policy scans everything in this image, so they are removed.
+RUN rm -rf /usr/local/lib/node_modules /opt/yarn-v* \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \

@@ -108,7 +108,8 @@ def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """
     if not isinstance(schema, dict):
         return schema
-    out = {k: _strict_schema(v) if isinstance(v, (dict, list)) else v for k, v in schema.items()}
+    # Lists pass through unchanged: this function has always returned a non-dict as-is.
+    out = {k: _strict_schema(v) if isinstance(v, dict) else v for k, v in schema.items()}
     if isinstance(out.get("properties"), dict):
         out["properties"] = {k: _strict_schema(v) for k, v in out["properties"].items()}
         out.setdefault("additionalProperties", False)
@@ -322,7 +323,7 @@ class OpenAIProvider(DelegatingProvider):
             _observe(model, raw)
             return _to_response(raw.parse())
         genai_metrics.record(model, genai_metrics.OUTCOME_EXHAUSTED)
-        raise last
+        raise last or RuntimeError("the model call made no attempt")
 
     def generate_choice(
         self,

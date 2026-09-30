@@ -144,6 +144,33 @@ describe("useReviewWorkflow boot routing", () => {
     const { result } = renderWorkflow("d1");
     await waitFor(() => expect(result.current.section).toBe("editor"));
   });
+
+  it("shows the job's own error sentence when a watched run fails", async () => {
+    // jobs.error is the worker's user-facing sentence (tasks._finalize_failed writes
+    // user_facing_message(exc)). It reached the hook as a plain Error, and humanizeError keeps a
+    // message only from an ApiError, so the banner said "identification failed" and the reason -
+    // here, that OCR is missing on the server - was thrown away.
+    const reason = "Text recognition (OCR) is unavailable on the server.";
+    mockDoc.mockResolvedValue(
+      detail({
+        status: "segmenting",
+        active_job: {
+          id: 1, kind: "segment",
+          state: "running",
+          stage: "segmenting",
+          current: 1,
+          total: 5,
+          error: null,
+        },
+      }),
+    );
+    mockStatus.mockResolvedValue({
+      status: "error",
+      job: { id: 1, kind: "segment", state: "error", stage: "segmenting", current: 1, total: 5, error: reason },
+    });
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.banner).toBe(reason));
+  });
 });
 
 // Regression guards for the resumable-summarize states (PR #28) + the error branch. Expected

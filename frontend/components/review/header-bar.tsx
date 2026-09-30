@@ -78,11 +78,15 @@ export function HeaderBar({
   async function autoFill() {
     setAutoFilling(true);
     try {
-      const data = await extractHeader(documentId);
-      // extractHeader now persists server-side; reflect it as the shared saved header (no Save step).
-      setFields(data);
+      const detected = await extractHeader(documentId);
+      // extractHeader persists server-side; reflect it as the shared saved header (no Save step).
+      // The reply holds only the four detected fields, so it is merged over the STORED header: the
+      // other five are whatever the server still has. Replacing the header with the reply left
+      // them undefined, and the next manual Save then stored each of them as "".
+      const saved = { ...(header ?? EMPTY), ...detected };
+      setFields(saved);
       setDirty(false);
-      onSaved(data);
+      onSaved(saved);
       toast.success("Header detected and saved.");
     } catch (err) {
       toast.error(humanizeError(err, { fallback: "Could not read the header." }));

@@ -1,0 +1,44 @@
+name: codeql
+
+# CodeQL static analysis for the Python backend, the TypeScript frontend and the workflows
+# themselves. Results go to the repository's code scanning; a ruleset rule ("Require code scanning
+# results": CodeQL, security alerts high or higher) can then block a pull request that adds such an
+# alert on a line it changes. `pull_request` carries no branch filter, for the same reason as ci.yml:
+# a base-branch filter would let pull requests into staging, production or qwen skip the scan.
+# Pushes to those three are analysed too: code scanning judges a pull request against an analysis
+# of the branch it merges into, so each branch needs one before its ruleset can require the rule.
+on:
+  push:
+    branches: [main, staging, production, qwen]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions: {}
+
+jobs:
+  analyze:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:${{ matrix.language }}

@@ -19,6 +19,7 @@ from app.api.documents import (
     _JOB_RUNNING_DETAIL,
     _NOT_FOUND_DETAIL,
     _pages_received,
+    _separate_filename,
 )
 from app.auth.password import MrrPasswordHelper
 from app.config import get_settings
@@ -4172,7 +4173,7 @@ async def test_a_bundle_download_is_sent_whole(authed, monkeypatch, endpoint):
 # The three record-level deliverables every archive carries, whatever bundles were asked
 # for. Named rather than counted: a count reports "4 == 3" and says nothing about which
 # member arrived or went missing.
-_ZIP_ALWAYS = {"scan_summary.docx", "scan_linked.pdf", "scan_memo.docx"}
+_ZIP_ALWAYS = {"scan_MRR.docx", "scan_linked.pdf", "scan_memo.docx"}
 
 
 async def test_a_bundle_that_matches_nothing_is_left_out_rather_than_failing_the_zip(authed):
@@ -4254,7 +4255,7 @@ async def test_the_archive_is_named_after_the_patient_like_its_members(authed):
     assert resp.status_code == 200, resp.text
     assert "Lovelace_Ada_Medical_Records.zip" in resp.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
-        assert "Lovelace_Ada_Medical_Records_summary.docx" in archive.namelist()
+        assert "Lovelace_Ada_Medical_Records_MRR.docx" in archive.namelist()
 
 
 def test_the_cover_sheet_page_count_is_coerced_rather_than_rejected():
@@ -5303,6 +5304,43 @@ async def test_fetching_the_pdf_returns_it_and_records_the_view(authed):
     assert _audit_actions(doc_id).count("view_pdf") == 1
 
 
+async def test_the_source_pdf_is_never_cached(authed):
+    """WHEN the source PDF is served, THE SYSTEM SHALL send Cache-Control: no-store.
+
+    It is the patient record itself. The prepared-download route already refuses caching ("no
+    browser or proxy cache may keep a copy"); this one did not, and reviewers work on shared
+    remote-desktop hosts where a browser cache outlives the session.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+
+    resp = await client.get(f"/api/documents/{doc_id}/pdf")
+
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-store"
+
+
+async def test_a_queue_outage_answers_503_with_a_sentence(authed, monkeypatch):
+    """WHEN the job queue cannot be reached, THE SYSTEM SHALL answer a job-start route with 503
+    and a sentence the page can show, not a bare 500.
+
+    The route caught only JobConflict, so the dispatch failure surfaced as an unhandled 500 with no
+    body, and the page could only say "Could not start identification."
+    """
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("redis is down")
+
+    monkeypatch.setattr("app.worker.queues.queue_for", boom)
+
+    resp = await client.post(f"/api/documents/{doc_id}/segment/start")
+
+    assert resp.status_code == 503
+    assert "queue" in resp.json()["detail"].lower()
+
+
 async def test_setting_a_category_to_the_value_it_already_has_writes_no_audit_row(authed):
     """WHEN a category is set to its current value, THE SYSTEM SHALL write no audit row.
 
@@ -5327,3 +5365,269 @@ async def test_setting_a_category_to_the_value_it_already_has_writes_no_audit_ro
     )
     assert changed.status_code == 200
     assert _audit_actions(doc_id).count("summary.category") == 1, "a real change went unrecorded"
+
+
+# --- Depositions download one file each, dated ------------------------------------------------
+# The reviewers: "When we download the depos, if it could download them each separately and have
+# them dated. IE: Deposition of <name> 12-04-25, Deposition of <name> 03-22-25."
+
+
+def _patient(first="Ada", last="Lovelace"):
+    return Document(patient_first_name=first, patient_last_name=last)
+
+
+def test_a_bare_deposition_title_is_named_for_the_patient_and_dated():
+    row = {"title": "Deposition", "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition")
+        == "Deposition of Ada Lovelace 12-04-25.pdf"
+    )
+
+
+def test_a_title_that_names_the_deponent_is_named_for_them_not_the_patient():
+    """A deposition of a doctor is not the patient's. The title says whose it is, when it says."""
+    row = {"title": "DEPOSITION OF JANE ROE", "date": "03/22/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition") == "Deposition of Jane Roe 03-22-25.pdf"
+    )
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Deposition Summary", "Deposition Transcript Volume 2", "DEPOSITION VOLUME II", "Depo"],
+)
+def test_a_word_that_describes_the_document_is_never_taken_for_a_name(title):
+    """Only the words after "of" can be a name. Taking whatever was left once a few words were
+    stripped named a file "Deposition of Summary" - in a document the client receives."""
+    row = {"title": title, "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition")
+        == "Deposition of Ada Lovelace 12-04-25.pdf"
+    )
+
+
+def test_the_name_after_of_is_kept_whatever_comes_before_it():
+    row = {"title": "Continued Deposition of John Doe", "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition") == "Deposition of John Doe 12-04-25.pdf"
+    )
+
+
+def test_a_title_that_says_of_deposition_names_no_one_and_falls_back_to_the_patient():
+    """A title seen on the test instance puts the name first: "<name> of Deposition". Nothing
+    after "of" is a name there, so the patient is used rather than an empty "Deposition of"."""
+    row = {"title": "Transcript of Deposition", "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition")
+        == "Deposition of Ada Lovelace 12-04-25.pdf"
+    )
+
+
+@pytest.mark.parametrize(
+    ("title", "who"),
+    [
+        ("Transcript of the Deposition of John Doe", "John Doe"),
+        ("Transcript of Deposition of John Doe", "John Doe"),
+        ("TRANSCRIPT OF THE DEPOSITION OF JOHN DOE", "John Doe"),
+        ("Deposition Transcript of John Doe", "John Doe"),
+    ],
+)
+def test_a_second_of_before_the_name_is_not_read_as_part_of_it(title, who):
+    """The first "of" can belong to "Transcript of", so reading after it named a file
+    "Deposition of the of John Doe". The name follows the LAST "<kind> of" pair."""
+    row = {"title": title, "date": "12/04/2025"}
+    assert _separate_filename(row, _patient(), "Deposition") == f"Deposition of {who} 12-04-25.pdf"
+
+
+def test_a_name_that_holds_an_of_is_kept_whole():
+    """Guards against a "words after the last of" shortcut, which would give "Records"."""
+    row = {"title": "Deposition of Custodian of Records", "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition")
+        == "Deposition of Custodian of Records 12-04-25.pdf"
+    )
+
+
+def test_an_of_that_follows_no_deposition_word_names_no_one():
+    row = {"title": "Summary of Deposition", "date": "12/04/2025"}
+    assert (
+        _separate_filename(row, _patient(), "Deposition")
+        == "Deposition of Ada Lovelace 12-04-25.pdf"
+    )
+
+
+def test_an_undated_deposition_is_named_without_a_date_not_with_a_placeholder():
+    row = {"title": "Deposition", "date": "-"}
+    assert _separate_filename(row, _patient(), "Deposition") == "Deposition of Ada Lovelace.pdf"
+
+
+def test_a_record_with_no_patient_name_still_gets_a_usable_name():
+    row = {"title": "Deposition", "date": "12/04/2025"}
+    assert _separate_filename(row, _patient("", ""), "Deposition") == "Deposition 12-04-25.pdf"
+
+
+def test_a_name_keeps_nothing_that_breaks_a_download_header():
+    """The name goes into a quoted Content-Disposition value and onto a Windows disk."""
+    row = {"title": 'DEPOSITION OF "JANE" ROE/SMITH', "date": "12/04/2025"}
+    name = _separate_filename(row, _patient(), "Deposition")
+    assert '"' not in name
+    assert "/" not in name
+    assert name.endswith(" 12-04-25.pdf")
+
+
+async def _two_depositions(client, doc_id, *, second_date="03/22/2025"):
+    await _put_header(client, doc_id, patient_first_name="Ada", patient_last_name="Lovelace")
+    rows = [
+        {
+            "start": 1,
+            "end": 2,
+            "category": _VALID_CATEGORY,
+            "title": "Deposition",
+            "date": "12/04/2025",
+            "include": True,
+        },
+        {
+            "start": 3,
+            "end": 4,
+            "category": _VALID_CATEGORY,
+            "title": "Deposition",
+            "date": second_date,
+            "include": True,
+        },
+    ]
+    resp = await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    assert resp.status_code == 200, resp.text
+
+
+async def test_the_zip_carries_each_deposition_as_its_own_dated_file(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _one_summary(doc_id)
+    await _two_depositions(client, doc_id)
+
+    resp = await _download(
+        client,
+        f"/api/documents/{doc_id}/export/zip",
+        json={
+            "bundles": [
+                {
+                    "label": "depositions",
+                    "categories": [_VALID_CATEGORY],
+                    "downloadName": "Depositions",
+                    "separateAs": "Deposition",
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        names = archive.namelist()
+        first = archive.read("Deposition of Ada Lovelace 12-04-25.pdf")
+        second = archive.read("Deposition of Ada Lovelace 03-22-25.pdf")
+    assert first.startswith(b"%PDF")
+    assert second.startswith(b"%PDF")
+    # ...and no combined file beside them.
+    assert not any(n.endswith("_Depositions.pdf") for n in names), names
+
+
+async def test_each_separate_deposition_holds_only_its_own_pages(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _one_summary(doc_id)
+    await _two_depositions(client, doc_id)
+
+    resp = await _download(
+        client,
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "label": "depositions", "separateAs": "Deposition"},
+    )
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        pages = {n: len(PdfReader(io.BytesIO(archive.read(n))).pages) for n in archive.namelist()}
+    assert pages == {
+        "Deposition of Ada Lovelace 12-04-25.pdf": 2,
+        "Deposition of Ada Lovelace 03-22-25.pdf": 2,
+    }
+
+
+async def test_the_depositions_button_hands_over_a_zip_when_there_are_several(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _one_summary(doc_id)
+    await _two_depositions(client, doc_id)
+
+    resp = await _download(
+        client,
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={
+            "categories": [_VALID_CATEGORY],
+            "label": "depositions",
+            "downloadName": "Depositions",
+            "separateAs": "Deposition",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert "Lovelace_Ada_Medical_Records_Depositions.zip" in resp.headers["content-disposition"]
+
+
+async def test_the_depositions_button_hands_over_the_pdf_itself_when_there_is_one(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _one_summary(doc_id)
+    await _put_header(client, doc_id, patient_first_name="Ada", patient_last_name="Lovelace")
+    row = {
+        "start": 1,
+        "end": 2,
+        "category": _VALID_CATEGORY,
+        "title": "Deposition",
+        "date": "12/04/2025",
+        "include": True,
+    }
+    await client.put(f"/api/documents/{doc_id}/rows", json={"rows": [row]})
+
+    resp = await _download(
+        client,
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "label": "depositions", "separateAs": "Deposition"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.content.startswith(b"%PDF")
+    assert "Deposition of Ada Lovelace 12-04-25.pdf" in resp.headers["content-disposition"]
+
+
+async def test_two_depositions_that_would_share_a_name_do_not_overwrite_each_other(authed):
+    """Two undated transcripts of one person come out with one name; a zip holding two entries of
+    the same name silently keeps only one when unpacked."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _one_summary(doc_id)
+    await _two_depositions(client, doc_id, second_date="12/04/2025")
+
+    resp = await _download(
+        client,
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "label": "depositions", "separateAs": "Deposition"},
+    )
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        names = archive.namelist()
+    assert names == [
+        "Deposition of Ada Lovelace 12-04-25.pdf",
+        "Deposition of Ada Lovelace 12-04-25 (2).pdf",
+    ]
+
+
+async def test_a_bundle_that_does_not_ask_to_separate_is_still_one_combined_pdf(authed):
+    """GUARD: Diagnostic & Operative sends no `separateAs` and must keep its single PDF."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await _one_summary(doc_id)
+    await _two_depositions(client, doc_id)
+
+    resp = await _download(
+        client,
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "label": "diagnostic-operative"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.content.startswith(b"%PDF")
+    assert len(PdfReader(io.BytesIO(resp.content)).pages) == 4

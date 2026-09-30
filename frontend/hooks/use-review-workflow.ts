@@ -14,7 +14,7 @@ import {
   startSummarize,
   type HeaderFields,
 } from "@/lib/review-api";
-import type { CategoryOption, FailedRow, JobKind, Row } from "@/lib/types";
+import type { CategoryOption, FailedRow, JobKind, RecordOwner, Row } from "@/lib/types";
 import {
   applyServerRowChanges,
   rowErrors,
@@ -53,7 +53,14 @@ type PollResult = {
   rows?: FailedRow[];
 };
 
+/** A watched job that ended in `error`, carrying `jobs.error`: the worker's own user-facing sentence
+ *  (backend tasks._finalize_failed writes user_facing_message(exc), never the raw vendor error). */
+class JobFailedError extends Error {}
+
 function message(err: unknown, fallback: string) {
+  // humanizeError keeps a message only from an ApiError, so without this the worker's sentence -
+  // "OCR is unavailable", "the daily quota has been used up" - was replaced by the bare fallback.
+  if (err instanceof JobFailedError && err.message) return err.message;
   return humanizeError(err, {
     fallback,
     notFound:
@@ -61,10 +68,11 @@ function message(err: unknown, fallback: string) {
   });
 }
 
-/** The identify -> review (-> summaries) lifecycle shared by /records/[id] and the category-bundle
- *  pages: boot from persisted state, poll a running job every 1s, autosave rows. A null documentId
- *  is idle (the bundle picker before a document is chosen). When enableSummaries is false (bundle),
- *  a finished record opens the editor instead of the summaries step, and summaries are never shown. */
+/** The identify -> review (-> summaries) lifecycle of the /records/[id] workbench
+ *  (review-page-client, its only caller): boot from persisted state, poll a running job every 1s,
+ *  autosave rows. A null documentId is idle. `enableSummaries: false` makes a finished record open
+ *  the editor instead of the summaries step and never shows summaries; it and the idle state were
+ *  built for the category-bundle pages, which no longer use this hook. */
 export function useReviewWorkflow(
   documentId: string | null,
   options: { enableSummaries?: boolean } = {},
@@ -84,6 +92,8 @@ export function useReviewWorkflow(
   };
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [doctors, setDoctors] = useState<string[]>([]);
+  // Whose record this is, so the page can say so when an admin has opened another reviewer's.
+  const [owner, setOwner] = useState<RecordOwner | null>(null);
   const [totalPages, setTotalPages] = useState(0);
   // Mirrored for the same reason as `rows` and `saveState`: the unmount flush below validates
   // against it, and the boot effect's cleanup closure was created BEFORE boot set it - so
@@ -248,7 +258,7 @@ export function useReviewWorkflow(
             message: job.error || "Some documents need attention.",
             rows: job.attention?.rows ?? [],
           });
-        if (job.state === "error") return reject(new Error(job.error || "the run failed"));
+        if (job.state === "error") return reject(new JobFailedError(job.error ?? ""));
         if (job.state === "interrupted") return reject(new Error("the run was interrupted"));
         // A stop is NOT a rejection: the reviewer asked for it, so it resolves and the page offers
         // Continue / Start over instead of an error banner.
@@ -430,6 +440,7 @@ export function useReviewWorkflow(
       applyTotalPages(detail.page_count);
       setCategories(detail.categories || []);
       setDoctors(detail.doctors || []);
+      setOwner(detail.owner ?? null);
       // The document switch. Whatever the previous document left in the touched set describes rows
       // that are gone; carrying it into this one is the leak.
       replaceRows(detail.rows || []);
@@ -589,6 +600,7 @@ export function useReviewWorkflow(
     rows,
     categories,
     doctors,
+    owner,
     totalPages,
     filename,
     banner,

@@ -11,7 +11,7 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app import models  # noqa: F401 - registers all tables on Base.metadata
 from app.api.admin import router as admin_router
@@ -19,6 +19,7 @@ from app.api.documents import router as documents_router
 from app.api.downloads import router as downloads_router
 from app.auth.deps import AuthRedirect, enforce_auth
 from app.auth.routes import auth_router, users_router
+from app.services.jobs import QueueUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,19 @@ app = FastAPI(
 @app.exception_handler(AuthRedirect)
 async def _auth_redirect(request: Request, exc: AuthRedirect) -> RedirectResponse:
     return RedirectResponse(url="/login", status_code=302)
+
+
+@app.exception_handler(QueueUnavailable)
+async def _queue_unavailable(request: Request, exc: QueueUnavailable) -> JSONResponse:
+    """Every job-start route enqueues through `jobs.enqueue`; one handler here covers them all. The
+    cause is logged with its traceback (ids only); the page gets a sentence it can show."""
+    logger.warning("%s", exc, exc_info=exc.__cause__)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "The job queue is unavailable, so the run could not start. Try again later."
+        },
+    )
 
 
 @app.get("/health")

@@ -42,6 +42,7 @@ the other rejected OCR speed lever - capping the DPI was 4.2x faster and lost 6.
 
 import logging
 from functools import lru_cache
+from typing import NotRequired, TypedDict
 
 import pytesseract
 from pdf2image import convert_from_path
@@ -54,6 +55,14 @@ from app.errors import OcrUnavailableError, PdfUnreadableError
 logger = logging.getLogger(__name__)
 
 _configured = False
+
+
+class _TesseractArgs(TypedDict):
+    """The keyword arguments `ocr_image` passes to `pytesseract.image_to_string`. `config` is sent only when
+    the page's DPI differs from the base, so a base-DPI call carries no config at all."""
+
+    timeout: int
+    config: NotRequired[str]
 
 
 def _ensure_tesseract() -> None:
@@ -90,7 +99,7 @@ def _ocr_image(image, dpi=None) -> str:
             recorded = recorded[0] if recorded else None
         if isinstance(recorded, (int, float)):
             dpi = recorded
-    kwargs = {"timeout": settings.ocr_timeout_seconds}
+    kwargs: _TesseractArgs = {"timeout": settings.ocr_timeout_seconds}
     if dpi and int(round(float(dpi))) != int(settings.ocr_base_dpi):
         kwargs["config"] = f"--dpi {int(round(float(dpi)))}"
     try:

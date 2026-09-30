@@ -1,22 +1,40 @@
 # Commit Scopes (MRR AI)
 
-Allowed commit/PR scopes for this repo (kebab-case). Keeps history grep-able.
+Allowed commit and PR scopes for this repo (kebab-case), in `<type>(<scope>): <subject>`. Keeps
+history greppable. Use the narrowest scope that fits; if none does, add one here in the same PR.
 
-- `repo` - repo setup, meta, top-level config
-- `tooling` - uv, build, dependency, env tooling
+Pipeline stages:
+
+- `ocr` - Tesseract / Poppler, page text store, rasterising
+- `segmentation` - sub-document boundaries: windows, the segmentation call, the verify pass
+- `categorization` - category assignment: title rules, the cascade, taxonomy and catalog
+- `duplicates` - duplicate detection and its review and resolution
+- `summarize` - summary generation, the audit, house style, deposition format
+- `prompts` - summary and segmentation prompt text
+- `export` - Word letter, memo, linked PDF, ZIP, bundles, prepared downloads
+- `pipeline` - cross-cutting job flow: queues, lanes, job states, stop/resume, recovery
+
+Application areas:
+
+- `api` - FastAPI routers and schemas
+- `auth` - login, sessions, registration, passwords, admin flag
+- `admin` - the admin console and admin API (catalog, prompts, reprocess)
+- `worker` - the RQ worker process and job functions
+- `providers` - the model provider seam and backends (Gemini, OpenAI, vLLM), pacing, preflight
+- `config` - `backend/app/config.py` settings and boot guards
+- `review` - the /records/[id] workbench (steps, gating, banners, editor)
+- `ui` - other frontend pages and shared components, design system
+- `backend`, `frontend` - a change spanning several areas of one side
+
+Operations and tooling:
+
 - `compose` - docker-compose.yml: what a container is actually given
-- `quality` - linters, formatters, pre-commit, CI gates
-- `ci` - GitHub Actions / pipeline
-- `docs` - documentation, runbook, references
-- `sdk` - third-party SDK swaps (gemini/openai/pdf libs)
-- `segmentation` - sub-document boundary detection (getPages)
-- `categorization` - category assignment (taxonomy, matching, cascade)
-- `summarize` - OpenAI summarization + prompts
-- `ocr` - Tesseract / Poppler / text extraction
-- `export` - Word/CSV output generation
-- `pipeline` - cross-cutting flow / orchestration
-- `ui` - templates / static
-- `review` - the /records/[id] review workbench (steps, gating, banners)
-- `duplicates` - duplicate clustering review + resolution
-
-If a change does not fit, add the scope here in the same PR.
+- `deploy` - `deploy/` (proxy config, server bootstrap) and deploy procedure
+- `ci` - GitHub Actions
+- `quality` - linters, formatters, pre-commit, coverage and analysis gates
+- `tooling` - uv, pnpm, build, dependency and environment tooling
+- `sdk` - third-party SDK swaps and upgrades
+- `scripts` - `backend/scripts/` maintenance and dev scripts
+- `eval` - `backend/scripts/eval/` measurement harnesses
+- `docs` - documentation pages, the docs site, README and CLAUDE files
+- `repo` - repository setup and top-level meta files

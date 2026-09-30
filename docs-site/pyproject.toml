@@ -1,0 +1,18 @@
+[project]
+name = "mrr-docs-site"
+version = "0.1.0"
+description = "Builds the MRR AI documentation site from ../docs with Material for MkDocs."
+requires-python = ">=3.12"
+# Pinned exactly: the site is rebuilt on the server from this lock, and a theme or MkDocs upgrade
+# should be a deliberate change reviewed against a local `mkdocs build --strict`, not a surprise.
+# Material 9.7.x is in maintenance mode (critical fixes to 2027-05-05) and caps mkdocs below 2.0,
+# which drops plugins and cannot build this theme. Its successor, Zensical, reads this same
+# mkdocs.yml - see docs/how-to/work-on-these-docs.md.
+dependencies = [
+    "mkdocs==1.6.1",
+    "mkdocs-material==9.7.7",
+]
+
+[tool.uv]
+# A tool environment, not an installable package.
+package = false

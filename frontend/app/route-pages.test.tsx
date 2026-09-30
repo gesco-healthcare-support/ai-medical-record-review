@@ -24,7 +24,7 @@ const reviewClient = vi.fn();
 
 vi.mock("@/components/app/app-bar", () => ({ AppBar: () => <header data-testid="app-bar" /> }));
 vi.mock("@/components/app/back-link", () => ({
-  BackLink: () => <a data-testid="back-link" href="/" />,
+  BackLink: () => <a data-testid="back-link" />,
 }));
 vi.mock("@/components/documents/documents-view", () => ({
   DocumentsView: () => <div data-testid="documents-view" />,

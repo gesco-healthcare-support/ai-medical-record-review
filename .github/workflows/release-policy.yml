@@ -1,0 +1,57 @@
+name: release policy
+
+# The production release policy (.github/scripts/release_policy.py; Adrian 2026-09-28, decision 3). A pull request
+# into production must propose a commit whose images the staging stage accepted - they are in ghcr.io, tagged with
+# that commit - and those images must carry no Critical or High vulnerability without a reviewed, unexpired exception
+# in .github/release-exceptions.json. It scans the very images staging accepted; nothing is rebuilt. Only
+# production's ruleset requires this check, so the branch filter cannot leave a required check waiting elsewhere.
+on:
+  pull_request:
+    branches: [production]
+
+permissions: {}
+
+jobs:
+  release-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      REGISTRY: ghcr.io/gesco-healthcare-support
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Pull the images staging accepted for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          for name in mrr-backend-web mrr-frontend mrr-docs; do
+            if ! docker pull "$REGISTRY/$name:$HEAD_SHA"; then
+              echo "No $name image for $HEAD_SHA: the staging stage has not accepted this commit."
+              exit 1
+            fi
+          done
+
+      - name: Scan them (Grype, pinned release, checksum verified)
+        env:
+          VERSION: "0.119.0"
+          SHA256: 3fa2dc4b924621ab65404cf08d0b8438d896d80ab949c9d5a4ca283c36004c9b
+        run: |
+          set -euo pipefail
+          tarball="grype_${VERSION}_linux_amd64.tar.gz"
+          curl -sSL --fail -o "$tarball" "https://github.com/anchore/grype/releases/download/v${VERSION}/${tarball}"
+          echo "${SHA256}  ${tarball}" | sha256sum --check --strict
+          tar -xzf "$tarball" grype
+          for name in mrr-backend-web mrr-frontend mrr-docs; do
+            ./grype "docker:$REGISTRY/$name:$HEAD_SHA" -o json > "grype-$name.json"
+          done
+
+      - name: Apply the release policy
+        run: python3 .github/scripts/release_policy.py --exceptions .github/release-exceptions.json grype-*.json

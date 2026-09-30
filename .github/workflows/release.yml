@@ -1,0 +1,98 @@
+name: release
+
+# On each merge into production, publish what shipped. A promotion merges with a merge commit, whose second parent is
+# staging's tip: the commit whose images the staging stage built, scanned, attested and pushed to ghcr.io. This job
+# verifies those attestations - signed by staging-acceptance.yml running on refs/heads/staging, nothing else - takes
+# each image's SBOM from its signed SBOM attestation (so a release has no dependency on an expiring artifact),
+# computes the next semantic version from the commit messages (.github/scripts/release_version.py: breaking -> major,
+# feat -> minor, else patch; first release v0.1.0), and creates the tag and a GitHub Release: the image digests, then
+# GitHub's generated notes, with each image's SBOM attached. Release tags can never be moved or deleted (the `v*` tag
+# ruleset).
+on:
+  push:
+    branches: [production]
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the tag and the release
+      packages: read
+      attestations: read
+    env:
+      REGISTRY: ghcr.io/gesco-healthcare-support
+      # The one workflow and ref allowed to have signed the attestations a release relies on.
+      SIGNER: ${{ github.repository }}/.github/workflows/staging-acceptance.yml
+      SIGNER_REF: refs/heads/staging
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # every tag and commit since the last release
+
+      - name: Find the commit staging accepted
+        run: |
+          set -euo pipefail
+          # `rev-list --parents` prints the commit and its parents: three words for a merge commit.
+          if [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ne 3 ]; then
+            echo "HEAD is not a promotion merge commit, so there is no accepted staging commit to release."
+            exit 1
+          fi
+          echo "ACCEPTED=$(git rev-parse 'HEAD^2')" >> "$GITHUB_ENV"
+
+      # Provenance (the default predicate) and the SPDX SBOM, each required to come from the staging stage's workflow
+      # on staging. The SBOM file attached to the release is the signed attestation's own predicate.
+      - name: Verify the accepted images and their attestations, and take their SBOMs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          mkdir -p sboms
+          {
+            echo "Images (built, scanned and attested by the staging stage at $ACCEPTED):"
+            echo
+            echo "| Image | Digest |"
+            echo "| --- | --- |"
+          } > release-notes.md
+          for name in mrr-backend-web mrr-frontend mrr-docs; do
+            digest=$(docker buildx imagetools inspect "$REGISTRY/$name:$ACCEPTED" --format '{{json .Manifest}}' \
+              | python3 -c "import json,sys; print(json.load(sys.stdin)['digest'])")
+            image="oci://$REGISTRY/$name@$digest"
+            gh attestation verify "$image" -R "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER" --source-ref "$SIGNER_REF"
+            gh attestation verify "$image" -R "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER" --source-ref "$SIGNER_REF" \
+              --predicate-type https://spdx.dev/Document/v2.3 --format json \
+              --jq '.[0].verificationResult.statement.predicate' > "sboms/$name.spdx.json"
+            test -s "sboms/$name.spdx.json"
+            echo "| \`$REGISTRY/$name\` | \`$digest\` |" >> release-notes.md
+          done
+          echo >> release-notes.md
+
+      - name: Compute the version
+        run: |
+          set -euo pipefail
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)
+          if [ -n "$last" ]; then
+            version=$(git log "$last..HEAD" --format='%B%x00' | python3 .github/scripts/release_version.py --last-tag "$last")
+          else
+            version=$(git log HEAD --format='%B%x00' | python3 .github/scripts/release_version.py)
+          fi
+          echo "Previous release: ${last:-none}; this release: $version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Tag and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" \
+            --notes-file release-notes.md --generate-notes sboms/*.spdx.json

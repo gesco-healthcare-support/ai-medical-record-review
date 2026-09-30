@@ -25,7 +25,7 @@ import re
 from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
-from app.services.llm import DocumentPart, TextPart, provider_for_stage
+from app.services.llm import DocumentPart, Part, TextPart, provider_for_stage
 from app.services.rasterise import page_image_parts
 from app.worker.failures import JobCancelled
 
@@ -147,7 +147,7 @@ def _clean(reply: str) -> str:
     return " & ".join(items) if items else "-"
 
 
-def _isolated_parts(pdf_path, start, end, settings):
+def _isolated_parts(pdf_path, start, end, settings) -> list[Part]:
     """This sub-document's first pages, whose SHAPE differs per backend rather than its content.
 
     vLLM cannot carry an inline PDF at all: `llm/vllm.py` converts parts through

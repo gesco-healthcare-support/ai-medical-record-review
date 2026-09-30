@@ -1,4 +1,17 @@
 {
-  "_comment": "Project-level Claude Code settings for MRR AI. Extends ~/.claude/settings.json (global). Add overrides here as needed: commit scope enum, project-specific skills, permission changes.",
-  "_hipaa_note": "This project handles raw medical record content sent to OpenAI and Gemini. Stricter PHI review required on all PRs."
+  "_comment": "Project-level Claude Code settings for MRR AI, committed so every Claude Code session in this repository gets them. Extends each user's ~/.claude/settings.json.",
+  "_hipaa_note": "This project handles raw medical record content sent to model providers (Gemini on Vertex by default; OpenAI or a self-hosted vLLM server by configuration). Stricter PHI review required on all PRs.",
+  "_hooks_note": "Stop: .claude/hooks/docs-reminder.sh reminds an agent once, before it finishes, about READMEs, CLAUDE.md files and pages its code changes may have made wrong. See docs/how-to/work-on-these-docs.md.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/docs-reminder.sh\""
+          }
+        ]
+      }
+    ]
+  }
 }

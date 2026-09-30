@@ -10,7 +10,7 @@ and carried as the Job row.
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -74,6 +74,12 @@ class JobConflict(Exception):
     """A job is already active for the document (the one-active-job invariant)."""
 
 
+class QueueUnavailable(RuntimeError):
+    """The job could not be handed to the queue (usually Redis is unreachable). The job row has
+    already been marked interrupted and nothing ran; `main.py` answers it with a 503 and a sentence
+    the page can show, rather than the bare 500 an unhandled error gives."""
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -123,6 +129,13 @@ def mark_terminal(
     changed = session.execute(
         update(Job).where(Job.id == job.id, Job.state.in_(ACTIVE_STATES)).values(**values)
     )
+    # An ORM UPDATE with WHERE criteria returns a CursorResult, which carries rowcount. SQLAlchemy
+    # 2.0.44 types Session.execute as a plain Result because RETURNING and bulk updates do not; if an
+    # edit here ever turns this into one of those, fail by name rather than read a missing count.
+    if not isinstance(changed, CursorResult):
+        raise TypeError(
+            f"expected a CursorResult from the job UPDATE, got {type(changed).__name__}"
+        )
     if not changed.rowcount:
         session.rollback()  # someone else finalized it first; leave their outcome alone
         return False
@@ -155,8 +168,10 @@ def create_job(
     catalog_revision: int | None = None,
     title_model: str | None = None,
     audit_model: str | None = None,
+    requested_by: int | None = None,
 ) -> Job:
-    """Insert a queued Job + advance Document.status; raise JobConflict if one is already active.
+    """Insert a queued Job + advance Document.status; raise JobConflict if one is already active,
+    and LookupError if the document does not exist.
 
     The DB partial-unique index is the real guard - it survives a cross-process race the old
     in-process lock could not. Commits on success.
@@ -186,11 +201,19 @@ def create_job(
         # change must keep the backend it started with, or one delivered document ends up written by
         # two vendors with no record of which wrote what.
         #
-        # ONLY the summarize kind is stamped. The other kinds still call google-genai directly and do
-        # not cross the provider seam until PR 2 and PR 3, so stamping them here would record an
-        # intention rather than an observation - and a column that says "vllm" about a call that went
-        # to Gemini is worse than one that says nothing.
+        # ONLY the summarize kind is stamped. When this was written the other kinds still called
+        # google-genai directly, so stamping them would have recorded an intention rather than an
+        # observation - and a column that says "vllm" about a call that went to Gemini is worse than
+        # one that says nothing. Every kind now crosses the provider seam, each stage routed on its
+        # own (Settings.backend_for), but no stamp was added for the other kinds: their `backend`
+        # stays NULL, meaning "not recorded".
         backend = settings.backend_for("summarize")
+    # Looked up BEFORE the job is added. A missing document used to reach the commit, and the
+    # handler below reported the foreign-key failure as "a job is already active" - false - for the
+    # kind that moves no status (dedup); every other kind died on an AttributeError instead.
+    document = session.get(Document, document_id)
+    if document is None:
+        raise LookupError(f"document {document_id} does not exist")
     job = Job(
         document_id=document_id,
         kind=kind,
@@ -202,9 +225,9 @@ def create_job(
         prompt_fingerprint=job_prompt_fingerprint(session, kind),
         build_sha=settings.build_sha,
         catalog_revision=catalog_revision,
+        requested_by=requested_by,
     )
     session.add(job)
-    document = session.get(Document, document_id)
     enqueue_status = STATUS_ON_ENQUEUE[kind]
     if enqueue_status is not None:  # None = advisory (dedup): never moves the stage the UI shows
         document.status = enqueue_status
@@ -226,6 +249,7 @@ def enqueue(
     catalog_revision: int | None = None,
     title_model: str | None = None,
     audit_model: str | None = None,
+    requested_by: int | None = None,
 ) -> Job:
     """create_job + dispatch to the kind's RQ queue. If the dispatch fails (e.g. Redis down), the
     job is marked interrupted rather than left stuck queued.
@@ -247,6 +271,7 @@ def enqueue(
         catalog_revision=catalog_revision,
         title_model=title_model,
         audit_model=audit_model,
+        requested_by=requested_by,
     )
     try:
         # RQ job id == the DB job id, so heartbeat orphan recovery can correlate the two.
@@ -274,12 +299,16 @@ def enqueue(
         # str(job.id); a resumable summarize pause reassigns it to the fresh scheduled resume.
         job.rq_job_id = rq_job.id
         session.commit()
-    except Exception:
+    except Exception as exc:
         job.state = "interrupted"
         job.finished_at = _utcnow()
         document = session.get(Document, document_id)
-        if document is not None:
+        # Only move the document out of a stage THIS job put it in, like every other failure path
+        # (tasks._finalize_failed, mark_terminal's document_status_only_when, recovery). A dedup
+        # sets no stage (STATUS_ON_ENQUEUE["dedup"] is None), so a failed re-check must leave a
+        # finished record finished rather than flip it to Interrupted.
+        if document is not None and document.status in INTERRUPTIBLE_DOCUMENT_STATUSES:
             document.status = "interrupted"
         session.commit()
-        raise
+        raise QueueUnavailable(f"job {job.id} ({kind}) could not be queued") from exc
     return job
