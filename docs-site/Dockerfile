@@ -23,7 +23,9 @@ COPY docs-site/mkdocs.yml ./
 COPY docs /src/docs
 RUN uv run --frozen mkdocs build --strict --site-dir /out
 
-FROM nginx:1.30@sha256:b972f831f200b19ef0767938224f9711e74cd783718738cd7405d5cabf75c442
+# nginx only (the -alpine-slim variant has no njs or image-filter modules, so none of the image
+# libraries they pull in): the site is static files served by core directives (nginx.conf).
+FROM nginx:1.30-alpine-slim@sha256:32463212baf0e7d91aded2e9b843a4f2b9e017804b8c9d5bae7b51dcef64389c
 # Links the image to this repository in ghcr.io (see backend/Dockerfile).
 LABEL org.opencontainers.image.source="https://github.com/gesco-healthcare-support/ai-medical-record-review"
 COPY docs-site/nginx.conf /etc/nginx/conf.d/default.conf
