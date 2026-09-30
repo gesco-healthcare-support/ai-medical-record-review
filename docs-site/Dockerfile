@@ -24,5 +24,7 @@ COPY docs /src/docs
 RUN uv run --frozen mkdocs build --strict --site-dir /out
 
 FROM nginx:1.30@sha256:b972f831f200b19ef0767938224f9711e74cd783718738cd7405d5cabf75c442
+# Links the image to this repository in ghcr.io (see backend/Dockerfile).
+LABEL org.opencontainers.image.source="https://github.com/gesco-healthcare-support/ai-medical-record-review"
 COPY docs-site/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /out /usr/share/nginx/html/docs

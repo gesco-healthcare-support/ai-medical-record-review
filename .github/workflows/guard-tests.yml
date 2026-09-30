@@ -34,3 +34,8 @@ jobs:
       - name: Acceptance seed unit tests
         working-directory: .github/scripts
         run: python3 -m unittest -v test_acceptance_seed
+
+      # The release scripts run only on production pull requests and merges, so their logic is tested on every PR.
+      - name: Release version and release policy unit tests
+        working-directory: .github/scripts
+        run: python3 -m unittest -v test_release_version test_release_policy

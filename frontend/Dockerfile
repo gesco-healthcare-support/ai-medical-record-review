@@ -11,6 +11,8 @@ COPY . .
 RUN corepack pnpm build
 
 FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runtime
+# Links the image to this repository in ghcr.io (see backend/Dockerfile).
+LABEL org.opencontainers.image.source="https://github.com/gesco-healthcare-support/ai-medical-record-review"
 WORKDIR /app
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
