@@ -25,6 +25,11 @@ export type BundleConfig = {
   // `<separateAs> of <who> <MM-DD-YY>.pdf`. The reviewers asked for this for depositions: "if it
   // could download them each separately and have them dated". Several come back as a zip.
   separateAs?: string;
+  // Only the documents ticked for summary. The reviewers asked for this on the diagnostic list,
+  // which "is still including files that we unchecked (due to being duplicates)". Depositions
+  // leave it off: a migration once unticked every deposition, so on older records it would empty
+  // that bundle (see `bundles.matched_rows`).
+  summarizedOnly?: boolean;
 };
 
 /** The two bundles the app offers, defined ONCE.
@@ -40,6 +45,7 @@ export const DIAGNOSTIC_OPERATIVE: BundleConfig = {
   // The reviewers named this string themselves, so it is theirs rather than a shortening of
   // the cover heading.
   downloadName: "List of Diagnostic and Operative Reports",
+  summarizedOnly: true,
 };
 
 export const DEPOSITIONS: BundleConfig = {
@@ -79,6 +85,7 @@ export function downloadBundlePdf(documentId: string, config: BundleConfig) {
       coverHeading: config.coverHeading,
       downloadName: config.downloadName,
       separateAs: config.separateAs,
+      summarizedOnly: config.summarizedOnly,
     },
     `${config.slug}.pdf`,
   );
@@ -97,6 +104,7 @@ export function downloadBundleSummary(
       categories: config.categories,
       label: config.slug,
       downloadName: config.downloadName,
+      summarizedOnly: config.summarizedOnly,
       ...fields,
     },
     `${config.slug}.docx`,

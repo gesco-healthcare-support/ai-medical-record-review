@@ -85,6 +85,7 @@ Route numbers (D1 to D27, A1 to A8) are those of the [HTTP API reference](http-a
 | 409 | `summarization is rewriting these summaries; wait` | D18 |
 | 409 | `no summaries to export yet` | D20, D21, D23 |
 | 409 | `no matching documents in this record` | D24, D25 |
+| 409 | `none of the matching documents is ticked for summary` | D24, D25 (`summarizedOnly` sent) |
 | 409 | `<N> matching documents exceeds the on-demand limit of <cap>; use the main Summaries flow for a record this large` | D25 |
 | 409 | `category <id> is used by <N> sub-document(s) and cannot be deactivated. Move those rows to another category first.` (singular `sub-document` when N is 1) | A4 |
 | 503 | `Downloads are unavailable right now. Please try again.` | D20 to D27 |

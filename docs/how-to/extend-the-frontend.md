@@ -106,7 +106,8 @@ check is the TypeScript compiler (`pnpm typecheck`); SonarCloud analyses the cod
     a URL-safe `slug`, `categories` (category ids as strings), `downloadName`, and `coverHeading` only
     if the combined PDF should start with a list page. Set `separateAs` (for example `"Deposition"`)
     instead when each document should download as its own dated PDF, as Depositions does; the page
-    button then reads "Download separate PDFs". The backend keeps no copy of this list; the
+    button then reads "Download separate PDFs". Set `summarizedOnly: true` when the bundle should carry
+    only the rows ticked for summary, as Diagnostic & Operative does. The backend keeps no copy of this list; the
     bundle and zip endpoints receive these values.
 2. Create a route page that passes the config, copying `frontend/app/diagnostics/page.tsx`.
 3. Add a tab to `BUNDLE_TABS` in `frontend/components/bundle/bundle-page-client.tsx`, with `value`
