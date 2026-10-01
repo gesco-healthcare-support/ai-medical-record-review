@@ -213,6 +213,8 @@ describe("ExportDialog page numbers", () => {
         categories: ["3", "8"],
         coverHeading: "LIST OF DIAGNOSTIC AND OPERATIVE REPORTS",
         downloadName: "List of Diagnostic and Operative Reports",
+        // Only the documents ticked for summary - the reviewers' own request for this list.
+        summarizedOnly: true,
       },
       {
         label: "depositions",

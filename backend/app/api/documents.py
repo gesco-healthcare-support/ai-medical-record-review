@@ -2143,7 +2143,13 @@ def _bundle_members(session: Session, document: Document, specs) -> list[tuple[s
     ]
     members: list[tuple[str, bytes]] = []
     for spec in specs:
-        matched = bundles.matched_rows(rows, spec.categories) if spec.categories else []
+        matched = (
+            bundles.matched_rows(
+                rows, spec.categories, summarized_only=getattr(spec, "summarizedOnly", False)
+            )
+            if spec.categories
+            else []
+        )
         if not matched:
             continue
         kind = (getattr(spec, "separateAs", None) or "").strip()
@@ -2165,9 +2171,13 @@ def _memo_filename(document: Document) -> str:
     return _deliverable_filename(document, "memo", "docx", fallback="memo")
 
 
-def _matched_rows(session: Session, document: Document, categories):
+def _matched_rows(session: Session, document: Document, categories, summarized_only=False):
     """The current review rows whose category is in the requested set, or raise: empty/invalid
     categories -> 400; a set that matches nothing in this record -> 409.
+
+    With ``summarized_only`` a match whose every document is unticked for summary is its own 409,
+    saying so: "no matching documents" would send the reviewer looking for documents that are on
+    screen, unticked.
 
     The duplicate rule lives in `bundles.matched_rows`, not here - see that function. This one only
     loads the rows and maps the error codes.
@@ -2183,7 +2193,14 @@ def _matched_rows(session: Session, document: Document, categories):
     matched = bundles.matched_rows(rows, categories)
     if not matched:
         raise HTTPException(status_code=409, detail="no matching documents in this record")
-    return matched
+    if not summarized_only:
+        return matched
+    ticked = bundles.matched_rows(rows, categories, summarized_only=True)
+    if not ticked:
+        raise HTTPException(
+            status_code=409, detail="none of the matching documents is ticked for summary"
+        )
+    return ticked
 
 
 def _record_accounting(session: Session, document: Document):
@@ -2329,7 +2346,10 @@ def export_document_zip(
     # 400 and 409 come from `_matched_rows`, which this handler calls; 503 from `_offer_download`.
     responses={
         400: {"description": "The category list is empty."},
-        409: {"description": "No sub-document in this record matches those categories."},
+        409: {
+            "description": "No sub-document in this record matches those categories, or none "
+            "that matches is ticked for summary (summarizedOnly)."
+        },
         503: _DOWNLOAD_STORE_UNAVAILABLE,
     },
 )
@@ -2344,7 +2364,7 @@ def bundle_pdf(
     Carries the same cover page the archive's copy does, from the same builder, so the file this
     button hands over and the one inside the folder are not two different documents."""
     payload = payload or BundlePayload()
-    matched = _matched_rows(session, document, payload.categories)
+    matched = _matched_rows(session, document, payload.categories, payload.summarizedOnly)
     kind = (payload.separateAs or "").strip()
     if kind:
         # One file per document. A single match is handed over as that PDF; several as a zip
@@ -2374,8 +2394,9 @@ def bundle_pdf(
     responses={
         400: {"description": "The category list is empty."},
         409: {
-            "description": "No sub-document in this record matches those categories, or the "
-            "match is larger than the on-demand summarize limit."
+            "description": "No sub-document in this record matches those categories, none that "
+            "matches is ticked for summary (summarizedOnly), or the match is larger than the "
+            "on-demand summarize limit."
         },
         # 422 is FastAPI's own validation-error code, and declaring it here REPLACES that
         # description - so it has to name both meanings or the generated spec loses one.
@@ -2395,7 +2416,7 @@ def bundle_summarize(
     """Summarize just the category-matched documents into a filtered Word report (synchronous,
     bounded by BUNDLE_SUMMARIZE_CAP; larger records route to the main Summaries flow)."""
     payload = payload or BundlePayload()
-    matched = _matched_rows(session, document, payload.categories)
+    matched = _matched_rows(session, document, payload.categories, payload.summarizedOnly)
     cap = get_settings().bundle_summarize_cap
     if len(matched) > cap:
         raise HTTPException(

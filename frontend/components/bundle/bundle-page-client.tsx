@@ -364,9 +364,9 @@ export function BundlePageClient({
   // then appears nowhere. Computed over ALL rows, before the category filter, because a cluster can
   // span categories and its primary may sit outside this preset.
   //
-  // Keyed on the duplicate fields, not on `include` - see `bundles.matched_rows` for why `include`
-  // is the wrong filter (a migration unchecked whole categories, so it would empty the Depositions
-  // preset for older records).
+  // Keyed on the duplicate fields, and on `include` only for a bundle that opts in with
+  // `summarizedOnly` (Diagnostic & Operative) - see `bundles.matched_rows` for why `include` is the
+  // wrong filter for Depositions (a migration unchecked that whole category on older records).
   const resolvedGroups = new Set(
     rows
       .filter((row) => row.dupe_group != null && row.dupe_primary)
@@ -379,7 +379,8 @@ export function BundlePageClient({
         resolvedGroups.has(row.dupe_group) &&
         !row.dupe_primary &&
         !row.dupe_dismissed
-      ),
+      ) &&
+      (!config.summarizedOnly || row.include !== false),
   );
   const identified = rows.length > 0;
 

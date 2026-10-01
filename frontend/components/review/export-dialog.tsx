@@ -233,6 +233,7 @@ export function ExportDialog({
                   coverHeading: b.coverHeading,
                   downloadName: b.downloadName,
                   separateAs: b.separateAs,
+                  summarizedOnly: b.summarizedOnly,
                 })),
               })
             }

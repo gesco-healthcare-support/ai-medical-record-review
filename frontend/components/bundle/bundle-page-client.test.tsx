@@ -218,6 +218,50 @@ describe("BundlePageClient error handling", () => {
     expect(screen.queryByText("4 matching documents")).not.toBeInTheDocument();
   });
 
+  it("leaves out an unticked document for a bundle that lists only summarized ones", async () => {
+    // The reviewers: the diagnostic list "is still including files that we unchecked (due to
+    // being duplicates)". A bundle with `summarizedOnly` counts what the server now sends: the
+    // resolved-away copy AND the hand-unticked one are both out.
+    const user = userEvent.setup();
+    const row = (start: number, over: Partial<Row> = {}) => ({
+      start,
+      end: start,
+      category: "3",
+      title: "MRI",
+      date: "",
+      injury_date: "",
+      flag: "-",
+      suggest_merge: false,
+      include: true,
+      ...over,
+    });
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      id: "d1",
+      original_filename: "rec.pdf",
+      page_count: 4,
+      status: "reviewing",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_name: "",
+      patient_dob: "",
+      law_firm: "",
+      rows: [
+        row(1),
+        row(2, { dupe_group: 1, dupe_primary: true }),
+        row(3, { dupe_group: 1, dupe_primary: false, include: false }),
+        row(4, { include: false }),
+      ],
+      categories: [{ id: "3", name: "Imaging" }],
+    });
+    withClient(<BundlePageClient config={{ ...CONFIG, summarizedOnly: true }} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(await screen.findByText("2 matching documents")).toBeInTheDocument();
+  });
+
   it("accepts an edit to every export header field", async () => {
     // The four fields render from props and write back through onChange. Asserting only that they
     // render leaves the write-back path - the half that actually carries the reviewer's typing into

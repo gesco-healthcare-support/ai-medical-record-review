@@ -5756,3 +5756,93 @@ async def test_a_bundle_that_does_not_ask_to_separate_is_still_one_combined_pdf(
     assert resp.status_code == 200, resp.text
     assert resp.content.startswith(b"%PDF")
     assert len(PdfReader(io.BytesIO(resp.content)).pages) == 4
+
+
+async def _three_rows_page_3_unticked(client):
+    doc_id = await _upload(client, pages=3)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2, 3)]},
+    )
+    with get_sessionmaker()() as session:
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.start)
+        ).all()
+        for row in rows:
+            row.include = row.start != 3
+        session.commit()
+    return doc_id
+
+
+async def test_a_summarized_only_bundle_leaves_out_an_unticked_document(authed):
+    """WHEN a bundle asks for summarized documents only, an unticked one is not in its PDF.
+
+    Reviewer feedback, 2026-10-01: the diagnostic list "is still including files that we unchecked
+    (due to being duplicates)". On the live box 121 of 126 such rows were unticked by hand, in no
+    duplicate group, so the duplicate fields alone cannot leave them out."""
+    client, _ = authed
+    doc_id = await _three_rows_page_3_unticked(client)
+
+    got = await _download(
+        client,
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "summarizedOnly": True},
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
+
+
+async def test_a_bundle_that_does_not_ask_keeps_an_unticked_document(authed):
+    """GUARD: without the flag the old rule holds. Depositions rely on it - a migration unticked
+    that whole category on older records, so filtering on the tick would empty that bundle."""
+    client, _ = authed
+    doc_id = await _three_rows_page_3_unticked(client)
+
+    got = await _download(
+        client, f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 3
+
+
+async def test_a_summarized_only_bundle_with_nothing_ticked_says_so(authed):
+    """Every match unticked is its own 409, naming the reason. "No matching documents" would send
+    the reviewer looking for documents that are right there on screen, unticked."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2)]},
+    )
+    _set_include(doc_id, False)
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "summarizedOnly": True},
+    )
+
+    assert got.status_code == 409
+    assert "ticked for summary" in got.json()["detail"]
+
+
+def test_matched_rows_drops_an_unticked_row_only_when_asked():
+    from app.services import bundles
+
+    rows = [
+        {"start": 1, "category": "3", "include": True},
+        {"start": 2, "category": "3", "include": False},
+        {"start": 3, "category": "8", "include": True},
+        {"start": 4, "category": "9", "include": False},
+    ]
+    assert [r["start"] for r in bundles.matched_rows(rows, ["3", "8"])] == [1, 2, 3]
+    assert [r["start"] for r in bundles.matched_rows(rows, ["3", "8"], summarized_only=True)] == [
+        1,
+        3,
+    ]
+    assert [r["start"] for r in bundles.matched_rows(rows, ["9"])] == [4]

@@ -87,6 +87,11 @@ class BundlePayload(BaseModel):
     # reviewers asked for this for depositions: a record can hold several and they want each
     # one on its own, dated. More than one match comes back as a zip; exactly one as that PDF.
     separateAs: str | None = None
+    # Only the rows the reviewer ticked for summary. The Diagnostic & Operative bundle sends it, so
+    # a document unticked as a duplicate stays out of its list and its PDF; see
+    # `bundles.matched_rows` for why Depositions does not. Absent means off - an older client keeps
+    # the old behaviour.
+    summarizedOnly: bool = False
     model: str | None = None
     patientName: str = ""
     patientdob: str = ""
@@ -134,6 +139,7 @@ class ZipBundle(BaseModel):
     # the bundle did not.
     downloadName: str | None = None
     separateAs: str | None = None  # see BundlePayload
+    summarizedOnly: bool = False  # see BundlePayload
 
 
 class ExportZipPayload(ExportPayload):
