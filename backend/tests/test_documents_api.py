@@ -5756,3 +5756,46 @@ async def test_a_bundle_that_does_not_ask_to_separate_is_still_one_combined_pdf(
     assert resp.status_code == 200, resp.text
     assert resp.content.startswith(b"%PDF")
     assert len(PdfReader(io.BytesIO(resp.content)).pages) == 4
+
+
+_SURNAME_FIRST_TITLE = (
+    "[ManualCheck] DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT. (Pages 3-5)"
+)
+
+
+def _titled_summary(**over):
+    fields = dict(
+        document_id="d",
+        job_id=1,
+        idx=0,
+        title=_SURNAME_FIRST_TITLE,
+        text="body",
+        row_start=3,
+        row_end=5,
+        row_category="1",
+        date="01/02/2026",
+    )
+    fields.update(over)
+    return Summary(**fields)
+
+
+def test_the_summaries_tab_and_the_export_show_a_stored_title_tidied():
+    """A title stored before the name-order and health-system rules reads tidy on the Summaries tab
+    and in the Word letter alike, with no re-run (reviewer feedback, 2026-10-01)."""
+    from app.api.documents import _export_entry, _summary_response
+
+    summary = _titled_summary()
+    shown = _summary_response(Document(review_rows=[]), summary)["summaryTitle"]
+    assert shown == "[ManualCheck] JANE DOE, M.D. KAISER PERMANENTE. OFFICE VISIT. (Pages 3-5)"
+    assert (
+        _export_entry(summary)["summaryTitle"] == "JANE DOE, M.D. KAISER PERMANENTE. OFFICE VISIT."
+    )
+
+
+def test_a_reviewer_typed_title_is_shown_and_exported_as_typed():
+    from app.api.documents import _export_entry, _summary_response
+
+    typed = "DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT."
+    summary = _titled_summary(edited_title=typed)
+    assert _summary_response(Document(review_rows=[]), summary)["summaryTitle"] == typed
+    assert _export_entry(summary)["summaryTitle"] == typed

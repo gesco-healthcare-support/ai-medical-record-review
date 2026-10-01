@@ -122,6 +122,11 @@ front of the combined pages.
   (see [Summarization](summarization.md#title)).
 - No street, suite, city-and-state, ZIP or phone pieces (`summarize_engine.py` `without_address()`):
   none of the entry headers in the reviewers' reference deliverables carries one.
+- The author first-name-first: a `SURNAME, GIVEN NAMES, CREDENTIAL` opening, copied from a letterhead
+  printed that way, becomes `GIVEN NAMES SURNAME, CREDENTIAL` (`tidy_author_and_facility()`).
+- A health system named without its site: `KAISER PERMANENTE FONTANA` becomes `KAISER PERMANENTE`
+  (`_HEALTH_SYSTEMS` in `summarize_engine.py`). Both rules also apply to titles stored before them, on
+  the Summaries tab and in the export, but never to a title a reviewer typed.
 - No internal markers: `presentable_title()` strips `[ManualCheck]`, `[Diagnostic Study]` and
   `(Pages X-Y)`. The page range comes back only when the export dialog's page-number box is ticked.
 - One spelling per provider across the record (`consistent_authors()`).

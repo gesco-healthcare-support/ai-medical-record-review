@@ -713,7 +713,7 @@ def _usable_title(generated, fallback, source="generated"):
     """
     cleaned = (generated or "").strip()
     if cleaned and len(cleaned) <= MAX_GENERATED_TITLE:
-        return without_address(cleaned)
+        return tidy_title(cleaned)
     logger.warning(
         "%s title unusable (%d chars); falling back to the row title", source, len(cleaned)
     )
@@ -972,6 +972,190 @@ def without_address(title: str) -> str:
     return _DOUBLED_SEPARATOR.sub(r"\1", "".join(sep + piece for sep, piece in kept)).strip()
 
 
+# FIRST NAME FIRST. The title prompt asks for "JANE SMITH, M.D.", but a letterhead or signature
+# block printed surname-first is copied as printed: "SMITH, JOHN PAUL III, M.D.". Reviewer feedback,
+# 2026-10-01: the rest of the documents read First Last, and a mix looks unfinished. Measured on the
+# live box over the last 30 days: 48 titles opened surname-first against 1,465 first-name-first, on
+# Gemini (43) and the self-hosted model (5) alike, so this is a property of the documents and not of
+# one model - which is why it is fixed here rather than in a prompt.
+#
+# Rewritten only in the one shape that cannot be anything else: SURNAME, GIVEN NAMES, CREDENTIAL -
+# exactly two commas before a recognised credential. "JANE SMITH, M.D., PH.D." is untouched (its
+# second element is itself a credential), and so is a title with no credential, where "SMITH, JANE"
+# cannot be told apart from "SMITH, D.C.". A suffix (JR, III ...) moves to after the surname.
+_CREDENTIAL = re.compile(
+    r"(?:M\.? ?D|D\.? ?O|D\.? ?C|P\.? ?T|R\.? ?N|P\.? ?A(?:-C)?|N\.? ?P|PSY\.? ?D|PH\.? ?D|L\.? ?AC"
+    r"|D\.? ?P\.? ?M|O\.? ?D|D\.? ?D\.? ?S|F\.? ?N\.? ?P|L\.? ?V\.? ?N|M\.? ?S\.? ?W"
+    r"|L\.? ?C\.? ?S\.? ?W"
+    r"|O\.? ?T(?:R)?|A\.? ?P\.? ?R\.? ?N)\.?",
+    re.I,
+)
+_NAME_WORD = re.compile(r"[A-Z][A-Z'\-]{0,24}\.?", re.I)
+_SURNAME_FIRST = re.compile(r"([^,]{1,80}), ([^,]{1,80}), (.{1,600})", re.S)
+
+
+# Degrees that can sit in the second slot of a FIRST-NAME-FIRST title ("JANE SMITH, MPH, M.D.") and
+# must never be read as given names.
+_DEGREES = frozenset(
+    {
+        "MPH",
+        "MBA",
+        "MS",
+        "MA",
+        "BS",
+        "BA",
+        "MSN",
+        "BSN",
+        "FACS",
+        "FAAOS",
+        "FACP",
+        "QME",
+        "AME",
+        "DABPMR",
+        "CCSP",
+        "CSCS",
+        "ATC",
+        "DPT",
+        "MSPT",
+        "OTR",
+        "CPE",
+        "FAAPMR",
+        "ABPMR",
+    }
+)
+_SURNAME_PARTICLES = frozenset(
+    {"DE", "DEL", "DELA", "LA", "LE", "VAN", "VON", "DI", "DA", "ST", "MC", "MAC"}
+)
+
+
+def _is_name(text: str, max_words: int) -> bool:
+    words = text.split()
+    return (
+        0 < len(words) <= max_words
+        and all(_NAME_WORD.fullmatch(w) for w in words)
+        and not _CREDENTIAL.fullmatch(text.strip())
+        and not {w.replace(".", "").upper() for w in words} & _DEGREES
+    )
+
+
+def _is_surname(text: str) -> bool:
+    """One word, or a surname behind its particles ("DE LA CRUZ") - never "JANE SMITH", which is
+    a whole name in the FIRST LAST order already."""
+    words = text.split()
+    if not _is_name(text, 3):
+        return False
+    return all(w.rstrip(".").upper() in _SURNAME_PARTICLES for w in words[:-1])
+
+
+def _is_given_names(text: str) -> bool:
+    """A given name, not only a suffix: "JOHN A SMITH, JR., M.D." is first-name-first already."""
+    words = text.split()
+    return _is_name(text, 5) and any(w.rstrip(".").upper() not in _NAME_SUFFIXES for w in words)
+
+
+def _first_name_first(title: str) -> str:
+    """``title`` with a ``SURNAME, GIVEN NAMES, CREDENTIAL`` opening turned to ``GIVEN NAMES
+    SURNAME, CREDENTIAL`` - see the note above. Anything else is returned unchanged."""
+    match = _SURNAME_FIRST.fullmatch(title)
+    if not match:
+        return title
+    surname, given, rest = match.groups()
+    credential = re.match(r"\S+", rest)
+    if not (
+        _is_surname(surname)
+        and _is_given_names(given)
+        and credential
+        and _CREDENTIAL.fullmatch(credential.group(0).rstrip(",.") + ".")
+    ):
+        return title
+    surname_words, given_words = surname.split(), given.split()
+    suffix = [w for w in (surname_words[-1:] + given_words[-1:]) if w.rstrip(".") in _NAME_SUFFIXES]
+    core = [w for w in given_words + surname_words if w not in suffix]
+    return " ".join(core + suffix) + ", " + rest
+
+
+# A health system's NAME only, never the branch. Reviewer feedback, 2026-10-01, on a title reading
+# "KAISER PERMANENTE <SITE> NO. MEDICAL OFFICE U.": "we would like to keep it neater as just
+# Kaiser Permanente". Measured on the live box: 298 titles name Kaiser and 28 carry more after it -
+# always a site or a department (CARSON SOUTH BAY, FONTANA, GARDEN MEDICAL OFFICES, SPINE CENTER,
+# ON-THE-JOB), never anything a reader needs. Not an address, so `without_address` keeps it.
+#
+# Listed systems only, deliberately: for a one-site clinic the words after its name can BE its name
+# ("VALLEY MEDICAL GROUP"), so a general branch-stripper would cut real facility names. The trim
+# stops before anything that names a document, so "KAISER PERMANENTE PROGRESS REPORT" - the facility
+# and the document type run together with no separator - keeps its document type.
+_HEALTH_SYSTEMS = ("KAISER PERMANENTE",)
+# A piece after the system's name that is still the site: an office, a centre, or the one stray
+# letter a wrapped letterhead leaves behind ("U."). Read only right after a site was cut from the
+# system's own piece, so "KAISER PERMANENTE. PTH, INTACT." keeps its lab test.
+_SITE_PIECE = re.compile(
+    r"[^.,]{0,40}\bMEDICAL (?:OFFICES?|CENTERS?|BUILDING)\b[^.,]{0,40}|[A-Z]", re.I
+)
+_NAMES_A_DOCUMENT = re.compile(
+    r"\b(?:REPORT|NOTES?|EVALUATION|EXAM(?:INATION)?|VISIT|SUMMARY|CONSULTATION|LETTER|FORM|ORDER"
+    r"|REQUEST|RECORDS?|MRI|CT|X-?RAYS?|ULTRASOUND|EMG|NCS|PR-?\d|H&P|HISTORY|PHYSICAL|DEPOSITION"
+    r"|P?QME|AME|IME|RFA|UR|IMR|PT|OT|DFR|DWC)\b",
+    re.I,
+)
+
+
+def _is_site(text: str) -> bool:
+    """Whether the words after a health system's name read as a site or department - short, in the
+    header's capitals, and not a phrase. "RELEASE OF MEDICAL INFORMATION" after "KAISER PERMANENTE"
+    is the DOCUMENT's own name, which a replay over the live box caught being cut."""
+    words = text.split()
+    return (
+        len(words) <= 6
+        and text.upper() == text
+        and not {"OF", "FOR", "AND", "TO"} & {w.strip(".,") for w in words}
+        and not _NAMES_A_DOCUMENT.search(text)
+    )
+
+
+def _system_name_only(title: str) -> str:
+    """``title`` with a listed health system's branch and site dropped - see the note above.
+
+    Returns ``title`` itself, byte for byte, unless a site was actually dropped."""
+    parts = _TITLE_SEPARATOR_RE.split(title)
+    pieces = [(parts[i - 1] if i else "", parts[i]) for i in range(0, len(parts), 2)]
+    out: list[tuple[str, str]] = []
+    trimming = changed = False
+    for sep, piece in pieces:
+        bare = piece.strip()
+        system = next((s for s in _HEALTH_SYSTEMS if bare.upper().startswith(s)), None)
+        tail = bare[len(system) :].strip() if system else ""
+        if system and (not tail or _is_site(tail)):
+            out.append((sep, piece[: piece.upper().index(system) + len(system)]))
+            changed = changed or bool(tail)
+            trimming = bool(tail)
+            continue
+        if trimming and bare and _SITE_PIECE.fullmatch(bare) and _is_site(bare):
+            changed = True
+            continue
+        trimming = False
+        out.append((sep, piece))
+    if not changed:
+        return title
+    return _DOUBLED_SEPARATOR.sub(r"\1", "".join(sep + piece for sep, piece in out)).strip()
+
+
+def tidy_author_and_facility(title: str) -> str:
+    """``title`` with the author first-name-first and a health system's site dropped - the two
+    rules above. A leading ``[ManualCheck]`` tag is kept where it was, so this is safe on a stored,
+    decorated title as well as on a bare header line."""
+    raw = title or ""
+    tag = _MANUAL_CHECK_PREFIX.match(raw)
+    head = raw[: tag.end()] if tag else ""
+    body = raw[len(head) :]
+    return head + _system_name_only(_first_name_first(body))
+
+
+def tidy_title(title: str) -> str:
+    """The deterministic clean-up every generated and every delivered title goes through: no
+    address (`without_address`), the author first-name-first, and a health system's name only."""
+    return tidy_author_and_facility(without_address(title))
+
+
 # ONE spelling per provider across a record. Titles are generated one sub-document at a time, each
 # from its own pages, so a provider printed "JEFFERY FREESEMANN" on one form and "JEFFERY M.
 # FREESEMANN" on the next got both in one delivered report. Adam Flake, 2026-09-24: "inconsistencies
@@ -1170,8 +1354,13 @@ def fold_same_visit(entries: list[dict], categories: list[str], title_key: str) 
     return out
 
 
-def presentable_title(title: str) -> str:
+def presentable_title(title: str, *, reviewer_edited: bool = False) -> str:
     """``title`` with every internal review marker removed, ready for a delivered document.
+
+    The author's name order and a health system's site are tidied too (`tidy_title`), so a summary
+    stored before those rules is delivered tidy without a re-run - EXCEPT a title a reviewer typed
+    (``reviewer_edited``), which keeps their wording; only the address rule, older than this
+    parameter, still applies to it.
 
     Lives next to `_row_tags`, which APPLIES those markers, because the two have to agree and they
     did not: `_row_tags`' own docstring says "the export strips both either way", and that was true
@@ -1193,7 +1382,8 @@ def presentable_title(title: str) -> str:
     # value were being mutated.
     presentable = _MANUAL_CHECK_PREFIX.sub("", (title or "").strip())
     presentable = _PAGES_SUFFIX.sub("", presentable).rstrip()
-    return without_address(_DIAGNOSTIC_TAG.sub(" ", presentable).strip())
+    presentable = _DIAGNOSTIC_TAG.sub(" ", presentable).strip()
+    return without_address(presentable) if reviewer_edited else tidy_title(presentable)
 
 
 def _unreadable_output(row, unreadable_pages) -> dict:

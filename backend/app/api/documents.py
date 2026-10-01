@@ -84,6 +84,7 @@ from app.services.summarize_engine import (
     consistent_authors,
     fold_same_visit,
     presentable_title,
+    tidy_author_and_facility,
     standalone_studies_from_rows,
     summarize_row,
 )
@@ -1441,8 +1442,13 @@ def _summary_response(document: Document, summary: Summary) -> dict:
     """
     live = {(row.start, row.end): row for row in document.review_rows}
     row = live.get((summary.row_start, summary.row_end))
+    listing = summary.listing()
+    if summary.edited_title is None:
+        # A title stored before the name-order and health-system rules reads tidy on this tab too,
+        # without a re-run - the same rules the export applies. A reviewer-typed title is theirs.
+        listing["summaryTitle"] = tidy_author_and_facility(listing["summaryTitle"])
     return {
-        **summary.listing(),
+        **listing,
         "rowCategoryLive": row.category if row is not None else None,
         "rowMissing": row is None,
         "rowMethodLive": row.method if row is not None else None,
@@ -1721,7 +1727,9 @@ def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tup
     that apply the markers, because the bundle export path needed the same logic and could not import
     it from here.
     """
-    title = presentable_title(summary.effective_title())
+    title = presentable_title(
+        summary.effective_title(), reviewer_edited=summary.edited_title is not None
+    )
     if with_pages:
         title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
     text = summary.effective_text()
@@ -2068,7 +2076,12 @@ def _delivered_entries(session: Session, document: Document) -> dict[int, tuple[
     review markers, and this is a page a client reads.
     """
     return {
-        summary.row_start: (summary.effective_date(), presentable_title(summary.effective_title()))
+        summary.row_start: (
+            summary.effective_date(),
+            presentable_title(
+                summary.effective_title(), reviewer_edited=summary.edited_title is not None
+            ),
+        )
         for summary in session.scalars(
             select(Summary).where(
                 Summary.document_id == document.id,
