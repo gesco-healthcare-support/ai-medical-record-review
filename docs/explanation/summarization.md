@@ -223,9 +223,14 @@ does not enforce `maxLength`. `_usable_title()` is the enforcement:
   overflowed the 512-character column and killed a 124-row job.
 - The segmentation title fallback is **truncated** to `MAX_STORED_TITLE` (512 minus the length of the
   three decorations), because a long segmentation title is a real header that is merely long.
-- An accepted title passes through `without_address()`, which drops pieces of the title that are
-  unmistakably an address (street, suite, city before a state or ZIP, `CA` after a city, a phone
-  number) and keeps everything else byte for byte.
+- An accepted title passes through `tidy_title()`. Its `without_address()` step drops pieces of the
+  title that are unmistakably an address (street, suite, city before a state or ZIP, `CA` after a
+  city, a phone number) and keeps everything else byte for byte. Its `tidy_author_and_facility()` step
+  turns a `SURNAME, GIVEN NAMES, CREDENTIAL` author into `GIVEN NAMES SURNAME, CREDENTIAL`, and cuts a
+  listed health system (`_HEALTH_SYSTEMS`, today Kaiser Permanente) down to its name, dropping the
+  branch or department after it. Both are deliberately narrow: an author without a credential, a
+  second credential or degree in the middle slot, and text after the system's name that names a
+  document are all left as they are.
 
 The stored title is decorated: `[ManualCheck] ` in front when the row flag is `x`,
 ` [Diagnostic Study]` after it for category 3, and ` (Pages S-E)` at the end. Exports strip all
