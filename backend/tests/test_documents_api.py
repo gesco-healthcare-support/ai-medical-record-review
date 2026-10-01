@@ -3137,7 +3137,6 @@ async def test_unknown_resolve_action_names_all_three(authed):
     assert "unkeep" in bad.json()["detail"]
 
 
-
 def _dupe_rows(doc_id):
     with get_sessionmaker()() as session:
         return {
@@ -3147,15 +3146,17 @@ def _dupe_rows(doc_id):
 
 
 async def test_keep_another_keeps_a_second_copy_and_the_cluster_reads_resolved(authed):
-    """WHEN a cluster holds two genuinely different documents (a left and a right study on one date),
-    THE SYSTEM SHALL let the reviewer keep one copy of each, and the cluster SHALL stop being
+    """WHEN a cluster holds two genuinely different documents (a left and a right study on one
+    date), THE SYSTEM SHALL let the reviewer keep one copy of each, and the cluster SHALL stop being
     advised. Before this, keep_one could keep only one, so the other study reached no report."""
     client, _ = authed
     doc_id = await _upload(client, pages=6)
     _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
 
     url = f"/api/documents/{doc_id}/duplicates/1/resolve"
-    assert (await client.post(url, json={"action": "keep_one", "primary_idx": 0})).status_code == 200
+    assert (
+        await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+    ).status_code == 200
     kept = await client.post(url, json={"action": "keep_another", "idx": 2})
     assert kept.status_code == 200
 

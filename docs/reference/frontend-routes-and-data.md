@@ -257,7 +257,7 @@ Optional fields marked "absent means nothing to say" (`verifyKeptRaw`, `verifyFa
 | `DocumentStatus` | `uploaded`, `segmenting`, `summarizing`, `reviewing`, `done`, `needs_attention`, `error`, `interrupted` | `frontend/lib/types.ts` |
 | `Row.method` | `rules`, `llm+embedding`, `llm-disagree`, `embedding-only`, `llm-only`, `no-signal`, `empty`, `timeout`; absent or null means unknown | `frontend/lib/types.ts` |
 | `Row.flag` | `x` (flagged for review), `-` (not flagged) | `frontend/components/review/rows-table.tsx` |
-| `DuplicateAction` | `keep_one`, `dismiss`, `remove_member` | `frontend/lib/review-api.ts` |
+| `DuplicateAction` | `keep_one`, `keep_another`, `unkeep`, `dismiss`, `remove_member` | `frontend/lib/review-api.ts` |
 | `DownloadState` | `waiting`, `downloading`, `interrupted`, `complete`, `expired` | `frontend/lib/download.ts` |
 | Letter type | `""` (Not set), `advocacy` (Advocacy letter), `interrogatory` (Interrogatory letter), `none` (No letter) | `frontend/components/review/header-bar.tsx` `LETTER_OPTIONS` |
 | Workbench tab | `review`, `duplicates`, `summaries` | `frontend/components/review/review-page-client.tsx` |

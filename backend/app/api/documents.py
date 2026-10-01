@@ -1084,9 +1084,7 @@ def _apply_keep_another(members, idx) -> None:
         raise HTTPException(status_code=400, detail="idx is not in this cluster")
     kept = [m for m in members if m.dupe_primary]
     if not kept:
-        raise HTTPException(
-            status_code=400, detail="keep one copy first, then keep another"
-        )
+        raise HTTPException(status_code=400, detail="keep one copy first, then keep another")
     target.dupe_primary = True
     target.dupe_dismissed = False
     target.include = any(m.include for m in kept)
@@ -1143,8 +1141,9 @@ def resolve_duplicate(
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
-    """Resolve one cluster: keep_one (mark the primary, exclude the rest), keep_another (keep one more
-    copy), unkeep (undo keep_another), dismiss (not duplicates) or remove_member (drop one copy)."""
+    """Resolve one cluster: keep_one (mark the primary, exclude the rest), keep_another (keep one
+    more copy), unkeep (undo keep_another), dismiss (not duplicates) or remove_member (drop one
+    copy)."""
     members = [r for r in document.review_rows if r.dupe_group == group]
     if not members:
         raise HTTPException(status_code=404, detail="no such duplicate group")

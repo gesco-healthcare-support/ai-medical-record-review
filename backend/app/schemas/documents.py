@@ -153,9 +153,9 @@ class DuplicateResolvePayload(BaseModel):
     whole cluster as not-duplicates; action="remove_member" drops the single row `idx` out of the
     cluster, for the mixed cluster where some copies are real and others are not.
     action="keep_another" keeps `idx` as well, for the cluster holding two genuinely different
-    documents (a left and a right study on one date) where each needs one copy in the report; it needs
-    a copy already kept. action="unkeep" reverses keep_another on `idx` and refuses to drop the last
-    kept copy. The route validates action + the referenced idx (-> 400)."""
+    documents (a left and a right study on one date) where each needs one copy in the report; it
+    needs a copy already kept. action="unkeep" reverses keep_another on `idx` and refuses to drop
+    the last kept copy. The route validates action + the referenced idx (-> 400)."""
 
     action: str  # "keep_one" | "keep_another" | "unkeep" | "dismiss" | "remove_member"
     primary_idx: int | None = None
