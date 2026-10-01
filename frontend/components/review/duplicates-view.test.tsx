@@ -179,6 +179,65 @@ describe("DuplicatesView", () => {
     expect(screen.getByText("Needs review")).toBeInTheDocument();
   });
 
+  it("offers 'Also keep' on the other copies once one is kept", async () => {
+    // A left and a right study on one date land in one group: the reviewer keeps one, then keeps
+    // the other side too, so both reach the report.
+    resolveMock.mockClear();
+    dupState.error = null;
+    dupState.data = {
+      job: null,
+      clusters: [
+        {
+          group: 4,
+          dismissed: false,
+          rows: [
+            { idx: 13, title: "MRI", date: "03/01/2026", pages: { start: 1, end: 2 }, include: true, primary: true },
+            { idx: 18, title: "MRI", date: "03/01/2026", pages: { start: 3, end: 4 }, include: false, primary: false },
+          ],
+        },
+      ],
+    };
+    render(<DuplicatesView documentId="d1" />);
+    expect(screen.queryByRole("button", { name: /keep this one/i })).not.toBeInTheDocument();
+    // The only kept copy cannot be undone here - keep a different one instead.
+    expect(screen.queryByRole("button", { name: /^undo$/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /also keep/i }));
+    await waitFor(() =>
+      expect(resolveMock).toHaveBeenCalledWith({ group: 4, action: "keep_another", idx: 18 }),
+    );
+  });
+
+  it("undoes an extra kept copy, and reads a group whose included copies were all kept as resolved", async () => {
+    resolveMock.mockClear();
+    dupState.error = null;
+    dupState.data = {
+      job: null,
+      clusters: [
+        {
+          group: 4,
+          dismissed: false,
+          rows: [
+            { idx: 13, title: "MRI", date: "03/01/2026", pages: { start: 1, end: 2 }, include: true, primary: true },
+            { idx: 18, title: "MRI", date: "03/01/2026", pages: { start: 3, end: 4 }, include: true, primary: true },
+            { idx: 22, title: "MRI", date: "03/01/2026", pages: { start: 5, end: 6 }, include: false, primary: false },
+          ],
+        },
+      ],
+    };
+    render(<DuplicatesView documentId="d1" />);
+    // Two copies will be summarized, but the reviewer chose both - that is decided, not pending.
+    expect(screen.getByText("Resolved")).toBeInTheDocument();
+    expect(screen.queryByText("Needs review")).not.toBeInTheDocument();
+
+    const undo = screen.getAllByRole("button", { name: /^undo$/i });
+    expect(undo).toHaveLength(2);
+    fireEvent.click(undo[1]);
+    await waitFor(() =>
+      expect(resolveMock).toHaveBeenCalledWith({ group: 4, action: "unkeep", idx: 18 }),
+    );
+  });
+
   it("shows the empty state when a completed check found no clusters", () => {
     // `checked: true` is load-bearing. Without it this fixture describes a document nothing has looked
     // at, and "No duplicates" would be a false statement rather than an empty result.

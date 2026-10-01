@@ -10,6 +10,7 @@ import { useReviewWorkflow } from "@/hooks/use-review-workflow";
 import { useSummaries } from "@/hooks/use-summaries";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { useDuplicates, useStartDedup } from "@/hooks/use-duplicates";
+import { clusterNeedsReview } from "@/lib/review-api";
 import { SegmentedTabs } from "@/components/ui/segmented-tabs";
 import { BackLink } from "@/components/app/back-link";
 import { ReviewEditor } from "./review-editor";
@@ -505,11 +506,9 @@ export function ReviewPageClient({
   const { data: dupData } = useDuplicates(documentId);
   const recheck = useStartDedup(documentId);
   const [tab, setTab] = useState<Tab>("review");
-  // A cluster still needs the reviewer while 2+ of its copies would be summarized - the same rule the
-  // API's advisory count and the cluster chip use, so every surface agrees.
+  // The same rule the API's advisory count and the cluster chip use, so every surface agrees.
   const unresolvedDupes = (dupData?.clusters ?? []).filter(
-    (c) =>
-      !c.dismissed && c.rows.filter((r) => r.include !== false).length >= 2,
+    clusterNeedsReview,
   ).length;
   // A dedup job blocks both /dedup/start and /summarize/start server-side (409), so disable rather
   // than surface the conflict.

@@ -5,15 +5,16 @@ import { Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
 import { useDuplicates, useResolveDuplicate } from "@/hooks/use-duplicates";
-import type { DuplicateAction } from "@/lib/review-api";
+import { clusterNeedsReview, type DuplicateAction } from "@/lib/review-api";
 import type { DuplicateCluster, DuplicateRow } from "@/lib/types";
 import { PdfViewer, type PdfViewerHandle } from "./pdf-viewer";
 import { SplitPane } from "./split-pane";
 
 /** Duplicates review (before summarization): each confirmed cluster lists its copies oldest-first
  *  beside the record's PDF, so the reviewer can read the pages before deciding; clicking a copy jumps
- *  the viewer to its first page. The reviewer keeps one copy (excluding the rest from summarization)
- *  or dismisses the cluster as not-duplicates. Resolving clusters is advisory, but running the check
+ *  the viewer to its first page. The reviewer keeps one copy (excluding the rest from summarization),
+ *  keeps a further copy when the group holds two different documents (a left and a right study on
+ *  one date), or dismisses the cluster as not-duplicates. Resolving clusters is advisory, but running the check
  *  is not: Summarize is refused until a completed check covers the current rows, unless the
  *  reviewer skips it (the skip is audited). `onResolved`
  *  lets the parent refresh the Review editor's rows so a later Summarize respects the exclusions. */
@@ -287,6 +288,10 @@ export function DuplicatesView({
                 onKeep={(idx) =>
                   act(cluster.group, "keep_one", { primaryIdx: idx })
                 }
+                onKeepAnother={(idx) =>
+                  act(cluster.group, "keep_another", { idx })
+                }
+                onUnkeep={(idx) => act(cluster.group, "unkeep", { idx })}
                 onDismiss={() => act(cluster.group, "dismiss")}
                 onRemove={(row) => removeMember(cluster.group, row)}
               />
@@ -322,6 +327,8 @@ function ClusterCard({
   selectedIdx,
   onOpen,
   onKeep,
+  onKeepAnother,
+  onUnkeep,
   onDismiss,
   onRemove,
 }: Readonly<{
@@ -330,14 +337,17 @@ function ClusterCard({
   selectedIdx: number | null;
   onOpen: (row: DuplicateRow) => void;
   onKeep: (idx: number) => void;
+  onKeepAnother: (idx: number) => void;
+  onUnkeep: (idx: number) => void;
   onDismiss: () => void;
   onRemove: (row: DuplicateRow) => void;
 }>) {
   // Resolved = at most one copy would still be summarized (the reviewer kept one, or excluded the
-  // rest by hand). Inclusion - not the "kept" mark - is the test, so a cluster stays resolved after a
-  // re-check recomputes its group, and is flagged again if it gains another included copy.
-  const includedCount = cluster.rows.filter((r) => r.include !== false).length;
-  const resolved = includedCount < 2;
+  // rest by hand), or every copy still summarized is one the reviewer kept (a group holding two
+  // different documents). Inclusion is the main test, so a cluster stays resolved after a re-check
+  // recomputes its group, and is flagged again if it gains another included copy nobody kept.
+  const resolved = !clusterNeedsReview({ ...cluster, dismissed: false });
+  const keptCount = cluster.rows.filter((r) => r.primary).length;
   return (
     <div className={cn("summary-card", cluster.dismissed && "excluded")}>
       <div className="summary-head">
@@ -389,14 +399,14 @@ function ClusterCard({
               // each of them would distribute the row's free space BETWEEN them and strand the first
               // mid-row, which is what the single-button rule did once a second button appeared.
               <span className="dupe-copy-actions">
-                <button
-                  type="button"
-                  className="ev-btn ev-btn-ghost ev-btn-sm"
-                  disabled={busy || row.primary}
-                  onClick={() => onKeep(row.idx)}
-                >
-                  {row.primary ? "Kept" : "Keep this one"}
-                </button>
+                <KeepButtons
+                  row={row}
+                  busy={busy}
+                  keptCount={keptCount}
+                  onKeep={onKeep}
+                  onKeepAnother={onKeepAnother}
+                  onUnkeep={onUnkeep}
+                />
                 {/* Per-copy escape from a MIXED cluster: real records produce 7-member groups
                     spanning 7 dates, where some copies belong and others do not. Dismissing the whole
                     group would discard the genuine duplicates along with the false ones. */}
@@ -427,5 +437,70 @@ function ClusterCard({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** The keep controls for one copy. With nothing kept yet, "Keep this one" keeps it and excludes the
+ *  rest. Once a copy is kept, the others offer "Also keep" - for a group that holds two different
+ *  documents, such as a left and a right study on the same date, where each needs one copy in the
+ *  report. A kept copy shows "Kept", plus "Undo" when another kept copy remains; the last kept copy
+ *  cannot be undone here (keep a different one instead). */
+function KeepButtons({
+  row,
+  busy,
+  keptCount,
+  onKeep,
+  onKeepAnother,
+  onUnkeep,
+}: Readonly<{
+  row: DuplicateRow;
+  busy: boolean;
+  keptCount: number;
+  onKeep: (idx: number) => void;
+  onKeepAnother: (idx: number) => void;
+  onUnkeep: (idx: number) => void;
+}>) {
+  if (row.primary) {
+    return (
+      <>
+        <button type="button" className="ev-btn ev-btn-ghost ev-btn-sm" disabled>
+          Kept
+        </button>
+        {keptCount > 1 ? (
+          <button
+            type="button"
+            className="ev-btn ev-btn-ghost ev-btn-sm"
+            disabled={busy}
+            title="Stop keeping this copy - it goes back to being an excluded duplicate"
+            onClick={() => onUnkeep(row.idx)}
+          >
+            Undo
+          </button>
+        ) : null}
+      </>
+    );
+  }
+  if (keptCount > 0) {
+    return (
+      <button
+        type="button"
+        className="ev-btn ev-btn-ghost ev-btn-sm"
+        disabled={busy}
+        title="This copy is a different document (e.g. the other side) - keep it in the report too"
+        onClick={() => onKeepAnother(row.idx)}
+      >
+        Also keep
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="ev-btn ev-btn-ghost ev-btn-sm"
+      disabled={busy}
+      onClick={() => onKeep(row.idx)}
+    >
+      Keep this one
+    </button>
   );
 }

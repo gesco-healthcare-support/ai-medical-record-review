@@ -787,12 +787,21 @@ def _unreviewed_dupe_count(groups: dict[int, list[ReviewRow]]) -> int:
     Inclusion, not the primary mark, is the test: a keep-one resolution excludes the other copies, so
     the cluster stops being advised even after a dedup re-run recomputes its group. A cluster that
     later gains another included copy is correctly advised again.
+
+    Two or more included copies are fine when every one of them is a copy the reviewer KEPT
+    (keep_another): that cluster holds distinct documents and has been decided. The frontend's
+    `clusterNeedsReview` applies the same rule so the chip and this count agree.
     """
-    return sum(
-        1
-        for members in groups.values()
-        if not any(m.dupe_dismissed for m in members) and sum(1 for m in members if m.include) >= 2
-    )
+    return sum(1 for members in groups.values() if _cluster_needs_review(members))
+
+
+def _cluster_needs_review(members: list[ReviewRow]) -> bool:
+    """A cluster still needs the reviewer when it is not dismissed and 2+ of its copies would be
+    summarized, at least one of which nobody chose to keep."""
+    if any(m.dupe_dismissed for m in members):
+        return False
+    included = [m for m in members if m.include]
+    return len(included) >= 2 and any(not m.dupe_primary for m in included)
 
 
 def _dupe_date_key(date: str | None) -> tuple[int, int, int]:
@@ -1058,6 +1067,47 @@ def _apply_keep_one(members, primary_idx) -> None:
         member.include = is_primary and wanted
 
 
+def _apply_keep_another(members, idx) -> None:
+    """Keep one more copy of a cluster that already has a kept copy.
+
+    A cluster can hold two genuinely different documents that the check grouped together - a left
+    and a right foot MRI on the same date share a date and a category, and that is the whole test
+    the gate applies. Measured on the live box 2026-10-01: 8 of 351 clusters held both a left and a
+    right study, and in one five-member cluster keeping a right-side copy excluded both left-side
+    copies, so that study reached no report. keep_one alone could only keep one.
+
+    The new copy takes the kept copy's inclusion rather than a flat True, for the reason keep_one
+    gives: keeping must not push a cluster the reviewer has excluded back into the report.
+    """
+    target = next((m for m in members if m.idx == idx), None)
+    if target is None:
+        raise HTTPException(status_code=400, detail="idx is not in this cluster")
+    kept = [m for m in members if m.dupe_primary]
+    if not kept:
+        raise HTTPException(
+            status_code=400, detail="keep one copy first, then keep another"
+        )
+    target.dupe_primary = True
+    target.dupe_dismissed = False
+    target.include = any(m.include for m in kept)
+
+
+def _apply_unkeep(members, idx) -> None:
+    """Undo keep_another on one copy, which goes back to being an excluded duplicate.
+
+    Refuses the LAST kept copy: un-keeping it would leave a cluster with every copy excluded and no
+    kept mark, which reads as resolved while nothing from it reaches the report. Choosing a
+    different single copy is keep_one's job.
+    """
+    target = next((m for m in members if m.idx == idx), None)
+    if target is None or not target.dupe_primary:
+        raise HTTPException(status_code=400, detail="idx is not a kept copy in this cluster")
+    if sum(1 for m in members if m.dupe_primary) < 2:
+        raise HTTPException(status_code=400, detail="a cluster must keep at least one copy")
+    target.dupe_primary = False
+    target.include = False
+
+
 def _apply_remove_member(session, members, idx) -> None:
     """Take one row out of a duplicate cluster, dissolving the cluster if fewer than two remain."""
     target = next((m for m in members if m.idx == idx), None)
@@ -1078,8 +1128,9 @@ def _apply_remove_member(session, members, idx) -> None:
     "/{document_id}/duplicates/{group}/resolve",
     responses={
         400: {
-            "description": "The action is not one of keep_one, dismiss or remove_member, "
-            "or an index is not in this cluster."
+            "description": "The action is not one of keep_one, keep_another, unkeep, dismiss or "
+            "remove_member, an index is not in this cluster, keep_another has no kept copy to add "
+            "to, or unkeep would remove the last kept copy."
         },
         404: {"description": "No duplicate group has this number."},
         409: {"description": "A job is running for this document."},
@@ -1092,7 +1143,8 @@ def resolve_duplicate(
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
-    """Resolve one cluster: keep_one (mark the primary, exclude the rest) or dismiss (not duplicates)."""
+    """Resolve one cluster: keep_one (mark the primary, exclude the rest), keep_another (keep one more
+    copy), unkeep (undo keep_another), dismiss (not duplicates) or remove_member (drop one copy)."""
     members = [r for r in document.review_rows if r.dupe_group == group]
     if not members:
         raise HTTPException(status_code=404, detail="no such duplicate group")
@@ -1100,6 +1152,10 @@ def resolve_duplicate(
         raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     if payload.action == "keep_one":
         _apply_keep_one(members, payload.primary_idx)
+    elif payload.action == "keep_another":
+        _apply_keep_another(members, payload.idx)
+    elif payload.action == "unkeep":
+        _apply_unkeep(members, payload.idx)
     elif payload.action == "dismiss":
         for member in members:
             member.dupe_dismissed = True
@@ -1109,7 +1165,8 @@ def resolve_duplicate(
     else:
         raise HTTPException(
             status_code=400,
-            detail="action must be 'keep_one', 'dismiss' or 'remove_member'",
+            detail="action must be 'keep_one', 'keep_another', 'unkeep', 'dismiss' or "
+            "'remove_member'",
         )
     session.commit()
     audit(
@@ -1117,7 +1174,8 @@ def resolve_duplicate(
         "duplicates.resolve",
         user.id,
         document.id,
-        detail=f"group={group} action={payload.action}",
+        detail=f"group={group} action={payload.action}"
+        + (f" idx={payload.idx}" if payload.idx is not None else ""),
     )
     return {"ok": True}
 
