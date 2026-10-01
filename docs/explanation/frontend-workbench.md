@@ -356,12 +356,15 @@ The gate is soft. "Summarize without checking" appears on the Duplicates tab onl
 stale check is the only thing in the way. It asks for confirmation, then sends
 `skip_duplicate_check: true`, which the server accepts and records in the audit log.
 
-Resolving clusters does not block Summarize. The actions are "Keep this one" (`keep_one`), "Not a
+Resolving clusters does not block Summarize. The actions are "Keep this one" (`keep_one`), "Also
+keep" on the other copies once one is kept (`keep_another`, for a group holding two different
+documents such as a left and a right study), "Undo" on an extra kept copy (`unkeep`), "Not a
 duplicate" for one copy (`remove_member`, after a confirmation) and "Not duplicates" for the whole
 cluster (`dismiss`). Each resolve invalidates the duplicates query and calls `reloadRows()`. A cluster
-reads "Resolved" once fewer than two of its copies are included, "Dismissed" when dismissed, and "Needs
-review" otherwise. The count of unresolved clusters (not dismissed, two or more copies included)
-labels the tab and puts a blue banner on the other tabs.
+reads "Resolved" once fewer than two of its copies are included or every included copy was kept,
+"Dismissed" when dismissed, and "Needs review" otherwise. The count of unresolved clusters
+(`clusterNeedsReview`: not dismissed, two or more copies included, at least one not kept) labels the
+tab and puts a blue banner on the other tabs.
 
 The Duplicates tab shows separate banners for a stale check (red), a record never checked (blue), a
 check that failed or was interrupted (red, with the job's error text), and sub-documents the last check

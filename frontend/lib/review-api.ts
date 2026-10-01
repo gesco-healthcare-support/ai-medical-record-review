@@ -2,6 +2,7 @@ import { apiFetch } from "@/lib/api";
 import type {
   DocumentDetail,
   DocumentStatus,
+  DuplicateCluster,
   DuplicatesResponse,
   JobProgress,
   Row,
@@ -53,12 +54,29 @@ export function cancelJob(id: string, jobId: number, force = false) {
   );
 }
 
-/** One resolution of a duplicate cluster: keep a copy, dismiss the cluster, or drop one member out
- *  of it (the mixed cluster where some copies are real duplicates and others are not). */
-export type DuplicateAction = "keep_one" | "dismiss" | "remove_member";
+/** One resolution of a duplicate cluster: keep a copy, keep one more copy (a cluster holding two
+ *  different documents, e.g. a left and a right study on one date), undo that extra keep, dismiss
+ *  the cluster, or drop one member out of it (the mixed cluster where some copies are real
+ *  duplicates and others are not). */
+export type DuplicateAction =
+  | "keep_one"
+  | "keep_another"
+  | "unkeep"
+  | "dismiss"
+  | "remove_member";
 
-/** POST /api/documents/{id}/duplicates/{group}/resolve - keep-one (primaryIdx), dismiss, or
- *  remove_member (idx). */
+/** Whether a cluster still needs the reviewer: not dismissed, 2+ copies would be summarized, and at
+ *  least one of those is a copy nobody chose to keep. A cluster whose included copies were ALL kept
+ *  holds distinct documents and is decided. The API's advisory count (`_cluster_needs_review`)
+ *  applies the same rule, so the chip, the tab badge and the status count agree. */
+export function clusterNeedsReview(cluster: DuplicateCluster): boolean {
+  if (cluster.dismissed) return false;
+  const included = cluster.rows.filter((r) => r.include !== false);
+  return included.length >= 2 && included.some((r) => !r.primary);
+}
+
+/** POST /api/documents/{id}/duplicates/{group}/resolve - keep-one (primaryIdx), keep_another /
+ *  unkeep / remove_member (idx), or dismiss. */
 export function resolveDuplicate(
   id: string,
   group: number,

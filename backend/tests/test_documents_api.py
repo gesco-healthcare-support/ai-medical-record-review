@@ -3133,6 +3133,131 @@ async def test_unknown_resolve_action_names_all_three(authed):
     )
     assert bad.status_code == 400
     assert "remove_member" in bad.json()["detail"]
+    assert "keep_another" in bad.json()["detail"]
+    assert "unkeep" in bad.json()["detail"]
+
+
+def _dupe_rows(doc_id):
+    with get_sessionmaker()() as session:
+        return {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+
+
+async def test_keep_another_keeps_a_second_copy_and_the_cluster_reads_resolved(authed):
+    """WHEN a cluster holds two genuinely different documents (a left and a right study on one
+    date), THE SYSTEM SHALL let the reviewer keep one copy of each, and the cluster SHALL stop being
+    advised. Before this, keep_one could keep only one, so the other study reached no report."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    assert (
+        await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+    ).status_code == 200
+    kept = await client.post(url, json={"action": "keep_another", "idx": 2})
+    assert kept.status_code == 200
+
+    rows = _dupe_rows(doc_id)
+    assert rows[0].dupe_primary is True
+    assert rows[0].include is True
+    assert rows[2].dupe_primary is True
+    assert rows[2].include is True
+    assert rows[1].dupe_primary is False
+    assert rows[1].include is False
+    status = await client.get(f"/api/documents/{doc_id}/status")
+    assert status.json()["unreviewed_duplicate_groups"] == 0
+
+
+async def test_keep_another_needs_a_kept_copy_first(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+
+    bad = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve", json={"action": "keep_another", "idx": 1}
+    )
+    assert bad.status_code == 400
+    assert _dupe_rows(doc_id)[1].dupe_primary is False
+
+
+async def test_keep_another_rejects_an_idx_outside_the_cluster(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, None)])
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+
+    assert (await client.post(url, json={"action": "keep_another", "idx": 2})).status_code == 400
+    assert (await client.post(url, json={"action": "keep_another"})).status_code == 400
+
+
+async def test_keep_another_does_not_opt_an_excluded_cluster_into_the_report(authed):
+    """The same rule keep_one follows: keeping must not push a cluster the reviewer excluded back
+    into the report."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+    _set_include(doc_id, False)
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+    await client.post(url, json={"action": "keep_another", "idx": 2})
+
+    rows = _dupe_rows(doc_id)
+    assert rows[2].dupe_primary is True
+    assert rows[2].include is False
+
+
+async def test_unkeep_returns_an_extra_copy_to_excluded(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+    await client.post(url, json={"action": "keep_another", "idx": 2})
+
+    assert (await client.post(url, json={"action": "unkeep", "idx": 2})).status_code == 200
+    rows = _dupe_rows(doc_id)
+    assert rows[2].dupe_primary is False
+    assert rows[2].include is False
+    assert rows[0].dupe_primary is True
+    assert rows[0].include is True
+
+
+async def test_unkeep_refuses_the_last_kept_copy(authed):
+    """Un-keeping the only kept copy would leave every copy excluded with no kept mark - a cluster
+    that reads resolved while nothing from it reaches the report."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+
+    assert (await client.post(url, json={"action": "unkeep", "idx": 0})).status_code == 400
+    assert (await client.post(url, json={"action": "unkeep", "idx": 1})).status_code == 400
+    assert _dupe_rows(doc_id)[0].dupe_primary is True
+
+
+async def test_a_second_included_copy_nobody_kept_is_still_advised(authed):
+    """GUARD: the widened resolved rule must not hide a real duplicate. Two kept copies plus a third
+    copy the reviewer re-ticked by hand is still a cluster that needs a decision."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+    await client.post(url, json={"action": "keep_another", "idx": 2})
+    with get_sessionmaker()() as session:
+        row = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.idx == 1)
+        ).one()
+        row.include = True
+        session.commit()
+
+    status = await client.get(f"/api/documents/{doc_id}/status")
+    assert status.json()["unreviewed_duplicate_groups"] == 1
 
 
 async def test_duplicates_report_sub_documents_that_could_not_be_read(authed):

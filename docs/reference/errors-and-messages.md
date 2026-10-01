@@ -53,8 +53,11 @@ Route numbers (D1 to D27, A1 to A8) are those of the [HTTP API reference](http-a
 | 400 | `no PDFs uploaded` | D2 |
 | 400 | `no readable PDFs uploaded` | D2 |
 | 400 | `primary_idx is not in this cluster` | D12 (`keep_one`) |
-| 400 | `idx is not in this cluster` | D12 (`remove_member`) |
-| 400 | `action must be 'keep_one', 'dismiss' or 'remove_member'` | D12 |
+| 400 | `idx is not in this cluster` | D12 (`keep_another`, `remove_member`) |
+| 400 | `keep one copy first, then keep another` | D12 (`keep_another`) |
+| 400 | `idx is not a kept copy in this cluster` | D12 (`unkeep`) |
+| 400 | `a cluster must keep at least one copy` | D12 (`unkeep`) |
+| 400 | `action must be 'keep_one', 'keep_another', 'unkeep', 'dismiss' or 'remove_member'` | D12 |
 | 400 | A row validation sentence (next table) | D13, D16 |
 | 400 | `no rows are marked for summarization` | D16 |
 | 400 | `unknown category` | D18 |
