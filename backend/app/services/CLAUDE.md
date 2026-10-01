@@ -46,3 +46,5 @@ uv run pytest -q tests/test_<module>.py
 ```
 
 Docs: `docs/explanation/*.md` (one page per stage), `docs/reference/model-calls-by-stage.md`.
+
+<!-- reviewed: 2026-09-30 -->

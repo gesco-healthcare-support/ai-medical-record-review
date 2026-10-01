@@ -66,3 +66,5 @@ uv run pytest -q tests/test_jobs.py tests/test_cancel.py tests/test_cancel_escap
 - [How to add a job kind or stage](../../../docs/how-to/add-a-job-kind-or-stage.md)
 - [OCR and page text](../../../docs/explanation/ocr-and-page-text.md)
 - [How to run the tests](../../../docs/how-to/run-the-tests.md)
+
+<!-- reviewed: 2026-09-30 -->

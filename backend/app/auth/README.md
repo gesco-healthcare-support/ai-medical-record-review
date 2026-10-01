@@ -50,3 +50,5 @@ uv run pytest tests/test_auth_gate.py tests/test_auth_integration.py tests/test_
 - [How to manage users and admins](../../../docs/how-to/manage-users-and-admins.md)
 - [HTTP API reference](../../../docs/reference/http-api.md)
 - [Errors and messages reference](../../../docs/reference/errors-and-messages.md)
+
+<!-- reviewed: 2026-09-30 -->

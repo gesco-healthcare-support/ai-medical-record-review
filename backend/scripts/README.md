@@ -50,3 +50,5 @@ Both load their script by file path. `copy_records.py` and `migrate_from_sqlite.
 - [Scripts reference](../../docs/reference/scripts.md): every script, its flags, writes, model
   calls and run command.
 - [Data model reference](../../docs/reference/data-model.md): the tables these scripts touch.
+
+<!-- reviewed: 2026-09-30 -->

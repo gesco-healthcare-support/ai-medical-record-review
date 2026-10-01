@@ -36,3 +36,5 @@ uv run pytest tests/test_documents_api.py tests/test_admin_api.py -q
   every field)
 - [Errors and messages reference](../../../docs/reference/errors-and-messages.md)
 - [How to add an API route or export](../../../docs/how-to/add-an-api-route-or-export.md)
+
+<!-- reviewed: 2026-09-30 -->

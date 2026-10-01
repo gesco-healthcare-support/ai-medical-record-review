@@ -66,3 +66,5 @@ uv run pytest tests/test_admin_api.py -q
 
 `docs/explanation/auth-and-access.md`, `docs/how-to/manage-users-and-admins.md`, and the auth and
 users tables in `docs/reference/http-api.md`.
+
+<!-- reviewed: 2026-09-30 -->

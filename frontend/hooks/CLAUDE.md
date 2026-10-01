@@ -64,3 +64,5 @@ pnpm typecheck
 
 - `docs/explanation/frontend-workbench.md` (autosave, polling, reloads, Stop, downloads)
 - `docs/reference/frontend-routes-and-data.md` (query keys and polling table)
+
+<!-- reviewed: 2026-09-30 -->

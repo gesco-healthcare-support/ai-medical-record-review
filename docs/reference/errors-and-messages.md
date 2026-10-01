@@ -53,8 +53,11 @@ Route numbers (D1 to D27, A1 to A8) are those of the [HTTP API reference](http-a
 | 400 | `no PDFs uploaded` | D2 |
 | 400 | `no readable PDFs uploaded` | D2 |
 | 400 | `primary_idx is not in this cluster` | D12 (`keep_one`) |
-| 400 | `idx is not in this cluster` | D12 (`remove_member`) |
-| 400 | `action must be 'keep_one', 'dismiss' or 'remove_member'` | D12 |
+| 400 | `idx is not in this cluster` | D12 (`keep_another`, `remove_member`) |
+| 400 | `keep one copy first, then keep another` | D12 (`keep_another`) |
+| 400 | `idx is not a kept copy in this cluster` | D12 (`unkeep`) |
+| 400 | `a cluster must keep at least one copy` | D12 (`unkeep`) |
+| 400 | `action must be 'keep_one', 'keep_another', 'unkeep', 'dismiss' or 'remove_member'` | D12 |
 | 400 | A row validation sentence (next table) | D13, D16 |
 | 400 | `no rows are marked for summarization` | D16 |
 | 400 | `unknown category` | D18 |
@@ -82,6 +85,7 @@ Route numbers (D1 to D27, A1 to A8) are those of the [HTTP API reference](http-a
 | 409 | `summarization is rewriting these summaries; wait` | D18 |
 | 409 | `no summaries to export yet` | D20, D21, D23 |
 | 409 | `no matching documents in this record` | D24, D25 |
+| 409 | `none of the matching documents is ticked for summary` | D24, D25 (`summarizedOnly` sent) |
 | 409 | `<N> matching documents exceeds the on-demand limit of <cap>; use the main Summaries flow for a record this large` | D25 |
 | 409 | `category <id> is used by <N> sub-document(s) and cannot be deactivated. Move those rows to another category first.` (singular `sub-document` when N is 1) | A4 |
 | 503 | `Downloads are unavailable right now. Please try again.` | D20 to D27 |
@@ -290,3 +294,5 @@ and the declared size - never the file name.
 - [How to add an API route or export](../how-to/add-an-api-route-or-export.md)
 - [How to diagnose a stuck or failed job](../how-to/diagnose-a-stuck-or-failed-job.md)
 - [Exports and downloads](../explanation/exports-and-downloads.md)
+
+<!-- reviewed: 2026-09-30 -->

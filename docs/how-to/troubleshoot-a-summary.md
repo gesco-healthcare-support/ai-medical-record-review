@@ -95,6 +95,7 @@ INFO, the per-row failure lines are WARNING. Numbers in angle brackets vary.
 | Header line cut short | none | `row title truncated to <n> chars to fit the column` | The fallback segmentation title was longer than the column allows after decoration | Edit the title |
 | Header line changed after the audit | Issue list shows `date`, `laterality` or `unsupported` | `audited title unusable (<n> chars); falling back to the row title` when a correction was rejected | The audit corrects the title independently of the body and stores it in `verified_title` when it differs | Check the corrected title against the source; edit it if wrong |
 | Part of a facility name missing from the header line | none | none | `without_address()` removed a piece it took for an address, such as a city before `CA` | Edit the title; a reviewer's title is never rewritten |
+| Author's name order or a facility's branch differs from the source | none | none | `tidy_author_and_facility()` writes a surname-first author first-name-first and cuts a listed health system (Kaiser Permanente) to its name | Edit the title to the wording you want; a reviewer's title is never rewritten |
 | Provider spelled differently in the export than in the app | none | none | `consistent_authors()` makes one spelling per provider across the record at export | Edit the title to the spelling you want; an edited title is locked and wins its group |
 | An entry is missing from the export | none | none | Same-visit folding merged a category 1 entry into another by the same author on the same date, or the summary is excluded | Check the other entry of that visit; its body carries the folded sections. Include the summary if it was excluded |
 | Wrong date of injury in the body | none | none | The `**DOI**:` prefix comes from the review row's date of injury, read at the end of segmentation | Correct the date of injury on the Review tab, then Re-draft the summary |
@@ -125,3 +126,5 @@ INFO, the per-row failure lines are WARNING. Numbers in angle brackets vary.
 - [Model calls by stage](../reference/model-calls-by-stage.md)
 - [Configuration](../reference/configuration.md)
 - [Data model](../reference/data-model.md)
+
+<!-- reviewed: 2026-09-30 -->

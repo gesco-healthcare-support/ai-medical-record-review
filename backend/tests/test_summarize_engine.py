@@ -3258,3 +3258,111 @@ def test_the_deposition_checker_expects_the_grouping_the_prompt_asks_for():
     words = {3: "THREE", 10: "TEN"}
     assert f"GROUPS OF {words[module._GROUP_PAGES]}" in prompts.prompts["category_09"]
     assert f"GROUPS OF {words[module._GROUP_PAGES]}" in se.build_preamble("9")
+
+
+# --- the author reads first-name-first, and a health system is named without its site -------------
+# Reviewer feedback, 2026-10-01. All names here are invented.
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        (
+            "SMITH, JOHN PAUL III, M.D. KAISER PERMANENTE. URGENT CARE REPORT.",
+            "JOHN PAUL SMITH III, M.D. KAISER PERMANENTE. URGENT CARE REPORT.",
+        ),
+        (
+            "DOE, JANE, D.C. VALLEY CHIROPRACTIC. PROGRESS NOTE.",
+            "JANE DOE, D.C. VALLEY CHIROPRACTIC. PROGRESS NOTE.",
+        ),
+        (
+            "DE LA CRUZ, MARIA, P.T. COAST PHYSICAL THERAPY.",
+            "MARIA DE LA CRUZ, P.T. COAST PHYSICAL THERAPY.",
+        ),
+        (
+            "LEE, ANNA B., N.P. CITY CLINIC. FOLLOW-UP VISIT.",
+            "ANNA B. LEE, N.P. CITY CLINIC. FOLLOW-UP VISIT.",
+        ),
+    ],
+)
+def test_a_surname_first_author_is_written_first_name_first(title, expected):
+    assert se.tidy_title(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # already first-name-first
+        "JANE DOE, M.D. CITY CLINIC. PROGRESS REPORT.",
+        # a suffix after a comma is not a surname-first name
+        "JOHN A SMITH, JR., M.D. CITY CLINIC. PROGRESS REPORT.",
+        # a second credential or a degree in the middle slot
+        "JANE DOE, M.D., PH.D. CITY CLINIC. CONSULTATION.",
+        "JANE DOE, MPH, M.D. CITY CLINIC. CONSULTATION.",
+        # no credential: "DOE, JANE" cannot be told from "DOE, D.C."
+        "DOE, JANE. CITY CLINIC. PROGRESS NOTE.",
+        # no author at all
+        "CITY IMAGING. MRI OF THE LUMBAR SPINE WITHOUT CONTRAST.",
+    ],
+)
+def test_an_author_already_in_order_or_ambiguous_is_left_alone(title):
+    assert se.tidy_title(title) == title
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        # the reported title, with the letterhead's site and the stray wrapped letter
+        (
+            "JANE DOE, M.D. KAISER PERMANENTE HARBOR NO. MEDICAL OFFICE U. URGENT CARE REPORT.",
+            "JANE DOE, M.D. KAISER PERMANENTE. URGENT CARE REPORT.",
+        ),
+        (
+            "JANE DOE, M.D. KAISER PERMANENTE GARDEN MEDICAL OFFICES. PROGRESS REPORT (PR-2).",
+            "JANE DOE, M.D. KAISER PERMANENTE. PROGRESS REPORT (PR-2).",
+        ),
+        ("KAISER PERMANENTE SPINE CENTER. OFFICE VISIT.", "KAISER PERMANENTE. OFFICE VISIT."),
+        (
+            "KAISER PERMANENTE ON-THE-JOB REGIONAL BUSINESS UNIT. REQUEST FOR AUTHORIZATION.",
+            "KAISER PERMANENTE. REQUEST FOR AUTHORIZATION.",
+        ),
+    ],
+)
+def test_a_health_system_is_named_without_its_site(title, expected):
+    assert se.tidy_title(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # already the bare name; the next piece is a lab test, not a fragment
+        "KAISER PERMANENTE. PTH, INTACT.",
+        # the facility and the document type run together - the document type stays
+        "KAISER PERMANENTE PROGRESS REPORT.",
+        # the words after the name are the DOCUMENT's own name
+        "Kaiser Permanente Release of Medical Information",
+        # a one-site clinic keeps every word of its name
+        "JANE DOE, M.D. VALLEY MEDICAL GROUP FONTANA. PROGRESS REPORT.",
+    ],
+)
+def test_a_health_system_title_that_names_no_site_is_left_alone(title):
+    assert se.tidy_title(title) == title
+
+
+def test_tidy_title_keeps_the_manual_check_tag_where_it_was():
+    title = "[ManualCheck] DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT. (Pages 3-5)"
+    assert se.tidy_author_and_facility(title) == (
+        "[ManualCheck] JANE DOE, M.D. KAISER PERMANENTE. OFFICE VISIT. (Pages 3-5)"
+    )
+
+
+def test_a_generated_title_is_tidied_before_it_is_stored():
+    stored = se._usable_title("DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT.", "-")
+    assert stored == "JANE DOE, M.D. KAISER PERMANENTE. OFFICE VISIT."
+
+
+def test_presentable_title_tidies_a_stored_title_but_not_a_reviewer_typed_one():
+    stored = "[ManualCheck] DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT. (Pages 3-5)"
+    assert se.presentable_title(stored) == "JANE DOE, M.D. KAISER PERMANENTE. OFFICE VISIT."
+    typed = "DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT."
+    assert se.presentable_title(typed, reviewer_edited=True) == typed

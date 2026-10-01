@@ -27,6 +27,12 @@ terms are in `docs/reference/glossary.md`.
   acknowledgement, vLLM origin allowlist).
 - **Pull requests only.** `main` is protected: changes arrive by squash-merged PR with all required
   checks green. Never push to `main`.
+- **One maintainer, no approving review (since 2026-10-01).** The repository owner is the sole
+  developer, so no branch ruleset requires an approval. Reviewing a PR means: read the diff; if CI
+  is green and the change is correct, merge it (`gh pr merge <n> --squash --admin` into `main`;
+  promotions into `staging`/`production`/`qwen` use `--merge`); if not, leave a review comment
+  asking for the change. Do not wait for another reviewer, do not re-run CI, and do not push to
+  someone's PR branch just to refresh it. See `docs/reference/ci-and-merge-gates.md`.
 - **Commit and PR titles:** `<type>(<scope>): <subject>`, imperative, ASCII, <= 72 chars, scope from
   `.claude/rules/commit-scopes.md` (add a scope there in the PR that needs it).
 - **Docs change with the code.** A change to behaviour, a route, a setting, a table, a migration, a
@@ -104,3 +110,5 @@ Details and the CI gates: `docs/how-to/run-the-tests.md`, `docs/reference/ci-and
 | Frontend | `frontend/app/`, `components/`, `hooks/`, `lib/` | `frontend/CLAUDE.md` and each folder's |
 | Proxy and server bootstrap | `deploy/` | `deploy/CLAUDE.md` |
 | Docs site | `docs/`, `docs-site/` | `docs-site/CLAUDE.md` |
+
+<!-- reviewed: 2026-09-30 -->

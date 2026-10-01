@@ -11,7 +11,7 @@ Source of truth: `backend/app/api/documents.py` (export and bundle routes, `_del
 ## Routes
 
 All export routes are `POST`, take an optional JSON body, require a signed-in session, and act only
-on a record the signed-in user owns. Each writes one audit event and answers with a prepared
+on a record the signed-in user owns, or on any record for an admin (`get_owned_document`). Each writes one audit event and answers with a prepared
 download (see [Response](#response)), not with the file.
 
 | Route | Output | Media type | Audit event | Needs included summaries |
@@ -72,6 +72,7 @@ Body of `/export/zip`: every `ExportPayload` field plus:
 | `coverHeading` | string or null | `null` | Heading of a cover list page; absent or blank means no cover |
 | `downloadName` | string or null | `null` | Filename suffix after the patient name |
 | `separateAs` | string or null | `null` | When set, one member PDF per matched sub-document instead of one combined PDF (see [Separate documents](#separate-documents)) |
+| `summarizedOnly` | bool | `false` | When true, a row a reviewer unticked for summary is left out of the bundle |
 
 ### `BundlePayload`
 
@@ -84,6 +85,7 @@ Body of `/bundle/pdf` and `/bundle/summarize`.
 | `coverHeading` | string or null | `null` | `/bundle/pdf` | Heading of a cover list page |
 | `downloadName` | string or null | `null` | both | Filename suffix after the patient name |
 | `separateAs` | string or null | `null` | `/bundle/pdf` | When set, one PDF per matched sub-document: the PDF itself for one match, a zip named like the combined file for several (see [Separate documents](#separate-documents)) |
+| `summarizedOnly` | bool | `false` | both | When true, a row a reviewer unticked for summary is left out |
 | `model` | string or null | `null` | `/bundle/summarize` | Body model; default `Settings.model_for("body")` |
 | `patientName` | string | `""` | `/bundle/summarize` | `RE:` header line |
 | `patientdob` | string | `""` | `/bundle/summarize` | `DOB:` header line |
@@ -94,10 +96,10 @@ Body of `/bundle/pdf` and `/bundle/summarize`.
 
 Defined once in `frontend/lib/bundle-api.ts` and sent by both the bundle pages and the zip request.
 
-| Preset | `label` | `categories` | `coverHeading` | `downloadName` | `separateAs` | Page |
-| --- | --- | --- | --- | --- | --- | --- |
-| Diagnostic & Operative | `diagnostic-operative` | `["3", "8"]` | `LIST OF DIAGNOSTIC AND OPERATIVE REPORTS` | `List of Diagnostic and Operative Reports` | none | `/diagnostics` |
-| Depositions | `depositions` | `["9"]` | none | `Depositions` | `Deposition` | `/depositions` |
+| Preset | `label` | `categories` | `coverHeading` | `downloadName` | `separateAs` | `summarizedOnly` | Page |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Diagnostic & Operative | `diagnostic-operative` | `["3", "8"]` | `LIST OF DIAGNOSTIC AND OPERATIVE REPORTS` | `List of Diagnostic and Operative Reports` | none | `true` | `/diagnostics` |
+| Depositions | `depositions` | `["9"]` | none | `Depositions` | `Deposition` | `false` | `/depositions` |
 
 ## Response
 
@@ -184,8 +186,11 @@ The bundle report is never a member.
 
 Row matching for both bundle routes (`bundles.py` `matched_rows()`): a row matches when its category
 is in `categories`, unless it is a non-primary, non-dismissed member of a duplicate group that has a
-primary. The row's `include` flag is not consulted. The cover page is omitted when every cell would
-be empty.
+primary. The row's `include` flag is consulted only when the request sets `summarizedOnly`, which the
+Diagnostic & Operative preset does: the reviewers want that list to carry only the documents being
+summarized. Depositions leave it off, because an older data migration unticked every deposition row
+and an `include` filter would empty that bundle on older records. The cover page is omitted when
+every cell would be empty.
 
 Layout detail: [Deliverable layout](../explanation/deliverable-layout.md).
 
@@ -201,6 +206,7 @@ HTTP errors raised by the routes carry `{"detail": "<message>"}`. Failures conve
 | 404 | `{"detail": "not found"}` | all | The record does not exist or belongs to another user |
 | 409 | `{"detail": "no summaries to export yet"}` | `/export`, `/export/pdf`, `/export/zip` | No included summaries |
 | 409 | `{"detail": "no matching documents in this record"}` | `/bundle/pdf`, `/bundle/summarize` | No row matches after duplicate filtering |
+| 409 | `{"detail": "none of the matching documents is ticked for summary"}` | `/bundle/pdf`, `/bundle/summarize` | `summarizedOnly` is set and every matching row is unticked |
 | 409 | `{"detail": "<n> matching documents exceeds the on-demand limit of <cap>; use the main Summaries flow for a record this large"}` | `/bundle/summarize` | More matched rows than `BUNDLE_SUMMARIZE_CAP` |
 | 422 | FastAPI validation error | all | The body does not match the payload schema |
 | 422 | `{"error": "<EmptyExtractionError message>"}` | `/bundle/summarize` | Every matched row was skipped for having no readable text, or the causes were mixed |
@@ -249,3 +255,5 @@ Every setting: [Configuration](configuration.md).
 - [Deliverable layout](../explanation/deliverable-layout.md)
 - [How to add an API route or export](../how-to/add-an-api-route-or-export.md)
 - [HTTP API](http-api.md)
+
+<!-- reviewed: 2026-09-30 -->

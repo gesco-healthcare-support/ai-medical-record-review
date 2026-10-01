@@ -316,3 +316,5 @@ Library. Whole historical `SEGMENTATION_PROMPT` texts, verbatim from git, used a
 - [Categorization](../explanation/categorization.md)
 - [Segmentation](../explanation/segmentation.md)
 - [OCR and page text](../explanation/ocr-and-page-text.md)
+
+<!-- reviewed: 2026-09-30 -->

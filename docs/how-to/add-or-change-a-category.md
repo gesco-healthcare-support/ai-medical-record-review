@@ -275,3 +275,5 @@ To undo:
   [migrations reference](../reference/migrations.md).
 - [HTTP API reference](../reference/http-api.md) - the `/api/admin` routes.
 - [How to manage users and admins](manage-users-and-admins.md)
+
+<!-- reviewed: 2026-09-30 -->

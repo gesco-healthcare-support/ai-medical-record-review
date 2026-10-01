@@ -33,3 +33,5 @@ admin is in [how to manage users and admins](../../../docs/how-to/manage-users-a
 - [How to change a summary prompt or rule](../../../docs/how-to/change-a-summary-prompt-or-rule.md)
 - [Frontend routes and data reference](../../../docs/reference/frontend-routes-and-data.md)
 - [Categorization](../../../docs/explanation/categorization.md)
+
+<!-- reviewed: 2026-09-30 -->

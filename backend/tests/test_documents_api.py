@@ -3133,6 +3133,131 @@ async def test_unknown_resolve_action_names_all_three(authed):
     )
     assert bad.status_code == 400
     assert "remove_member" in bad.json()["detail"]
+    assert "keep_another" in bad.json()["detail"]
+    assert "unkeep" in bad.json()["detail"]
+
+
+def _dupe_rows(doc_id):
+    with get_sessionmaker()() as session:
+        return {
+            r.idx: r
+            for r in session.scalars(select(ReviewRow).where(ReviewRow.document_id == doc_id)).all()
+        }
+
+
+async def test_keep_another_keeps_a_second_copy_and_the_cluster_reads_resolved(authed):
+    """WHEN a cluster holds two genuinely different documents (a left and a right study on one
+    date), THE SYSTEM SHALL let the reviewer keep one copy of each, and the cluster SHALL stop being
+    advised. Before this, keep_one could keep only one, so the other study reached no report."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    assert (
+        await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+    ).status_code == 200
+    kept = await client.post(url, json={"action": "keep_another", "idx": 2})
+    assert kept.status_code == 200
+
+    rows = _dupe_rows(doc_id)
+    assert rows[0].dupe_primary is True
+    assert rows[0].include is True
+    assert rows[2].dupe_primary is True
+    assert rows[2].include is True
+    assert rows[1].dupe_primary is False
+    assert rows[1].include is False
+    status = await client.get(f"/api/documents/{doc_id}/status")
+    assert status.json()["unreviewed_duplicate_groups"] == 0
+
+
+async def test_keep_another_needs_a_kept_copy_first(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+
+    bad = await client.post(
+        f"/api/documents/{doc_id}/duplicates/1/resolve", json={"action": "keep_another", "idx": 1}
+    )
+    assert bad.status_code == 400
+    assert _dupe_rows(doc_id)[1].dupe_primary is False
+
+
+async def test_keep_another_rejects_an_idx_outside_the_cluster(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, None)])
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+
+    assert (await client.post(url, json={"action": "keep_another", "idx": 2})).status_code == 400
+    assert (await client.post(url, json={"action": "keep_another"})).status_code == 400
+
+
+async def test_keep_another_does_not_opt_an_excluded_cluster_into_the_report(authed):
+    """The same rule keep_one follows: keeping must not push a cluster the reviewer excluded back
+    into the report."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+    _set_include(doc_id, False)
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+    await client.post(url, json={"action": "keep_another", "idx": 2})
+
+    rows = _dupe_rows(doc_id)
+    assert rows[2].dupe_primary is True
+    assert rows[2].include is False
+
+
+async def test_unkeep_returns_an_extra_copy_to_excluded(authed):
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+    await client.post(url, json={"action": "keep_another", "idx": 2})
+
+    assert (await client.post(url, json={"action": "unkeep", "idx": 2})).status_code == 200
+    rows = _dupe_rows(doc_id)
+    assert rows[2].dupe_primary is False
+    assert rows[2].include is False
+    assert rows[0].dupe_primary is True
+    assert rows[0].include is True
+
+
+async def test_unkeep_refuses_the_last_kept_copy(authed):
+    """Un-keeping the only kept copy would leave every copy excluded with no kept mark - a cluster
+    that reads resolved while nothing from it reaches the report."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1)])
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+
+    assert (await client.post(url, json={"action": "unkeep", "idx": 0})).status_code == 400
+    assert (await client.post(url, json={"action": "unkeep", "idx": 1})).status_code == 400
+    assert _dupe_rows(doc_id)[0].dupe_primary is True
+
+
+async def test_a_second_included_copy_nobody_kept_is_still_advised(authed):
+    """GUARD: the widened resolved rule must not hide a real duplicate. Two kept copies plus a third
+    copy the reviewer re-ticked by hand is still a cluster that needs a decision."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    _seed_rows(doc_id, [(1, 2, 1), (3, 4, 1), (5, 6, 1)])
+    url = f"/api/documents/{doc_id}/duplicates/1/resolve"
+    await client.post(url, json={"action": "keep_one", "primary_idx": 0})
+    await client.post(url, json={"action": "keep_another", "idx": 2})
+    with get_sessionmaker()() as session:
+        row = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id, ReviewRow.idx == 1)
+        ).one()
+        row.include = True
+        session.commit()
+
+    status = await client.get(f"/api/documents/{doc_id}/status")
+    assert status.json()["unreviewed_duplicate_groups"] == 1
 
 
 async def test_duplicates_report_sub_documents_that_could_not_be_read(authed):
@@ -5631,3 +5756,136 @@ async def test_a_bundle_that_does_not_ask_to_separate_is_still_one_combined_pdf(
     assert resp.status_code == 200, resp.text
     assert resp.content.startswith(b"%PDF")
     assert len(PdfReader(io.BytesIO(resp.content)).pages) == 4
+
+
+async def _three_rows_page_3_unticked(client):
+    doc_id = await _upload(client, pages=3)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2, 3)]},
+    )
+    with get_sessionmaker()() as session:
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.start)
+        ).all()
+        for row in rows:
+            row.include = row.start != 3
+        session.commit()
+    return doc_id
+
+
+async def test_a_summarized_only_bundle_leaves_out_an_unticked_document(authed):
+    """WHEN a bundle asks for summarized documents only, an unticked one is not in its PDF.
+
+    Reviewer feedback, 2026-10-01: the diagnostic list "is still including files that we unchecked
+    (due to being duplicates)". On the live box 121 of 126 such rows were unticked by hand, in no
+    duplicate group, so the duplicate fields alone cannot leave them out."""
+    client, _ = authed
+    doc_id = await _three_rows_page_3_unticked(client)
+
+    got = await _download(
+        client,
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "summarizedOnly": True},
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 2
+
+
+async def test_a_bundle_that_does_not_ask_keeps_an_unticked_document(authed):
+    """GUARD: without the flag the old rule holds. Depositions rely on it - a migration unticked
+    that whole category on older records, so filtering on the tick would empty that bundle."""
+    client, _ = authed
+    doc_id = await _three_rows_page_3_unticked(client)
+
+    got = await _download(
+        client, f"/api/documents/{doc_id}/bundle/pdf", json={"categories": [_VALID_CATEGORY]}
+    )
+
+    from pypdf import PdfReader
+
+    assert got.status_code == 200
+    assert len(PdfReader(io.BytesIO(got.content)).pages) == 3
+
+
+async def test_a_summarized_only_bundle_with_nothing_ticked_says_so(authed):
+    """Every match unticked is its own 409, naming the reason. "No matching documents" would send
+    the reviewer looking for documents that are right there on screen, unticked."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2)]},
+    )
+    _set_include(doc_id, False)
+
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "summarizedOnly": True},
+    )
+
+    assert got.status_code == 409
+    assert "ticked for summary" in got.json()["detail"]
+
+
+def test_matched_rows_drops_an_unticked_row_only_when_asked():
+    from app.services import bundles
+
+    rows = [
+        {"start": 1, "category": "3", "include": True},
+        {"start": 2, "category": "3", "include": False},
+        {"start": 3, "category": "8", "include": True},
+        {"start": 4, "category": "9", "include": False},
+    ]
+    assert [r["start"] for r in bundles.matched_rows(rows, ["3", "8"])] == [1, 2, 3]
+    assert [r["start"] for r in bundles.matched_rows(rows, ["3", "8"], summarized_only=True)] == [
+        1,
+        3,
+    ]
+    assert [r["start"] for r in bundles.matched_rows(rows, ["9"])] == [4]
+
+
+_SURNAME_FIRST_TITLE = (
+    "[ManualCheck] DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT. (Pages 3-5)"
+)
+
+
+def _titled_summary(**over):
+    fields = dict(
+        document_id="d",
+        job_id=1,
+        idx=0,
+        title=_SURNAME_FIRST_TITLE,
+        text="body",
+        row_start=3,
+        row_end=5,
+        row_category="1",
+        date="01/02/2026",
+    )
+    fields.update(over)
+    return Summary(**fields)
+
+
+def test_the_summaries_tab_and_the_export_show_a_stored_title_tidied():
+    """A title stored before the name-order and health-system rules reads tidy on the Summaries tab
+    and in the Word letter alike, with no re-run (reviewer feedback, 2026-10-01)."""
+    from app.api.documents import _export_entry, _summary_response
+
+    summary = _titled_summary()
+    shown = _summary_response(Document(review_rows=[]), summary)["summaryTitle"]
+    assert shown == "[ManualCheck] JANE DOE, M.D. KAISER PERMANENTE. OFFICE VISIT. (Pages 3-5)"
+    assert (
+        _export_entry(summary)["summaryTitle"] == "JANE DOE, M.D. KAISER PERMANENTE. OFFICE VISIT."
+    )
+
+
+def test_a_reviewer_typed_title_is_shown_and_exported_as_typed():
+    from app.api.documents import _export_entry, _summary_response
+
+    typed = "DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT."
+    summary = _titled_summary(edited_title=typed)
+    assert _summary_response(Document(review_rows=[]), summary)["summaryTitle"] == typed
+    assert _export_entry(summary)["summaryTitle"] == typed

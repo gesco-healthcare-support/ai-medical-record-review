@@ -70,9 +70,19 @@ def is_resolved_duplicate(row, resolved_groups) -> bool:
     )
 
 
-def matched_rows(rows, categories):
+def matched_rows(rows, categories, *, summarized_only=False):
     """Rows whose category is in ``categories`` (int/str mix ok), original order kept - minus any
-    copy the reviewer already resolved away as a duplicate.
+    copy the reviewer already resolved away as a duplicate, and, with ``summarized_only``, minus
+    any row the reviewer UNTICKED for summary.
+
+    ``summarized_only`` is the Diagnostic & Operative bundle's rule. Reviewer feedback, 2026-10-01:
+    its list "is still including files that we unchecked (due to being duplicates) ... Could you
+    make it so it only includes the files that are being summarized?". Measured on the live box:
+    126 unticked diagnostic rows across 45 records were still listed, 121 of them in NO duplicate
+    group - unticked by hand, which the duplicate fields below cannot see. That bundle is exempt
+    from the migration problem described next (0 of its records were unticked by it, and the
+    include rule empties its list on 1 of 168, where nothing is ticked at all), so it opts in. The
+    Depositions bundle does not, for exactly that reason.
 
     A bundle is a DELIVERABLE: a combined PDF or a Word report a client receives. Selecting purely
     on category put a confirmed duplicate's pages into the PDF a SECOND time and made
@@ -108,7 +118,9 @@ def matched_rows(rows, categories):
     return [
         row
         for row in rows
-        if str(row["category"]) in wanted and not is_resolved_duplicate(row, resolved_groups)
+        if str(row["category"]) in wanted
+        and not is_resolved_duplicate(row, resolved_groups)
+        and (row.get("include", True) or not summarized_only)
     ]
 
 

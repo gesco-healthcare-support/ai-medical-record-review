@@ -36,7 +36,7 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-Expected: `current` prints the revision marked `(head)`; today that is `e4b7a2c91d05`. The chain
+Expected: `current` prints the revision marked `(head)`; on 2026-09-30 that is `f5c8d2a19e47`. The chain
 must have exactly one head:
 
 ```bash

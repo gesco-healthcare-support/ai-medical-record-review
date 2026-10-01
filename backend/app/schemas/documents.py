@@ -87,6 +87,11 @@ class BundlePayload(BaseModel):
     # reviewers asked for this for depositions: a record can hold several and they want each
     # one on its own, dated. More than one match comes back as a zip; exactly one as that PDF.
     separateAs: str | None = None
+    # Only the rows the reviewer ticked for summary. The Diagnostic & Operative bundle sends it, so
+    # a document unticked as a duplicate stays out of its list and its PDF; see
+    # `bundles.matched_rows` for why Depositions does not. Absent means off - an older client keeps
+    # the old behaviour.
+    summarizedOnly: bool = False
     model: str | None = None
     patientName: str = ""
     patientdob: str = ""
@@ -134,6 +139,7 @@ class ZipBundle(BaseModel):
     # the bundle did not.
     downloadName: str | None = None
     separateAs: str | None = None  # see BundlePayload
+    summarizedOnly: bool = False  # see BundlePayload
 
 
 class ExportZipPayload(ExportPayload):
@@ -151,9 +157,12 @@ class DuplicateResolvePayload(BaseModel):
 
     action="keep_one" keeps `primary_idx` and excludes the other members; action="dismiss" marks the
     whole cluster as not-duplicates; action="remove_member" drops the single row `idx` out of the
-    cluster, for the mixed cluster where some copies are real and others are not. The route validates
-    action + the referenced idx (-> 400)."""
+    cluster, for the mixed cluster where some copies are real and others are not.
+    action="keep_another" keeps `idx` as well, for the cluster holding two genuinely different
+    documents (a left and a right study on one date) where each needs one copy in the report; it
+    needs a copy already kept. action="unkeep" reverses keep_another on `idx` and refuses to drop
+    the last kept copy. The route validates action + the referenced idx (-> 400)."""
 
-    action: str  # "keep_one" | "dismiss" | "remove_member"
+    action: str  # "keep_one" | "keep_another" | "unkeep" | "dismiss" | "remove_member"
     primary_idx: int | None = None
-    idx: int | None = None  # remove_member: the member to drop
+    idx: int | None = None  # keep_another / unkeep / remove_member: the member acted on

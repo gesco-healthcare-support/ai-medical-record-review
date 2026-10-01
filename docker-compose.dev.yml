@@ -1,6 +1,6 @@
-# Local dev services for the Next.js + FastAPI re-platform (see docs/plans/2026-07-14-nextjs-fastapi-rewrite.md).
-# Postgres + Redis only - the FastAPI app, RQ workers, and Next.js run on the host during dev.
-# On the LAN server these become locally-installed services (no cloud); this file is dev-only.
+# Throwaway Postgres + Redis for the backend test suite and host-run development (see
+# docs/how-to/run-the-tests.md). The FastAPI app, RQ workers and Next.js run on the host.
+# Dev-only: servers run docker-compose.yml, which has its own Postgres and Redis.
 services:
   postgres:
     image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54

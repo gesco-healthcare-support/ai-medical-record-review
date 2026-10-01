@@ -242,3 +242,5 @@ All scripts are described in [Scripts reference](../reference/scripts.md).
 - [How to deploy to the server](deploy-to-the-server.md)
 - [How to manage users and admins](manage-users-and-admins.md)
 - [Errors and messages reference](../reference/errors-and-messages.md)
+
+<!-- reviewed: 2026-09-30 -->

@@ -28,3 +28,5 @@ that prepared the server's Docker installation. `docker-compose.yml` at the repo
 - [How to deploy to the server](../docs/how-to/deploy-to-the-server.md)
 - [How to back up and restore](../docs/how-to/back-up-and-restore.md)
 - [Compose services reference](../docs/reference/compose-services.md), including every proxy route
+
+<!-- reviewed: 2026-09-30 -->

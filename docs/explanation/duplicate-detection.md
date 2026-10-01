@@ -229,6 +229,8 @@ Each cluster is resolved with `POST /api/documents/{id}/duplicates/{group}/resol
 | Action (button) | What it writes | Result |
 | --- | --- | --- |
 | `keep_one` with `primary_idx` ("Keep this one") | The chosen row gets `dupe_primary = true`; every member gets `dupe_dismissed = false`; `include` becomes true only for the chosen row, and only if any member was included before | One copy is summarized. An all-excluded cluster stays excluded, so keeping a copy never adds paperwork to the report. |
+| `keep_another` with `idx` ("Also keep", shown once a copy is kept) | That row also gets `dupe_primary = true` and `dupe_dismissed = false`; its `include` copies the kept copies' inclusion | For a group holding two different documents, such as a left and a right study on the same date, where each needs one copy in the report. Refused with 400 when no copy is kept yet. |
+| `unkeep` with `idx` ("Undo" on an extra kept copy) | That row's `dupe_primary` and `include` become false | Reverses `keep_another`. Refused with 400 on the last kept copy; choosing a different single copy is `keep_one`. |
 | `dismiss` ("Not duplicates") | Every member gets `dupe_dismissed = true`, `dupe_primary = false`; `include` is untouched | The cluster is marked as not duplicates, and stays dismissed on a later run while its set of copies is unchanged. |
 | `remove_member` with `idx` ("Not a duplicate" on one row) | That row leaves the group: `dupe_group`, `dupe_primary` and `dupe_dismissed` cleared, `include` reset to its category's `summarize_default` | For a mixed cluster. If fewer than two rows remain, the group dissolves and the remaining row is reset the same way. |
 
@@ -236,6 +238,7 @@ Each cluster is resolved with `POST /api/documents/{id}/duplicates/{group}/resol
 stateDiagram-v2
     [*] --> NeedsReview: run confirms a group
     NeedsReview --> Resolved: keep_one
+    Resolved --> Resolved: keep_another / unkeep
     NeedsReview --> Dismissed: dismiss
     NeedsReview --> NeedsReview: remove_member, 2+ rows left
     NeedsReview --> [*]: remove_member, fewer than 2 left
@@ -246,9 +249,11 @@ stateDiagram-v2
     Dismissed --> NeedsReview: re-run, copies changed
 ```
 
-The tab shows "Needs review", "Resolved" (fewer than two members still included) or "Dismissed".
-`GET /api/documents/{id}/status` carries an advisory count, `unreviewed_duplicate_groups`: groups
-that are not dismissed and still have two or more included members.
+The tab shows "Needs review", "Resolved" (fewer than two members still included, or every
+included member is one the reviewer kept) or "Dismissed". `GET /api/documents/{id}/status` carries an
+advisory count, `unreviewed_duplicate_groups`: groups that are not dismissed and still have two or
+more included members, at least one of them not kept. The backend (`_cluster_needs_review`) and the
+frontend (`clusterNeedsReview`) apply the same rule.
 
 ## Boundary edits and stale checks
 

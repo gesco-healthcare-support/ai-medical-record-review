@@ -257,7 +257,7 @@ Optional fields marked "absent means nothing to say" (`verifyKeptRaw`, `verifyFa
 | `DocumentStatus` | `uploaded`, `segmenting`, `summarizing`, `reviewing`, `done`, `needs_attention`, `error`, `interrupted` | `frontend/lib/types.ts` |
 | `Row.method` | `rules`, `llm+embedding`, `llm-disagree`, `embedding-only`, `llm-only`, `no-signal`, `empty`, `timeout`; absent or null means unknown | `frontend/lib/types.ts` |
 | `Row.flag` | `x` (flagged for review), `-` (not flagged) | `frontend/components/review/rows-table.tsx` |
-| `DuplicateAction` | `keep_one`, `dismiss`, `remove_member` | `frontend/lib/review-api.ts` |
+| `DuplicateAction` | `keep_one`, `keep_another`, `unkeep`, `dismiss`, `remove_member` | `frontend/lib/review-api.ts` |
 | `DownloadState` | `waiting`, `downloading`, `interrupted`, `complete`, `expired` | `frontend/lib/download.ts` |
 | Letter type | `""` (Not set), `advocacy` (Advocacy letter), `interrogatory` (Interrogatory letter), `none` (No letter) | `frontend/components/review/header-bar.tsx` `LETTER_OPTIONS` |
 | Workbench tab | `review`, `duplicates`, `summaries` | `frontend/components/review/review-page-client.tsx` |
@@ -323,7 +323,8 @@ endpoints are handed these values.
 | `DEPOSITIONS` | Depositions | `depositions` | `9` | none (no cover page) | Depositions | `/depositions` |
 
 A bundle page lists the rows whose category is in the set, leaving out a non-primary, non-dismissed
-member of a duplicate cluster that has a primary, which mirrors `backend/app/services/bundles.py`
+member of a duplicate cluster that has a primary, and, for a preset with `summarizedOnly` (Diagnostic
+& Operative), any row unticked for summary. This mirrors `backend/app/services/bundles.py`
 `matched_rows()`.
 
 ## Constants
@@ -346,3 +347,5 @@ Environment variables read by the frontend (`API_ORIGIN`, `E2E_BASE_URL`, `CI`) 
 - [How to extend the frontend](../how-to/extend-the-frontend.md)
 - [HTTP API reference](http-api.md)
 - [Design system reference](design-system.md)
+
+<!-- reviewed: 2026-09-30 -->
