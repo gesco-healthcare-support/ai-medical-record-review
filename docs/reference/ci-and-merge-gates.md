@@ -353,9 +353,7 @@ gh api repos/gesco-healthcare-support/ai-medical-record-review/rulesets/<id>
 | --- | --- | --- |
 | Changes arrive by pull request | Required | Required |
 | Allowed merge method | Squash only | Merge commit only, so a promotion keeps the commits of the branch above |
-| Required approving reviews | 1 | 1 |
-| Approval must come after the most recent push, from someone other than the last pusher | Yes | Yes |
-| Stale approvals dismissed on a new push | Yes | Yes |
+| Required approving reviews | 0 (since 2026-10-01; see Single maintainer) | 0 |
 | Branch must be up to date before merging | Required | Not required, by design: "Update branch" on a promotion pull request would merge the lower branch back into the upper one |
 | Force push (non-fast-forward) | Blocked | Blocked |
 | Branch deletion | Blocked | Blocked |
@@ -373,23 +371,25 @@ gets the rule only after `codeql.yml` has analysed a push to it; until then a pu
 could not be judged. `staging`, `production` and `qwen` have the rule since 2026-09-30, each added after
 its first analysis. Every commit on those branches has come through `main`, where the rule applies.
 
-GitHub never lets an account approve its own pull request, and the approver must not be the account
-that pushed the pull request's last commit either. So whoever merges `main` into a pull request
-becomes its last pusher and cannot approve it. When that is the reviewer, only a third account can
-approve, so the pull request's author should be the one who merges `main` in.
+**Single maintainer (since 2026-10-01).** The project has one maintainer, so no ruleset requires an
+approving review: GitHub never lets an author approve their own pull request, and a required approval
+could only ever be met by bypass. Every other rule still applies: a pull request, the required status
+checks, CodeQL, and the merge method. The maintainer reviews the diff, and when CI is green and the
+change is correct, merges it; when it is not, they leave a review comment asking for the change. If a
+second maintainer joins, restore `required_approving_review_count: 1` and "approval after the most
+recent push" on each branch ruleset, and update this table.
 
 Because `main` requires an up-to-date branch, every merge into `main` makes the other open pull
-requests into it out of date. Merge `main` into each one. Do not rebase: that rewrites the
-branch's history and needs a force push. Either way the new commit dismisses existing approvals, so
-once CI has run the pull request needs approving again, by someone other than whoever pushed it.
+requests into it out of date. Merge `main` into each one, or merge with the admin bypass when its
+checks are already green against a recent `main`. Do not rebase: that rewrites the branch's history
+and needs a force push.
 
 **Admin bypass.** Every branch ruleset lists the repository admin role as a bypass actor, in
 pull-request mode. An admin can merge a pull request that has not met the rules (in the CLI,
 `gh pr merge <number> --admin`); direct pushes stay blocked for everyone. A bypass skips every rule
 in the ruleset, required status checks and approvals included, so first confirm that every required
-check is green. With a single maintainer it is the normal way to merge that maintainer's own pull
-requests, because GitHub never lets an author approve their own; with two or more maintainers, keep it
-for a fix that cannot wait. GitHub records each bypass in the repository's rule insights and the audit log.
+check is green. With no approval required, the bypass is needed only to merge a pull request that
+is behind `main`. GitHub records each bypass in the repository's rule insights and the audit log.
 
 The `v*` tag ruleset blocks moving (updating) or deleting any release tag.
 
