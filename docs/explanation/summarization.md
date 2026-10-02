@@ -29,7 +29,9 @@ The rest of this page describes the worker path unless it says otherwise.
 
 ```mermaid
 flowchart TD
-    A[Row + resolved prompt + models] --> B[Build system message:<br/>preamble for the category + category prompt]
+    A[Row + resolved prompt + models] --> Z{Category 18?<br/>illegible}
+    Z -- yes --> ZZ[Fixed line 'Document was illegible.':<br/>no OCR, no model call]
+    Z -- no --> B[Build system message:<br/>preamble for the category + category prompt]
     B --> C[Fingerprint preamble + prompt]
     C --> D[Append per-row blocks:<br/>document date / studies list / deposition page numbers]
     D --> E{Stored OCR text usable?<br/>not a deposition}
@@ -40,7 +42,7 @@ flowchart TD
     H -- no, some pages errored --> N[Notice-only entry:<br/>no model call]
     H -- no, pages read but blank --> X[EmptyExtractionError]
     H -- yes --> I[Body call: page images + OCR text + instruction<br/>429 fallback, one truncation re-ask]
-    I --> J[Title call: OCR text only]
+    I --> J[Title call: first + last page images + OCR text]
     J --> K[House style on the body]
     K --> L{Audit enabled?}
     L -- yes --> M[Audit call + guards]
@@ -49,6 +51,10 @@ flowchart TD
     O --> P[Output dict with provenance]
 ```
 
+0. **Illegible.** A row a reviewer put in category 18 returns at once from `_illegible_output()`:
+   the body is `ILLEGIBLE_SUMMARY` ("Document was illegible."), the header is the row's own title
+   and date, and nothing is read, rendered or sent to a model. `noticeOnly` is false, because it is
+   the reviewer's decision rather than a failure, so the job does not end needs_attention.
 1. **Models.** The worker passes the three models stored on the Job (`job.model`,
    `job.title_model or job.model`, `job.audit_model or job.model`). A caller that omits one gets it
    from `Settings.model_for()` (`summarize_engine.py` `_resolved_models()`).
@@ -154,6 +160,7 @@ is a fixed sentence from `summarize_engine.py`:
 | Case | Function | Result |
 | --- | --- | --- |
 | Nothing on the row could be read | `unreadable_notice()` via `_unreadable_output()` | The body IS the notice; every model field is NULL; `noticeOnly` is true; no DOI prefix |
+| A reviewer marked the row illegible (category 18) | `_illegible_output()` | The body is `ILLEGIBLE_SUMMARY`; every model field is NULL; `noticeOnly` is false; no DOI prefix |
 | Some pages could not be read | `partial_unreadable_notice()` | Sentence appended to the summary of the readable pages |
 | An excluded records-review block belongs to this evaluation | `embedded_review_notice()` | Sentence appended naming the review's pages |
 
@@ -176,7 +183,7 @@ backend for the `summarize` stage. See [Model providers](model-providers.md) and
 | Call | Prompt | Input | Temperature | Output cap | On failure |
 | --- | --- | --- | --- | --- | --- |
 | Body | Preamble + category prompt + per-row blocks | Page images (when `SUMMARY_MULTIMODAL`), OCR text, instruction | `SUMMARY_TEMPERATURE` (0.0) | `SUMMARY_MAX_OUTPUT_TOKENS` (8192) | 429 fallback, one truncation re-ask |
-| Title | `TITLE_PROMPT` | OCR text only | 0.0 | `SUMMARY_MAX_OUTPUT_TOKENS` | Rejected answer falls back to the segmentation title |
+| Title | `TITLE_PROMPT` | First and last page images + OCR text (multimodal on) | 0.0 | `SUMMARY_MAX_OUTPUT_TOKENS` | Rejected answer falls back to the segmentation title |
 | Audit | `VERIFY_PROMPT` (`summary_verify.py`) | Source, document date (categories 1 and 2 only), title, body | 0.0 | Argument, else `AUDIT_MAX_OUTPUT_TOKENS`, else the body cap | Fail-safe: body ships unaudited |
 
 The three models are resolved once, when the Job is created (`backend/app/services/jobs.py`
@@ -213,6 +220,14 @@ was measured against 812 of 813 human-written entries. Diagnostic studies are na
 side, body part and contrast rather than by document class; a deposition is titled
 `DEPOSITION OF <NAME>` with no author or facility; absent elements are left out with their
 separator; no dates, page numbers or patient name.
+
+The author is the name PRINTED on the page - the typed name under or beside the signature, a
+physician field on a form, or the letterhead - never a transcription of a handwritten signature;
+when no printed name can be read in full the author and credentials are left out. The call is sent
+the row's first and last page images (letterhead and signature block) with the OCR text
+(`_title_contents()`), because OCR cannot read a signature drawn over a typed name: reviewer
+feedback on 2026-10-02 showed titles opening with OCR's fragment of such a name, and with the
+letters OCR made of a cursive signature.
 
 The 150-character limit in the prompt is a hint only: the call has no response schema and Gemini
 does not enforce `maxLength`. `_usable_title()` is the enforcement:

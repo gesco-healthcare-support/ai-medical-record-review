@@ -6,7 +6,7 @@ carry catalog data.
 Source of truth: `backend/alembic/versions/` (one file per revision, named
 `<revision>_<slug>.py`), `backend/alembic/env.py` and `backend/alembic.ini`.
 
-**Current head: `a3d6f0b81e57`.** The chain has 31 revisions, one head and no branches. How to add
+**Current head: `b7e4c1a9d203`.** The chain has 32 revisions, one head and no branches. How to add
 a revision is in [How to create a database migration](../how-to/create-a-database-migration.md).
 
 ## Chain
@@ -47,9 +47,10 @@ columns or indexes; **data** changes rows only; **schema + data** does both.
 | 28 | `c2f1a7d94e63` | `b3e9f0c47a15` | 2026-09-14 | schema | Adds `documents.attorney_name`, `doctor`, `letter_type`, `letter_date`, `pages_received`. |
 | 29 | `e4b7a2c91d05` | `c2f1a7d94e63` | 2026-09-24 | data | Inserts category 17 (job description), only on a seeded catalog. |
 | 30 | `f5c8d2a19e47` | `e4b7a2c91d05` | 2026-09-29 | schema | Adds `jobs.requested_by` (nullable, no backfill). |
-| 31 | `a3d6f0b81e57` | `f5c8d2a19e47` | 2026-10-02 | schema | Creates `replaced_review_rows`: the reviewer rows a re-segment replaces, kept per replacing job. No backfill. **Current head.** |
+| 31 | `a3d6f0b81e57` | `f5c8d2a19e47` | 2026-10-02 | schema | Creates `replaced_review_rows`: the reviewer rows a re-segment replaces, kept per replacing job. No backfill. |
+| 32 | `b7e4c1a9d203` | `a3d6f0b81e57` | 2026-10-02 | data | Inserts category 18 (illegible document, `auto_assign` false, so only a reviewer assigns it), only on a seeded catalog, `ON CONFLICT DO NOTHING`; downgrade keeps the row while any review row uses it. **Current head.** |
 
-Totals: 22 schema, 8 data, 1 schema + data.
+Totals: 22 schema, 9 data, 1 schema + data.
 
 ## Revisions out of date order
 

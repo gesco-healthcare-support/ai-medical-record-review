@@ -291,7 +291,9 @@ code constants are the fallback:
 - `backend/app/services/taxonomy.py` `CATEGORIES`: ids 1-5, 7-17 and 100, each with a name, a
   description and example titles.
 - `backend/app/services/seed_catalog.py` `constants_categories()`: those, plus id 6 ("Daily / SOAP
-  notes", active, `auto_assign=False`), with `summarize_default` off for 100 only.
+  notes", active, `auto_assign=False`) and id 18 ("Illegible document",
+  active, `auto_assign=False`: a reviewer marks a document nobody can read), with
+  `summarize_default` off for 100 only.
 
 `backend/app/services/catalog.py` `get_categories()` reads the table and uses the constants **only
 when the table has no rows at all**. The fallback is all-or-nothing: one inserted row ends it for
