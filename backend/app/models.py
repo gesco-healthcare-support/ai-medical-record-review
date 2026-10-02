@@ -237,6 +237,12 @@ class Document(Base):
     page_texts: Mapped[list["PageText"]] = relationship(
         "PageText", backref="document", cascade=_CASCADE_DELETE_ORPHAN
     )
+    # The reviewer rows a re-segment replaced (see ReplacedReviewRow). Cascaded for the same reason
+    # as page_texts: the foreign key is NO ACTION, so without this the document becomes undeletable
+    # the first time it is re-segmented.
+    replaced_review_rows: Mapped[list["ReplacedReviewRow"]] = relationship(
+        "ReplacedReviewRow", backref="document", cascade=_CASCADE_DELETE_ORPHAN
+    )
 
     @property
     def active_job(self):
@@ -700,6 +706,43 @@ class AuditLog(Base):
     # human reading a row is the only consumer a write-only trail can have.
     detail: Mapped[str | None] = mapped_column(Text)
     at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
+class ReplacedReviewRow(Base):
+    """A reviewer's row as it stood the moment a re-segment replaced it - kept, not destroyed.
+
+    `segment_document` deletes the document's `review_rows` and writes the new model output in their
+    place. Before this table that was the end of them: #217 recorded HOW MANY corrections a
+    re-segment destroyed, but the corrections themselves were gone. They are the only segmentation
+    and categorization ground truth this project has, and the training data for the self-hosted
+    model, so a re-run started by mistake (or on purpose, to compare models) must not cost them.
+
+    One row per replaced `ReviewRow`, grouped by `job_id` - the segment job that did the replacing,
+    so each generation of reviewer work is recoverable on its own. `job_id` is a plain integer rather
+    than a foreign key, like the rest of a job's provenance: the record of what was replaced must
+    outlive the job row. Copies the fields a reviewer decides (span, category, title, dates, flag,
+    `include`) plus `method`; the dedup and `source_text` columns are derived and re-derivable, and
+    leaving `source_text` out keeps a second copy of the OCR text off the table.
+    """
+
+    __tablename__ = "replaced_review_rows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey(_FK_DOCUMENTS_ID), nullable=False, index=True
+    )
+    job_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    replaced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    start: Mapped[int] = mapped_column(Integer, nullable=False)
+    end: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(8), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="-")
+    date: Mapped[str] = mapped_column(String(16), nullable=False, default="-")
+    injury_date: Mapped[str] = mapped_column(Text, nullable=False, default="-")
+    flag: Mapped[str] = mapped_column(String(4), nullable=False, default="-")
+    include: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    method: Mapped[str | None] = mapped_column(String(32))
 
 
 class PageText(Base):

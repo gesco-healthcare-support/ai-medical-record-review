@@ -38,6 +38,7 @@ erDiagram
     documents ||--o{ review_rows : "document_id"
     documents ||--o{ summaries : "document_id"
     documents ||--o{ page_texts : "document_id"
+    documents ||--o{ replaced_review_rows : "document_id"
     jobs ||--o{ segment_rows : "job_id"
     jobs ||--o{ summaries : "job_id"
     documents ||..o{ audit_log : "document_id (no FK)"
@@ -101,6 +102,11 @@ erDiagram
         string document_id FK
         int page
     }
+    replaced_review_rows {
+        int id PK
+        string document_id FK
+        int job_id
+    }
     categories {
         string id PK
         string name
@@ -140,6 +146,7 @@ deletes the children first.
 | `review_rows.document_id` | `documents.id` | NO ACTION | `Document.review_rows`, `all, delete-orphan`, ordered by `ReviewRow.idx`; backref `ReviewRow.document` | `ix_review_rows_document_id` |
 | `summaries.document_id` | `documents.id` | NO ACTION | `Document.summaries`, `all, delete-orphan`, ordered by `Summary.idx`; backref `Summary.document` | `ix_summaries_document_id` |
 | `page_texts.document_id` | `documents.id` | NO ACTION | `Document.page_texts`, `all, delete-orphan`; backref `PageText.document` | `ix_page_texts_document_id`; unique `uq_page_texts_document_page` |
+| `replaced_review_rows.document_id` | `documents.id` | NO ACTION | `Document.replaced_review_rows`, `all, delete-orphan`; backref `ReplacedReviewRow.document` | `ix_replaced_review_rows_document_id` |
 | `segment_rows.job_id` | `jobs.id` | NO ACTION | `Job.segment_rows`, `all, delete-orphan`, ordered by `SegmentRow.idx`; backref `SegmentRow.job` | `ix_segment_rows_job_id` |
 | `summaries.job_id` | `jobs.id` | NO ACTION | none | none |
 
@@ -172,6 +179,7 @@ Logical references (no foreign key, no ORM relationship):
 | `review_rows` | `ix_review_rows_dupe_group` | index | `dupe_group` | `f1b8d3c60a29` |
 | `summaries` | `ix_summaries_document_id` | index | `document_id` | `73abdcd5ef01` |
 | `page_texts` | `ix_page_texts_document_id` | index | `document_id` | `f0f4d21dbb53` |
+| `replaced_review_rows` | `ix_replaced_review_rows_document_id` | index | `document_id` | `a3d6f0b81e57` |
 | `page_texts` | `uq_page_texts_document_page` | UNIQUE constraint | `(document_id, page)` | `f0f4d21dbb53` |
 | `prompts` | `uq_prompt_role_category` | UNIQUE constraint | `(role, category_id)` | `73abdcd5ef01` |
 | `audit_log` | `ix_audit_log_user_id` | index | `user_id` | `73abdcd5ef01` |
@@ -443,6 +451,31 @@ row, so it survives reviewer merges and splits. Writer: `backend/app/services/pa
 | `extract_ok` | Boolean | no | ORM `True` | Extraction succeeded. `False` with empty text = the page errored; `True` with empty text = a genuinely blank page. A later successful read replaces a `False` row. | `f0f4d21dbb53` |
 | `char_count` | Integer | no | ORM `0` | Length of `text`. | `f0f4d21dbb53` |
 | `created_at` | DateTime | no | ORM `_utcnow` | Creation time. | `f0f4d21dbb53` |
+
+### `replaced_review_rows`
+
+The reviewer rows a re-segment replaced, copied by `backend/app/worker/tasks.py`
+`_archive_review_rows()` just before `_store_segment_rows()` deletes them. One row per replaced
+`review_rows` row; `job_id` groups each generation. Never edited, and read by no route: it keeps
+reviewer corrections available as ground truth and training data. Rows replaced before
+`a3d6f0b81e57` were not kept.
+
+| Column | Type | Null | Default | Meaning | Added by |
+| --- | --- | --- | --- | --- | --- |
+| `id` | Integer | no | serial | Primary key. | `a3d6f0b81e57` |
+| `document_id` | String(36) | no | - | FK `documents.id`, indexed. | `a3d6f0b81e57` |
+| `job_id` | Integer | no | - | The segment job that replaced the row. A plain integer, not a foreign key. | `a3d6f0b81e57` |
+| `replaced_at` | DateTime | no | ORM `_utcnow` | When the row was replaced. | `a3d6f0b81e57` |
+| `idx` | Integer | no | - | Order within the replaced set. | `a3d6f0b81e57` |
+| `start` | Integer | no | - | First page, 1-based. | `a3d6f0b81e57` |
+| `end` | Integer | no | - | Last page, inclusive. | `a3d6f0b81e57` |
+| `category` | String(8) | no | - | As `review_rows.category`. | `a3d6f0b81e57` |
+| `title` | String(512) | no | ORM `'-'` | As `review_rows.title`. | `a3d6f0b81e57` |
+| `date` | String(16) | no | ORM `'-'` | As `review_rows.date`. | `a3d6f0b81e57` |
+| `injury_date` | Text | no | ORM `'-'` | As `review_rows.injury_date`. | `a3d6f0b81e57` |
+| `flag` | String(4) | no | ORM `'-'` | As `review_rows.flag`. | `a3d6f0b81e57` |
+| `include` | Boolean | no | ORM `True` | As `review_rows.include`. | `a3d6f0b81e57` |
+| `method` | String(32) | yes | - | As `review_rows.method`. | `a3d6f0b81e57` |
 
 ### `categories`
 
