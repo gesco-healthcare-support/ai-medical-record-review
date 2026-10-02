@@ -762,20 +762,20 @@ def _run(paragraph, s, *, bold=False, italic=False, size=None, underline=False, 
     return run
 
 
-def _add_inline_runs(paragraph, text, *, bold=False, italic=False, font=None):
+def _add_inline_runs(paragraph, text, *, bold=False, italic=False, font=None, size=None):
     """Append runs to ``paragraph``, turning **bold** / *italic* / _italic_ markers into real
     formatting; ``bold``/``italic`` set the baseline for the plain segments."""
     pos = 0
     for m in INLINE_EMPHASIS_RE.finditer(text):
         if m.start() > pos:
-            _run(paragraph, text[pos : m.start()], bold=bold, italic=italic, font=font)
+            _run(paragraph, text[pos : m.start()], bold=bold, italic=italic, font=font, size=size)
         if m.group(1) is not None:
-            _run(paragraph, m.group(1), bold=True, italic=italic, font=font)
+            _run(paragraph, m.group(1), bold=True, italic=italic, font=font, size=size)
         else:
-            _run(paragraph, m.group(2) or m.group(3), bold=bold, italic=True, font=font)
+            _run(paragraph, m.group(2) or m.group(3), bold=bold, italic=True, font=font, size=size)
         pos = m.end()
     if pos < len(text):
-        _run(paragraph, text[pos:], bold=bold, italic=italic, font=font)
+        _run(paragraph, text[pos:], bold=bold, italic=italic, font=font, size=size)
 
 
 def _page_number_field(paragraph) -> None:
@@ -991,10 +991,39 @@ def date_label(entry) -> str:
 #
 # The two widths sum to 6.5in either way, which is the usable width of a letter page at the 1in
 # margins this document uses. Widening the date column narrows the body by the same amount.
-_DATE_COL = Inches(0.9)
-_DATE_COL_WIDE = Inches(1.2)
-_BODY_COL = Inches(5.6)
-_BODY_COL_NARROW = Inches(5.3)
+#
+# WIDENED 2026-10-02, so the sizing above is now history. Reviewer feedback with a screenshot: a
+# diagnostic entry's date wrapped ("07/24/2" over "0"). Two changes landed after 0.9in was chosen and
+# it was never re-measured against either: the diagnostic tier made a date BOLD, and the entries move
+# from 11pt to 12pt here (asked for in the same message). Measured from the font files, MM/DD/YY at
+# 12pt BOLD is 42.7pt Times New Roman, 46.7 Arial, 46.8 Calibri, 51.4 Century Gothic, 57.6 Georgia,
+# 59.7 Tahoma - two doctor fonts no longer fit the 54.0pt a 0.9in cell leaves. Bold Tahoma is 1.233x
+# its regular weight, the widest bold-to-regular ratio of the six.
+#
+# 1.1in leaves 68.4pt. The same argument as above covers the five fonts nobody can open: a font whose
+# 11pt regular label is no wider than the widest measured (Georgia, 47.8pt) is at most
+# 47.8 x 12/11 x 1.233 = 64.3pt bold at 12pt, clearing 68.4 by 4.1pt; the widest MEASURED bold label,
+# Tahoma's 59.7, clears it by 8.7. "Undated" is at most 53.0pt. The four-digit column scales by the
+# same 1.286 as before: 68.4 x 1.286 = 88.0pt of text = 1.37in, so 1.4in.
+_DATE_COL = Inches(1.1)
+_DATE_COL_WIDE = Inches(1.4)
+_BODY_COL = Inches(5.4)
+_BODY_COL_NARROW = Inches(5.1)
+
+# Entry text size. The letter's own paragraphs were already 12pt; the entries took `_run`'s default
+# of 11 and the reviewers asked for 12 (2026-10-02). The memo and the running header keep theirs -
+# the request was about the review's entries.
+_ENTRY_SIZE = Pt(12)
+
+
+def title_separator(title: str) -> str:
+    """The separator between an entry's title and its body: `TITLE_SEPARATOR`, less its period when
+    the title already ends in one.
+
+    A title ending in a credential or an abbreviation ("JANE SMITH, M.D.", "...REPORT.") got a
+    second period from the separator - "M.D.. Findings" - and the reviewers flagged it on
+    2026-10-02: the outside MRRs never double the period. Shared by both renderers."""
+    return " " if (title or "").rstrip().endswith(".") else TITLE_SEPARATOR
 
 
 def _column_widths(entries) -> tuple[Inches, Inches]:
@@ -1090,6 +1119,12 @@ def build_mrr_document(
     table = doc.add_table(rows=0, cols=2)
     table.autofit = False
     date_width, body_width = _column_widths(entries)
+    # The GRID as well as each cell. python-docx creates the grid at half the page width per
+    # column (3in + 3in) and only the cells were ever set, so the table carried two widths that
+    # disagreed. Word reads the cells; an editor reading the grid - which is what a paste into
+    # another document can do - got the 3in columns instead.
+    table.columns[0].width = date_width
+    table.columns[1].width = body_width
     for entry in entries:
         cells = table.add_row().cells
         cells[0].width = date_width
@@ -1097,7 +1132,9 @@ def build_mrr_document(
         cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         cells[1].vertical_alignment = WD_ALIGN_VERTICAL.TOP
         diagnostic = bool(entry.get("diagnostic"))
-        _run(cells[0].paragraphs[0], date_label(entry), bold=diagnostic, font=font)
+        _run(
+            cells[0].paragraphs[0], date_label(entry), bold=diagnostic, font=font, size=_ENTRY_SIZE
+        )
         body = cells[1].paragraphs[0]
         # Justified: the report is read as a finished document, and a ragged right edge on every
         # record is what made the export look like a draft.
@@ -1105,11 +1142,31 @@ def build_mrr_document(
         # The entry header is PLAIN in the reviewers' own reports - date, author, facility
         # and type read as a sentence rather than a heading. Ours bolded it. A diagnostic
         # study is the exception: bold throughout (see DIAGNOSTIC_CATEGORY).
-        _add_inline_runs(body, entry["summaryTitle"], bold=diagnostic, font=font)
-        _run(body, TITLE_SEPARATOR, bold=diagnostic, font=font)
+        _add_inline_runs(body, entry["summaryTitle"], bold=diagnostic, font=font, size=_ENTRY_SIZE)
+        _run(
+            body,
+            title_separator(entry["summaryTitle"]),
+            bold=diagnostic,
+            font=font,
+            size=_ENTRY_SIZE,
+        )
         segments = entry_body_segments(entry["summaryText"], whole_bold=diagnostic)
         for chunk, bold, italic, underline in segments:
-            _run(body, chunk, bold=bold, italic=italic, underline=underline, font=font)
+            _run(
+                body,
+                chunk,
+                bold=bold,
+                italic=italic,
+                underline=underline,
+                font=font,
+                size=_ENTRY_SIZE,
+            )
+        # A blank line after every entry, as its own paragraph. The only gap before was the
+        # document default's 10pt space-after, which is PARAGRAPH formatting: a reviewer pasting the
+        # entries into their report under the destination's style loses it, and the entries then
+        # run together (reviewer feedback, 2026-10-02). An empty paragraph survives every paste mode,
+        # plain text included.
+        cells[1].add_paragraph("")
 
     # THE PAGE ACCOUNTING, between the entries and the conclusion - the position both
     # reference documents put it in. Bold, because they bold all three of these sentences
