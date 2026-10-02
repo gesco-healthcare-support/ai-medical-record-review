@@ -26,8 +26,9 @@ Built by `backend/app/services/reporting.py` `build_mrr_document()` with python-
 5. **Summary intro**, bold, 12 pt: `The following is a summary of records from <firm>:`, or
    `The following is a summary of those records:` when no firm was given.
 6. **Entries.** A borderless two-column table with fixed layout: the date label in the left column,
-   and in the right column the header line, `. `, then the body, justified. Entries are sorted by
-   date with undated entries last. 11 pt.
+   and in the right column the header line, `. `, then the body, justified, then an empty paragraph
+   so a blank line separates entries even after they are pasted into another document under its
+   own style. Entries are sorted by date with undated entries last. 12 pt.
 7. **Page accounting**, when it applies: the exclusion sentence in bold, each excluded document type
    on its own plain line, then the duplicates sentence in bold. 12 pt.
 8. **Conclusion**: `This concludes the review of submitted records.`, plain, 12 pt.
@@ -38,11 +39,14 @@ for an unknown or absent doctor. python-docx writes only the font name and the r
 it, so nothing needs installing on the server. The same tuple, `DOCTORS`, feeds the review page's
 doctor dropdown.
 
-**Column widths.** The date column is 0.9 in and the body 5.6 in. When any entry's date label needs
-a four-digit year, the date column widens to 1.2 in and the body narrows to 5.3 in; the pair always
-sums to 6.5 in. The wider width is derived from a ratio (a four-digit label is at most 1.286 times a
-two-digit one across the measurable doctor fonts) rather than from one font, because five of the
-eleven fonts could not be measured (comment above `_DATE_COL`).
+**Column widths.** The date column is 1.1 in and the body 5.4 in. When any entry's date label needs
+a four-digit year, the date column widens to 1.4 in and the body narrows to 5.1 in; the pair always
+sums to 6.5 in, and the table grid carries the same widths as the cells. 1.1 in holds a bold 12 pt
+`MM/DD/YY` label (a diagnostic entry's date is bold) in every measurable doctor font, the widest
+being Tahoma at 59.7 pt against 68.4 pt available. The wider width is derived from a ratio (a
+four-digit label is at most 1.286 times a two-digit one across the measurable doctor fonts) rather
+than from one font, because five of the eleven fonts could not be measured (comment above
+`_DATE_COL`).
 
 ## The linked PDF
 
@@ -131,7 +135,10 @@ front of the combined pages.
   `(Pages X-Y)`. The page range comes back only when the export dialog's page-number box is ticked.
 - One spelling per provider across the record (`consistent_authors()`).
 - A period and a space (`TITLE_SEPARATOR`) between the header line and the body: 329 dated entries
-  across the reference deliverables use a period, none a colon.
+  across the reference deliverables use a period, none a colon. When the header line already ends in
+  a period (`M.D.`), only the space is added (`title_separator()`, both renderers).
+- No doubled period inside a header line: `JANE SMITH, M.D.. ACME CLINIC` becomes
+  `JANE SMITH, M.D. ACME CLINIC` (`tidy_author_and_facility()`). A comma after a credential is kept.
 - In Word the header line is plain (bold only in the diagnostic tier); in the PDF it is always bold
   because it is the link.
 

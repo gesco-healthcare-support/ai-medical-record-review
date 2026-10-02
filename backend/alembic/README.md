@@ -9,7 +9,7 @@ applies whatever a database is missing.
 | --- | --- |
 | `env.py` | Wires Alembic to the app: imports `app.models` so every table is on `Base.metadata`, and takes the database URL from `Settings.database_url` (so `DATABASE_URL`, `SECRET_KEY` and `SECURITY_PASSWORD_SALT` must be set). Online runs use one transaction for all pending revisions. |
 | `script.py.mako` | The template `alembic revision` fills in for a new file. |
-| `versions/` | One file per revision, named `<revision>_<slug>.py`. 30 on 2026-09-30; head `f5c8d2a19e47` (`uv run alembic heads` prints the current one). |
+| `versions/` | One file per revision, named `<revision>_<slug>.py`. 31 on 2026-10-02; head `a3d6f0b81e57` (`uv run alembic heads` prints the current one). |
 | `README` | Alembic's stock one-line description of the template. Left as generated. |
 | `README.md` | This file. |
 | `CLAUDE.md` | Rules for AI coding agents working in this folder. |

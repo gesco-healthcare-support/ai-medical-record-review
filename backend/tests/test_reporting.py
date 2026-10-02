@@ -398,7 +398,7 @@ def test_a_four_digit_date_gets_a_column_wide_enough_to_hold_it():
             {"summaryDate": "06/15/1958", "summaryTitle": "B", "summaryText": "b"},
         ]
     )
-    assert date_w == Inches(1.2)
+    assert date_w == Inches(1.4)
     assert date_w + body_w == Inches(6.5)  # the usable width of the page is unchanged
 
 
@@ -415,7 +415,7 @@ def test_a_record_of_short_dates_keeps_the_layout_it_always_had():
             {"summaryDate": "01/02/2020", "summaryTitle": "B", "summaryText": "b"},
         ]
     )
-    assert date_w == Inches(0.9)
+    assert date_w == Inches(1.1)
     assert date_w + body_w == Inches(6.5)
 
 
@@ -424,7 +424,7 @@ def test_an_undated_entry_does_not_widen_the_column():
     slash in it. A width rule written as "is it long" rather than "does it carry four year
     digits" would have to special-case it; this one does not."""
     date_w, body_w = _table_widths([{"summaryDate": "-", "summaryTitle": "A", "summaryText": "a"}])
-    assert date_w == Inches(0.9)
+    assert date_w == Inches(1.1)
     assert date_w + body_w == Inches(6.5)
 
 
@@ -1854,3 +1854,138 @@ def test_the_word_document_separates_deposition_paragraphs():
         if "On pages 11 to 20" in p.text
     )
     assert body._p.xml.count("<w:br/>") == 2
+
+
+# Reviewer feedback, 2026-10-02, with a screenshot of a delivered letter: a bold (diagnostic) date
+# wrapped onto a second line, the entries run together once pasted into their report, the entry
+# text is not 12pt, and a title ending in "M.D." gets a second period.
+
+# The Table Normal style's cell margin, 108 twips each side = 5.4pt, so 10.8pt of every column is
+# not available to the text.
+_CELL_MARGINS_PT = 10.8
+# MM/DD/YY at 12pt BOLD in Tahoma, the widest of the six doctor fonts that can be measured
+# (from the font files' advance widths; the comment above `_DATE_COL` lists all six).
+_WIDEST_BOLD_SHORT_DATE_PT = 59.7
+
+
+def _diagnostic_entry(date="07/24/2020", title="JANE SMITH, M.D.", text="**Findings**: Normal."):
+    return {**_entry(date, title, text), "diagnostic": True}
+
+
+def test_a_bold_short_date_fits_its_column():
+    """DEMONSTRATES the wrap in the reviewers' screenshot ("07/24/2" over "0").
+
+    0.9in left 54.0pt for the label, enough at 11pt regular. A diagnostic entry's date is bold and
+    entries are now 12pt, and at 12pt bold the label is 57.6pt in Georgia and 59.7pt in Tahoma."""
+    date_w, _ = _table_widths([_diagnostic_entry()])
+    assert date_w.pt - _CELL_MARGINS_PT > _WIDEST_BOLD_SHORT_DATE_PT
+
+
+def test_the_grid_carries_the_same_widths_as_the_cells():
+    """python-docx creates the grid at 3in + 3in and only the cells were set, so a reader that
+    lays the table out from its grid - a paste into another document can - got 3in columns."""
+    doc = build_mrr_document(
+        [_entry("01/02/2020")], 10, "A B", "01/01/1980", "QME", details=ReportDetails()
+    )
+    table = doc.tables[0]
+    row = table.rows[0]
+    assert table.columns[0].width == row.cells[0].width
+    assert table.columns[1].width == row.cells[1].width
+
+
+def test_every_run_of_an_entry_is_twelve_point():
+    """The letter's own paragraphs were 12pt and the entries took the 11pt `_run` default."""
+    doc = build_mrr_document(
+        [_entry("01/02/2020", "A REPORT", "**Diagnoses**: Strain. Plain text.")],
+        10,
+        "A B",
+        "01/01/1980",
+        "QME",
+        details=ReportDetails(),
+    )
+    runs = [r for c in doc.tables[0].rows[0].cells for p in c.paragraphs for r in p.runs]
+    assert runs
+    assert {r.font.size for r in runs} == {Pt(12)}
+
+
+def test_each_entry_ends_with_a_blank_line_that_survives_a_paste():
+    """A real empty paragraph, not paragraph spacing: spacing is formatting, which a paste under
+    the destination's style drops, and the entries then run together."""
+    doc = build_mrr_document(
+        [_entry("01/02/2020"), _entry("03/04/2021")],
+        10,
+        "A B",
+        "01/01/1980",
+        "QME",
+        details=ReportDetails(),
+    )
+    for row in doc.tables[0].rows:
+        paragraphs = row.cells[1].paragraphs
+        assert len(paragraphs) == 2
+        assert paragraphs[0].text.strip()
+        assert paragraphs[-1].text == ""
+
+
+@pytest.mark.parametrize("title", ["JANE SMITH, M.D.", "LABORATORY REPORT."])
+def test_a_title_ending_in_a_period_is_not_given_a_second_one(title):
+    """DEMONSTRATES "M.D.. Findings" - the separator added its period after the title's own."""
+    doc = build_mrr_document(
+        [_entry("01/02/2020", title, "body text")],
+        10,
+        "A B",
+        "01/01/1980",
+        "QME",
+        details=ReportDetails(),
+    )
+    cell = doc.tables[0].rows[0].cells[1].paragraphs[0].text
+    assert ".." not in cell, cell
+    assert cell.endswith(". body text"), cell
+
+
+def test_both_renderers_drop_the_doubled_period_alike():
+    entries = [_entry("01/02/2020", "JANE SMITH, M.D.", "body text")]
+    linked_pdf = pytest.importorskip("app.services.linked_pdf")
+    letter = linked_pdf._summary_html(entries, 10, "QME", ReportDetails())
+    assert "</a> body text" in letter
+    assert "</a>. " not in letter
+
+
+def test_a_title_without_a_period_still_gets_the_separator():
+    """GUARD - the ordinary case keeps `TITLE_SEPARATOR` exactly."""
+    doc = build_mrr_document(
+        [_entry("01/02/2020", "A REPORT", "body text")],
+        10,
+        "A B",
+        "01/01/1980",
+        "QME",
+        details=ReportDetails(),
+    )
+    assert (
+        doc.tables[0].rows[0].cells[1].paragraphs[0].text == f"A REPORT{TITLE_SEPARATOR}body text"
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "tidy"),
+    [
+        (
+            "VADIM CHUDNOVSKY, M.D.. RES RELIANT RADIOLOGY. ULTRASOUND",
+            "VADIM CHUDNOVSKY, M.D. RES RELIANT RADIOLOGY. ULTRASOUND",
+        ),
+        ("JANE SMITH, M.D. . ACME CLINIC. PR-2", "JANE SMITH, M.D. ACME CLINIC. PR-2"),
+        ("ULTRASOUND OF THE PELVIS..", "ULTRASOUND OF THE PELVIS."),
+    ],
+)
+def test_a_doubled_period_inside_a_title_is_collapsed(raw, tidy):
+    """DEMONSTRATES the period the model doubles by writing "AUTHOR, CREDENTIALS. FACILITY"
+    literally after a credential that already ends in one."""
+    from app.services.summarize_engine import tidy_title
+
+    assert tidy_title(raw) == tidy
+
+
+def test_a_credential_followed_by_a_comma_is_left_alone():
+    """The comma after "M.D." survives - only periods collapse - while "PH.D.." still loses one."""
+    from app.services.summarize_engine import tidy_title
+
+    assert tidy_title("JANE SMITH, M.D., PH.D.. ACME") == "JANE SMITH, M.D., PH.D. ACME"

@@ -24,8 +24,8 @@ import pymupdf
 from app.services.reporting import (
     CONCLUSION,
     REVIEW_HEADING,
-    TITLE_SEPARATOR,
     ReportDetails,
+    title_separator,
     accounting_sentences,
     date_label,
     entry_body_segments,
@@ -89,7 +89,7 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
         # title, which is bold here for every entry because it is the link. Same tier as Word.
         diagnostic = bool(e.get("diagnostic"))
         date_html = html.escape(date_label(e))
-        separator = html.escape(TITLE_SEPARATOR)
+        separator = html.escape(title_separator(e["linkTitle"]))
         if diagnostic:
             date_html, separator = f"<b>{date_html}</b>", f"<b>{separator}</b>"
         rows.append(

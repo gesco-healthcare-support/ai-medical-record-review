@@ -3409,6 +3409,86 @@ class TestSegmentRowsReplacedIsRecorded:
         assert len(event.action) <= 32  # AuditLog.action is String(32)
 
 
+class TestReplacedReviewRowsAreKept:
+    """A re-segment copies the reviewer rows it replaces before deleting them, so the corrections
+    survive as training data and ground truth instead of only being counted."""
+
+    _row = staticmethod(TestSegmentRowsReplacedIsRecorded._row)
+
+    def _segment(self, monkeypatch, doc_id, rows):
+        return TestSegmentRowsReplacedIsRecorded._segment(self, monkeypatch, doc_id, rows)
+
+    @staticmethod
+    def _kept(doc_id):
+        from app.models import ReplacedReviewRow
+
+        with get_sessionmaker()() as session:
+            return session.scalars(
+                select(ReplacedReviewRow)
+                .where(ReplacedReviewRow.document_id == doc_id)
+                .order_by(ReplacedReviewRow.job_id, ReplacedReviewRow.idx)
+            ).all()
+
+    def test_a_first_segment_keeps_nothing_because_it_replaces_nothing(self, monkeypatch):
+        doc_id = _make_user_and_doc(page_count=2)
+        self._segment(monkeypatch, doc_id, [self._row(1, "1"), self._row(2, "100")])
+        assert self._kept(doc_id) == []
+
+    def test_a_re_segment_keeps_the_reviewer_rows_exactly_as_they_stood(self, monkeypatch):
+        doc_id = _make_user_and_doc(page_count=3)
+        self._segment(
+            monkeypatch, doc_id, [self._row(1, "1"), self._row(2, "100"), self._row(3, "100")]
+        )
+        # The reviewer's work: a category correction, a title, a tick, and a merge of pages 2-3.
+        with get_sessionmaker()() as session:
+            rows = session.scalars(
+                select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+            ).all()
+            rows[0].category = "13"
+            rows[0].title = "Reviewer title"
+            rows[1].include = True
+            rows[1].end = 3
+            session.delete(rows[2])
+            session.commit()
+
+        second = self._segment(monkeypatch, doc_id, [self._row(1, "1"), self._row(2, "1", end=3)])
+
+        kept = self._kept(doc_id)
+        assert [(r.start, r.end) for r in kept] == [(1, 1), (2, 3)]
+        assert [r.category for r in kept] == ["13", "100"]
+        assert kept[0].title == "Reviewer title"
+        assert kept[1].include is True
+        assert {r.job_id for r in kept} == {second}
+
+    def test_each_re_segment_keeps_its_own_generation(self, monkeypatch):
+        doc_id = _make_user_and_doc(page_count=2)
+        rows = [self._row(1, "1"), self._row(2, "100")]
+        self._segment(monkeypatch, doc_id, rows)
+        second = self._segment(monkeypatch, doc_id, rows)
+        third = self._segment(monkeypatch, doc_id, rows)
+
+        kept = self._kept(doc_id)
+        assert len(kept) == 4
+        assert [r.job_id for r in kept] == [second, second, third, third]
+
+    def test_a_document_with_kept_rows_can_still_be_deleted(self, monkeypatch):
+        from app.models import ReplacedReviewRow
+
+        doc_id = _make_user_and_doc(page_count=2)
+        rows = [self._row(1, "1"), self._row(2, "100")]
+        self._segment(monkeypatch, doc_id, rows)
+        self._segment(monkeypatch, doc_id, rows)
+        assert self._kept(doc_id)
+
+        with get_sessionmaker()() as session:
+            session.delete(session.get(Document, doc_id))
+            session.commit()
+            left = session.scalars(
+                select(ReplacedReviewRow).where(ReplacedReviewRow.document_id == doc_id)
+            ).all()
+        assert left == []
+
+
 class TestLostCorrectionsArithmetic:
     """The pure half of #217. `ReviewRow` starts as a copy of `SegmentRow`, so comparing the two on
     an identical page span is the only way to separate a reviewer's decision from the model's."""

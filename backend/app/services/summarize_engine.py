@@ -1139,15 +1139,22 @@ def _system_name_only(title: str) -> str:
     return _DOUBLED_SEPARATOR.sub(r"\1", "".join(sep + piece for sep, piece in out)).strip()
 
 
+# A credential's own period followed by the header's separator period: "JANE SMITH, M.D.. ACME
+# CLINIC". The model writes the TITLE_PROMPT shape "AUTHOR, CREDENTIALS. FACILITY" literally, so a
+# credential ending in a period gets a second one. Reviewer feedback, 2026-10-02: the outside MRRs
+# never double it. Periods only - "M.D., ACME" is a credential and a comma, and is left alone.
+_DOUBLED_PERIOD = re.compile(r"\.(?:[ \t]{0,4}\.)+")
+
+
 def tidy_author_and_facility(title: str) -> str:
-    """``title`` with the author first-name-first and a health system's site dropped - the two
-    rules above. A leading ``[ManualCheck]`` tag is kept where it was, so this is safe on a stored,
-    decorated title as well as on a bare header line."""
+    """``title`` with the author first-name-first, a health system's site dropped, and no doubled
+    period - the rules above. A leading ``[ManualCheck]`` tag is kept where it was, so this is safe
+    on a stored, decorated title as well as on a bare header line."""
     raw = title or ""
     tag = _MANUAL_CHECK_PREFIX.match(raw)
     head = raw[: tag.end()] if tag else ""
     body = raw[len(head) :]
-    return head + _system_name_only(_first_name_first(body))
+    return head + _DOUBLED_PERIOD.sub(".", _system_name_only(_first_name_first(body)))
 
 
 def tidy_title(title: str) -> str:

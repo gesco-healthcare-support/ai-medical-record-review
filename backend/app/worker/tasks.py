@@ -18,7 +18,15 @@ from sqlalchemy import delete, select, update
 from app.config import get_settings
 from app.db import get_engine, get_sessionmaker
 from app.errors import OcrUnavailableError, user_facing_message
-from app.models import Document, Job, PageText, ReviewRow, SegmentRow, Summary
+from app.models import (
+    Document,
+    Job,
+    PageText,
+    ReplacedReviewRow,
+    ReviewRow,
+    SegmentRow,
+    Summary,
+)
 from app.services import catalog
 from app.services.audit import audit
 from app.services.jobs import (
@@ -537,12 +545,46 @@ def _populate_page_text(session, document, report) -> None:
         logger.warning("page text population failed for %s", document.id, exc_info=True)
 
 
+def _archive_review_rows(session, document, job) -> int:
+    """Copy the document's current ReviewRows to ``replaced_review_rows``, tagged with ``job``.
+
+    Read with a fresh SELECT rather than ``document.review_rows``: the relationship may already be
+    loaded and stale in this session. Returns how many rows were kept. A document segmented for the
+    first time has none, and nothing is written.
+    """
+    current = session.scalars(
+        select(ReviewRow).where(ReviewRow.document_id == document.id).order_by(ReviewRow.idx)
+    ).all()
+    for row in current:
+        session.add(
+            ReplacedReviewRow(
+                document_id=document.id,
+                job_id=job.id,
+                idx=row.idx,
+                start=row.start,
+                end=row.end,
+                category=row.category,
+                title=row.title,
+                date=row.date,
+                injury_date=row.injury_date,
+                flag=row.flag,
+                include=row.include,
+                method=row.method,
+            )
+        )
+    return len(current)
+
+
 def _store_segment_rows(session, document, job, rows) -> None:
     """Replace this document's ReviewRows with ``rows``, keeping an immutable SegmentRow copy.
 
     The two copies are written from ONE shared ``fields`` dict deliberately, so the immutable model
     output and the editable reviewer copy cannot drift apart.
+
+    The rows being replaced are copied to ``replaced_review_rows`` first, in the same transaction,
+    so a re-segment can no longer destroy reviewer corrections - see ``ReplacedReviewRow``.
     """
+    _archive_review_rows(session, document, job)
     session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
     for idx, row in enumerate(rows):
         fields = {

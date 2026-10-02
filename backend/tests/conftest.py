@@ -420,6 +420,7 @@ from app.models import (  # noqa: E402
     Document,
     Job,
     PageText,
+    ReplacedReviewRow,
     ReviewRow,
     SegmentRow,
     Summary,
@@ -462,6 +463,7 @@ def _delete_test_users() -> None:
         session.execute(delete(Summary).where(Summary.document_id.in_(doc_ids)))
         session.execute(delete(PageText).where(PageText.document_id.in_(doc_ids)))
         session.execute(delete(ReviewRow).where(ReviewRow.document_id.in_(doc_ids)))
+        session.execute(delete(ReplacedReviewRow).where(ReplacedReviewRow.document_id.in_(doc_ids)))
         session.execute(delete(Job).where(Job.document_id.in_(doc_ids)))
         session.execute(delete(Document).where(Document.user_id.in_(ids)))
         session.execute(delete(AuditLog).where(AuditLog.user_id.in_(ids)))
