@@ -24,6 +24,24 @@ _ID_SIX = {
     "summarize_default": True,
 }
 
+# Id 18, like id 6, has no taxonomy entry and is never auto-assigned: only a REVIEWER sets it, on
+# a document that is in the record but cannot be read (handwritten, illegible, incomplete). Its
+# summary is the fixed line `summarize_engine.ILLEGIBLE_SUMMARY`, built in code with no model call.
+# Not auto-assigned because a wrong guess in that direction replaces a real summary with that line.
+# Migration b7e4c1a9d203 carries it to a seeded box and must stay byte-identical to this dict.
+_ILLEGIBLE = {
+    "id": "18",
+    "name": "Illegible document",
+    "description": (
+        "A document that is in the record but cannot be read - handwritten, illegible, or "
+        "incomplete. Chosen by a reviewer; its summary states only that the document was illegible."
+    ),
+    "examples": [],
+    "active": True,
+    "auto_assign": False,
+    "summarize_default": True,
+}
+
 # Categories unchecked for summarization by default (rarely summarized): General.
 #
 # Depositions (9) were here until 2026-08-06. Adrian turned them on: a reviewer had to remember a
@@ -43,7 +61,7 @@ def _prompt_key(category_id) -> str:
 
 
 def constants_categories() -> list[dict]:
-    """The canonical category catalog as dicts (taxonomy ids + id 6); shape matches
+    """The canonical category catalog as dicts (taxonomy ids + ids 6 and 18); shape matches
     Category.listing() so it can back-fill the DB accessor when the tables are unseeded."""
     categories = [
         {
@@ -58,6 +76,7 @@ def constants_categories() -> list[dict]:
         for category in CATEGORIES.values()
     ]
     categories.append(dict(_ID_SIX))
+    categories.append(dict(_ILLEGIBLE))
     return categories
 
 
