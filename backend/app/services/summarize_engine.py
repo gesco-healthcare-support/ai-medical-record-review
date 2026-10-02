@@ -36,8 +36,13 @@ TITLE_PROMPT = (
     "order, with the elements separated by a period and a space, and the WHOLE line in capital "
     "letters:\n\n"
     "AUTHOR, CREDENTIALS. FACILITY. DOCUMENT TYPE.\n\n"
-    "1. AUTHOR - the person who conducted and signed THIS encounter, read from the signature "
-    "block where there is one. Never the referring provider. Write the name, then a comma, "
+    "1. AUTHOR - the person who conducted and signed THIS encounter. Never the referring provider. "
+    "Take the name from where it is PRINTED: the typed name beneath or beside the signature, a "
+    "physician or provider name field on a form, or the letterhead. A handwritten signature is "
+    "NOT the name - never transcribe the strokes of a signature. Where a signature is drawn over "
+    "the printed name, read the printed name from the page image, not from garbled OCR. If no "
+    "printed name can be read in full, omit the AUTHOR and its credentials rather than write a "
+    "fragment or a guess. Write the name, then a comma, "
     'then the credentials with periods, for example "JANE SMITH, M.D." Non-physicians are '
     "included: M.D., D.O., D.C., P.T., R.N., P.A., N.P., PSY.D., L.V.N., O.D., D.D.S.\n"
     "2. FACILITY - the clinic, imaging centre, hospital, laboratory, or practice that produced "
@@ -626,6 +631,45 @@ _MULTIMODAL_INSTRUCTION = (
     "following every rule they state."
 )
 _OCR_TEXT_HEADER = "OCR TEXT:\n"
+
+# The title call's counterpart to _MULTIMODAL_INSTRUCTION. It used to be text-only ("cheaper and
+# adequate"), and reviewer feedback on 2026-10-02 showed where that was not adequate: the author
+# is read from a signature block, and OCR cannot read a signature. Two titles on one record, both
+# corrected by hand afterwards:
+#   - a typed name under a signature that was drawn across it: OCR kept only the tail of the
+#     surname, and the title opened with that fragment. The full name is legible on the IMAGE.
+#   - a request for authorization whose only signature was cursive: OCR turned the strokes into
+#     letters, and the prompt said to read the author "from the signature block", so the title
+#     carried them - while the printed name sat in the form's own physician field, in the OCR text.
+# Both models take this call through the same seam, so both had it.
+_TITLE_IMAGE_INSTRUCTION = (
+    "\n\nThe images above are the first and last pages of this sub-document, where the letterhead "
+    "and the signature block are, and the OCR text above is all of its pages. Wherever the OCR has "
+    "garbled or lost the author's printed name - a signature drawn over it is the usual cause - "
+    "read the name from the images. Now return the header line per the system instructions."
+)
+
+
+def _title_contents(pdf_path, row, text):
+    """What the title call is sent: the FIRST and LAST page images, then the OCR text.
+
+    The first page carries the letterhead (the facility) and the last the signature block (the
+    author). Two pages rather than the body's fifteen because a header line needs nothing between
+    them, and every image is prefill the call pays for on both backends. Same switch and same
+    degrade-to-text rule as the body: a rasterize failure costs the images, never the title."""
+    if not get_settings().summary_multimodal:
+        return text
+    start, end = int(row["start"]), int(row["end"])
+    try:
+        images = page_image_parts(pdf_path, start, start, 1)
+        if end > start:
+            images += page_image_parts(pdf_path, end, end, 1)
+    except Exception as exc:  # noqa: BLE001 - degrade to OCR-only; never fail a title on this
+        logger.warning(
+            "title rasterize failed for pages %s-%s; using OCR-only: %s", start, end, exc
+        )
+        return text
+    return [*images, TextPart(_OCR_TEXT_HEADER + text), TextPart(_TITLE_IMAGE_INSTRUCTION)]
 
 
 # _hit_token_cap moved to services/llm/gemini.py: truncation is read from a vendor's finish reason,
@@ -2020,7 +2064,7 @@ def summarize_row(
     # Summary body runs at settings.summary_temperature (default 0.0 for determinism); the title is
     # pure extraction, always 0. When multimodal is on, the body also gets the page images (OCR text
     # alone garbles tables/handwriting); a rasterize failure degrades to OCR-only rather than failing
-    # the row. The title stays OCR-text-only (cheaper and adequate).
+    # the row. The title gets the first and last page images (see _title_contents).
     body_contents = text
     if settings.summary_multimodal:
         try:
@@ -2053,7 +2097,9 @@ def summarize_row(
         # the row's deposition-ness - and passing both would take it, and the helper below it,
         # past the seven-parameter ceiling this module already sits at.
         _log_incomplete_deposition(summary, text, row)
-    title, _ = _generate(title_model, TITLE_PROMPT, text, temperature=0.0)
+    title, _ = _generate(
+        title_model, TITLE_PROMPT, _title_contents(pdf_path, row, text), temperature=0.0
+    )
     # The title call has no response_schema, and Gemini does not enforce maxLength on strings even
     # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and
     # written to a varchar(512).

@@ -40,7 +40,7 @@ flowchart TD
     H -- no, some pages errored --> N[Notice-only entry:<br/>no model call]
     H -- no, pages read but blank --> X[EmptyExtractionError]
     H -- yes --> I[Body call: page images + OCR text + instruction<br/>429 fallback, one truncation re-ask]
-    I --> J[Title call: OCR text only]
+    I --> J[Title call: first + last page images + OCR text]
     J --> K[House style on the body]
     K --> L{Audit enabled?}
     L -- yes --> M[Audit call + guards]
@@ -176,7 +176,7 @@ backend for the `summarize` stage. See [Model providers](model-providers.md) and
 | Call | Prompt | Input | Temperature | Output cap | On failure |
 | --- | --- | --- | --- | --- | --- |
 | Body | Preamble + category prompt + per-row blocks | Page images (when `SUMMARY_MULTIMODAL`), OCR text, instruction | `SUMMARY_TEMPERATURE` (0.0) | `SUMMARY_MAX_OUTPUT_TOKENS` (8192) | 429 fallback, one truncation re-ask |
-| Title | `TITLE_PROMPT` | OCR text only | 0.0 | `SUMMARY_MAX_OUTPUT_TOKENS` | Rejected answer falls back to the segmentation title |
+| Title | `TITLE_PROMPT` | First and last page images + OCR text (multimodal on) | 0.0 | `SUMMARY_MAX_OUTPUT_TOKENS` | Rejected answer falls back to the segmentation title |
 | Audit | `VERIFY_PROMPT` (`summary_verify.py`) | Source, document date (categories 1 and 2 only), title, body | 0.0 | Argument, else `AUDIT_MAX_OUTPUT_TOKENS`, else the body cap | Fail-safe: body ships unaudited |
 
 The three models are resolved once, when the Job is created (`backend/app/services/jobs.py`
@@ -213,6 +213,14 @@ was measured against 812 of 813 human-written entries. Diagnostic studies are na
 side, body part and contrast rather than by document class; a deposition is titled
 `DEPOSITION OF <NAME>` with no author or facility; absent elements are left out with their
 separator; no dates, page numbers or patient name.
+
+The author is the name PRINTED on the page - the typed name under or beside the signature, a
+physician field on a form, or the letterhead - never a transcription of a handwritten signature;
+when no printed name can be read in full the author and credentials are left out. The call is sent
+the row's first and last page images (letterhead and signature block) with the OCR text
+(`_title_contents()`), because OCR cannot read a signature drawn over a typed name: reviewer
+feedback on 2026-10-02 showed titles opening with OCR's fragment of such a name, and with the
+letters OCR made of a cursive signature.
 
 The 150-character limit in the prompt is a hint only: the call has no response schema and Gemini
 does not enforce `maxLength`. `_usable_title()` is the enforcement:
