@@ -346,14 +346,16 @@ The engine returns row dicts with `start`, `end`, `title`, `date`, `injury_date`
 `category`, `method` and, when the verify pass ran, `suggest_merge`. The worker then
 (`_store_segment_rows()`):
 
-1. Deletes every existing `ReviewRow` of the document.
+1. Copies every existing `ReviewRow` of the document to `replaced_review_rows`, tagged with this
+   job, then deletes them.
 2. Writes each row twice from one shared dict: an immutable `SegmentRow` tied to this job, and an
    editable `ReviewRow` that the reviewer changes. Writing both from one dict keeps the two copies
    from drifting.
 3. Sets each `ReviewRow.include` from the category's `summarize_default` in the live catalog.
 
 Re-running segmentation therefore replaces the document's rows and every reviewer correction on
-them. The worker counts the corrections it is about to destroy and, if there were any, writes a
+them in the editor. The replaced rows are kept in `replaced_review_rows`, one generation per
+re-segment, so the corrections remain available as ground truth and training data. The worker counts the corrections it is about to destroy and, if there were any, writes a
 `segment.rows_replaced` audit row after the new rows exist. The `fresh` flag on
 `POST /api/documents/{id}/segment/start` is accepted and currently does nothing: segmentation keeps
 no checkpoints, so every run recomputes every window.
