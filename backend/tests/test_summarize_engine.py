@@ -3366,3 +3366,85 @@ def test_presentable_title_tidies_a_stored_title_but_not_a_reviewer_typed_one():
     assert se.presentable_title(stored) == "JANE DOE, M.D. KAISER PERMANENTE. OFFICE VISIT."
     typed = "DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT."
     assert se.presentable_title(typed, reviewer_edited=True) == typed
+
+
+# THE TITLE CALL SEES THE SIGNATURE PAGE. Reviewer feedback, 2026-10-02: two titles on one record
+# carried a wrong author - a typed name under a signature drawn across it, which OCR read only as
+# the tail of the surname, and a cursive signature OCR turned into letters while the printed name
+# sat in the form's own physician field. The title call was text-only, so it could not read the
+# first, and the prompt sent it to the signature block for the second.
+
+
+def _title_call(monkeypatch, row, *, multimodal=True, raster=None):
+    """Run summarize_row and return (contents the TITLE call was given, page ranges rasterised)."""
+    captured, rasterised = {}, []
+
+    def fake_generate(model, system_msg, contents, temperature, max_output_tokens=None):
+        if system_msg == se.TITLE_PROMPT:
+            captured["contents"] = contents
+        return _fake_generate(model, system_msg, contents, temperature)
+
+    def fake_raster(path, start, end, cap):
+        rasterised.append((start, end, cap))
+        if raster is not None:
+            return raster(start, end, cap)
+        return [f"IMG{start}"] if cap == 1 else ["BODYIMG"]
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR BODY", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "page_image_parts", fake_raster)
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setattr(se.get_settings(), "summary_multimodal", multimodal, raising=False)
+    se.summarize_row("/x.pdf", row, prompt="P")
+    return captured["contents"], rasterised
+
+
+def test_the_title_call_is_given_the_first_and_last_page_images(monkeypatch):
+    """DEMONSTRATES the fix: letterhead (first page) and signature block (last page), then the
+    OCR text, then the instruction - and only those two pages, not the body's fifteen."""
+    contents, rasterised = _title_call(monkeypatch, _row(start=4, end=9))
+
+    assert contents[:2] == ["IMG4", "IMG9"]
+    assert contents[2].text == se._OCR_TEXT_HEADER + "OCR BODY"
+    assert contents[-1].text == se._TITLE_IMAGE_INSTRUCTION
+    assert (4, 4, 1) in rasterised
+    assert (9, 9, 1) in rasterised
+
+
+def test_a_one_page_row_sends_its_page_once(monkeypatch):
+    contents, _ = _title_call(monkeypatch, _row(start=7, end=7))
+    images = [c for c in contents if isinstance(c, str)]
+    assert images == ["IMG7"]
+
+
+def test_the_title_stays_text_only_when_multimodal_is_off(monkeypatch):
+    """GUARD - the same switch as the body: off means no images anywhere."""
+    contents, rasterised = _title_call(monkeypatch, _row(start=4, end=9), multimodal=False)
+    assert contents == "OCR BODY"
+    assert rasterised == []
+
+
+def test_a_rasterize_failure_costs_the_title_its_images_not_the_title(monkeypatch):
+    """GUARD - a page that will not render degrades to the OCR text, exactly as the body does."""
+
+    def raster(start, end, cap):
+        if cap == 1:
+            raise RuntimeError("poppler could not render the page")
+        return ["BODYIMG"]
+
+    contents, _ = _title_call(monkeypatch, _row(start=4, end=9), raster=raster)
+    assert contents == "OCR BODY"
+
+
+def test_the_title_prompt_reads_the_printed_name_never_the_signature():
+    """DEMONSTRATES the prompt half. The old rule sent the model to "the signature block", which is
+    where it copied OCR's reading of a cursive signature from."""
+    prompt = se.TITLE_PROMPT
+    assert "read from the signature block" not in prompt
+    assert "PRINTED" in prompt
+    assert "never transcribe the strokes of a signature" in prompt
+    assert "omit the AUTHOR and its credentials rather than write a fragment" in prompt
