@@ -30,7 +30,7 @@ import json
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
 
 # revision identifiers, used by Alembic.
 revision: str = "b7e4c1a9d203"
@@ -63,7 +63,25 @@ def _bump_revision() -> None:
     )
 
 
+def _quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def upgrade() -> None:
+    if context.is_offline_mode():
+        # `alembic upgrade --sql` (the Squawk lint in CI) has no database to read, so the seeded-catalog
+        # guard below cannot run as Python. The same guard as ONE statement: insert only when another
+        # category row exists, and never over an existing id 18.
+        op.execute(
+            "INSERT INTO categories "
+            "(id, name, description, examples, active, auto_assign, summarize_default, updated_at) "
+            f"SELECT {_quote(CATEGORY_ID)}, {_quote(_NAME)}, {_quote(_DESCRIPTION)}, "
+            f"CAST({_quote(json.dumps(_EXAMPLES))} AS json), true, false, true, now() "
+            f"WHERE EXISTS (SELECT 1 FROM categories WHERE id <> {_quote(CATEGORY_ID)}) "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+        _bump_revision()
+        return
     bind = op.get_bind()
     # ONLY touch a catalog that is already seeded. An empty `categories` table is the normal state
     # for a fresh box, local dev and CI, and `catalog.get_categories` falls back to the constants
@@ -104,6 +122,13 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove the category, but only while nothing references it."""
+    if context.is_offline_mode():
+        op.execute(
+            f"DELETE FROM categories WHERE id = {_quote(CATEGORY_ID)} AND NOT EXISTS "
+            f"(SELECT 1 FROM review_rows WHERE category = {_quote(CATEGORY_ID)})"
+        )
+        _bump_revision()
+        return
     bind = op.get_bind()
     in_use = bind.execute(
         sa.text("SELECT count(*) FROM review_rows WHERE category = :cid"),
