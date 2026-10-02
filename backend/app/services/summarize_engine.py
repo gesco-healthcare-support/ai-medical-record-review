@@ -1437,6 +1437,56 @@ def presentable_title(title: str, *, reviewer_edited: bool = False) -> str:
     return without_address(presentable) if reviewer_edited else tidy_title(presentable)
 
 
+# A reviewer marks a document they cannot read - handwritten, illegible, incomplete - with this
+# category, so the review records that it was there instead of the document being dropped. Its
+# summary is this one line and nothing else. Built here rather than asked of a model: a model told
+# to summarize pages nobody can read is exactly the shape that invents content.
+ILLEGIBLE_CATEGORY = "18"
+ILLEGIBLE_SUMMARY = "Document was illegible."
+
+
+def _illegible_output(row) -> dict:
+    """The output_dict for a row a reviewer marked illegible (category 18). No model call at all.
+
+    Same header rule as ``_unreadable_output``: the row's own title and date, degrading to the
+    page range when there is no title, because nothing here re-reads the pages. Every model field
+    is None, as there, but ``noticeOnly`` is FALSE: the worker reports a notice-only row as a
+    sub-document that could not be summarized and ends the job needs_attention, and this row is
+    the reviewer's own decision, not a failure. ``unreadablePages`` stays empty for the same
+    reason - that is the recognizer's fact, and setting it would make ``_is_retryable_notice``
+    re-run the row every time.
+    """
+    manual_tag, diag_tag = _row_tags(row)
+    page_label = f"Pages {row['start']}-{row['end']}"
+    title = str(row.get("title") or "").strip()
+    if not title or title == "-":
+        decorated = f"{manual_tag}{page_label}{diag_tag}"
+    else:
+        decorated = f"{manual_tag}{title}{diag_tag} ({page_label})"
+    return {
+        "summaryDate": row["date"],
+        "summaryTitle": decorated,
+        "manualCheck": manual_tag,
+        "truncated": False,
+        "summaryText": ILLEGIBLE_SUMMARY,
+        "verified": False,
+        "verifiedText": None,
+        "verifiedTitle": None,
+        "verifyIssues": None,
+        "sourceText": None,
+        "model": None,
+        "bodyFallbackFrom": None,
+        "titleModel": None,
+        "auditModel": None,
+        "backend": None,
+        "promptFingerprint": None,
+        "auditFingerprint": None,
+        "unreadablePages": [],
+        "embeddedReviewPages": [],
+        "noticeOnly": False,
+    }
+
+
 def _unreadable_output(row, unreadable_pages) -> dict:
     """The output_dict for a row whose pages could not be READ at all.
 
@@ -2042,6 +2092,10 @@ def summarize_row(
     caller that omits them falls back to config. They are NOT re-resolved per call - see the note
     where ``model_for`` used to live.
     """
+    if str(row.get("category")) == ILLEGIBLE_CATEGORY:
+        # Before OCR, the prompt and every model call: the reviewer has said the pages cannot be
+        # read.
+        return _illegible_output(row)
     settings = get_settings()
     model, title_model, audit_model = _resolved_models(model, title_model, audit_model)
     if verify is None:

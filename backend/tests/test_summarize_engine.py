@@ -3448,3 +3448,41 @@ def test_the_title_prompt_reads_the_printed_name_never_the_signature():
     assert "PRINTED" in prompt
     assert "never transcribe the strokes of a signature" in prompt
     assert "omit the AUTHOR and its credentials rather than write a fragment" in prompt
+
+
+# AN ILLEGIBLE DOCUMENT IS NOTED, NOT DROPPED. A reviewer marks the row category 18 and the summary
+# reads only "Document was illegible." - nothing is read, rendered or sent to a model.
+
+
+def _forbid(*_a, **_k):
+    raise AssertionError("an illegible row must not be read, rendered or sent to a model")
+
+
+def _illegible(monkeypatch, **over):
+    monkeypatch.setattr(se, "extract_pages_with_report", _forbid)
+    monkeypatch.setattr(se, "page_image_parts", _forbid)
+    monkeypatch.setattr(se, "_generate", _forbid)
+    monkeypatch.setattr(se, "verify_summary", _forbid)
+    return se.summarize_row("/x.pdf", _row(category="18", **over))
+
+
+def test_an_illegible_row_says_so_and_calls_no_model(monkeypatch):
+    out = _illegible(monkeypatch, title="Progress Note", start=4, end=6)
+    assert out["summaryText"] == se.ILLEGIBLE_SUMMARY == "Document was illegible."
+    assert out["summaryTitle"] == "Progress Note (Pages 4-6)"
+    assert out["model"] is None
+    assert out["auditModel"] is None
+    assert out["verified"] is False
+
+
+def test_an_illegible_row_is_not_reported_as_a_failure(monkeypatch):
+    """noticeOnly True would make the worker end the job needs_attention, and non-empty
+    unreadablePages would make every summarize run delete and redo it."""
+    out = _illegible(monkeypatch, title="Progress Note")
+    assert out["noticeOnly"] is False
+    assert out["unreadablePages"] == []
+
+
+def test_an_untitled_illegible_row_is_named_by_its_pages(monkeypatch):
+    out = _illegible(monkeypatch, title="-", start=7, end=9)
+    assert out["summaryTitle"] == "Pages 7-9"

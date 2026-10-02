@@ -29,7 +29,9 @@ The rest of this page describes the worker path unless it says otherwise.
 
 ```mermaid
 flowchart TD
-    A[Row + resolved prompt + models] --> B[Build system message:<br/>preamble for the category + category prompt]
+    A[Row + resolved prompt + models] --> Z{Category 18?<br/>illegible}
+    Z -- yes --> ZZ[Fixed line 'Document was illegible.':<br/>no OCR, no model call]
+    Z -- no --> B[Build system message:<br/>preamble for the category + category prompt]
     B --> C[Fingerprint preamble + prompt]
     C --> D[Append per-row blocks:<br/>document date / studies list / deposition page numbers]
     D --> E{Stored OCR text usable?<br/>not a deposition}
@@ -49,6 +51,10 @@ flowchart TD
     O --> P[Output dict with provenance]
 ```
 
+0. **Illegible.** A row a reviewer put in category 18 returns at once from `_illegible_output()`:
+   the body is `ILLEGIBLE_SUMMARY` ("Document was illegible."), the header is the row's own title
+   and date, and nothing is read, rendered or sent to a model. `noticeOnly` is false, because it is
+   the reviewer's decision rather than a failure, so the job does not end needs_attention.
 1. **Models.** The worker passes the three models stored on the Job (`job.model`,
    `job.title_model or job.model`, `job.audit_model or job.model`). A caller that omits one gets it
    from `Settings.model_for()` (`summarize_engine.py` `_resolved_models()`).
@@ -154,6 +160,7 @@ is a fixed sentence from `summarize_engine.py`:
 | Case | Function | Result |
 | --- | --- | --- |
 | Nothing on the row could be read | `unreadable_notice()` via `_unreadable_output()` | The body IS the notice; every model field is NULL; `noticeOnly` is true; no DOI prefix |
+| A reviewer marked the row illegible (category 18) | `_illegible_output()` | The body is `ILLEGIBLE_SUMMARY`; every model field is NULL; `noticeOnly` is false; no DOI prefix |
 | Some pages could not be read | `partial_unreadable_notice()` | Sentence appended to the summary of the readable pages |
 | An excluded records-review block belongs to this evaluation | `embedded_review_notice()` | Sentence appended naming the review's pages |
 

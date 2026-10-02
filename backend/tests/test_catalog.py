@@ -321,16 +321,16 @@ def test_creating_a_category_does_not_collapse_an_unseeded_catalog(session):
     session.add(user)
     session.commit()
 
-    # 18, not 17: 17 became a real category (job description, 2026-09-24) after 16 did (hospital
-    # discharge summary, 2026-09-08), and this test needs an id the catalog does NOT already carry
-    # or `create_category` answers 409 duplicate.
-    created = create_category(CategoryCreate(id="18", name="A New Category"), session, user)
-    assert created["id"] == "18"
+    # 19: 17 became a real category (job description, 2026-09-24) and then 18 did (illegible
+    # document, 2026-10-02), and this test needs an id the catalog does NOT already carry or
+    # `create_category` answers 409 duplicate.
+    created = create_category(CategoryCreate(id="19", name="A New Category"), session, user)
+    assert created["id"] == "19"
 
     ids = catalog.get_category_ids(session, active_only=True)
-    assert "18" in ids, "the category the admin created must exist"
-    for category_id in ("1", "3", "5", "10", "13", "15", "16", "17", "100"):
-        assert category_id in ids, f"category {category_id} was destroyed by creating '18'"
+    assert "19" in ids, "the category the admin created must exist"
+    for category_id in ("1", "3", "5", "10", "13", "15", "16", "17", "18", "100"):
+        assert category_id in ids, f"category {category_id} was destroyed by creating '19'"
     assert validate_rows(session, [{"start": 1, "end": 2, "category": "1"}], 5) is None
     assert catalog.summarize_default_for(session, "100") is False  # General still off by default
 
@@ -470,3 +470,46 @@ def test_the_job_description_migration_carries_the_constants_text():
     assert migration._NAME == constant.name
     assert migration._DESCRIPTION == constant.description
     assert tuple(migration._EXAMPLES) == tuple(constant.examples)
+
+
+# CATEGORY 18, ILLEGIBLE DOCUMENT. Reviewer request, 2026-10-02: a handwritten, illegible or
+# incomplete note should be recorded as present-but-illegible rather than ignored. Only a reviewer
+# assigns it, the way only a reviewer assigns 6.
+
+
+def test_an_unseeded_catalog_offers_the_illegible_category_to_a_reviewer_only(session):
+    from app.services import catalog
+
+    assert "18" in catalog.get_category_ids(session, active_only=True)
+    assert "18" not in catalog.get_category_ids(session, auto_assign=True)
+    assert catalog.summarize_default_for(session, "18") is True
+
+
+def test_the_illegible_category_is_valid_on_a_reviewer_row(session):
+    assert validate_rows(session, [{"start": 1, "end": 2, "category": "18"}], 5) is None
+
+
+def test_the_illegible_migration_carries_the_constants_text():
+    """A seeded box sees the migration's row and an unseeded one sees the constant: they must
+    agree."""
+    import importlib.util
+    from pathlib import Path
+
+    from app.services import seed_catalog
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "b7e4c1a9d203_illegible_document_category.py"
+    )
+    spec = importlib.util.spec_from_file_location("illegible_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    constant = seed_catalog._ILLEGIBLE
+    assert migration.CATEGORY_ID == constant["id"]
+    assert migration._NAME == constant["name"]
+    assert migration._DESCRIPTION == constant["description"]
+    assert list(migration._EXAMPLES) == constant["examples"]
+    assert constant["auto_assign"] is False
