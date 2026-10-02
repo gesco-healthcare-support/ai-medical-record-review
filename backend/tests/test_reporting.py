@@ -1985,7 +1985,7 @@ def test_a_doubled_period_inside_a_title_is_collapsed(raw, tidy):
 
 
 def test_a_credential_followed_by_a_comma_is_left_alone():
-    """GUARD - "M.D., ACME" is a credential and a comma, not a doubled separator."""
+    """The comma after "M.D." survives - only periods collapse - while "PH.D.." still loses one."""
     from app.services.summarize_engine import tidy_title
 
     assert tidy_title("JANE SMITH, M.D., PH.D.. ACME") == "JANE SMITH, M.D., PH.D. ACME"
