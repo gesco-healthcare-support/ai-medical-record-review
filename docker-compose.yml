@@ -332,7 +332,7 @@ services:
 
   redis:
     restart: unless-stopped
-    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    image: redis:8-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
     # Persistence OFF: no RDB/AOF on disk (HIPAA). The queue carries only non-PHI job ids, but a prepared
     # export's `download:<token>` entry holds its filename - a patient name - for 5 minutes (#389).
     command: ["redis-server", "--save", "", "--appendonly", "no"]
