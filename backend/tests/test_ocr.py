@@ -692,3 +692,55 @@ def test_a_missing_binary_stops_the_all_pages_loop(monkeypatch):
 
     with pytest.raises(OcrUnavailableError):
         ocr.extract_text_from_all_pages("/x.pdf")
+
+
+# A PAGE THE LAYOUT PASS READ AS EMPTY IS READ AGAIN AS ONE BLOCK. Reviewer feedback 2026-10-05: a
+# handwritten intake questionnaire read as empty under Tesseract's default segmentation, so the whole
+# row was refused before any model saw it, while --psm 6 reads the same page.
+
+
+def _tesseract(monkeypatch, answers):
+    """image_to_string answering from ``answers`` by config: "" key = the default (layout) pass."""
+    calls = []
+
+    def fake(image, timeout=0, config=""):
+        calls.append(config)
+        return answers["psm6" if "--psm 6" in config else "default"]
+
+    monkeypatch.setattr(ocr.pytesseract, "image_to_string", fake)
+    monkeypatch.setattr(ocr, "_configured", True)
+    return calls
+
+
+def test_an_empty_layout_pass_is_read_again_as_one_block(monkeypatch):
+    """DEMONSTRATES the fix: the single-block reading is returned instead of nothing."""
+    block = "Initial Workers Comp Questionnaire patient reports neck and back pain at work"
+    calls = _tesseract(monkeypatch, {"default": "  \f", "psm6": block})
+
+    assert ocr._ocr_image(_Sentinel()) == block
+    assert calls == ["", "--psm 6"]
+
+
+def test_the_fallback_keeps_the_declared_dpi(monkeypatch):
+    """A page rendered below the base DPI still tells Tesseract its resolution on the retry."""
+    calls = _tesseract(monkeypatch, {"default": "", "psm6": "one two three four five six seven"})
+
+    ocr._ocr_image(_Sentinel(), dpi=100)
+
+    assert calls[-1] == "--dpi 100 --psm 6"
+
+
+def test_a_page_with_text_is_never_read_twice(monkeypatch):
+    """GUARD: every page that produces text today is unchanged, and costs no second pass."""
+    calls = _tesseract(monkeypatch, {"default": "a normal page", "psm6": "should not be used"})
+
+    assert ocr._ocr_image(_Sentinel()) == "a normal page"
+    assert calls == [""]
+
+
+def test_a_blank_page_stays_blank_when_the_retry_finds_only_specks(monkeypatch):
+    """GUARD: a few stray tokens off a separator sheet are not text, so the page stays empty and
+    summarize_row still treats it as a page with no words."""
+    _tesseract(monkeypatch, {"default": "", "psm6": "~ Ill ab .. xyz :;"})
+
+    assert ocr._ocr_image(_Sentinel()).strip() == ""
