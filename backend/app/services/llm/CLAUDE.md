@@ -103,7 +103,7 @@ guards in `_derive`; a preflight if the server must be vetted; `classify_failure
 
 ## Traps that have bitten
 
-- `vllm._CLIENTS` is keyed on scalars because `httpx.Timeout` is unhashable.
+- `vllm._CLIENTS` is keyed on scalars because the SDK's `Timeout` is unhashable.
 - `pacing.snapshot()` strips the known prefix and suffix instead of counting colons from the front,
   because the prefix `llm:pace` itself contains a colon.
 - `DelegatingProvider` and `vllm._request_kwargs()` exist to clear SonarCloud gates (duplication,
