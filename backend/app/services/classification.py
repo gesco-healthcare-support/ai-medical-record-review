@@ -550,7 +550,14 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         (r"deposition", "9"),
         (r"\brfa\b|request for authorization", "10"),
         (
-            r"adjudication of claim|application for adjudication|compensation claim|\bdwc-? ?1\b",
+            # A Compromise and Release is the settlement filed with the Appeals Board. It matched no
+            # rule, so the cascade sent 15 of 28 such rows on the live box (2026-10-05) to General,
+            # unsummarized. Reviewer feedback the same day asks for it to be summarized with its
+            # settlement amount, which category 7's prompt now carries. A letter or a proof of
+            # service ABOUT one is paperwork and stays where the administrative rule puts it;
+            # without the guard this rule would outrank that one on exactly those two titles.
+            r"adjudication of claim|application for adjudication|compensation claim|\bdwc-? ?1\b"
+            + r"|^(?!.*\b(?:letter|proof\s+of\s+service)\b).*compromise\s*(?:and|&)\s*release",
             "7",
         ),
         (r"comprehensive interval history|medical decision making", "11"),

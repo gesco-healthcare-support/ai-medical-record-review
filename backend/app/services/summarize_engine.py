@@ -1201,6 +1201,78 @@ def tidy_author_and_facility(title: str) -> str:
     return head + _DOUBLED_PERIOD.sub(".", _system_name_only(_first_name_first(body)))
 
 
+# A workers' compensation legal form (category 7) is titled without the state agency that issues it.
+# Reviewer feedback, 2026-10-05: "for category 7 we can remove the location/facility for the titles,
+# since it would always say 'State of California Division of Worker's Compensation...'". Measured on
+# the live box the same day, 93 of 338 category-7 titles carried it: as its own element, after the
+# filer's name ("<FILER>, ATTORNEY, STATE OF CALIFORNIA ..."), or run into the document type with a
+# colon or a dash; with a straight, curly or OCR-garbled apostrophe; with or without commas and the
+# Department of Industrial Relations. A replay over all 338 takes it out of all 93, empties none.
+#
+# So the agency is removed as a RUN of its own names wherever it sits, never as a whole element: a
+# filer's name or a document type beside it survives. Two things are deliberately left alone:
+#   - "WORKERS' COMPENSATION CLAIM FORM (DWC 1)" is a document type and names no part of the agency;
+#   - the Appeals Board, the body a settlement or an answer is filed with. The reviewer's own
+#     corrected title for a Compromise and Release reads "WORKERS' COMPENSATION APPEALS BOARD.
+#     COMPROMISE AND RELEASE.", so a run naming the Board is reduced to the Board, and the Board
+#     alone is untouched.
+# Other agencies (the Employment Development Department, the Disability Evaluation Unit, a DWC
+# district office) are not the header the reviewer described and keep their names; only "State of
+# California" in front of them goes.
+WORKERS_COMP_LEGAL_CATEGORY = "7"
+_WC_APPEALS_BOARD = "WORKERS' COMPENSATION APPEALS BOARD"
+_WC_AGENCY_PART = (
+    r"(?:THE\s{1,3})?STATE\s{1,3}OF\s{1,3}CALIFORNIA"
+    r"|DEPARTMENT\s{1,3}OF\s{1,3}INDUSTRIAL\s{1,3}RELATIONS"
+    r"|DIVISION\s{1,3}OF\s{1,3}WORKERS[^\s\w]?\s{1,3}COMPENSATION"
+    r"|WORKERS[^\s\w]?\s{1,3}COMPENSATION\s{1,3}APPEALS\s{1,3}BOARD"
+)
+_WC_AGENCY_SEP = " \t\n,/|:-\u2013"
+_WC_AGENCY_RUN = re.compile(
+    rf"(?:{_WC_AGENCY_PART})(?:[{re.escape(_WC_AGENCY_SEP)}]{{0,6}}(?:{_WC_AGENCY_PART}))*", re.I
+)
+_WC_AGENCY_NAME = re.compile(r"STATE\s{1,3}OF\s{1,3}CALIFORNIA|INDUSTRIAL|DIVISION\s{1,3}OF", re.I)
+_WC_BOARD = re.compile(r"APPEALS\s{1,3}BOARD", re.I)
+_WC_DOUBLED_PERIOD = re.compile(r"\.(?:\s{0,3}\.)+")
+
+
+def _without_agency_run(title: str, run: re.Match) -> str:
+    """``title`` with one agency ``run`` taken out, and what stood either side of it rejoined."""
+    if _WC_BOARD.search(run.group()):
+        return f"{title[: run.start()]}{_WC_APPEALS_BOARD}{title[run.end() :]}"
+    before = title[: run.start()].rstrip(_WC_AGENCY_SEP)
+    after = title[run.end() :].lstrip(_WC_AGENCY_SEP)
+    if not before or before.endswith("."):
+        return f"{before} {after.lstrip('. ')}".strip()
+    if not after or after.startswith("."):
+        return f"{before}{after}"
+    # The run sat BETWEEN two pieces of one element ("<FILER>, ATTORNEY, <AGENCY>: APPLICATION");
+    # with it gone they are two elements, joined the way every title element is.
+    return f"{before}. {after}"
+
+
+def without_wc_agency(title: str) -> str:
+    """``title`` with the workers' compensation agency header taken out - see the note above.
+
+    Returns ``title`` itself, byte for byte, when it names no part of the agency, and never empties
+    a title: a header that is ONLY the agency is left as it came."""
+    result = title or ""
+    for run in reversed(list(_WC_AGENCY_RUN.finditer(result))):
+        if _WC_AGENCY_NAME.search(run.group()):
+            result = _without_agency_run(result, run)
+    if result == (title or ""):
+        return title
+    result = _WC_DOUBLED_PERIOD.sub(".", result).strip()
+    return result if re.search(r"[A-Za-z0-9]", result) else title
+
+
+def _category_title(title: str, row: dict) -> str:
+    """A generated or audited title with the rules that hold for its category alone."""
+    if str(row.get("category")) == WORKERS_COMP_LEGAL_CATEGORY:
+        return without_wc_agency(title)
+    return title
+
+
 def tidy_title(title: str) -> str:
     """The deterministic clean-up every generated and every delivered title goes through: no
     address (`without_address`), the author first-name-first, and a health system's name only."""
@@ -2048,7 +2120,9 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
         # out of _usable_title returning `title`: an unusable rewrite then equals the current
         # title and no verified_title is stored, exactly as a rejected BODY rewrite keeps the raw
         # body.
-        fixed_title = _usable_title(result.get("fixed_title"), title, source="audited")
+        fixed_title = _category_title(
+            _usable_title(result.get("fixed_title"), title, source="audited"), row
+        )
         if fixed_title and fixed_title != title:
             verified_title = (
                 f"{manual_tag}{fixed_title}{diag_tag} (Pages {row['start']}-{row['end']})"
@@ -2164,7 +2238,7 @@ def summarize_row(
     # The title call has no response_schema, and Gemini does not enforce maxLength on strings even
     # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and
     # written to a varchar(512).
-    title = _usable_title(title, row.get("title"))
+    title = _category_title(_usable_title(title, row.get("title")), row)
     # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
     # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.

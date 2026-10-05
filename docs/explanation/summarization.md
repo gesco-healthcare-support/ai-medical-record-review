@@ -246,6 +246,9 @@ does not enforce `maxLength`. `_usable_title()` is the enforcement:
   branch or department after it. Both are deliberately narrow: an author without a credential, a
   second credential or degree in the middle slot, and text after the system's name that names a
   document are all left as they are.
+- A category-7 title (workers' compensation legal forms) then loses the state agency header
+  (`without_wc_agency()`), keeping the Appeals Board when the header names it. Applied to the
+  generated and the audited title of category 7 only; other categories keep the agency.
 
 The stored title is decorated: `[ManualCheck] ` in front when the row flag is `x`,
 ` [Diagnostic Study]` after it for category 3, and ` (Pages S-E)` at the end. Exports strip all

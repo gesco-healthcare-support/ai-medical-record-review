@@ -3486,3 +3486,108 @@ def test_an_illegible_row_is_not_reported_as_a_failure(monkeypatch):
 def test_an_untitled_illegible_row_is_named_by_its_pages(monkeypatch):
     out = _illegible(monkeypatch, title="-", start=7, end=9)
     assert out["summaryTitle"] == "Pages 7-9"
+
+
+# Category 7 titles drop the state agency (reviewer feedback, 2026-10-05). Synthetic titles only.
+_AGENCY = "STATE OF CALIFORNIA DIVISION OF WORKERS' COMPENSATION"
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        (
+            f"{_AGENCY} WORKERS' COMPENSATION APPEALS BOARD. COMPROMISE AND RELEASE.",
+            "WORKERS' COMPENSATION APPEALS BOARD. COMPROMISE AND RELEASE.",
+        ),
+        (
+            "STATE OF CALIFORNIA, DEPARTMENT OF INDUSTRIAL RELATIONS, DIVISION OF WORKERS\u2019 "
+            "COMPENSATION. APPLICATION FOR ADJUDICATION OF CLAIM.",
+            "APPLICATION FOR ADJUDICATION OF CLAIM.",
+        ),
+        (
+            f"EXAMPLE LEGAL GROUP. {_AGENCY}. ANSWER TO APPLICATION FOR ADJUDICATION OF CLAIM.",
+            "EXAMPLE LEGAL GROUP. ANSWER TO APPLICATION FOR ADJUDICATION OF CLAIM.",
+        ),
+        (
+            f"JANE DOE, ATTORNEY, {_AGENCY}: APPLICATION FOR ADJUDICATION OF CLAIM",
+            "JANE DOE, ATTORNEY. APPLICATION FOR ADJUDICATION OF CLAIM",
+        ),
+        (
+            f"JOHN ROE, EMPLOYEE, {_AGENCY}, WORKERS' COMPENSATION CLAIM FORM (DWC 1)",
+            "JOHN ROE, EMPLOYEE. WORKERS' COMPENSATION CLAIM FORM (DWC 1)",
+        ),
+        (
+            "DIVISION OF WORKERS\ufffd COMPENSATION. APPLICATION FOR ADJUDICATION OF CLAIM.",
+            "APPLICATION FOR ADJUDICATION OF CLAIM.",
+        ),
+    ],
+)
+def test_a_workers_comp_title_loses_the_state_agency(title, expected):
+    assert se.without_wc_agency(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "WORKERS' COMPENSATION CLAIM FORM (DWC 1).",
+        "WORKERS' COMPENSATION APPEALS BOARD. COMPROMISE AND RELEASE.",
+        "JOHN SMITH, M.D. ACME CLINIC. PR-2.",
+        f"{_AGENCY}.",
+    ],
+)
+def test_a_title_the_rule_has_nothing_to_take_from_is_returned_as_is(title):
+    """GUARD: a document type, the Board alone, an unrelated title, and a title that is ONLY the
+    agency (never emptied) all come back byte for byte."""
+    assert se.without_wc_agency(title) is title
+
+
+def _agency_titled(monkeypatch, category):
+    def generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        if system_msg == se.TITLE_PROMPT:
+            return f"{_AGENCY}. COMPROMISE AND RELEASE.", False
+        return "Summary body", False
+
+    monkeypatch.setattr(se, "extract_pages_with_report", _stub_extract)
+    monkeypatch.setattr(se, "_generate", generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    return se.summarize_row("/x.pdf", _row(category=category), prompt="P")["summaryTitle"]
+
+
+def test_a_category_7_summary_is_titled_without_the_agency(monkeypatch):
+    title = _agency_titled(monkeypatch, "7")
+    assert "STATE OF CALIFORNIA" not in title
+    assert "COMPROMISE AND RELEASE" in title
+
+
+def test_another_category_keeps_the_agency_in_its_title(monkeypatch):
+    """GUARD: the reviewer asked about category 7 only, and 35 titles in other categories name the
+    agency on the live box."""
+    assert "STATE OF CALIFORNIA" in _agency_titled(monkeypatch, "2")
+
+
+def test_a_category_7_audited_title_loses_the_agency_too(monkeypatch):
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(se, "extract_pages_with_report", _stub_extract)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": "Summary body",
+            "fixed_title": f"{_AGENCY}. ANSWER TO APPLICATION FOR ADJUDICATION OF CLAIM.",
+            "issues": [{"type": "wrong_title", "detail": "d"}],
+            "ok": True,
+        },
+    )
+    out = se.summarize_row("/x.pdf", _row(category="7"), prompt="P", verify=True)
+    assert out["verifiedTitle"] is not None
+    assert "STATE OF CALIFORNIA" not in out["verifiedTitle"]
+    assert "ANSWER TO APPLICATION" in out["verifiedTitle"]
+
+
+def test_category_7_asks_for_the_settlement_and_the_denials():
+    prompt = se.prompts["category_07"]
+    assert "### Compromise and Release ###" in prompt
+    assert "Settlement" in prompt
+    assert "### Answer to Application for Adjudication of Claim ###" in prompt
+    assert "Denials" in prompt
+    assert "never calculate an amount" in prompt
