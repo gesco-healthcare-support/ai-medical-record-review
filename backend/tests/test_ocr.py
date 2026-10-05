@@ -145,7 +145,7 @@ def test_report_separates_pages_that_errored_from_pages_that_read_blank(monkeypa
     separator sheet is legitimately textless and no retry will produce words.
     """
 
-    def by_page(image, timeout=0):
+    def by_page(image, timeout=0, config=""):
         if image.page == 1:
             raise RuntimeError("Tesseract process timeout")
         return "" if image.page == 2 else "real body text"
@@ -166,7 +166,11 @@ def test_report_retries_only_the_errored_page(monkeypatch):
     re-OCR'd: there is nothing to recover, and each attempt costs a rasterize plus a Tesseract run."""
     attempts = []
 
-    def flaky(image, timeout=0):
+    def flaky(image, timeout=0, config=""):
+        if "--psm 6" in config:
+            # The single-block second pass on an empty page re-reads the SAME image; it is not a
+            # retry of the page and costs no rasterize, so it is not counted here.
+            return ""
         attempts.append(image.page)
         if image.page == 1 and attempts.count(1) == 1:
             raise RuntimeError("Tesseract process timeout")
