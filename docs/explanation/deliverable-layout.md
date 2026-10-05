@@ -131,6 +131,10 @@ front of the combined pages.
 - A health system named without its site: `KAISER PERMANENTE FONTANA` becomes `KAISER PERMANENTE`
   (`_HEALTH_SYSTEMS` in `summarize_engine.py`). Both rules also apply to titles stored before them, on
   the Summaries tab and in the export, but never to a title a reviewer typed.
+- A workers' compensation legal form (category 7) without the state agency that issues it:
+  `STATE OF CALIFORNIA DIVISION OF WORKERS' COMPENSATION` is taken out, and a header naming the
+  Appeals Board keeps only `WORKERS' COMPENSATION APPEALS BOARD` (`without_wc_agency()`). Applied
+  when the summary is written, so a summary written before it changes on re-summarize.
 - No internal markers: `presentable_title()` strips `[ManualCheck]`, `[Diagnostic Study]` and
   `(Pages X-Y)`. The page range comes back only when the export dialog's page-number box is ticked.
 - One spelling per provider across the record (`consistent_authors()`).

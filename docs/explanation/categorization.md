@@ -86,7 +86,7 @@ comment in the code records why it sits where it does. In order:
 | 11 | Operative report, pathology, operation performed | 8 |
 | 12 | Deposition | 9 |
 | 13 | RFA, request for authorization | 10 |
-| 14 | Adjudication of claim, compensation claim, DWC-1 | 7 |
+| 14 | Adjudication of claim, compensation claim, DWC-1, compromise and release (not a letter or proof of service about one) | 7 |
 | 15 | Comprehensive interval history, medical decision making | 11 |
 | 16 | GI outpatient, outpatient procedure H&P | 4 |
 | 17 | Lab or test results, lab discharge summary | 14 |

@@ -2232,3 +2232,28 @@ def test_a_report_that_mentions_the_job_keeps_its_own_category():
     assert classification.match_rules("QME Report and Job Description") == "13"
     assert classification.match_rules("Work Status Report") == "1"
     assert classification.match_rules("Physician's Return-to-Work & Voucher Report") == "1"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Compromise and Release",
+        "COMPROMISE & RELEASE",
+        "Workers' Compensation Appeals Board - Compromise and Release",
+        "Answer to Application for Adjudication of Claim",
+    ],
+)
+def test_the_settlement_and_the_answer_are_workers_comp_forms(title):
+    """A Compromise and Release matched no rule and was sent to General, unsummarized; the reviewers
+    asked for its settlement amount. The Answer already reached 7 and is pinned beside it."""
+    assert classification.match_rules(title) == "7"
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Compromise and Release - Cover Letter", "Proof of Service - Compromise and Release"],
+)
+def test_paperwork_about_a_settlement_stays_general(title):
+    """GUARD: a document-type rule outranks an administrative one, so without its guard the new
+    rule would have pulled these two live titles out of General."""
+    assert classification.match_rules(title) == "100"
