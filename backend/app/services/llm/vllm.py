@@ -88,7 +88,7 @@ def _client():
     )
 
 
-# Keyed on SCALAR floats rather than on a prepared timeout object: `httpx.Timeout` is unhashable, so
+# Keyed on SCALAR floats rather than on a prepared timeout object: the SDK's `Timeout` is unhashable, so
 # a cache keyed on one raises TypeError the first time a second client is requested.
 _CLIENTS: dict[tuple[str, str, float, float], Any] = {}
 
@@ -96,8 +96,7 @@ _CLIENTS: dict[tuple[str, str, float, float], Any] = {}
 def _cached_client(api_key: str, base_url: str, read_s: float, connect_s: float):
     key = (api_key, base_url, read_s, connect_s)
     if key not in _CLIENTS:
-        import httpx
-        from openai import OpenAI
+        from openai import OpenAI, Timeout
 
         # max_retries=0 for the same reason as the OpenAI provider: this module owns retrying,
         # because the SDK's own backoff cannot see our cancellation flag and would make the stop
@@ -105,7 +104,8 @@ def _cached_client(api_key: str, base_url: str, read_s: float, connect_s: float)
         _CLIENTS[key] = OpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=httpx.Timeout(read_s, connect=connect_s),
+            # The SDK's own Timeout, not httpx's: openai 3 runs on httpx2 and rejects an httpx one.
+            timeout=Timeout(read_s, connect=connect_s),
             max_retries=0,
         )
     return _CLIENTS[key]

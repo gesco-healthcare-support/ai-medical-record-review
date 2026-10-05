@@ -41,6 +41,7 @@ the other rejected OCR speed lever - capping the DPI was 4.2x faster and lost 6.
 """
 
 import logging
+import re
 from functools import lru_cache
 from typing import NotRequired, TypedDict
 
@@ -103,12 +104,44 @@ def _ocr_image(image, dpi=None) -> str:
     if dpi and int(round(float(dpi))) != int(settings.ocr_base_dpi):
         kwargs["config"] = f"--dpi {int(round(float(dpi)))}"
     try:
-        return pytesseract.image_to_string(image, **kwargs)
+        text = pytesseract.image_to_string(image, **kwargs)
+        if text.strip():
+            return text
+        return _single_block_fallback(image, kwargs) or text
     except pytesseract.TesseractNotFoundError as exc:
         raise OcrUnavailableError(f"Tesseract not found: {exc}") from exc
     except RuntimeError as exc:
         logger.warning("OCR failed for a page (timeout or tesseract error): %s", exc)
         raise
+
+
+# A page the default layout pass read as EMPTY is read again as one block of text (--psm 6), and
+# that second reading is kept only when it holds at least this many words of three or more letters.
+#
+# Why: Tesseract's default page segmentation (--psm 3) finds no text blocks at all on some grey,
+# speckled form scans and returns nothing, while --psm 6 reads the same page. Reviewer feedback
+# 2026-10-05: a handwritten intake questionnaire was "refused outright" - eight pages read as empty,
+# so summarize_row raised EmptyExtractionError and no model, Gemini or ours, ever saw the pages.
+#
+# Measured on the test box 2026-10-05, every page stored with empty text (13 pages, 5 records):
+# the eight questionnaire pages gave 24-89 words, two pages of other records 12 and 49, and the
+# genuinely blank ones 0 or 1-5 stray tokens. The floor keeps those last ones blank, which preserves
+# the rule that a page read cleanly with no words stays silent rather than reaching a model.
+#
+# Only a page that read EMPTY is retried, so every page that produces text today is unchanged -
+# the same reason the base-DPI path omits --dpi (see _ocr_image).
+_FALLBACK_MIN_WORDS = 5
+_FALLBACK_WORD = re.compile(r"[A-Za-z]{3,}")
+
+
+def _single_block_fallback(image, kwargs: _TesseractArgs) -> str:
+    """Re-read an empty page as one block of text; "" unless it finds enough real words."""
+    config = " ".join(part for part in (kwargs.get("config", ""), "--psm 6") if part)
+    text = pytesseract.image_to_string(image, timeout=kwargs["timeout"], config=config)
+    if len(_FALLBACK_WORD.findall(text)) < _FALLBACK_MIN_WORDS:
+        return ""
+    logger.info("OCR layout pass found no text; single-block pass read %d chars", len(text))
+    return text
 
 
 @lru_cache(maxsize=64)

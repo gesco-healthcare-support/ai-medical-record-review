@@ -47,6 +47,7 @@ The rules, all in `backend/app/services/ocr.py`:
 | DPI | `OCR_BASE_DPI` (default 200). That value was pdf2image's own default before it was made explicit. |
 | Optional DPI cap | `OCR_MAX_LONG_EDGE_PX` (default 0, which disables it) lowers the DPI of an oversized page so its long edge fits; it never raises the DPI. Page sizes are read once per file and cached. |
 | `--dpi` flag | Passed to Tesseract only when a page was rendered below the base DPI. At the base DPI it is omitted. |
+| Empty-page second pass | A page the default layout pass reads as empty is read again as one block of text (`--psm 6`), and that reading is kept only when it holds at least five words of three or more letters (`_FALLBACK_MIN_WORDS`). The default pass finds nothing on some grey, speckled form scans that `--psm 6` reads. A page that produced text is never read twice, and a truly blank page stays blank. |
 | Timeout | `OCR_TIMEOUT_SECONDS` (default 120) per image. pytesseract kills the Tesseract subprocess on timeout, so a hung page cannot hold a thread forever. |
 | Retries | `extract_pages_with_report(..., retries=1)`: an errored page gets two attempts. A blank page is not an error and is not retried. |
 | Fail fast on configuration | A missing Tesseract (`TesseractNotFoundError`) or missing Poppler (`PDFInfoNotInstalledError`) raises `OcrUnavailableError`. Every layer re-raises it rather than degrading to empty text. |
@@ -63,8 +64,8 @@ An empty result has two causes that must stay apart:
 
 - **Errored**: the read itself failed (timeout, Tesseract error). Often transient, so worth
   another attempt later.
-- **Blank**: the read succeeded and found no words (a film, a photograph, a separator sheet). No
-  number of retries will change it.
+- **Blank**: the read succeeded and found no words (a film, a photograph, a separator sheet), even
+  after the single-block second pass. No number of retries will change it.
 
 `page_text._extract` returns `(text, ok)` where `ok` is false only for an errored page. The
 duplicate check reports the difference to the reviewer, and the summarizer names errored pages in a
