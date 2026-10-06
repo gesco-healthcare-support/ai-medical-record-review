@@ -1032,6 +1032,24 @@ def llm_classify(text, model=None):
     return category if category in set(allowed) else None
 
 
+def _rule_answer(title, page_text):
+    """What the rules settle for ``classify``, as ``(decided, deferred)``.
+
+    ``decided`` is a finished `Classification` when the rules have the last word. ``deferred`` is
+    the rule's category when the row's pages decide instead (`_decided_by_pages`) - the answer
+    ``classify`` falls back on, flagged, if neither vote comes back. At most one is set.
+    """
+    rule_category = match_rules(title)
+    if not rule_category:
+        return None, None
+    if not _decided_by_pages(title):
+        return Classification(rule_category, "high", "rules", needs_review=False), None
+    if not (page_text or "").strip():
+        # Title alone: flag it, so `segment_engine._categorize` comes back with the pages.
+        return Classification(rule_category, "low", "rules", needs_review=True), None
+    return None, rule_category
+
+
 def classify(title, page_text=None):
     """Classify a sub-document, cross-checking the embedding and LLM votes.
 
@@ -1046,14 +1064,9 @@ def classify(title, page_text=None):
     title = (title or "").strip()
     text = (page_text or title).strip()
 
-    rule_category = match_rules(title)
-    deferred = None
-    if rule_category and _decided_by_pages(title):
-        if not (page_text or "").strip():
-            return Classification(rule_category, "low", "rules", needs_review=True)
-        deferred, rule_category = rule_category, None
-    if rule_category:
-        return Classification(rule_category, "high", "rules", needs_review=False)
+    decided, deferred = _rule_answer(title, page_text)
+    if decided:
+        return decided
 
     if not text:
         return Classification(DEFAULT_ID, "low", "empty", needs_review=True)
