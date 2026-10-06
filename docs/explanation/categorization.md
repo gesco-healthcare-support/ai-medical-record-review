@@ -37,7 +37,9 @@ does call the rule function `match_rules()`, which is pure (see
 `classify(title, page_text=None)` is the entry point. It runs three stages and escalates only as
 far as it must:
 
-1. **Rules** on the title. A match answers outright, at high confidence, with no model call.
+1. **Rules** on the title. A match answers outright, at high confidence, with no model call. One
+   exception, on our own model only: see
+   [A bare Progress Note on our model](#a-bare-progress-note-on-our-model).
 2. **Embedding** vote, run locally.
 3. **LLM** vote, a constrained choice among the allowed category ids.
 
@@ -250,6 +252,27 @@ not even flagged. Pages 93 and 94 together still answered 100; pages 93 to 95 re
 already long enough to satisfy any sensible threshold.
 
 A title where both votes agree is answered at high confidence without reading any page.
+
+### A bare Progress Note on our model
+
+When the `classify` stage runs on vLLM (`backend_for("classify") == "vllm"`), a title whose only
+category-1 reason is the token "progress note" (`bare_progress_note()`) does not let rule 1 decide:
+
+- Asked on the title alone, `classify()` answers rule 1's category flagged for review and calls no
+  model, so `_categorize()` escalates to the row's first pages as above.
+- Asked with page text, the rule stands aside and the embedding and LLM vote on the pages. If
+  neither vote comes back, rule 1's category stands, still flagged.
+- "Progress report", "PR-2", "office visit", "work status" and "activity status" keep the rule. So
+  does any title another rule answers on its own word: rule 5's therapy words, the return-to-work
+  voucher, the emergency-department visit, History & Physical.
+
+Why: on the 27-record exam of 2026-10-06, rule 1 answered 84 bare "Progress Note" rows on our
+trained model and 28 of them were chiropractic, physical-therapy or acupuncture notes the reviewer
+filed under 5. Our model leaves the discipline out of the title, so rule 5 never fires, and the
+author's credential is on the pages. The other treating tokens were 63 right against 4 wrong.
+
+Gemini is untouched: on a Gemini backend the rule answers exactly as before and the pages are not
+read.
 
 The aggregate-upload `classify` job does not escalate: its rows have no title (`-`), so no rule can
 match, and it classifies the text of each row's first page directly. It re-derives each row's

@@ -799,6 +799,57 @@ def match_rules(title):
     return next((c for c in matches if c != _EVALUATOR_MENTION), DEFAULT_ID)
 
 
+# ON OUR MODEL ONLY: a bare "Progress Note" title does not decide the category by itself.
+#
+# Measured 2026-10-06 on the 27-record exam (the trained adapter, scored against the reviewers'
+# final rows): rule 1 answered 84 rows whose only category-1 token was "progress note", and 28 of
+# them (33%) were chiropractic, physical-therapy or acupuncture notes the reviewer filed under 5.
+# Our model titles a therapy visit "Progress Note" without the discipline, so rule 5 never sees the
+# word that would claim it, and rule 1 answered before anything read the pages - where the author's
+# credential is. The other treating tokens stay with the rule: "progress report", "PR-2",
+# "office visit" and "work status" were 63 right against 4 wrong on the same exam.
+#
+# Such a row is decided ON ITS PAGES. Not on its title, which is exactly what cannot tell the two
+# apart; and the trained adapter was taught on page text (mrr-training's categorization builder uses
+# the escalation form wherever page text exists).
+#
+# Gemini is untouched, byte for byte: the gate is the backend that answers `classify`, the same seam
+# segmentation uses for its vLLM-only page labels. Gemini names the discipline more often and the
+# rule measured 38 right / 9 wrong there, so it has not earned the change.
+_PROGRESS_NOTE = re.compile(r"progress note")
+# Rule 1's other treating tokens, DERIVED rather than listed so a token added to rule 1 is covered
+# the day it is written. Safe to split on "|": the source has no groups.
+_OTHER_TREATING_TOKENS = re.compile(
+    "|".join(alt for alt in _TREATING_VISIT_TOKENS.split("|") if alt != _PROGRESS_NOTE.pattern)
+)
+_RULE_ONE_SOURCE = rf"{_TREATING_VISIT_TOKENS}|{_FOLLOWUP_TOKEN_SOURCE}"
+
+
+def bare_progress_note(title):
+    """Is the bare "progress note" token the only reason category 1 answered this title?
+
+    False when rule 1 matched on another treating token as well, when a different rule answers 1
+    on its own evidence (the return-to-work voucher, the emergency-department visit, History &
+    Physical), and whenever the title's rule answer is not 1 at all - "Physical Therapy Progress
+    Note" is answered 5 by rule 5, which sits above rule 1.
+    """
+    text = (title or "").lower()
+    if not _PROGRESS_NOTE.search(text) or _OTHER_TREATING_TOKENS.search(text):
+        return False
+    if match_rules(title) != _FOLLOWUP_MENTION:
+        return False
+    return not any(
+        pattern.search(text)
+        for pattern, category in _RULES
+        if category == _FOLLOWUP_MENTION and pattern.pattern != _RULE_ONE_SOURCE
+    )
+
+
+def _decided_by_pages(title):
+    """Should this title's rule answer give way to the row's pages? Only ever on our model."""
+    return get_settings().backend_for("classify") == "vllm" and bare_progress_note(title)
+
+
 # --- catalog cache (DB-backed, invalidated on edit) -----------------------------------------
 # The classifier's category set comes from the editable DB catalog (auto-assignable only). The
 # derived state (catalog text for the LLM, ids, embedding matrix) is cached per process and rebuilt
@@ -986,11 +1037,21 @@ def classify(title, page_text=None):
 
     Rules win outright when they fire. Otherwise the embedding and LLM must agree to be confident;
     disagreement (or an unavailable LLM) assigns a best guess and sets ``needs_review``.
+
+    One exception, on our model only (`bare_progress_note`): a title whose only category-1 reason is
+    "progress note" is decided from ``page_text``. Asked with the title alone it answers the rule's
+    category flagged ``needs_review``, which is what makes `segment_engine._categorize` come back
+    with the row's first pages; where no page text exists that flagged rule answer stands.
     """
     title = (title or "").strip()
     text = (page_text or title).strip()
 
     rule_category = match_rules(title)
+    deferred = None
+    if rule_category and _decided_by_pages(title):
+        if not (page_text or "").strip():
+            return Classification(rule_category, "low", "rules", needs_review=True)
+        deferred, rule_category = rule_category, None
     if rule_category:
         return Classification(rule_category, "high", "rules", needs_review=False)
 
@@ -1006,6 +1067,9 @@ def classify(title, page_text=None):
 
     if embed_category is None:
         if llm_category is None:
+            if deferred:
+                # Neither vote came back on the pages: the rule's answer, flagged, beats General.
+                return Classification(deferred, "low", "rules", needs_review=True)
             return Classification(DEFAULT_ID, "low", "no-signal", needs_review=True)
         return Classification(llm_category, "low", "llm-only", needs_review=True)
     if llm_category is None:
