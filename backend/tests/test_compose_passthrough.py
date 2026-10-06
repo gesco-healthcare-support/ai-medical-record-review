@@ -41,6 +41,7 @@ _MUST_REACH_A_CONTAINER = {
     "DOI_MAX_OUTPUT_TOKENS": "counts thought tokens; a pod model reasons differently from Gemini",
     "DEPOSITION_MAX_OUTPUT_TOKENS": "counts thought tokens; same reason",
     "VLLM_THINKING_STAGES": "the arm it exists for is run WHILE a pod bills; a rebuild defeats it",
+    "VLLM_CLASSIFY_FROM_PAGES": "a categorization A/B run while a pod bills; same reason",
 }
 
 

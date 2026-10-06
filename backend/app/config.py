@@ -881,6 +881,21 @@ class Settings(BaseSettings):
     # F1, so this needs a measurement rather than an argument. `summarize` in particular must not be
     # added without re-running the empty-summary case above.
     vllm_thinking_stages: str = ""
+    # ON OUR MODEL ONLY: decide every row no title rule answers from the row's first pages, rather
+    # than asking about the title first and reading the pages only when that answer is unsure.
+    #
+    # Off ships today's behaviour exactly. It exists because the fine-tuned adapter was TRAINED on
+    # the pages form of the question (mrr-training's categorization builder sends the escalation
+    # text wherever page text exists, 5,031 examples) while the worker asks it about the title first
+    # and keeps a confident title answer. So the trained model mostly answers a request shape it
+    # never saw. The combined-upload path (`classify_document`) already classifies on pages every
+    # time; this gives the segment path the same option.
+    #
+    # NOT a recommendation to turn it on. Whether pages beat the title for this model is a
+    # measurement - one categorization replay of an exam arm on each setting, minutes on a pod -
+    # and it is a switch rather than a code change so that A/B runs without a rebuild. Gemini
+    # ignores it.
+    vllm_classify_from_pages: bool = False
     verify_merge: bool = True
     verify_use_text: bool = True
     verify_suspect_cap: int = 200

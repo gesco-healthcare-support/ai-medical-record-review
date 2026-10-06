@@ -29,6 +29,7 @@ from app.services.summary_doi import extract_injury_date
 from app.services.taxonomy import DEFAULT_ID
 from app.services.verify_pass import verify_and_merge
 from app.services.windows import byte_budgeted_windows
+from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,51 @@ def _escalation_text(pdf_path, row, page_text_fn=None):
     return "\n".join(parts)[:_ESCALATION_CHARS]
 
 
+def _escalated(pdf_path, row, page_text_fn, result):
+    """The title-only ``result`` re-decided on the row's first pages; ``result`` itself when the
+    pages cannot be read or carry no text."""
+    try:
+        page_text = _escalation_text(pdf_path, row, page_text_fn)
+        if page_text.strip():
+            result = classify(row["title"], page_text=page_text)
+    except OcrUnavailableError:
+        # Narrow on purpose. The broad catch below is RIGHT for a per-page failure - one
+        # unreadable page must not stop a document being categorized on its title alone. It is
+        # wrong for a config failure, which fails identically on EVERY row: the whole document
+        # would be quietly categorized title-only, and so would every document after it, leaving
+        # one WARNING per row and nothing naming the missing binary.
+        raise
+    except Exception as exc:
+        logger.warning("classification escalation OCR failed: %s", exc)
+    return result
+
+
+def _classifies_from_pages():
+    """Does this deployment decide rows on their pages first? Only ever on our model
+    (`Settings.vllm_classify_from_pages`); Gemini always asks about the title first."""
+    settings = get_settings()
+    return settings.vllm_classify_from_pages and settings.backend_for("classify") == "vllm"
+
+
+def _classified_on_pages(pdf_path, row, page_text_fn):
+    """One classify call on the row's first pages, the form the fine-tuned model was trained on;
+    the title alone when the pages cannot be read or carry no text.
+
+    The title rules still answer first inside ``classify``, so a row a rule decides is unaffected.
+    A reviewer's Stop (`JobCancelled`) and a missing OCR binary propagate; any other failure to read
+    the pages falls back to the title, as the escalation does.
+    """
+    try:
+        page_text = _escalation_text(pdf_path, row, page_text_fn)
+        if page_text.strip():
+            return classify(row["title"], page_text=page_text)
+    except (OcrUnavailableError, JobCancelled):
+        raise
+    except Exception as exc:
+        logger.warning("classification page read failed: %s", exc)
+    return classify(row["title"])
+
+
 def _categorize(pdf_path, row, page_text_fn=None):
     """B5 cascade on the title, escalating to the row's first pages when inconclusive; any
     low-confidence result routes the row to human review via the flag.
@@ -316,21 +362,12 @@ def _categorize(pdf_path, row, page_text_fn=None):
     worker every page is already in the store, so widening the escalation from one page to
     ``_ESCALATION_PAGES`` costs extra row reads and prompt tokens, not extra OCR.
     """
-    result = classify(row["title"])
-    if result.needs_review:
-        try:
-            page_text = _escalation_text(pdf_path, row, page_text_fn)
-            if page_text.strip():
-                result = classify(row["title"], page_text=page_text)
-        except OcrUnavailableError:
-            # Narrow on purpose. The broad catch below is RIGHT for a per-page failure - one
-            # unreadable page must not stop a document being categorized on its title alone. It is
-            # wrong for a config failure, which fails identically on EVERY row: the whole document
-            # would be quietly categorized title-only, and so would every document after it, leaving
-            # one WARNING per row and nothing naming the missing binary.
-            raise
-        except Exception as exc:
-            logger.warning("classification escalation OCR failed: %s", exc)
+    if _classifies_from_pages():
+        result = _classified_on_pages(pdf_path, row, page_text_fn)
+    else:
+        result = classify(row["title"])
+        if result.needs_review:
+            result = _escalated(pdf_path, row, page_text_fn, result)
     row["category"] = result.category
     # Which cascade path decided it, persisted from here on (#188). `result` is the ESCALATED call
     # where one happened, so this is the verdict that stood rather than the title-only one it

@@ -290,6 +290,11 @@ _TREATING_VISIT_TOKENS = (
 _TREATING_VISIT_WITHOUT_FOLLOWUP = re.compile(_TREATING_VISIT_TOKENS)
 _FOLLOWUP_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, deposition, lab
 
+# The request-for-authorization rule's tokens. One source, because `treating_report_with_
+# authorization` below asks whether THIS rule is why a title answered 10.
+_AUTHORIZATION_SOURCE = r"\brfa\b|request for authorization"
+_AUTHORIZATION = re.compile(_AUTHORIZATION_SOURCE)
+
 # A title that is ONLY the position-in-care token. A category-1 rule that does not match this
 # answers 1 for some other reason, which is what `_answered_for_another_reason` asks.
 _FOLLOWUP_ONLY = "follow-up"
@@ -548,7 +553,7 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
             "8",
         ),
         (r"deposition", "9"),
-        (r"\brfa\b|request for authorization", "10"),
+        (_AUTHORIZATION_SOURCE, "10"),
         (
             # A Compromise and Release is the settlement filed with the Appeals Board. It matched no
             # rule, so the cascade sent 15 of 28 such rows on the live box (2026-10-05) to General,
@@ -845,9 +850,39 @@ def bare_progress_note(title):
     )
 
 
+# ON OUR MODEL ONLY: a treating physician's report that also names a request for authorization.
+#
+# "Primary Treating Physician's Report and Request for Authorization" carries no rule-1 token (no
+# "progress report", no "PR-2"), so the authorization rule answers 10. Reviewers disagree with that
+# more often than not. Across every reviewed record on the live box (211 distinct PDFs, measured
+# 2026-10-06) titles of this shape were filed 1 on 8 rows, 2 on 4 and 10 on 4 - the rule is right a
+# quarter of the time. On the 27-record exam 7 of its 9 wrong answers here were reviewers actively
+# changing Gemini's 10 to 1, not leaving a guess alone.
+#
+# The title cannot tell a treating report that happens to carry an authorization request from the
+# request itself, so the pages decide, exactly as for the bare progress note above. A title that
+# also carries a rule-1 token already answers 1 (rule 1 sits above the authorization rule) and is
+# not touched; a bare "Request for Authorization" stays 10, which reviewers chose on 288 of 292
+# rows.
+_TREATING_PHYSICIAN = re.compile(r"treating physician|\bptp\b|primary treating")
+_AUTHORIZATION_CATEGORY = "10"
+
+
+def treating_report_with_authorization(title):
+    """Did the authorization rule answer 10 for a title that also names a treating physician?"""
+    text = (title or "").lower()
+    return (
+        bool(_AUTHORIZATION.search(text))
+        and bool(_TREATING_PHYSICIAN.search(text))
+        and match_rules(title) == _AUTHORIZATION_CATEGORY
+    )
+
+
 def _decided_by_pages(title):
     """Should this title's rule answer give way to the row's pages? Only ever on our model."""
-    return get_settings().backend_for("classify") == "vllm" and bare_progress_note(title)
+    if get_settings().backend_for("classify") != "vllm":
+        return False
+    return bare_progress_note(title) or treating_report_with_authorization(title)
 
 
 # --- catalog cache (DB-backed, invalidated on edit) -----------------------------------------
