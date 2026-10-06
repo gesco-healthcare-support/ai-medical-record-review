@@ -2257,3 +2257,164 @@ def test_paperwork_about_a_settlement_stays_general(title):
     """GUARD: a document-type rule outranks an administrative one, so without its guard the new
     rule would have pulled these two live titles out of General."""
     assert classification.match_rules(title) == "100"
+
+
+# --- On our model, a bare "Progress Note" is decided from its pages -------------------------------
+
+
+def _on_backend(monkeypatch, backend):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "llm_backend", backend)
+    monkeypatch.setattr(settings, "llm_backend_overrides", "")
+
+
+def _votes(monkeypatch, embed, llm, seen=None):
+    """Stub both cascade votes; record the text each was asked about in `seen`."""
+
+    def _embed(text):
+        if seen is not None:
+            seen.append(("embed", text))
+        return (embed, 0.9) if embed else (None, 0.0)
+
+    def _llm(text, model=None):
+        if seen is not None:
+            seen.append(("llm", text))
+        return llm
+
+    monkeypatch.setattr(classification, "embed_classify", _embed)
+    monkeypatch.setattr(classification, "llm_classify", _llm)
+
+
+def _no_model_call(monkeypatch):
+    def _refuse(*_a, **_k):
+        raise AssertionError("a rule-decided title must not reach the cascade")
+
+    monkeypatch.setattr(classification, "embed_classify", _refuse)
+    monkeypatch.setattr(classification, "llm_classify", _refuse)
+
+
+@pytest.mark.parametrize(
+    ("title", "bare"),
+    [
+        ("Progress Note", True),
+        ("Progress Notes", True),
+        ("Follow-Up Progress Note", True),
+        ("PR-2 Progress Note", False),
+        ("Progress Report", False),
+        ("Office Visit Progress Note", False),
+        ("Work Status Progress Note", False),
+        # Rule 5 sits above rule 1 and answers these on its own word.
+        ("Physical Therapy Progress Note", False),
+        ("Chiropractic Progress Note", False),
+        # A different rule answering 1 has a reason of its own.
+        ("History and Physical Progress Note", False),
+        ("Emergency Department Record Progress Note", False),
+        ("MRI of the Lumbar Spine", False),
+    ],
+)
+def test_a_bare_progress_note_is_one_whose_only_category_one_reason_is_that_token(title, bare):
+    assert classification.bare_progress_note(title) is bare
+
+
+def test_every_other_treating_token_still_keeps_the_rule():
+    """GUARD: the exemption is derived from rule 1's own token list, so a token added there later
+    keeps its rule answer without anyone remembering this list."""
+    for token in classification._TREATING_VISIT_TOKENS.split("|"):
+        if token == "progress note":
+            continue
+        assert classification._OTHER_TREATING_TOKENS.pattern.count(token) == 1, token
+
+
+def test_on_gemini_a_bare_progress_note_is_still_decided_by_the_rule(monkeypatch):
+    """GUARD: Gemini is untouched - the rule answers, confidently, and no model is asked."""
+    _on_backend(monkeypatch, "gemini")
+    _no_model_call(monkeypatch)
+
+    for page_text in (None, "Patient seen by John Doe, D.C., for chiropractic adjustment."):
+        result = classification.classify("Progress Note", page_text=page_text)
+        assert result == classification.Classification("1", "high", "rules", needs_review=False)
+
+
+def test_on_our_model_a_bare_progress_note_asks_for_its_pages(monkeypatch):
+    """Asked on the title alone it answers the rule's 1 flagged for review - the signal that makes
+    _categorize come back with the row's first pages - and asks no model about the bare title."""
+    _on_backend(monkeypatch, "vllm")
+    _no_model_call(monkeypatch)
+
+    result = classification.classify("Progress Note")
+
+    assert result == classification.Classification("1", "low", "rules", needs_review=True)
+
+
+def test_on_our_model_the_pages_decide_a_bare_progress_note(monkeypatch):
+    _on_backend(monkeypatch, "vllm")
+    seen = []
+    _votes(monkeypatch, "5", "5", seen)
+    pages = "Patient seen by John Doe, D.C., for chiropractic adjustment."
+
+    result = classification.classify("Progress Note", page_text=pages)
+
+    assert result == classification.Classification("5", "high", "llm+embedding", needs_review=False)
+    assert seen == [("embed", pages), ("llm", pages)]
+
+
+def test_on_our_model_other_treating_titles_keep_the_rule(monkeypatch):
+    _on_backend(monkeypatch, "vllm")
+    _no_model_call(monkeypatch)
+
+    for title in ("PR-2 Progress Note", "Progress Report", "Physical Therapy Progress Note"):
+        result = classification.classify(title, page_text="any page text")
+        assert result.method == "rules"
+        assert result.needs_review is False
+
+
+def test_on_our_model_no_vote_on_the_pages_keeps_the_rule_answer_flagged(monkeypatch):
+    """Neither vote came back: the rule's 1 beats General's 100 as a guess, and stays flagged."""
+    _on_backend(monkeypatch, "vllm")
+    _votes(monkeypatch, None, None)
+
+    result = classification.classify("Progress Note", page_text="unreadable")
+
+    assert result == classification.Classification("1", "low", "rules", needs_review=True)
+
+
+def test_on_our_model_categorize_reads_the_pages_of_a_bare_progress_note(monkeypatch):
+    """The whole path through segment_engine: the title-only answer escalates, the row's first pages
+    are read, and the pages' answer is the one stored."""
+    from app.services import segment_engine as se
+
+    _on_backend(monkeypatch, "vllm")
+    _votes(monkeypatch, "5", "5")
+    read = []
+
+    def _page(p):
+        read.append(p)
+        return f"page {p}: chiropractic adjustment by a D.C."
+
+    row = se._categorize(
+        "x.pdf", {"start": 4, "end": 9, "title": "Progress Note", "date": "-", "flag": "-"}, _page
+    )
+
+    assert row["category"] == "5"
+    assert row["method"] == "llm+embedding"
+    assert read == [4, 5, 6]
+    assert row["flag"] == "-"
+
+
+def test_on_gemini_categorize_never_reads_the_pages_of_a_progress_note(monkeypatch):
+    """GUARD: the same row on Gemini is decided by the title rule and its pages are never read."""
+    from app.services import segment_engine as se
+
+    _on_backend(monkeypatch, "gemini")
+    _no_model_call(monkeypatch)
+
+    def _page(p):
+        raise AssertionError("Gemini must not read the pages of a rule-decided row")
+
+    row = se._categorize(
+        "x.pdf", {"start": 4, "end": 9, "title": "Progress Note", "date": "-", "flag": "-"}, _page
+    )
+
+    assert row["category"] == "1"
+    assert row["method"] == "rules"
+    assert row["flag"] == "-"
