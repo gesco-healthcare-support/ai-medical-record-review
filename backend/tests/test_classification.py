@@ -2418,3 +2418,179 @@ def test_on_gemini_categorize_never_reads_the_pages_of_a_progress_note(monkeypat
     assert row["category"] == "1"
     assert row["method"] == "rules"
     assert row["flag"] == "-"
+
+
+# --- On our model, a treating report that names an authorization request is decided from its pages
+
+
+@pytest.mark.parametrize(
+    ("title", "deferred"),
+    [
+        ("Primary Treating Physician's Report and Request for Authorization", True),
+        ("PTP Report / RFA", True),
+        ("Treating Physician Report - Request for Authorization", True),
+        # A rule-1 token already answers 1: rule 1 sits above the authorization rule.
+        ("Primary Treating Physician's PR-2 and Request for Authorization", False),
+        # The authorization request on its own keeps 10 - reviewers chose it on 288 of 292 rows.
+        ("Request for Authorization", False),
+        ("RFA", False),
+        # A treating report with no authorization request is not the rule's answer at all.
+        ("Primary Treating Physician's Report", False),
+    ],
+)
+def test_a_treating_report_naming_an_authorization_is_recognised(title, deferred):
+    assert classification.treating_report_with_authorization(title) is deferred
+
+
+def test_on_gemini_a_treating_report_with_an_authorization_keeps_the_rule(monkeypatch):
+    """GUARD: Gemini is untouched - the authorization rule answers 10 and no model is asked."""
+    _on_backend(monkeypatch, "gemini")
+    _no_model_call(monkeypatch)
+    title = "Primary Treating Physician's Report and Request for Authorization"
+
+    for page_text in (None, "Primary treating physician report. Request for authorization below."):
+        result = classification.classify(title, page_text=page_text)
+        assert result == classification.Classification("10", "high", "rules", needs_review=False)
+
+
+def test_on_our_model_the_pages_decide_a_treating_report_with_an_authorization(monkeypatch):
+    _on_backend(monkeypatch, "vllm")
+    title = "Primary Treating Physician's Report and Request for Authorization"
+    _no_model_call(monkeypatch)
+    asked = classification.classify(title)
+    assert asked == classification.Classification("10", "low", "rules", needs_review=True)
+
+    seen = []
+    _votes(monkeypatch, "1", "1", seen)
+    pages = "Subjective complaints. Objective findings. Work status. Request for authorization."
+
+    result = classification.classify(title, page_text=pages)
+
+    assert result == classification.Classification("1", "high", "llm+embedding", needs_review=False)
+    assert seen == [("embed", pages), ("llm", pages)]
+
+
+def test_on_our_model_a_bare_authorization_request_keeps_the_rule(monkeypatch):
+    _on_backend(monkeypatch, "vllm")
+    _no_model_call(monkeypatch)
+
+    result = classification.classify("Request for Authorization", page_text="any page text")
+
+    assert result == classification.Classification("10", "high", "rules", needs_review=False)
+
+
+# --- VLLM_CLASSIFY_FROM_PAGES: our model decides a row on its pages first ------------------------
+
+
+def _from_pages(monkeypatch, on):
+    monkeypatch.setattr(get_settings(), "vllm_classify_from_pages", on)
+
+
+_TITLE_ONLY_ROW = {"start": 4, "end": 9, "title": "Encounter Note", "date": "-", "flag": "-"}
+
+
+def test_from_pages_on_our_model_classifies_once_on_the_pages(monkeypatch):
+    """Switched on, a row no rule answers is classified on its first pages in ONE call - the title
+    is never asked about, even when the votes on it would have agreed."""
+    from app.services import segment_engine as se
+
+    _on_backend(monkeypatch, "vllm")
+    _from_pages(monkeypatch, True)
+    seen = []
+    _votes(monkeypatch, "5", "5", seen)
+    read = []
+
+    def _page(p):
+        read.append(p)
+        return f"page {p}: treatment by a licensed acupuncturist"
+
+    row = se._categorize("x.pdf", dict(_TITLE_ONLY_ROW), _page)
+
+    assert row["category"] == "5"
+    assert read == [4, 5, 6]
+    asked = {text for _vote, text in seen}
+    assert "Encounter Note" not in asked
+    assert len(seen) == 2
+
+
+def test_from_pages_off_asks_about_the_title_first(monkeypatch):
+    """GUARD: off (the default), a confident title answer stands and no page is read."""
+    from app.services import segment_engine as se
+
+    _on_backend(monkeypatch, "vllm")
+    _from_pages(monkeypatch, False)
+    seen = []
+    _votes(monkeypatch, "1", "1", seen)
+
+    def _page(p):
+        raise AssertionError("a confident title answer must not read the pages")
+
+    row = se._categorize("x.pdf", dict(_TITLE_ONLY_ROW), _page)
+
+    assert row["category"] == "1"
+    assert seen == [("embed", "Encounter Note"), ("llm", "Encounter Note")]
+
+
+def test_from_pages_is_ignored_on_gemini(monkeypatch):
+    """GUARD: the switch is our model's only; Gemini asks about the title first whatever it says."""
+    from app.services import segment_engine as se
+
+    _on_backend(monkeypatch, "gemini")
+    _from_pages(monkeypatch, True)
+    seen = []
+    _votes(monkeypatch, "1", "1", seen)
+
+    def _page(p):
+        raise AssertionError("Gemini must not read the pages of a confidently titled row")
+
+    row = se._categorize("x.pdf", dict(_TITLE_ONLY_ROW), _page)
+
+    assert row["category"] == "1"
+    assert seen == [("embed", "Encounter Note"), ("llm", "Encounter Note")]
+
+
+def test_from_pages_falls_back_to_the_title_when_the_pages_are_blank(monkeypatch):
+    from app.services import segment_engine as se
+
+    _on_backend(monkeypatch, "vllm")
+    _from_pages(monkeypatch, True)
+    seen = []
+    _votes(monkeypatch, "1", "1", seen)
+
+    row = se._categorize("x.pdf", dict(_TITLE_ONLY_ROW), lambda p: "   ")
+
+    assert row["category"] == "1"
+    assert seen == [("embed", "Encounter Note"), ("llm", "Encounter Note")]
+
+
+def test_from_pages_keeps_the_title_rules_first(monkeypatch):
+    """A row a title rule answers is unaffected: the rule decides and no model is asked."""
+    from app.services import segment_engine as se
+
+    _on_backend(monkeypatch, "vllm")
+    _from_pages(monkeypatch, True)
+    _no_model_call(monkeypatch)
+    row = dict(_TITLE_ONLY_ROW, title="MRI of the Lumbar Spine")
+
+    done = se._categorize("x.pdf", row, lambda p: "impression: normal study")
+
+    assert done["category"] == "3"
+    assert done["method"] == "rules"
+
+
+def test_from_pages_lets_a_reviewers_stop_through(monkeypatch):
+    """A Stop raised while the pages are classified must end the job, not fall back to the title."""
+    from app.services import segment_engine as se
+    from app.worker.failures import JobCancelled
+
+    _on_backend(monkeypatch, "vllm")
+    _from_pages(monkeypatch, True)
+
+    def _cancelled(_text, model=None):
+        raise JobCancelled(3, 170)
+
+    monkeypatch.setattr(classification, "embed_classify", lambda _t: (None, 0.0))
+    monkeypatch.setattr(classification, "llm_classify", _cancelled)
+
+    with pytest.raises(JobCancelled):
+        se._categorize("x.pdf", dict(_TITLE_ONLY_ROW), lambda p: "some page text")

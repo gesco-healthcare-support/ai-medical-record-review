@@ -119,6 +119,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `VLLM_MAX_IMAGES_PER_PROMPT` | int | `40` | `40` | yes | Each vLLM stage's image cap must not exceed it | Must equal the pod's `--limit-mm-per-prompt`; the boot guard compares `SUMMARY_IMAGE_MAX_PAGES`, `VLLM_SEGMENT_MAX_PAGES` and the DOI (10) and deposition (6) caps against it for stages on vLLM |
 | `VLLM_SEGMENT_MAX_PAGES` | int | `30` | `30` | yes | Must not exceed `VLLM_MAX_IMAGES_PER_PROMPT` when `segment` is on vLLM | Pages per segmentation window on vLLM (the smaller of this and `WINDOW_MAX_PAGES`) and the image cap for that window |
 | `VLLM_THINKING_STAGES` | str | `""` | `""` | yes | Comma-separated exact stage names; an unknown name raises `ValueError` when a vLLM call is made, not at boot | Stages sent `enable_thinking: true` on vLLM (`Settings.vllm_thinking_for()`); every other stage is sent `false` |
+| `VLLM_CLASSIFY_FROM_PAGES` | bool | `false` | `false` | yes | none; read only when `classify` resolves to `vllm` | Segment-path categorization (`segment_engine._categorize`): `true` classifies every row no title rule answers on its first pages in one call instead of the title first; Gemini ignores it |
 
 ## Summarize stage
 
