@@ -271,8 +271,29 @@ trained model and 28 of them were chiropractic, physical-therapy or acupuncture 
 filed under 5. Our model leaves the discipline out of the title, so rule 5 never fires, and the
 author's credential is on the pages. The other treating tokens were 63 right against 4 wrong.
 
+The same deferral covers a treating physician's report that also names a request for authorization
+(`treating_report_with_authorization()`): a title naming a treating physician (or "PTP") and an
+RFA, with no rule-1 token, that the authorization rule would answer 10. Across the 211 reviewed
+records on the live box reviewers filed that shape 1 on 8 rows, 2 on 4 and 10 on 4. A bare "Request
+for Authorization" keeps its 10 (288 of 292 rows), and a title carrying a rule-1 token already
+answers 1.
+
 Gemini is untouched: on a Gemini backend the rule answers exactly as before and the pages are not
 read.
+
+### Deciding from the pages first, on our model (`VLLM_CLASSIFY_FROM_PAGES`)
+
+Off by default, and then everything above holds. On, and only when `classify` runs on vLLM,
+`_categorize()` reads the row's first pages first and calls `classify(title, page_text)` once, so
+every row no title rule answers is decided on its pages. With no readable page text it falls back
+to the title alone. Rules still answer first, a reviewer's Stop and a missing OCR installation still
+propagate, and any other read failure falls back to the title.
+
+It exists because the fine-tuned adapter was trained on the pages form of the request (the
+mrr-training categorization builder sends the escalation text wherever page text exists), while
+the default path asks it about the title and keeps a confident title answer. It is a switch so the
+two can be compared by a categorization replay on a pod without a rebuild. Whether it helps is a
+measurement, not yet made.
 
 The aggregate-upload `classify` job does not escalate: its rows have no title (`-`), so no rule can
 match, and it classifies the text of each row's first page directly. It re-derives each row's
