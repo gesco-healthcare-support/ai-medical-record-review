@@ -1526,18 +1526,22 @@ def consistent_facilities(titles: list[str], locked: list[bool] | None = None) -
             spelled[(p[0], key)] = p[1]
         spelled.setdefault((p[0], key), p[1])
     out = []
-    for title, p, is_locked in zip(titles, parts, locked, strict=True):
-        if not p or is_locked:
+    for title, p in zip(titles, parts, strict=True):
+        if not p:
             out.append(title)
             continue
         author, facility, start = p
         key = " ".join(facility.upper().split())
+        # A reviewer's spelling is pinned, which covers every title carrying it: the edited one,
+        # and an unedited one that agrees with it and would otherwise follow a commoner garble.
+        if (author, key) in pinned:
+            out.append(title)
+            continue
         group = counts[author]
         candidates = [
             c
             for c in group
             if c != key
-            and (author, key) not in pinned
             and _same_facility(key, c)
             and (group[c] > group[key] or (author, c) in pinned)
         ]

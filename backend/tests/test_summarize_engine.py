@@ -2465,6 +2465,7 @@ def test_the_near_spellings_the_replay_found_are_joined(variant, other):
         ("EAST CLINIC", "WEST CLINIC"),  # exactly 0.75, under the 0.80 bound
         ("WESTSIDE ORTHOPEDICS", "EASTSIDE ORTHOPEDICS"),  # 0.88: why the compass rule exists
         ("VALLEY DENTAL GROUP", "VALLEY MEDICAL GROUP"),
+        ("UPLAND MEDICAL GROUP", "OAKLAND MEDICAL GROUP"),  # 0.62: only the 0.80 bound parts these
         ("CITY CLINIC 1", "CITY CLINIC 2"),
         # A garble that changes the word count is NOT joined: on the whole string it is as close
         # to the right name as a second site of the same practice is, so no rule here can tell them
@@ -2536,6 +2537,16 @@ def test_a_reviewer_s_facility_is_never_outvoted():
         _ORTHO + "C",
     ]
     assert se.consistent_facilities(titles, [False, True, False])[1] == titles[1]
+
+
+def test_an_unedited_title_spelled_as_the_reviewer_spelled_it_stays_put():
+    """GUARD: the reviewer's spelling is pinned for every title carrying it, not only the one
+    they edited - so an unedited title that agrees with them is not pulled to a commoner garble."""
+    garble = "JANE ROE, M.D. VALLEY ORTHOPAEDIC INSTITVTE. "
+    titles = [_ORTHO + "A", _ORTHO + "B", garble + "C", garble + "D", garble + "E"]
+    out = se.consistent_facilities(titles, [True, False, False, False, False])
+    assert out[1] == _ORTHO + "B"
+    assert out[2:] == [_ORTHO + "C", _ORTHO + "D", _ORTHO + "E"]
 
 
 def test_the_export_joins_facilities_after_it_joins_authors():
