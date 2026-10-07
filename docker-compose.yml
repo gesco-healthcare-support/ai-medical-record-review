@@ -71,6 +71,10 @@ x-backend-env: &backend-env
   # never config.py. A test pins the two together.
   PIPELINE_WORKERS: ${PIPELINE_WORKERS:-5}
   CLASSIFY_WORKERS: ${CLASSIFY_WORKERS:-4}
+  # Identify jobs one reviewer may have running while another reviewer's identify is waiting
+  # (app/worker/fairness.py); 0 turns it off. Keep it above half the segment-worker replicas
+  # below, so at most one reviewer can be at the cap. Passed explicitly, like everything here.
+  IDENTIFY_PER_REVIEWER_CAP: ${IDENTIFY_PER_REVIEWER_CAP:-3}
   # Concurrency of the ONE-TIME per-page OCR pass (services/page_text.populate_document). Named here
   # for the same reason as everything above: an unreferenced key never reaches a container.
   #
@@ -373,12 +377,19 @@ services:
     image: mrr-backend-classifier
     command: ["python", "-m", "app.worker", "segment"]
     # One replica serialised every tester behind whoever queued first (measured 2026-07-30: a
-    # 427-second unstarted wait behind another user's job). Three matches the tester count; the
-    # ceiling is 4, because the binding resource is CPU during OCR on 4 vCPU, not RAM (~2-4 GB for
-    # six workers against 13 GB free). Pairs with the per-user lanes in app/worker/queues.py -
-    # replicas alone stop helping the moment one user queues more documents than there are workers.
+    # 427-second unstarted wait behind another user's job). Pairs with the per-user lanes in
+    # app/worker/queues.py - replicas alone stop helping the moment one user queues more documents
+    # than there are workers, which is what IDENTIFY_PER_REVIEWER_CAP is for.
+    #
+    # 3 -> 5 on 2026-10-07. The old ceiling of 4 was set by CPU during OCR on 4 vCPU; the live box
+    # measured 8 vCPU and 15 GB that day, with idle segment workers at ~150 MB each and 13 GB
+    # available. A 2,236-page record OCR'd in 12 minutes alongside the other workers' jobs, and
+    # every identify wait over a minute in the 30 days before was three workers held by one
+    # reviewer's batch. Five with a cap of three: a lone reviewer still runs three at a time, and a
+    # second reviewer always finds a free worker. More concurrent identifies share one Vertex
+    # rate limit, so watch `vertex:metrics:*` after raising it further.
     deploy:
-      replicas: 3
+      replicas: 5
     environment: *backend-env
     volumes:
       - mrr_uploads:/app/uploads

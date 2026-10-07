@@ -83,6 +83,11 @@ def main(argv: list[str] | None = None) -> None:
     user_ids = _user_ids()
     names = [name for base in bases for name in lanes_for(base, user_ids)]
     logger.info("worker listening round-robin on %d queue(s): %s", len(names), names)
+    # The identify cap may only hand a turn to a lane this worker actually reads (worker/fairness.py),
+    # and a forked work-horse inherits this.
+    from app.worker import fairness
+
+    fairness.serve(names)
 
     redis = get_redis()
     # with_scheduler=True runs the RQ scheduler thread in-process so `enqueue_in`-scheduled jobs

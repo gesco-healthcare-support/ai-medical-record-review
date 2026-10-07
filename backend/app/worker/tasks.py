@@ -9,6 +9,7 @@ server-side, ids only). The worker is the single writer of Document.status after
 import logging
 import re
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -160,6 +161,8 @@ def _run(job_id, work) -> None:
         if job is None:
             logger.warning("job %s vanished before it ran", job_id)
             return
+        if _step_aside(session, job):
+            return  # still queued; it runs on a later turn
         job.state = "running"
         job.started_at = _utcnow()
         session.commit()
@@ -276,6 +279,83 @@ def _finalize_done(session, job, job_id) -> None:
     logger.info("job %s (%s) done on document %s", job_id, job.kind, job.document_id)
 
 
+def _dispatch_again(
+    session,
+    job,
+    *,
+    delay: timedelta | None = None,
+    at_front: bool = False,
+    rq_id: str | None = None,
+) -> None:
+    """Put the SAME job back on its owner's lane as a fresh RQ job, and record that RQ id.
+
+    The two callers are a paused summarize's delayed resume and an identify job stepping aside for
+    another reviewer (``_step_aside``). One helper, because a re-dispatch that drops the finalizers
+    leaves a force-stopped run wedged ``running`` - and a resumed summarize, the longest-running job
+    in the system, is the likeliest to be force-stopped. The fresh RQ id is recorded so orphan
+    recovery and Force stop correlate the new dispatch, not the run that just returned.
+    """
+    from rq import Callback
+
+    # Same lane as the original dispatch: a re-dispatched job must not jump onto the shared base
+    # queue, or it would start blocking other users.
+    owner = getattr(session.get(Document, job.document_id), "user_id", None)
+    queue = queue_for(job.kind, owner)
+    kwargs = {
+        "job_timeout": _job_timeout(session, job.document_id),
+        "on_stopped": Callback(on_job_stopped),
+        "on_failure": Callback(on_job_failed),
+    }
+    if rq_id is not None:
+        kwargs["job_id"] = rq_id
+    if delay is not None:
+        rq_job = queue.enqueue_in(delay, worker_fn(job.kind), job.id, **kwargs)
+    else:
+        rq_job = queue.enqueue(worker_fn(job.kind), job.id, at_front=at_front, **kwargs)
+    job.rq_job_id = rq_job.id
+
+
+def _step_aside(session, job) -> bool:
+    """True if this identify job went back to the front of its lane so a waiting reviewer goes
+    first (app/worker/fairness.py). A job the reviewer asked to stop never steps aside: it runs, and
+    its first progress report ends it."""
+    from rq import get_current_job
+
+    from app.worker import fairness
+
+    if job.cancel_requested:
+        return False
+    owner = getattr(session.get(Document, job.document_id), "user_id", None)
+    current = get_current_job()
+    if not fairness.should_step_aside(
+        job.kind,
+        owner,
+        get_settings().identify_per_reviewer_cap,
+        get_redis(),
+        current_rq_id=current.id if current else None,
+    ):
+        return False
+    # The new RQ id is committed BEFORE the job goes back on the queue. Enqueue-then-commit would,
+    # on a failed commit, leave a queued copy AND run this one now: the same job twice.
+    previous = job.rq_job_id
+    job.rq_job_id = f"{job.id}-turn-{uuid.uuid4().hex[:8]}"
+    session.commit()
+    try:
+        _dispatch_again(session, job, at_front=True, rq_id=job.rq_job_id)
+    except Exception:
+        # Could not put it back (Redis gone between the check and here): run it now instead. The
+        # cost is today's behaviour; the alternative is a job that never runs.
+        job.rq_job_id = previous
+        session.commit()
+        logger.warning("job %s could not step aside; running it now", job.id, exc_info=True)
+        return False
+    logger.info(
+        "job %s stepped aside: its reviewer is at the identify cap and another reviewer is waiting",
+        job.id,
+    )
+    return True
+
+
 def _finalize_paused(session, job_id, sig: JobPaused) -> None:
     """Persist progress + schedule a delayed resume of the SAME job. document.status stays
     in-flight ("summarizing") so the UI keeps showing progress ("paused, will retry"). A fresh RQ
@@ -286,23 +366,7 @@ def _finalize_paused(session, job_id, sig: JobPaused) -> None:
     job.current, job.total = sig.done, sig.total
     job.attempts = (job.attempts or 0) + 1
     try:
-        from rq import Callback
-
-        # Same lane as the original dispatch: a resumed job must not jump onto the shared base queue,
-        # or a paused summarize would start blocking other users on every retry cycle.
-        owner = getattr(session.get(Document, job.document_id), "user_id", None)
-        rq_job = queue_for(job.kind, owner).enqueue_in(
-            timedelta(seconds=sig.delay),
-            worker_fn(job.kind),
-            job.id,
-            job_timeout=_job_timeout(session, job.document_id),
-            # Same finalizers as the original dispatch: a resumed summarize is the LONGEST-running
-            # job in the system and so the likeliest to be force-stopped. Omitting them here would
-            # leave exactly those runs wedged.
-            on_stopped=Callback(on_job_stopped),
-            on_failure=Callback(on_job_failed),
-        )
-        job.rq_job_id = rq_job.id
+        _dispatch_again(session, job, delay=timedelta(seconds=sig.delay))
         session.commit()
     except Exception:
         # Could not schedule the resume (e.g. Redis down): fail visibly rather than strand paused.

@@ -552,6 +552,13 @@ class Settings(BaseSettings):
     # they parallelise like categorization does. Its own knob rather than borrowing another
     # stage's, following segment_window_workers / classify_workers / page_text_workers.
     doi_workers: int = 4
+    # Identify jobs one reviewer may have RUNNING while another reviewer's identify waits for a
+    # worker (app/worker/fairness.py). Without it one reviewer's batch takes every identify worker:
+    # on 2026-10-07 a 13-record batch held all three and another reviewer waited 6 to 12 minutes.
+    # It only acts while someone else waits, so a reviewer working alone is never capped. Keep it
+    # above half the segment-worker replicas (5 replicas, cap 3): then at most one reviewer can be
+    # at the cap, so a free worker always has someone it may serve. 0 turns the rule off.
+    identify_per_reviewer_cap: int = 3
     # RQ per-job wall-clock cap (seconds). The old Flask app ran the pipeline in-process with no
     # cap; RQ's 180s default is far too short - a 200+ page record needs minutes per vision window
     # plus one Vertex call per identified document. The effective cap is SIZE-AWARE:
