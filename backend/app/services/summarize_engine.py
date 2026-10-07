@@ -1548,7 +1548,8 @@ def consistent_facilities(titles: list[str], locked: list[bool] | None = None) -
         if not candidates:
             out.append(title)
             continue
-        best = max(candidates, key=lambda c: ((author, c) in pinned, group[c], c))
+        # A reviewer's spelling first, then the most common, then a fixed order on a tie.
+        best = max([((author, c) in pinned, group[c], c) for c in candidates])[2]
         out.append(title[:start] + spelled[(author, best)] + title[start + len(facility) :])
     return out
 
