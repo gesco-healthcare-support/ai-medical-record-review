@@ -323,9 +323,10 @@ endpoints are handed these values.
 | `DEPOSITIONS` | Depositions | `depositions` | `9` | none (no cover page) | Depositions | `/depositions` |
 
 A bundle page lists the rows whose category is in the set, leaving out a non-primary, non-dismissed
-member of a duplicate cluster that has a primary, and, for a preset with `summarizedOnly` (Diagnostic
-& Operative), any row unticked for summary. This mirrors `backend/app/services/bundles.py`
-`matched_rows()`.
+member of a duplicate cluster that has a primary, and, for a preset with `summarizedOnly` (both
+presets), any row unticked for summary. This mirrors `backend/app/services/bundles.py`
+`matched_rows()`. When every matching row is unticked, the page says the documents are unticked
+rather than missing.
 
 ## Constants
 

@@ -75,14 +75,22 @@ def matched_rows(rows, categories, *, summarized_only=False):
     copy the reviewer already resolved away as a duplicate, and, with ``summarized_only``, minus
     any row the reviewer UNTICKED for summary.
 
-    ``summarized_only`` is the Diagnostic & Operative bundle's rule. Reviewer feedback, 2026-10-01:
-    its list "is still including files that we unchecked (due to being duplicates) ... Could you
-    make it so it only includes the files that are being summarized?". Measured on the live box:
+    ``summarized_only`` was first the Diagnostic & Operative bundle's rule. Reviewer feedback,
+    2026-10-01: its list "is still including files that we unchecked (due to being duplicates) ...
+    Could you make it so it only includes the files that are being summarized?". Measured live:
     126 unticked diagnostic rows across 45 records were still listed, 121 of them in NO duplicate
     group - unticked by hand, which the duplicate fields below cannot see. That bundle is exempt
     from the migration problem described next (0 of its records were unticked by it, and the
-    include rule empties its list on 1 of 168, where nothing is ticked at all), so it opts in. The
-    Depositions bundle does not, for exactly that reason.
+    include rule empties its list on 1 of 168, where nothing is ticked at all), so it opts in.
+
+    The Depositions bundle opted in too, later, on the reviewers' own request (2026-10-06): "make
+    sure that it doesn't download the Depos that we unchecked for summarization". It had stayed
+    out because of the migration below, and that cost has shrunk. Measured on the live box
+    2026-10-07: 65 records hold depositions; 47 have every one ticked, 6 some, and 12 none. 9 of
+    those 12 were segmented before 2026-08-08, when depositions were unticked by the migration
+    below or by the default it set, and none of the 9 has been touched since August. The other 3
+    are newer and were unticked by a reviewer, which is the case being asked for. So on those 9
+    old records the Depositions download now says nothing is ticked; ticking one brings it back.
 
     A bundle is a DELIVERABLE: a combined PDF or a Word report a client receives. Selecting purely
     on category put a confirmed duplicate's pages into the PDF a SECOND time and made
@@ -90,15 +98,15 @@ def matched_rows(rows, categories, *, summarized_only=False):
     reviewer had just resolved away - because keep_one changes `include` and `dupe_primary` and
     leaves the CATEGORY alone, so the copy still looks like an ordinary category-3 row.
 
-    Filtered on the DUPLICATE fields rather than on `include`, and that choice is the whole design
-    of this fix. `include` looks like the natural filter and is not:
+    The duplicate rule itself is filtered on the DUPLICATE fields rather than on `include`, so it
+    holds for a caller that does not opt in. `include` looks like the natural filter and was not:
 
       * migration `a7c3f2e9b1d4` ran `UPDATE review_rows SET include = false WHERE category IN
         ('9','100')`, and `a9c4e13f70b2` turned depositions back on in `categories.summarize_default`
         WITHOUT backfilling the rows. So a blanket migration unchecked them, not a reviewer.
-      * measured on the box: an `include` filter would return NOTHING for **11 of 30** documents
-        holding depositions. The Depositions preset is `["9"]`, so it would simply stop working for
-        older records.
+      * measured on the box (2026-10-01; the current count is above): an `include` filter would
+        return NOTHING for **11 of 30** documents holding depositions. The Depositions preset is
+        `["9"]`, so it would simply stop working for older records.
       * diagnostic/operative is NOT affected by that migration - **0 of 67** such documents would be
         emptied. An earlier version of this note said 30, from a query using `bool_and(include)`,
         which answers "has ANY unchecked row" where it needed `bool_or`. The two coincide for

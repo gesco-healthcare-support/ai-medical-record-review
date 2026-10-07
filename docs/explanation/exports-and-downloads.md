@@ -77,11 +77,13 @@ one, else the PDF's own page count (`_letter_pages()`).
   request.
 - **Bundle PDF.** `bundles.py` `matched_rows()` selects the rows in the requested categories minus
   any copy a reviewer resolved away as a duplicate (a non-primary, non-dismissed member of a cluster
-  that has a primary). It deliberately does not filter on the row's `include` flag, because an older
-  data migration unticked every deposition row in bulk and an `include` filter would empty the
-  Depositions bundle for older records. A bundle that sends `summarizedOnly` (the Diagnostic &
-  Operative preset) does leave out a row unticked for summary, so its list carries only the documents
-  being summarized. The matched rows' pages are concatenated in record order with
+  that has a primary). On its own it does not filter on the row's `include` flag. A bundle that
+  sends `summarizedOnly` also leaves out a row unticked for summary, so it carries only the
+  documents being summarized. Both presets send it: the reviewers asked for it on the diagnostic
+  list and then on the depositions. An older data migration unticked every deposition row in bulk,
+  so on the few records segmented before 2026-08-08 with no deposition ticked since, the Depositions
+  download finds nothing until a reviewer ticks one, and the Depositions page says so. The matched
+  rows' pages are concatenated in record order with
   pypdf; out-of-range pages are skipped. When the request carries a cover heading, a list page built
   by `build_cover_pdf()` goes in front, unless every cell of it would be empty. A request carrying
   `separateAs` (Depositions) instead gets one PDF per matched row, named

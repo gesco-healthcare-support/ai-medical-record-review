@@ -83,6 +83,23 @@ describe("downloadBundlePdf", () => {
     expect(bodies[1].separateAs).toBeUndefined();
   });
 
+  it("asks for only the documents ticked for summary, for both bundles", async () => {
+    // DEMONSTRATES the reviewers' request for depositions: "make sure that it doesn't download the
+    // Depos that we unchecked for summarization", the same rule they asked for on diagnostics.
+    // Both download routes send it, so the combined PDF and the Word report agree.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200));
+    await downloadBundlePdf("doc-1", DEPOSITIONS);
+    await downloadBundlePdf("doc-1", DIAGNOSTIC_OPERATIVE);
+    await downloadBundleSummary("doc-1", DEPOSITIONS, {
+      patientName: "",
+      patientdob: "",
+      QMEorAME: "",
+      lawfirm: "",
+    });
+    const bodies = fetchSpy.mock.calls.map((c) => JSON.parse(String(c[1]?.body)));
+    expect(bodies.map((b) => b.summarizedOnly)).toEqual([true, true, true]);
+  });
+
   it("raises the server's own reason rather than a bare status code", async () => {
     vi.stubGlobal(
       "fetch",
