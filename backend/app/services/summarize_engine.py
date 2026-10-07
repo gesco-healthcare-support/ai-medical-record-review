@@ -9,6 +9,7 @@ Model calls go through services.llm, so which vendor answers is a config value r
 import. This module no longer names an SDK.
 """
 
+import difflib
 import logging
 import re
 
@@ -49,6 +50,10 @@ TITLE_PROMPT = (
     "the document, read from the LETTERHEAD at the top of the page. The facility's NAME only: "
     "never its street address, suite, city, state, ZIP code, phone or fax number, even though "
     "the letterhead prints them beside the name.\n"
+    "   Read the facility from the page IMAGE as well as the OCR text: a logo or a stylised "
+    "letterhead is where OCR garbles most, turning the name into broken or run-together letters. "
+    "Write the facility as the words printed there; if its name cannot be read in full as real "
+    "words, omit the FACILITY rather than write a fragment or a guess.\n"
     "   A stamp added to the photocopy afterwards is NOT the facility. Records-copying, "
     "transcription, billing and bill-review vendors stamp their name, an address and a "
     "received-date or bill/DCN number onto the page; that names who handled the paper, not who "
@@ -642,11 +647,20 @@ _OCR_TEXT_HEADER = "OCR TEXT:\n"
 #     letters, and the prompt said to read the author "from the signature block", so the title
 #     carried them - while the printed name sat in the form's own physician field, in the OCR text.
 # Both models take this call through the same seam, so both had it.
+#
+# The FACILITY was left out of that fix, and the reviewers reported its twin on 2026-10-06: a
+# title carried letters from an institute's logo where the next entry by the same doctor named the
+# institute correctly. Measured read-only over the live box the next day: of the 45 facility
+# spellings that appear once in a record beside a near spelling of the same name by the same
+# author, 38 came from this call and 7 from the audit - so the image instruction now names the
+# facility too, and TITLE_PROMPT says to omit a facility that cannot be read as real words.
+# `consistent_facilities` repairs what still gets through, at export.
 _TITLE_IMAGE_INSTRUCTION = (
     "\n\nThe images above are the first and last pages of this sub-document, where the letterhead "
     "and the signature block are, and the OCR text above is all of its pages. Wherever the OCR has "
     "garbled or lost the author's printed name - a signature drawn over it is the usual cause - "
-    "read the name from the images. Now return the header line per the system instructions."
+    "or the facility's name - a logo or stylised letterhead is the usual cause - read that name "
+    "from the images. Now return the header line per the system instructions."
 )
 
 
@@ -1382,6 +1396,157 @@ def consistent_authors(titles: list[str], locked: list[bool] | None = None) -> l
         title if not p or is_locked else chosen[(p[0], p[1])] + title[len(p[0]) :]
         for title, p, is_locked in zip(titles, parts, locked, strict=True)
     ]
+
+
+# A short all-letters token before a period is an ABBREVIATION, not the end of an element:
+# `ST. MARY'S`, `MT. SINAI`, `U.S. HEALTHWORKS` are ordinary facility names. Splitting on ". "
+# alone tore them in half and the PROVIDER column read `ST - MARY'S HOSPITAL`, in a page a client
+# reads. Bounded at three characters because that is what the real cases need and a longer bound
+# starts swallowing genuine one-word elements. Lives here rather than in `bundles.py` because the
+# record-level facility pass below needs the same split, and `bundles` imports this module.
+_ABBREVIATION = re.compile(r"^[A-Za-z][A-Za-z.]{0,2}$")
+
+
+def title_elements(title: str) -> list[str]:
+    """The header line's elements, with abbreviations and the author kept whole.
+
+    The author is everything up to its ``NAME, CREDENTIAL`` comma. A middle initial carries its
+    own period, so `JANE K. ROE, M.D. VALLEY CLINIC. MRI` split as `JANE K` / `ROE, M.D` /
+    `VALLEY CLINIC` / `MRI`, and the diagnostics cover page printed `JANE K - ROE, M.D. - VALLEY
+    CLINIC` in its PROVIDER column - on 102 of the 921 titles in that bundle's categories on the
+    live box, 2026-10-07. The abbreviation rule cannot catch it: `JANE K` is no abbreviation."""
+    raw = [part.strip(" .") for part in re.split(r"\.\s+", title)]
+    elements: list[str] = []
+    for part in raw:
+        if not part:
+            continue
+        # A fragment this short followed by more text is the front half of an abbreviated name,
+        # so it rejoins what the split separated. The `elements` guard keeps a genuinely short
+        # LAST element - a document type of "CT" - from being merged into nothing.
+        if elements and _ABBREVIATION.match(elements[-1]):
+            elements[-1] = f"{elements[-1]}. {part}"
+        else:
+            elements.append(part)
+    author_end = next((i for i, e in enumerate(elements) if ", " in e), 0)
+    if author_end and _author_parts(title):
+        elements[: author_end + 1] = [". ".join(elements[: author_end + 1])]
+    return elements
+
+
+# ONE spelling per facility for each provider across a record - `consistent_authors`' counterpart,
+# for the same reason: each title is read from its own pages, and a letterhead that OCR garbles on
+# one form (a logo, a faint fax) gets a garbled facility on that entry only. The reviewers,
+# 2026-10-06, on a record where one entry by a doctor named his institute correctly and the next
+# carried letters from its logo instead: "Maybe we can make sure that it only types real words".
+#
+# Joined only when a spelling can ONLY be the same place, because the wrong facility on an entry is
+# worse than two spellings of the right one:
+#
+#   - Within ONE author element (after `consistent_authors`), so the doctor anchors the practice.
+#     A title with no author, or no facility element, is left alone.
+#   - The same number of words, with at most half of them differing (one, in a short name), and
+#     every differing pair a near spelling of each other: both words at least four letters, a
+#     difflib ratio of at least 0.80, and the same compass words (NORTH, SOUTH, EAST, WEST) in
+#     each. That joins ORTHOPAEDIC / ORTHOPEDIC and a letter OCR misread, and keeps NORTH /
+#     SOUTH, MEDICAL / DENTAL and CLINIC 1 / CLINIC 2 apart. The compass rule is what keeps
+#     WESTSIDE / EASTSIDE apart, at 0.88. The ratio is 0.80 rather than 0.75 because EAST / WEST
+#     scores exactly 0.75 - a near miss worth not depending on - and the replay below joined the
+#     same titles at either value.
+#     It does NOT join a garble that changes the word count: "SANTA MONICA <NAME> INSTITUTE"
+#     against "LOS ANGELES <NAME> INSTITUTE" scores 0.75 on the whole string, which is as close as
+#     the reported garble did (0.80), so no whole-string threshold separates a misread from a
+#     second site of one practice.
+#   - A variant moves to the spelling more of that author's entries carry, or to a reviewer's.
+#     A REVIEWER-EDITED title is never rewritten and its spelling wins, as for authors.
+#
+# Replayed read-only over every stored title on the live box, 2026-10-07: 25 titles in 13 records
+# would change, 18 distinct pairs, every one a misread or a spelling of the same name. With the
+# reviewer locks switched OFF, it would have changed 3 of the 850 titles a reviewer typed - all
+# three one reviewer's own typo of a facility the rest of the record spelled right.
+_FACILITY_MIN_WORD = 4
+_FACILITY_MIN_RATIO = 0.80
+_COMPASS = ("NORTH", "SOUTH", "EAST", "WEST")
+
+
+def _facility_words(facility: str) -> list[str]:
+    return re.sub(r"[^A-Z0-9]+", " ", facility.upper().replace("&", " AND ")).split()
+
+
+def _compass(word: str) -> set[str]:
+    return {c for c in _COMPASS if c in word}
+
+
+def _same_facility(variant: str, candidate: str) -> bool:
+    """Whether two facility spellings can only be one place - see the note above."""
+    a, b = _facility_words(variant), _facility_words(candidate)
+    if not a or len(a) != len(b):
+        return False
+    diffs = [(x, y) for x, y in zip(a, b, strict=True) if x != y]
+    if len(diffs) > max(1, len(a) // 2):
+        return False
+    return all(
+        min(len(x), len(y)) >= _FACILITY_MIN_WORD
+        and difflib.SequenceMatcher(None, x, y).ratio() >= _FACILITY_MIN_RATIO
+        and _compass(x) == _compass(y)
+        for x, y in diffs
+    )
+
+
+def _facility_parts(title: str):
+    """``(author, facility, facility start)`` for an ``AUTHOR, CRED. FACILITY. TYPE`` title, else
+    ``None``. The start is where the facility sits in ``title`` itself, so only that span is ever
+    replaced. A document type must follow the facility, so a title of author and type alone has
+    none."""
+    if not _author_parts(title):
+        return None
+    elements = title_elements(title)
+    if len(elements) < 3:
+        return None
+    start = title.find(elements[1], title.index(", "))
+    return (elements[0].upper(), elements[1], start) if start >= 0 else None
+
+
+def consistent_facilities(titles: list[str], locked: list[bool] | None = None) -> list[str]:
+    """``titles`` with every spelling of one author's facility made the same - see the note above.
+
+    ``locked`` marks reviewer-edited titles: never rewritten, and their spelling wins its group."""
+    locked = locked or [False] * len(titles)
+    parts = [_facility_parts(t) for t in titles]
+    counts: dict[str, dict[str, int]] = {}
+    pinned: set[tuple[str, str]] = set()
+    spelled: dict[tuple[str, str], str] = {}
+    for p, is_locked in zip(parts, locked, strict=True):
+        if not p:
+            continue
+        key = " ".join(p[1].upper().split())
+        group = counts.setdefault(p[0], {})
+        group[key] = group.get(key, 0) + 1
+        if is_locked:
+            pinned.add((p[0], key))
+            spelled[(p[0], key)] = p[1]
+        spelled.setdefault((p[0], key), p[1])
+    out = []
+    for title, p, is_locked in zip(titles, parts, locked, strict=True):
+        if not p or is_locked:
+            out.append(title)
+            continue
+        author, facility, start = p
+        key = " ".join(facility.upper().split())
+        group = counts[author]
+        candidates = [
+            c
+            for c in group
+            if c != key
+            and (author, key) not in pinned
+            and _same_facility(key, c)
+            and (group[c] > group[key] or (author, c) in pinned)
+        ]
+        if not candidates:
+            out.append(title)
+            continue
+        best = max(candidates, key=lambda c: ((author, c) in pinned, group[c], c))
+        out.append(title[:start] + spelled[(author, best)] + title[start + len(facility) :])
+    return out
 
 
 # One entry per visit. The reviewers, 2026-08-21: "mostly when one visit produces a work status

@@ -159,12 +159,9 @@ _CREDENTIALS = re.compile(
 
 COVER_COLUMNS = ("Date", "PROVIDER", "REPORT TITLE")
 
-# A short all-letters token before a period is an ABBREVIATION, not the end of an element:
-# `ST. MARY'S`, `MT. SINAI`, `U.S. HEALTHWORKS` are ordinary facility names. Splitting on ". "
-# alone tore them in half and the PROVIDER column read `ST - MARY'S HOSPITAL`, in a page a client
-# reads. Bounded at three characters because that is what the real cases need and a longer bound
-# starts swallowing genuine one-word elements.
-_ABBREVIATION = re.compile(r"^[A-Za-z][A-Za-z.]{0,2}$")
+# The header line is split into its elements by `summarize_engine.title_elements`, which keeps
+# an abbreviation (`ST. MARY'S`, `U.S. HEALTHWORKS`) whole. It lived here until the record-level
+# facility pass needed the same split, and this module imports that one rather than the reverse.
 
 # The separator and an abbreviation's own final period are the same character, so the split eats
 # it and a client read `JANE SMITH, M.D`. Restored only after an actual abbreviation - a lone
@@ -173,23 +170,6 @@ _ABBREVIATION = re.compile(r"^[A-Za-z][A-Za-z.]{0,2}$")
 # .effective_title` returns `edited_title` first and nothing normalises its case), and it added a
 # period to `IMAGING CENTER A`, on a docstring's claim that "a facility name ends in a word".
 _ABBREVIATION_TAIL = re.compile(r"(?<=\.)([A-Za-z])$")
-
-
-def _elements(title: str) -> list[str]:
-    """The title's elements, with abbreviations kept whole."""
-    raw = [part.strip(" .") for part in re.split(r"\.\s+", title)]
-    elements: list[str] = []
-    for part in raw:
-        if not part:
-            continue
-        # A fragment this short followed by more text is the front half of an abbreviated name,
-        # so it rejoins what the split separated. The `elements` guard keeps a genuinely short
-        # LAST element - a document type of "CT" - from being merged into nothing.
-        if elements and _ABBREVIATION.match(elements[-1]):
-            elements[-1] = f"{elements[-1]}. {part}"
-        else:
-            elements.append(part)
-    return elements
 
 
 def _restore_abbreviation(part: str) -> str:
@@ -228,11 +208,11 @@ def split_deliverable_title(title) -> tuple[str, str]:
     A title with nothing to split - 72 of 268 on that server arrive as a single element - puts
     everything under REPORT TITLE and leaves PROVIDER empty, rather than splitting on a guess.
 
-    Splitting on ". " alone is NOT enough, and `_elements` is why: the separator and an
+    Splitting on ". " alone is NOT enough, and `title_elements` is why: the separator and an
     abbreviation's own period are the same character, so `ST. MARY'S HOSPITAL` came apart into two
     elements and the column read `ST - MARY'S HOSPITAL`.
     """
-    parts = _elements((title or "").strip())
+    parts = summarize_engine.title_elements((title or "").strip())
     if not parts:
         return "", ""
     provider, report = parts[:-1], parts[-1]
@@ -470,6 +450,8 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
                 f"transcript page numbers unreadable in all {len(rows)} matching documents"
             )
         raise EmptyExtractionError(f"no readable text in any of the {len(rows)} matching documents")
-    # One spelling per provider across the bundle, as the record export does.
-    titles = summarize_engine.consistent_authors([e["summaryTitle"] for e in entries])
+    # One spelling per provider and per facility across the bundle, as the record export does.
+    titles = summarize_engine.consistent_facilities(
+        summarize_engine.consistent_authors([e["summaryTitle"] for e in entries])
+    )
     return [{**e, "summaryTitle": t} for e, t in zip(entries, titles, strict=True)]

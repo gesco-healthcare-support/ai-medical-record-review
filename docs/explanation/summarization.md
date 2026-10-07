@@ -229,6 +229,13 @@ the row's first and last page images (letterhead and signature block) with the O
 feedback on 2026-10-02 showed titles opening with OCR's fragment of such a name, and with the
 letters OCR made of a cursive signature.
 
+The facility is read the same way, from the image as well as the OCR, because a logo or stylised
+letterhead is where OCR garbles most; a facility that cannot be read in full as real words is left
+out rather than written as a fragment. Reviewer feedback on 2026-10-06 showed a title carrying
+letters from an institute's logo beside an entry that named the institute correctly, and a
+read-only measurement the next day put 38 of the 45 such one-off facility spellings on this call
+(`_TITLE_IMAGE_INSTRUCTION` now names the facility as well as the author).
+
 The 150-character limit in the prompt is a hint only: the call has no response schema and Gemini
 does not enforce `maxLength`. `_usable_title()` is the enforcement:
 
@@ -270,6 +277,14 @@ title and body for faithfulness to the source and for six house rules (`_HOUSE_R
 
 Faithfulness issues are `unsupported`, `contradiction`, `date` and `laterality`. The reply schema is
 `{fixed_text, fixed_title, issues: [{type, detail}]}`.
+
+The audit is text-only, while the title call reads the first and last page images, so a name in a
+logo can be right in the title and broken letters in the source. `VERIFY_PROMPT` forbids writing
+such letters into the title: a name it writes must read as a name or as real words, and where the
+source gives the name only as garbled letters the title's name stays. The rule is deliberately no
+wider than that. Where the audit re-spelled a title's facility or author and a reviewer later
+retyped the title, they kept the audit's spelling about as often as the original's (comment above
+`VERIFY_PROMPT`).
 
 The audit is fail-safe. `ok` is true only when the reply parsed; an empty body, a truncated reply
 (checked before parsing) or any exception returns the originals with no issues and `ok` false. A
@@ -383,6 +398,13 @@ the linked PDF are built (`documents.py` `_record_pass()`), not on the stored ro
   person: same surname, suffix and credential; identical first names; an initial only when exactly
   one first name fits; different middle initials kept apart. A reviewer-edited title is never
   rewritten and its spelling wins its group.
+- **One spelling per facility for each provider.** `consistent_facilities()` runs after the author
+  pass and groups by author. It joins a facility spelling to the one more of that author's entries
+  carry (or to a reviewer's) only when both have the same number of words and every differing word
+  is a near spelling of the other: at least four letters, a difflib ratio of at least 0.80, and the
+  same compass words. A garble that changes the word count is not joined, because by spelling alone
+  it is as close to the right name as a second site of the same practice. The same reviewer lock
+  applies.
 - **Same-visit folding.** `fold_same_visit()` makes one entry of the category-1 entries with the same
   author, credential and date string. The entry is headed by a PR-2 when the visit has one (a title
   matching `PR-2` or `PROGRESS REPORT` that is not a work status slip), otherwise by the longest body.
@@ -390,7 +412,7 @@ the linked PDF are built (`documents.py` `_record_pass()`), not on the stored ro
   The rows and summaries are untouched, so the review page still shows every document and a reviewer
   can still separate them.
 
-Bundle summarize applies `consistent_authors()` but not folding.
+Bundle summarize applies `consistent_authors()` and `consistent_facilities()` but not folding.
 
 ## The resumable run
 
