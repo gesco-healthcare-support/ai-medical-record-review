@@ -186,11 +186,11 @@ The bundle report is never a member.
 
 Row matching for both bundle routes (`bundles.py` `matched_rows()`): a row matches when its category
 is in `categories`, unless it is a non-primary, non-dismissed member of a duplicate group that has a
-primary. The row's `include` flag is consulted only when the request sets `summarizedOnly`, which the
-Diagnostic & Operative preset does: the reviewers want that list to carry only the documents being
-summarized. Depositions leave it off, because an older data migration unticked every deposition row
-and an `include` filter would empty that bundle on older records. The cover page is omitted when
-every cell would be empty.
+primary. The row's `include` flag is consulted only when the request sets `summarizedOnly`, which
+both presets do: the reviewers want the Diagnostic & Operative list and the Depositions download to
+carry only the documents being summarized. A record whose every match is unticked gets a 409 from
+the bundle routes and no member for that bundle in the archive. The cover page is omitted when every
+cell would be empty.
 
 Layout detail: [Deliverable layout](../explanation/deliverable-layout.md).
 

@@ -67,24 +67,45 @@ function FixCategoriesLink({
  * The empty-vs-table branch was INERT before this moved - rendering the table unconditionally left
  * every test in bundle-page-client.test.tsx green. It is covered now, because "no documents here" is
  * the whole behaviour of this card on an unmatched record. */
+function EmptyMatches({ label, unticked }: Readonly<{ label: string; unticked: number }>) {
+  // A bundle that lists only ticked documents can match NOTHING while the record holds several:
+  // "not every record has them" would then assert a fact that is false, and send the reviewer
+  // checking categories that are right. Say what actually happened instead.
+  if (unticked > 0) {
+    return (
+      <div className="bnd-empty" style={{ border: "none" }}>
+        <p className="bnd-empty-title">No {label} documents ticked for summary</p>
+        <p>
+          This record has {unticked} {label} document{unticked === 1 ? "" : "s"}, all unticked
+          for summary. Tick one in Review &amp; correct to include it here.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="bnd-empty" style={{ border: "none" }}>
+      <p className="bnd-empty-title">No {label} documents here</p>
+      <p>
+        That&apos;s normal - not every record has them. Check the categories
+        in Review &amp; correct if you expected some.
+      </p>
+    </div>
+  );
+}
+
 function MatchesCard({
   matches,
+  unticked,
   categories,
   label,
-}: Readonly<{ matches: Row[]; categories: CategoryOption[]; label: string }>) {
+}: Readonly<{ matches: Row[]; unticked: number; categories: CategoryOption[]; label: string }>) {
   return (
     <div className="hd-card">
       <div className="bnd-card-head">
         {matches.length} matching document{matches.length === 1 ? "" : "s"}
       </div>
       {matches.length === 0 ? (
-        <div className="bnd-empty" style={{ border: "none" }}>
-          <p className="bnd-empty-title">No {label} documents here</p>
-          <p>
-            That&apos;s normal - not every record has them. Check the categories
-            in Review &amp; correct if you expected some.
-          </p>
-        </div>
+        <EmptyMatches label={label} unticked={unticked} />
       ) : (
         <table className="hd-table">
           <thead>
@@ -365,23 +386,26 @@ export function BundlePageClient({
   // span categories and its primary may sit outside this preset.
   //
   // Keyed on the duplicate fields, and on `include` only for a bundle that opts in with
-  // `summarizedOnly` (Diagnostic & Operative) - see `bundles.matched_rows` for why `include` is the
-  // wrong filter for Depositions (a migration unchecked that whole category on older records).
+  // `summarizedOnly` (both presets do) - see `bundles.matched_rows` for why the duplicate rule does
+  // not use `include` and what the opt-in costs on old records.
   const resolvedGroups = new Set(
     rows
       .filter((row) => row.dupe_group != null && row.dupe_primary)
       .map((row) => row.dupe_group),
   );
-  const matches = rows.filter(
+  const inBundle = rows.filter(
     (row) =>
       config.categories.includes(String(row.category)) &&
       !(
         resolvedGroups.has(row.dupe_group) &&
         !row.dupe_primary &&
         !row.dupe_dismissed
-      ) &&
-      (!config.summarizedOnly || row.include !== false),
+      ),
   );
+  const matches = inBundle.filter(
+    (row) => !config.summarizedOnly || row.include !== false,
+  );
+  const unticked = inBundle.length - matches.length;
   const identified = rows.length > 0;
 
   // Which of the four states the detail pane is in, decided ONCE. A failed fetch used to fall
@@ -629,6 +653,7 @@ export function BundlePageClient({
               <div className="bnd-grid">
                 <MatchesCard
                   matches={matches}
+                  unticked={unticked}
                   categories={categories}
                   label={config.label}
                 />
