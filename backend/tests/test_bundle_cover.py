@@ -342,7 +342,7 @@ def test_a_deposition_title_puts_everything_under_the_report_title():
 def test_a_deposed_physician_keeps_their_name_in_one_element():
     """The deponent is often a treating physician, so the name arrives WITH a credential.
 
-    The credential's own period must not be read as a separator - that is what `_elements`
+    The credential's own period must not be read as a separator - that is what `title_elements`
     guards - so this stays one element and the provider column stays empty.
 
     Asserted as the splitter actually behaves, not as I first assumed: the trailing period is
@@ -355,6 +355,17 @@ def test_a_deposed_physician_keeps_their_name_in_one_element():
     provider, report = split_deliverable_title("DEPOSITION OF JANE SMITH, M.D.")
     assert provider == ""
     assert report == "DEPOSITION OF JANE SMITH, M.D"
+
+
+def test_a_middle_initial_keeps_the_doctor_in_one_provider_element():
+    """DEMONSTRATES: `JANE K. ROE, M.D.` is one person. The initial's period split the name in
+    two, and the PROVIDER column read `JANE K - ROE, M.D. - VALLEY CLINIC`, unreordered, on 102 of
+    the 921 titles in this bundle's categories on the live box, 2026-10-07."""
+    provider, report = split_deliverable_title(
+        "JANE K. ROE, M.D. VALLEY CLINIC. MRI OF THE LEFT KNEE"
+    )
+    assert provider == "VALLEY CLINIC \u2013 JANE K. ROE, M.D."
+    assert report == "MRI OF THE LEFT KNEE"
 
 
 def test_the_old_reporter_fronted_shape_still_parses():

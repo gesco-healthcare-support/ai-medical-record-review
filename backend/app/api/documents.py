@@ -82,6 +82,7 @@ from app.services.reporting import (
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
     consistent_authors,
+    consistent_facilities,
     fold_same_visit,
     presentable_title,
     tidy_author_and_facility,
@@ -1762,19 +1763,21 @@ def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
 def _consistent_authors(
     entries: list[dict], key: str, locked: list[bool] | None = None
 ) -> list[dict]:
-    """``entries`` with one spelling per provider across the record - see
-    `summarize_engine.consistent_authors`. Record-level, so it runs once over the whole list rather
-    than per entry, and both renderers call it so the Word and PDF deliverables name people alike.
-    ``locked`` marks the entries whose title a reviewer edited: never rewritten, and they win."""
-    titles = consistent_authors([e[key] for e in entries], locked)
+    """``entries`` with one spelling per provider, then per facility of each provider, across the
+    record - see `summarize_engine.consistent_authors` and `consistent_facilities`. Record-level, so
+    it runs once over the whole list rather than per entry, and both renderers call it so the Word
+    and PDF deliverables name people and places alike. ``locked`` marks the entries whose title a
+    reviewer edited: never rewritten, and they win. Authors go first because the facility pass
+    groups by author, so it needs one spelling of each."""
+    titles = consistent_facilities(consistent_authors([e[key] for e in entries], locked), locked)
     return [{**e, key: t} for e, t in zip(entries, titles, strict=True)]
 
 
 def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> list[dict]:
-    """The record-level passes over a delivered entry list, in order: one spelling per provider,
-    then one entry per visit for a doctor's category 1 documents on one date (which needs the
-    spellings to agree first). Both renderers call this, so the Word and PDF deliverables list the
-    same entries."""
+    """The record-level passes over a delivered entry list, in order: one spelling per provider and
+    per facility, then one entry per visit for a doctor's category 1 documents on one date (which
+    needs the spellings to agree first). Both renderers call this, so the Word and PDF deliverables
+    list the same entries."""
     locked = [s.edited_title is not None for s in summaries]
     entries = _consistent_authors(entries, key, locked)
     return fold_same_visit(entries, [str(s.row_category) for s in summaries], key)
