@@ -116,7 +116,8 @@ front of the combined pages.
   line is the report title and everything before it is the provider. The provider elements are
   reordered facility-first only when the first element carries a credential (the one unambiguous sign
   it is a person), and are joined with an en dash (U+2013), as in the reviewers' reference list. A
-  short abbreviation such as `ST.` is kept whole rather than split at its period.
+  short abbreviation such as `ST.` is kept whole rather than split at its period, and so is an
+  author with a middle initial: `JANE K. ROE, M.D.` is one element (`title_elements()`).
 
 ## House style
 
@@ -137,7 +138,9 @@ front of the combined pages.
   when the summary is written, so a summary written before it changes on re-summarize.
 - No internal markers: `presentable_title()` strips `[ManualCheck]`, `[Diagnostic Study]` and
   `(Pages X-Y)`. The page range comes back only when the export dialog's page-number box is ticked.
-- One spelling per provider across the record (`consistent_authors()`).
+- One spelling per provider across the record (`consistent_authors()`), then one spelling per
+  facility for each provider (`consistent_facilities()`): a near spelling of the facility the
+  author's other entries carry, such as a letter misread from a logo, takes their spelling.
 - A period and a space (`TITLE_SEPARATOR`) between the header line and the body: 329 dated entries
   across the reference deliverables use a period, none a colon. When the header line already ends in
   a period (`M.D.`), only the space is added (`title_separator()`, both renderers).
@@ -250,7 +253,7 @@ In addition, the records included <D> pages of duplicate copies of records alrea
 | Diagnostic tier | `reporting.py` `is_diagnostic()` | Export entries and bundle report entries; both renderers |
 | Internal title markers | `summarize_engine.py` `_row_tags()` applies them, `presentable_title()` strips them | Every delivered document. The web view strips its own copy in `frontend/components/review/summaries-view.tsx` `displayTitle()` |
 | DOI prefix grammar | `backend/app/services/summary_doi.py` | Export restoration; the web view's copy in `summaries-view.tsx` (`DOI_PREFIX_NEW`, `DOI_PREFIX_LEGACY`) |
-| Header-line shape | `summarize_engine.py` `TITLE_PROMPT` | `without_address()`, `consistent_authors()`, `bundles.py` `split_deliverable_title()` all parse that shape |
+| Header-line shape | `summarize_engine.py` `TITLE_PROMPT` | `without_address()`, `title_elements()`, `consistent_authors()`, `consistent_facilities()`, `bundles.py` `split_deliverable_title()` all parse that shape |
 | "Resolved duplicate" | Stated twice: `record_accounting()` (ORM rows) and `bundles.py` `resolved_clusters()` / `is_resolved_duplicate()` (row dictionaries) | Pinned together by `test_the_two_readings_of_a_resolved_duplicate_agree` |
 | Doctor typefaces | `reporting.py` `DOCTOR_FONTS` | Word typeface; the doctor dropdown (`DOCTORS`) |
 | Letter types | `reporting.py` `LETTER_TYPES`, `LETTER_LABELS` | Header validation on save; the letter and memo clauses |
@@ -266,7 +269,8 @@ and PDF renderers together on these rules.
 - A change to emphasis must also be made in `markdown-text.tsx`, or the review screen stops showing
   what the deliverable prints.
 - A change to the header-line shape in `TITLE_PROMPT` breaks the parsers that split it; check
-  `without_address()`, `consistent_authors()` and `split_deliverable_title()`.
+  `without_address()`, `title_elements()`, `consistent_authors()`, `consistent_facilities()` and
+  `split_deliverable_title()`.
 - Every optional clause is dropped rather than rendered empty. Keep that property: a dangling
   `from .` shipped once.
 - Changing the cover table's CSS can move Story's geometry; run the bundle cover tests.

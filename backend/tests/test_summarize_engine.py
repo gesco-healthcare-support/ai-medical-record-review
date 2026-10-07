@@ -2417,6 +2417,194 @@ def test_both_export_renderers_name_a_provider_alike():
     ]
 
 
+# --- one spelling per facility for each provider across a record ------------------------------
+# The reviewers, 2026-10-06: one entry by a doctor named his institute correctly, the next carried
+# letters from its logo instead - "Maybe we can make sure that it only types real words". Synthetic
+# names below; the shapes are the ones the live-box replay found.
+_ORTHO = "JANE ROE, M.D. VALLEY ORTHOPAEDIC INSTITUTE. "
+
+
+def test_a_garbled_facility_takes_the_spelling_its_doctor_s_other_entries_carry():
+    """DEMONSTRATES the fix: the minority spelling moves to the majority, and only the facility
+    span changes - the author and the document type come back exactly as they went in."""
+    titles = [
+        _ORTHO + "RE-EXAMINATION REPORT",
+        "JANE ROE, M.D. VALLEY ORTHOPAEDIC INSTITVTE. PROGRESS REPORT",
+        _ORTHO + "WORK STATUS",
+    ]
+    assert se.consistent_facilities(titles) == [
+        _ORTHO + "RE-EXAMINATION REPORT",
+        _ORTHO + "PROGRESS REPORT",
+        _ORTHO + "WORK STATUS",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("variant", "other"),
+    [
+        ("BWORK HEALTH SERVICES", "WORK HEALTH SERVICES"),  # a stray letter from a logo
+        ("METRA HEALTHCARE GROUP", "METRO HEALTHCARE GROUP"),  # a misread letter
+        ("SPINE AND SPORT", "SPINE & SPORT"),  # the same words, spelled two ways
+        ("VALLEY ORTHOPEDIC GROUP", "VALLEY ORTHOPAEDIC GROUP"),
+    ],
+)
+def test_the_near_spellings_the_replay_found_are_joined(variant, other):
+    """DEMONSTRATES: shapes taken from the read-only replay over the live box, 2026-10-07."""
+    titles = [
+        f"JANE ROE, M.D. {other}. A",
+        f"JANE ROE, M.D. {other}. B",
+        f"JANE ROE, M.D. {variant}. C",
+    ]
+    assert se.consistent_facilities(titles)[2] == f"JANE ROE, M.D. {other}. C"
+
+
+@pytest.mark.parametrize(
+    ("variant", "other"),
+    [
+        ("NORTH VALLEY CLINIC", "SOUTH VALLEY CLINIC"),
+        ("EAST CLINIC", "WEST CLINIC"),  # exactly 0.75, under the 0.80 bound
+        ("WESTSIDE ORTHOPEDICS", "EASTSIDE ORTHOPEDICS"),  # 0.88: why the compass rule exists
+        ("VALLEY DENTAL GROUP", "VALLEY MEDICAL GROUP"),
+        ("UPLAND MEDICAL GROUP", "OAKLAND MEDICAL GROUP"),  # 0.62: only the 0.80 bound parts these
+        ("CITY CLINIC 1", "CITY CLINIC 2"),
+        # A garble that changes the word count is NOT joined: on the whole string it is as close
+        # to the right name as a second site of the same practice is, so no rule here can tell them
+        # apart. That is the shape the reviewers reported; the prompts carry it instead.
+        ("SANTA MONICA ORTHOPAEDIC INSTITUTE", "LOS ANGELES ORTHOPAEDIC INSTITUTE"),
+        ("GLEN X ALE ORTHOPAEDIC INSTITUTE", "GLENDALE ORTHOPAEDIC INSTITUTE"),
+    ],
+)
+def test_places_that_could_be_two_are_left_alone(variant, other):
+    """GUARD: the wrong facility on an entry is worse than two spellings of the right one. The
+    majority sits on `other`, so a join - if the rule allowed one - would happen."""
+    titles = [
+        f"JANE ROE, M.D. {other}. A",
+        f"JANE ROE, M.D. {other}. B",
+        f"JANE ROE, M.D. {variant}. C",
+    ]
+    assert se.consistent_facilities(titles) == titles
+
+
+def test_only_one_doctor_s_entries_vote_on_that_doctor_s_facility():
+    """GUARD: the author anchors the practice. A near spelling under a DIFFERENT doctor is left
+    alone, and so is a title with no author or no facility element."""
+    titles = [
+        _ORTHO + "A",
+        _ORTHO + "B",
+        "JOHN DOE, D.C. VALLEY ORTHOPAEDIC INSTITVTE. C",
+        "VALLEY ORTHOPAEDIC INSTITVTE. MRI OF THE LEFT KNEE",
+        "JANE ROE, M.D. PROGRESS REPORT",
+        "DEPOSITION OF JOHN DOE",
+        "",
+    ]
+    assert se.consistent_facilities(titles) == titles
+
+
+def test_a_facility_after_an_abbreviation_is_read_whole():
+    """GUARD: `ST. MARY'S` is one facility, not `ST` - the split the cover page already relies on -
+    and the whole name is what gets replaced."""
+    titles = [
+        "JANE ROE, M.D. ST. MARY'S HOSPITAL. A",
+        "JANE ROE, M.D. ST. MARY'S HOSPITAL. B",
+        "JANE ROE, M.D. ST. MARY'S HOSPLTAL. C",
+    ]
+    assert se.consistent_facilities(titles)[2] == "JANE ROE, M.D. ST. MARY'S HOSPITAL. C"
+
+
+def test_a_middle_initial_is_part_of_the_author_not_the_facility():
+    """GUARD on a bug the first cut had: `JANE K. ROE, M.D.` splits at the initial's period, and
+    reading the second element as the facility took the surname for it and left the real facility
+    unjoined."""
+    titles = [
+        "JANE K. ROE, M.D. VALLEY ORTHOPAEDIC INSTITUTE. A",
+        "JANE K. ROE, M.D. VALLEY ORTHOPAEDIC INSTITUTE. B",
+        "JANE K. ROE, M.D. VALLEY ORTHOPAEDIC INSTITVTE. C",
+    ]
+    assert se.consistent_facilities(titles)[2] == titles[0][:-1] + "C"
+
+
+def test_a_reviewer_s_facility_is_never_outvoted():
+    """DEMONSTRATES the lock, as for authors: a reviewer-edited title is never rewritten and its
+    spelling wins - so editing ONE entry corrects every near spelling of it in the record."""
+    titles = [
+        _ORTHO + "A",
+        "JANE ROE, M.D. VALLEY ORTHOPAEDIC INSTITVTE. B",
+        "JANE ROE, M.D. VALLEY ORTHOPAEDIC INSTITVTE. C",
+    ]
+    assert se.consistent_facilities(titles, [True, False, False]) == [
+        _ORTHO + "A",
+        _ORTHO + "B",
+        _ORTHO + "C",
+    ]
+    assert se.consistent_facilities(titles, [False, True, False])[1] == titles[1]
+
+
+def test_an_unedited_title_spelled_as_the_reviewer_spelled_it_stays_put():
+    """GUARD: the reviewer's spelling is pinned for every title carrying it, not only the one
+    they edited - so an unedited title that agrees with them is not pulled to a commoner garble."""
+    garble = "JANE ROE, M.D. VALLEY ORTHOPAEDIC INSTITVTE. "
+    titles = [_ORTHO + "A", _ORTHO + "B", garble + "C", garble + "D", garble + "E"]
+    out = se.consistent_facilities(titles, [True, False, False, False, False])
+    assert out[1] == _ORTHO + "B"
+    assert out[2:] == [_ORTHO + "C", _ORTHO + "D", _ORTHO + "E"]
+
+
+def test_the_export_joins_facilities_after_it_joins_authors():
+    """The export runs the facility pass after the author pass, because it groups by author: the
+    middle initial below would otherwise split one doctor's entries into two groups of one."""
+    from types import SimpleNamespace
+
+    from app.api.documents import _record_pass
+
+    titles = [
+        _ORTHO + "A",
+        "JANE K. ROE, M.D. VALLEY ORTHOPAEDIC INSTITUTE. B",
+        "JANE K. ROE, M.D. VALLEY ORTHOPAEDIC INSTITVTE. C",
+    ]
+    summaries = [SimpleNamespace(row_category="3", edited_title=None) for _ in titles]
+    entries = [{"summaryTitle": t, "summaryText": "x", "summaryDate": "-"} for t in titles]
+    out = [e["summaryTitle"] for e in _record_pass(entries, summaries, "summaryTitle")]
+    assert out == [
+        "JANE K. ROE, M.D. VALLEY ORTHOPAEDIC INSTITUTE. A",
+        "JANE K. ROE, M.D. VALLEY ORTHOPAEDIC INSTITUTE. B",
+        "JANE K. ROE, M.D. VALLEY ORTHOPAEDIC INSTITUTE. C",
+    ]
+
+
+def test_the_bundle_export_joins_facilities_too(monkeypatch):
+    """The third path into a delivered Word document makes the same spellings agree - the class of
+    defect where two export paths decided independently (#158, #162)."""
+    from app.services import bundles
+
+    titles = iter([_ORTHO + "A", _ORTHO + "B", "JANE ROE, M.D. VALLEY ORTHOPAEDIC INSTITVTE. C"])
+    monkeypatch.setattr(
+        bundles.summarize_engine,
+        "summarize_row",
+        lambda *a, **k: {"summaryDate": "-", "summaryTitle": next(titles), "summaryText": "x"},
+    )
+    rows = [{"start": n, "end": n, "category": "3", "flag": "-"} for n in (1, 2, 3)]
+    entries = bundles.bundle_summary_entries("/x.pdf", rows)
+    assert entries[2]["summaryTitle"] == _ORTHO + "C"
+
+
+def test_the_title_call_reads_the_facility_from_the_image_or_omits_it():
+    """The prompt half, which cannot be tested without a model: the call that wrote 38 of the 45
+    garbled facilities measured is told to read the facility from the image, and to leave it out
+    rather than write letters it cannot read as words. Its image instruction names it too."""
+    assert "Read the facility from the page IMAGE" in se.TITLE_PROMPT
+    assert "omit the FACILITY rather than write a fragment or a guess" in se.TITLE_PROMPT
+    assert "or the facility's name" in se._TITLE_IMAGE_INSTRUCTION
+
+
+def test_the_audit_never_writes_a_garbled_name_into_the_title():
+    """The audit is text-only, so it sees the logo as broken letters. It may still correct a
+    spelling - reviewers kept its re-spellings about as often as not - but never into non-words."""
+    from app.services.summary_verify import VERIFY_PROMPT
+
+    assert "must read as a name or as real words" in VERIFY_PROMPT
+    assert "leave the title's name as it is" in VERIFY_PROMPT
+
+
 # --- one entry per visit: a doctor's category 1 documents on one date become one entry ----------
 def _entry(title, text, date="02/04/2026"):
     return {"summaryDate": date, "summaryTitle": title, "summaryText": text}

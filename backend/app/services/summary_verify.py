@@ -70,6 +70,15 @@ _HOUSE_RULES = (
     "date is given below.\n"
 )
 
+# The bullet on garbled names, 2026-10-07. This call is text-only while the title call reads the
+# first and last page images, so a name in a logo can be right in the title and broken letters in
+# the SOURCE. The reviewers reported exactly that: the title named an institute correctly and this
+# audit replaced it with letters from its logo. The rule is deliberately NARROW - it forbids writing
+# non-words, it does not say "keep the title's spelling". Measured read-only on the live box the
+# same day, where the audit re-spelled a title's facility and a reviewer later retyped it, they
+# kept the audit's spelling about as often as the original's (9 to 7, and 5 to 2 for looser
+# re-spellings); for authors 8 to 4. So the audit's re-spellings fix the title as often as they
+# break it, and only the garbled ones are worth forbidding.
 VERIFY_PROMPT = (
     "You audit the TITLE and SUMMARY of a medical-record sub-document on two counts: faithfulness "
     "to its SOURCE text, and compliance with the house rules below.\n"
@@ -89,6 +98,11 @@ VERIFY_PROMPT = (
     "REQUIRED structure, not an addition: before judging one invented, look for the signature block, "
     "which usually sits on the LAST page of the SOURCE rather than near the text you just read. "
     "Remove a name only when the SOURCE names no such person anywhere.\n"
+    "- The title's author and facility were read from the page IMAGES; you see only the OCR text, "
+    "which turns a name printed in a logo, a stamp, or under a signature into broken or "
+    "run-together letters. Never put such letters into the title: a name you write there must read "
+    "as a name or as real words. Where the SOURCE gives the name only as garbled letters, leave "
+    "the title's name as it is.\n"
     "- Then apply the HOUSE RULES. These are the one reason you may edit a sentence that is "
     "perfectly faithful.\n"
     "- Return a corrected summary and a corrected title that fix ONLY those problems: the "
