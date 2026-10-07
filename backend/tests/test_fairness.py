@@ -42,7 +42,7 @@ def redis():
     clear()
     yield connection
     clear()
-    fairness._served_lanes = None
+    fairness.serve([])
 
 
 def _serve(*owners, base="segment"):
@@ -297,4 +297,4 @@ def test_the_worker_records_the_lanes_it_serves(monkeypatch, redis):
     monkeypatch.setattr(worker_main, "_user_ids", lambda: [A, B])
     worker_main.main(["segment"])
 
-    assert fairness._served_lanes == ("segment", f"segment:{A}", f"segment:{B}")
+    assert fairness.served() == ("segment", f"segment:{A}", f"segment:{B}")

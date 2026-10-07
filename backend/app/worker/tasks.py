@@ -157,16 +157,9 @@ def _run(job_id, work) -> None:
     # changelog), so the horse builds its own connections and can never corrupt one the parent reuses.
     get_engine().dispose(close=False)
     with get_sessionmaker()() as session:
-        job = session.get(Job, job_id)
+        job = _take(session, job_id)
         if job is None:
-            logger.warning("job %s vanished before it ran", job_id)
             return
-        if _step_aside(session, job):
-            return  # still queued; it runs on a later turn
-        job.state = "running"
-        job.started_at = _utcnow()
-        session.commit()
-        logger.info("job %s (%s) started on document %s", job_id, job.kind, job.document_id)
         # Publish which job this forked work-horse owns, so generate_with_retry's backoff can check
         # for a cancel without a session or a job argument. Cleared in the finally below.
         set_current_job(job_id)
@@ -277,6 +270,22 @@ def _finalize_done(session, job, job_id) -> None:
         document.status = done_status
     session.commit()
     logger.info("job %s (%s) done on document %s", job_id, job.kind, job.document_id)
+
+
+def _take(session, job_id):
+    """The job this work-horse should run, marked running - or None when the row vanished or the
+    job stepped aside for another reviewer (``_step_aside``) and is still queued for a later turn."""
+    job = session.get(Job, job_id)
+    if job is None:
+        logger.warning("job %s vanished before it ran", job_id)
+        return None
+    if _step_aside(session, job):
+        return None
+    job.state = "running"
+    job.started_at = _utcnow()
+    session.commit()
+    logger.info("job %s (%s) started on document %s", job_id, job.kind, job.document_id)
+    return job
 
 
 def _dispatch_again(

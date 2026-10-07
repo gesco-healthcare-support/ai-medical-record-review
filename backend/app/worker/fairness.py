@@ -34,15 +34,21 @@ from app.worker.queues import SEGMENT_QUEUE, base_queue_name, lane_name
 
 logger = logging.getLogger(__name__)
 
-# The lanes this worker process dequeues from, set by __main__ before work(). A forked work-horse
-# inherits it. None (tests, a script calling a task directly) means the rule is off.
-_served_lanes: tuple[str, ...] | None = None
+# The lanes this worker process dequeues from, filled by __main__ before work(); a forked work-horse
+# inherits it. Empty (tests, a script calling a task directly) means the rule is off. A list filled
+# in place rather than a rebound global.
+_served_lanes: list[str] = []
 
 
 def serve(lanes) -> None:
-    """Record the lanes this worker listens on. Called once, at worker start-up."""
-    global _served_lanes
-    _served_lanes = tuple(lanes)
+    """Record the lanes this worker listens on: once, at worker start-up. An empty list turns the
+    rule off."""
+    _served_lanes[:] = list(lanes)
+
+
+def served() -> tuple[str, ...]:
+    """The lanes ``serve`` recorded."""
+    return tuple(_served_lanes)
 
 
 def _running(registry, exclude: str | None) -> int:
@@ -50,6 +56,23 @@ def _running(registry, exclude: str | None) -> int:
     ``get_job_ids`` strips them back to job ids, so a job is counted once whatever its executions.
     ``cleanup=False`` keeps this a pure read; workers run the registry's own cleanup."""
     return len(set(registry.get_job_ids(cleanup=False)) - {exclude})
+
+
+def _waiting_below_cap(base: str, own: str, cap: int, redis) -> bool:
+    """Whether a reviewer other than ``own``, on a lane this worker serves, has a job waiting and is
+    below the cap - the only kind of reviewer a step aside can actually hand the turn to."""
+    from rq import Queue
+    from rq.registry import StartedJobRegistry
+
+    for name in _served_lanes:
+        # The base queue holds ownerless jobs: no reviewer is waiting on it.
+        if name in (own, base) or not name.startswith(f"{base}:"):
+            continue
+        if Queue(name, connection=redis).count == 0:
+            continue
+        if _running(StartedJobRegistry(name, connection=redis), None) < cap:
+            return True
+    return False
 
 
 def should_step_aside(kind: str, owner, cap: int, redis, current_rq_id: str | None = None) -> bool:
@@ -63,22 +86,13 @@ def should_step_aside(kind: str, owner, cap: int, redis, current_rq_id: str | No
     base = base_queue_name(kind)
     if base != SEGMENT_QUEUE:
         return False
+    own = lane_name(base, owner)
     try:
-        from rq import Queue
         from rq.registry import StartedJobRegistry
 
-        own = lane_name(base, owner)
-        if _running(StartedJobRegistry(own, connection=redis), current_rq_id) < cap:
-            return False
-        for name in _served_lanes:
-            # The base queue holds ownerless jobs: no reviewer is waiting on it.
-            if name in (own, base) or not name.startswith(f"{base}:"):
-                continue
-            if Queue(name, connection=redis).count == 0:
-                continue
-            if _running(StartedJobRegistry(name, connection=redis), None) < cap:
-                return True
-        return False
+        at_cap = _running(StartedJobRegistry(own, connection=redis), current_rq_id) >= cap
+        step_aside = at_cap and _waiting_below_cap(base, own, cap, redis)
     except Exception:
         logger.warning("fairness check failed; running the job as picked", exc_info=True)
         return False
+    return step_aside
