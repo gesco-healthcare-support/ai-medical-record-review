@@ -174,8 +174,8 @@ describe("BundlePageClient error handling", () => {
     // contain. keep_one marks one member primary and leaves the category alone, so the copy looks
     // identical to a shipping row here.
     //
-    // Keyed on the duplicate fields, NOT on `include` - filtering on `include` would have emptied
-    // the Depositions preset for older records (see bundles.matched_rows).
+    // Keyed on the duplicate fields, NOT on `include`: a bundle that does not opt in with
+    // `summarizedOnly` keeps an unticked document (see bundles.matched_rows).
     const user = userEvent.setup();
     const row = (start: number, over: Partial<Row> = {}) => ({
       start,
@@ -206,7 +206,7 @@ describe("BundlePageClient error handling", () => {
         row(1),
         row(2, { dupe_group: 1, dupe_primary: true }),
         row(3, { dupe_group: 1, dupe_primary: false }),
-        // Unchecked but NOT a duplicate: still counted, or the Depositions preset breaks.
+        // Unchecked but NOT a duplicate: still counted, since this bundle does not opt in.
         row(4, { include: false }),
       ],
       categories: [{ id: "3", name: "Imaging" }],
@@ -260,6 +260,52 @@ describe("BundlePageClient error handling", () => {
     await user.click(await screen.findByRole("button", { name: "Select" }));
 
     expect(await screen.findByText("2 matching documents")).toBeInTheDocument();
+  });
+
+  it("says the documents are unticked, not missing, when none is ticked", async () => {
+    // DEMONSTRATES: with the depositions now listing only ticked documents, an older record whose
+    // depositions were all unticked by a data migration matched nothing, and the page said "No
+    // Depositions documents here ... not every record has them" - false, they are on screen in
+    // Review & correct. The message has to say they are unticked, and how many.
+    const user = userEvent.setup();
+    const row = (start: number) => ({
+      start,
+      end: start,
+      category: "9",
+      title: "Deposition",
+      date: "",
+      injury_date: "",
+      flag: "-",
+      suggest_merge: false,
+      include: false,
+    });
+    vi.mocked(getDocument).mockResolvedValueOnce({
+      id: "d1",
+      original_filename: "rec.pdf",
+      page_count: 4,
+      status: "done",
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_name: "",
+      patient_dob: "",
+      law_firm: "",
+      rows: [row(1), row(2)],
+      categories: [{ id: "9", name: "Depositions" }],
+    });
+    withClient(
+      <BundlePageClient
+        config={{ ...CONFIG, label: "Depositions", categories: ["9"], summarizedOnly: true }}
+      />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+
+    expect(await screen.findByText("0 matching documents")).toBeInTheDocument();
+    expect(screen.getByText("No Depositions documents ticked for summary")).toBeInTheDocument();
+    expect(screen.getByText(/has 2 Depositions documents, all unticked/)).toBeInTheDocument();
+    expect(screen.queryByText(/not every record has them/)).not.toBeInTheDocument();
   });
 
   it("accepts an edit to every export header field", async () => {

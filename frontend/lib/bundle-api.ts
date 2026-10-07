@@ -26,9 +26,9 @@ export type BundleConfig = {
   // could download them each separately and have them dated". Several come back as a zip.
   separateAs?: string;
   // Only the documents ticked for summary. The reviewers asked for this on the diagnostic list,
-  // which "is still including files that we unchecked (due to being duplicates)". Depositions
-  // leave it off: a migration once unticked every deposition, so on older records it would empty
-  // that bundle (see `bundles.matched_rows`).
+  // which "is still including files that we unchecked (due to being duplicates)", and then for
+  // the depositions: "make sure that it doesn't download the Depos that we unchecked for
+  // summarization". Both bundles set it. The cost on old records is in `bundles.matched_rows`.
   summarizedOnly?: boolean;
 };
 
@@ -54,6 +54,7 @@ export const DEPOSITIONS: BundleConfig = {
   categories: ["9"],
   downloadName: "Depositions",
   separateAs: "Deposition",
+  summarizedOnly: true,
 };
 
 export const BUNDLES: BundleConfig[] = [DIAGNOSTIC_OPERATIVE, DEPOSITIONS];

@@ -224,6 +224,8 @@ describe("ExportDialog page numbers", () => {
         // The reviewers asked for each deposition on its own, dated - so this bundle asks the
         // server for one file per document, and Diagnostic & Operative does not.
         separateAs: "Deposition",
+        // "make sure that it doesn't download the Depos that we unchecked for summarization".
+        summarizedOnly: true,
       },
     ]);
   });
