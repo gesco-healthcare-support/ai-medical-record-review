@@ -278,6 +278,7 @@ export function SummariesView({
   categories,
   doctors,
   header,
+  filePages,
   onHeaderSaved,
   onGotoSummarizeStep,
   onRowsChanged,
@@ -287,6 +288,8 @@ export function SummariesView({
   categories: CategoryOption[];
   doctors?: readonly string[];
   header?: HeaderFields | null;
+  /** The PDF's own page count, for the header bar's "Pages received" check (#330). */
+  filePages?: number;
   onHeaderSaved?: (fields: HeaderFields) => void;
   /** Opens the step that owns the Summarize button, for the empty state to send the reviewer there. */
   onGotoSummarizeStep: () => void;
@@ -419,6 +422,7 @@ export function SummariesView({
           documentId={documentId}
           doctors={doctors}
           header={header ?? null}
+          pageCount={filePages}
           onSaved={(f) => onHeaderSaved?.(f)}
         />
         <div className="sum-header">

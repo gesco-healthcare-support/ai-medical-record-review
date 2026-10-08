@@ -473,6 +473,11 @@ the hook, so both bars and the export dialog read one copy.
   longer has it, so a blur cannot write a different doctor. The doctor list comes from the backend with
   the record (`doctors`). The letter options are a constant in the component (`LETTER_OPTIONS`); the
   record's `letter_types` list is typed but not read.
+- A "pages received" figure far from the file's own page count shows a warning under the field
+  naming both numbers (`pageCountWarning()`, #330): past the larger of 10 pages and a tenth of the
+  file, since real cover sheets run a few pages short of the file. It never blocks Save; the figure
+  is stored as typed. Both bars get the count from the hook (`pageCount`, `filePages` on
+  `SummariesView`).
 
 ## Exports handed to the browser
 
