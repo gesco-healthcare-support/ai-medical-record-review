@@ -16,6 +16,7 @@ reaches Vertex or a pod, and no real record is opened.
 import io
 from types import SimpleNamespace
 
+import pytest
 from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
@@ -79,7 +80,7 @@ def _stub_provider(monkeypatch, captured, reply="[]"):
         def generate_structured(self, **kwargs):
             captured.clear()
             captured.update(kwargs)
-            return SimpleNamespace(text=reply)
+            return SimpleNamespace(text=reply, truncated=False, output_tokens=None)
 
     def _resolver(stage, *_a, **_k):
         asked["stage"] = stage
@@ -286,3 +287,107 @@ def test_a_fenced_reply_is_still_parsed(tmp_path, monkeypatch):
     rows = se._window_rows(pdf, 1, 2)
 
     assert [(r["start"], r["end"], r["title"]) for r in rows] == [(1, 2, "A")]
+
+
+# --- #383: an unusable window reply is re-asked as two halves, not fatal to the document --------
+
+
+def _on_our_model(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "llm_backend", "vllm")
+    monkeypatch.setattr(settings, "vllm_model", "served-by-the-pod/model")
+    monkeypatch.setattr(
+        se, "page_image_parts", lambda _p, start, end, cap, label_pages=False: [ImagePart(data=b"i")]
+    )
+    return settings
+
+
+def test_our_model_caps_each_window_reply(tmp_path, monkeypatch):
+    """Uncapped, one window answered with 189,446 characters that never closed its list (#383)."""
+    settings = _on_our_model(monkeypatch)
+    captured = {}
+    _stub_provider(monkeypatch, captured)
+
+    se._window_rows(_blank_pdf(tmp_path / "synthetic.pdf", 4), 1, 3)
+
+    assert captured["max_output_tokens"] == settings.vllm_segment_max_output_tokens
+
+
+def _scripted_window(monkeypatch, unusable):
+    """Stub the single-window call: windows in `unusable` raise; others answer one row per page
+    range start, titled by the window that answered it."""
+    asked = []
+
+    def _ask(_pdf, ws, we):
+        asked.append((ws, we))
+        if (ws, we) in unusable:
+            raise se._UnusableWindowReply("cut off at 8192 output tokens")
+        return [
+            {"start": p, "end": p, "title": f"{ws}-{we}", "date": "-", "flag": "-"}
+            for p in range(ws, we + 1, 4)
+        ]
+
+    monkeypatch.setattr(se, "_ask_window", _ask)
+    return asked
+
+
+def test_a_window_that_answers_is_asked_once(monkeypatch):
+    """GUARD: the fallback runs only where the old code raised."""
+    asked = _scripted_window(monkeypatch, unusable=set())
+
+    se._window_rows("x.pdf", 1, 30)
+
+    assert asked == [(1, 30)]
+
+
+def test_an_unusable_window_is_asked_again_as_two_overlapping_halves(monkeypatch):
+    monkeypatch.setattr(get_settings(), "window_overlap", 10)
+    asked = _scripted_window(monkeypatch, unusable={(1, 30)})
+
+    rows = se._window_rows("x.pdf", 1, 30)
+
+    # 30 pages: the first half is 1-15; the overlap is min(10, 30 // 4) = 7, so the second half
+    # starts at 9 and the first half (which saw page 8 before it) owns the start at 9.
+    assert asked == [(1, 30), (1, 15), (9, 30)]
+    owners = {r["start"]: r["title"] for r in rows}
+    assert owners == {1: "1-15", 5: "1-15", 9: "1-15", 13: "9-30", 17: "9-30", 21: "9-30",
+                      25: "9-30", 29: "9-30"}  # fmt: skip
+    assert [r["start"] for r in rows] == sorted(r["start"] for r in rows)
+
+
+def test_a_half_that_is_unusable_too_is_split_again(monkeypatch):
+    monkeypatch.setattr(get_settings(), "window_overlap", 10)
+    asked = _scripted_window(monkeypatch, unusable={(1, 30), (9, 30)})
+
+    rows = se._window_rows("x.pdf", 1, 30)
+
+    assert (9, 30) in asked
+    assert any(ws > 9 for ws, _we in asked[asked.index((9, 30)) + 1 :])
+    assert rows, "every page was still asked about"
+
+
+def test_a_small_window_that_stays_unusable_still_fails_the_job(monkeypatch):
+    """Below the split floor nothing is dropped silently: the job fails as it always did."""
+    _scripted_window(monkeypatch, unusable={(1, 4)})
+
+    with pytest.raises(se._UnusableWindowReply):
+        se._window_rows("x.pdf", 1, 4)
+
+
+@pytest.mark.parametrize(
+    "reply,truncated",
+    [('[{"s": 1, "e": 2, "t": "A"', False), ('{"rows": []}', False), ("[]", True)],
+    ids=["broken-json", "not-a-list", "cut-off"],
+)
+def test_each_unusable_reply_shape_is_recognised(tmp_path, monkeypatch, reply, truncated):
+    def _resolver(stage, *_a, **_k):
+        class _Provider:
+            def generate_structured(self, **_kwargs):
+                return SimpleNamespace(text=reply, truncated=truncated, output_tokens=8192)
+
+        return _Provider()
+
+    monkeypatch.setattr(se, "provider_for_stage", _resolver)
+
+    with pytest.raises(se._UnusableWindowReply):
+        se._ask_window(_blank_pdf(tmp_path / "synthetic.pdf", 4), 1, 2)

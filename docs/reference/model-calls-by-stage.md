@@ -110,11 +110,11 @@ bundle export pass `verify=False`.
 | Parts | Gemini: the window's pages as one inline PDF (`DocumentPart`). vLLM: the window's pages as JPEG images, each preceded by a `Page N` text part, capped at `VLLM_SEGMENT_MAX_PAGES`. Then `SEGMENTATION_PROMPT` last |
 | Window size | Gemini: packed to `WINDOW_BUDGET_MB` of raw PDF bytes and at most `WINDOW_MAX_PAGES` pages. vLLM: at most `min(WINDOW_MAX_PAGES, VLLM_SEGMENT_MAX_PAGES)` pages, no byte budget. Overlap `WINDOW_OVERLAP` |
 | Sampling | Temperature 0.0, `top_p` 0.95, `top_k` 40 (`segment_engine._TOP_P`, `_TOP_K`) |
-| Max output tokens | Not set |
+| Max output tokens | Gemini: not set. vLLM: `VLLM_SEGMENT_MAX_OUTPUT_TOKENS` (8,192) |
 | Schema | `gemini.SEGMENT_RESPONSE_SCHEMA`: array of objects with `id`, `s`, `e`, `t`, `d`, `m` (`m` is `x` or `-`); `s`, `e`, `t`, `d`, `m` required |
-| Reply handling | Code fences stripped, `json.loads`, each element through `gemini.parse_segment_item()`; an element that fails to parse is skipped. `truncated` is not read |
+| Reply handling | Code fences stripped, `json.loads`, each element through `gemini.parse_segment_item()`; an element that fails to parse is skipped. A truncated reply, invalid JSON or a non-list raises `_UnusableWindowReply` |
 | Concurrency | `SEGMENT_WINDOW_WORKERS` windows at once |
-| Failure | An exception in any window, including a JSON parse error, propagates and fails the segment job. A pool that outlives `Settings.pool_timeout()` raises `PipelineTimeoutError` |
+| Failure | An unusable reply is asked again as two overlapping halves (`_rows_from_halves()`), recursively, down to 4 pages; below that, and for any other exception, it propagates and fails the segment job. A pool that outlives `Settings.pool_timeout()` raises `PipelineTimeoutError` |
 
 ## extract
 

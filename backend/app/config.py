@@ -869,6 +869,21 @@ class Settings(BaseSettings):
     # the constraint - the image COUNT is. A sizing argument that reasons from context length is
     # reasoning about the wrong limit.
     vllm_segment_max_pages: int = 30
+    # Output cap for ONE segmentation window on our model (#383). Gemini's call carries no cap and
+    # is unchanged.
+    #
+    # Uncapped, a window could run away: on our model one 30-page window answered with 189,446
+    # characters (14,683 lines) that never closed its JSON list, byte-identical on a second run, and
+    # the whole document failed with it. A cut-off reply is now unusable rather than fatal: the
+    # window is asked again as two halves (`segment_engine._rows_from_halves`).
+    #
+    # 8,192 is SIZED from stored output, not measured on a pod. A window holds at most one document
+    # per page, and our model's runs on the test box never started more than 30 in any 30 pages;
+    # its titles run to 189 characters at most (99th percentile 77). Thirty rows with the longest
+    # title is about 2,500 tokens, so this is over three times the largest legitimate answer, and a
+    # runaway now costs ~8k tokens instead of ~60k. Thinking tokens count against it: raise it
+    # before adding `segment` to VLLM_THINKING_STAGES.
+    vllm_segment_max_output_tokens: int = 8192
     # Stages allowed to THINK on the vLLM path, comma-separated, empty for none.
     #
     # Empty is today's behaviour exactly, and this ships empty. It exists because the blanket
