@@ -209,6 +209,27 @@ def extract_text_from_image(image) -> str:
     return _ocr_image(image)
 
 
+FRONT_MATTER_MARKER = "Front matter (before transcript page 1, no page number):"
+
+
+def page_marker(page_number: int, page_label_offset: int = 0) -> str:
+    """The ``Page <n>:`` line that opens a marked page, or the front-matter line (#259).
+
+    A deposition is labelled with the transcript's OWN printed numbers (``page_label_offset``, from
+    `deposition_pages.transcript_page_offset`), and `_deposition_pages_block` tells the model those
+    markers ARE the printed numbers and to cite them exactly. A page that comes BEFORE the
+    transcript's page 1 - a cover, caption or appearance page - has no printed number, and the offset
+    derivation already skips such pages for exactly that reason. Shifting it anyway labelled it
+    ``Page 0:`` (or below), a number that does not exist in the transcript, under an instruction to
+    cite it. So a label at or below zero becomes a marker that says what the page is instead.
+
+    Record pages start at 1, so with no offset this never fires: every non-deposition caller gets the
+    marker it always got.
+    """
+    label = page_number + page_label_offset
+    return f"Page {label}:" if label > 0 else FRONT_MATTER_MARKER
+
+
 def _ocr_page_images(images, page_number: int, page_label_offset: int, mark_pages: bool) -> str:
     """OCR every image rasterized from one record page, concatenated.
 
@@ -228,8 +249,8 @@ def _ocr_page_images(images, page_number: int, page_label_offset: int, mark_page
             logger.warning("OCR skipped page %s: %s", page_number, exc)  # timeout/bad page
             continue
         # Same marker shape as extract_text_from_all_pages, so both extractors read alike.
-        label = page_number + page_label_offset
-        text += f"Page {label}:\n{page_text}\n" if mark_pages else page_text
+        marker = page_marker(page_number, page_label_offset)
+        text += f"{marker}\n{page_text}\n" if mark_pages else page_text
     return text
 
 
@@ -340,7 +361,7 @@ def extract_pages_with_report(
         if not (page_text or "").strip():
             blank.append(page_number)
         if mark_pages:
-            text += f"Page {page_number + page_label_offset}:\n{page_text or ''}\n"
+            text += f"{page_marker(page_number, page_label_offset)}\n{page_text or ''}\n"
         else:
             text += page_text or ""
     return text, {"pages": pages, "errored": errored, "blank": blank}

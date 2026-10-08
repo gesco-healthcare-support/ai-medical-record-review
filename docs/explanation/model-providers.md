@@ -116,7 +116,12 @@ so selecting Gemini never imports the OpenAI package.
   at job creation (`backend/app/services/jobs.py` `create_job()`) and persisted, so a job resumed
   after a config change keeps the models it started with.
 - **Every other stage** resolves through `Settings.model_for_stage(stage)`. On vLLM it returns
-  `VLLM_MODEL` for every stage, because one vLLM process serves one model. On Gemini it keeps the
+  `VLLM_MODEL`, unless `VLLM_STAGE_MODELS` (`stage=model`, comma-separated) names another served
+  model for that stage. One vLLM process serves one base model but several names on it: with
+  `--enable-lora` the base and each adapter are separate names, and an adapter would otherwise
+  answer stages it was never trained on. `summarize` is refused there (it has its own three
+  keys), an unknown stage refuses startup, and every name passes the model-versus-backend check.
+  On Gemini it keeps the
   per-stage settings: `GENAI_MODEL` for segment, extract, doi and deposition; `CLASSIFY_MODEL` for
   classify and dedup; `VERIFY_MODEL` (default `GENAI_MODEL`) for verify. It is a method rather than
   a rewritten field because `GENAI_MODEL` feeds four stages: rewriting it when one stage moves

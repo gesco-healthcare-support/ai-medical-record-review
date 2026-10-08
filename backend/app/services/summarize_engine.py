@@ -272,6 +272,19 @@ def _bold_span_count(text: str) -> int:
     return len(re.findall(r"\*\*(.+?)\*\*", text or ""))
 
 
+def _rewrite_shape(raw: str, fixed: str) -> str:
+    """Two sizes for a REJECTED rewrite's log line: characters and bold headings, rewrite and raw.
+
+    Counts only, never text. Asked for on #348: a rejected rewrite leaves no trace (verified_text
+    stays None by design), so without its shape nobody could tell "the audit returned the title"
+    from "the audit returned a short real correction" except by anecdote - on either model.
+    """
+    return (
+        f"rewrite {len(fixed or '')} chars / {_bold_span_count(fixed)} headings, "
+        f"raw {len(raw or '')} chars / {_bold_span_count(raw)} headings"
+    )
+
+
 def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> bool:
     """True when the audit removed a bold point heading for a reason that cannot justify removing one.
 
@@ -843,8 +856,9 @@ def notice_pages(unreadable_pages, page_offset) -> list:
 
     A shifted number that lands at or below zero is NOT emitted. That is a page preceding the
     transcript's own page 1, and inventing "page 0" for it would be a worse citation than the record
-    number - so the whole notice falls back to record pages rather than mixing the two. See #259,
-    which is the general form of that defect; this only refuses to add to it.
+    number - so the whole notice falls back to record pages rather than mixing the two. #259 was the
+    general form of that defect: such a page is now marked as front matter in the source text
+    (`ocr.page_marker`) rather than labelled ``Page 0:``, so the body has no zero to cite either.
     """
     if page_offset is None:
         return list(unreadable_pages)
@@ -1405,6 +1419,21 @@ def consistent_authors(titles: list[str], locked: list[bool] | None = None) -> l
 # starts swallowing genuine one-word elements. Lives here rather than in `bundles.py` because the
 # record-level facility pass below needs the same split, and `bundles` imports this module.
 _ABBREVIATION = re.compile(r"^[A-Za-z][A-Za-z.]{0,2}$")
+# ...but NOT into the LAST element, which is the document type by TITLE_PROMPT's contract (#316). A
+# short facility name in front of it - `JANE SMITH, M.D. UCI. MRI OF THE KNEE` - is a whole element,
+# and joining it put the facility in the diagnostics cover page's REPORT TITLE column. Measured over
+# the delivered titles on the live box (copy of 2026-10-07): every short fragment joined into the
+# last element was a facility acronym (CMC 30, QVH 4, ...), a company suffix (INC 9) or a stray
+# credential, EXCEPT a name prefix, which still joins wherever it is - `DR. JOHN DOE ...` as a whole
+# title, `ST. JOHN'S ... DISCHARGE SUMMARY`.
+_NAME_PREFIX = frozenset({"DR", "ST", "MT", "FT", "MR", "MS", "MRS", "STE", "U.S"})
+
+
+def _joins_next(fragment: str, last: bool) -> bool:
+    """Is ``fragment`` the front half of an abbreviated name the next element completes?"""
+    if not _ABBREVIATION.match(fragment):
+        return False
+    return not last or fragment.upper() in _NAME_PREFIX
 
 
 def title_elements(title: str) -> list[str]:
@@ -1415,15 +1444,14 @@ def title_elements(title: str) -> list[str]:
     `VALLEY CLINIC` / `MRI`, and the diagnostics cover page printed `JANE K - ROE, M.D. - VALLEY
     CLINIC` in its PROVIDER column - on 102 of the 921 titles in that bundle's categories on the
     live box, 2026-10-07. The abbreviation rule cannot catch it: `JANE K` is no abbreviation."""
-    raw = [part.strip(" .") for part in re.split(r"\.\s+", title)]
+    raw = [p for p in (part.strip(" .") for part in re.split(r"\.\s+", title)) if p]
     elements: list[str] = []
-    for part in raw:
-        if not part:
-            continue
+    for i, part in enumerate(raw):
         # A fragment this short followed by more text is the front half of an abbreviated name,
         # so it rejoins what the split separated. The `elements` guard keeps a genuinely short
-        # LAST element - a document type of "CT" - from being merged into nothing.
-        if elements and _ABBREVIATION.match(elements[-1]):
+        # LAST element - a document type of "CT" - from being merged into nothing. Into the last
+        # element only a name prefix joins (`_NAME_PREFIX`, #316).
+        if elements and _joins_next(elements[-1], last=i == len(raw) - 1):
             elements[-1] = f"{elements[-1]}. {part}"
         else:
             elements.append(part)
@@ -2245,10 +2273,12 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
             # was flagged. WARNING because the rate is the measurement - on the self-hosted model
             # this is the failure a reviewer reported, and on gemini it should never fire.
             logger.warning(
-                "verify pass returned only the title on pages %s-%s (issues: %s); keeping raw body",
+                "verify pass returned only the title on pages %s-%s (issues: %s; %s); "
+                "keeping raw body",
                 row["start"],
                 row["end"],
                 ",".join(sorted(issue_types)),
+                _rewrite_shape(summary, result["fixed_text"]),
             )
         elif _drops_required_headings(summary, result["fixed_text"], issue_types):
             # Keep the RAW body by leaving verified_text None: effective_text() then falls back to
@@ -2256,10 +2286,12 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
             # flagged, and this logs at WARNING so the guard's firing rate stays measurable rather
             # than becoming an invisible silent correction.
             logger.warning(
-                "verify pass dropped bold headings on pages %s-%s (issues: %s); keeping raw body",
+                "verify pass dropped bold headings on pages %s-%s (issues: %s; %s); "
+                "keeping raw body",
                 row["start"],
                 row["end"],
                 ",".join(sorted(issue_types)),
+                _rewrite_shape(summary, result["fixed_text"]),
             )
         elif deposition and _drops_deposition_structure(summary, result["fixed_text"]):
             # Same remedy for the deposition format: the page grouping and its citations are what a
@@ -2267,9 +2299,11 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
             # ships. Logged at WARNING for the same reason - a silent structural correction is
             # indistinguishable from the model never having produced the structure.
             logger.warning(
-                "verify pass flattened the deposition grouping on pages %s-%s; keeping raw body",
+                "verify pass flattened the deposition grouping on pages %s-%s (%s); "
+                "keeping raw body",
                 row["start"],
                 row["end"],
+                _rewrite_shape(summary, result["fixed_text"]),
             )
         else:
             # The audit may reintroduce capitals while fixing something else, so the transform runs

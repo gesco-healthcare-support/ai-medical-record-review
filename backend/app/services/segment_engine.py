@@ -162,8 +162,72 @@ def _window_parts(pdf_path, window_start, window_end, settings) -> list[Part]:
     return [DocumentPart(data=buffer.getvalue(), mime_type="application/pdf")]
 
 
+class _UnusableWindowReply(ValueError):
+    """A window's reply arrived but cannot be used: cut off at the cap, or not a JSON list."""
+
+
+# The smallest window the fallback below will split further. Below it a window that still cannot be
+# answered fails the job, exactly as every window did before the fallback existed.
+_SPLIT_MIN_PAGES = 4
+
+
 def _window_rows(pdf_path, window_start, window_end):
-    """Segment pages [window_start, window_end] in one inline call; absolute-page rows."""
+    """Segment pages [window_start, window_end]; absolute-page rows.
+
+    One call, and when its reply is unusable the same pages asked again as two overlapping halves
+    (#383). An unusable reply used to fail the WHOLE document: one window's JSON broke and the
+    record was lost. And retrying it unchanged cannot help - at temperature 0 the reply is
+    deterministic, reproduced byte-identical on our model (189,446 characters, 14,683 lines, a
+    runaway that never closed its list). Halving changes the request, so the model is asked a
+    different question, and nothing is dropped: every page is still asked about. The fallback only
+    runs where the old code raised, so a window that answers is untouched on every backend.
+    """
+    try:
+        return _ask_window(pdf_path, window_start, window_end)
+    except _UnusableWindowReply as unusable:
+        return _rows_from_halves(pdf_path, window_start, window_end, unusable)
+
+
+def _rows_from_halves(pdf_path, window_start, window_end, unusable):
+    """The window re-asked as two halves that overlap, merged by the same ownership rule as windows.
+
+    The second half starts INSIDE the first, so the page where it starts has been seen by the first
+    half with its preceding page: the first half owns starts up to and including that page, the
+    second owns the starts after it - `merge_window_rows`' rule, applied one level down. Ends are
+    re-derived when the windows are merged, so only the starts matter here.
+    """
+    pages = window_end - window_start + 1
+    if pages <= _SPLIT_MIN_PAGES:
+        raise unusable
+    middle = window_start + pages // 2 - 1
+    overlap = max(1, min(get_settings().window_overlap, pages // 4))
+    second_start = middle + 1 - overlap
+    logger.warning(
+        "segmentation window %s-%s gave an unusable reply (%s); asking it as %s-%s and %s-%s",
+        window_start,
+        window_end,
+        unusable,
+        window_start,
+        middle,
+        second_start,
+        window_end,
+    )
+    first = _window_rows(pdf_path, window_start, middle)
+    second = _window_rows(pdf_path, second_start, window_end)
+    return [r for r in first if r["start"] <= second_start] + [
+        r for r in second if r["start"] > second_start
+    ]
+
+
+def _segment_output_cap(settings):
+    """Our model's reply cap for one window, or None (Gemini keeps its uncapped, thinking reply)."""
+    if settings.backend_for("segment") == "vllm":
+        return settings.vllm_segment_max_output_tokens
+    return None
+
+
+def _ask_window(pdf_path, window_start, window_end):
+    """One segmentation call for pages [window_start, window_end]; raises `_UnusableWindowReply`."""
     settings = get_settings()
     # Document first, prompt LAST, unchanged from the pre-seam call - and the seam preserves caller
     # order, so this is the order that goes out.
@@ -173,6 +237,9 @@ def _window_rows(pdf_path, window_start, window_end):
     # BOTH halves resolve through `segment`. A bare `get_provider()` would resolve the TRANSPORT
     # through backend_for("summarize") while the model below resolved through backend_for("segment")
     # - so moving only `segment` would send the pod's model name over the Gemini transport.
+    # The cap goes only to our model: Gemini's call has never carried one and keeps its request.
+    cap = _segment_output_cap(settings)
+    capped = {} if cap is None else {"max_output_tokens": cap}
     response = provider_for_stage("segment").generate_structured(
         # Resolved for the backend answering this stage rather than read from genai_model, which is
         # shared with extract, doi and deposition - none of which moves when segment does.
@@ -185,10 +252,19 @@ def _window_rows(pdf_path, window_start, window_end):
         top_k=_TOP_K,
         # Selects `thinking_for("segment")`, which is the carve-out keeping dynamic thinking here.
         stage="segment",
+        **capped,
     )
+    if response.truncated:
+        raise _UnusableWindowReply(f"cut off at {response.output_tokens} output tokens")
     clean = (response.text or "").replace("```json", "").replace("```", "").strip()
+    try:
+        items = json.loads(clean)
+    except ValueError as exc:
+        raise _UnusableWindowReply(f"not JSON: {exc.__class__.__name__}") from exc
+    if not isinstance(items, list):
+        raise _UnusableWindowReply(f"a JSON {type(items).__name__}, not a list")
     rows = []
-    for item in json.loads(clean):
+    for item in items:
         try:
             s, e, title, date, manual = parse_segment_item(item)
         except (KeyError, TypeError, ValueError):

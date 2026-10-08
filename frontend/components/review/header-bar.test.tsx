@@ -8,7 +8,7 @@ vi.mock("@/lib/review-api", () => ({ saveHeader: vi.fn(), extractHeader: vi.fn()
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api";
 import { extractHeader, saveHeader } from "@/lib/review-api";
-import { HeaderBar } from "@/components/review/header-bar";
+import { HeaderBar, pageCountWarning } from "@/components/review/header-bar";
 
 const mockToast = vi.mocked(toast);
 
@@ -243,5 +243,75 @@ describe("HeaderBar doctor selection", () => {
         expect.objectContaining({ pages_received: "418" }),
       ),
     );
+  });
+});
+
+describe("Pages received against the file (#330)", () => {
+  const HEADER = {
+    patient_first_name: "Jane",
+    patient_last_name: "Roe",
+    patient_dob: "01/02/1990",
+    law_firm: "Acme LLP",
+    attorney_name: "",
+    doctor: "",
+    letter_type: "",
+    letter_date: "",
+    pages_received: "",
+  };
+
+  it.each([
+    ["500", 52],
+    ["24", 244],
+    ["2440", 244],
+  ])("warns when %s is typed for a %i-page file", (typed, file) => {
+    expect(pageCountWarning(typed, file)).toMatch(String(file));
+  });
+
+  it.each([
+    ["241", 244],
+    ["309", 311],
+    ["50", 52],
+    ["", 244],
+    ["about 200", 244],
+    ["0", 244],
+  ])("says nothing for %s on a %i-page file (routine gap or not a number)", (typed, file) => {
+    expect(pageCountWarning(typed, file)).toBeNull();
+  });
+
+  it("says nothing without the file's page count", () => {
+    expect(pageCountWarning("500", undefined)).toBeNull();
+  });
+
+  it("shows the warning beside the field, naming both numbers", async () => {
+    const user = userEvent.setup();
+    render(<HeaderBar documentId="d1" header={HEADER} pageCount={52} onSaved={vi.fn()} />);
+    await user.type(screen.getByLabelText("Pages received"), "500");
+    const warning = screen.getByRole("status");
+    expect(warning).toHaveTextContent("52");
+    expect(warning).toHaveTextContent("500");
+    expect(screen.getByLabelText("Pages received")).toHaveAccessibleDescription(
+      warning.textContent ?? "",
+    );
+  });
+
+  it("still saves the implausible figure exactly as typed - a prompt, not a gate", async () => {
+    const user = userEvent.setup();
+    vi.mocked(saveHeader).mockResolvedValue(undefined);
+    render(<HeaderBar documentId="d1" header={HEADER} pageCount={52} onSaved={vi.fn()} />);
+    await user.type(screen.getByLabelText("Pages received"), "500");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(saveHeader).toHaveBeenCalledWith(
+        "d1",
+        expect.objectContaining({ pages_received: "500" }),
+      ),
+    );
+  });
+
+  it("shows nothing for a routine figure", async () => {
+    const user = userEvent.setup();
+    render(<HeaderBar documentId="d1" header={HEADER} pageCount={244} onSaved={vi.fn()} />);
+    await user.type(screen.getByLabelText("Pages received"), "241");
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });

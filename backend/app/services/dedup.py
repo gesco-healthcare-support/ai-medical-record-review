@@ -208,14 +208,50 @@ def _same_dated_kind(i, j, dates, categories, titles) -> bool:
     return same_category or same_title
 
 
+_LEFT_SIDE = re.compile(r"\b(?:left|lt)\b")
+_RIGHT_SIDE = re.compile(r"\b(?:right|rt)\b")
+_BOTH_SIDES = re.compile(r"\b(?:bilateral|bilat|both)\b")
+
+
+def _side(title: str) -> str:
+    """``"left"`` or ``"right"`` when a normalised title names exactly one side, else ``""``.
+
+    Whole words only, and never a bare L or R: titles carry physician names, and a middle initial
+    is not a side. A bilateral study, or a title naming both sides, has no single side.
+    """
+    if not title or _BOTH_SIDES.search(title):
+        return ""
+    left, right = bool(_LEFT_SIDE.search(title)), bool(_RIGHT_SIDE.search(title))
+    if left == right:
+        return ""
+    return "left" if left else "right"
+
+
+def _comparable_pairs(sides):
+    """Every pair of rows ``(i, j)``, ``i < j``, except a left-sided and a right-sided one.
+
+    A left knee MRI and a right knee MRI on one day are two studies, never copies of one. Their text
+    is the same template with one word changed, so no similarity score can tell them apart (the
+    pairs measured scored 0.97-0.99), and the same date and category send them straight to the
+    confirm step. On the live box's records 7 groups paired a left study with a right one, all
+    imaging, and reviewers dismissed 6 of them. Only the TITLES' sides are read: a row with no side,
+    or both, pairs with anything as before.
+    """
+    n = len(sides)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if not (sides[i] and sides[j] and sides[i] != sides[j]):
+                yield i, j
+
+
 def _union_pairs(items, jaccard_threshold, cross_date_override):
     """Join every qualifying pair, returning the two union-find structures ``cluster_rows`` reads.
 
     Extracted from ``cluster_rows`` to keep that function under the cognitive-complexity ceiling.
     Note this MOVES the nesting rather than removing it: the double loop was already at the top
-    level of ``cluster_rows``, so the points land here (about 12, still well under the limit)
-    instead of being destroyed. The gain is that each function is separately legible, not that
-    the work got simpler.
+    level of ``cluster_rows``, so the points land here (about 12; fewer since the pairs come from
+    ``_comparable_pairs`` as one loop) instead of being destroyed. The gain is that each function is
+    separately legible, not that the work got simpler.
     """
     n = len(items)
     sigs = [_sig(it.get("text")) for it in items]
@@ -230,32 +266,31 @@ def _union_pairs(items, jaccard_threshold, cross_date_override):
     parent = list(range(n))
     strong = list(range(n))
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            # A pair that shares a known date AND a known category or title is exactly what
-            # `duplicate_gate`'s primary branch admits, so it goes to the confirm step whatever its
-            # words look like. It used to meet the word-set cut below first, and that cut dropped a
-            # report delivered twice in DIFFERENT FORMATS - the state PR-2 form and a clinic's own
-            # letter of the same visit - because the same facts in different wording share few
-            # words. The lead client reviewer reported exactly that; measured over the corpus, only
-            # 18% of same-date same-category pairs ever reached the gate (issue #234). The cut
-            # guards the quadratic difflib below, which this branch never calls. Precision is the
-            # confirm step's: the model reads both and decides, and nothing is auto-accepted here -
-            # dissimilar text never clears `dupe_model_override`, so it cannot skip that call.
-            if _same_dated_kind(i, j, dates, categories, titles):
-                parent[_find(parent, i)] = _find(parent, j)
-                continue
-            # Jaccard first for every other pair, same date or not: it is a set intersection, and it
-            # is the cheap gate that keeps the quadratic difflib below off pairs that share nothing.
-            if _jaccard(sigs[i], sigs[j]) < jaccard_threshold:
-                continue
-            if dates[i] == dates[j]:
-                parent[_find(parent, i)] = _find(parent, j)
-            elif _min_difflib([items[i].get("text") or "", items[j].get("text") or ""]) >= (
-                cross_date_override
-            ):
-                parent[_find(parent, i)] = _find(parent, j)
-                strong[_find(strong, i)] = _find(strong, j)
+    for i, j in _comparable_pairs([_side(title) for title in titles]):
+        # A pair that shares a known date AND a known category or title is exactly what
+        # `duplicate_gate`'s primary branch admits, so it goes to the confirm step whatever its
+        # words look like. It used to meet the word-set cut below first, and that cut dropped a
+        # report delivered twice in DIFFERENT FORMATS - the state PR-2 form and a clinic's own
+        # letter of the same visit - because the same facts in different wording share few
+        # words. The lead client reviewer reported exactly that; measured over the corpus, only
+        # 18% of same-date same-category pairs ever reached the gate (issue #234). The cut
+        # guards the quadratic difflib below, which this branch never calls. Precision is the
+        # confirm step's: the model reads both and decides, and nothing is auto-accepted here -
+        # dissimilar text never clears `dupe_model_override`, so it cannot skip that call.
+        if _same_dated_kind(i, j, dates, categories, titles):
+            parent[_find(parent, i)] = _find(parent, j)
+            continue
+        # Jaccard first for every other pair, same date or not: it is a set intersection, and it
+        # is the cheap gate that keeps the quadratic difflib below off pairs that share nothing.
+        if _jaccard(sigs[i], sigs[j]) < jaccard_threshold:
+            continue
+        if dates[i] == dates[j]:
+            parent[_find(parent, i)] = _find(parent, j)
+        elif _min_difflib([items[i].get("text") or "", items[j].get("text") or ""]) >= (
+            cross_date_override
+        ):
+            parent[_find(parent, i)] = _find(parent, j)
+            strong[_find(strong, i)] = _find(strong, j)
 
     return parent, strong
 
@@ -323,6 +358,24 @@ def _norm(value) -> str:
     """Lowercased, whitespace-collapsed comparison key; "" for the absent-value sentinels."""
     text = re.sub(r"\s+", " ", str(value or "").strip().lower())
     return "" if text in _UNKNOWN else text
+
+
+def spans_dates(members) -> bool:
+    """Whether a candidate's members carry two or more DIFFERENT known dates.
+
+    Such a candidate is always put to the confirm call, however similar its text: the worker skips
+    that call above `dupe_model_override`, and for one date that is right - near-identical text on one
+    day has settled it. Across dates it is not, because a visit form filled in again on another day
+    is the same template with a few words changed, and it scores as high as a re-scan.
+
+    Measured on the live box's records (one copy per PDF, 2026-10-08): 109 different-date groups had
+    skipped the call. Reviewers dismissed 101 of them and kept a copy of 6. Asked now, the model
+    (gemini-2.5-flash-lite, the dedup stage's model) rejected 31 of the 101 and confirmed all 6. So
+    the call removes about a third of those false groups and, on that sample, no real duplicate.
+    An unknown date is not a date here, as everywhere in this module.
+    """
+    dates = {_norm(m.get("date")) for m in members} - {""}
+    return len(dates) >= 2
 
 
 def duplicate_gate(members, similarity, override=None, content_joined=False) -> bool:

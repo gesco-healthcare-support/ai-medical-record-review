@@ -9,6 +9,8 @@ Pure: no Vertex, no database. ``_offset_from`` is exercised directly with model-
 the OCR label is exercised with the rasterize/OCR steps stubbed.
 """
 
+import re
+
 import pytest
 
 from app.services import deposition_pages as dp
@@ -156,6 +158,60 @@ def test_an_offset_is_ignored_when_markers_are_off(_stub_ocr):
     # The offset labels markers; with markers off there is nothing to label.
     text = ocr.extract_text_from_selected_pages("/x.pdf", [418], page_label_offset=-417)
     assert "Page" not in text
+
+
+# --- #259: a page before the transcript's page 1 is front matter, never "Page 0" -----------------
+
+
+def test_a_page_before_transcript_page_one_is_marked_as_front_matter(_stub_ocr):
+    # The common shape the issue measured: the row opens on one cover page and transcript page 1 is
+    # the row's SECOND page, so the offset is exactly -start and the first page shifts to zero.
+    text = ocr.extract_text_from_selected_pages(
+        "/x.pdf", [418, 419, 420], mark_pages=True, page_label_offset=-418
+    )
+    assert "Page 0:" not in text
+    assert ocr.FRONT_MATTER_MARKER in text
+    assert "Page 1:" in text
+    assert "Page 2:" in text
+
+
+def test_several_front_matter_pages_are_each_marked_and_none_is_numbered(_stub_ocr):
+    text = ocr.extract_text_from_selected_pages(
+        "/x.pdf", [10, 11, 12, 13], mark_pages=True, page_label_offset=-12
+    )
+    assert text.count(ocr.FRONT_MATTER_MARKER) == 3
+    assert not re.search(r"^Page -?0:|^Page -\d+:", text, re.MULTILINE)
+    assert "Page 1:" in text
+
+
+def test_the_reporting_extractor_marks_front_matter_the_same_way(monkeypatch):
+    # Summarize reads depositions through extract_pages_with_report, not the plain extractor, so this
+    # is the path the model actually sees.
+    monkeypatch.setattr(ocr, "_configured", True)
+    monkeypatch.setattr(ocr, "_rasterize", lambda path, first_page, last_page: ["image"])
+    monkeypatch.setattr(ocr, "_ocr_image", lambda image: "TESTIMONY TEXT")
+
+    text, report = ocr.extract_pages_with_report(
+        "/x.pdf", [77, 78], mark_pages=True, page_label_offset=-77
+    )
+
+    assert "Page 0:" not in text
+    assert text.startswith(ocr.FRONT_MATTER_MARKER + "\n")
+    assert "Page 1:\nTESTIMONY TEXT\n" in text
+    assert report["pages"] == [77, 78], "the report stays on real record pages"
+
+
+def test_front_matter_is_not_counted_as_a_cited_page_marker():
+    # _warn_if_citations_stop compares the LAST "Page N:" marker with the last citation, so the
+    # front-matter line must not read as a marker of its own.
+    marked = f"{ocr.FRONT_MATTER_MARKER}\nCOVER\nPage 1:\nQ. A.\n"
+    assert se._PAGE_MARKER.findall(marked) == ["1"]
+
+
+@pytest.mark.parametrize("page", [1, 2, 418])
+def test_with_no_offset_every_page_keeps_its_record_number(page):
+    # Record pages start at 1, so the front-matter marker can never reach a non-deposition caller.
+    assert ocr.page_marker(page) == f"Page {page}:"
 
 
 # --- what the prompt is told the markers mean ----------------------------------------------------

@@ -278,6 +278,15 @@ title and body for faithfulness to the source and for six house rules (`_HOUSE_R
 Faithfulness issues are `unsupported`, `contradiction`, `date` and `laterality`. The reply schema is
 `{fixed_text, fixed_title, issues: [{type, detail}]}`.
 
+On our model (`summarize` on vLLM) the same reply is asked for as `{issues, corrected_title,
+corrected_summary}` (`_reply_shape()`, switch `VLLM_AUDIT_ISSUES_FIRST`, on by default) and mapped
+back to `fixed_text` and `fixed_title` before anything reads it. vLLM's grammar writes an object's
+fields in the order the schema lists them, so the shared schema made the model open with
+`fixed_text`, a name the prompt never explains, before it had listed an issue or had a field for
+the title. It wrote the title there on 176 of about 300 audits on 2026-10-01, and each was
+rejected by the title guard below (#348). Gemini orders its fields alphabetically, which is the
+shared order, and gets the shared schema whatever the switch says.
+
 The audit is text-only, while the title call reads the first and last page images, so a name in a
 logo can be right in the title and broken letters in the source. `VERIFY_PROMPT` forbids writing
 such letters into the title: a name it writes must read as a name or as real words, and where the
@@ -346,7 +355,11 @@ body before the audit (so the audit reads what a reader will see) and on any acc
   of four or more letters becomes title case; allowlisted acronyms (`_ACRONYMS`) are untouched. It is
   never applied to a title, which is ALL CAPS by design.
 - `one_paragraph()`: joins lines into one paragraph, drops list markers, and removes a label that
-  introduces nothing. Skipped for depositions.
+  introduces nothing: one followed only by another label or the end, carrying no digit, and not
+  in front of a result heading (Findings, Impression, Conclusion, Interpretation, Results). So
+  `**Objective Findings**:` straight into `**Range of Motion**:` goes, while a study heading such as
+  `**MRI of the lumbar spine (05/15/2025):**` in a multi-study summary stays (#407). Skipped for
+  depositions.
 
 Both exist because the prompt rule alone missed: 22% of stored summaries still carried a run of
 capitals after the prompt and the audit had both had a go, and 83 delivered summaries in 30 days
@@ -383,7 +396,9 @@ Category 9 differs at every step:
 - **Page numbers.** `backend/app/services/deposition_pages.py` `transcript_page_offset()` makes one
   `deposition`-stage model call over the first six pages to find the transcript's own printed page
   numbers (at least two pages must agree on one offset). The OCR markers are then labelled in
-  transcript numbering and the model is told to cite them. If no offset can be established the model
+  transcript numbering and the model is told to cite them. A page that comes before the transcript's
+  page 1 (a cover or caption page) has no printed number, so `ocr.page_marker()` marks it as front
+  matter instead of labelling it `Page 0:` (#259). If no offset can be established the model
   is told to cite no page numbers. A truncated reply raises `TranscriptPagesUnreadableError`, which
   the worker treats as a permanent failure for that row.
 - **No stored text, no one-paragraph pass, no export flattening.**

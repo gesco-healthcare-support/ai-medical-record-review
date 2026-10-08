@@ -6,6 +6,8 @@ cluster_rows is pure; confirm_cluster's model call is monkeypatched (no Vertex).
 import difflib
 import json
 
+import pytest
+
 from app.services import dedup
 
 
@@ -838,3 +840,76 @@ def test_a_candidate_in_two_formats_is_sent_to_the_model_not_accepted_on_text():
     items = [_row(0, _STATE_FORM, title="PR-2"), _row(1, _CLINIC_LETTER, title="Office Note")]
     [cluster] = dedup.cluster_rows(items)
     assert cluster["similarity"] < get_settings().dupe_model_override
+
+
+# --- a left study and a right study are never copies of each other ----------------------------
+
+_KNEE_MRI = "MRI OF THE KNEE. TECHNIQUE: MULTIPLANAR IMAGING. FINDINGS: MENISCUS INTACT. " * 8
+
+
+def _study(idx, title, text=_KNEE_MRI):
+    return {"idx": idx, "date": "05/08/2022", "category": "3", "title": title, "text": text}
+
+
+def test_a_left_and_a_right_study_on_one_day_are_not_grouped():
+    """WHEN two same-day imaging rows are the same template and one title names the left side and
+    the other the right, THE SYSTEM SHALL NOT group them: they are two studies. Identical text, so
+    no similarity score could separate them - the title's side is the only signal."""
+    items = [_study(0, "MRI LEFT KNEE"), _study(1, "MRI RIGHT KNEE")]
+    assert dedup.cluster_rows(items) == []
+
+
+def test_abbreviated_sides_count_as_sides():
+    items = [_study(0, "X-RAY LT SHOULDER"), _study(1, "X-RAY RT SHOULDER")]
+    assert dedup.cluster_rows(items) == []
+
+
+def test_the_same_side_still_groups():
+    # Guard: two copies of the left study are still a duplicate candidate.
+    items = [_study(0, "MRI LEFT KNEE"), _study(1, "MRI LEFT KNEE")]
+    assert len(dedup.cluster_rows(items)) == 1
+
+
+def test_a_title_without_a_side_still_groups_with_a_sided_one():
+    # Guard: a side is a veto only when BOTH titles name one, and different ones.
+    items = [_study(0, "MRI LEFT KNEE"), _study(1, "MRI KNEE")]
+    assert len(dedup.cluster_rows(items)) == 1
+
+
+def test_a_bilateral_study_is_not_a_side():
+    items = [_study(0, "MRI BILATERAL KNEES"), _study(1, "MRI RIGHT KNEE")]
+    assert len(dedup.cluster_rows(items)) == 1
+
+
+def test_a_middle_initial_is_not_a_side():
+    # Titles carry physician names: "R." and "L." are initials, not sides.
+    items = [_study(0, "JOHN R. DOE, M.D. MRI KNEE"), _study(1, "JANE L. ROE, M.D. MRI KNEE")]
+    assert len(dedup.cluster_rows(items)) == 1
+
+
+def test_opposite_sides_are_not_grouped_across_dates_either():
+    # The content branch: two near-identical studies a day apart would clear the cross-date bar.
+    left, right = _study(0, "MRI LEFT KNEE"), _study(1, "MRI RIGHT KNEE")
+    right["date"] = "05/09/2022"
+    assert dedup.cluster_rows([left, right], cross_date_override=0.5) == []
+
+
+def test_a_side_veto_leaves_the_other_pairs_alone():
+    # Three rows: two left copies and a right study. The left copies still group; the right does not.
+    items = [_study(0, "MRI LEFT KNEE"), _study(1, "MRI RIGHT KNEE"), _study(2, "MRI LEFT KNEE")]
+    [cluster] = dedup.cluster_rows(items)
+    assert {m["idx"] for m in cluster["members"]} == {0, 2}
+
+
+@pytest.mark.parametrize(
+    ("dates", "expected"),
+    [
+        (["05/08/2022", "06/12/2022"], True),
+        (["05/08/2022", "05/08/2022"], False),
+        (["05/08/2022", "-"], False),
+        (["-", "unknown"], False),
+        (["05/08/2022", " 05/08/2022 ", "06/12/2022"], True),
+    ],
+)
+def test_spans_dates_counts_known_dates_only(dates, expected):
+    assert dedup.spans_dates([{"date": d} for d in dates]) is expected

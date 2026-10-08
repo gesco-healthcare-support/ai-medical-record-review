@@ -390,3 +390,38 @@ def test_the_old_reporter_fronted_shape_still_parses():
     reordered, _ = split_deliverable_title("JANE SMITH, M.D. ACME COURT REPORTING. DEPOSITION.")
     assert reordered.startswith("ACME COURT REPORTING")
     assert reordered.endswith("JANE SMITH, M.D.")
+
+
+# #316: a short facility name is a whole element when the document type follows it. Joining it put
+# the facility in the REPORT TITLE column - 52 delivered titles on the live box's copy, all a
+# three-letter facility acronym or a company suffix in front of the document type.
+@pytest.mark.parametrize(
+    "title,provider,report",
+    [
+        (
+            "JANE SMITH, M.D. UCI. MRI OF THE KNEE.",
+            "UCI \u2013 JANE SMITH, M.D.",
+            "MRI OF THE KNEE",
+        ),
+        ("A DOE, M.D. CPC. CT HEAD.", "CPC \u2013 A DOE, M.D.", "CT HEAD"),
+        (
+            "JANE SMITH, M.D. HSS. X-RAY OF THE HIP.",
+            "HSS \u2013 JANE SMITH, M.D.",
+            "X-RAY OF THE HIP",
+        ),
+    ],
+)
+def test_a_short_facility_stays_out_of_the_report_title(title, provider, report):
+    assert split_deliverable_title(title) == (provider, report)
+
+
+@pytest.mark.parametrize(
+    "title,report",
+    [
+        ("DR. JOHN DOE SUPPLEMENTAL REQUEST.", "DR. JOHN DOE SUPPLEMENTAL REQUEST"),
+        ("ST. JOHN'S HOSPITAL DISCHARGE SUMMARY.", "ST. JOHN'S HOSPITAL DISCHARGE SUMMARY"),
+    ],
+)
+def test_a_name_prefix_still_joins_even_the_last_element(title, report):
+    """GUARD: DR, ST, MT and the like are what the join exists for, wherever they stand."""
+    assert split_deliverable_title(title) == ("", report)

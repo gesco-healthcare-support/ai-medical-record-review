@@ -49,7 +49,7 @@ flowchart TD
     C --> D["cluster_rows: candidate clusters<br/>same date + category/title join,<br/>Jaccard pre-filter, date join,<br/>cross-date join on high similarity"]
     D --> E{"duplicate_gate passes?"}
     E -->|no| X["Rejected, no model call"]
-    E -->|yes| F{"similarity >= dupe_model_override?"}
+    E -->|yes| F{"one date, and similarity >= dupe_model_override?"}
     F -->|yes| G["Accepted whole, no model call"]
     F -->|no| H["confirm_groups: model picks the copies,<br/>asked again about the remainder"]
     H --> I["0, 1 or more confirmed groups"]
@@ -75,7 +75,12 @@ so a run that could not read part of the record does not present as a clean resu
 
 ### 3. Find candidate clusters (`cluster_rows()`)
 
-For every pair of rows:
+For every pair of rows, except a pair whose titles name opposite sides - one only `left`/`lt`, the
+other only `right`/`rt` (`_comparable_pairs()`). A left and a right study on one day are two
+studies: the text is one template with one word changed, so no similarity score separates them,
+and reviewers dismissed 6 of the 7 such groups on the live box's records. A title with no side, or
+`bilateral`/both sides, pairs as usual. A bare `L` or `R` is not read as a side (it is usually a
+middle initial).
 
 0. **Same known date and same category or title: join, whatever the wording.** If both rows carry
    the same known date and the same known category or title, the pair joins without the word-set
@@ -157,6 +162,12 @@ accepted whole without a model call. This also removes the one way the confirm s
 real duplicate (the model answering "all distinct"). It deliberately reads the minimum, not
 `content_joined`: a chain admitted by the gate must still be adjudicated.
 
+Never when the members carry two or more different known dates (`spans_dates()`): across dates
+high similarity is as often a visit form filled in again as a re-scan. On the live box's records
+reviewers dismissed 101 of the 109 different-date groups this step had accepted; asked, the model
+rejected 31 of those 101 and confirmed all 6 the reviewers kept. So those groups always get the
+model call.
+
 ### 6. Ask a small model which members are copies (`confirm_groups()`)
 
 `confirm_cluster()` makes one call on the `dedup` stage: `generate_structured` with the members as
@@ -229,7 +240,7 @@ Each cluster is resolved with `POST /api/documents/{id}/duplicates/{group}/resol
 | Action (button) | What it writes | Result |
 | --- | --- | --- |
 | `keep_one` with `primary_idx` ("Keep this one") | The chosen row gets `dupe_primary = true`; every member gets `dupe_dismissed = false`; `include` becomes true only for the chosen row, and only if any member was included before | One copy is summarized. An all-excluded cluster stays excluded, so keeping a copy never adds paperwork to the report. |
-| `keep_another` with `idx` ("Also keep", shown once a copy is kept) | That row also gets `dupe_primary = true` and `dupe_dismissed = false`; its `include` copies the kept copies' inclusion | For a group holding two different documents, such as a left and a right study on the same date, where each needs one copy in the report. Refused with 400 when no copy is kept yet. |
+| `keep_another` with `idx` ("Also keep", shown once a copy is kept) | That row also gets `dupe_primary = true` and `dupe_dismissed = false`; its `include` copies the kept copies' inclusion | For a group holding two different documents, such as a left and a right study on the same date whose titles do not say which side (titles that do are never grouped, step 3), where each needs one copy in the report. Refused with 400 when no copy is kept yet. |
 | `unkeep` with `idx` ("Undo" on an extra kept copy) | That row's `dupe_primary` and `include` become false | Reverses `keep_another`. Refused with 400 on the last kept copy; choosing a different single copy is `keep_one`. |
 | `dismiss` ("Not duplicates") | Every member gets `dupe_dismissed = true`, `dupe_primary = false`; `include` is untouched | The cluster is marked as not duplicates, and stays dismissed on a later run while its set of copies is unchanged. |
 | `remove_member` with `idx` ("Not a duplicate" on one row) | That row leaves the group: `dupe_group`, `dupe_primary` and `dupe_dismissed` cleared, `include` reset to its category's `summarize_default` | For a mixed cluster. If fewer than two rows remain, the group dissolves and the remaining row is reset the same way. |

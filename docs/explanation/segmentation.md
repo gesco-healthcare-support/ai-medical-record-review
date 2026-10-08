@@ -190,7 +190,10 @@ transport and the model resolved for the `segment` stage (`provider_for_stage("s
 - `stage="segment"`, which on Gemini selects `segment_thinking_budget` (default -1, dynamic
   thinking). Thinking stays on because an A/B showed thinking-off regresses document F1 by
   over-segmenting (docstring of `Settings.thinking_for()`).
-- No output-token cap is passed.
+- No output-token cap is passed on Gemini. On vLLM the reply is capped at
+  `VLLM_SEGMENT_MAX_OUTPUT_TOKENS` (default 8,192), over three times the largest legitimate
+  answer: a window holds at most one document per page, and our model never started more than 30
+  in any 30 pages, with titles of at most 189 characters.
 
 **Schema.** An array of objects with `s` (first page), `e` (last page), `t`, `d` and `m`, all
 required; `m` is constrained to `x` or `-`. An `id` property is also declared and never read: it is
@@ -208,7 +211,18 @@ absolute pages (`s + window_start - 1`). Each row gets `injury_date = "-"` as a 
 `segment_window_workers` threads (default 3); the provider's pacer caps the aggregate request rate.
 Results are placed by window index so the merge sees them in order. Any window that raises fails
 the whole job: a lost window is lost coverage, and a silently shorter document is worse than a
-visible failure. If the window pool exceeds its time budget, the job fails with a timeout error
+visible failure.
+
+**An unusable reply is asked again, in halves** (#383). A reply cut off at the cap, not valid
+JSON, or not a JSON list raises `_UnusableWindowReply`, and `_window_rows()` asks the same pages
+as two overlapping halves (`_rows_from_halves()`): the first half ends in the middle, the second
+starts `min(WINDOW_OVERLAP, pages // 4)` pages earlier, the first half owns starts up to and
+including the second half's first page, and the second owns the rest - the window ownership rule
+one level down. A half that is unusable too is split again. A window of 4 pages or fewer that
+stays unusable still fails the job, so nothing is dropped silently. A plain retry would not help:
+at temperature 0 the reply is deterministic, and on our model one 30-page window answered with
+189,446 characters that never closed its list, byte-identical on a second run. A window that
+answers is asked exactly once, on every backend. If the window pool exceeds its time budget, the job fails with a timeout error
 (see [Timeouts](#timeouts) and [Errors and messages](../reference/errors-and-messages.md)).
 
 ## Seams: which window decides a boundary

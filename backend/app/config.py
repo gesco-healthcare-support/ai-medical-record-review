@@ -147,6 +147,33 @@ def _parsed_overrides(raw: str) -> tuple[tuple[str, str], ...]:
     return tuple(overrides)
 
 
+@lru_cache(maxsize=16)
+def _parsed_stage_models(raw: str) -> tuple[tuple[str, str], ...]:
+    """``VLLM_STAGE_MODELS`` -> validated ``(stage, model)`` pairs. Raises on anything unknown.
+
+    Same shape and the same reasons as ``_parsed_overrides`` above: cached on the raw string, a
+    tuple so no caller can mutate what the next receives, and a typo refuses startup rather than
+    leaving a stage on a model the operator believes it left.
+
+    ``summarize`` is refused: it resolves THREE models (body, title, audit), which have their own
+    keys, so one name here would either be ambiguous or silently collapse that tiering.
+    """
+    pairs: list[tuple[str, str]] = []
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        stage, separator, model = entry.partition("=")
+        stage, model = stage.strip().lower(), model.strip()
+        if not separator or not model or stage not in _LLM_STAGES or stage == "summarize":
+            raise RuntimeError(
+                f"VLLM_STAGE_MODELS entry {entry!r} is not 'stage=model' with stage one of "
+                f"{[s for s in _LLM_STAGES if s != 'summarize']} (summarize has its own three keys)."
+            )
+        pairs.append((stage, model))
+    return tuple(pairs)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -394,6 +421,22 @@ class Settings(BaseSettings):
     # serving anything else. `_derive` refuses to start when a resolved backend is vllm and this is
     # unset. The served name IS stable across pods because we set it explicitly - see .env.example.
     vllm_model: str = ""
+    # Per-stage model names on vLLM, `stage=model` comma-separated, empty for none. A stage not named
+    # here asks for `vllm_model`, exactly as before.
+    #
+    # One vLLM process serves ONE base model but can serve several names on it: with --enable-lora
+    # the base and each adapter are separate served names. An adapter is trained for some stages
+    # (segmentation and categorization so far) and answers every stage that asks for its name, so
+    # without this an adapter switched in for segmentation also answered the merge-suggestion check,
+    # the injury-date read, the header read, the duplicate confirm and the deposition page read -
+    # none of which it was trained on. Measured on the 27-record exam (2026-10-08): the merge
+    # suggestions caught 16.8% of wrong boundaries at 30.5% precision on the base model and 10.6% at
+    # 14.3% on run-v2. This lets such a stage stay on the base model while the adapter does the work
+    # it was trained for, the way the summary keys already do for summarization.
+    #
+    # `summarize` is refused here - it has its own three keys. Validated at startup, and a name here
+    # passes the same model-versus-backend check as every other name the app sends.
+    vllm_stage_models: str = ""
     # Read deadline in SECONDS, and much longer than the Gemini path's 120s because it is a different
     # kind of limit. genai_http_timeout_ms is forwarded to Vertex as a SERVER-side deadline; this one
     # is purely client-side, and the pod has no proxy in front of it since the SSH tunnel replaced
@@ -869,6 +912,21 @@ class Settings(BaseSettings):
     # the constraint - the image COUNT is. A sizing argument that reasons from context length is
     # reasoning about the wrong limit.
     vllm_segment_max_pages: int = 30
+    # Output cap for ONE segmentation window on our model (#383). Gemini's call carries no cap and
+    # is unchanged.
+    #
+    # Uncapped, a window could run away: on our model one 30-page window answered with 189,446
+    # characters (14,683 lines) that never closed its JSON list, byte-identical on a second run, and
+    # the whole document failed with it. A cut-off reply is now unusable rather than fatal: the
+    # window is asked again as two halves (`segment_engine._rows_from_halves`).
+    #
+    # 8,192 is SIZED from stored output, not measured on a pod. A window holds at most one document
+    # per page, and our model's runs on the test box never started more than 30 in any 30 pages;
+    # its titles run to 189 characters at most (99th percentile 77). Thirty rows with the longest
+    # title is about 2,500 tokens, so this is over three times the largest legitimate answer, and a
+    # runaway now costs ~8k tokens instead of ~60k. Thinking tokens count against it: raise it
+    # before adding `segment` to VLLM_THINKING_STAGES.
+    vllm_segment_max_output_tokens: int = 8192
     # Stages allowed to THINK on the vLLM path, comma-separated, empty for none.
     #
     # Empty is today's behaviour exactly, and this ships empty. It exists because the blanket
@@ -903,6 +961,22 @@ class Settings(BaseSettings):
     # and it is a switch rather than a code change so that A/B runs without a rebuild. Gemini
     # ignores it.
     vllm_classify_from_pages: bool = False
+    # ON OUR MODEL ONLY: ask the summary audit for its reply as issues, then the corrected title,
+    # then the corrected summary, under those plain names - instead of `fixed_text` first.
+    #
+    # vLLM enforces the schema with xgrammar, which fixes the ORDER of an object's properties to the
+    # order the schema lists them (checked 2026-10-08: the grammar's root rule for the shared schema
+    # opens with the `fixed_text` key). So our model was made to open its reply with the corrected
+    # summary, before it had listed what was wrong and before the title had a field of its own, and
+    # the prompt never names that field. It answered with the title instead on 176 of ~300 audited
+    # summaries on 2026-10-01 ("verify pass returned only the title"), and every one of those audits
+    # was discarded (#348). Gemini orders its properties alphabetically, which is today's order, and
+    # is untouched whatever this says.
+    #
+    # On by default because the defect it removes is measured and the change is structural - the
+    # keys map back to `fixed_text` / `fixed_title` before anything reads them. A switch so a pod
+    # day can compare both shapes without a rebuild.
+    vllm_audit_issues_first: bool = True
     verify_merge: bool = True
     verify_use_text: bool = True
     verify_suspect_cap: int = 200
@@ -1091,10 +1165,11 @@ class Settings(BaseSettings):
         model id. The pod has never heard of it, so the job fails PER ROW, mid-run - which is the
         outcome `_validate_vllm_backend` exists to prevent one field away.
 
-        The summarize triple is where the whole exposure is: `model_for_stage` returns `vllm_model`
-        for every other stage routed to vllm, so a Gemini name cannot reach a pod through them.
-        Both directions are checked for all of them anyway, because the Gemini direction has no
-        such protection and costs nothing to cover.
+        The summarize triple was where the whole exposure was: `model_for_stage` returned
+        `vllm_model` for every other stage routed to vllm. `VLLM_STAGE_MODELS` now lets an operator
+        name a model per stage, which is a second way in - and it is covered because this reads
+        `model_for_stage`, which applies those names. Both directions are checked for every stage,
+        because the Gemini direction has no other protection and costs nothing to cover.
 
         COARSE ON PURPOSE, and that is the design rather than a shortcut. A vLLM server serves
         whatever name it was started with, so "is this a real model" is not a question answerable
@@ -1191,6 +1266,7 @@ class Settings(BaseSettings):
         # Called for its exceptions. The parsed result is cached, so every later backend_for on this
         # process reuses it rather than re-validating.
         _parsed_overrides(self.llm_backend_overrides)
+        _parsed_stage_models(self.vllm_stage_models)
 
     def resolved_backends(self) -> set[str]:
         """Every backend some stage can actually reach: the global default plus every override.
@@ -1486,8 +1562,10 @@ class Settings(BaseSettings):
         if stage == "summarize":
             raise KeyError("summarize resolves three models; use model_for(kind)")
         if self.backend_for(stage) == "vllm":
-            # One process serves one model, so every stage routed there asks for the same name.
-            return self.vllm_model
+            # One process serves one BASE model, so every stage routed there asks for `vllm_model`
+            # unless `vllm_stage_models` names another served name for it (a LoRA adapter, or the
+            # base while an adapter is the default).
+            return dict(_parsed_stage_models(self.vllm_stage_models)).get(stage, self.vllm_model)
         return {
             "segment": self.genai_model,
             "extract": self.genai_model,

@@ -145,6 +145,19 @@ x-backend-env: &backend-env
   # the form the fine-tuned adapter was trained on. Named here for the same reason as the line
   # above: the A/B it exists for runs while a pod bills, and a rebuild to flip it defeats it.
   VLLM_CLASSIFY_FROM_PAGES: ${VLLM_CLASSIFY_FROM_PAGES:-false}
+  # On ships the fix for #348: our model's summary audit is asked for issues, then the corrected
+  # title, then the corrected summary, under plain names. Off restores the shared Gemini-ordered
+  # schema. Named here so a pod day can compare the two without a rebuild. Gemini ignores it.
+  VLLM_AUDIT_ISSUES_FIRST: ${VLLM_AUDIT_ISSUES_FIRST:-true}
+  # Our model's reply cap for one segmentation window (#383); a cut-off window is re-asked in
+  # halves. Thinking tokens count against it, so it must move WITH VLLM_THINKING_STAGES - named
+  # here so that is a restart, not a rebuild. Gemini's call carries no cap.
+  VLLM_SEGMENT_MAX_OUTPUT_TOKENS: ${VLLM_SEGMENT_MAX_OUTPUT_TOKENS:-8192}
+  # Per-stage served model on our model (`stage=model`, comma-separated); empty keeps VLLM_MODEL
+  # for every stage. Keeps the stages an adapter was not trained on on the base model while the
+  # adapter is switched in - 7_use_adapter.sh sets it, so it must reach a container without a
+  # rebuild. Gemini ignores it.
+  VLLM_STAGE_MODELS: ${VLLM_STAGE_MODELS:-}
   # The render ceiling, and the two per-stage targets it caps. page_dpi fits the DPI to a stage's
   # pixel target and then caps it at SUMMARY_IMAGE_DPI - so lowering this silently shrinks the DOI
   # and deposition reads, which is why the app refuses to boot on the mismatch rather than rendering

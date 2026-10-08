@@ -339,6 +339,7 @@ function ReviewBody({
             documentId={documentId}
             doctors={wf.doctors}
             header={wf.header}
+            pageCount={wf.totalPages}
             onSaved={(f) => wf.setHeader(f)}
           />
           <div className={cn("rce-editor", wf.watching && "busy")}>
@@ -368,6 +369,7 @@ function ReviewBody({
           categories={wf.categories}
           doctors={wf.doctors}
           header={wf.header}
+          filePages={wf.totalPages}
           onHeaderSaved={wf.setHeader}
           onGotoSummarizeStep={onGotoSummarizeStep}
           onRowsChanged={wf.reloadRows}

@@ -42,6 +42,9 @@ _MUST_REACH_A_CONTAINER = {
     "DEPOSITION_MAX_OUTPUT_TOKENS": "counts thought tokens; same reason",
     "VLLM_THINKING_STAGES": "the arm it exists for is run WHILE a pod bills; a rebuild defeats it",
     "VLLM_CLASSIFY_FROM_PAGES": "a categorization A/B run while a pod bills; same reason",
+    "VLLM_AUDIT_ISSUES_FIRST": "the summary-audit A/B (#348) runs while a pod bills; same reason",
+    "VLLM_SEGMENT_MAX_OUTPUT_TOKENS": "counts thought tokens; moves with VLLM_THINKING_STAGES",
+    "VLLM_STAGE_MODELS": "set by 7_use_adapter.sh whenever an adapter is switched in on a pod",
 }
 
 

@@ -1725,6 +1725,74 @@ def test_the_similarity_override_skips_the_confirm_call_rather_than_passing_it(m
     assert rows[0].dupe_similarity == 1.0
 
 
+def _refusing_spy(asked):
+    def refuse_everything(members, model=None):
+        asked.append(members)
+        return []
+
+    return refuse_everything
+
+
+def test_a_different_date_candidate_is_asked_however_similar(monkeypatch):
+    """WHEN a candidate's members carry two different known dates, THE SYSTEM SHALL put it to the
+    confirm call even above dupe_model_override. Same refusing spy as the test above: here the model
+    IS asked, refuses, and the rows stay ungrouped - a visit form filled in again on another day."""
+    doc_id = _make_user_and_doc(page_count=2)
+    same = "alpha beta gamma delta epsilon zeta eta theta"
+    job_id = _dedup_rows(
+        doc_id,
+        [(1, 1, True, False, None, same), (2, 2, True, False, None, same)],
+        dates=["05/08/2022", "06/12/2022"],
+    )
+    asked = []
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", _refusing_spy(asked))
+
+    dedup_document(job_id)
+
+    assert len(asked) == 1, "different dates: the model must be asked"
+    rows = _rows_by_idx(doc_id)
+    assert rows[0].dupe_group is None
+    assert rows[1].dupe_group is None
+
+
+def test_a_different_date_candidate_the_model_confirms_is_still_grouped(monkeypatch):
+    # Guard: asking is not refusing. A re-scan stamped with a second date is still found.
+    doc_id = _make_user_and_doc(page_count=2)
+    same = "alpha beta gamma delta epsilon zeta eta theta"
+    job_id = _dedup_rows(
+        doc_id,
+        [(1, 1, True, False, None, same), (2, 2, True, False, None, same)],
+        dates=["05/08/2022", "05/09/2022"],
+    )
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: members)
+
+    dedup_document(job_id)
+
+    rows = _rows_by_idx(doc_id)
+    assert rows[0].dupe_group is not None
+    assert rows[0].dupe_group == rows[1].dupe_group
+
+
+def test_one_known_date_and_one_unknown_still_skips_the_call(monkeypatch):
+    # Guard: an unknown date is not a second date, so the override still settles it.
+    doc_id = _make_user_and_doc(page_count=2)
+    same = "alpha beta gamma delta epsilon zeta eta theta"
+    job_id = _dedup_rows(
+        doc_id,
+        [(1, 1, True, False, None, same), (2, 2, True, False, None, same)],
+        dates=["05/08/2022", "-"],
+    )
+    asked = []
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", _refusing_spy(asked))
+
+    dedup_document(job_id)
+
+    assert asked == []
+    rows = _rows_by_idx(doc_id)
+    assert rows[0].dupe_group is not None
+    assert rows[0].dupe_group == rows[1].dupe_group
+
+
 def test_each_rows_text_is_committed_before_the_next_row_is_read(monkeypatch):
     """WHEN a row's text has been read, THE SYSTEM SHALL commit it before reading the next row.
 
