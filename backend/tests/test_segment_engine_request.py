@@ -297,7 +297,9 @@ def _on_our_model(monkeypatch):
     monkeypatch.setattr(settings, "llm_backend", "vllm")
     monkeypatch.setattr(settings, "vllm_model", "served-by-the-pod/model")
     monkeypatch.setattr(
-        se, "page_image_parts", lambda _p, start, end, cap, label_pages=False: [ImagePart(data=b"i")]
+        se,
+        "page_image_parts",
+        lambda _p, start, end, cap, label_pages=False: [ImagePart(data=b"i")],
     )
     return settings
 

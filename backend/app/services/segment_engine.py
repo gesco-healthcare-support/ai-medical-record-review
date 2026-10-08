@@ -237,7 +237,7 @@ def _ask_window(pdf_path, window_start, window_end):
     # BOTH halves resolve through `segment`. A bare `get_provider()` would resolve the TRANSPORT
     # through backend_for("summarize") while the model below resolved through backend_for("segment")
     # - so moving only `segment` would send the pod's model name over the Gemini transport.
-    # The cap goes only to our model: Gemini's call has never carried one and keeps its exact request.
+    # The cap goes only to our model: Gemini's call has never carried one and keeps its request.
     cap = _segment_output_cap(settings)
     capped = {} if cap is None else {"max_output_tokens": cap}
     response = provider_for_stage("segment").generate_structured(
