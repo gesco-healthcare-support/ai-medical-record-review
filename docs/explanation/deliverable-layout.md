@@ -122,7 +122,10 @@ front of the combined pages.
   reordered facility-first only when the first element carries a credential (the one unambiguous sign
   it is a person), and are joined with an en dash (U+2013), as in the reviewers' reference list. A
   short abbreviation such as `ST.` is kept whole rather than split at its period, and so is an
-  author with a middle initial: `JANE K. ROE, M.D.` is one element (`title_elements()`).
+  author with a middle initial: `JANE K. ROE, M.D.` is one element (`title_elements()`). A short
+  fragment joins the LAST element (the document type) only when it is a name prefix
+  (`_NAME_PREFIX`: DR, ST, MT and the like), so a short facility such as `UCI` in
+  `JANE SMITH, M.D. UCI. MRI OF THE KNEE` stays in the provider column (#316).
 
 ## House style
 

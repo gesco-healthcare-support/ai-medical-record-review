@@ -1418,6 +1418,21 @@ def consistent_authors(titles: list[str], locked: list[bool] | None = None) -> l
 # starts swallowing genuine one-word elements. Lives here rather than in `bundles.py` because the
 # record-level facility pass below needs the same split, and `bundles` imports this module.
 _ABBREVIATION = re.compile(r"^[A-Za-z][A-Za-z.]{0,2}$")
+# ...but NOT into the LAST element, which is the document type by TITLE_PROMPT's contract (#316). A
+# short facility name in front of it - `JANE SMITH, M.D. UCI. MRI OF THE KNEE` - is a whole element,
+# and joining it put the facility in the diagnostics cover page's REPORT TITLE column. Measured over
+# the delivered titles on the live box (copy of 2026-10-07): every short fragment joined into the
+# last element was a facility acronym (CMC 30, QVH 4, ...), a company suffix (INC 9) or a stray
+# credential, EXCEPT a name prefix, which still joins wherever it is - `DR. JOHN DOE ...` as a whole
+# title, `ST. JOHN'S ... DISCHARGE SUMMARY`.
+_NAME_PREFIX = frozenset({"DR", "ST", "MT", "FT", "MR", "MS", "MRS", "STE", "U.S"})
+
+
+def _joins_next(fragment: str, last: bool) -> bool:
+    """Is ``fragment`` the front half of an abbreviated name the next element completes?"""
+    if not _ABBREVIATION.match(fragment):
+        return False
+    return not last or fragment.upper() in _NAME_PREFIX
 
 
 def title_elements(title: str) -> list[str]:
@@ -1428,15 +1443,14 @@ def title_elements(title: str) -> list[str]:
     `VALLEY CLINIC` / `MRI`, and the diagnostics cover page printed `JANE K - ROE, M.D. - VALLEY
     CLINIC` in its PROVIDER column - on 102 of the 921 titles in that bundle's categories on the
     live box, 2026-10-07. The abbreviation rule cannot catch it: `JANE K` is no abbreviation."""
-    raw = [part.strip(" .") for part in re.split(r"\.\s+", title)]
+    raw = [p for p in (part.strip(" .") for part in re.split(r"\.\s+", title)) if p]
     elements: list[str] = []
-    for part in raw:
-        if not part:
-            continue
+    for i, part in enumerate(raw):
         # A fragment this short followed by more text is the front half of an abbreviated name,
         # so it rejoins what the split separated. The `elements` guard keeps a genuinely short
-        # LAST element - a document type of "CT" - from being merged into nothing.
-        if elements and _ABBREVIATION.match(elements[-1]):
+        # LAST element - a document type of "CT" - from being merged into nothing. Into the last
+        # element only a name prefix joins (`_NAME_PREFIX`, #316).
+        if elements and _joins_next(elements[-1], last=i == len(raw) - 1):
             elements[-1] = f"{elements[-1]}. {part}"
         else:
             elements.append(part)
