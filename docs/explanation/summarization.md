@@ -396,7 +396,9 @@ Category 9 differs at every step:
 - **Page numbers.** `backend/app/services/deposition_pages.py` `transcript_page_offset()` makes one
   `deposition`-stage model call over the first six pages to find the transcript's own printed page
   numbers (at least two pages must agree on one offset). The OCR markers are then labelled in
-  transcript numbering and the model is told to cite them. If no offset can be established the model
+  transcript numbering and the model is told to cite them. A page that comes before the transcript's
+  page 1 (a cover or caption page) has no printed number, so `ocr.page_marker()` marks it as front
+  matter instead of labelling it `Page 0:` (#259). If no offset can be established the model
   is told to cite no page numbers. A truncated reply raises `TranscriptPagesUnreadableError`, which
   the worker treats as a permanent failure for that row.
 - **No stored text, no one-paragraph pass, no export flattening.**

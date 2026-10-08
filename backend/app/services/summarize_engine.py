@@ -856,8 +856,9 @@ def notice_pages(unreadable_pages, page_offset) -> list:
 
     A shifted number that lands at or below zero is NOT emitted. That is a page preceding the
     transcript's own page 1, and inventing "page 0" for it would be a worse citation than the record
-    number - so the whole notice falls back to record pages rather than mixing the two. See #259,
-    which is the general form of that defect; this only refuses to add to it.
+    number - so the whole notice falls back to record pages rather than mixing the two. #259 was the
+    general form of that defect: such a page is now marked as front matter in the source text
+    (`ocr.page_marker`) rather than labelled ``Page 0:``, so the body has no zero to cite either.
     """
     if page_offset is None:
         return list(unreadable_pages)
