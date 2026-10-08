@@ -182,8 +182,9 @@ def test_a_missing_tesseract_still_fails_fast_from_a_quarter(monkeypatch):
         raise OcrUnavailableError("Tesseract not found")
 
     monkeypatch.setattr(ocr, "_ocr_image", missing)
+    sheet = _sheet()
     with pytest.raises(OcrUnavailableError):
-        ocr._condensed_quarters(_sheet())
+        ocr._condensed_quarters(sheet)
 
 
 def test_a_grid_whose_labels_do_not_agree_is_read_as_one_page(monkeypatch):
