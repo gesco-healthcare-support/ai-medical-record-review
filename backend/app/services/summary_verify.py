@@ -195,6 +195,13 @@ def _reply_shape(settings):
     return _RESPONSE_SCHEMA, {}
 
 
+def _with_shared_names(data, renames):
+    """The reply with our-model field names mapped back to the shared ones; anything else as is."""
+    if not renames or not isinstance(data, dict):
+        return data
+    return {renames.get(key, key): value for key, value in data.items()}
+
+
 def _usage_fields(response=None):
     """The two token counts, present on EVERY return path.
 
@@ -369,9 +376,7 @@ def verify_summary(
             # message - which is the position the benchmark was in when the audit turned out to be
             # 46 percent of a record's wall clock.
             return _unverified(summary_text, title, response, truncated=True)
-        data = json.loads((response.text or "").strip())
-        if renames and isinstance(data, dict):
-            data = {renames.get(key, key): value for key, value in data.items()}
+        data = _with_shared_names(json.loads((response.text or "").strip()), renames)
         return _verified_reply(data, summary_text, title, response)
     except JobCancelled:
         # NOT a model failure - the reviewer pressed Stop. The PROVIDER raises this from its
