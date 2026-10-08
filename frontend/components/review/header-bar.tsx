@@ -238,9 +238,9 @@ export function HeaderBar({
             aria-describedby={pagesWarning ? pagesWarningId : undefined}
           />
           {pagesWarning ? (
-            <span id={pagesWarningId} className="rc-hb-warn" role="status">
+            <output id={pagesWarningId} className="rc-hb-warn">
               {pagesWarning}
-            </span>
+            </output>
           ) : null}
         </label>
       </div>
