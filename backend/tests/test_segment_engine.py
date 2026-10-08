@@ -371,3 +371,159 @@ def test_the_standalone_escalation_stays_quiet_when_every_page_reads(monkeypatch
 
     assert text == "all of it"
     assert not [r for r in caplog.records if "SHORT" in r.getMessage()]
+
+
+# --- On our model, a short row that OPENS as a proof of service is paperwork ---------------------
+
+_SERVICE_PAGE = (
+    "SUPERIOR COURT OF EXAMPLE\nPROOF OF SERVICE\nI served the QME Orthopedic Evaluation Report"
+)
+
+
+def _segment_backend(monkeypatch, backend, overrides=""):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "llm_backend", backend)
+    monkeypatch.setattr(get_settings(), "llm_backend_overrides", overrides)
+
+
+def _classify_must_not_run(monkeypatch):
+    from app.services import segment_engine as se
+
+    def _classify(title, page_text=None):
+        raise AssertionError("a service page is decided before classify() is asked")
+
+    monkeypatch.setattr(se, "classify", _classify)
+    return se
+
+
+def test_on_our_model_a_service_page_is_paperwork_whatever_its_title(monkeypatch):
+    """The run-v2 failure: an evaluation-report title over a proof-of-service page fired rule 13."""
+    _segment_backend(monkeypatch, "vllm")
+    se = _classify_must_not_run(monkeypatch)
+    row = _row(62, 62, title="QME Orthopedic Evaluation Report", flag="x")
+
+    out = se._categorize("x.pdf", row, lambda p: {62: _SERVICE_PAGE}.get(p, ""))
+
+    assert out["category"] == "100"
+    assert out["method"] == "rules"
+    assert out["flag"] == "x", "the guard decides the category only; the segmenter's flag stands"
+
+
+def test_a_two_page_service_row_is_claimed_and_only_its_first_page_is_read(monkeypatch):
+    _segment_backend(monkeypatch, "vllm")
+    se = _classify_must_not_run(monkeypatch)
+    reads = []
+
+    def _page(p):
+        reads.append(p)
+        return _SERVICE_PAGE
+
+    out = se._categorize("x.pdf", _row(65, 66, title="Evaluation Report"), _page)
+
+    assert out["category"] == "100"
+    assert reads == [65]
+
+
+def test_the_phrase_may_break_across_lines_as_ocr_writes_it(monkeypatch):
+    _segment_backend(monkeypatch, "vllm")
+    se = _classify_must_not_run(monkeypatch)
+    page = "CASE NO. 123\nDECLARATION  OF\nSERVICE BY MAIL"
+
+    out = se._categorize("x.pdf", _row(3, 3, title="Evaluation Report"), lambda p: page)
+
+    assert out["category"] == "100"
+
+
+def test_a_service_page_in_front_of_a_longer_document_is_not_claimed(monkeypatch):
+    """GUARD: three pages or more is where a real report with a service page in front lives."""
+    from app.services import segment_engine as se
+
+    _segment_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(
+        se, "classify", lambda title, page_text=None: _Result("13", False, method="rules")
+    )
+
+    out = se._categorize("x.pdf", _row(10, 12, title="QME Report"), lambda p: _SERVICE_PAGE)
+
+    assert out["category"] == "13"
+
+
+def test_the_phrase_must_open_the_page(monkeypatch):
+    """GUARD: past the first 800 characters the phrase is something the page MENTIONS."""
+    from app.services import segment_engine as se
+
+    _segment_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(
+        se, "classify", lambda title, page_text=None: _Result("2", False, method="rules")
+    )
+    page = "x" * se._SERVICE_PAGE_HEAD + " proof of service"
+
+    out = se._categorize("x.pdf", _row(4, 4, title="Evaluation Report"), lambda p: page)
+
+    assert out["category"] == "2"
+
+
+def test_gemini_reads_no_page_for_the_service_check(monkeypatch):
+    """GUARD: Gemini titles these pages correctly and is untouched, byte for byte."""
+    from app.services import segment_engine as se
+
+    _segment_backend(monkeypatch, "gemini")
+    monkeypatch.setattr(
+        se, "classify", lambda title, page_text=None: _Result("13", False, method="rules")
+    )
+
+    def _page(p):
+        raise AssertionError("Gemini must not read a page for the service check")
+
+    out = se._categorize("x.pdf", _row(62, 62, title="QME Report"), _page)
+
+    assert out["category"] == "13"
+
+
+def test_the_gate_is_the_backend_that_writes_the_title(monkeypatch):
+    """Segmentation writes the title, so its backend decides - not the classify stage's."""
+    from app.services import segment_engine as se
+
+    monkeypatch.setattr(
+        se, "classify", lambda title, page_text=None: _Result("13", False, method="rules")
+    )
+
+    def pages(p):
+        return _SERVICE_PAGE
+
+    _segment_backend(monkeypatch, "gemini", overrides="classify=vllm")
+    assert se._categorize("x.pdf", _row(62, 62, title="QME Report"), pages)["category"] == "13"
+
+    _segment_backend(monkeypatch, "vllm", overrides="classify=gemini")
+    assert se._categorize("x.pdf", _row(62, 62, title="QME Report"), pages)["category"] == "100"
+
+
+def test_an_unreadable_first_page_leaves_the_normal_cascade(monkeypatch):
+    from app.services import segment_engine as se
+
+    _segment_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(
+        se, "classify", lambda title, page_text=None: _Result("13", False, method="rules")
+    )
+
+    def _page(p):
+        raise RuntimeError("store read failed")
+
+    out = se._categorize("x.pdf", _row(62, 62, title="QME Report"), _page)
+
+    assert out["category"] == "13"
+
+
+def test_a_reviewers_stop_during_the_service_check_is_not_swallowed(monkeypatch):
+    from app.services import segment_engine as se
+    from app.worker.failures import JobCancelled
+
+    _segment_backend(monkeypatch, "vllm")
+
+    def _page(p):
+        raise JobCancelled(3, 170)
+
+    row = _row(62, 62, title="QME Report")
+    with pytest.raises(JobCancelled):
+        se._categorize("x.pdf", row, _page)
