@@ -390,6 +390,7 @@ def test_each_unusable_reply_shape_is_recognised(tmp_path, monkeypatch, reply, t
         return _Provider()
 
     monkeypatch.setattr(se, "provider_for_stage", _resolver)
+    pdf = _blank_pdf(tmp_path / "synthetic.pdf", 4)
 
     with pytest.raises(se._UnusableWindowReply):
-        se._ask_window(_blank_pdf(tmp_path / "synthetic.pdf", 4), 1, 2)
+        se._ask_window(pdf, 1, 2)
