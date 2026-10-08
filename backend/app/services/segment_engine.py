@@ -373,9 +373,10 @@ def _classified_on_pages(pdf_path, row, page_text_fn):
 #
 # Gated on the backend that WRITES the title (segmentation), because the title is what goes wrong.
 # Gemini is untouched, byte for byte, and reads no extra page.
+# Matched against the head with its whitespace collapsed to single spaces (after the cutoff is
+# taken, so the 800 characters are the measured ones), which keeps the pattern itself simple.
 _SERVICE_PAGE = re.compile(
-    r"proof\s+of\s+(?:personal\s+|electronic\s+|mail\s+)?service|declaration\s+of\s+service",
-    re.IGNORECASE,
+    r"proof of (?:personal |electronic |mail )?service|declaration of service", re.IGNORECASE
 )
 _SERVICE_PAGE_HEAD = 800
 _SERVICE_PAGE_MAX_PAGES = 2
@@ -397,7 +398,7 @@ def _opens_as_proof_of_service(pdf_path, row, page_text_fn):
     except Exception as exc:
         logger.warning("service-page check could not read page %s: %s", start, exc)
         return False
-    return bool(_SERVICE_PAGE.search(head[:_SERVICE_PAGE_HEAD]))
+    return bool(_SERVICE_PAGE.search(" ".join(head[:_SERVICE_PAGE_HEAD].split())))
 
 
 def _categorize(pdf_path, row, page_text_fn=None):

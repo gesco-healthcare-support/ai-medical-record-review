@@ -425,6 +425,16 @@ def test_a_two_page_service_row_is_claimed_and_only_its_first_page_is_read(monke
     assert reads == [65]
 
 
+def test_the_phrase_may_break_across_lines_as_ocr_writes_it(monkeypatch):
+    _segment_backend(monkeypatch, "vllm")
+    se = _classify_must_not_run(monkeypatch)
+    page = "CASE NO. 123\nDECLARATION  OF\nSERVICE BY MAIL"
+
+    out = se._categorize("x.pdf", _row(3, 3, title="Evaluation Report"), lambda p: page)
+
+    assert out["category"] == "100"
+
+
 def test_a_service_page_in_front_of_a_longer_document_is_not_claimed(monkeypatch):
     """GUARD: three pages or more is where a real report with a service page in front lives."""
     from app.services import segment_engine as se
@@ -514,5 +524,6 @@ def test_a_reviewers_stop_during_the_service_check_is_not_swallowed(monkeypatch)
     def _page(p):
         raise JobCancelled(3, 170)
 
+    row = _row(62, 62, title="QME Report")
     with pytest.raises(JobCancelled):
-        se._categorize("x.pdf", _row(62, 62, title="QME Report"), _page)
+        se._categorize("x.pdf", row, _page)
