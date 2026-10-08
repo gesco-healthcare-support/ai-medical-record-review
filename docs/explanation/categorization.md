@@ -39,7 +39,9 @@ far as it must:
 
 1. **Rules** on the title. A match answers outright, at high confidence, with no model call. One
    exception, on our own model only: see
-   [A bare Progress Note on our model](#a-bare-progress-note-on-our-model).
+   [A bare Progress Note on our model](#a-bare-progress-note-on-our-model). Also on our model only,
+   a short row whose first page opens as a proof of service is answered before the cascade runs:
+   see [A proof of service on our model](#a-proof-of-service-on-our-model).
 2. **Embedding** vote, run locally.
 3. **LLM** vote, a constrained choice among the allowed category ids.
 
@@ -280,6 +282,32 @@ answers 1.
 
 Gemini is untouched: on a Gemini backend the rule answers exactly as before and the pages are not
 read.
+
+### A proof of service on our model
+
+When the `segment` stage runs on vLLM, `_categorize()` first asks `_opens_as_proof_of_service()`: is
+the row one or two pages long, and does its first page carry "proof of service" (or "declaration of
+service") within its first 800 characters of stored page text? If so the row is General (100) with
+method `rules`, and `classify()` is not called.
+
+The gate is the backend that writes the TITLE, because the title is what goes wrong. A proof of
+service names the document it serves, and the trained adapter titled such pages after that
+document: on one exam record of 2026-10-07 it put an evaluation-report title on 25 proof-of-service
+pages the reviewer filed General, rule 13 claimed every one, and each became a summary to untick.
+The base model and Gemini titled the same pages "Proof of Service". The training labels were not the
+cause (114 of 118 such pages are titled as proofs of service there).
+
+The cutoff is measured on the read-only copy of the live box taken 2026-10-07 (312 PDFs, one copy
+each). Reviewer rows of one or two pages matching within 800 characters: 379, of which 374 were
+filed General and 5 elsewhere, none ticked for summary. Reading the whole first page reached rows
+the reviewer ticked (7 of 460). A row of three pages or more is where a real report with a service
+page in front of it lives, so it is never claimed. On the 27-record exam the check moves 15 of
+run-v2's rows, all of which the reviewer filed General, and none of the base model's, run-v1's or
+Gemini's.
+
+The category no longer follows the title, so a guarded row whose title the model got wrong shows in
+"Could not identify" (its title does not rule as paperwork). That is deliberate: title and category
+disagree, and a reviewer should look. Gemini is untouched and reads no extra page.
 
 ### Deciding from the pages first, on our model (`VLLM_CLASSIFY_FROM_PAGES`)
 
