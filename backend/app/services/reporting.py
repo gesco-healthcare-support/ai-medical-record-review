@@ -1111,7 +1111,14 @@ def build_mrr_document(
         justified=True,
         font=font,
     )
+    # A blank line after the opening paragraph and after the summary intro, as empty paragraphs.
+    # A reviewer marked both places on a delivered letter (2026-10-08): the three blocks read as
+    # one. Empty paragraphs for the same reason each entry ends with one - paragraph spacing is
+    # formatting, which a paste under the destination's style drops. `linked_pdf` adds the same
+    # two lines.
+    doc.add_paragraph("")
     _letter_paragraph(doc, summary_intro(lawfirm), bold=True, font=font)
+    doc.add_paragraph("")
 
     # Two-column borderless table: date | title + body. The default "Table Normal" style has no
     # cell borders, matching the canonical MRR summary layout (date sits in its own left column,

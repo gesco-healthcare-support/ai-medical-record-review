@@ -1926,6 +1926,67 @@ def test_each_entry_ends_with_a_blank_line_that_survives_a_paste():
         assert paragraphs[-1].text == ""
 
 
+def test_a_blank_line_follows_the_opening_paragraph_and_the_summary_intro():
+    """DEMONSTRATES the reviewer's markup of a delivered letter (2026-10-08): the opening paragraph,
+    the summary intro and the first entry ran together. Empty PARAGRAPHS, for the reason each entry
+    ends with one - spacing is formatting, which a paste under the destination's style drops.
+
+    Read in body order, tables included, because the second blank line sits between the summary
+    intro and the entries TABLE, which `doc.paragraphs` does not list."""
+    from docx.oxml.ns import qn
+
+    doc = build_mrr_document(
+        [_entry("01/02/2020")],
+        10,
+        "A B",
+        "01/01/1980",
+        "QME",
+        details=ReportDetails(lawfirm="Firm"),
+    )
+    blocks = []
+    for child in doc.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            blocks.append("".join(t.text or "" for t in child.iter(qn("w:t"))))
+        elif child.tag == qn("w:tbl"):
+            blocks.append("<table>")
+    intro = intro_sentence(10, "Firm")
+    start = blocks.index(intro)
+    assert blocks[start : start + 5] == [intro, "", summary_intro("Firm"), "", "<table>"]
+
+
+def test_the_linked_pdf_leaves_the_same_blank_lines():
+    """DEMONSTRATES the PDF half: the same two blank lines, read off the rendered page.
+
+    Geometry rather than markup, because the markup can carry a blank line that does not render:
+    an empty `<p></p>` collapses to its margin (measured 14.6pt against 27.8pt for a real line).
+    So each of the two gaps must exceed the ordinary gap between paragraphs - the one under the
+    heading - by at least a line."""
+    linked_pdf = pytest.importorskip("app.services.linked_pdf")
+
+    rendered, _ = linked_pdf._render_summary_pdf(
+        linked_pdf._summary_html([_entry("01/02/2020")], 10, "QME", ReportDetails(lawfirm="Firm"))
+    )
+    lines = sorted(
+        (line["bbox"][1], line["bbox"][3], "".join(s["text"] for s in line["spans"]).strip())
+        for block in rendered[0].get_text("dict")["blocks"]
+        for line in block.get("lines", [])
+    )
+    lines = [line for line in lines if line[2]]
+
+    def gap_before(i):
+        return lines[i][0] - lines[i - 1][1]
+
+    heading = next(i for i, line in enumerate(lines) if line[2] == REVIEW_HEADING)
+    summary = next(i for i, line in enumerate(lines) if line[2] == summary_intro("Firm"))
+    ordinary = gap_before(heading + 1)
+    for i in (summary, summary + 1):
+        height = lines[i][1] - lines[i][0]
+        assert gap_before(i) - ordinary >= height, (
+            f"no blank line above {lines[i][2]!r}: gap {gap_before(i):.1f}pt, "
+            f"ordinary {ordinary:.1f}pt, line {height:.1f}pt"
+        )
+
+
 @pytest.mark.parametrize("title", ["JANE SMITH, M.D.", "LABORATORY REPORT."])
 def test_a_title_ending_in_a_period_is_not_given_a_second_one(title):
     """DEMONSTRATES "M.D.. Findings" - the separator added its period after the title's own."""

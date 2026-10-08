@@ -69,6 +69,13 @@ def _sort_key(entry: dict):
     return parsed_date(entry) or datetime.max
 
 
+# One blank line, the PDF's twin of the empty paragraphs `build_mrr_document` puts after the opening
+# paragraph and the summary intro. A non-breaking space, because Story collapses an EMPTY paragraph
+# to its margin alone. Measured on a rendered letter: 6.6pt between the intro and the summary line
+# before, 14.6pt with `<p></p>` (not a line), 27.8pt with this (one line).
+_BLANK_LINE = "<p>&#160;</p>"
+
+
 def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
     """Render the summary letter's body. The patient identity is deliberately NOT a parameter: it
     goes on the running header, which `_draw_running_header` paints onto the rendered pages."""
@@ -150,7 +157,9 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
             )
         )
     }</p>
+      {_BLANK_LINE}
       <p style='font-weight:bold;'>{html.escape(summary_intro(details.lawfirm))}</p>
+      {_BLANK_LINE}
       {"".join(rows)}
       {tail}
       <p>{html.escape(CONCLUSION)}</p>

@@ -22,9 +22,12 @@ Built by `backend/app/services/reporting.py` `build_mrr_document()` with python-
    centred, 12 pt.
 3. **Heading.** `MEDICAL RECORD REVIEW`, bold and underlined, 12 pt. All eight reference
    deliverables write it in capitals.
-4. **Opening paragraph**, justified, 12 pt (see [The opening paragraph](#the-opening-paragraph)).
+4. **Opening paragraph**, justified, 12 pt (see [The opening paragraph](#the-opening-paragraph)),
+   then an empty paragraph.
 5. **Summary intro**, bold, 12 pt: `The following is a summary of records from <firm>:`, or
-   `The following is a summary of those records:` when no firm was given.
+   `The following is a summary of those records:` when no firm was given, then an empty paragraph.
+   A reviewer asked for both blank lines (2026-10-08). They are empty paragraphs rather than
+   paragraph spacing for the same reason as the blank line after each entry below.
 6. **Entries.** A borderless two-column table with fixed layout: the date label in the left column,
    and in the right column the header line, `. `, then the body, justified, then an empty paragraph
    so a blank line separates entries even after they are pasted into another document under its
@@ -59,7 +62,9 @@ through PyMuPDF's `Story`, followed by the whole uploaded source record.
   `Page <n>` from page 2, 10 pt in the base-14 Times font (`tiro`). The appended source pages carry
   no header.
 - **Letter.** Times New Roman 11 pt; the evaluation line and heading 12 pt, bold, underlined; the
-  opening paragraph justified; the summary intro bold; the accounting and conclusion as in Word.
+  opening paragraph justified; the summary intro bold; a blank line after each of those two, as in
+  Word (a paragraph holding a non-breaking space, because `Story` collapses an empty paragraph to
+  its margin); the accounting and conclusion as in Word.
 - **Entries** are hanging-indent paragraphs, not table rows: a 90 pt date span, then the header line,
   `. `, then the justified body. Story cannot split a table row across a page break; a long entry in a
   row was clipped (72 of 90 sentences kept) or vanished entirely (a 120-sentence body over 31 pages),
