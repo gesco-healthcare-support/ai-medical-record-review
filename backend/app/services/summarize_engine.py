@@ -272,6 +272,19 @@ def _bold_span_count(text: str) -> int:
     return len(re.findall(r"\*\*(.+?)\*\*", text or ""))
 
 
+def _rewrite_shape(raw: str, fixed: str) -> str:
+    """Two sizes for a REJECTED rewrite's log line: characters and bold headings, rewrite and raw.
+
+    Counts only, never text. Asked for on #348: a rejected rewrite leaves no trace (verified_text
+    stays None by design), so without its shape nobody could tell "the audit returned the title"
+    from "the audit returned a short real correction" except by anecdote - on either model.
+    """
+    return (
+        f"rewrite {len(fixed or '')} chars / {_bold_span_count(fixed)} headings, "
+        f"raw {len(raw or '')} chars / {_bold_span_count(raw)} headings"
+    )
+
+
 def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> bool:
     """True when the audit removed a bold point heading for a reason that cannot justify removing one.
 
@@ -2245,10 +2258,12 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
             # was flagged. WARNING because the rate is the measurement - on the self-hosted model
             # this is the failure a reviewer reported, and on gemini it should never fire.
             logger.warning(
-                "verify pass returned only the title on pages %s-%s (issues: %s); keeping raw body",
+                "verify pass returned only the title on pages %s-%s (issues: %s; %s); "
+                "keeping raw body",
                 row["start"],
                 row["end"],
                 ",".join(sorted(issue_types)),
+                _rewrite_shape(summary, result["fixed_text"]),
             )
         elif _drops_required_headings(summary, result["fixed_text"], issue_types):
             # Keep the RAW body by leaving verified_text None: effective_text() then falls back to
@@ -2256,10 +2271,12 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
             # flagged, and this logs at WARNING so the guard's firing rate stays measurable rather
             # than becoming an invisible silent correction.
             logger.warning(
-                "verify pass dropped bold headings on pages %s-%s (issues: %s); keeping raw body",
+                "verify pass dropped bold headings on pages %s-%s (issues: %s; %s); "
+                "keeping raw body",
                 row["start"],
                 row["end"],
                 ",".join(sorted(issue_types)),
+                _rewrite_shape(summary, result["fixed_text"]),
             )
         elif deposition and _drops_deposition_structure(summary, result["fixed_text"]):
             # Same remedy for the deposition format: the page grouping and its citations are what a
@@ -2267,9 +2284,11 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
             # ships. Logged at WARNING for the same reason - a silent structural correction is
             # indistinguishable from the model never having produced the structure.
             logger.warning(
-                "verify pass flattened the deposition grouping on pages %s-%s; keeping raw body",
+                "verify pass flattened the deposition grouping on pages %s-%s (%s); "
+                "keeping raw body",
                 row["start"],
                 row["end"],
+                _rewrite_shape(summary, result["fixed_text"]),
             )
         else:
             # The audit may reintroduce capitals while fixing something else, so the transform runs

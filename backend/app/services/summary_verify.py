@@ -167,6 +167,40 @@ _RESPONSE_SCHEMA = {
     "additionalProperties": False,
 }
 
+# ON OUR MODEL ONLY (`Settings.vllm_audit_issues_first`): the same reply, asked for in an order and
+# under names the model can follow. vLLM's xgrammar writes an object's properties in the order the
+# schema lists them, so the shared schema made our model open with `fixed_text` - a name the prompt
+# never explains - before it had listed a single issue or had anywhere to put the title. It wrote
+# the title there instead on 176 of ~300 audits (#348). Issues first, then the title in its own
+# field, then the summary under a name that says what it is. The keys are mapped back to
+# `fixed_text` / `fixed_title` before anything reads them, so no caller sees a difference.
+_OUR_MODEL_FIELDS = {"corrected_summary": "fixed_text", "corrected_title": "fixed_title"}
+_OUR_MODEL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "issues": _RESPONSE_SCHEMA["properties"]["issues"],
+        "corrected_title": _RESPONSE_SCHEMA["properties"]["fixed_title"],
+        "corrected_summary": _RESPONSE_SCHEMA["properties"]["fixed_text"],
+    },
+    "required": ["issues", "corrected_title", "corrected_summary"],
+    "additionalProperties": False,
+}
+
+
+def _reply_shape(settings):
+    """``(schema, field renames)`` for this deployment's audit call. Gemini always gets the shared
+    schema; the audit resolves its provider through the summarize stage, so that is the gate."""
+    if settings.vllm_audit_issues_first and settings.backend_for("summarize") == "vllm":
+        return _OUR_MODEL_SCHEMA, _OUR_MODEL_FIELDS
+    return _RESPONSE_SCHEMA, {}
+
+
+def _with_shared_names(data, renames):
+    """The reply with our-model field names mapped back to the shared ones; anything else as is."""
+    if not renames or not isinstance(data, dict):
+        return data
+    return {renames.get(key, key): value for key, value in data.items()}
+
 
 def _usage_fields(response=None):
     """The two token counts, present on EVERY return path.
@@ -292,12 +326,13 @@ def verify_summary(
     effective_cap = (
         max_output_tokens or settings.audit_max_output_tokens or settings.summary_max_output_tokens
     )
+    schema, renames = _reply_shape(settings)
     try:
         response = get_provider().generate_structured(
             model=model,
             system=VERIFY_PROMPT,
             parts=[TextPart(prompt)],
-            schema=_RESPONSE_SCHEMA,
+            schema=schema,
             temperature=0.0,
             # The audit runs inside the summarize stage and has always shared its thinking budget;
             # naming the stage keeps that true rather than leaving it to the seam's default.
@@ -341,7 +376,7 @@ def verify_summary(
             # message - which is the position the benchmark was in when the audit turned out to be
             # 46 percent of a record's wall clock.
             return _unverified(summary_text, title, response, truncated=True)
-        data = json.loads((response.text or "").strip())
+        data = _with_shared_names(json.loads((response.text or "").strip()), renames)
         return _verified_reply(data, summary_text, title, response)
     except JobCancelled:
         # NOT a model failure - the reviewer pressed Stop. The PROVIDER raises this from its

@@ -145,6 +145,10 @@ x-backend-env: &backend-env
   # the form the fine-tuned adapter was trained on. Named here for the same reason as the line
   # above: the A/B it exists for runs while a pod bills, and a rebuild to flip it defeats it.
   VLLM_CLASSIFY_FROM_PAGES: ${VLLM_CLASSIFY_FROM_PAGES:-false}
+  # On ships the fix for #348: our model's summary audit is asked for issues, then the corrected
+  # title, then the corrected summary, under plain names. Off restores the shared Gemini-ordered
+  # schema. Named here so a pod day can compare the two without a rebuild. Gemini ignores it.
+  VLLM_AUDIT_ISSUES_FIRST: ${VLLM_AUDIT_ISSUES_FIRST:-true}
   # The render ceiling, and the two per-stage targets it caps. page_dpi fits the DPI to a stage's
   # pixel target and then caps it at SUMMARY_IMAGE_DPI - so lowering this silently shrinks the DOI
   # and deposition reads, which is why the app refuses to boot on the mismatch rather than rendering
