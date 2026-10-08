@@ -187,7 +187,8 @@ pnpm test
 - `KeyError` in the worker log for the kind: one of the three status maps in step 2 is missing it.
 - The job fails as soon as a worker takes it, with an import error for the task in the worker log:
   the workers run older code. Rebuild and recreate them with the API (step 8).
-- The job stays `queued`: no worker is free, or none serves the owner's lane (see
+- The job stays `queued`: no worker is free, none serves the owner's lane, or (for a kind on the
+  `segment` queue) its reviewer is at `IDENTIFY_PER_REVIEWER_CAP` while another reviewer waits (see
   [How to diagnose a stuck or failed job](diagnose-a-stuck-or-failed-job.md)).
 - Stop does nothing until the job ends: a long loop has no `report` call, or a pool is left without
   cancelling its queued futures.
