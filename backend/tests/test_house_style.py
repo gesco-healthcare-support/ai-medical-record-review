@@ -213,8 +213,8 @@ def test_a_label_carrying_a_number_is_never_taken_for_empty():
 
 
 def test_the_reported_shape_still_loses_its_empty_headings_when_studies_are_present():
-    """GUARD: the multi-line flattening and the vacuous-heading removal both still run around a
-    study heading - only the heading that carries information is kept."""
+    """DEMONSTRATES both rules together: the multi-line flattening and the vacuous-heading removal
+    still run around a study heading - only the heading that carries information is kept."""
     text = "**Objective Findings**:\n**Range of Motion**: flexion 40.\n" + _TWO_STUDIES
     flat = one_paragraph(text)
     assert "\n" not in flat
