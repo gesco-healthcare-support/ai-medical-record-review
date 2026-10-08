@@ -58,7 +58,8 @@ Any state not in `job_outcome`'s table is bucketed `failed_unknown` (`backend/ap
 | --- | --- | --- | --- | --- |
 | (none) | `queued` | Row inserted. | `create_job` | no |
 | `queued` | `interrupted` | RQ dispatch raised (for example Redis unreachable). `enqueue` then raises `QueueUnavailable`, which the API answers with 503. | `enqueue` | no |
-| `queued` or `paused` | `running` | A work-horse starts the job, first run or scheduled resume. | `_run` | no (unconditional write) |
+| `queued` | `queued` | An identify job (`segment`, `classify`) steps aside: its reviewer already has `IDENTIFY_PER_REVIEWER_CAP` identify jobs running and another reviewer is waiting. It goes back to the front of its lane under a new `rq_job_id` (`<id>-turn-<hex>`); `started_at` stays empty (`backend/app/worker/fairness.py`). | `_step_aside` (from `_take` in `_run`) | no |
+| `queued` or `paused` | `running` | A work-horse starts the job, first run or scheduled resume. | `_take` (from `_run`) | no (unconditional write) |
 | `running` | `done` | `work()` returned. | `_finalize_done` | no |
 | `running` | `error` | `work()` raised an exception that is not a control signal. | `_finalize_failed` | no |
 | `running` | `paused` | `JobPaused` (summarize). | `_finalize_paused` | no |

@@ -479,6 +479,17 @@ def _clean_test_users() -> Iterator[None]:
     _delete_test_users()
 
 
+@pytest.fixture(autouse=True)
+def _identify_cap_off() -> Iterator[None]:
+    """`app.worker.__main__.main()` records the lanes it serves, which switches the identify cap on
+    (app/worker/fairness.py). A test that calls main() must not leave it on for every test after it."""
+    from app.worker import fairness
+
+    fairness.serve([])
+    yield
+    fairness.serve([])
+
+
 @pytest.fixture
 def seeded_user() -> tuple[str, str]:
     """A verifiable dev-salt account inserted directly (bypassing register), so login is tested

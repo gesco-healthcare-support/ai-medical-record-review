@@ -285,6 +285,30 @@ describe("useReviewWorkflow resumable-summarize + error states", () => {
     expect(result.current.banner).toBe(""); // paused must not resolve to an error
   });
 
+  it("says a queued job is waiting for a worker, then shows its stage once it runs", async () => {
+    // A queued job's stage is still "starting", so it read "Starting..." for as long as it waited -
+    // 6 to 12 minutes behind another reviewer's batch on 2026-10-07, which looked frozen.
+    const job = { id: 1, kind: "segment" as const, current: 0, total: 0, error: null };
+    mockDoc.mockResolvedValue(
+      detail({ status: "segmenting", active_job: { ...job, state: "queued", stage: "starting" } }),
+    );
+    mockStatus.mockResolvedValue({
+      status: "segmenting",
+      job: { ...job, state: "queued", stage: "starting" },
+    });
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.progress.detail).toMatch(/^Waiting for a free worker/));
+
+    mockStatus.mockResolvedValue({
+      status: "segmenting",
+      job: { ...job, state: "running", stage: "segmenting", current: 1, total: 4 },
+    });
+    await waitFor(
+      () => expect(result.current.progress.detail).toBe("Finding document boundaries (1/4)"),
+      { timeout: 4000 },
+    );
+  });
+
   it("routes a boot-active summarize job ending needs_attention to the editor, not the start panel", async () => {
     // Regression guard for the stale-rows-closure bug: a summarize job discovered at boot that ends
     // needs_attention must land in the editor (rows present) with the notice, via rowsRef.

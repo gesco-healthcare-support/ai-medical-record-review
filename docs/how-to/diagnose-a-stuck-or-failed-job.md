@@ -50,7 +50,7 @@ docker compose exec -T postgres psql -U mrr -d mrr -c "SELECT id, state, error, 
 
 | What the job row shows | What it means | Go to |
 | --- | --- | --- |
-| `queued`, `started_at` empty, for minutes | No worker has taken it: every worker is busy, no worker is listening on the owner's lane, or the workers are down. | Step 4, then 5c |
+| `queued`, `started_at` empty, for minutes | No worker has taken it: every worker is busy, no worker is listening on the owner's lane, or the workers are down. An identify job can also be stepping aside: its reviewer already has `IDENTIFY_PER_REVIEWER_CAP` identify jobs running and another reviewer is waiting; `rq_job_id` then ends in `-turn-<hex>`. That is by design and clears as jobs finish. | Step 4, then 5c |
 | `paused`, stage `paused`, `attempts` rising | Summarize hit repeated transient model failures and resumes itself every `SUMMARIZE_RESUME_DELAY` seconds (default 60). There is no limit on cycles. | 5b |
 | `running`, `current` moving | Working. | 5b |
 | `running`, `current` not moving, recent log lines for the job | A slow stage: the OCR pass (`reading`) or model calls in retry backoff. | Step 3, then 5b or 5a |
@@ -95,6 +95,9 @@ matter here (`backend/app/worker/tasks.py`, `backend/app/worker/finalizers.py`,
 | `page text population failed for D` | The OCR pass failed; later stages read pages on demand. |
 | `OCR gave up on page P after 2 attempt(s)` | One page errored twice. |
 | `worker listening round-robin on N queue(s): [...]` | Printed at worker start: the lanes this worker serves. |
+| `job N stepped aside: its reviewer is at the identify cap and another reviewer is waiting` | The job went back to the front of its own lane, still `queued`, so a waiting reviewer goes first (`backend/app/worker/fairness.py`). |
+| `job N could not step aside; running it now` | The step-aside re-dispatch failed (usually Redis), so the job ran as picked. |
+| `fairness check failed; running the job as picked` | The cap check itself could not read Redis; the job ran as picked. |
 | `could not enumerate users for queue lanes; serving base queues only` | At worker start the user list could not be read. |
 
 Orphan recovery logs in the API, not the workers:

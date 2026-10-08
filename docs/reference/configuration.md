@@ -188,6 +188,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `JOB_TIMEOUT` | int | `3600` | `3600` | yes | none | Floor of the RQ wall-clock cap: `max(JOB_TIMEOUT, pages x JOB_TIMEOUT_PER_PAGE)` (`Settings.effective_job_timeout()`) |
 | `JOB_TIMEOUT_PER_PAGE` | float | `20.0` | `20.0` | yes | none | Per-page part of the same cap |
 | `FUTURE_TIMEOUT_MARGIN_SECONDS` | int | `120` | - | no | none | Subtracted from the job cap to bound every thread-pool drain: `max(1, cap - margin)` (`Settings.pool_timeout()`) |
+| `IDENTIFY_PER_REVIEWER_CAP` | int | `3` | `3` | yes | none; `0` turns it off | Identify jobs one reviewer may have running while another reviewer's identify is waiting; past it a picked-up job goes back to the front of its lane (`backend/app/worker/fairness.py`). Keep it above half the `segment-worker` replicas |
 | `JOB_CANCEL_GRACE_SECONDS` | int | `10` | `10` | yes | none | Seconds the UI waits for a cooperative stop before offering Force stop (returned by the cancel route); the cancel flag's Redis TTL is `max(60, value x 60)` (`backend/app/worker/cancel.py` `request_cancel()`) |
 
 ## Variables compose passes that are not settings
