@@ -49,7 +49,7 @@ flowchart TD
     C --> D["cluster_rows: candidate clusters<br/>same date + category/title join,<br/>Jaccard pre-filter, date join,<br/>cross-date join on high similarity"]
     D --> E{"duplicate_gate passes?"}
     E -->|no| X["Rejected, no model call"]
-    E -->|yes| F{"similarity >= dupe_model_override?"}
+    E -->|yes| F{"one date, and similarity >= dupe_model_override?"}
     F -->|yes| G["Accepted whole, no model call"]
     F -->|no| H["confirm_groups: model picks the copies,<br/>asked again about the remainder"]
     H --> I["0, 1 or more confirmed groups"]
@@ -161,6 +161,12 @@ A candidate whose `similarity` (the closure minimum) is at least `dupe_model_ove
 accepted whole without a model call. This also removes the one way the confirm step can lose a
 real duplicate (the model answering "all distinct"). It deliberately reads the minimum, not
 `content_joined`: a chain admitted by the gate must still be adjudicated.
+
+Never when the members carry two or more different known dates (`spans_dates()`): across dates
+high similarity is as often a visit form filled in again as a re-scan. On the live box's records
+reviewers dismissed 101 of the 109 different-date groups this step had accepted; asked, the model
+rejected 31 of those 101 and confirmed all 6 the reviewers kept. So those groups always get the
+model call.
 
 ### 6. Ask a small model which members are copies (`confirm_groups()`)
 

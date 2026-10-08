@@ -6,6 +6,8 @@ cluster_rows is pure; confirm_cluster's model call is monkeypatched (no Vertex).
 import difflib
 import json
 
+import pytest
+
 from app.services import dedup
 
 
@@ -897,3 +899,17 @@ def test_a_side_veto_leaves_the_other_pairs_alone():
     items = [_study(0, "MRI LEFT KNEE"), _study(1, "MRI RIGHT KNEE"), _study(2, "MRI LEFT KNEE")]
     [cluster] = dedup.cluster_rows(items)
     assert {m["idx"] for m in cluster["members"]} == {0, 2}
+
+
+@pytest.mark.parametrize(
+    ("dates", "expected"),
+    [
+        (["05/08/2022", "06/12/2022"], True),
+        (["05/08/2022", "05/08/2022"], False),
+        (["05/08/2022", "-"], False),
+        (["-", "unknown"], False),
+        (["05/08/2022", " 05/08/2022 ", "06/12/2022"], True),
+    ],
+)
+def test_spans_dates_counts_known_dates_only(dates, expected):
+    assert dedup.spans_dates([{"date": d} for d in dates]) is expected

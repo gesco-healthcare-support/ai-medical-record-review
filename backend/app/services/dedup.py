@@ -360,6 +360,24 @@ def _norm(value) -> str:
     return "" if text in _UNKNOWN else text
 
 
+def spans_dates(members) -> bool:
+    """Whether a candidate's members carry two or more DIFFERENT known dates.
+
+    Such a candidate is always put to the confirm call, however similar its text: the worker skips
+    that call above `dupe_model_override`, and for one date that is right - near-identical text on one
+    day has settled it. Across dates it is not, because a visit form filled in again on another day
+    is the same template with a few words changed, and it scores as high as a re-scan.
+
+    Measured on the live box's records (one copy per PDF, 2026-10-08): 109 different-date groups had
+    skipped the call. Reviewers dismissed 101 of them and kept a copy of 6. Asked now, the model
+    (gemini-2.5-flash-lite, the dedup stage's model) rejected 31 of the 101 and confirmed all 6. So
+    the call removes about a third of those false groups and, on that sample, no real duplicate.
+    An unknown date is not a date here, as everywhere in this module.
+    """
+    dates = {_norm(m.get("date")) for m in members} - {""}
+    return len(dates) >= 2
+
+
 def duplicate_gate(members, similarity, override=None, content_joined=False) -> bool:
     """Whether a candidate cluster is plausible enough to spend a confirm call on.
 

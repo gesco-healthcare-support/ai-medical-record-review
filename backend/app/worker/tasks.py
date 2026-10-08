@@ -932,7 +932,7 @@ def _confirm_clusters(
     "app.services.dedup.cluster_rows" by dotted path, which lands only while the name is re-bound on
     each call.
     """
-    from app.services.dedup import cluster_rows, confirm_groups, duplicate_gate
+    from app.services.dedup import cluster_rows, confirm_groups, duplicate_gate, spans_dates
 
     confirmed_clusters = []
     for cluster in cluster_rows(items):
@@ -959,7 +959,10 @@ def _confirm_clusters(
         # now also admits a cluster whose every EDGE cleared the override, which is a weaker
         # statement: a chain A~B~C says nothing about A against C. Letting that provenance skip
         # the confirm call would accept a whole chain wholesale with nothing adjudicating it.
-        if similarity is not None and similarity >= model_override:
+        #
+        # Never across dates (`spans_dates`): there high similarity is a visit form filled in again,
+        # as often as a re-scan, and reviewers dismissed 101 of 109 such skipped groups.
+        if similarity is not None and similarity >= model_override and not spans_dates(members):
             logger.info(
                 "dedup accepted a %d-member candidate on document %s by similarity %s "
                 "(pages %s); confirm call skipped",
