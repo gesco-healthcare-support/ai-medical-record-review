@@ -295,8 +295,29 @@ _LIST_MARKER = re.compile(r"(?:[-*•]|\d{1,2}[.)])[ \t]{1,4}")
 # the whole summary. A bold span without a colon is content, never a heading, and a label followed
 # by bold CONTENT is not empty.
 _LABEL = r"\*\*[^*\n]{1,60}(?:\*\*:|:\*\*)"
-_EMPTY_LABEL = re.compile(_LABEL + r"[ \t]{0,8}(?=" + _LABEL + r"|$)")
+_EMPTY_LABEL = re.compile("(" + _LABEL + r")[ \t]{0,8}(?=(" + _LABEL + r")|$)")
 _CLAUSE_END = ".:;,!?"
+# ...and a label followed by a label is not always vacuous (#407). In a summary covering several
+# studies, `**MRI of the lumbar spine (05/15/2025):** **Findings**: ...` NAMES the study the next
+# heading belongs to; removing it ran two studies' findings together and lost both names and dates.
+# So a label is empty only when it carries nothing: no digit (a date, a level, a study number) and
+# not followed by a result heading, which is what a study heading introduces. The reviewers' case,
+# `**Objective Findings**:` straight into `**Range of Motion**:`, is still removed.
+_RESULT_LABEL = re.compile(
+    r"\*\*\s*(?:findings?|impressions?|conclusions?|interpretation|results?)\b", re.I
+)
+_DIGIT = re.compile(r"\d")
+
+
+def _vacuous(label: re.Match) -> bool:
+    """Is this label-followed-by-a-label (or by the end) a heading that introduces nothing?"""
+    if _DIGIT.search(label.group(1)):
+        return False
+    return not _RESULT_LABEL.match(label.group(2) or "")
+
+
+def _without_empty_labels(text: str) -> str:
+    return _EMPTY_LABEL.sub(lambda m: "" if _vacuous(m) else m.group(0), text)
 
 
 def one_paragraph(text: str) -> str:
@@ -304,7 +325,7 @@ def one_paragraph(text: str) -> str:
 
     Returns ``text`` unchanged when it is already one paragraph with no empty heading, so a
     conforming summary passes through byte for byte."""
-    if not text or ("\n" not in text and not _EMPTY_LABEL.search(text)):
+    if not text or ("\n" not in text and not any(map(_vacuous, _EMPTY_LABEL.finditer(text)))):
         return text
     lines = [ln.strip() for ln in text.strip().splitlines()]
     lines = [_LIST_MARKER.sub("", ln, count=1) if _LIST_MARKER.match(ln) else ln for ln in lines]
@@ -318,5 +339,5 @@ def one_paragraph(text: str) -> str:
             flat = f"{flat}. {line}"
         else:
             flat = f"{flat}; {line}"
-    flat = _EMPTY_LABEL.sub("", flat)
+    flat = _without_empty_labels(flat)
     return re.sub(r"[ \t]{2,}", " ", flat).strip()

@@ -355,7 +355,11 @@ body before the audit (so the audit reads what a reader will see) and on any acc
   of four or more letters becomes title case; allowlisted acronyms (`_ACRONYMS`) are untouched. It is
   never applied to a title, which is ALL CAPS by design.
 - `one_paragraph()`: joins lines into one paragraph, drops list markers, and removes a label that
-  introduces nothing. Skipped for depositions.
+  introduces nothing: one followed only by another label or the end, carrying no digit, and not
+  in front of a result heading (Findings, Impression, Conclusion, Interpretation, Results). So
+  `**Objective Findings**:` straight into `**Range of Motion**:` goes, while a study heading such as
+  `**MRI of the lumbar spine (05/15/2025):**` in a multi-study summary stays (#407). Skipped for
+  depositions.
 
 Both exist because the prompt rule alone missed: 22% of stored summaries still carried a run of
 capitals after the prompt and the audit had both had a go, and 83 delivered summaries in 30 days
