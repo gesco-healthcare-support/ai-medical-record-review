@@ -613,15 +613,16 @@ def extract_condensed_transcript(pdf_path, selected_pages, *, retries: int = 1):
             )
             errored.append(page_number)
             continue
-        lost = [number for number, text in sheet if text is None] if _is_split(sheet) else []
-        if lost:
-            errored.append(page_number)
-            unreadable.extend(lost)
-        if not _is_split(sheet) and not (sheet or "").strip():
+        if isinstance(sheet, list):
+            lost = [number for number, text in sheet if text is None]
+            if lost:
+                errored.append(page_number)
+                unreadable.extend(lost)
+        elif not (sheet or "").strip():
             blank.append(page_number)
         sheets.append((page_number, sheet))
 
-    condensed = any(_is_split(sheet) for _, sheet in sheets)
+    condensed = any(isinstance(sheet, list) for _, sheet in sheets)
     # A sheet that failed whole has no known transcript numbers, so the notice cannot be stated in
     # them; a sheet that lost only some quarters can. Read sheets are the ones in `sheets`.
     read = {page_number for page_number, _ in sheets}
@@ -631,16 +632,11 @@ def extract_condensed_transcript(pdf_path, selected_pages, *, retries: int = 1):
     return _marked_transcript(sheets, condensed), report, numbers
 
 
-def _is_split(sheet) -> bool:
-    """Whether `_read_sheet` returned a sheet as its transcript pages rather than as one text."""
-    return isinstance(sheet, list)
-
-
 def _marked_transcript(sheets, condensed: bool) -> str:
     """The marked text for `extract_condensed_transcript`'s ``(record page, sheet)`` pairs."""
     text, seen_condensed = "", False
     for page_number, sheet in sheets:
-        if _is_split(sheet):
+        if isinstance(sheet, list):  # `_read_sheet` split it into its pages
             seen_condensed = True
             text += "".join(f"Page {n}:\n{page}\n" for n, page in sheet if page is not None)
             continue
