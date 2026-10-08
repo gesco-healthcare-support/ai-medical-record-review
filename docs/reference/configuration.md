@@ -120,6 +120,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `VLLM_SEGMENT_MAX_PAGES` | int | `30` | `30` | yes | Must not exceed `VLLM_MAX_IMAGES_PER_PROMPT` when `segment` is on vLLM | Pages per segmentation window on vLLM (the smaller of this and `WINDOW_MAX_PAGES`) and the image cap for that window |
 | `VLLM_THINKING_STAGES` | str | `""` | `""` | yes | Comma-separated exact stage names; an unknown name raises `ValueError` when a vLLM call is made, not at boot | Stages sent `enable_thinking: true` on vLLM (`Settings.vllm_thinking_for()`); every other stage is sent `false` |
 | `VLLM_CLASSIFY_FROM_PAGES` | bool | `false` | `false` | yes | none; read only when `classify` resolves to `vllm` | Segment-path categorization (`segment_engine._categorize`): `true` classifies every row no title rule answers on its first pages in one call instead of the title first; Gemini ignores it |
+| `VLLM_AUDIT_ISSUES_FIRST` | bool | `true` | `true` | yes | none; read only when `summarize` resolves to `vllm` | Summary audit (`summary_verify.verify_summary`): `true` asks our model for `issues`, then `corrected_title`, then `corrected_summary` (vLLM writes fields in schema order), mapped back to `fixed_text`/`fixed_title`; `false` sends the shared schema. Gemini ignores it |
 
 ## Summarize stage
 

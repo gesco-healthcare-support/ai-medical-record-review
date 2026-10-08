@@ -443,3 +443,98 @@ def test_a_diagnostic_study_reports_every_finding_not_a_selection():
     diagnostic = prompts.prompts["category_03"]
     assert "Report EVERY finding the findings section states" in diagnostic
     assert "report BOTH, every time" in diagnostic
+
+
+# --- #348: on our model the audit asks for issues, then the title, then the summary -------------
+
+
+class _Reply:
+    def __init__(self, payload):
+        self.text = json.dumps(payload)
+        self.truncated = False
+        self.input_tokens = 10
+        self.output_tokens = 20
+
+
+def _capturing_provider(monkeypatch, payload):
+    sent = {}
+
+    class _Provider:
+        def generate_structured(self, **kwargs):
+            sent.update(kwargs)
+            return _Reply(payload)
+
+    monkeypatch.setattr(sv, "get_provider", lambda *a, **k: _Provider())
+    return sent
+
+
+def _summarize_backend(monkeypatch, backend, issues_first=True):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "llm_backend", backend)
+    monkeypatch.setattr(settings, "llm_backend_overrides", "")
+    monkeypatch.setattr(settings, "vllm_audit_issues_first", issues_first)
+
+
+def test_on_our_model_the_audit_lists_issues_then_title_then_summary(monkeypatch):
+    """vLLM writes an object's fields in schema order, so the order IS the instruction: the shared
+    order made our model open with `fixed_text` and it wrote the title there (#348)."""
+    _summarize_backend(monkeypatch, "vllm")
+    sent = _capturing_provider(
+        monkeypatch,
+        {
+            "issues": [{"type": "vitals", "detail": "height"}],
+            "corrected_title": "A TITLE",
+            "corrected_summary": "**Diagnoses**: Lumbar strain.",
+        },
+    )
+
+    result = sv.verify_summary("m", "src", "**Diagnoses**: Lumbar strain. Height 5 ft.", title="T")
+
+    assert list(sent["schema"]["properties"]) == ["issues", "corrected_title", "corrected_summary"]
+    assert sent["schema"]["required"] == ["issues", "corrected_title", "corrected_summary"]
+    assert result["fixed_text"] == "**Diagnoses**: Lumbar strain."
+    assert result["fixed_title"] == "A TITLE"
+    assert result["issues"] == [{"type": "vitals", "detail": "height"}]
+    assert result["ok"] is True
+
+
+def test_the_reordered_schema_asks_for_the_same_fields(monkeypatch):
+    """GUARD: only the order and the two names move; the issue types and nullability do not."""
+    shared, ours = sv._RESPONSE_SCHEMA["properties"], sv._OUR_MODEL_SCHEMA["properties"]
+
+    assert ours["issues"] == shared["issues"]
+    assert ours["corrected_title"] == shared["fixed_title"]
+    assert ours["corrected_summary"] == shared["fixed_text"]
+    assert set(sv._OUR_MODEL_FIELDS.values()) == {"fixed_text", "fixed_title"}
+
+
+def test_gemini_keeps_the_shared_schema(monkeypatch):
+    """GUARD: Gemini orders fields alphabetically, which is the shared order; it is untouched."""
+    _summarize_backend(monkeypatch, "gemini")
+    sent = _capturing_provider(monkeypatch, {"fixed_text": "S.", "fixed_title": None, "issues": []})
+
+    result = sv.verify_summary("m", "src", "S.")
+
+    assert sent["schema"] is sv._RESPONSE_SCHEMA
+    assert result["fixed_text"] == "S."
+
+
+def test_the_switch_restores_the_shared_schema_on_our_model(monkeypatch):
+    """GUARD: off, our model gets the shared schema, so a pod day can compare the two shapes."""
+    _summarize_backend(monkeypatch, "vllm", issues_first=False)
+    sent = _capturing_provider(monkeypatch, {"fixed_text": "S.", "fixed_title": None, "issues": []})
+
+    result = sv.verify_summary("m", "src", "S.")
+
+    assert sent["schema"] is sv._RESPONSE_SCHEMA
+    assert result["fixed_text"] == "S."
+
+
+def test_a_reply_in_the_old_names_still_reads_on_our_model(monkeypatch):
+    """GUARD: the renames apply to the two new names only, so nothing else in a reply is dropped."""
+    _summarize_backend(monkeypatch, "vllm")
+    _capturing_provider(monkeypatch, {"fixed_text": "S.", "fixed_title": "T", "issues": []})
+
+    result = sv.verify_summary("m", "src", "S. Extra.")
+
+    assert result["fixed_text"] == "S."

@@ -1292,6 +1292,26 @@ def test_an_audit_rewrite_that_is_only_the_title_is_refused(monkeypatch, caplog)
     assert "1-2" in caplog.text
 
 
+def test_a_rejected_rewrite_logs_its_size_and_never_its_text(monkeypatch, caplog):
+    """#348: a rejected rewrite leaves no trace in the row, so its shape goes on the warning -
+    character and heading counts for the rewrite and the raw body, and not one word of either."""
+    _stub_verify(monkeypatch, _TITLE_BACK, _SUBSTANTIVE)
+
+    with caplog.at_level("WARNING"):
+        se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    line = next(r.getMessage() for r in caplog.records if "only the title" in r.getMessage())
+    shape = re.search(
+        r"rewrite (\d+) chars / (\d+) headings, raw (\d+) chars / (\d+) headings", line
+    )
+    assert shape is not None, line
+    assert int(shape.group(1)) == len(_TITLE_BACK)
+    assert int(shape.group(2)) == 0
+    assert int(shape.group(4)) >= 2, "the raw labelled body carries its bold points"
+    assert "Smith" not in line
+    assert "Lower back" not in line
+
+
 def test_a_substantive_issue_cannot_excuse_a_title_only_rewrite(monkeypatch):
     """The hole this closes, stated on its own.
 

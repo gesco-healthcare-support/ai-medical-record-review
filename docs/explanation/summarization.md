@@ -278,6 +278,15 @@ title and body for faithfulness to the source and for six house rules (`_HOUSE_R
 Faithfulness issues are `unsupported`, `contradiction`, `date` and `laterality`. The reply schema is
 `{fixed_text, fixed_title, issues: [{type, detail}]}`.
 
+On our model (`summarize` on vLLM) the same reply is asked for as `{issues, corrected_title,
+corrected_summary}` (`_reply_shape()`, switch `VLLM_AUDIT_ISSUES_FIRST`, on by default) and mapped
+back to `fixed_text` and `fixed_title` before anything reads it. vLLM's grammar writes an object's
+fields in the order the schema lists them, so the shared schema made the model open with
+`fixed_text`, a name the prompt never explains, before it had listed an issue or had a field for
+the title. It wrote the title there on 176 of about 300 audits on 2026-10-01, and each was
+rejected by the title guard below (#348). Gemini orders its fields alphabetically, which is the
+shared order, and gets the shared schema whatever the switch says.
+
 The audit is text-only, while the title call reads the first and last page images, so a name in a
 logo can be right in the title and broken letters in the source. `VERIFY_PROMPT` forbids writing
 such letters into the title: a name it writes must read as a name or as real words, and where the

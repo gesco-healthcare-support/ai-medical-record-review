@@ -93,8 +93,8 @@ bundle export pass `verify=False`.
 | Parts | One text part: `SOURCE`, the document date when known, `TITLE` when present, `SUMMARY` |
 | Temperature | 0.0 |
 | Max output tokens | The `max_output_tokens` argument, else `AUDIT_MAX_OUTPUT_TOKENS`, else `SUMMARY_MAX_OUTPUT_TOKENS` |
-| Schema | `summary_verify._RESPONSE_SCHEMA`: object with `fixed_text` (string), `fixed_title` (string or null), `issues` (array of `{type, detail}`, `type` one of `unsupported`, `contradiction`, `date`, `laterality`, `vitals`, `pain_descriptor`, `capitalization`, `range_of_motion`, `duplicate_finding`, `prior_visit`) |
-| Reply handling | `json.loads` of the reply text, then `_verified_reply()` |
+| Schema | `summary_verify._RESPONSE_SCHEMA`: object with `fixed_text` (string), `fixed_title` (string or null), `issues` (array of `{type, detail}`, `type` one of `unsupported`, `contradiction`, `date`, `laterality`, `vitals`, `pain_descriptor`, `capitalization`, `range_of_motion`, `duplicate_finding`, `prior_visit`). On vLLM, unless `VLLM_AUDIT_ISSUES_FIRST=false`, `_OUR_MODEL_SCHEMA`: the same three fields in the order `issues`, `corrected_title`, `corrected_summary` |
+| Reply handling | `json.loads` of the reply text, our-model field names mapped back, then `_verified_reply()` |
 | Truncated reply | Logged at WARNING; the original summary is kept, marked unverified and truncated |
 | Failure | Any other exception, including a JSON parse error: logged at WARNING, original summary kept unverified. `JobCancelled` is re-raised |
 | No call | An empty summary is returned unverified without a call |

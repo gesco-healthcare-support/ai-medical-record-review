@@ -903,6 +903,22 @@ class Settings(BaseSettings):
     # and it is a switch rather than a code change so that A/B runs without a rebuild. Gemini
     # ignores it.
     vllm_classify_from_pages: bool = False
+    # ON OUR MODEL ONLY: ask the summary audit for its reply as issues, then the corrected title,
+    # then the corrected summary, under those plain names - instead of `fixed_text` first.
+    #
+    # vLLM enforces the schema with xgrammar, which fixes the ORDER of an object's properties to the
+    # order the schema lists them (checked 2026-10-08: the grammar's root rule for the shared schema
+    # opens with the `fixed_text` key). So our model was made to open its reply with the corrected
+    # summary, before it had listed what was wrong and before the title had a field of its own, and
+    # the prompt never names that field. It answered with the title instead on 176 of ~300 audited
+    # summaries on 2026-10-01 ("verify pass returned only the title"), and every one of those audits
+    # was discarded (#348). Gemini orders its properties alphabetically, which is today's order, and
+    # is untouched whatever this says.
+    #
+    # On by default because the defect it removes is measured and the change is structural - the
+    # keys map back to `fixed_text` / `fixed_title` before anything reads them. A switch so a pod
+    # day can compare both shapes without a rebuild.
+    vllm_audit_issues_first: bool = True
     verify_merge: bool = True
     verify_use_text: bool = True
     verify_suspect_cap: int = 200
