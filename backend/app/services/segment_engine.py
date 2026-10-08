@@ -8,6 +8,7 @@ This is the segment worker's core; it runs on the P4 `segment` (torch/classifier
 import io
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from pypdf import PdfReader, PdfWriter
@@ -352,6 +353,53 @@ def _classified_on_pages(pdf_path, row, page_text_fn):
     return classify(row["title"])
 
 
+# ON OUR MODEL ONLY: a short row whose first page OPENS as a proof or declaration of service is
+# paperwork, whatever title the model gave it.
+#
+# A proof of service names the document it serves, and the trained adapter (run-v2) titled such
+# pages after that document: on one exam record of 2026-10-07 it wrote an evaluation-report title
+# over 25 proof-of-service pages the reviewer filed General. Rule 13 claimed the titles and each
+# page became a summary to untick. The base model and Gemini titled the same pages "Proof of
+# Service". The training labels were not the cause (114 of 118 such pages are titled as proofs of
+# service there), so this guards what the categorizer trusts rather than fixing the model.
+#
+# The cutoff is MEASURED, on the read-only copy of the live box taken 2026-10-07 (312 PDFs, one copy
+# each): reviewer rows of one or two pages whose first page carries the phrase within its first 800
+# characters - 379 rows, 374 filed General, the other 5 unticked, NONE ticked for summary. Reading
+# the whole first page instead reached rows the reviewer ticked (460 rows, 7 ticked), and a row of
+# three pages or more is where a real report with a service page in front of it lives, so neither is
+# claimed. On the 27-record exam it moves 15 of run-v2's rows, every one the reviewer filed General;
+# the base model, run-v1 and Gemini had already filed every such row correctly.
+#
+# Gated on the backend that WRITES the title (segmentation), because the title is what goes wrong.
+# Gemini is untouched, byte for byte, and reads no extra page.
+_SERVICE_PAGE = re.compile(
+    r"proof\s+of\s+(?:personal\s+|electronic\s+|mail\s+)?service|declaration\s+of\s+service",
+    re.IGNORECASE,
+)
+_SERVICE_PAGE_HEAD = 800
+_SERVICE_PAGE_MAX_PAGES = 2
+
+
+def _opens_as_proof_of_service(pdf_path, row, page_text_fn):
+    """Does this short row's first page open as a proof or declaration of service? Only ever asked
+    on our model. A page that cannot be read answers no, so the normal cascade decides; a reviewer's
+    Stop and a missing OCR installation propagate, as they do from the escalation."""
+    if get_settings().backend_for("segment") != "vllm":
+        return False
+    start = int(row["start"])
+    if int(row.get("end") or start) - start + 1 > _SERVICE_PAGE_MAX_PAGES:
+        return False
+    try:
+        head = _escalation_text(pdf_path, {"start": start, "end": start}, page_text_fn)
+    except (OcrUnavailableError, JobCancelled):
+        raise
+    except Exception as exc:
+        logger.warning("service-page check could not read page %s: %s", start, exc)
+        return False
+    return bool(_SERVICE_PAGE.search(head[:_SERVICE_PAGE_HEAD]))
+
+
 def _categorize(pdf_path, row, page_text_fn=None):
     """B5 cascade on the title, escalating to the row's first pages when inconclusive; any
     low-confidence result routes the row to human review via the flag.
@@ -362,6 +410,12 @@ def _categorize(pdf_path, row, page_text_fn=None):
     worker every page is already in the store, so widening the escalation from one page to
     ``_ESCALATION_PAGES`` costs extra row reads and prompt tokens, not extra OCR.
     """
+    if _opens_as_proof_of_service(pdf_path, row, page_text_fn):
+        # A rule decided it, so "rules". It read the page rather than the title, so a title the
+        # model got wrong still disagrees with the category on screen - see categorization.md.
+        row["category"] = DEFAULT_ID
+        row["method"] = "rules"
+        return row
     if _classifies_from_pages():
         result = _classified_on_pages(pdf_path, row, page_text_fn)
     else:
