@@ -149,6 +149,10 @@ x-backend-env: &backend-env
   # title, then the corrected summary, under plain names. Off restores the shared Gemini-ordered
   # schema. Named here so a pod day can compare the two without a rebuild. Gemini ignores it.
   VLLM_AUDIT_ISSUES_FIRST: ${VLLM_AUDIT_ISSUES_FIRST:-true}
+  # Our model's reply cap for one segmentation window (#383); a cut-off window is re-asked in
+  # halves. Thinking tokens count against it, so it must move WITH VLLM_THINKING_STAGES - named
+  # here so that is a restart, not a rebuild. Gemini's call carries no cap.
+  VLLM_SEGMENT_MAX_OUTPUT_TOKENS: ${VLLM_SEGMENT_MAX_OUTPUT_TOKENS:-8192}
   # The render ceiling, and the two per-stage targets it caps. page_dpi fits the DPI to a stage's
   # pixel target and then caps it at SUMMARY_IMAGE_DPI - so lowering this silently shrinks the DOI
   # and deposition reads, which is why the app refuses to boot on the mismatch rather than rendering
