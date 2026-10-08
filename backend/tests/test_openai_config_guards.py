@@ -41,6 +41,7 @@ _PROVIDER_KEYS = (
     "VLLM_APPROVED_ORIGINS",
     "VLLM_SEGMENT_MAX_PAGES",
     "VLLM_MAX_IMAGES_PER_PROMPT",
+    "VLLM_STAGE_MODELS",
 )
 
 
@@ -1044,3 +1045,61 @@ def test_the_refusal_names_the_call_and_what_to_do(monkeypatch):
     assert "the summarize audit model" in message
     assert "gemini-2.5-pro" in message
     assert "clear it" in message
+
+
+# --- VLLM_STAGE_MODELS: a stage on our model can ask for its own served name ------------------------
+#
+# One vLLM process serves the base model and each LoRA adapter as separate names. An adapter answers
+# every stage that asks for its name, including the ones it was never trained on.
+
+_ADAPTER_MODEL = "mrr-lora-v3"
+_BASE_MODEL = "Qwen/Qwen3.6-35B-A3B"
+
+
+def test_a_named_stage_asks_for_its_own_model_and_the_rest_keep_vllm_model(monkeypatch):
+    s = _settings(
+        monkeypatch,
+        **{**_VLLM_UP, "VLLM_MODEL": _ADAPTER_MODEL},
+        VLLM_STAGE_MODELS=f"verify={_BASE_MODEL}, dedup={_BASE_MODEL}",
+    )
+
+    assert s.model_for_stage("verify") == _BASE_MODEL
+    assert s.model_for_stage("dedup") == _BASE_MODEL
+    assert s.model_for_stage("segment") == _ADAPTER_MODEL
+    assert s.model_for_stage("classify") == _ADAPTER_MODEL
+
+
+def test_empty_keeps_every_stage_on_vllm_model(monkeypatch):
+    """GUARD: unset ships today's resolution exactly."""
+    s = _settings(monkeypatch, **_VLLM_UP)
+
+    assert {s.model_for_stage(st) for st in ("segment", "verify", "doi")} == {_BASE_MODEL}
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["summarize=x", "verfy=x", "verify", "verify="],
+    ids=["summarize-has-its-own-keys", "typo", "no-separator", "no-model"],
+)
+def test_an_entry_nobody_can_act_on_refuses_startup(monkeypatch, value):
+    with pytest.raises(RuntimeError, match="VLLM_STAGE_MODELS"):
+        _settings(monkeypatch, **_VLLM_UP, VLLM_STAGE_MODELS=value)
+
+
+def test_a_stage_on_gemini_ignores_its_vllm_name(monkeypatch):
+    """GUARD: the names apply only where the stage resolves to vLLM; Gemini keeps its own models."""
+    s = _settings(
+        monkeypatch,
+        **_POD,
+        LLM_BACKEND="gemini",
+        LLM_BACKEND_OVERRIDES="segment=vllm",
+        VLLM_STAGE_MODELS=f"verify={_ADAPTER_MODEL}",
+    )
+
+    assert s.model_for_stage("verify").startswith("gemini-")
+
+
+def test_a_gemini_name_routed_to_the_pod_through_a_stage_is_refused(monkeypatch):
+    """The second way in for #350: the model-versus-backend check reads `model_for_stage`."""
+    with pytest.raises(RuntimeError, match="Gemini model name"):
+        _settings(monkeypatch, **_VLLM_UP, VLLM_STAGE_MODELS="verify=gemini-2.5-flash")
