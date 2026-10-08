@@ -44,6 +44,7 @@ shared `conftest.py`.
 | `test_eval_corpus.py` | The eval corpus rule: one row per distinct PDF for anything pooled across records. |
 | `test_extraction.py` | Header extraction and how it reports a partial OCR read. |
 | `test_failures.py` | The failure taxonomy and control signals behind resumable summarizing. |
+| `test_fairness.py` | The identify cap: when one reviewer's job steps aside for another who is waiting, and that it never livelocks. |
 | `test_files.py` | The upload filename sanitizer. |
 | `test_genai_client.py` | The Gemini client bounds every request with an HTTP timeout. |
 | `test_genai_metrics.py` | Per-attempt model call accounting, which never breaks the caller. |

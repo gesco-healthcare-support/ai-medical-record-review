@@ -19,6 +19,7 @@ killed or abandoned job, and the orphan recovery the API runs at start-up.
 | `failures.py` | `classify_failure` (transient or permanent), `job_outcome` / `is_failure` for stored jobs, and the control signals `JobPaused`, `JobCancelled`, `JobNeedsAttention`. |
 | `finalizers.py` | RQ `on_stopped` / `on_failure` callbacks, run in the worker parent. |
 | `recovery.py` | `recover_orphans`, called once from the API's start-up. |
+| `fairness.py` | `should_step_aside`: an identify job whose reviewer is at `IDENTIFY_PER_REVIEWER_CAP` steps back to the front of its lane while another reviewer waits. `serve` records the lanes this worker reads. |
 
 The job service that creates and dispatches jobs (`create_job`, `enqueue`, `mark_terminal`, the
 status maps and `ACTIVE_STATES`) is `backend/app/services/jobs.py`, one folder over.
@@ -29,7 +30,7 @@ In the compose stack, two services run this package (`docker-compose.yml`):
 
 | Service | Image | Command |
 | --- | --- | --- |
-| `segment-worker` (3 replicas) | `mrr-backend-classifier`, built with `--extra docs --extra classifier` | `python -m app.worker segment` |
+| `segment-worker` (5 replicas) | `mrr-backend-classifier`, built with `--extra docs --extra classifier` | `python -m app.worker segment` |
 | `summarize-worker` (3 replicas) | `mrr-backend-web`, built with `--extra docs` | `python -m app.worker summarize` |
 
 With no arguments the entry point serves both queues. RQ's `RoundRobinWorker` forks a work-horse
@@ -55,7 +56,7 @@ The tests run against a real Postgres and Redis (see the linked page on running 
 `backend/`:
 
 ```bash
-uv run pytest -q tests/test_jobs.py tests/test_cancel.py tests/test_cancel_escapes_model_calls.py tests/test_failures.py tests/test_job_health.py tests/test_main.py
+uv run pytest -q tests/test_jobs.py tests/test_cancel.py tests/test_cancel_escapes_model_calls.py tests/test_failures.py tests/test_job_health.py tests/test_main.py tests/test_fairness.py
 ```
 
 ## Documentation

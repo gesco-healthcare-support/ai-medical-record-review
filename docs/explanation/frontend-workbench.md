@@ -152,7 +152,10 @@ outcome rather than a tolerated state: without it, a stopped job would spin the 
 request that fails rejects the poll; the loop itself does not retry.
 
 The progress bar shows `round(100 * current / total)` percent, or 5 when `total` is 0, and never less
-than 4. The label comes from `STAGE_LABELS`:
+than 4. While the job is `queued` the label is "Waiting for a free worker - other records are being
+processed first" (`QUEUED_LABEL`), whatever its stage: a queued job's stage is still `starting`, and
+"Starting..." for minutes behind another reviewer's batch read as frozen. Otherwise the label comes
+from `STAGE_LABELS`:
 
 | Job stage | Label |
 | --- | --- |

@@ -41,6 +41,11 @@ const STAGE_LABELS: Record<string, string> = {
   paused: "Paused - waiting for capacity, will retry automatically",
 };
 
+// A job that is QUEUED has not reached a worker yet. Its stage is still "starting", so it used to read
+// "Starting..." for as long as it waited - on 2026-10-07 that was 6 to 12 minutes behind another
+// reviewer's batch, and the reviewer took the screen for frozen. Say what is actually happening.
+const QUEUED_LABEL = "Waiting for a free worker - other records are being processed first";
+
 /** How a polled job settled: finished cleanly, ended needing the reviewer's attention (with the
  *  sub-documents that failed, so the UI can name + highlight them), or was stopped by the reviewer.
  *
@@ -245,7 +250,8 @@ export function useReviewWorkflow(
         activeJobRef.current = { id: job.id, kind: job.kind };
         setActiveJobId(job.id);
         const pct = job.total ? Math.round((100 * job.current) / job.total) : 5;
-        const label = STAGE_LABELS[job.stage] || job.stage || "Working";
+        const label =
+          job.state === "queued" ? QUEUED_LABEL : STAGE_LABELS[job.stage] || job.stage || "Working";
         setProgress({
           title,
           pct: Math.max(pct, 4),

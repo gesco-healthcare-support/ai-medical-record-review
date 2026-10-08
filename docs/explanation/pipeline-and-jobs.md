@@ -116,6 +116,37 @@ lanes, or re-reading the user set periodically.
 If listing users fails at start-up, the worker logs a warning and serves the base queues only, on
 the reasoning that a worker serving fewer lanes is better than one that refuses to boot.
 
+### One reviewer's batch cannot hold every identify worker
+
+Round-robin hands out a turn only when a worker frees, and a job keeps its worker until it ends. So
+a reviewer who queues a batch can occupy every identify worker, and the next reviewer waits for one
+of those jobs to finish. On 2026-10-07 a 13-record batch held all three identify workers and
+another reviewer's identifies sat queued 6 to 12 minutes. In the 30 days before, every identify wait
+longer than a minute was a batch; none was caused by a large record.
+
+`backend/app/worker/fairness.py` adds one rule, checked in `_run` before a job is marked running
+(`_step_aside` in `backend/app/worker/tasks.py`). When an identify job (`segment` or `classify`) is
+picked up, its reviewer already has `IDENTIFY_PER_REVIEWER_CAP` identify jobs running, and another
+reviewer has one waiting, the job goes back to the front of its own lane, still `queued`, and the
+worker's next round-robin turn serves the waiting reviewer. The rule only acts while someone else
+waits, so a reviewer working alone is never capped. With five `segment-worker` replicas and a cap of
+three, a lone reviewer still runs three at a time and a second reviewer always finds a free worker.
+
+Three details are load-bearing:
+
+- Running and waiting are read from Redis (each lane's queue and RQ's `StartedJobRegistry`), not
+  from the `jobs` table. A row can say `queued` for a job RQ has lost, and stepping aside for it
+  would hand the turn to nobody.
+- Only a reviewer below the cap, on a lane this worker serves, counts as waiting. So if every
+  waiting reviewer is at the cap nobody steps aside, and a reviewer added after the workers started
+  (whose lane no running worker reads) cannot make the busy reviewer step aside forever.
+- The job's new RQ id is committed before it goes back on the queue, so a failed write cannot leave
+  a queued copy and run the job as well. Any failure in the check runs the job as picked.
+
+Summarize and dedup jobs are not capped. Over the same 30 days 53 of them waited more than a minute,
+but 52 waited behind their own reviewer's jobs; one waited behind other reviewers' work alone, for
+about a minute.
+
 ### What a worker does before its first job
 
 `backend/app/worker/__main__.py` `main()`:
