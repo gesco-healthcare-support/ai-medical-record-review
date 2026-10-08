@@ -42,9 +42,11 @@ the other rejected OCR speed lever - capping the DPI was 4.2x faster and lost 6.
 
 import logging
 import re
+from collections import Counter
 from functools import lru_cache
-from typing import NotRequired, TypedDict
+from typing import NamedTuple, NotRequired, TypedDict
 
+import numpy as np
 import pytesseract
 from pdf2image import convert_from_path
 from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError
@@ -287,7 +289,13 @@ def extract_text_from_selected_pages(
     return extracted_text
 
 
-def _ocr_page_with_retries(pdf_path, page_number: int, retries: int):
+def _read_page(pdf_path, page_number: int) -> str:
+    """Rasterize and OCR one record page, as one page."""
+    images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
+    return "".join(_ocr_image(image) for image in images)
+
+
+def _ocr_page_with_retries(pdf_path, page_number: int, retries: int, read=_read_page):
     """OCR one page, retrying only ERRORS. Returns ``(text, failure)``; exactly one is None.
 
     ``OcrUnavailableError`` is re-raised rather than retried and rather than reported as a failure:
@@ -298,12 +306,14 @@ def _ocr_page_with_retries(pdf_path, page_number: int, retries: int):
     A blank page is NOT a failure here. It returns ("", None), and the caller decides whether an
     empty read means blank; only errors are retried, because a film or separator sheet is
     legitimately textless and retrying it just costs time.
+
+    ``read`` is what one attempt does. A condensed deposition reads a sheet as its four transcript
+    pages (`_read_sheet`), and passes that here so both readers share one retry rule.
     """
     page_text, failed = None, None
     for _ in range(max(1, retries + 1)):
         try:
-            images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
-            page_text = "".join(_ocr_image(image) for image in images)
+            page_text = read(pdf_path, page_number)
             failed = None
             break
         except OcrUnavailableError:
@@ -365,6 +375,277 @@ def extract_pages_with_report(
         else:
             text += page_text or ""
     return text, {"pages": pages, "errored": errored, "blank": blank}
+
+
+# --- condensed deposition transcripts -------------------------------------------------------------
+#
+# A CONDENSED transcript (the "Min-U-Script" layout and its imitators) prints FOUR transcript pages
+# on one scanned sheet, in a 2x2 grid read down the left column and then down the right: top-left N,
+# bottom-left N+1, top-right N+2, bottom-right N+3. Each quarter carries its own "Page N" label,
+# except the transcript's first page, which is its cover.
+#
+# Read as one page, a condensed sheet loses both things the deposition summary depends on.
+# Tesseract's layout pass takes the grid's four blocks row by row, so the text comes back in the
+# order 1, 3, 2, 4 with nothing between the pages, and the whole sheet gets ONE "Page N:" marker.
+# Measured 2026-10-08 on the record a reviewer reported (eleven sheets holding forty transcript
+# pages): that order on every sheet, so the model was handed eleven "pages" and asked to group them
+# in tens. Worse, the printed-number read (`deposition_pages.transcript_page_offset`) expects one
+# printed number per scanned page, finds four, and on that record its reply was cut off every time,
+# so the deposition was never summarized at all.
+#
+# Each quarter read on its own gives the transcript page back. Same record, same 200 dpi render:
+# all forty page labels read correctly, the cover being the one quarter with no label, and the
+# text kept the same word recall as the whole-sheet read (0.90-0.96 against the sheet's own text
+# layer). The cost is the quarter reads themselves, about four seconds a sheet, paid only by a
+# sheet that IS condensed: an ordinary transcript page has no grid and is read exactly as before.
+
+# A grid line is a row (or column) at least this dark - the share of its pixels darker than mid
+# grey - in BOTH halves of the sheet. Measured at the 200 dpi OCR render on all eleven sheets of
+# the record above: the grid's own lines read 0.84-0.88, and nothing else on any sheet (testimony,
+# the reporter's signature lines, a cover sheet's single rule) reached 0.45. "Both halves" is what
+# keeps a line drawn across one quarter, a signature line, from passing for the grid.
+_GRID_LINE_DARKNESS = 0.6
+# The grid's middle lines are looked for in the middle of the sheet only, where they always sit.
+_GRID_MIDDLE_BAND = (0.35, 0.65)
+# The frame above and below the grid is the nearest full line at least this far from the middle
+# one. Cropping to it keeps the running header and the reporter's footer out of the quarters.
+_GRID_FRAME_GAP = 0.25
+# A line holding ONLY a page label, anchored at both ends: "page 12" inside testimony is content,
+# not a label. Looked for anywhere in the quarter, because Tesseract does not put the label first
+# (it came back as anything from the 1st to the 17th line on the measured sheets).
+_QUARTER_LABEL = re.compile(r"^\W*Page\s+(\d{1,4})\W*$", re.MULTILINE)
+# Where each quarter - top-left, bottom-left, top-right, bottom-right - falls in reading order, for
+# the two orders a condensed transcript can use. Down-then-across is what the measured record
+# printed; across-then-down is accepted too. A sheet that fits neither is read as one page.
+_QUARTER_ORDERS = ((0, 1, 2, 3), (0, 2, 1, 3))
+# At least this many quarters must agree on the sheet's numbering - the same evidence rule as
+# `deposition_pages._MIN_AGREEING`, for the same reason: one label alone could be a misread.
+_MIN_AGREEING_QUARTERS = 2
+
+UNNUMBERED_MARKER = "Unnumbered page (not a transcript page, no page number):"
+
+
+class TranscriptNumbers(NamedTuple):
+    """What `extract_condensed_transcript` found about the transcript's own page numbers."""
+
+    # At least one sheet was read as four transcript pages, so the markers carry printed numbers.
+    condensed: bool
+    # The printed numbers of the transcript pages that could not be read, for a notice in the same
+    # numbering as the summary. None when a failure cannot be stated that way: a whole sheet that
+    # could not be read has no known numbers, and no condensed sheet means there are none at all.
+    unreadable: list[int] | None
+
+
+def _middle_line(profile) -> int | None:
+    """The index of the grid line nearest the middle of a darkness ``profile``, or None."""
+    size = len(profile)
+    low, high = int(_GRID_MIDDLE_BAND[0] * size), int(_GRID_MIDDLE_BAND[1] * size)
+    hits = np.flatnonzero(profile[low:high] >= _GRID_LINE_DARKNESS) + low
+    if not hits.size:
+        return None
+    return int(hits[np.argmin(np.abs(hits - size / 2))])
+
+
+def _grid_cuts(image) -> tuple[int, int, int, int] | None:
+    """Where a condensed sheet's grid divides it: ``(x, y, top, bottom)``, or None.
+
+    ``x`` and ``y`` are the middle lines; ``top`` and ``bottom`` the frame above and below the grid,
+    or the sheet's edge when there is none. Fail-safe: anything that cannot be measured is "no grid",
+    which reads the sheet as one page, exactly as before.
+    """
+    try:
+        dark = np.asarray(image.convert("L")) < 128
+    except Exception:
+        return None
+    if dark.ndim != 2 or min(dark.shape) < 50:
+        return None
+    height, width = dark.shape
+    rows = np.minimum(dark[:, : width // 2].mean(axis=1), dark[:, width // 2 :].mean(axis=1))
+    cols = np.minimum(dark[: height // 2, :].mean(axis=0), dark[height // 2 :, :].mean(axis=0))
+    y, x = _middle_line(rows), _middle_line(cols)
+    if x is None or y is None:
+        return None
+    gap = int(_GRID_FRAME_GAP * height)
+    above = np.flatnonzero(rows[: max(0, y - gap)] >= _GRID_LINE_DARKNESS)
+    below = np.flatnonzero(rows[y + gap :] >= _GRID_LINE_DARKNESS)
+    top = int(above[-1]) if above.size else 0
+    bottom = int(below[0]) + y + gap if below.size else height
+    return x, y, top, bottom
+
+
+def _quarter_label(text) -> int | None:
+    """The page number a quarter's label prints, or None when it shows none or more than one."""
+    labels = {int(found) for found in _QUARTER_LABEL.findall(text or "")}
+    return labels.pop() if len(labels) == 1 else None
+
+
+def _sheet_numbering(labels) -> list[int] | None:
+    """The transcript page number of each quarter, from the labels that could be read, or None.
+
+    ``labels`` is per quarter in the fixed order top-left, bottom-left, top-right, bottom-right. Each
+    readable label implies where the sheet's numbering starts, under each reading order. The order
+    with the MOST labels agreeing wins, and at least `_MIN_AGREEING_QUARTERS` must agree. Refused,
+    which reads the sheet as one page: a tie between two starts within an order, and a tie between
+    the orders themselves - which is what reading only the two corners gives, since top-left and
+    bottom-right are N and N+3 either way and say nothing about the other two.
+
+    "Most" rather than "any": a fully labelled down-then-across sheet (21, 22, 23, 24) also fits
+    across-then-down at two quarters (21 and 24), and a rule accepting any fitting order refused it
+    as ambiguous. That would have refused nine of the ten numbered sheets on the measured record.
+    """
+    best, best_agreeing, tied = None, 0, False
+    for order in _QUARTER_ORDERS:
+        starts = Counter(
+            label - position
+            for label, position in zip(labels, order, strict=True)
+            if label is not None
+        )
+        ranked = starts.most_common()
+        if not ranked:
+            continue
+        start, agreeing = ranked[0]
+        split = len(ranked) > 1 and ranked[1][1] == agreeing
+        if agreeing < _MIN_AGREEING_QUARTERS or split or start < 1:
+            continue
+        if agreeing > best_agreeing:
+            best, best_agreeing, tied = [start + position for position in order], agreeing, False
+        elif agreeing == best_agreeing:
+            tied = True
+    return None if tied else best
+
+
+def _ocr_quarter(image, retries: int) -> str | None:
+    """OCR one quarter, retrying errors the way `_ocr_page_with_retries` does; None when it failed."""
+    for _ in range(max(1, retries + 1)):
+        try:
+            return _ocr_image(image)
+        except OcrUnavailableError:
+            raise
+        except Exception as exc:
+            logger.warning("OCR failed for a quarter of a condensed transcript sheet: %s", exc)
+    return None
+
+
+def _condensed_quarters(image, retries: int = 1) -> list[tuple[int, str | None]] | None:
+    """``[(printed page number, text)]`` for a condensed sheet, in page order, or None.
+
+    None means "read this sheet as one page": it shows no grid, or its quarters' labels do not
+    establish a numbering. ``text`` is None for a quarter whose OCR failed. A quarter with no label
+    and no words is left out - the empty end of a sheet where the transcript stopped mid-grid.
+    """
+    cuts = _grid_cuts(image)
+    if cuts is None:
+        return None
+    x, y, top, bottom = cuts
+    width = image.size[0]
+    boxes = ((0, top, x, y), (0, y, x, bottom), (x, top, width, y), (x, y, width, bottom))
+    texts = [_ocr_quarter(image.crop(box), retries) for box in boxes]
+    labels = [_quarter_label(text) for text in texts]
+    numbers = _sheet_numbering(labels)
+    if numbers is None:
+        return None
+    pages = []
+    for number, label, text in sorted(
+        zip(numbers, labels, texts, strict=True), key=lambda page: page[0]
+    ):
+        if text is None:
+            pages.append((number, None))
+        elif label is not None or text.strip():
+            # The label line is dropped: the marker above the page already carries its number.
+            pages.append((number, _QUARTER_LABEL.sub("", text)))
+    return pages
+
+
+def _read_sheet(pdf_path, page_number: int):
+    """One deposition sheet: its transcript pages when it is condensed, else its text as one page."""
+    images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
+    if len(images) == 1:
+        quarters = _condensed_quarters(images[0])
+        if quarters is not None:
+            return quarters
+    return "".join(_ocr_image(image) for image in images)
+
+
+def has_condensed_sheets(pdf_path, start, end, max_sheets: int = 6) -> bool:
+    """Whether a deposition row's first sheets are printed condensed, four pages to a sheet.
+
+    Looks for the grid only, with no OCR, on the same pages and the same bound as the printed-number
+    read it stands in front of (`deposition_pages._MAX_PAGES`). A condensed row skips that read: it
+    expects one printed number per scanned page, and a condensed sheet prints four.
+
+    Fail-safe: any error is False, which keeps the row on the path it always took. A missing Poppler
+    is not swallowed for long - the row's own extraction raises it a moment later.
+    """
+    try:
+        first, last = int(start), min(int(end), int(start) + max_sheets - 1)
+        for page_number in range(first, last + 1):
+            images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
+            if any(_grid_cuts(image) is not None for image in images):
+                return True
+    except Exception as exc:
+        logger.info("condensed-transcript check skipped: %s", exc)
+    return False
+
+
+def extract_condensed_transcript(pdf_path, selected_pages, *, retries: int = 1):
+    """`extract_pages_with_report(mark_pages=True)` for a deposition that may be printed condensed.
+
+    Returns ``(text, report, numbers)``. ``report`` has exactly the keys and meaning of
+    `extract_pages_with_report`'s, in RECORD pages, and a sheet counts as errored when it, or any of
+    its quarters, could not be read. ``numbers`` is a `TranscriptNumbers`.
+
+    A condensed sheet contributes one ``Page N:`` marker per transcript page, N the number printed on
+    it. Any other sheet in the row has no transcript page number of its own, so it is marked as front
+    matter before the first condensed sheet and as `UNNUMBERED_MARKER` after it - never with a record
+    page number, which would read as a transcript page and send a reviewer to the wrong one.
+
+    When no sheet turns out to be condensed the text is exactly what
+    ``extract_pages_with_report(mark_pages=True)`` returns with no offset: record-page markers, which
+    the caller must then tell the model not to cite.
+    """
+    pages = sorted(set(selected_pages))
+    sheets, errored, blank, unreadable = [], [], [], []
+    for page_number in pages:
+        sheet, failed = _ocr_page_with_retries(pdf_path, page_number, retries, read=_read_sheet)
+        if failed is not None:
+            logger.warning(
+                "OCR gave up on page %s after %d attempt(s): %s", page_number, retries + 1, failed
+            )
+            errored.append(page_number)
+            continue
+        if isinstance(sheet, list):
+            lost = [number for number, text in sheet if text is None]
+            if lost:
+                errored.append(page_number)
+                unreadable.extend(lost)
+        elif not (sheet or "").strip():
+            blank.append(page_number)
+        sheets.append((page_number, sheet))
+
+    condensed = any(isinstance(sheet, list) for _, sheet in sheets)
+    # A sheet that failed whole has no known transcript numbers, so the notice cannot be stated in
+    # them; a sheet that lost only some quarters can. Read sheets are the ones in `sheets`.
+    read = {page_number for page_number, _ in sheets}
+    statable = condensed and all(page_number in read for page_number in errored)
+    numbers = TranscriptNumbers(condensed, sorted(unreadable) if statable else None)
+    report = {"pages": pages, "errored": errored, "blank": blank}
+    return _marked_transcript(sheets, condensed), report, numbers
+
+
+def _marked_transcript(sheets, condensed: bool) -> str:
+    """The marked text for `extract_condensed_transcript`'s ``(record page, sheet)`` pairs."""
+    text, seen_condensed = "", False
+    for page_number, sheet in sheets:
+        if isinstance(sheet, list):  # `_read_sheet` split it into its pages
+            seen_condensed = True
+            text += "".join(f"Page {n}:\n{page}\n" for n, page in sheet if page is not None)
+            continue
+        if not condensed:
+            marker = page_marker(page_number)
+        else:
+            marker = UNNUMBERED_MARKER if seen_condensed else FRONT_MATTER_MARKER
+        text += f"{marker}\n{sheet or ''}\n"
+    return text
 
 
 def extract_text_from_all_pages(pdf_path) -> str:
