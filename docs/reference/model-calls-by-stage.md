@@ -201,6 +201,7 @@ bundle export pass `verify=False`.
 | Parts | Gemini: the transcript's first pages, at most 6 (`deposition_pages._MAX_PAGES`), as one inline PDF. vLLM: the same pages as images at `DEPOSITION_IMAGE_LONG_EDGE_PX`. Then `deposition_pages._PROMPT` |
 | Max output tokens | `DEPOSITION_MAX_OUTPUT_TOKENS` |
 | Schema | `deposition_pages._SCHEMA`: object with `pages`, an array of `{i, printed}` integers |
+| Skipped | For a transcript printed condensed, four pages to a scanned sheet (`ocr.has_condensed_sheets()` finds the grid on one of the row's first six pages). Its page numbers are read from each quarter's OCR instead, with no model call |
 | Reply handling | `json.loads`, then `_offset_from()`: the single offset that at least two pages (`_MIN_AGREEING`) agree on, else `None` |
 | Truncated reply | Raises `TranscriptPagesUnreadableError`, a `PipelineError`, which propagates |
 | Failure | Any other exception: WARNING and `None` (the summary cites no transcript pages). `JobCancelled` is re-raised |

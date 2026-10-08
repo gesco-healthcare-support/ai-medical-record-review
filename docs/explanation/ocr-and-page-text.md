@@ -157,6 +157,7 @@ Some reads OCR the PDF directly and do not write to `page_texts`:
 | Header extraction at the end of a segment job | 1 to `min(15, page_count)` | `backend/app/services/extraction.py` `extract_header` |
 | Boundary verification in the segment job | The two pages either side of a suspect boundary, rendered at 120 DPI; any OCR failure falls back to the image-only check | `backend/app/services/verify_pass.py` `_boundary_text` |
 | Summarize, for a row with no seeded text | The row's pages; depositions (category 9) always, with `Page N:` markers | `backend/app/services/summarize_engine.py` (`extract_pages_with_report`) |
+| Summarize, a deposition printed condensed | The row's pages. A sheet holding four transcript pages in a 2x2 grid is cut on its grid lines and each quarter OCR'd on its own, so each transcript page gets its own `Page N:` marker | `backend/app/services/ocr.py` `extract_condensed_transcript` |
 | Categorization escalation run outside the worker | Up to the first three pages of the row | `backend/app/services/segment_engine.py` `_escalation_text`, only when no page reader is supplied (the evaluation scripts) |
 
 ## The OpenMP thread limit

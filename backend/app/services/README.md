@@ -12,7 +12,7 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 | | `files.py` | Filesystem-safe filename helper. |
 | | `aggregate.py` | Merges several already-split PDFs into one record and computes each source's page range. |
 | Page text | `page_text.py` | Extracts each page's text once (text layer or OCR), stores it in `page_texts`, and reuses it in every stage. |
-| | `ocr.py` | Tesseract OCR over pages rasterized by Poppler. |
+| | `ocr.py` | Tesseract OCR over pages rasterized by Poppler; reads a condensed deposition sheet a quarter at a time. |
 | | `rasterise.py` | Renders pages to images for backends that cannot take an inline PDF. |
 | Segmentation | `segment_engine.py` | Runs identification: windows, the model call per window, the merge, categorizing, the verify pass, injury dates. |
 | | `windows.py` | Packs pages into overlapping windows by byte budget and page cap. |

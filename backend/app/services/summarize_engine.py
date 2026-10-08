@@ -12,13 +12,18 @@ import. This module no longer names an SDK.
 import difflib
 import logging
 import re
+from dataclasses import dataclass
 
 from app.config import get_settings
 from app.errors import EmptyExtractionError, is_rate_limited
 from app.services.deposition_pages import transcript_page_offset
 from app.services.house_style import one_paragraph, sentence_case_caps_runs
 from app.services.llm import Part, TextPart, get_provider
-from app.services.ocr import extract_pages_with_report
+from app.services.ocr import (
+    extract_condensed_transcript,
+    extract_pages_with_report,
+    has_condensed_sheets,
+)
 from app.services.prompts import prompts
 from app.services.provenance import fingerprint, summary_prompt_fingerprint
 from app.services.rasterise import page_image_parts
@@ -583,28 +588,44 @@ def standalone_studies_from_rows(rows, exclude=None) -> list[dict]:
     return studies
 
 
-def _deposition_pages_block(page_offset) -> str:
+def _deposition_pages_block(page_offset, *, condensed=False) -> str:
     """The system-message block telling a deposition what its ``Page N:`` markers actually mean.
 
     The category prompt cannot know: the same markers are the transcript's OWN printed page numbers
-    when ``deposition_pages.transcript_page_offset`` established an offset, and mere positions in our
-    scanned file when it could not. Citing the second as though it were the first sends a reviewer to
-    the wrong page - so when the offset is unknown the model is told to cite nothing.
+    when ``deposition_pages.transcript_page_offset`` established an offset, or when the transcript is
+    printed ``condensed`` and every page was labelled with its own printed number, and mere positions
+    in our scanned file otherwise. Citing the last as though it were the first sends a reviewer to
+    the wrong page - so when the numbers are unknown the model is told to cite nothing.
+
+    A condensed transcript gets one more sentence. Its scanned sheets each hold four transcript
+    pages, while the page images attached to the request are whole sheets; the groups of ten are
+    counted in transcript pages, the markers, never in sheets. And a sheet that is not part of the
+    transcript's own pages - a cover, an exhibit - is marked without a number, which is not a page to
+    count or cite.
 
     Appended to the SYSTEM message, like the other per-row blocks, so the user payload ordering
     (images -> OCR text -> instruction) is untouched.
     """
-    if page_offset is None:
+    if page_offset is None and not condensed:
         return (
             "\n\nPAGE NUMBERS: the 'Page N:' markers below are positions in our scanned file, NOT "
             "this transcript's own printed page numbers. Do NOT write any page number in the summary "
             "- not the marker numbers and not a number you infer. Still group the pages as instructed "
             "and begin each paragraph with the substance instead of a page reference.\n"
         )
-    return (
+    block = (
         "\n\nPAGE NUMBERS: the 'Page N:' markers below ARE this transcript's own printed page "
         "numbers. Cite them exactly as given - they are what a reader uses to find the testimony.\n"
     )
+    if condensed:
+        block += (
+            "This transcript is printed condensed, four transcript pages to each scanned sheet, so "
+            "an attached image shows four pages. Count and group the transcript pages by the "
+            "'Page N:' markers, never by the images. A marker without a number marks a sheet that "
+            "is not a transcript page (a cover or an exhibit): do not count it in a group or cite "
+            "it.\n"
+        )
+    return block
 
 
 def _standalone_studies_block(studies) -> str:
@@ -1835,14 +1856,14 @@ def _resolved_models(model, title_model, audit_model) -> tuple[str, str, str]:
     )
 
 
-def _build_system_message(pdf_path, row, prompt, standalone_studies):
-    """The system message for one row, its prompt fingerprint, and the deposition facts behind it.
+def _build_system_message(row, prompt, standalone_studies):
+    """The system message for one row and its prompt fingerprint.
 
-    Returns ``(system_msg, prompt_fingerprint, deposition, page_offset)``. The last two are returned
-    rather than kept private because the caller needs both afterwards: ``deposition`` decides whether
-    stored OCR may be reused, and ``page_offset`` labels both the re-extraction and the trailing
-    notice. Discovering that offset READS THE PDF, so it is named in the return rather than left as a
-    side effect of something called "build system message".
+    Returns ``(system_msg, prompt_fingerprint)``. A deposition's page-number block is NOT added here:
+    what its markers mean is only known once the transcript has been read (`_row_source_text`), so
+    `summarize_row` appends `_deposition_pages_block` after that. This used to discover the printed
+    page numbers itself, before any page was read, which is what left no room for a transcript
+    printed four pages to a sheet.
     """
     # Prepend the shared rules that can bind on THIS category (applies to DB-resolved and fallback
     # prompts alike, and to any future category - build_preamble defaults an unknown id to everything).
@@ -1862,26 +1883,28 @@ def _build_system_message(pdf_path, row, prompt, standalone_studies):
     # apart from this visit's own findings by date rather than by guesswork.
     if str(row["category"]) in _CURRENT_VISIT_CATEGORIES:
         system_msg += _document_date_block(row.get("date"))
-
-    # Depositions are summarized in groups of consecutive transcript pages, so this category needs to
-    # SEE where each page ends. The stored text cannot be reused for them: page boundaries cannot be
-    # retrofitted onto text that was already concatenated without them, so a marked re-extraction is
-    # the only way. Confined to category 9 - markers in every category's input would push page numbers
-    # into ordinary summaries and pollute the duplicate check's similarity scoring.
-    deposition = str(row["category"]) == "9"
-    page_offset = None
-    if deposition:
-        # Label the markers with the TRANSCRIPT's own printed page numbers, discovered once. When the
-        # offset cannot be established the markers fall back to record pages and the prompt is told
-        # not to cite them at all: a citation that looks like a transcript page but is not one sends a
-        # reviewer to the wrong page, which is worse than giving them no page at all.
-        page_offset = transcript_page_offset(pdf_path, row["start"], row["end"])
-        system_msg += _deposition_pages_block(page_offset)
-    return system_msg, prompt_fingerprint, deposition, page_offset
+    return system_msg, prompt_fingerprint
 
 
-def _row_source_text(pdf_path, row, deposition, page_offset) -> tuple[str, list]:
-    """The row's OCR text, and which of its pages the recognizer FAILED on.
+@dataclass(frozen=True)
+class _RowSource:
+    """A row's OCR text, the pages it could not read, and what a deposition's markers mean."""
+
+    text: str
+    # RECORD pages the recognizer failed on: what `unreadablePages` reports, and what the reviewer's
+    # row tooling matches against.
+    unreadable_pages: list
+    # The same failures in the numbering the summary BODY cites, for the trailing notice.
+    notice_pages: list
+    # A deposition's marker numbers are the transcript's own printed ones: either an offset was read
+    # (one transcript page per scanned page), or the transcript is printed condensed and every page
+    # was labelled with the number printed on it.
+    page_offset: int | None = None
+    condensed: bool = False
+
+
+def _row_source_text(pdf_path, row, deposition) -> _RowSource:
+    """The row's OCR text, which of its pages the recognizer FAILED on, and its page numbering.
 
     Reuse the duplicate check's OCR when it exists: it ran the SAME extraction over the SAME pages
     and persisted it per row, so a second full pass is pure waste - on a 1500-page record that is
@@ -1892,7 +1915,9 @@ def _row_source_text(pdf_path, row, deposition, page_offset) -> tuple[str, list]
     leave summarize_row entirely - a notice-only dict, or EmptyExtractionError that two callers catch
     by type - so neither can live behind a helper call.
     """
-    text = "" if deposition else (row.get("source_text") or "").strip()
+    if deposition:
+        return _deposition_source_text(pdf_path, row)
+    text = (row.get("source_text") or "").strip()
     # Which of this row's pages the recognizer FAILED on, as opposed to read cleanly and found empty.
     # Seeded from the row when the caller knows (it can read `page_texts.extract_ok`, which this
     # DB-free module cannot), then OVERRIDDEN by a fresh extraction below - what just happened is
@@ -1901,17 +1926,72 @@ def _row_source_text(pdf_path, row, deposition, page_offset) -> tuple[str, list]
     # read it is worse than saying nothing.
     unreadable_pages = sorted({int(p) for p in (row.get("unreadable_pages") or [])})
     if not text:
-        pages = list(range(int(row["start"]), int(row["end"]) + 1))
         # The REPORTING extractor, so a row that produced no text can say WHY. The plain variant
         # collapses a failed page and a legitimately blank one into the same silent skip, and that is
         # exactly the distinction the notice below turns on. It also retries an errored page once on
         # the way through, so a transient Tesseract timeout gets another chance before it is
         # announced to a client.
         text, report = extract_pages_with_report(
-            pdf_path, pages, mark_pages=deposition, page_label_offset=page_offset or 0
+            pdf_path, _row_pages(row), mark_pages=False, page_label_offset=0
         )
         unreadable_pages = sorted(report["errored"])
-    return text, unreadable_pages
+    return _RowSource(text, unreadable_pages, unreadable_pages)
+
+
+def _row_pages(row) -> list:
+    return list(range(int(row["start"]), int(row["end"]) + 1))
+
+
+def _source_block(source: _RowSource, deposition: bool) -> str:
+    """The system-message block that depends on what the read found: a deposition's page numbers.
+
+    Added after the read, because only the read knows what the markers mean - see
+    `_deposition_source_text`. "" for every other category.
+    """
+    if not deposition:
+        return ""
+    return _deposition_pages_block(source.page_offset, condensed=source.condensed)
+
+
+def _deposition_source_text(pdf_path, row) -> _RowSource:
+    """A deposition's text with a ``Page N:`` marker per transcript page, and what the numbers mean.
+
+    Depositions are summarized in groups of consecutive transcript pages, so this category needs to
+    SEE where each page ends. The stored text cannot be reused for them: page boundaries cannot be
+    retrofitted onto text that was already concatenated without them, so a marked re-extraction is
+    the only way. Confined to category 9 - markers in every category's input would push page numbers
+    into ordinary summaries and pollute the duplicate check's similarity scoring.
+
+    The markers carry the TRANSCRIPT's own printed page numbers whenever those can be established,
+    two ways:
+
+    * A transcript printed CONDENSED, four pages to a scanned sheet (`ocr.has_condensed_sheets`), is
+      read a quarter at a time and each page labelled with the number printed on it
+      (`ocr.extract_condensed_transcript`). It skips the printed-number read: that read expects one
+      number per scanned page, and on a condensed sheet it finds four. Reviewer report 2026-10-08:
+      such a deposition was never summarized at all, because that read's reply was cut off on every
+      attempt.
+    * Any other transcript has its offset discovered once (`transcript_page_offset`) and the record
+      page markers shifted by it.
+
+    When neither establishes the numbers the markers fall back to record pages and the prompt is told
+    not to cite them at all: a citation that looks like a transcript page but is not one sends a
+    reviewer to the wrong page, which is worse than giving them no page at all.
+    """
+    pages = _row_pages(row)
+    if has_condensed_sheets(pdf_path, row["start"], row["end"]):
+        text, report, numbers = extract_condensed_transcript(pdf_path, pages)
+        unreadable_pages = sorted(report["errored"])
+        cited = numbers.unreadable if numbers.unreadable is not None else unreadable_pages
+        return _RowSource(text, unreadable_pages, cited, condensed=numbers.condensed)
+    page_offset = transcript_page_offset(pdf_path, row["start"], row["end"])
+    text, report = extract_pages_with_report(
+        pdf_path, pages, mark_pages=True, page_label_offset=page_offset or 0
+    )
+    unreadable_pages = sorted(report["errored"])
+    return _RowSource(
+        text, unreadable_pages, notice_pages(unreadable_pages, page_offset), page_offset
+    )
 
 
 def _doi_lead(injury_date) -> str:
@@ -1938,8 +2018,12 @@ def _doi_lead(injury_date) -> str:
     return f"**DOI**: {injury_date}. "
 
 
-def _trailing_notices(verified_text, unreadable_pages, embedded_review_pages, page_offset):
+def _trailing_notices(verified_text, notice_pages_cited, embedded_review_pages):
     """The sentences appended AFTER the audit, and the verified body carrying them.
+
+    ``notice_pages_cited`` are the unreadable pages already in the numbering the body cites
+    (`_RowSource.notice_pages`): record pages for most rows, the transcript's own numbers for a
+    deposition whose numbers are known.
 
     Returns ``(partial_notice, verified_text)``. ``verified_text`` MUST be returned and rebound by the
     caller: it is a str, so appending to it in here could never reach them.
@@ -1956,13 +2040,11 @@ def _trailing_notices(verified_text, unreadable_pages, embedded_review_pages, pa
     which is exact - appending an empty string is a no-op - but it is the same order.
     """
     partial_notice = ""
-    if unreadable_pages:
+    if notice_pages_cited:
         # Cited in the SAME numbering as the body above it - see `notice_pages`. For a deposition the
         # body cites transcript pages, so a record-page notice put two different numbering systems in
         # one summary with nothing marking the change.
-        partial_notice = " " + partial_unreadable_notice(
-            notice_pages(unreadable_pages, page_offset)
-        )
+        partial_notice = " " + partial_unreadable_notice(notice_pages_cited)
     if embedded_review_pages:
         partial_notice += " " + embedded_review_notice(embedded_review_pages)
     if verified_text is not None:
@@ -2381,10 +2463,11 @@ def summarize_row(
     if prompt is None:
         key = f"category_{int(row['category']):02d}" if row["category"] != "100" else "category_100"
         prompt = prompts.get(key, prompts["category_100"])
-    system_msg, prompt_fingerprint, deposition, page_offset = _build_system_message(
-        pdf_path, row, prompt, standalone_studies
-    )
-    text, unreadable_pages = _row_source_text(pdf_path, row, deposition, page_offset)
+    system_msg, prompt_fingerprint = _build_system_message(row, prompt, standalone_studies)
+    deposition = str(row["category"]) == "9"
+    source = _row_source_text(pdf_path, row, deposition)
+    text, unreadable_pages = source.text, source.unreadable_pages
+    system_msg += _source_block(source, deposition)
     # Pages of an excluded records-review block that belongs to THIS row. Seeded by the worker, which
     # is the only layer that can see the neighbouring rows - this module is deliberately DB-free, the
     # same reason `unreadable_pages` arrives as row data rather than being looked up here.
@@ -2485,7 +2568,7 @@ def summarize_row(
     # Applied to the verified body too, so the notice survives whichever body effective_text()
     # delivers, and after sentence_case_caps_runs so that transform never rewrites it.
     partial_notice, verified_text = _trailing_notices(
-        verified_text, unreadable_pages, embedded_review_pages, page_offset
+        verified_text, source.notice_pages, embedded_review_pages
     )
     # Computed once, because the two are absent TOGETHER - a different fact from "not recorded",
     # which `verified` is what distinguishes.

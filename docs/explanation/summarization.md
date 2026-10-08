@@ -167,7 +167,9 @@ is a fixed sentence from `summarize_engine.py`:
 Trailing notices are appended by `_trailing_notices()` after the audit (the audit checks the body
 against the source, and these sentences are not in the source) and after capitalisation (so the
 transform never rewrites them). For a deposition the notice cites pages in transcript numbering,
-falling back to record pages if any shifted number would be zero or less (`notice_pages()`).
+falling back to record pages if any shifted number would be zero or less (`notice_pages()`). For a
+condensed transcript it cites the printed numbers of the quarters that could not be read, falling
+back to record pages when a whole sheet could not be read, since that sheet's numbers are unknown.
 
 The embedded-review tag exists because an evaluation's embedded records review is split off as its
 own row and excluded, which left its pages unmentioned. `tasks.py` `_seed_embedded_review_pages()`
@@ -401,6 +403,18 @@ Category 9 differs at every step:
   matter instead of labelling it `Page 0:` (#259). If no offset can be established the model
   is told to cite no page numbers. A truncated reply raises `TranscriptPagesUnreadableError`, which
   the worker treats as a permanent failure for that row.
+- **Condensed transcripts.** Some depositions are printed four transcript pages to a sheet, in a 2x2
+  grid read down the left column, then down the right, each quarter labelled "Page N". The offset
+  read cannot handle that (it expects one printed number per scanned page), and a whole-sheet OCR
+  returns the four pages out of order with no boundaries. `ocr.has_condensed_sheets()` looks for the
+  grid on the row's first six pages, with no model call; when it finds one the offset read is
+  skipped and `ocr.extract_condensed_transcript()` cuts each sheet on its grid lines and OCRs each
+  quarter on its own. Each transcript page gets its own `Page N:` marker with the number printed on
+  it (at least two quarters must agree on a sheet's numbering). A sheet without the grid, such as a
+  cover or an exhibit, gets a marker with no number. `_deposition_pages_block()` then tells the model
+  the markers are printed page numbers and to group by markers, not by page images. Reviewer report
+  2026-10-08: a condensed deposition (11 sheets, 40 transcript pages) failed to summarize three
+  times because the offset read was truncated every time.
 - **No stored text, no one-paragraph pass, no export flattening.**
 - **Audit guard** on paragraph and page-range counts, and the coverage warning described above.
 
