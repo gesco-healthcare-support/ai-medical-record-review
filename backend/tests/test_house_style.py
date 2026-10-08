@@ -183,3 +183,41 @@ def test_a_label_followed_only_by_another_label_is_still_removed():
     """The case the rule exists for survives the tightening: a heading introducing nothing."""
     text = "**Objective Findings**: **Range of Motion**: flexion 40 degrees."
     assert one_paragraph(text) == "**Range of Motion**: flexion 40 degrees."
+
+
+# #407: a label in front of a label is not always vacuous. A diagnostic summary covering several
+# studies opens each with the study's own heading, and removing those ran the studies together.
+_TWO_STUDIES = (
+    "**MRI of the lumbar spine (05/15/2025):** **Findings**: L4-5 bulge. "
+    "**Impression**: Mild degeneration. "
+    "**MRI of the cervical spine (05/15/2025):** **Findings**: C5-6 osteophyte. "
+    "**Impression**: Mild spondylosis."
+)
+
+
+def test_a_study_heading_in_a_multi_study_summary_is_kept():
+    """DEMONSTRATES #407 on the issue's own synthetic input: both study names and dates survive."""
+    assert one_paragraph(_TWO_STUDIES) == _TWO_STUDIES
+
+
+def test_a_study_heading_without_a_date_is_kept_in_front_of_its_findings():
+    """DEMONSTRATES the second half: what a study heading introduces is a result heading."""
+    text = "**X-ray of the right knee:** **Impression**: No fracture."
+    assert one_paragraph(text) == text
+
+
+def test_a_label_carrying_a_number_is_never_taken_for_empty():
+    """A digit is information - a date, a level, a study number - even with a label after it."""
+    text = "**Visit 3:** **Range of Motion**: flexion 40 degrees."
+    assert one_paragraph(text) == text
+
+
+def test_the_reported_shape_still_loses_its_empty_headings_when_studies_are_present():
+    """GUARD: the multi-line flattening and the vacuous-heading removal both still run around a
+    study heading - only the heading that carries information is kept."""
+    text = "**Objective Findings**:\n**Range of Motion**: flexion 40.\n" + _TWO_STUDIES
+    flat = one_paragraph(text)
+    assert "\n" not in flat
+    assert "**Objective Findings**" not in flat
+    assert "**MRI of the lumbar spine (05/15/2025):**" in flat
+    assert "**MRI of the cervical spine (05/15/2025):**" in flat
