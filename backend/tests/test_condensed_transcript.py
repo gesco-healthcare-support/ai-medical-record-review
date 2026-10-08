@@ -229,7 +229,8 @@ def test_every_transcript_page_gets_its_own_printed_number(monkeypatch):
     ], "eight transcript pages from two sheets, in order"
     assert text.startswith(ocr.FRONT_MATTER_MARKER + "\nWHOLE SHEET 10\n"), "the cover sheet"
     assert text.endswith(ocr.UNNUMBERED_MARKER + "\nWHOLE SHEET 13\n"), "an exhibit after it"
-    assert "Page 10:" not in text and "Page 13:" not in text, "no record page reads as a citation"
+    assert "Page 10:" not in text, "no record page reads as a citation"
+    assert "Page 13:" not in text
     assert report == {"pages": [10, 11, 12, 13], "errored": [], "blank": []}
     assert numbers == ocr.TranscriptNumbers(condensed=True, unreadable=[])
 

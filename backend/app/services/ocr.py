@@ -496,7 +496,9 @@ def _sheet_numbering(labels) -> list[int] | None:
     best, best_agreeing, tied = None, 0, False
     for order in _QUARTER_ORDERS:
         starts = Counter(
-            label - position for label, position in zip(labels, order) if label is not None
+            label - position
+            for label, position in zip(labels, order, strict=True)
+            if label is not None
         )
         ranked = starts.most_common()
         if not ranked:
@@ -543,7 +545,9 @@ def _condensed_quarters(image, retries: int = 1) -> list[tuple[int, str | None]]
     if numbers is None:
         return None
     pages = []
-    for number, label, text in sorted(zip(numbers, labels, texts), key=lambda page: page[0]):
+    for number, label, text in sorted(
+        zip(numbers, labels, texts, strict=True), key=lambda page: page[0]
+    ):
         if text is None:
             pages.append((number, None))
         elif label is not None or text.strip():
@@ -609,34 +613,43 @@ def extract_condensed_transcript(pdf_path, selected_pages, *, retries: int = 1):
             )
             errored.append(page_number)
             continue
-        if isinstance(sheet, list):
-            lost = [number for number, text in sheet if text is None]
-            if lost:
-                errored.append(page_number)
-                unreadable.extend(lost)
-        elif not (sheet or "").strip():
+        lost = [number for number, text in sheet if text is None] if _is_split(sheet) else []
+        if lost:
+            errored.append(page_number)
+            unreadable.extend(lost)
+        if not _is_split(sheet) and not (sheet or "").strip():
             blank.append(page_number)
         sheets.append((page_number, sheet))
 
-    condensed = any(isinstance(sheet, list) for _, sheet in sheets)
-    text, seen_condensed = "", False
-    for page_number, sheet in sheets:
-        if isinstance(sheet, list):
-            seen_condensed = True
-            text += "".join(
-                f"Page {number}:\n{page}\n" for number, page in sheet if page is not None
-            )
-        elif condensed:
-            marker = UNNUMBERED_MARKER if seen_condensed else FRONT_MATTER_MARKER
-            text += f"{marker}\n{sheet or ''}\n"
-        else:
-            text += f"{page_marker(page_number)}\n{sheet or ''}\n"
+    condensed = any(_is_split(sheet) for _, sheet in sheets)
     # A sheet that failed whole has no known transcript numbers, so the notice cannot be stated in
     # them; a sheet that lost only some quarters can. Read sheets are the ones in `sheets`.
     read = {page_number for page_number, _ in sheets}
     statable = condensed and all(page_number in read for page_number in errored)
     numbers = TranscriptNumbers(condensed, sorted(unreadable) if statable else None)
-    return text, {"pages": pages, "errored": errored, "blank": blank}, numbers
+    report = {"pages": pages, "errored": errored, "blank": blank}
+    return _marked_transcript(sheets, condensed), report, numbers
+
+
+def _is_split(sheet) -> bool:
+    """Whether `_read_sheet` returned a sheet as its transcript pages rather than as one text."""
+    return isinstance(sheet, list)
+
+
+def _marked_transcript(sheets, condensed: bool) -> str:
+    """The marked text for `extract_condensed_transcript`'s ``(record page, sheet)`` pairs."""
+    text, seen_condensed = "", False
+    for page_number, sheet in sheets:
+        if _is_split(sheet):
+            seen_condensed = True
+            text += "".join(f"Page {n}:\n{page}\n" for n, page in sheet if page is not None)
+            continue
+        if not condensed:
+            marker = page_marker(page_number)
+        else:
+            marker = UNNUMBERED_MARKER if seen_condensed else FRONT_MATTER_MARKER
+        text += f"{marker}\n{sheet or ''}\n"
+    return text
 
 
 def extract_text_from_all_pages(pdf_path) -> str:

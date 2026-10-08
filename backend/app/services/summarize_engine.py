@@ -1942,6 +1942,17 @@ def _row_pages(row) -> list:
     return list(range(int(row["start"]), int(row["end"]) + 1))
 
 
+def _source_block(source: _RowSource, deposition: bool) -> str:
+    """The system-message block that depends on what the read found: a deposition's page numbers.
+
+    Added after the read, because only the read knows what the markers mean - see
+    `_deposition_source_text`. "" for every other category.
+    """
+    if not deposition:
+        return ""
+    return _deposition_pages_block(source.page_offset, condensed=source.condensed)
+
+
 def _deposition_source_text(pdf_path, row) -> _RowSource:
     """A deposition's text with a ``Page N:`` marker per transcript page, and what the numbers mean.
 
@@ -2456,10 +2467,7 @@ def summarize_row(
     deposition = str(row["category"]) == "9"
     source = _row_source_text(pdf_path, row, deposition)
     text, unreadable_pages = source.text, source.unreadable_pages
-    if deposition:
-        # After the read, because only the read knows what the markers mean - see
-        # `_deposition_source_text`. Appended to the system message like every per-row block.
-        system_msg += _deposition_pages_block(source.page_offset, condensed=source.condensed)
+    system_msg += _source_block(source, deposition)
     # Pages of an excluded records-review block that belongs to THIS row. Seeded by the worker, which
     # is the only layer that can see the neighbouring rows - this module is deliberately DB-free, the
     # same reason `unreadable_pages` arrives as row data rather than being looked up here.
