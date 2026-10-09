@@ -138,12 +138,22 @@ front of the combined pages.
 - The author first-name-first: a `SURNAME, GIVEN NAMES, CREDENTIAL` opening, copied from a letterhead
   printed that way, becomes `GIVEN NAMES SURNAME, CREDENTIAL` (`tidy_author_and_facility()`).
 - A health system named without its site: `KAISER PERMANENTE FONTANA` becomes `KAISER PERMANENTE`
-  (`_HEALTH_SYSTEMS` in `summarize_engine.py`). Both rules also apply to titles stored before them, on
-  the Summaries tab and in the export, but never to a title a reviewer typed.
+  (`_HEALTH_SYSTEMS` in `summarize_engine.py`).
+- No facility that only repeats the author's own name:
+  `JOHN SMITH, M.D. JOHN SMITH MD, INC. OFFICE VISIT` becomes `JOHN SMITH, M.D. OFFICE VISIT`
+  (`_without_own_practice()`, part of `tidy_author_and_facility()`). Only when the facility is the
+  same surname, suffix and first name or initial, plus credential and corporate words (`MD`, `DO`,
+  `DC`, `INC`, `APC`, `PC`, `LLC`, `A MEDICAL CORPORATION`), and the title's shape is certain. A
+  named practice (`JOHN SMITH ORTHOPEDIC GROUP`) and another person's corporation (a physician
+  assistant's supervising doctor) are kept. These three rules also apply to titles stored before
+  them, on the Summaries tab and in the export, but never to a title a reviewer typed.
 - A workers' compensation legal form (category 7) without the state agency that issues it:
   `STATE OF CALIFORNIA DIVISION OF WORKERS' COMPENSATION` is taken out, and a header naming the
-  Appeals Board keeps only `WORKERS' COMPENSATION APPEALS BOARD` (`without_wc_agency()`). Applied
-  when the summary is written, so a summary written before it changes on re-summarize.
+  Appeals Board keeps only `WORKERS' COMPENSATION APPEALS BOARD` (`without_wc_agency()`). An
+  Application for Adjudication of Claim loses the Board too, so with no attorney named its title is
+  just `APPLICATION FOR ADJUDICATION OF CLAIM`; an Answer to one keeps it. Applied by
+  `category_title()` when the summary is written, to the audited title, and on the Summaries tab and
+  in the export, keyed on the category the summary was written under (`summaries.row_category`).
 - No internal markers: `presentable_title()` strips `[ManualCheck]`, `[Diagnostic Study]` and
   `(Pages X-Y)`. The page range comes back only when the export dialog's page-number box is ticked.
 - One spelling per provider across the record (`consistent_authors()`), then one spelling per

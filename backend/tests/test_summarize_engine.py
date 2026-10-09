@@ -3792,6 +3792,159 @@ def test_a_category_7_audited_title_loses_the_agency_too(monkeypatch):
     assert "ANSWER TO APPLICATION" in out["verifiedTitle"]
 
 
+# The Application for Adjudication of Claim drops the Appeals Board too (reviewer feedback,
+# 2026-10-09); every other category-7 title keeps it (#535). Synthetic names only.
+_BOARD = "WORKERS' COMPENSATION APPEALS BOARD"
+_APPLICATION = "APPLICATION FOR ADJUDICATION OF CLAIM"
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        (
+            f"JANE DOE, ATTORNEY. {_AGENCY} {_BOARD}. {_APPLICATION}.",
+            f"JANE DOE, ATTORNEY. {_APPLICATION}.",
+        ),
+        (f"JANE DOE, ESQ. {_BOARD}. {_APPLICATION}.", f"JANE DOE, ESQ. {_APPLICATION}."),
+        (
+            f"EXAMPLE LAW GROUP, P.C. {_BOARD}. {_APPLICATION}.",
+            f"EXAMPLE LAW GROUP, P.C. {_APPLICATION}.",
+        ),
+        (f"JANE DOE, ATTORNEY, {_BOARD}, {_APPLICATION}", f"JANE DOE, ATTORNEY. {_APPLICATION}"),
+        (f"{_BOARD}. AMENDED {_APPLICATION}.", f"AMENDED {_APPLICATION}."),
+    ],
+)
+def test_an_application_for_adjudication_loses_the_board(title, expected):
+    assert se.without_wc_agency(title) == expected
+
+
+@pytest.mark.parametrize("board", [_BOARD, f"{_AGENCY} {_BOARD}", f"THE {_AGENCY}, {_BOARD}"])
+def test_an_application_with_only_the_board_is_just_the_document_type(board):
+    """No attorney named: the title is the document type alone - the Board is implied."""
+    assert se.without_wc_agency(f"{board}. {_APPLICATION}.") == f"{_APPLICATION}."
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        f"{_BOARD}. COMPROMISE AND RELEASE.",
+        f"{_BOARD}. ANSWER TO {_APPLICATION}.",
+        f"{_BOARD}. PROOF OF SERVICE OF {_APPLICATION}.",
+        f"{_BOARD}. NOTICE OF HEARING.",
+    ],
+)
+def test_every_other_category_7_title_keeps_the_board(title):
+    """GUARD (#535): only the Application loses the Board. An Answer to it, or a proof of serving
+    it, is a different document that names the Application as its object."""
+    assert se.without_wc_agency(title) is title
+
+
+def test_category_title_applies_to_category_7_only_and_keeps_the_tag():
+    stored = f"[ManualCheck] {_BOARD}. {_APPLICATION}. (Pages 3-4)"
+    assert se.category_title(stored, "7") == f"[ManualCheck] {_APPLICATION}. (Pages 3-4)"
+    assert se.category_title(stored, "2") is stored
+    assert se.category_title(stored, None) is stored
+
+
+def test_a_category_7_application_is_generated_without_the_board(monkeypatch):
+    def generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        if system_msg == se.TITLE_PROMPT:
+            return f"JANE DOE, ATTORNEY. {_AGENCY} {_BOARD}. {_APPLICATION}.", False
+        return "Summary body", False
+
+    monkeypatch.setattr(se, "extract_pages_with_report", _stub_extract)
+    monkeypatch.setattr(se, "_generate", generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    title = se.summarize_row("/x.pdf", _row(category="7"), prompt="P")["summaryTitle"]
+    assert title.startswith(f"JANE DOE, ATTORNEY. {_APPLICATION}.")
+    assert "APPEALS BOARD" not in title
+
+
+def test_a_stored_title_is_delivered_under_its_category_rule():
+    """DEMONSTRATES the export half: the category rule ran at generation only, so a title stored
+    before it shipped kept the agency in every delivered document."""
+    stored = f"[ManualCheck] JANE DOE, ATTORNEY. {_AGENCY} {_BOARD}. {_APPLICATION}. (Pages 3-4)"
+    assert se.presentable_title(stored, category="7") == f"JANE DOE, ATTORNEY. {_APPLICATION}."
+    assert _AGENCY in se.presentable_title(stored, category="1")
+
+
+def test_a_reviewer_typed_application_title_is_never_rewritten():
+    typed = f"{_BOARD}. {_APPLICATION}."
+    assert se.presentable_title(typed, reviewer_edited=True, category="7") == typed
+
+
+# The author's own practice is not a second facility (reviewer feedback, 2026-10-09). Synthetic
+# names only.
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("JOHN SMITH, M.D. JOHN SMITH MD, INC. OFFICE VISIT.", "JOHN SMITH, M.D. OFFICE VISIT."),
+        ("JOHN SMITH, M.D. JOHN SMITH, M.D., INC. PR-2.", "JOHN SMITH, M.D. PR-2."),
+        (
+            "JOHN SMITH, D.C. JOHN SMITH DC APC. PROGRESS REPORT.",
+            "JOHN SMITH, D.C. PROGRESS REPORT.",
+        ),
+        (
+            "JOHN A. SMITH, M.D. J. SMITH, M.D., A MEDICAL CORPORATION. PR-2.",
+            "JOHN A. SMITH, M.D. PR-2.",
+        ),
+        ("JOHN SMITH, M.D. SMITH MD INC. NURSE VISIT.", "JOHN SMITH, M.D. NURSE VISIT."),
+        (
+            "DR. JOHN SMITH, M.D. JOHN SMITH MD INC. OFFICE VISIT.",
+            "DR. JOHN SMITH, M.D. OFFICE VISIT.",
+        ),
+        # the name repeated with no corporate word at all
+        ("JOHN SMITH, M.D. JOHN SMITH, M.D. PROGRESS REPORT.", "JOHN SMITH, M.D. PROGRESS REPORT."),
+        # a corporate word the element split cut off is dropped with the name
+        ("JOHN SMITH, M.D. JOHN SMITH, M.D. INC. RFA.", "JOHN SMITH, M.D. RFA."),
+        # a middle initial's period splits the facility too; it is judged whole
+        (
+            "JOHN A. SMITH, M.D. JOHN A. SMITH, M.D., INC. PROGRESS NOTE.",
+            "JOHN A. SMITH, M.D. PROGRESS NOTE.",
+        ),
+        # surname-first is turned first, then the practice reads as the author's own
+        ("SMITH, JOHN, M.D. JOHN SMITH MD INC. OFFICE VISIT.", "JOHN SMITH, M.D. OFFICE VISIT."),
+        (
+            "[ManualCheck] JOHN SMITH, M.D. JOHN SMITH MD INC. MRI. [Diagnostic Study] (Pages 4-6)",
+            "[ManualCheck] JOHN SMITH, M.D. MRI. [Diagnostic Study] (Pages 4-6)",
+        ),
+    ],
+)
+def test_a_facility_that_is_the_authors_own_name_is_dropped(title, expected):
+    assert se.tidy_author_and_facility(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # a named practice: words that are not the author's name
+        "JOHN SMITH, M.D. JOHN SMITH ORTHOPEDIC GROUP. PR-2.",
+        # a different person's practice, by first name, middle initial, suffix or surname
+        "JOHN SMITH, M.D. JANE SMITH MD INC. PR-2.",
+        "JOHN A. SMITH, M.D. JOHN B. SMITH MD INC. PR-2.",
+        "JOHN SMITH JR., M.D. JOHN SMITH MD INC. PR-2.",
+        "JANE ROE, P.A. JOHN SMITH MD INC. OFFICE VISIT.",
+        # the same surname under another credential: not shown to be the same person
+        "JOHN SMITH, D.C. SMITH MD INC. PROGRESS REPORT.",
+        "JANE SMITH, P.A. SMITH MD INC. OFFICE VISIT.",
+        # a practice named with a credential's period, split by the element cut
+        "DR. JOHN SMITH, M.D. JOHN SMITH, M.D. MEDICAL GROUP. RFA.",
+        "JOHN SMITH, M.D., QME. SMITH, M.D. A MEDICAL CORPORATION PRIMARY TREATING REPORT.",
+        # no document type after it, so no certain facility
+        "JOHN SMITH, M.D. JOHN SMITH MD INC.",
+    ],
+)
+def test_a_practice_that_is_not_only_the_authors_name_is_kept(title):
+    """GUARD: named practices, other people's corporations and uncertain shapes stay as they are."""
+    assert se.tidy_author_and_facility(title) == title
+
+
+def test_a_reviewer_typed_title_keeps_its_own_practice():
+    typed = "JOHN SMITH, M.D. JOHN SMITH MD INC. OFFICE VISIT."
+    assert se.presentable_title(typed, reviewer_edited=True) == typed
+    assert se.presentable_title(typed) == "JOHN SMITH, M.D. OFFICE VISIT."
+
+
 def test_category_7_asks_for_the_settlement_and_the_denials():
     prompt = se.prompts["category_07"]
     assert "### Compromise and Release ###" in prompt

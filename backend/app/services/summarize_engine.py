@@ -1239,15 +1239,138 @@ def _system_name_only(title: str) -> str:
 _DOUBLED_PERIOD = re.compile(r"\.(?:[ \t]{0,4}\.)+")
 
 
+# THE AUTHOR'S OWN PRACTICE IS NOT A SECOND FACILITY. Reviewer feedback, 2026-10-09: when the
+# facility is the author's own name - a private practice, "JOHN SMITH, M.D. JOHN SMITH MD, INC." -
+# it says nothing the author does not, so delete it. Measured on a copy of the live box the same
+# day: reviewers changed it in all 26 corrected titles that carried it, mostly by dropping the
+# element.
+#
+# Narrow on purpose. Dropped only when what is left of the facility, once credential and corporate
+# words are taken off its end, is the author's own name: the same surname and suffix, the same
+# first name (or its initial) when both carry one, and the same credential when the facility names
+# one. A named practice keeps its name - "JOHN SMITH ORTHOPEDIC GROUP" has words that are not his
+# name - and so does a DIFFERENT person's corporation. A physician assistant's title naming the
+# supervising doctor's corporation is a separate case the reviewers are split on (about 10 dropped,
+# 6 kept), so it is left as it is.
+#
+# The facility is judged WHOLE: everything between the author and the document type. The element
+# split cuts at every ". ", so a practice whose name carries a credential's period - "JOHN SMITH,
+# M.D. MEDICAL GROUP", "SMITH, M.D. A MEDICAL CORPORATION" - reaches here in pieces, and a replay
+# over a copy of the live box caught both being cut in half when only the first piece was judged:
+# the name dropped and "MEDICAL GROUP" left as the facility, or "A MEDICAL CORPORATION" left at the
+# front of the document type. Judged whole, the first has words that are not his name; a document
+# type that opens with corporate words means the facility ran into it, and nothing is dropped.
+_PRACTICE_FORM = re.compile(
+    r"(?:^|\s)(?:A\s(?:MEDICAL|PROFESSIONAL)\sCORPORATION|MEDICAL\sCORPORATION"
+    r"|MD|DO|DC|INC|APC|PC|LLC)$"
+)
+_LEADING_PRACTICE_FORM = re.compile(
+    r"(?:A\s(?:MEDICAL|PROFESSIONAL)\sCORPORATION|MEDICAL\sCORPORATION|INC|APC|PC|LLC)(?:\s|$)"
+)
+_PRACTICE_CREDENTIALS = frozenset({"MD", "DO", "DC"})
+_NAME_ONLY = re.compile(r"[A-Z][A-Z'\-]*")
+# What follows the document type on a stored title: the diagnostic tag, then the page suffix.
+_TITLE_TAIL = re.compile(
+    r"(?:\s{0,8}\[Diagnostic Study\])?"
+    r"(?:\s{0,8}\(pages\s{1,8}\d{1,9}\s{0,8}[-\u2013]\s{0,8}\d{1,9}\))?\s{0,8}$",
+    re.I,
+)
+
+
+def _practice_words(text: str) -> str:
+    """``text`` upper-cased, periods dropped (``M.D.`` reads ``MD``) and commas made spaces."""
+    return " ".join(text.upper().replace(".", "").replace(",", " ").split())
+
+
+def _name_and_suffix(name: str) -> tuple[list[str], str]:
+    """A name's words, upper-cased, without periods, commas, a leading "DR" or a suffix - and the
+    suffix ("" when none)."""
+    words = _practice_words(name).split()
+    if words[:1] == ["DR"]:
+        words = words[1:]
+    suffix = words.pop() if len(words) > 1 and words[-1] in _NAME_SUFFIXES else ""
+    return words, suffix
+
+
+def _same_initial(a: str, b: str) -> bool:
+    """One first or middle name for one person: identical, or one is the other's initial."""
+    return a == b or (min(len(a), len(b)) == 1 and a[0] == b[0])
+
+
+def _without_practice_forms(text: str) -> tuple[str, set[str]]:
+    """``text``'s words with every credential and corporate word taken off its end, and the
+    credentials among them."""
+    bare, credentials = _practice_words(text), set()
+    while match := _PRACTICE_FORM.search(bare):
+        credentials |= {match.group().strip()} & _PRACTICE_CREDENTIALS
+        bare = bare[: match.start()].strip()
+    return bare, credentials
+
+
+def _is_own_practice(name: str, credential: str, facility: str) -> bool:
+    """Whether ``facility`` is the author's own ``name`` plus credential and corporate words only,
+    naming no credential but the author's own."""
+    bare, credentials = _without_practice_forms(facility)
+    if not bare or (credentials and credentials != {credential}):
+        return False
+    mine, my_suffix = _name_and_suffix(name)
+    theirs, their_suffix = _name_and_suffix(bare)
+    if not (mine and theirs) or len(theirs) > 4 or my_suffix != their_suffix:
+        return False
+    if not all(_NAME_ONLY.fullmatch(w) for w in theirs) or theirs[-1] != mine[-1]:
+        return False
+    if len(theirs) > 1 and len(mine) > 1 and not _same_initial(theirs[0], mine[0]):
+        return False
+    middles = (theirs[1:-1], mine[1:-1])
+    return not (all(middles) and not _same_initial(middles[0][0], middles[1][0]))
+
+
+def _own_practice_span(core: str) -> tuple[int, int] | None:
+    """Where ``core``'s facility - everything between the author and the document type - is the
+    author's own practice, else ``None``."""
+    author = _author_parts(core)
+    parts = _facility_parts(core) if author else None
+    if not (author and parts):
+        return None
+    elements = title_elements(core)
+    _, facility, start = parts
+    end = start + len(facility)
+    for element in elements[2:-1]:
+        at = core.find(element, end)
+        if at < 0:
+            return None
+        end = at + len(element)
+    if _LEADING_PRACTICE_FORM.match(_practice_words(elements[-1])):
+        return None
+    name, (_, _, credential) = author
+    return (start, end) if _is_own_practice(name, credential, core[start:end]) else None
+
+
+def _without_own_practice(title: str) -> str:
+    """``title`` with a facility that is only the author's own name dropped - see the note above.
+
+    Returns ``title`` itself, byte for byte, unless that facility was dropped. A title of author and
+    document type alone has no facility, so nothing is ever taken from it. A stored title's
+    diagnostic tag and page suffix are set aside first and put back after."""
+    tail = _TITLE_TAIL.search(title)
+    core = title[: tail.start()] if tail else title
+    span = _own_practice_span(core)
+    if span is None:
+        return title
+    start, end = span
+    return core[:start] + core[end:].lstrip(" .,") + title[len(core) :]
+
+
 def tidy_author_and_facility(title: str) -> str:
-    """``title`` with the author first-name-first, a health system's site dropped, and no doubled
-    period - the rules above. A leading ``[ManualCheck]`` tag is kept where it was, so this is safe
-    on a stored, decorated title as well as on a bare header line."""
+    """``title`` with the author first-name-first, a health system's site dropped, no doubled
+    period, and no facility that only repeats the author's own name - the rules above. A leading
+    ``[ManualCheck]`` tag is kept where it was, so this is safe on a stored, decorated title as well
+    as on a bare header line."""
     raw = title or ""
     tag = _MANUAL_CHECK_PREFIX.match(raw)
     head = raw[: tag.end()] if tag else ""
-    body = raw[len(head) :]
-    return head + _DOUBLED_PERIOD.sub(".", _system_name_only(_first_name_first(body)))
+    body = _DOUBLED_PERIOD.sub(".", _system_name_only(_first_name_first(raw[len(head) :])))
+    return head + _without_own_practice(body)
 
 
 # A workers' compensation legal form (category 7) is titled without the state agency that issues it.
@@ -1268,6 +1391,15 @@ def tidy_author_and_facility(title: str) -> str:
 # Other agencies (the Employment Development Department, the Disability Evaluation Unit, a DWC
 # district office) are not the header the reviewer described and keep their names; only "State of
 # California" in front of them goes.
+#
+# THE APPLICATION FOR ADJUDICATION OF CLAIM goes without the Board as well. Reviewer feedback,
+# 2026-10-09: the Board in that title is unnecessary - it is implied the Board issued it - and with
+# no attorney named the title is just "APPLICATION FOR ADJUDICATION OF CLAIM". Measured on a copy of
+# the live box the same day: reviewers took the Board out of 26 of the 30 corrected titles that
+# carried it, every one an Application. Every other category-7 title keeps the Board as above. An
+# "ANSWER TO APPLICATION FOR ADJUDICATION OF CLAIM" is the defence's reply, a different document, so
+# the Application is recognised only where it is not the object of TO or OF; across the same copy
+# that was the only document name ever found in front of it.
 WORKERS_COMP_LEGAL_CATEGORY = "7"
 _WC_APPEALS_BOARD = "WORKERS' COMPENSATION APPEALS BOARD"
 _WC_AGENCY_PART = (
@@ -1283,11 +1415,14 @@ _WC_AGENCY_RUN = re.compile(
 _WC_AGENCY_NAME = re.compile(r"STATE\s{1,3}OF\s{1,3}CALIFORNIA|INDUSTRIAL|DIVISION\s{1,3}OF", re.I)
 _WC_BOARD = re.compile(r"APPEALS\s{1,3}BOARD", re.I)
 _WC_DOUBLED_PERIOD = re.compile(r"\.(?:\s{0,3}\.)+")
+# Tested on the title with its whitespace collapsed, so the look-behinds are single-spaced.
+_WC_APPLICATION = re.compile(r"(?<!\bTO )(?<!\bOF )\bAPPLICATION FOR ADJUDICATION\b", re.I)
 
 
-def _without_agency_run(title: str, run: re.Match) -> str:
-    """``title`` with one agency ``run`` taken out, and what stood either side of it rejoined."""
-    if _WC_BOARD.search(run.group()):
+def _without_agency_run(title: str, run: re.Match, *, keep_board: bool = True) -> str:
+    """``title`` with one agency ``run`` taken out, and what stood either side of it rejoined. A
+    run naming the Board is reduced to the Board unless ``keep_board`` is off."""
+    if keep_board and _WC_BOARD.search(run.group()):
         return f"{title[: run.start()]}{_WC_APPEALS_BOARD}{title[run.end() :]}"
     before = title[: run.start()].rstrip(_WC_AGENCY_SEP)
     after = title[run.end() :].lstrip(_WC_AGENCY_SEP)
@@ -1301,25 +1436,39 @@ def _without_agency_run(title: str, run: re.Match) -> str:
 
 
 def without_wc_agency(title: str) -> str:
-    """``title`` with the workers' compensation agency header taken out - see the note above.
+    """``title`` with the workers' compensation agency header taken out - see the note above. In an
+    Application for Adjudication of Claim the Appeals Board goes too.
 
     Returns ``title`` itself, byte for byte, when it names no part of the agency, and never empties
     a title: a header that is ONLY the agency is left as it came."""
     result = title or ""
+    application = bool(_WC_APPLICATION.search(" ".join(result.split())))
     for run in reversed(list(_WC_AGENCY_RUN.finditer(result))):
-        if _WC_AGENCY_NAME.search(run.group()):
-            result = _without_agency_run(result, run)
+        if application or _WC_AGENCY_NAME.search(run.group()):
+            result = _without_agency_run(result, run, keep_board=not application)
     if result == (title or ""):
         return title
     result = _WC_DOUBLED_PERIOD.sub(".", result).strip()
     return result if re.search(r"[A-Za-z0-9]", result) else title
 
 
-def _category_title(title: str, row: dict) -> str:
-    """A generated or audited title with the rules that hold for its category alone."""
-    if str(row.get("category")) == WORKERS_COMP_LEGAL_CATEGORY:
-        return without_wc_agency(title)
-    return title
+def category_title(title: str, category) -> str:
+    """``title`` with the rules that hold for its ``category`` alone - today category 7's agency
+    header (`without_wc_agency`).
+
+    Applied at generation, to the audit's corrected title, and - since 2026-10-09 - at export and on
+    the Summaries tab too, so a title stored before a rule existed is delivered under it without a
+    re-run, as `tidy_title` already was. Until then the agency rule reached only titles generated
+    after it shipped. A leading ``[ManualCheck]`` tag stays where it was, so this is safe on a
+    stored, decorated title. Returns ``title`` itself, byte for byte, when nothing applies."""
+    if str(category) != WORKERS_COMP_LEGAL_CATEGORY:
+        return title
+    raw = title or ""
+    tag = _MANUAL_CHECK_PREFIX.match(raw)
+    head = raw[: tag.end()] if tag else ""
+    body = raw[len(head) :]
+    cleaned = without_wc_agency(body)
+    return title if cleaned == body else head + cleaned
 
 
 def tidy_title(title: str) -> str:
@@ -1696,11 +1845,12 @@ def fold_same_visit(entries: list[dict], categories: list[str], title_key: str) 
     return out
 
 
-def presentable_title(title: str, *, reviewer_edited: bool = False) -> str:
+def presentable_title(title: str, *, reviewer_edited: bool = False, category=None) -> str:
     """``title`` with every internal review marker removed, ready for a delivered document.
 
-    The author's name order and a health system's site are tidied too (`tidy_title`), so a summary
-    stored before those rules is delivered tidy without a re-run - EXCEPT a title a reviewer typed
+    The author's name order and a health system's site are tidied too (`tidy_title`), and so is
+    what holds for the summary's ``category`` alone (`category_title`), so a summary stored before
+    those rules is delivered tidy without a re-run - EXCEPT a title a reviewer typed
     (``reviewer_edited``), which keeps their wording; only the address rule, older than this
     parameter, still applies to it.
 
@@ -1725,7 +1875,9 @@ def presentable_title(title: str, *, reviewer_edited: bool = False) -> str:
     presentable = _MANUAL_CHECK_PREFIX.sub("", (title or "").strip())
     presentable = _PAGES_SUFFIX.sub("", presentable).rstrip()
     presentable = _DIAGNOSTIC_TAG.sub(" ", presentable).strip()
-    return without_address(presentable) if reviewer_edited else tidy_title(presentable)
+    if reviewer_edited:
+        return without_address(presentable)
+    return category_title(tidy_title(presentable), category)
 
 
 # A reviewer marks a document they cannot read - handwritten, illegible, incomplete - with this
@@ -2406,8 +2558,8 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
         # out of _usable_title returning `title`: an unusable rewrite then equals the current
         # title and no verified_title is stored, exactly as a rejected BODY rewrite keeps the raw
         # body.
-        fixed_title = _category_title(
-            _usable_title(result.get("fixed_title"), title, source="audited"), row
+        fixed_title = category_title(
+            _usable_title(result.get("fixed_title"), title, source="audited"), row.get("category")
         )
         if fixed_title and fixed_title != title:
             verified_title = (
@@ -2525,7 +2677,7 @@ def summarize_row(
     # The title call has no response_schema, and Gemini does not enforce maxLength on strings even
     # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and
     # written to a varchar(512).
-    title = _category_title(_usable_title(title, row.get("title")), row)
+    title = category_title(_usable_title(title, row.get("title")), row.get("category"))
     # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
     # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
     # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
