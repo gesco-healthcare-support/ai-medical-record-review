@@ -5889,3 +5889,50 @@ def test_a_reviewer_typed_title_is_shown_and_exported_as_typed():
     summary = _titled_summary(edited_title=typed)
     assert _summary_response(Document(review_rows=[]), summary)["summaryTitle"] == typed
     assert _export_entry(summary)["summaryTitle"] == typed
+
+
+_STORED_APPLICATION = (
+    "[ManualCheck] JANE DOE, ATTORNEY. STATE OF CALIFORNIA DIVISION OF WORKERS' COMPENSATION "
+    "WORKERS' COMPENSATION APPEALS BOARD. APPLICATION FOR ADJUDICATION OF CLAIM. (Pages 3-5)"
+)
+
+
+def test_a_stored_application_is_shown_and_exported_without_the_agency_or_the_board():
+    """The category-7 rule ran at generation only, so a title stored before it shipped kept the
+    agency on this tab and in every deliverable (reviewer feedback, 2026-10-09)."""
+    from app.api.documents import _export_entry, _summary_response
+
+    summary = _titled_summary(title=_STORED_APPLICATION, row_category="7")
+    shown = _summary_response(Document(review_rows=[]), summary)["summaryTitle"]
+    assert shown == (
+        "[ManualCheck] JANE DOE, ATTORNEY. APPLICATION FOR ADJUDICATION OF CLAIM. (Pages 3-5)"
+    )
+    exported = _export_entry(summary)["summaryTitle"]
+    assert exported == "JANE DOE, ATTORNEY. APPLICATION FOR ADJUDICATION OF CLAIM."
+
+
+def test_the_agency_rule_follows_the_category_the_summary_was_written_under():
+    """GUARD: outside category 7 the same words are left alone, as at generation."""
+    from app.api.documents import _export_entry
+
+    summary = _titled_summary(title=_STORED_APPLICATION, row_category="1")
+    assert "APPEALS BOARD" in _export_entry(summary)["summaryTitle"]
+
+
+def test_a_reviewer_typed_application_title_is_shown_and_exported_as_typed():
+    from app.api.documents import _export_entry, _summary_response
+
+    typed = "WORKERS' COMPENSATION APPEALS BOARD. APPLICATION FOR ADJUDICATION OF CLAIM."
+    summary = _titled_summary(title=_STORED_APPLICATION, row_category="7", edited_title=typed)
+    assert _summary_response(Document(review_rows=[]), summary)["summaryTitle"] == typed
+    assert _export_entry(summary)["summaryTitle"] == typed
+
+
+def test_a_stored_title_naming_the_authors_own_practice_is_shown_and_exported_without_it():
+    from app.api.documents import _export_entry, _summary_response
+
+    stored = "[ManualCheck] JOHN SMITH, M.D. JOHN SMITH MD, INC. OFFICE VISIT. (Pages 3-5)"
+    summary = _titled_summary(title=stored)
+    shown = _summary_response(Document(review_rows=[]), summary)["summaryTitle"]
+    assert shown == "[ManualCheck] JOHN SMITH, M.D. OFFICE VISIT. (Pages 3-5)"
+    assert _export_entry(summary)["summaryTitle"] == "JOHN SMITH, M.D. OFFICE VISIT."

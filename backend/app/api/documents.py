@@ -81,6 +81,7 @@ from app.services.reporting import (
 )
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
+    category_title,
     consistent_authors,
     consistent_facilities,
     fold_same_visit,
@@ -1445,9 +1446,12 @@ def _summary_response(document: Document, summary: Summary) -> dict:
     row = live.get((summary.row_start, summary.row_end))
     listing = summary.listing()
     if summary.edited_title is None:
-        # A title stored before the name-order and health-system rules reads tidy on this tab too,
-        # without a re-run - the same rules the export applies. A reviewer-typed title is theirs.
-        listing["summaryTitle"] = tidy_author_and_facility(listing["summaryTitle"])
+        # A title stored before the name-order, health-system and category rules reads tidy on this
+        # tab too, without a re-run - the same rules the export applies. A reviewer-typed title is
+        # theirs.
+        listing["summaryTitle"] = category_title(
+            tidy_author_and_facility(listing["summaryTitle"]), summary.row_category
+        )
     return {
         **listing,
         "rowCategoryLive": row.category if row is not None else None,
@@ -1729,7 +1733,9 @@ def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tup
     it from here.
     """
     title = presentable_title(
-        summary.effective_title(), reviewer_edited=summary.edited_title is not None
+        summary.effective_title(),
+        reviewer_edited=summary.edited_title is not None,
+        category=summary.row_category,
     )
     if with_pages:
         title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
@@ -2082,7 +2088,9 @@ def _delivered_entries(session: Session, document: Document) -> dict[int, tuple[
         summary.row_start: (
             summary.effective_date(),
             presentable_title(
-                summary.effective_title(), reviewer_edited=summary.edited_title is not None
+                summary.effective_title(),
+                reviewer_edited=summary.edited_title is not None,
+                category=summary.row_category,
             ),
         )
         for summary in session.scalars(

@@ -428,7 +428,9 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
         entries.append(
             {
                 "summaryDate": output.get("summaryDate") or "-",
-                "summaryTitle": summarize_engine.presentable_title(output["summaryTitle"]),
+                "summaryTitle": summarize_engine.presentable_title(
+                    output["summaryTitle"], category=row.get("category")
+                ),
                 "summaryText": output["summaryText"],
                 "diagnostic": is_diagnostic(row.get("category")),
             }
