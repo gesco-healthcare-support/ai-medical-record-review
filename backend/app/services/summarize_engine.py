@@ -1272,7 +1272,7 @@ _NAME_ONLY = re.compile(r"[A-Z][A-Z'\-]*")
 # What follows the document type on a stored title: the diagnostic tag, then the page suffix.
 _TITLE_TAIL = re.compile(
     r"(?:\s{0,8}\[Diagnostic Study\])?"
-    r"(?:\s{0,8}\(pages\s{1,8}\d{1,9}\s{0,8}[-–]\s{0,8}\d{1,9}\))?\s{0,8}$",
+    r"(?:\s{0,8}\(pages\s{1,8}\d{1,9}\s{0,8}[-\u2013]\s{0,8}\d{1,9}\))?\s{0,8}$",
     re.I,
 )
 
