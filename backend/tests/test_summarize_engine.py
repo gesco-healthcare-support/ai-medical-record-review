@@ -3897,6 +3897,11 @@ def test_a_reviewer_typed_application_title_is_never_rewritten():
         ("JOHN SMITH, M.D. JOHN SMITH, M.D. PROGRESS REPORT.", "JOHN SMITH, M.D. PROGRESS REPORT."),
         # a corporate word the element split cut off is dropped with the name
         ("JOHN SMITH, M.D. JOHN SMITH, M.D. INC. RFA.", "JOHN SMITH, M.D. RFA."),
+        # a middle initial's period splits the facility too; it is judged whole
+        (
+            "JOHN A. SMITH, M.D. JOHN A. SMITH, M.D., INC. PROGRESS NOTE.",
+            "JOHN A. SMITH, M.D. PROGRESS NOTE.",
+        ),
         # surname-first is turned first, then the practice reads as the author's own
         ("SMITH, JOHN, M.D. JOHN SMITH MD INC. OFFICE VISIT.", "JOHN SMITH, M.D. OFFICE VISIT."),
         (

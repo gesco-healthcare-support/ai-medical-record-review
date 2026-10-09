@@ -1253,12 +1253,13 @@ _DOUBLED_PERIOD = re.compile(r"\.(?:[ \t]{0,4}\.)+")
 # supervising doctor's corporation is a separate case the reviewers are split on (about 10 dropped,
 # 6 kept), so it is left as it is.
 #
-# And only when the title's shape is certain: the facility is followed by nothing but its own
-# corporate words and then the document type. The element split cuts at every ". ", so a practice
-# whose name carries a credential's period - "JOHN SMITH, M.D. MEDICAL GROUP", "SMITH, M.D. A
-# MEDICAL CORPORATION" - reaches here in pieces, and a replay over a copy of the live box caught
-# both being cut in half: the name dropped, "MEDICAL GROUP" left as the facility, or "A MEDICAL
-# CORPORATION" left at the front of the document type.
+# The facility is judged WHOLE: everything between the author and the document type. The element
+# split cuts at every ". ", so a practice whose name carries a credential's period - "JOHN SMITH,
+# M.D. MEDICAL GROUP", "SMITH, M.D. A MEDICAL CORPORATION" - reaches here in pieces, and a replay
+# over a copy of the live box caught both being cut in half when only the first piece was judged:
+# the name dropped and "MEDICAL GROUP" left as the facility, or "A MEDICAL CORPORATION" left at the
+# front of the document type. Judged whole, the first has words that are not his name; a document
+# type that opens with corporate words means the facility ran into it, and nothing is dropped.
 _PRACTICE_FORM = re.compile(
     r"(?:^|\s)(?:A\s(?:MEDICAL|PROFESSIONAL)\sCORPORATION|MEDICAL\sCORPORATION"
     r"|MD|DO|DC|INC|APC|PC|LLC)$"
@@ -1325,8 +1326,8 @@ def _is_own_practice(name: str, credential: str, facility: str) -> bool:
 
 
 def _own_practice_span(core: str) -> tuple[int, int] | None:
-    """Where ``core`` names the author's own practice as its facility, with any corporate words
-    split off after it, when the rest of the title is only the document type - else ``None``."""
+    """Where ``core``'s facility - everything between the author and the document type - is the
+    author's own practice, else ``None``."""
     author = _author_parts(core)
     parts = _facility_parts(core) if author else None
     if not (author and parts):
@@ -1336,7 +1337,7 @@ def _own_practice_span(core: str) -> tuple[int, int] | None:
     end = start + len(facility)
     for element in elements[2:-1]:
         at = core.find(element, end)
-        if _without_practice_forms(element)[0] or at < 0:
+        if at < 0:
             return None
         end = at + len(element)
     if _LEADING_PRACTICE_FORM.match(_practice_words(elements[-1])):
