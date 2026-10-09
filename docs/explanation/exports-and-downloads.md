@@ -38,7 +38,10 @@ entry list (`documents.py`):
    false, and answers 409 when there are none.
 2. **Title and body.** `_export_title_and_text()` takes the effective title (reviewer edit, else
    audited correction, else raw) through `presentable_title()`, which strips the internal markers
-   `[ManualCheck]`, `[Diagnostic Study]` and `(Pages X-Y)` and any address pieces. If the dialog asked
+   `[ManualCheck]`, `[Diagnostic Study]` and `(Pages X-Y)` and any address pieces, and - unless a
+   reviewer typed the title - applies the header-line rules in
+   [Deliverable layout](deliverable-layout.md#header-lines), including the category-7 rule keyed on
+   the summary's `row_category`. If the dialog asked
    for page numbers, `(Pages X-Y)` is re-applied from the summary's stored page range. The body is
    the effective text; unedited machine text of a non-deposition row is run through `one_paragraph()`
    again, and a missing DOI prefix is restored from the raw body.

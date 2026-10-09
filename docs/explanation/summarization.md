@@ -252,12 +252,18 @@ does not enforce `maxLength`. `_usable_title()` is the enforcement:
   city, a phone number) and keeps everything else byte for byte. Its `tidy_author_and_facility()` step
   turns a `SURNAME, GIVEN NAMES, CREDENTIAL` author into `GIVEN NAMES SURNAME, CREDENTIAL`, and cuts a
   listed health system (`_HEALTH_SYSTEMS`, today Kaiser Permanente) down to its name, dropping the
-  branch or department after it. Both are deliberately narrow: an author without a credential, a
-  second credential or degree in the middle slot, and text after the system's name that names a
-  document are all left as they are.
+  branch or department after it, and drops a facility that is only the author's own name with
+  credential and corporate words (`_without_own_practice()`, as in
+  `JOHN SMITH, M.D. JOHN SMITH MD, INC.`).
+  All are deliberately narrow: an author without a credential, a second credential or degree in the
+  middle slot, text after the system's name that names a document, a named practice, another
+  person's corporation, and a facility followed by anything but its corporate words and the
+  document type are all left as they are.
 - A category-7 title (workers' compensation legal forms) then loses the state agency header
-  (`without_wc_agency()`), keeping the Appeals Board when the header names it. Applied to the
-  generated and the audited title of category 7 only; other categories keep the agency.
+  (`without_wc_agency()`, through `category_title()`), keeping the Appeals Board when the header
+  names it - except in an Application for Adjudication of Claim, where the Board goes too. Applied
+  to the generated and the audited title of category 7 only, and again on the Summaries tab and in
+  the export for a title stored before the rule; other categories keep the agency.
 
 The stored title is decorated: `[ManualCheck] ` in front when the row flag is `x`,
 ` [Diagnostic Study]` after it for category 3, and ` (Pages S-E)` at the end. Exports strip all
