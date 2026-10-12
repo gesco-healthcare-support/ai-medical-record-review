@@ -42,7 +42,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
-    "eslint-config-next": "15.5.26",
+    "eslint-config-next": "16.3.8",
     "jsdom": "^29.1.1",
     "postcss": "^8.5.28",
     "shadcn": "^4.21.0",
