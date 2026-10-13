@@ -2033,7 +2033,11 @@ def test_a_title_without_a_period_still_gets_the_separator():
             "VADIM CHUDNOVSKY, M.D.. RES RELIANT RADIOLOGY. ULTRASOUND",
             "VADIM CHUDNOVSKY, M.D. RES RELIANT RADIOLOGY. ULTRASOUND",
         ),
-        ("JANE SMITH, M.D. . ACME CLINIC. PR-2", "JANE SMITH, M.D. ACME CLINIC. PR-2"),
+        # the document type is renamed too, since a PR-2 in any spelling takes the form's name
+        (
+            "JANE SMITH, M.D. . ACME CLINIC. PR-2",
+            "JANE SMITH, M.D. ACME CLINIC. PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)",
+        ),
         ("ULTRASOUND OF THE PELVIS..", "ULTRASOUND OF THE PELVIS."),
     ],
 )

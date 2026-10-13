@@ -82,11 +82,12 @@ from app.services.reporting import (
 from app.services.rows import validate_rows
 from app.services.summarize_engine import (
     category_title,
-    consistent_authors,
-    consistent_facilities,
+    consistent_titles,
     fold_same_visit,
     presentable_title,
+    split_decoration,
     tidy_author_and_facility,
+    tidy_report_type,
     standalone_studies_from_rows,
     summarize_row,
 )
@@ -1410,7 +1411,43 @@ def summarize_start(
     return {"ok": True}
 
 
-def _summary_response(document: Document, summary: Summary) -> dict:
+def _tab_title(summary: Summary) -> str:
+    """One summary's title as the Summaries tab shows it before the record-level passes: a title
+    stored before the name-order, health-system, PR-2 and category rules reads tidy without a
+    re-run - the same rules the export applies. A reviewer-typed title is theirs."""
+    title = summary.effective_title()
+    if summary.edited_title is not None:
+        return title
+    return category_title(tidy_report_type(tidy_author_and_facility(title)), summary.row_category)
+
+
+def _tab_titles(document: Document) -> dict[Summary, str]:
+    """Summary -> its title on the Summaries tab after the record-level title passes the export
+    runs (`summarize_engine.consistent_titles`), so the tab shows the names the Word letter will
+    print. Reviewer feedback, 2026-10-13, was read off THIS tab: one clinic named three ways and
+    one doctor's PR-2 reports named three ways in one record. Until then the record-level passes
+    ran only at export, so the tab showed every variant even where the deliverable had one.
+
+    Over the summaries the export ships, as the export does: an excluded summary keeps its own
+    tidied title and does not vote. The decoration a stored title carries is set aside for the
+    passes and put back after, because the client strips it and the passes read the bare header
+    line."""
+    delivered = [s for s in document.summaries if not s.excluded]
+    split = [split_decoration(_tab_title(s)) for s in delivered]
+    cores = consistent_titles(
+        [core for _, core, _ in split],
+        [str(s.row_category) for s in delivered],
+        [s.edited_title is not None for s in delivered],
+    )
+    return {
+        s: head + core + tail
+        for s, (head, _, tail), core in zip(delivered, split, cores, strict=True)
+    }
+
+
+def _summary_response(
+    document: Document, summary: Summary, titles: dict[Summary, str] | None = None
+) -> dict:
     """One summary's listing plus ``rowCategoryLive``: the CURRENT category of the row behind it.
 
     ``listing()["row"]["category"]`` is the snapshot of what generated the text; this is what the row
@@ -1445,13 +1482,11 @@ def _summary_response(document: Document, summary: Summary) -> dict:
     live = {(row.start, row.end): row for row in document.review_rows}
     row = live.get((summary.row_start, summary.row_end))
     listing = summary.listing()
-    if summary.edited_title is None:
-        # A title stored before the name-order, health-system and category rules reads tidy on this
-        # tab too, without a re-run - the same rules the export applies. A reviewer-typed title is
-        # theirs.
-        listing["summaryTitle"] = category_title(
-            tidy_author_and_facility(listing["summaryTitle"]), summary.row_category
-        )
+    # The whole record's titles, not this one's alone: a single-summary response (an edit, a
+    # re-draft) replaces the item in the client's cache, so it has to carry the same title the list
+    # did or the record-level names would flip back on save.
+    titles = _tab_titles(document) if titles is None else titles
+    listing["summaryTitle"] = titles.get(summary) or _tab_title(summary)
     return {
         **listing,
         "rowCategoryLive": row.category if row is not None else None,
@@ -1462,7 +1497,8 @@ def _summary_response(document: Document, summary: Summary) -> dict:
 
 @router.get("/{document_id}/summaries")
 def get_summaries(document: Document = Depends(get_owned_document)):
-    return [_summary_response(document, summary) for summary in document.summaries]
+    titles = _tab_titles(document)
+    return [_summary_response(document, summary, titles) for summary in document.summaries]
 
 
 def _apply_summary_edits(summary, body) -> list[str]:
@@ -1766,27 +1802,19 @@ def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     }
 
 
-def _consistent_authors(
-    entries: list[dict], key: str, locked: list[bool] | None = None
-) -> list[dict]:
-    """``entries`` with one spelling per provider, then per facility of each provider, across the
-    record - see `summarize_engine.consistent_authors` and `consistent_facilities`. Record-level, so
-    it runs once over the whole list rather than per entry, and both renderers call it so the Word
-    and PDF deliverables name people and places alike. ``locked`` marks the entries whose title a
-    reviewer edited: never rewritten, and they win. Authors go first because the facility pass
-    groups by author, so it needs one spelling of each."""
-    titles = consistent_facilities(consistent_authors([e[key] for e in entries], locked), locked)
-    return [{**e, key: t} for e, t in zip(entries, titles, strict=True)]
-
-
 def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> list[dict]:
-    """The record-level passes over a delivered entry list, in order: one spelling per provider and
-    per facility, then one entry per visit for a doctor's category 1 documents on one date (which
-    needs the spellings to agree first). Both renderers call this, so the Word and PDF deliverables
-    list the same entries."""
+    """The record-level passes over a delivered entry list, in order: the title passes
+    (`summarize_engine.consistent_titles` - one spelling per provider and per facility, a listed
+    system's abbreviation read as the system, one name for a PR-2), then one entry per visit for a
+    doctor's category 1 documents on one date (which needs the spellings to agree first). Both
+    renderers call this, so the Word and PDF deliverables list the same entries, and the Summaries
+    tab runs the same title passes (`_tab_titles`). ``locked`` marks the entries whose title a
+    reviewer edited: never rewritten, and they win."""
     locked = [s.edited_title is not None for s in summaries]
-    entries = _consistent_authors(entries, key, locked)
-    return fold_same_visit(entries, [str(s.row_category) for s in summaries], key)
+    categories = [str(s.row_category) for s in summaries]
+    titles = consistent_titles([e[key] for e in entries], categories, locked)
+    entries = [{**e, key: t} for e, t in zip(entries, titles, strict=True)]
+    return fold_same_visit(entries, categories, key)
 
 
 def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:

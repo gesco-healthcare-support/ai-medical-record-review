@@ -2428,12 +2428,15 @@ def test_the_export_locks_the_titles_a_reviewer_edited():
 
 def test_both_export_renderers_name_a_provider_alike():
     """The Word and PDF entry lists go through the same pass, so the two deliverables agree."""
-    from app.api.documents import _consistent_authors
+    from types import SimpleNamespace
 
+    from app.api.documents import _record_pass
+
+    summaries = [SimpleNamespace(row_category="3", edited_title=None) for _ in range(2)]
     word = [{"summaryTitle": "JOHN DOE, M.D. A"}, {"summaryTitle": "JOHN Q. DOE, M.D. B"}]
     pdf = [{"linkTitle": "JOHN DOE, M.D. A"}, {"linkTitle": "JOHN Q. DOE, M.D. B"}]
-    assert [e["summaryTitle"] for e in _consistent_authors(word, "summaryTitle")] == [
-        e["linkTitle"] for e in _consistent_authors(pdf, "linkTitle")
+    assert [e["summaryTitle"] for e in _record_pass(word, summaries, "summaryTitle")] == [
+        e["linkTitle"] for e in _record_pass(pdf, summaries, "linkTitle")
     ]
 
 
@@ -3527,7 +3530,8 @@ def test_an_author_already_in_order_or_ambiguous_is_left_alone(title):
         ),
         (
             "JANE DOE, M.D. KAISER PERMANENTE GARDEN MEDICAL OFFICES. PROGRESS REPORT (PR-2).",
-            "JANE DOE, M.D. KAISER PERMANENTE. PROGRESS REPORT (PR-2).",
+            "JANE DOE, M.D. KAISER PERMANENTE. "
+            "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2).",
         ),
         ("KAISER PERMANENTE SPINE CENTER. OFFICE VISIT.", "KAISER PERMANENTE. OFFICE VISIT."),
         (
@@ -3952,3 +3956,219 @@ def test_category_7_asks_for_the_settlement_and_the_denials():
     assert "### Answer to Application for Adjudication of Claim ###" in prompt
     assert "Denials" in prompt
     assert "never calculate an amount" in prompt
+
+
+# ONE NAME PER CLINIC AND ONE NAME FOR A PR-2 (reviewer feedback, 2026-10-13). Synthetic names only.
+_PR2_NAME = se.PR2_REPORT_TYPE
+
+
+@pytest.mark.parametrize(
+    ("facility", "expected"),
+    [
+        ("CONCENTRA OCCUPATIONAL MEDICAL CENTER", "CONCENTRA"),
+        ("CONCENTRA MEDICAL CENTERS", "CONCENTRA"),
+        ("CONCENTRA MEDICAL CENTER-SPRINGFIELD", "CONCENTRA"),
+        # a town whose own name carries "OF", joined by a dash with or without spaces
+        ("CONCENTRA MEDICAL CENTER-CITY OF SPRINGFIELD", "CONCENTRA"),
+        ("CONCENTRA MEDICAL CENTER - CITY OF SPRINGFIELD", "CONCENTRA"),
+        # a department, not a "history and physical"
+        ("CONCENTRA PHYSICAL THERAPY", "CONCENTRA"),
+        ("CONCENTRA", "CONCENTRA"),
+    ],
+)
+def test_concentra_is_named_without_its_site(facility, expected):
+    title = f"JANE ROE, M.D. {facility}. OFFICE VISIT."
+    assert se.tidy_title(title) == f"JANE ROE, M.D. {expected}. OFFICE VISIT."
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # after a dash, the LAST piece is the document type and is never cut
+        "JANE ROE, M.D. KAISER PERMANENTE - URGENT CARE.",
+        # a document named after the system, with "OF" in it
+        "KAISER PERMANENTE-RELEASE OF INFORMATION. LETTER.",
+        "KAISER PERMANENTE - RELEASE OF INFORMATION. LETTER.",
+    ],
+)
+def test_a_dash_after_a_health_system_cuts_no_document(title):
+    """GUARD: relaxing "OF" for a town after a dash must not reach a document's own name."""
+    assert se.tidy_title(title) == title
+
+
+def test_cutting_a_site_leaves_the_author_line_as_it_came():
+    """DEMONSTRATES: the rejoin after a cut collapsed doubled separators across the WHOLE line, so a
+    credential's comma in front of the system went too ("M.D., JANE ROE" read "M.D. JANE ROE")."""
+    title = "JOHN DOE, M.D., JANE ROE, D.C. KAISER PERMANENTE FONTANA. OFFICE VISIT."
+    assert se.tidy_title(title) == "JOHN DOE, M.D., JANE ROE, D.C. KAISER PERMANENTE. OFFICE VISIT."
+
+
+@pytest.mark.parametrize(
+    "document_type",
+    [
+        "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT",
+        "PRIMARY TREATING PHYSICIAN\u2019S PROGRESS REPORT (PR-2)",
+        "PRIMARY TREATING PHYSICIANS PROGRESS REPORT",
+        "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT PR-2",
+        "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT - PR2",
+        "PHYSICIAN'S PROGRESS REPORT (PR-2)",
+        "PROGRESS REPORT (PR-2)",
+        "PR-2",
+        "PR 2 REPORT",
+        "DWC FORM PR-2",
+        # a specialist's heading puts the specialty inside the form's name
+        "PRIMARY TREATING PHYSICIAN ORTHOPAEDIC HAND/UPPER EXTREMITY SPECIALIST PROGRESS REPORT",
+    ],
+)
+def test_a_document_type_naming_the_pr2_form_takes_the_form_s_name(document_type):
+    title = f"JANE ROE, M.D. CITY CLINIC. {document_type}."
+    assert se.tidy_title(title) == f"JANE ROE, M.D. CITY CLINIC. {_PR2_NAME}."
+
+
+@pytest.mark.parametrize(
+    "document_type",
+    [
+        # not the form by its words alone - the record-level pass decides these
+        "PROGRESS REPORT",
+        # with the same anchor it sat on PR-2 pages only 19 times in 51: another document
+        "PHYSICIAN PROGRESS REPORT",
+        # a combined document keeps its wording
+        "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2) AND REQUEST FOR AUTHORIZATION",
+        "PRIMARY TREATING PHYSICIAN'S SUPPLEMENTAL PROGRESS REPORT",
+        "PRIMARY TREATING PHYSICIAN'S PERMANENT AND STATIONARY REPORT (PR-4)",
+        "WORK STATUS REPORT",
+    ],
+)
+def test_a_document_type_that_is_not_the_pr2_form_keeps_its_wording(document_type):
+    """GUARD: only a type that names the form is renamed."""
+    title = f"JANE ROE, M.D. CITY CLINIC. {document_type}."
+    assert se.tidy_title(title) == title
+
+
+def test_the_pr2_name_keeps_a_stored_title_s_decoration():
+    stored = "[ManualCheck] JANE ROE, M.D. CITY CLINIC. PR-2. [Diagnostic Study] (Pages 1-4)"
+    assert se.tidy_report_type(stored) == (
+        f"[ManualCheck] JANE ROE, M.D. CITY CLINIC. {_PR2_NAME}. [Diagnostic Study] (Pages 1-4)"
+    )
+
+
+def test_a_title_of_one_element_has_no_document_type_to_rename():
+    assert se.tidy_report_type("PR-2") == "PR-2"
+
+
+def test_split_decoration_round_trips():
+    stored = "[ManualCheck] JANE ROE, M.D. CITY CLINIC. MRI. [Diagnostic Study] (Pages 1-4)"
+    head, core, tail = se.split_decoration(stored)
+    assert (head, core) == ("[ManualCheck] ", "JANE ROE, M.D. CITY CLINIC. MRI.")
+    assert head + core + tail == stored
+
+
+_CMC = "JOHN DOE, M.D. CMC - SPRINGFIELD. X-RAY OF THE CHEST."
+_NAMES_IT = "JANE ROE, M.D. CONCENTRA. OFFICE VISIT."
+
+
+@pytest.mark.parametrize(
+    ("abbreviated", "expected"),
+    [
+        (_CMC, "JOHN DOE, M.D. CONCENTRA. X-RAY OF THE CHEST."),
+        ("JOHN DOE, M.D. CMC-SPRINGFIELD. X-RAY.", "JOHN DOE, M.D. CONCENTRA. X-RAY."),
+        ("JOHN DOE, M.D. CMC. X-RAY.", "JOHN DOE, M.D. CONCENTRA. X-RAY."),
+    ],
+)
+def test_the_system_s_abbreviation_is_the_system_where_the_record_names_it(abbreviated, expected):
+    assert se.consistent_systems([_NAMES_IT, abbreviated]) == [_NAMES_IT, expected]
+
+
+def test_the_abbreviation_alone_is_left_where_the_record_does_not_name_the_system():
+    """GUARD: an abbreviation alone could be another place (3 of the 36 records naming CMC)."""
+    assert se.consistent_systems([_CMC]) == [_CMC]
+    assert se.consistent_systems(["JOHN DOE, M.D. CMCH CLINIC. NOTE.", _NAMES_IT])[0] == (
+        "JOHN DOE, M.D. CMCH CLINIC. NOTE."
+    )
+
+
+def test_a_reviewer_s_abbreviation_is_kept_and_a_reviewer_s_system_counts():
+    typed = "JOHN DOE, M.D. CMC. X-RAY."
+    assert se.consistent_systems([_NAMES_IT, typed], [False, True]) == [_NAMES_IT, typed]
+    # a reviewer-typed title naming the system is evidence for the others
+    assert se.consistent_systems([_NAMES_IT, _CMC], [True, False])[1] == (
+        "JOHN DOE, M.D. CONCENTRA. X-RAY OF THE CHEST."
+    )
+
+
+_PTP = f"JANE ROE, M.D. CITY CLINIC. {_PR2_NAME}."
+_BARE = "JANE ROE, M.D. CITY CLINIC. PROGRESS REPORT."
+
+
+def test_a_bare_progress_report_joins_the_pr2_name_where_its_author_writes_pr2s():
+    out = se.consistent_report_types([_PTP, _BARE], ["1", "1"])
+    assert out == [_PTP, _PTP]
+
+
+@pytest.mark.parametrize(
+    ("titles", "categories", "locked"),
+    [
+        # another author's PR-2 says nothing about this one
+        ([_PTP, "JOHN DOE, M.D. CITY CLINIC. PROGRESS REPORT."], ["1", "1"], None),
+        # a therapist's progress report is not a PR-2
+        ([_PTP, _BARE], ["1", "5"], None),
+        # a reviewer-typed bare progress report stays as typed
+        ([_PTP, _BARE], ["1", "1"], [False, True]),
+        # no PR-2 by this author anywhere in the record
+        ([_BARE, _BARE], ["1", "1"], None),
+        # with the same anchor this one sat on PR-2 pages only 19 times in 51
+        ([_PTP, "JANE ROE, M.D. CITY CLINIC. PHYSICIAN PROGRESS REPORT."], ["1", "1"], None),
+    ],
+)
+def test_a_bare_progress_report_is_left_where_nothing_ties_it_to_a_pr2(titles, categories, locked):
+    """GUARD: each case is one way the record-level rule could reach a document it should not."""
+    assert se.consistent_report_types(titles, categories, locked) == titles
+
+
+def test_a_reviewer_typed_pr2_title_counts_as_its_author_writing_pr2s():
+    typed = "JANE ROE, M.D. CITY CLINIC. PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT."
+    assert se.consistent_report_types([typed, _BARE], ["1", "1"], [True, False]) == [typed, _PTP]
+
+
+def test_the_reported_record_reads_one_clinic_and_one_pr2():
+    """The shape the reviewer reported, end to end: one doctor's PR-2s at one clinic named three
+    ways each, plus another doctor's study under the clinic's abbreviation."""
+    titles = [
+        "JANE ROE, M.D. CONCENTRA OCCUPATIONAL MEDICAL CENTER. PRIMARY TREATING PHYSICIAN'S "
+        "PROGRESS REPORT (PR-2).",
+        "JANE ROE, M.D. CONCENTRA. PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT.",
+        "JANE ROE, M.D. CONCENTRA MEDICAL CENTER-SPRINGFIELD. PROGRESS REPORT.",
+        "JOHN DOE, M.D. CMC - SPRINGFIELD. X-RAY OF THE CHEST.",
+    ]
+    shown = [se.presentable_title(t, category=c) for t, c in zip(titles, "1113", strict=True)]
+    out = se.consistent_titles(shown, list("1113"))
+    assert out == [f"JANE ROE, M.D. CONCENTRA. {_PR2_NAME}."] * 3 + [
+        "JOHN DOE, M.D. CONCENTRA. X-RAY OF THE CHEST."
+    ]
+
+
+def test_the_export_and_the_bundle_run_the_same_title_passes(monkeypatch):
+    """The Word letter and a bundle both reach the abbreviation and the PR-2 rules - the class of
+    defect where two export paths decided independently (#158, #162)."""
+    from types import SimpleNamespace
+
+    from app.api.documents import _record_pass
+    from app.services import bundles
+
+    titles = [_NAMES_IT, _CMC, _PTP, _BARE]
+    categories = ["1", "3", "1", "1"]
+    summaries = [SimpleNamespace(row_category=c, edited_title=None) for c in categories]
+    entries = [{"summaryTitle": t, "summaryText": "x", "summaryDate": "-"} for t in titles]
+    exported = [e["summaryTitle"] for e in _record_pass(entries, summaries, "summaryTitle")]
+
+    feed = iter(titles)
+    monkeypatch.setattr(
+        bundles.summarize_engine,
+        "summarize_row",
+        lambda *a, **k: {"summaryDate": "-", "summaryTitle": next(feed), "summaryText": "x"},
+    )
+    rows = [{"start": n, "end": n, "category": c, "flag": "-"} for n, c in enumerate(categories)]
+    bundled = [e["summaryTitle"] for e in bundles.bundle_summary_entries("/x.pdf", rows)]
+    expected = [_NAMES_IT, "JOHN DOE, M.D. CONCENTRA. X-RAY OF THE CHEST.", _PTP, _PTP]
+    assert exported == expected
+    assert bundled == expected
