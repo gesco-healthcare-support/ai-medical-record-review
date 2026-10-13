@@ -374,6 +374,7 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
     check marker reaches most rows, because of the row flag it keys on.
     """
     entries = []
+    categories = []
     # Which exception types caused a row to be skipped, so the all-rows-skipped floor below can name
     # what actually happened instead of always reporting the blank-text case.
     skipped_causes: set[type[Exception]] = set()
@@ -425,6 +426,7 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
             )
             skipped_causes.add(TranscriptPagesUnreadableError)
             continue
+        categories.append(row.get("category"))
         entries.append(
             {
                 "summaryDate": output.get("summaryDate") or "-",
@@ -452,8 +454,7 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
                 f"transcript page numbers unreadable in all {len(rows)} matching documents"
             )
         raise EmptyExtractionError(f"no readable text in any of the {len(rows)} matching documents")
-    # One spelling per provider and per facility across the bundle, as the record export does.
-    titles = summarize_engine.consistent_facilities(
-        summarize_engine.consistent_authors([e["summaryTitle"] for e in entries])
-    )
+    # The record export's title passes - one spelling per provider and per facility, a listed
+    # system's abbreviation read as the system, one name for a PR-2 - across the bundle.
+    titles = summarize_engine.consistent_titles([e["summaryTitle"] for e in entries], categories)
     return [{**e, "summaryTitle": t} for e, t in zip(entries, titles, strict=True)]

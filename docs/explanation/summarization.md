@@ -251,10 +251,11 @@ does not enforce `maxLength`. `_usable_title()` is the enforcement:
   title that are unmistakably an address (street, suite, city before a state or ZIP, `CA` after a
   city, a phone number) and keeps everything else byte for byte. Its `tidy_author_and_facility()` step
   turns a `SURNAME, GIVEN NAMES, CREDENTIAL` author into `GIVEN NAMES SURNAME, CREDENTIAL`, and cuts a
-  listed health system (`_HEALTH_SYSTEMS`, today Kaiser Permanente) down to its name, dropping the
-  branch or department after it, and drops a facility that is only the author's own name with
-  credential and corporate words (`_without_own_practice()`, as in
-  `JOHN SMITH, M.D. JOHN SMITH MD, INC.`).
+  listed health system (`_HEALTH_SYSTEMS`, today Kaiser Permanente and Concentra) down to its name,
+  dropping the branch, department or place after it, and drops a facility that is only the author's
+  own name with credential and corporate words (`_without_own_practice()`, as in
+  `JOHN SMITH, M.D. JOHN SMITH MD, INC.`). Its `tidy_report_type()` step gives a document type that
+  names the PR-2 form its printed name, `PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)`.
   All are deliberately narrow: an author without a credential, a second credential or degree in the
   middle slot, text after the system's name that names a document, a named practice, another
   person's corporation, and a facility followed by anything but its corporate words and the
@@ -427,7 +428,10 @@ Category 9 differs at every step:
 ## Record-level passes at export
 
 Some rules need the whole record, so they run over the delivered entries when the Word letter and
-the linked PDF are built (`documents.py` `_record_pass()`), not on the stored rows:
+the linked PDF are built (`documents.py` `_record_pass()`), not on the stored rows. The title passes
+are one function, `summarize_engine.consistent_titles()`, which a bundle and the Summaries tab
+(`documents.py` `_tab_titles()`, over the summaries an export ships) run too, so the tab names a
+provider, a clinic and a PR-2 the way the letter will:
 
 - **One spelling per provider.** `consistent_authors()` joins only spellings that can only be one
   person: same surname, suffix and credential; identical first names; an initial only when exactly
@@ -440,6 +444,13 @@ the linked PDF are built (`documents.py` `_record_pass()`), not on the stored ro
   same compass words. A garble that changes the word count is not joined, because by spelling alone
   it is as close to the right name as a second site of the same practice. The same reviewer lock
   applies.
+- **A listed system's abbreviation.** `consistent_systems()` reads `CMC`, alone or followed by a
+  site, as `CONCENTRA` (`_SYSTEM_ABBREVIATIONS`) - only in a record that names the system in full,
+  because an abbreviation alone could be another place. A reviewer-typed title is kept, and counts
+  as naming the system.
+- **One name for a PR-2.** `consistent_report_types()` gives a category-1 document type of just
+  `PROGRESS REPORT` the PR-2 name when the same author's category-1 entries in the record name the
+  form; measured, 25 of 26 such titles sat on pages that print `PR-2`.
 - **Same-visit folding.** `fold_same_visit()` makes one entry of the category-1 entries with the same
   author, credential and date string. The entry is headed by a PR-2 when the visit has one (a title
   matching `PR-2` or `PROGRESS REPORT` that is not a work status slip), otherwise by the longest body.
@@ -447,7 +458,7 @@ the linked PDF are built (`documents.py` `_record_pass()`), not on the stored ro
   The rows and summaries are untouched, so the review page still shows every document and a reviewer
   can still separate them.
 
-Bundle summarize applies `consistent_authors()` and `consistent_facilities()` but not folding.
+Bundle summarize and the Summaries tab apply `consistent_titles()` but not folding.
 
 ## The resumable run
 

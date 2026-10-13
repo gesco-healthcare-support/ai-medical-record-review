@@ -1177,7 +1177,15 @@ def _first_name_first(title: str) -> str:
 # ("VALLEY MEDICAL GROUP"), so a general branch-stripper would cut real facility names. The trim
 # stops before anything that names a document, so "KAISER PERMANENTE PROGRESS REPORT" - the facility
 # and the document type run together with no separator - keeps its document type.
-_HEALTH_SYSTEMS = ("KAISER PERMANENTE",)
+#
+# CONCENTRA joined the list on 2026-10-13. Reviewer feedback that day, on a record whose titles
+# named one occupational clinic "CONCENTRA", "CONCENTRA OCCUPATIONAL MEDICAL CENTER" and "CONCENTRA
+# MEDICAL CENTER-<SITE>": "it looks weird if they use different names for different summaries
+# (despite the documents being very similar)". Measured on the live box the same day: 47 records
+# name it, and of the 44 retyped titles that had more after the name, 42 were cut back to
+# "CONCENTRA". Its own abbreviation, "CMC", is read as the system too, but only in a record that
+# names the system in full - see `consistent_systems`.
+_HEALTH_SYSTEMS = ("KAISER PERMANENTE", "CONCENTRA")
 # A piece after the system's name that is still the site: an office, a centre, or the one stray
 # letter a wrapped letterhead leaves behind ("U."). Read only right after a site was cut from the
 # system's own piece, so "KAISER PERMANENTE. PTH, INTACT." keeps its lab test.
@@ -1192,16 +1200,57 @@ _NAMES_A_DOCUMENT = re.compile(
 )
 
 
+# A department, not a document: "PHYSICAL" above is there for "HISTORY AND PHYSICAL", and a
+# "<SYSTEM> PHYSICAL THERAPY" letterhead names the clinic's department.
+_DEPARTMENT = re.compile(r"\bPHYSICAL\s{1,3}THERAPY\b", re.I)
+_PHRASE_WORDS = frozenset({"OF", "FOR", "AND", "TO"})
+
+
+def _words_of(text: str) -> set[str]:
+    return {w.strip(".,") for w in text.split()}
+
+
+def _is_plain_site(text: str) -> bool:
+    return (
+        len(text.split()) <= 6
+        and text.upper() == text
+        and not _PHRASE_WORDS & _words_of(text)
+        and not _NAMES_A_DOCUMENT.search(_DEPARTMENT.sub(" ", text))
+    )
+
+
 def _is_site(text: str) -> bool:
     """Whether the words after a health system's name read as a site or department - short, in the
     header's capitals, and not a phrase. "RELEASE OF MEDICAL INFORMATION" after "KAISER PERMANENTE"
-    is the DOCUMENT's own name, which a replay over the live box caught being cut."""
-    words = text.split()
+    is the DOCUMENT's own name, which a replay over the live box caught being cut. A site and a
+    place joined by a dash - "MEDICAL CENTER-<TOWN> OF <NAME>" - is a site too (`_is_place`)."""
+    if _is_plain_site(text):
+        return True
+    dash = _DASH.search(text)
+    if not dash or len(text.split()) > 6:
+        return False
+    site, place = text[: dash.start()], text[dash.end() :]
+    return (not site or _is_plain_site(site)) and bool(place) and _is_place(place)
+
+
+# A place name after a dash: "CONCENTRA MEDICAL CENTER-<TOWN> OF <NAME>", or the same with spaces
+# round the dash, which the title split hands over as a piece of its own. On the live box,
+# 2026-10-13, it was the one shape that kept a Concentra site after the system joined the list: 9
+# titles in 2 records that otherwise named the clinic "CONCENTRA" 20 times. A town's name can carry
+# "OF", so the phrase test is relaxed for it - and to keep that from cutting a document named after
+# the system ("... - RELEASE OF INFORMATION"), a place names no release, authorization or consent.
+_DASH = re.compile(r"[ \t]{0,3}[-\u2013][ \t]{0,3}")
+_NAMES_A_RELEASE = re.compile(r"\b(?:RELEASE|INFORMATION|AUTHORIZATION|CONSENT|DISCLOSURE)\b", re.I)
+
+
+def _is_place(text: str) -> bool:
+    """Whether a piece after a dash reads as a place: short, in capitals, naming no document."""
     return (
-        len(words) <= 6
+        len(text.split()) <= 4
         and text.upper() == text
-        and not {"OF", "FOR", "AND", "TO"} & {w.strip(".,") for w in words}
-        and not _NAMES_A_DOCUMENT.search(text)
+        and not (_PHRASE_WORDS - {"OF"}) & _words_of(text)
+        and not _NAMES_A_DOCUMENT.search(_DEPARTMENT.sub(" ", text))
+        and not _NAMES_A_RELEASE.search(text)
     )
 
 
@@ -1212,24 +1261,39 @@ def _system_name_only(title: str) -> str:
     parts = _TITLE_SEPARATOR_RE.split(title)
     pieces = [(parts[i - 1] if i else "", parts[i]) for i in range(0, len(parts), 2)]
     out: list[tuple[str, str]] = []
-    trimming = changed = False
-    for sep, piece in pieces:
+    trimming = after_system = changed = False
+    system_at = None
+    # The last non-empty piece is the document type, by TITLE_PROMPT's contract: never cut.
+    last = max((i for i, (_, piece) in enumerate(pieces) if piece.strip()), default=-1)
+    for i, (sep, piece) in enumerate(pieces):
         bare = piece.strip()
         system = next((s for s in _HEALTH_SYSTEMS if bare.upper().startswith(s)), None)
         tail = bare[len(system) :].strip() if system else ""
         if system and (not tail or _is_site(tail)):
+            system_at = len(out) if system_at is None else system_at
             out.append((sep, piece[: piece.upper().index(system) + len(system)]))
             changed = changed or bool(tail)
             trimming = bool(tail)
+            after_system = True
             continue
         if trimming and bare and _SITE_PIECE.fullmatch(bare) and _is_site(bare):
             changed = True
             continue
-        trimming = False
+        dashed = sep.strip() in ("-", "\u2013")
+        if after_system and dashed and i != last and bare and _is_place(bare):
+            changed = True
+            continue
+        trimming = after_system = False
         out.append((sep, piece))
     if not changed:
         return title
-    return _DOUBLED_SEPARATOR.sub(r"\1", "".join(sep + piece for sep, piece in out)).strip()
+    # What stands BEFORE the system is returned as it came. A doubled separator can only appear
+    # where a piece was dropped, which is after it; collapsing the whole line also took the comma
+    # out of a credential in front ("JOHN DOE, M.D., JANE ROE ..."), which a replay over the live
+    # box caught once the list grew past Kaiser.
+    head = "".join(sep + piece for sep, piece in out[:system_at])
+    rest = "".join(sep + piece for sep, piece in out[system_at:])
+    return (head + _DOUBLED_SEPARATOR.sub(r"\1", rest)).strip()
 
 
 # A credential's own period followed by the header's separator period: "JANE SMITH, M.D.. ACME
@@ -1471,10 +1535,123 @@ def category_title(title: str, category) -> str:
     return title if cleaned == body else head + cleaned
 
 
+# ONE NAME FOR A PR-2. Reviewer feedback, 2026-10-13: one doctor's progress reports in one record
+# were titled "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)", the same without "(PR-2)", or
+# just "PROGRESS REPORT", "despite the documents being very similar". Measured on the live box the
+# same day, over category 1 titles whose pages are stored: the model wrote the first 520 times and
+# the second 435 times, and the pages printed "PR-2" behind 516 and 418 of them - which of the two a
+# title got was chance, not the document.
+#
+# So a document type that NAMES the form - "PR-2" in any spelling, alone or beside the words of its
+# name, or the form's full name without it - is given the form's printed name, `PR2_REPORT_TYPE`.
+# The full form rather than the short one because it is what the pages print, what the model writes
+# most, and what the outside human-written reviews use (28 to 8 across the ones on file). It is one
+# constant: if the reviewers want the short form, this is the only line that changes.
+#
+# A bare "PROGRESS REPORT" is not the form by its words alone, and is joined to it only by the
+# record-level pass (`consistent_report_types`): where the SAME author's category 1 titles in the
+# record name the form, 25 of 26 such titles sat on pages that print "PR-2". "PHYSICIAN PROGRESS
+# REPORT" is left alone - with the same anchor it sat on pages that print "PR-2" only 19 times in
+# 51, so it is a different document. Only the WHOLE document type is matched: a combined one ("...
+# AND REQUEST FOR AUTHORIZATION") keeps its wording.
+#
+# A specialist's heading puts the specialty inside the name - "PRIMARY TREATING PHYSICIAN
+# <SPECIALTY> PROGRESS REPORT" (2 titles on the live box, both in the reported record) - and is the
+# same form. Up to six words there are read as the specialty, unless one of them makes it a
+# different document: a supplemental report, a permanent and stationary report, or a request riding
+# with the report.
+PR2_REPORT_TYPE = "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)"
+_PR2_TOKEN = re.compile(r"\bPR[ \t-]?2\b")
+_PR2_NAME_WORDS = frozenset(
+    {"PRIMARY", "TREATING", "PHYSICIAN", "PHYSICIANS", "PROGRESS", "REPORT", "DWC", "FORM"}
+)
+_PR2_FULL_NAME = ["PRIMARY", "TREATING", "PHYSICIANS", "PROGRESS", "REPORT"]
+_BARE_PROGRESS_REPORT = ["PROGRESS", "REPORT"]
+_NOT_A_SPECIALTY = frozenset(
+    {
+        "AND",
+        "OF",
+        "FOR",
+        "TO",
+        "REQUEST",
+        "AUTHORIZATION",
+        "RFA",
+        "SUPPLEMENTAL",
+        "PERMANENT",
+        "STATIONARY",
+        "EVALUATION",
+        "CONSULTATION",
+        "INITIAL",
+        "FINAL",
+        "DISCHARGE",
+    }
+)
+
+
+def _type_words(document_type: str) -> list[str]:
+    """``document_type``'s words, upper-cased, apostrophes dropped (``PHYSICIAN'S`` reads
+    ``PHYSICIANS``) and every spelling of PR-2 made the one word ``PR2``."""
+    text = document_type.upper().replace("\u2019", "").replace("'", "")
+    return re.sub(r"[^A-Z0-9]+", " ", _PR2_TOKEN.sub(" PR2 ", text)).split()
+
+
+def _names_pr2(document_type: str) -> bool:
+    """Whether ``document_type`` names the PR-2 form - see the note above."""
+    words = _type_words(document_type)
+    rest = [("PHYSICIANS" if w == "PHYSICIAN" else w) for w in words if w != "PR2"]
+    if len(rest) < len(words) and set(rest) <= _PR2_NAME_WORDS:
+        return True
+    head, tail, specialty = rest[:3], rest[-2:], rest[3:-2]
+    return (
+        head == _PR2_FULL_NAME[:3]
+        and tail == _BARE_PROGRESS_REPORT
+        and len(specialty) <= 6
+        and not _NOT_A_SPECIALTY & set(specialty)
+    )
+
+
+def _type_span(title: str) -> tuple[int, int] | None:
+    """Where ``title``'s document type - its last element - sits in it, else ``None`` for a title
+    of fewer than two elements, which has no element that is reliably the type."""
+    elements = title_elements(title)
+    if len(elements) < 2:
+        return None
+    start = title.rfind(elements[-1])
+    return (start, start + len(elements[-1])) if start >= 0 else None
+
+
+def split_decoration(title: str) -> tuple[str, str, str]:
+    """``(head, header line, tail)``: a stored title's ``[ManualCheck]`` tag, the header line
+    itself, and its diagnostic tag and page suffix. The three concatenate back to ``title``."""
+    raw = title or ""
+    tag = _MANUAL_CHECK_PREFIX.match(raw)
+    head = raw[: tag.end()] if tag else ""
+    body = raw[len(head) :]
+    tail = _TITLE_TAIL.search(body)
+    core = body[: tail.start()] if tail else body
+    return head, core, body[len(core) :]
+
+
+def tidy_report_type(title: str) -> str:
+    """``title`` with a document type that names the PR-2 form given the form's printed name - see
+    the note above. Decoration is kept where it was, so this is safe on a stored title.
+
+    Returns ``title`` itself, byte for byte, unless the type was renamed."""
+    head, core, tail = split_decoration(title)
+    span = _type_span(core)
+    if span is None:
+        return title
+    start, end = span
+    if core[start:end] == PR2_REPORT_TYPE or not _names_pr2(core[start:end]):
+        return title
+    return head + core[:start] + PR2_REPORT_TYPE + core[end:] + tail
+
+
 def tidy_title(title: str) -> str:
     """The deterministic clean-up every generated and every delivered title goes through: no
-    address (`without_address`), the author first-name-first, and a health system's name only."""
-    return tidy_author_and_facility(without_address(title))
+    address (`without_address`), the author first-name-first, a health system's name only, and one
+    name for a PR-2 (`tidy_report_type`)."""
+    return tidy_report_type(tidy_author_and_facility(without_address(title)))
 
 
 # ONE spelling per provider across a record. Titles are generated one sub-document at a time, each
@@ -1750,6 +1927,107 @@ def consistent_facilities(titles: list[str], locked: list[bool] | None = None) -
         best = max([((author, c) in pinned, group[c], c) for c in candidates])[2]
         out.append(title[:start] + spelled[(author, best)] + title[start + len(facility) :])
     return out
+
+
+# A listed health system's own ABBREVIATION is the system - in a record that names the system in
+# full. Reviewer feedback, 2026-10-13, on one record: "for the same location it might say 'Concentra
+# Medical Centers,' just 'Concentra' or 'CMC-<site>'". CMC is Concentra Medical Centers' own
+# abbreviation, and on the live box the same day 33 of the 36 records naming CMC named Concentra
+# too. The other three keep "CMC" as it came: an abbreviation alone could be another place, and the
+# wrong facility on an entry is worse than two names for the right one. A site after the
+# abbreviation goes with it, as after the full name (`_system_name_only`).
+_SYSTEM_ABBREVIATIONS = {"CMC": "CONCENTRA"}
+_ABBREVIATION_AT_START = {
+    short: re.compile(rf"{re.escape(short)}(?![A-Za-z0-9])", re.I)
+    for short in _SYSTEM_ABBREVIATIONS
+}
+
+
+def _abbreviated_system(facility: str) -> str | None:
+    """The listed system ``facility`` abbreviates - the abbreviation alone, or followed by a site -
+    else ``None``."""
+    bare = facility.strip()
+    for short, system in _SYSTEM_ABBREVIATIONS.items():
+        match = _ABBREVIATION_AT_START[short].match(bare)
+        if match:
+            tail = bare[match.end() :].strip(" .,-\u2013")
+            return system if not tail or _is_site(tail) else None
+    return None
+
+
+def _names_system(facility: str, system: str) -> bool:
+    """Whether ``facility`` opens with the listed ``system``'s name."""
+    words = system.split()
+    return _facility_words(facility)[: len(words)] == words
+
+
+def consistent_systems(titles: list[str], locked: list[bool] | None = None) -> list[str]:
+    """``titles`` with a listed system's abbreviation turned to the system's name, wherever another
+    title in the record names that system - see the note above.
+
+    ``locked`` marks reviewer-edited titles: never rewritten, though they count as naming one."""
+    locked = locked or [False] * len(titles)
+    parts = [_facility_parts(t) for t in titles]
+    named = {s for p in parts if p for s in _HEALTH_SYSTEMS if _names_system(p[1], s)}
+    out = []
+    for title, p, is_locked in zip(titles, parts, locked, strict=True):
+        system = _abbreviated_system(p[1]) if p and not is_locked else None
+        if p and system in named:
+            _, facility, start = p
+            out.append(title[:start] + system + title[start + len(facility) :])
+        else:
+            out.append(title)
+    return out
+
+
+def _pr2_parts(title: str):
+    """``(author key, document type span)`` for a title that names an author and a document type,
+    else ``None``."""
+    author = _author_parts(title)
+    span = _type_span(title) if author else None
+    return (author[1], span) if author and span else None
+
+
+def consistent_report_types(
+    titles: list[str], categories: list, locked: list[bool] | None = None
+) -> list[str]:
+    """``titles`` with a category 1 document type of just "PROGRESS REPORT" given the PR-2 form's
+    name, wherever the same author's category 1 titles in the record name the form - see the note
+    on `PR2_REPORT_TYPE`.
+
+    ``locked`` marks reviewer-edited titles: never rewritten, though they count as naming the form.
+    The author is matched on `consistent_authors`' key, so run that first."""
+    locked = locked or [False] * len(titles)
+    parts = [
+        _pr2_parts(t) if str(c) == "1" else None for t, c in zip(titles, categories, strict=True)
+    ]
+    writes_pr2 = {
+        p[0] for t, p in zip(titles, parts, strict=True) if p and _names_pr2(t[p[1][0] : p[1][1]])
+    }
+    out = []
+    for title, p, is_locked in zip(titles, parts, locked, strict=True):
+        if p and not is_locked and p[0] in writes_pr2:
+            start, end = p[1]
+            if _type_words(title[start:end]) == _BARE_PROGRESS_REPORT:
+                out.append(title[:start] + PR2_REPORT_TYPE + title[end:])
+                continue
+        out.append(title)
+    return out
+
+
+def consistent_titles(
+    titles: list[str], categories: list, locked: list[bool] | None = None
+) -> list[str]:
+    """Every record-level title pass, in order: one spelling per provider, one spelling per facility
+    of each provider, a listed system's abbreviation read as the system, and one name for a PR-2.
+
+    ONE entry point for every caller - the Word letter, the linked PDF, a bundle and the Summaries
+    tab - so the screen and the deliverable cannot name a provider, a place or a document two ways.
+    The passes read bare header lines, so a caller holding stored titles strips their decoration
+    first (`split_decoration`). ``locked`` marks reviewer-edited titles: never rewritten, and they
+    win where a pass chooses between spellings."""
+    titles = consistent_facilities(consistent_authors(titles, locked), locked)
+    return consistent_report_types(consistent_systems(titles, locked), categories, locked)
 
 
 # One entry per visit. The reviewers, 2026-08-21: "mostly when one visit produces a work status
