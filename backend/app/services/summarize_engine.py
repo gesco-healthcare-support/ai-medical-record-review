@@ -1254,6 +1254,30 @@ def _is_place(text: str) -> bool:
     )
 
 
+def _system_piece(piece: str) -> tuple[str, bool] | None:
+    """``(piece cut to the system's name, whether a site was cut)`` for a piece naming a listed
+    health system with nothing or only a site after it, else ``None``."""
+    bare = piece.strip()
+    system = next((s for s in _HEALTH_SYSTEMS if bare.upper().startswith(s)), None)
+    if not system:
+        return None
+    tail = bare[len(system) :].strip()
+    if tail and not _is_site(tail):
+        return None
+    return piece[: piece.upper().index(system) + len(system)], bool(tail)
+
+
+def _is_trailing_site(sep: str, piece: str, *, trimming: bool, is_last: bool) -> bool:
+    """Whether a piece right after a system's piece is still its site: an office piece after a site
+    was cut, or a place after a dash. Never the document type, which is the last piece."""
+    bare = piece.strip()
+    if not bare:
+        return False
+    if trimming and _SITE_PIECE.fullmatch(bare) and _is_site(bare):
+        return True
+    return sep.strip() in ("-", "\u2013") and not is_last and _is_place(bare)
+
+
 def _system_name_only(title: str) -> str:
     """``title`` with a listed health system's branch and site dropped - see the note above.
 
@@ -1266,25 +1290,17 @@ def _system_name_only(title: str) -> str:
     # The last non-empty piece is the document type, by TITLE_PROMPT's contract: never cut.
     last = max((i for i, (_, piece) in enumerate(pieces) if piece.strip()), default=-1)
     for i, (sep, piece) in enumerate(pieces):
-        bare = piece.strip()
-        system = next((s for s in _HEALTH_SYSTEMS if bare.upper().startswith(s)), None)
-        tail = bare[len(system) :].strip() if system else ""
-        if system and (not tail or _is_site(tail)):
+        cut = _system_piece(piece)
+        if cut:
             system_at = len(out) if system_at is None else system_at
-            out.append((sep, piece[: piece.upper().index(system) + len(system)]))
-            changed = changed or bool(tail)
-            trimming = bool(tail)
-            after_system = True
-            continue
-        if trimming and bare and _SITE_PIECE.fullmatch(bare) and _is_site(bare):
+            out.append((sep, cut[0]))
+            changed = changed or cut[1]
+            trimming, after_system = cut[1], True
+        elif after_system and _is_trailing_site(sep, piece, trimming=trimming, is_last=i == last):
             changed = True
-            continue
-        dashed = sep.strip() in ("-", "\u2013")
-        if after_system and dashed and i != last and bare and _is_place(bare):
-            changed = True
-            continue
-        trimming = after_system = False
-        out.append((sep, piece))
+        else:
+            trimming = after_system = False
+            out.append((sep, piece))
     if not changed:
         return title
     # What stands BEFORE the system is returned as it came. A doubled separator can only appear
