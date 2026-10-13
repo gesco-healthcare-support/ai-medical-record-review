@@ -137,15 +137,23 @@ front of the combined pages.
   none of the entry headers in the reviewers' reference deliverables carries one.
 - The author first-name-first: a `SURNAME, GIVEN NAMES, CREDENTIAL` opening, copied from a letterhead
   printed that way, becomes `GIVEN NAMES SURNAME, CREDENTIAL` (`tidy_author_and_facility()`).
-- A health system named without its site: `KAISER PERMANENTE FONTANA` becomes `KAISER PERMANENTE`
-  (`_HEALTH_SYSTEMS` in `summarize_engine.py`).
+- A health system named without its site: `KAISER PERMANENTE FONTANA` becomes `KAISER PERMANENTE`,
+  and `CONCENTRA OCCUPATIONAL MEDICAL CENTER` or `CONCENTRA MEDICAL CENTER-<TOWN>` becomes
+  `CONCENTRA` (`_HEALTH_SYSTEMS` in `summarize_engine.py`). A place after a dash goes with the site;
+  the document type, always the last element, never does.
+- One name for a PR-2: a document type that names the form (`PR-2` in any spelling, alone or with
+  the words of its name, or the full name without it) becomes
+  `PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)` (`tidy_report_type()`, `PR2_REPORT_TYPE`).
+  The model wrote the long name with and without `(PR-2)` about equally on pages that print the
+  form, so which one a title got was chance. A combined type (`... AND REQUEST FOR AUTHORIZATION`) and
+  `PHYSICIAN PROGRESS REPORT` keep their wording.
 - No facility that only repeats the author's own name:
   `JOHN SMITH, M.D. JOHN SMITH MD, INC. OFFICE VISIT` becomes `JOHN SMITH, M.D. OFFICE VISIT`
   (`_without_own_practice()`, part of `tidy_author_and_facility()`). Only when the facility is the
   same surname, suffix and first name or initial, plus credential and corporate words (`MD`, `DO`,
   `DC`, `INC`, `APC`, `PC`, `LLC`, `A MEDICAL CORPORATION`), and the title's shape is certain. A
   named practice (`JOHN SMITH ORTHOPEDIC GROUP`) and another person's corporation (a physician
-  assistant's supervising doctor) are kept. These three rules also apply to titles stored before
+  assistant's supervising doctor) are kept. These four rules also apply to titles stored before
   them, on the Summaries tab and in the export, but never to a title a reviewer typed.
 - A workers' compensation legal form (category 7) without the state agency that issues it:
   `STATE OF CALIFORNIA DIVISION OF WORKERS' COMPENSATION` is taken out, and a header naming the
@@ -156,9 +164,14 @@ front of the combined pages.
   in the export, keyed on the category the summary was written under (`summaries.row_category`).
 - No internal markers: `presentable_title()` strips `[ManualCheck]`, `[Diagnostic Study]` and
   `(Pages X-Y)`. The page range comes back only when the export dialog's page-number box is ticked.
-- One spelling per provider across the record (`consistent_authors()`), then one spelling per
-  facility for each provider (`consistent_facilities()`): a near spelling of the facility the
-  author's other entries carry, such as a letter misread from a logo, takes their spelling.
+- Record-level names, all through `consistent_titles()` in the export, a bundle and on the
+  Summaries tab: one spelling per provider across the record (`consistent_authors()`), then one
+  spelling per facility for each provider (`consistent_facilities()`: a near spelling of the
+  facility the author's other entries carry, such as a letter misread from a logo, takes their
+  spelling), then a listed system's abbreviation read as the system where the record names it in
+  full (`consistent_systems()`: `CMC - <TOWN>` becomes `CONCENTRA`), then a bare `PROGRESS REPORT`
+  given the PR-2 name where the same author's category 1 entries name the form
+  (`consistent_report_types()`). A title a reviewer typed is never rewritten and counts as evidence.
 - A period and a space (`TITLE_SEPARATOR`) between the header line and the body: 329 dated entries
   across the reference deliverables use a period, none a colon. When the header line already ends in
   a period (`M.D.`), only the space is added (`title_separator()`, both renderers).
@@ -271,7 +284,7 @@ In addition, the records included <D> pages of duplicate copies of records alrea
 | Diagnostic tier | `reporting.py` `is_diagnostic()` | Export entries and bundle report entries; both renderers |
 | Internal title markers | `summarize_engine.py` `_row_tags()` applies them, `presentable_title()` strips them | Every delivered document. The web view strips its own copy in `frontend/components/review/summaries-view.tsx` `displayTitle()` |
 | DOI prefix grammar | `backend/app/services/summary_doi.py` | Export restoration; the web view's copy in `summaries-view.tsx` (`DOI_PREFIX_NEW`, `DOI_PREFIX_LEGACY`) |
-| Header-line shape | `summarize_engine.py` `TITLE_PROMPT` | `without_address()`, `title_elements()`, `consistent_authors()`, `consistent_facilities()`, `bundles.py` `split_deliverable_title()` all parse that shape |
+| Header-line shape | `summarize_engine.py` `TITLE_PROMPT` | `without_address()`, `title_elements()`, `tidy_report_type()`, `consistent_authors()`, `consistent_facilities()`, `consistent_systems()`, `consistent_report_types()`, `bundles.py` `split_deliverable_title()` all parse that shape |
 | "Resolved duplicate" | Stated twice: `record_accounting()` (ORM rows) and `bundles.py` `resolved_clusters()` / `is_resolved_duplicate()` (row dictionaries) | Pinned together by `test_the_two_readings_of_a_resolved_duplicate_agree` |
 | Doctor typefaces | `reporting.py` `DOCTOR_FONTS` | Word typeface; the doctor dropdown (`DOCTORS`) |
 | Letter types | `reporting.py` `LETTER_TYPES`, `LETTER_LABELS` | Header validation on save; the letter and memo clauses |
@@ -287,7 +300,8 @@ and PDF renderers together on these rules.
 - A change to emphasis must also be made in `markdown-text.tsx`, or the review screen stops showing
   what the deliverable prints.
 - A change to the header-line shape in `TITLE_PROMPT` breaks the parsers that split it; check
-  `without_address()`, `title_elements()`, `consistent_authors()`, `consistent_facilities()` and
+  `without_address()`, `title_elements()`, `tidy_report_type()`, `consistent_authors()`,
+  `consistent_facilities()`, `consistent_systems()`, `consistent_report_types()` and
   `split_deliverable_title()`.
 - Every optional clause is dropped rather than rendered empty. Keep that property: a dangling
   `from .` shipped once.

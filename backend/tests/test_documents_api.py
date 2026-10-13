@@ -5936,3 +5936,79 @@ def test_a_stored_title_naming_the_authors_own_practice_is_shown_and_exported_wi
     shown = _summary_response(Document(review_rows=[]), summary)["summaryTitle"]
     assert shown == "[ManualCheck] JOHN SMITH, M.D. OFFICE VISIT. (Pages 3-5)"
     assert _export_entry(summary)["summaryTitle"] == "JOHN SMITH, M.D. OFFICE VISIT."
+
+
+# The Summaries tab runs the export's record-level title passes (reviewer feedback, 2026-10-13: one
+# clinic and one doctor's PR-2s were each named three ways in one record, read off this tab).
+_PR2_NAME = "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT (PR-2)"
+
+
+def _record_of(*summaries):
+    return Document(review_rows=[], summaries=list(summaries))
+
+
+def test_the_summaries_tab_names_one_clinic_and_one_pr2_across_the_record():
+    """DEMONSTRATES: the record-level passes ran at export only, so the tab showed every variant."""
+    from app.api.documents import _summary_response, _tab_titles
+
+    ptp = _titled_summary(
+        idx=0,
+        title="[ManualCheck] JANE ROE, M.D. CONCENTRA OCCUPATIONAL MEDICAL CENTER. "
+        "PRIMARY TREATING PHYSICIAN'S PROGRESS REPORT. (Pages 3-5)",
+    )
+    bare = _titled_summary(
+        idx=1,
+        title="JANE ROE, M.D. CONCENTRA. PROGRESS REPORT. (Pages 6-8)",
+        row_start=6,
+        row_end=8,
+    )
+    xray = _titled_summary(
+        idx=2,
+        title="JOHN DOE, M.D. CMC - SPRINGFIELD. X-RAY OF THE CHEST. "
+        "[Diagnostic Study] (Pages 9-9)",
+        row_category="3",
+        row_start=9,
+        row_end=9,
+    )
+    document = _record_of(ptp, bare, xray)
+    titles = _tab_titles(document)
+    shown = [_summary_response(document, s, titles)["summaryTitle"] for s in (ptp, bare, xray)]
+    assert shown == [
+        f"[ManualCheck] JANE ROE, M.D. CONCENTRA. {_PR2_NAME}. (Pages 3-5)",
+        f"JANE ROE, M.D. CONCENTRA. {_PR2_NAME}. (Pages 6-8)",
+        "JOHN DOE, M.D. CONCENTRA. X-RAY OF THE CHEST. [Diagnostic Study] (Pages 9-9)",
+    ]
+    # a single-summary response (an edit, a re-draft) replaces the cached item, so it must carry
+    # the title the list did
+    assert _summary_response(document, bare)["summaryTitle"] == shown[1]
+
+
+def test_an_excluded_summary_does_not_vote_on_the_record_s_names():
+    """GUARD: the tab runs over the summaries the export ships, as the export does - an excluded
+    summary keeps its own tidied title and names nothing for the others."""
+    from app.api.documents import _summary_response
+
+    excluded = _titled_summary(
+        idx=0, title="JANE ROE, M.D. CONCENTRA MEDICAL CENTERS. OFFICE VISIT.", excluded=True
+    )
+    xray = _titled_summary(
+        idx=1, title="JOHN DOE, M.D. CMC - SPRINGFIELD. X-RAY.", row_category="3"
+    )
+    document = _record_of(excluded, xray)
+    assert _summary_response(document, xray)["summaryTitle"] == xray.title
+    assert _summary_response(document, excluded)["summaryTitle"] == (
+        "JANE ROE, M.D. CONCENTRA. OFFICE VISIT."
+    )
+
+
+def test_a_reviewer_typed_title_on_the_tab_is_kept_and_still_names_the_clinic():
+    from app.api.documents import _summary_response
+
+    typed = "JANE ROE, M.D. CONCENTRA. OFFICE VISIT."
+    edited = _titled_summary(idx=0, title="anything", edited_title=typed)
+    xray = _titled_summary(
+        idx=1, title="JOHN DOE, M.D. CMC - SPRINGFIELD. X-RAY.", row_category="3"
+    )
+    document = _record_of(edited, xray)
+    assert _summary_response(document, edited)["summaryTitle"] == typed
+    assert _summary_response(document, xray)["summaryTitle"] == "JOHN DOE, M.D. CONCENTRA. X-RAY."
