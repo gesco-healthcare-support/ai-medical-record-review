@@ -21,6 +21,7 @@ const upload = { mutateAsync: vi.fn(), isPending: false };
 const del = { mutateAsync: vi.fn(), isPending: false };
 const identify = { mutateAsync: vi.fn(), isPending: false };
 const aggregate = { mutateAsync: vi.fn(), isPending: false };
+const assign = { mutateAsync: vi.fn(), isPending: false };
 // Who the list was asked for: `useDocuments(owner)` receives the reviewer an admin picked.
 const docsArgs: unknown[] = [];
 vi.mock("@/hooks/use-documents", () => ({
@@ -32,6 +33,7 @@ vi.mock("@/hooks/use-documents", () => ({
   useDeleteDocument: () => del,
   useStartIdentification: () => identify,
   useAggregateDocuments: () => aggregate,
+  useAssignDocument: () => assign,
 }));
 
 // A plain reviewer unless a test says otherwise, so every test written before admins could pick a
@@ -236,7 +238,8 @@ describe("DocumentsView drop target", () => {
     fireEvent.dragLeave(main);
     expect(fireEvent.drop(main, { dataTransfer: { files: [file] } })).toBe(false);
 
-    expect(upload.mutateAsync).toHaveBeenCalledWith(file);
+    // Into one's own account: straight in, no confirmation, and no owner sent.
+    expect(upload.mutateAsync).toHaveBeenCalledWith({ file });
   });
 });
 
@@ -278,6 +281,15 @@ describe("DocumentsView for an admin", () => {
     expect(docsArgs.at(-1)).toBeNull();
   });
 
+  it("offers no Assign to a reviewer who is not an admin", async () => {
+    // GUARD: moving records between accounts is an admin's action only.
+    const user = userEvent.setup();
+    docsState.data = [doc()];
+    render(<DocumentsView />);
+    await user.click(screen.getAllByRole("button", { name: "Actions" })[0]);
+    expect(screen.queryByRole("menuitem", { name: /assign/i })).toBeNull();
+  });
+
   it("starts an admin on their own records", () => {
     me.data = { id: 1, is_superuser: true };
     accountsState.data = ACCOUNTS;
@@ -309,16 +321,121 @@ describe("DocumentsView for an admin", () => {
     expect(screen.getByText(/recorded under your name/i)).toBeInTheDocument();
   });
 
-  it("offers no upload while viewing another reviewer's records", async () => {
-    // An upload would land in the admin's own list, not the one on screen.
-    const user = userEvent.setup();
+  async function viewBrian(user: ReturnType<typeof userEvent.setup>, records = [doc()]) {
     me.data = { id: 1, is_superuser: true };
     accountsState.data = ACCOUNTS;
-    docsState.data = [doc()];
-    render(<DocumentsView />);
+    docsState.data = records;
+    const view = render(<DocumentsView />);
     await user.selectOptions(screen.getByLabelText("Show records for"), "7");
-    expect(screen.queryByRole("button", { name: /upload a record/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /upload split records/i })).toBeNull();
+    return view;
+  }
+
+  const pick = (container: HTMLElement, name = "rec.pdf") => {
+    const file = new File([new Uint8Array([1])], name, { type: "application/pdf" });
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+    return file;
+  };
+
+  it("offers both uploads while viewing another reviewer's records", async () => {
+    // DEMONSTRATES the request: an admin can upload into the reviewer's page. This used to be
+    // pinned the other way, when an upload could only land in the admin's own list.
+    const user = userEvent.setup();
+    await viewBrian(user);
+    expect(screen.getByRole("button", { name: /upload a record/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /upload split records/i })).toBeInTheDocument();
+  });
+
+  it("offers them on an empty list of another reviewer's too", async () => {
+    const user = userEvent.setup();
+    await viewBrian(user, []);
+    expect(screen.getByText("Brian has no records.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /upload a record/i })).toBeInTheDocument();
+  });
+
+  it("asks before uploading into another reviewer's account, and sends it there once confirmed", async () => {
+    const user = userEvent.setup();
+    upload.mutateAsync.mockResolvedValueOnce({ id: "n1", sha256_duplicate: false });
+    const { container } = await viewBrian(user);
+    const file = pick(container, "brian.pdf");
+
+    // Nothing is sent until the admin confirms the reviewer the confirmation names.
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Upload to Brian's records?");
+    expect(dialog).toHaveTextContent('"brian.pdf" will be added');
+    expect(upload.mutateAsync).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await waitFor(() =>
+      expect(upload.mutateAsync).toHaveBeenCalledWith({ file, owner: 7, allowDuplicate: false }),
+    );
+    expect(vi.mocked(toast).success).toHaveBeenCalledWith("Record uploaded to Brian's records.");
+  });
+
+  it("uploads nothing when the admin cancels", async () => {
+    const user = userEvent.setup();
+    const { container } = await viewBrian(user);
+    pick(container);
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(upload.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("asks again when the reviewer already has the record, and sends a copy only if confirmed", async () => {
+    const user = userEvent.setup();
+    upload.mutateAsync
+      .mockRejectedValueOnce(
+        new ApiError(
+          "Brian already has this record (uploaded 10/01/2026, 3 pages).",
+          409,
+          "duplicate",
+        ),
+      )
+      .mockResolvedValueOnce({ id: "n2", sha256_duplicate: true });
+    const { container } = await viewBrian(user);
+    const file = pick(container);
+    await user.click(await screen.findByRole("button", { name: "Upload" }));
+
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Brian already has this record",
+    });
+    expect(dialog).toHaveTextContent("(uploaded 10/01/2026, 3 pages). Upload another copy anyway?");
+    expect(vi.mocked(toast).error).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Upload anyway" }));
+    await waitFor(() =>
+      expect(upload.mutateAsync).toHaveBeenLastCalledWith({ file, owner: 7, allowDuplicate: true }),
+    );
+  });
+
+  it("reports any other refusal instead of offering to upload anyway", async () => {
+    const user = userEvent.setup();
+    upload.mutateAsync.mockRejectedValueOnce(new ApiError("the reviewer could not be reached", 409));
+    const { container } = await viewBrian(user);
+    pick(container);
+    await user.click(await screen.findByRole("button", { name: "Upload" }));
+    await waitFor(() =>
+      expect(vi.mocked(toast).error).toHaveBeenCalledWith("the reviewer could not be reached"),
+    );
+    expect(screen.queryByRole("alertdialog", { name: /already has/ })).toBeNull();
+  });
+
+  it("names the reviewer on the split upload too", async () => {
+    const user = userEvent.setup();
+    await viewBrian(user);
+    await user.click(screen.getByRole("button", { name: /upload split records/i }));
+    expect(
+      screen.getByRole("heading", { name: "Upload split records for Brian" }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers Assign to an admin, and opens it on the record picked", async () => {
+    const user = userEvent.setup();
+    await viewBrian(user, [doc({ original_filename: "case.pdf" })]);
+    await user.click(await menuItem(user, /^Assign to/));
+    expect(screen.getByRole("heading", { name: "Assign this record" })).toBeInTheDocument();
+    // Brian owns it, so the assign list offers only the others.
+    const assignTo = screen.getByLabelText("Assign to");
+    const names = Array.from(assignTo.querySelectorAll("option")).map((o) => o.textContent);
+    expect(names).toEqual(["Choose a reviewer", "Adam"]);
   });
 
   it("remembers the reviewer picked when the admin comes back to the list", () => {

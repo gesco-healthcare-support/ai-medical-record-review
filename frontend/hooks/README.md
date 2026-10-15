@@ -7,7 +7,7 @@ workbench. Components read and write the backend only through these hooks or the
 | File | What it is |
 | --- | --- |
 | `use-review-workflow.ts` | `useReviewWorkflow(documentId)`: boot from the stored record, watch a segment or summarize run (1 s status poll), the row buffer with 800 ms autosave, the touched set, stop and restart, `reloadRows()` after other tabs write |
-| `use-documents.ts` | `useDocuments(owner?)` (`["documents"]`, or `["documents", "owner", id]` for an admin viewing another reviewer; polls every 2 s while any record has an active job), `useUploadDocument()`, `useAggregateDocuments()`, `useDeleteDocument()`, `useStartIdentification()` |
+| `use-documents.ts` | `useDocuments(owner?)` (`["documents"]`, or `["documents", "owner", id]` for an admin viewing another reviewer; polls every 2 s while any record has an active job), `useUploadDocument()` (`{file, owner?, allowDuplicate?}`), `useAggregateDocuments()`, `useAssignDocument()` (an admin moving a record to another reviewer), `useDeleteDocument()`, `useStartIdentification()` |
 | `use-duplicates.ts` | `duplicatesKey()`, `useDuplicates()` (polls every 2 s while the dedup job is queued or running), `useResolveDuplicate()`, `useStartDedup()` |
 | `use-summaries.ts` | `summariesKey()`, `useSummaries()`, `useSaveSummary()`, `useResummarize()`; saves patch the cached list in place |
 | `use-admin.ts` | `useAccounts(enabled)` (the accounts an admin can pick on the records page), `useCategories()`, `useCreateCategory()`, `useUpdateCategory()`, `useSavePrompt()`, `useRevertPrompt()`, `useReprocess()` |

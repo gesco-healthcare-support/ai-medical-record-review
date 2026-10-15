@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_owned_document
 from app.api.downloads import DOWNLOADS_UNAVAILABLE
+from app.api.ownership import duplicate_conflict, same_file, upload_owner
 from app.auth.deps import current_active_user
 from app.config import get_settings
 from app.db import get_db
@@ -379,20 +380,36 @@ def _apply_row_category(
 @router.post(
     "",
     status_code=status.HTTP_201_CREATED,
-    responses={400: {"description": "No PDF was uploaded, or the file is not a readable PDF."}},
+    responses={
+        400: {"description": "No PDF was uploaded, or the file is not a readable PDF."},
+        403: {"description": "A non-admin named another reviewer's account."},
+        404: {"description": "The reviewer named is not an active account."},
+        409: {"description": "That reviewer already holds this file; send allow_duplicate."},
+    },
 )
 def create_document(
     pdf: UploadFile | None = File(default=None),
+    owner: int | None = Form(default=None),
+    allow_duplicate: bool = Form(default=False),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
+    """Upload one PDF. `owner` (admins only) puts it in another reviewer's account instead.
+
+    Into one's own account a duplicate is a warning in the response, as it always was. Into
+    someone else's it is a 409 the admin confirms with `allow_duplicate` (see `api/ownership.py`):
+    the file is checked against THAT reviewer's records, not the admin's, because the question is
+    whether the person who will work on it already has it.
+    """
     if pdf is None or not pdf.filename:
         raise HTTPException(status_code=400, detail="no PDF uploaded")
+    reviewer = upload_owner(session, user, owner)
+    for_someone_else = reviewer.id != user.id
 
     document_id = str(uuid.uuid4())
     # Storage names are uuids: no collisions, and no patient-named filename in any path that
-    # later shows up in logs or process listings.
-    user_dir = os.path.join(get_settings().upload_folder, str(user.id))
+    # later shows up in logs or process listings. Filed under the account it is uploaded INTO.
+    user_dir = os.path.join(get_settings().upload_folder, str(reviewer.id))
     os.makedirs(user_dir, exist_ok=True)
     stored_path = os.path.join(user_dir, document_id + ".pdf")
     with open(stored_path, "wb") as out:
@@ -405,20 +422,16 @@ def create_document(
         raise HTTPException(status_code=400, detail="file is not a readable PDF")
 
     sha256 = _sha256(stored_path)
-    # A duplicate upload is a WARNING, never a block: re-running a case is legitimate.
-    duplicate = (
-        # COUNT always returns a row; `or 0` only tells the type checker so.
-        session.scalar(
-            select(func.count())
-            .select_from(Document)
-            .where(Document.user_id == user.id, Document.sha256 == sha256)
-        )
-        or 0
-    ) > 0
+    # Into one's own account a duplicate upload is a WARNING, never a block: re-running a case is
+    # legitimate. Into another reviewer's, the admin is asked first.
+    copies = same_file(session, reviewer.id, sha256)
+    if copies and for_someone_else and not allow_duplicate:
+        os.remove(stored_path)
+        return duplicate_conflict(reviewer, copies)
 
     document = Document(
         id=document_id,
-        user_id=user.id,
+        user_id=reviewer.id,
         original_filename=safe_name(pdf.filename),
         stored_path=stored_path,
         sha256=sha256,
@@ -426,24 +439,36 @@ def create_document(
     )
     session.add(document)
     session.commit()
-    audit(session, "upload", user.id, document_id)
-    return {"id": document_id, "page_count": page_count, "sha256_duplicate": duplicate}
+    # Recorded under whoever uploaded it; the detail says whose account it went into.
+    detail = f"for user {reviewer.id}" if for_someone_else else None
+    audit(session, "upload", user.id, document_id, detail=detail)
+    return {"id": document_id, "page_count": page_count, "sha256_duplicate": bool(copies)}
 
 
 @router.post(
     "/aggregate",
     status_code=status.HTTP_201_CREATED,
-    responses={400: {"description": "No PDFs were uploaded, or none of them is readable."}},
+    responses={
+        400: {"description": "No PDFs were uploaded, or none of them is readable."},
+        403: {"description": "A non-admin named another reviewer's account."},
+        404: {"description": "The reviewer named is not an active account."},
+    },
 )
 def aggregate_documents(
     pdfs: list[UploadFile] = File(default=[]),
     name: str = Form(default=""),
+    owner: int | None = Form(default=None),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
     """Individual-record upload: merge several pre-split PDFs into one Document, seed one ReviewRow
     per source file (by page range), and enqueue a classify job to auto-categorize them. The
-    optional `name` becomes the record's display name (shown to its owner only)."""
+    optional `name` becomes the record's display name (shown to its owner only). `owner` (admins
+    only) puts the record in another reviewer's account, as on the single upload.
+
+    No duplicate check (there never was one here): the record is a file the server builds from the
+    pieces, so its hash says nothing reliable about whether the same pieces were uploaded before."""
+    reviewer = upload_owner(session, user, owner)
     sources = [(safe_name(f.filename), f.file.read()) for f in pdfs if f.filename]
     if not sources:
         raise HTTPException(status_code=400, detail="no PDFs uploaded")
@@ -452,7 +477,7 @@ def aggregate_documents(
         raise HTTPException(status_code=400, detail="no readable PDFs uploaded")
 
     document_id = str(uuid.uuid4())
-    user_dir = os.path.join(get_settings().upload_folder, str(user.id))
+    user_dir = os.path.join(get_settings().upload_folder, str(reviewer.id))
     os.makedirs(user_dir, exist_ok=True)
     stored_path = os.path.join(user_dir, document_id + ".pdf")
     with open(stored_path, "wb") as out:
@@ -461,7 +486,7 @@ def aggregate_documents(
 
     document = Document(
         id=document_id,
-        user_id=user.id,
+        user_id=reviewer.id,
         original_filename=name.strip()[:512] or "aggregated-records.pdf",
         stored_path=stored_path,
         sha256=_sha256(stored_path),
@@ -487,7 +512,8 @@ def aggregate_documents(
             )
         )
     session.commit()
-    audit(session, "aggregate_upload", user.id, document_id)
+    detail = f"for user {reviewer.id}" if reviewer.id != user.id else None
+    audit(session, "aggregate_upload", user.id, document_id, detail=detail)
     try:
         enqueue(
             session,
@@ -496,6 +522,9 @@ def aggregate_documents(
             model=get_settings().genai_model,
             prompt_version=PROMPT_VERSION,
             catalog_revision=catalog.catalog_version(session),
+            # Who started it, as on every other job start: an admin uploading for a reviewer
+            # starts this classify job in that reviewer's lane.
+            requested_by=user.id,
         )
     except JobConflict:
         pass  # a brand-new document cannot already have an active job; never fail the upload on it

@@ -20,6 +20,10 @@
 - `UPLOAD_INPUT_ID` is declared in `empty-state.tsx` and imported by `documents-view.tsx`; the reverse
   import would be a cycle.
 - Errors go through `humanizeError()` with a record-specific `notFound` sentence.
+- An upload into ANOTHER reviewer's account is confirmed first, naming the reviewer; the reviewer is
+  captured with the file so the upload goes where the confirmation said. Offer "anyway" only for
+  `isDuplicateRecord(err)` - every other 409 (a job running) is reported, never overridden. Uploads
+  into one's own account are not asked about.
 
 ## Traps
 

@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  assignDocument,
   createCategory,
   deletePrompt,
   getPrompt,
@@ -82,5 +83,20 @@ describe("reprocess", () => {
 
     expect(lastCall().url).toBe("/api/admin/reprocess/d1");
     expect(lastCall().init.method).toBe("POST");
+  });
+});
+
+describe("assigning a record", () => {
+  it("posts the reviewer to the record's admin route, without the duplicate confirmation", async () => {
+    await assignDocument("d1", 7);
+    const { url, init } = lastCall();
+    expect(url).toBe("/api/admin/documents/d1/assign");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ owner: 7, allow_duplicate: false });
+  });
+
+  it("confirms the duplicate when asked", async () => {
+    await assignDocument("d1", 7, true);
+    expect(JSON.parse(lastCall().init.body as string)).toEqual({ owner: 7, allow_duplicate: true });
   });
 });

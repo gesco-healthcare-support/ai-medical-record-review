@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { assignDocument } from "@/lib/admin-api";
 import * as api from "@/lib/documents-api";
 import type { DocumentListItem } from "@/lib/types";
 
@@ -28,10 +29,19 @@ function useDocsMutation<TArgs, TResult>(mutationFn: (args: TArgs) => Promise<TR
   });
 }
 
-export const useUploadDocument = () => useDocsMutation((file: File) => api.uploadDocument(file));
+/** One PDF, into the caller's own account or - for an admin - `owner`'s. */
+export const useUploadDocument = () =>
+  useDocsMutation(({ file, ...target }: { file: File } & api.UploadTarget) =>
+    api.uploadDocument(file, target),
+  );
 export const useAggregateDocuments = () =>
-  useDocsMutation((vars: { name: string; files: File[] }) =>
-    api.aggregateDocuments(vars.name, vars.files),
+  useDocsMutation((vars: { name: string; files: File[]; owner?: number | null }) =>
+    api.aggregateDocuments(vars.name, vars.files, vars.owner),
+  );
+/** Admins: move a record to another reviewer. It leaves the list on screen, so the list refreshes. */
+export const useAssignDocument = () =>
+  useDocsMutation((vars: { id: string; owner: number; allowDuplicate?: boolean }) =>
+    assignDocument(vars.id, vars.owner, vars.allowDuplicate),
   );
 export const useDeleteDocument = () => useDocsMutation((id: string) => api.deleteDocument(id));
 export const useStartIdentification = () =>
