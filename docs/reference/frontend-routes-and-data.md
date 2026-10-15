@@ -79,8 +79,8 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | Function | Method and path | Body | Response type | Used by |
 | --- | --- | --- | --- | --- |
 | `listDocuments(owner?)` | `GET /documents`, or `GET /documents?owner=<id>` | - | `DocumentListItem[]` (the caller's own records, newest first; for an admin with `owner`, that account's) | `useDocuments()` in `DocumentsView`, `BundlePageClient`, `AdminView`; `useDocuments(owner)` in `DocumentsView` for an admin who picked a reviewer |
-| `uploadDocument()` | `POST /documents` | multipart field `pdf` | `{id, page_count, sha256_duplicate}` | `useUploadDocument()` in `DocumentsView`; does not start identification |
-| `aggregateDocuments()` | `POST /documents/aggregate` | multipart `name` (only when non-blank), one `pdfs` field per file in order | `{id, page_count, records}` | `useAggregateDocuments()` in `SplitUploadDialog` |
+| `uploadDocument()` | `POST /documents` | multipart field `pdf`; `owner` and `allow_duplicate` when an admin uploads into another reviewer's account | `{id, page_count, sha256_duplicate}` | `useUploadDocument()` in `DocumentsView`; does not start identification. Into another reviewer's account it runs only after a confirmation, and a 409 with code `duplicate` asks a second time before sending `allow_duplicate` |
+| `aggregateDocuments()` | `POST /documents/aggregate` | multipart `name` (only when non-blank), `owner` when an admin opened the dialog on another reviewer's records, one `pdfs` field per file in order | `{id, page_count, records}` | `useAggregateDocuments()` in `SplitUploadDialog` |
 | `deleteDocument()` | `DELETE /documents/{id}` | - | `{ok}` | `useDeleteDocument()` in `DocumentsView` |
 | `startIdentification()` | `POST /documents/{id}/segment/start` | none | `{ok}` | `useStartIdentification()` in `DocumentsView` |
 
@@ -115,6 +115,7 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | `putPrompt()` | `PUT /admin/prompts/{id}` | `{text}` | `{category_id, text, custom}` | `useSavePrompt()` in `PromptDialog` |
 | `deletePrompt()` | `DELETE /admin/prompts/{id}` | - | `PromptInfo` | `useRevertPrompt()` in `PromptDialog` |
 | `reprocessDocument()` | `POST /admin/reprocess/{documentId}` | none | `{ok}` | `useReprocess()` in `AdminView`; the record list offered is the admin's own summarized records from `GET /documents` |
+| `assignDocument()` | `POST /admin/documents/{documentId}/assign` | JSON `{owner, allow_duplicate}` | `{id, owner: {id, name}}` | `useAssignDocument()` (in `frontend/hooks/use-documents.ts`, so it refreshes the records list) in `AssignDialog`, opened from a record's "Assign to..." menu item on My documents for an admin |
 
 ### Files and downloads (`frontend/lib/download.ts`, `frontend/lib/bundle-api.ts`, `frontend/hooks/use-download-watch.ts`)
 
@@ -138,7 +139,7 @@ TanStack Query holds all server state that is not the workbench's row buffer.
 | Query key | Owner | Fetches | Refresh | Invalidated or patched by |
 | --- | --- | --- | --- | --- |
 | `["current-user"]` | `useCurrentUser()` | `GET /users/me` | No retry, 5 minute stale time | `useLogin()` success invalidates; sign out clears the whole cache |
-| `["documents"]` | `useDocuments()` | `GET /documents` | Every 2000 ms while any record has an `active_job`, otherwise none | Upload, aggregate, delete and start identification invalidate |
+| `["documents"]` | `useDocuments()` | `GET /documents` | Every 2000 ms while any record has an `active_job`, otherwise none | Upload, aggregate, assign, delete and start identification invalidate |
 | `["documents", "owner", <id>]` | `useDocuments(owner)` | `GET /documents?owner=<id>` | As above | The same mutations: they invalidate the `["documents"]` prefix |
 | `["admin", "users"]` | `useAccounts(enabled)` | `GET /admin/users` | None | None |
 | `["duplicates", id]` | `useDuplicates()` (`duplicatesKey()`) | `GET /documents/{id}/duplicates` | Every 2000 ms while the latest dedup job is `queued` or `running`, otherwise none | Resolve and start dedup invalidate |
@@ -299,6 +300,14 @@ count:
 Other My documents behaviour: search matches the filename or the patient name; sort columns are
 Document, Patient, Pages, Uploaded (the default, newest first), Documents found and Last activity; 20
 records per page.
+
+For an admin viewing another reviewer's records ("Show records for"): both upload buttons stay,
+and the record goes into that reviewer's account. A single upload first asks "Upload to <name>'s
+records?"; if the server answers that the reviewer already has the file, a second confirmation
+shows its sentence and offers "Upload anyway". The split-upload dialog names the reviewer in its
+title and button instead. Delete is not offered there. On any list an admin sees, each record's menu
+has "Assign to...", which moves the record to another reviewer and asks again in the same dialog
+when that reviewer already has the file.
 
 Workbench progress labels (`STAGE_LABELS` in `frontend/hooks/use-review-workflow.ts`):
 

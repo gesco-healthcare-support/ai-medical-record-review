@@ -15,6 +15,7 @@ shared `conftest.py`.
 | `test_ab_stats.py` | The aggregation used by the segmentation boundary A/B script (`scripts/eval/ab_stats.py`). |
 | `test_admin_api.py` | The `/api/admin` routes: categories, prompts, reprocess, admin-only access. |
 | `test_admin_record_access.py` | An admin opening and fixing another reviewer's record: the ownership guard, the `owner` list filter, audit attribution, owner-only delete, the accounts list. |
+| `test_admin_uploads_and_assigns.py` | An admin uploading (single and split) into another reviewer's account and assigning a record to someone: admins only, the duplicate confirmation checked against the receiving account, audit attribution, and the queue lane a moved record's jobs use. |
 | `test_auth_gate.py` | The deny-by-default authentication gate and its public-path allowlist. |
 | `test_auth_integration.py` | Login, logout, the registration rules and the password-reset routes, against the database. |
 | `test_backend_provenance.py` | Which model backend answered a call is recorded beside which model did. |

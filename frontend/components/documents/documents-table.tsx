@@ -79,11 +79,14 @@ export function DocumentsTable({
   docs,
   onOpen,
   onIdentify,
+  onAssign,
   onDelete,
 }: Readonly<{
   docs: DocumentListItem[];
   onOpen: (id: string) => void;
   onIdentify?: (doc: DocumentListItem) => void;
+  /** Admins only: move the record to another reviewer. Off while a job runs, as on the server. */
+  onAssign?: (doc: DocumentListItem) => void;
   onDelete?: (doc: DocumentListItem) => void;
 }>) {
   const [filter, setFilter] = useState("all");
@@ -226,6 +229,14 @@ export function DocumentsTable({
                             onSelect={() => onIdentify(doc)}
                           >
                             {doc.rows_count ? "Re-run identification" : "Start identification"}
+                          </DropdownMenuItem>
+                        ) : null}
+                        {onAssign ? (
+                          <DropdownMenuItem
+                            disabled={Boolean(doc.active_job)}
+                            onSelect={() => onAssign(doc)}
+                          >
+                            Assign to...
                           </DropdownMenuItem>
                         ) : null}
                         {onDelete ? (

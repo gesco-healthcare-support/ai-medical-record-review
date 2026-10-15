@@ -7,11 +7,11 @@ Nothing here renders; hooks and components import these functions.
 | File | What it is |
 | --- | --- |
 | `api.ts` | `apiFetch()` (prefixes `/api`, sends the session cookie, JSON by default), `ApiError`, `signedOut()` (redirect to `/login` and return the error to throw), `errorFromResponse()` (reads a string `detail` or `error`, else `"<path> failed (<status>)"`) |
-| `errors.ts` | `humanizeError()` (the one mapping from an error to a sentence), `isOffline()`, `lacksServerMessage()` |
+| `errors.ts` | `humanizeError()` (the one mapping from an error to a sentence), `isOffline()`, `lacksServerMessage()`, `isDuplicateRecord()` (the 409 an admin may confirm past) |
 | `auth-api.ts` | `login()` (form-encoded), `logout()`, `register()`, `forgotPassword()`, `resetPassword()` |
-| `documents-api.ts` | `listDocuments(owner?)` (an admin's `owner` asks for that account's records), `uploadDocument()`, `aggregateDocuments()`, `deleteDocument()`, `startIdentification()` |
+| `documents-api.ts` | `listDocuments(owner?)` (an admin's `owner` asks for that account's records), `uploadDocument(file, target?)` and `aggregateDocuments(name, files, owner?)` (an admin's `owner` puts the record in that account), `deleteDocument()`, `startIdentification()` |
 | `review-api.ts` | The workbench calls: record detail, status, duplicates, dedup start, cancel, resolve, rows, segment and summarize start, header extract and save, summaries; the `HeaderFields` and `DuplicateAction` types |
-| `admin-api.ts` | The accounts list (`listAccounts()`); categories list, create and update; prompt get, put and delete; reprocess; the `AdminCategory`, `PromptInfo` and `CategoryInput` types |
+| `admin-api.ts` | The accounts list (`listAccounts()`); categories list, create and update; prompt get, put and delete; reprocess; `assignDocument()` (move a record to another reviewer); the `AdminCategory`, `PromptInfo` and `CategoryInput` types |
 | `bundle-api.ts` | `BundleConfig`, `DIAGNOSTIC_OPERATIVE`, `DEPOSITIONS`, `BUNDLES` (the only copy of the bundle taxonomy), `downloadBundlePdf()`, `downloadBundleSummary()` |
 | `download.ts` | `downloadFile()` (POST, then a native browser download of the prepared file), `fetchDownloadStatus()`, `PreparedDownload`, `DownloadState`, `DOWNLOAD_INTERRUPTED`, `DOWNLOAD_NOT_PREPARED` |
 | `review-rows.ts` | Row keys (`withKeys()`, `newKey()`, `stripKeys()`), `sortRows()`, `mergeRows()`, `applyServerRowChanges()`, `SERVER_WRITABLE_FIELDS`, `touchKey()`, `touchedFields()`, `couldNotIdentify()`, `categoryWasGuessed()`, `rowErrors()`, `clearFlagOnEdit()`, `moveSharedBoundary()` |

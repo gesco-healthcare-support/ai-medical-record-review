@@ -4,9 +4,13 @@
 // double-submit header is needed. A 401 means the session is gone -> callers redirect to /login.
 
 export class ApiError extends Error {
+  /** `code` names a refusal the page offers a way past - today only "duplicate": the reviewer an
+   *  admin is uploading or assigning to already holds the file. Absent on every other error, so a
+   *  check for it cannot mistake an ordinary 409 (a job running) for one. */
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -38,10 +42,11 @@ export function signedOut(): ApiError {
  */
 export async function errorFromResponse(resp: Response, path: string): Promise<ApiError> {
   const data = await resp.json().catch(() => null);
-  const body = data as { detail?: unknown; error?: unknown } | null;
+  const body = data as { detail?: unknown; error?: unknown; code?: unknown } | null;
   const detail = typeof body?.detail === "string" ? body.detail : undefined;
   const error = typeof body?.error === "string" ? body.error : undefined;
-  return new ApiError(detail ?? error ?? `${path} failed (${resp.status})`, resp.status);
+  const code = typeof body?.code === "string" ? body.code : undefined;
+  return new ApiError(detail ?? error ?? `${path} failed (${resp.status})`, resp.status, code);
 }
 
 export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {

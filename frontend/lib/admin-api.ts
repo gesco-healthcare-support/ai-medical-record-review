@@ -76,3 +76,13 @@ export function listAccounts() {
 export function reprocessDocument(documentId: string) {
   return apiFetch<{ ok: boolean }>(`/admin/reprocess/${documentId}`, { method: "POST" });
 }
+
+/** POST /api/admin/documents/{id}/assign: move a record into another reviewer's account. 409 with
+ *  code "duplicate" when that reviewer already holds the same file, until `allowDuplicate` is sent;
+ *  409 without a code while a job is running on the record. */
+export function assignDocument(documentId: string, owner: number, allowDuplicate = false) {
+  return apiFetch<{ id: string; owner: { id: number; name: string } }>(
+    `/admin/documents/${documentId}/assign`,
+    { method: "POST", body: JSON.stringify({ owner, allow_duplicate: allowDuplicate }) },
+  );
+}

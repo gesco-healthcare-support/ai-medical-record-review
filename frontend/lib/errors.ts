@@ -35,6 +35,13 @@ export function isOffline(err: unknown): boolean {
   return err instanceof ApiError && err.status === 0;
 }
 
+/** True when an upload into, or assignment to, another reviewer's account was refused because that
+ *  reviewer already holds the same file. The admin is asked and may send it again anyway; every
+ *  other 409 (a job running, say) is not this and must not be offered "anyway". */
+export function isDuplicateRecord(err: unknown): err is ApiError {
+  return err instanceof ApiError && err.status === 409 && err.code === "duplicate";
+}
+
 /**
  * Turn any thrown error into a clear, user-facing sentence. Keyed on HTTP status so the terse,
  * IDOR-vague server 404 ("not found") becomes guidance, while genuinely actionable server details

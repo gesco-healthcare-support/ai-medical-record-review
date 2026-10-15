@@ -49,3 +49,21 @@ describe("errorFromResponse", () => {
     expect(humanizeError(err, { fallback: "no" })).toBe("A job is running.");
   });
 });
+
+describe("a refusal's code", () => {
+  it("carries a string `code` so the page can tell a duplicate from every other 409", async () => {
+    const err = await errorFromResponse(
+      response(409, { detail: "Brian already has this record.", code: "duplicate" }),
+      "/documents",
+    );
+    expect(err.code).toBe("duplicate");
+    expect(err.message).toBe("Brian already has this record.");
+  });
+
+  it("leaves `code` unset when the server sent none, or sent something that is not a string", async () => {
+    expect((await errorFromResponse(response(409, { detail: "A job." }), "/x")).code).toBeUndefined();
+    expect(
+      (await errorFromResponse(response(409, { detail: "A job.", code: 7 }), "/x")).code,
+    ).toBeUndefined();
+  });
+});

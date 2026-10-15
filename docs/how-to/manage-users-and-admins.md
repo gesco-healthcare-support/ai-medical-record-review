@@ -2,7 +2,10 @@
 
 ## When you need it
 
-- Someone needs the admin console (categories, prompts, reprocess), or should lose it.
+- Someone needs the admin console (categories, prompts, reprocess), or should lose it. An admin
+  can also open any reviewer's records, upload a record into a reviewer's account and assign a
+  record to another reviewer, all from My documents ("Show records for" and a record's
+  "Assign to...").
 - A user has forgotten their password. The "Forgot password" form sends no email, so an operator
   has to set a new one.
 - A user leaves and their account must stop working.
