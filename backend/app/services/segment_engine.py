@@ -457,10 +457,48 @@ _SERVICE_PAGE = re.compile(
 _SERVICE_PAGE_HEAD = 800
 _SERVICE_PAGE_MAX_PAGES = 2
 
+# The SERVER'S DECLARATION, for the service pages whose heading the check above cannot see.
+#
+# Measured 2026-10-15 on the 27-record exam (run-seg4 + run-cat1): eight one- and two-page proofs of
+# service on one record were titled "QME Supplemental Report" or "Evaluation Report", rule 12 or the
+# model claimed them, and each became a summary the reviewer filed General. On six of those pages
+# the heading is not in the OCR at all, and on the other two it sits past the 800 characters. Every
+# one of them carries the declaration a server signs: over the age of eighteen, not a party to the
+# action, under penalty of perjury.
+#
+# So a short row also counts when its first page carries that declaration - the age or not-a-party
+# line, together with the oath, a served/true-copy line or the heading anywhere on the page - and
+# does NOT mention a request for authorization, which travels with a service page of its own and is
+# a document reviewers summarize. On the read-only copy of the live box (reviewer-finished records,
+# one- and two-page reviewer rows) this claims 259 rows against the heading's 203: all 259 filed
+# General or left unticked, NONE ticked. Without the authorization exclusion it claimed two ticked
+# requests for authorization, which is why it is there.
+_SERVER_DECLARATION = re.compile(
+    r"over the age of (?:18|eighteen)|age of eighteen|not a party to", re.I
+)
+_SERVICE_OATH = re.compile(
+    r"penalty of perjury|true (?:and correct )?cop(?:y|ies)"
+    r"|\b(?:i|we) (?:served|caused to be served)|\bserved (?:the|a) (?:following|foregoing|within)",
+    re.IGNORECASE,
+)
+_AUTHORIZATION_PAGE = re.compile(r"request for authori[sz]ation|\brfa\b", re.IGNORECASE)
+
+
+def _is_service_page(text):
+    """The heading opening the page, or the server's declaration anywhere on it (see above)."""
+    if _SERVICE_PAGE.search(" ".join(text[:_SERVICE_PAGE_HEAD].split())):
+        return True
+    flat = " ".join(text.split())
+    return (
+        bool(_SERVER_DECLARATION.search(flat))
+        and bool(_SERVICE_OATH.search(flat) or _SERVICE_PAGE.search(flat))
+        and not _AUTHORIZATION_PAGE.search(flat)
+    )
+
 
 def _opens_as_proof_of_service(pdf_path, row, page_text_fn):
-    """Does this short row's first page open as a proof or declaration of service? Only ever asked
-    on our model. A page that cannot be read answers no, so the normal cascade decides; a reviewer's
+    """Is this short row's first page a proof or declaration of service (`_is_service_page`)? Only
+    ever asked on our model. A page that cannot be read answers no, so the normal cascade decides; a reviewer's
     Stop and a missing OCR installation propagate, as they do from the escalation."""
     if get_settings().backend_for("segment") != "vllm":
         return False
@@ -474,7 +512,7 @@ def _opens_as_proof_of_service(pdf_path, row, page_text_fn):
     except Exception as exc:
         logger.warning("service-page check could not read page %s: %s", start, exc)
         return False
-    return bool(_SERVICE_PAGE.search(" ".join(head[:_SERVICE_PAGE_HEAD].split())))
+    return _is_service_page(head)
 
 
 def _categorize(pdf_path, row, page_text_fn=None):

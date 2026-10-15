@@ -499,6 +499,85 @@ def test_the_gate_is_the_backend_that_writes_the_title(monkeypatch):
     assert se._categorize("x.pdf", _row(62, 62, title="QME Report"), pages)["category"] == "100"
 
 
+# --- ...or whose first page carries the server's declaration -------------------------------------
+
+_DECLARATION_PAGE = (
+    "I am a citizen of the United States, over the age of eighteen years and not a party to the "
+    "within action. On the date below I mailed a true copy of the Supplemental Report. I declare "
+    "under penalty of perjury that the foregoing is true and correct."
+)
+
+
+def test_a_service_page_without_its_heading_is_paperwork(monkeypatch):
+    """The 2026-10-15 exam failure: no heading in the OCR, a supplemental-report title, rule 12."""
+    _segment_backend(monkeypatch, "vllm")
+    se = _classify_must_not_run(monkeypatch)
+
+    out = se._categorize(
+        "x.pdf", _row(46, 47, title="QME Supplemental Report"), lambda p: _DECLARATION_PAGE
+    )
+
+    assert out["category"] == "100"
+    assert out["method"] == "rules"
+
+
+def test_the_heading_past_the_first_800_characters_counts_beside_the_declaration(monkeypatch):
+    _segment_backend(monkeypatch, "vllm")
+    se = _classify_must_not_run(monkeypatch)
+    page = "x" * se._SERVICE_PAGE_HEAD + " PROOF OF SERVICE  I am over the age of 18 years."
+
+    out = se._categorize("x.pdf", _row(60, 61, title="Evaluation Report"), lambda p: page)
+
+    assert out["category"] == "100"
+
+
+def test_a_request_for_authorization_with_a_service_declaration_is_not_claimed(monkeypatch):
+    """GUARD: two ticked requests for authorization carried a server's declaration on the live box."""
+    from app.services import segment_engine as se
+
+    _segment_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(
+        se, "classify", lambda title, page_text=None: _Result("10", False, method="rules")
+    )
+    page = "REQUEST FOR AUTHORIZATION (DWC Form RFA). " + _DECLARATION_PAGE
+
+    out = se._categorize("x.pdf", _row(20, 21, title="Treatment Request"), lambda p: page)
+
+    assert out["category"] == "10"
+
+
+def test_the_age_line_alone_is_not_a_service_page(monkeypatch):
+    """GUARD: a history mentioning a patient's age is not a declaration; the oath must be there too."""
+    from app.services import segment_engine as se
+
+    _segment_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(
+        se, "classify", lambda title, page_text=None: _Result("1", False, method="rules")
+    )
+    page = "The applicant has been over the age of eighteen since 1990 and works as a driver."
+
+    out = se._categorize("x.pdf", _row(8, 9, title="Progress Report"), lambda p: page)
+
+    assert out["category"] == "1"
+
+
+def test_gemini_reads_no_page_for_the_declaration_either(monkeypatch):
+    """GUARD: the widened check sits behind the same gate - Gemini is untouched."""
+    from app.services import segment_engine as se
+
+    _segment_backend(monkeypatch, "gemini")
+    monkeypatch.setattr(
+        se, "classify", lambda title, page_text=None: _Result("12", False, method="rules")
+    )
+
+    def _page(p):
+        raise AssertionError("Gemini must not read a page for the service check")
+
+    out = se._categorize("x.pdf", _row(46, 47, title="QME Supplemental Report"), _page)
+
+    assert out["category"] == "12"
+
+
 def test_an_unreadable_first_page_leaves_the_normal_cascade(monkeypatch):
     from app.services import segment_engine as se
 
