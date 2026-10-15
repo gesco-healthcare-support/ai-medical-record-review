@@ -2316,6 +2316,57 @@ def test_a_bare_progress_note_is_one_whose_only_category_one_reason_is_that_toke
     assert classification.bare_progress_note(title) is bare
 
 
+@pytest.mark.parametrize(
+    ("title", "bare"),
+    [
+        ("Follow Up Visit", True),
+        ("FOLLOW UP VISIT", True),
+        ("Follow-Up", True),
+        ("Follow-up Appointment", True),
+        ("Follow-Up Progress Note", True),
+        # Another rule-1 token names the visit outright, so the rule keeps it.
+        ("Office Visit Follow-Up", False),
+        ("PR-2 Follow-Up Report", False),
+        ("Work Status Follow-Up", False),
+        # A different rule answers on its own word.
+        ("Physical Therapy Follow-Up", False),
+        ("Emergency Department Record Follow-Up", False),
+        ("Follow-Up MRI of the Lumbar Spine", False),
+        ("Progress Note", False),
+    ],
+)
+def test_a_bare_follow_up_is_one_whose_only_category_one_reason_is_that_token(title, bare):
+    assert classification.bare_follow_up(title) is bare
+
+
+def test_on_our_model_the_pages_decide_a_bare_follow_up_visit(monkeypatch):
+    """Measured 2026-10-15: reviewers filed bare follow-up titles 5 on 13 rows and 1 on 9."""
+    _on_backend(monkeypatch, "vllm")
+    _no_model_call(monkeypatch)
+    assert classification.classify("Follow Up Visit") == classification.Classification(
+        "1", "low", "rules", needs_review=True
+    )
+
+    seen = []
+    _votes(monkeypatch, "5", "5", seen)
+    pages = "Chiropractic adjustment performed by John Doe, D.C."
+
+    result = classification.classify("Follow Up Visit", page_text=pages)
+
+    assert result == classification.Classification("5", "high", "llm+embedding", needs_review=False)
+    assert seen == [("embed", pages), ("llm", pages)]
+
+
+def test_on_gemini_a_bare_follow_up_is_still_decided_by_the_rule(monkeypatch):
+    """GUARD: Gemini is untouched."""
+    _on_backend(monkeypatch, "gemini")
+    _no_model_call(monkeypatch)
+
+    result = classification.classify("Follow Up Visit", page_text="any page text")
+
+    assert result == classification.Classification("1", "high", "rules", needs_review=False)
+
+
 def test_every_other_treating_token_still_keeps_the_rule():
     """GUARD: the exemption is derived from rule 1's own token list, so a token added there later
     keeps its rule answer without anyone remembering this list."""

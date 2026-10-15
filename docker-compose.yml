@@ -153,6 +153,9 @@ x-backend-env: &backend-env
   # halves. Thinking tokens count against it, so it must move WITH VLLM_THINKING_STAGES - named
   # here so that is a restart, not a rebuild. Gemini's call carries no cap.
   VLLM_SEGMENT_MAX_OUTPUT_TOKENS: ${VLLM_SEGMENT_MAX_OUTPUT_TOKENS:-8192}
+  # Where the seam between two segmentation windows sits on our model (edge | middle). Named here
+  # so a pod day can compare the two without a rebuild. Gemini ignores it.
+  VLLM_SEGMENT_OWNERSHIP: ${VLLM_SEGMENT_OWNERSHIP:-edge}
   # Per-stage served model on our model (`stage=model`, comma-separated); empty keeps VLLM_MODEL
   # for every stage. Keeps the stages an adapter was not trained on on the base model while the
   # adapter is switched in - 7_use_adapter.sh sets it, so it must reach a container without a

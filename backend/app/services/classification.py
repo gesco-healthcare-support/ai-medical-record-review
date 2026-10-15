@@ -841,6 +841,31 @@ def bare_progress_note(title):
     text = (title or "").lower()
     if not _PROGRESS_NOTE.search(text) or _OTHER_TREATING_TOKENS.search(text):
         return False
+    return _rule_one_by_itself(title, text)
+
+
+# ON OUR MODEL ONLY, and for the same reason: a bare "Follow Up Visit" title does not decide the
+# category by itself either.
+#
+# "Follow-up" says WHEN a visit happened in a course of care, not who saw the patient, and a
+# chiropractor's or physical therapist's second visit is a follow-up as much as a treating
+# physician's is. Measured 2026-10-15 on the read-only copy of the live box (reviewer-finished
+# records): titles that are only the token, with or without "visit"/"note"/"appointment", were filed
+# 5 on 13 rows and 1 on 9 - the rule's 1 is wrong more often than right. On our own model a reviewer
+# moved eight two-page "Follow Up Visit" rows of one record from 1 to 5 by hand.
+#
+# Decided on the row's pages, exactly as the bare progress note is; every other rule-1 token keeps
+# the rule. Gemini is untouched.
+def bare_follow_up(title):
+    """Is the bare "follow-up" token the only reason category 1 answered this title?"""
+    text = (title or "").lower()
+    if not _FOLLOWUP_TOKEN.search(text) or _OTHER_TREATING_TOKENS.search(text):
+        return False
+    return _rule_one_by_itself(title, text)
+
+
+def _rule_one_by_itself(title, text):
+    """Did rule 1 - and no other rule that answers category 1 on its own evidence - answer this?"""
     if match_rules(title) != _FOLLOWUP_MENTION:
         return False
     return not any(
@@ -882,7 +907,11 @@ def _decided_by_pages(title):
     """Should this title's rule answer give way to the row's pages? Only ever on our model."""
     if get_settings().backend_for("classify") != "vllm":
         return False
-    return bare_progress_note(title) or treating_report_with_authorization(title)
+    return (
+        bare_progress_note(title)
+        or bare_follow_up(title)
+        or treating_report_with_authorization(title)
+    )
 
 
 # --- catalog cache (DB-backed, invalidated on edit) -----------------------------------------
