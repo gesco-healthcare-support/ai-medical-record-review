@@ -264,6 +264,10 @@ category-1 reason is the token "progress note" (`bare_progress_note()`) does not
   model, so `_categorize()` escalates to the row's first pages as above.
 - Asked with page text, the rule stands aside and the embedding and LLM vote on the pages. If
   neither vote comes back, rule 1's category stands, still flagged.
+- The bare token "follow-up" (`bare_follow_up()`: "Follow Up Visit", "Follow-up Appointment") is
+  deferred the same way. On the read-only copy of the live box (2026-10-15, reviewer-finished
+  records) reviewers filed such titles 5 on 13 rows and 1 on 9, and on our model a reviewer moved
+  eight two-page "Follow Up Visit" rows of one record from 1 to 5 by hand.
 - "Progress report", "PR-2", "office visit", "work status" and "activity status" keep the rule. So
   does any title another rule answers on its own word: rule 5's therapy words, the return-to-work
   voucher, the emergency-department visit, History & Physical.
@@ -289,6 +293,17 @@ When the `segment` stage runs on vLLM, `_categorize()` first asks `_opens_as_pro
 the row one or two pages long, and does its first page carry "proof of service" (or "declaration of
 service") within its first 800 characters of stored page text? If so the row is General (100) with
 method `rules`, and `classify()` is not called.
+
+It also counts when the first page carries the declaration a server signs, wherever it sits on the
+page (`_is_service_page()`): "over the age of eighteen" or "not a party to", together with "penalty
+of perjury", a true-copy or served line, or the heading itself - and no mention of a request for
+authorization, which travels with a service page of its own and is summarized. On the 2026-10-15
+exam eight proofs of service on one record were titled "QME Supplemental Report" or "Evaluation
+Report" and summarized; six carry no heading in their OCR at all and two carry it past the 800
+characters. On the read-only copy of the live box (reviewer-finished records, rows of one or two
+pages) the widened check claims 259 rows against the heading's 203, every one filed General or
+left unticked; without the authorization exclusion it also claimed two ticked requests for
+authorization.
 
 The gate is the backend that writes the TITLE, because the title is what goes wrong. A proof of
 service names the document it serves, and the trained adapter titled such pages after that
