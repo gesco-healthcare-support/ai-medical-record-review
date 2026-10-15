@@ -13,6 +13,10 @@ HTTP routers for documents, downloads and admin. Full contracts:
   another user's record for a non-admin, is 404 `not found`, never 403; an admin passes (they may
   open and fix any reviewer's record), except on delete, which stays owner-only.
   `admin.reprocess` is the only route without ownership.
+- A record put in another reviewer's account (an admin's upload with `owner`, or
+  `admin.assign_document`) goes through `api/ownership.py`: `upload_owner` / `reviewer_for` for the
+  account and `same_file` + `duplicate_conflict` for the 409 that asks before a second copy lands
+  there. Do not re-derive either in a route.
 - Handlers are sync `def` on `Depends(get_db)` (sync session). Do not switch them to `async def`
   or to the async session; the async session is for FastAPI-Users only.
 - Define every helper ABOVE the route decorator. A function placed between `@router...` and the

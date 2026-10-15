@@ -19,7 +19,11 @@ vi.mock("@/lib/documents-api", () => ({
   deleteDocument: vi.fn().mockResolvedValue({ ok: true }),
   startIdentification: vi.fn().mockResolvedValue({ ok: true }),
 }));
+vi.mock("@/lib/admin-api", () => ({
+  assignDocument: vi.fn().mockResolvedValue({ id: "d1", owner: { id: 7, name: "Brian" } }),
+}));
 
+import { assignDocument } from "@/lib/admin-api";
 import {
   aggregateDocuments,
   deleteDocument,
@@ -28,6 +32,7 @@ import {
 } from "@/lib/documents-api";
 import {
   useAggregateDocuments,
+  useAssignDocument,
   useDeleteDocument,
   useDocuments,
   useStartIdentification,
@@ -95,8 +100,11 @@ describe("useDocuments mutations", () => {
     const file = new File(["x"], "record.pdf", { type: "application/pdf" });
 
     const cases = [
-      { hook: useUploadDocument, args: file as unknown },
+      { hook: useUploadDocument, args: { file } as unknown },
+      { hook: useUploadDocument, args: { file, owner: 7, allowDuplicate: true } },
       { hook: useAggregateDocuments, args: { name: "Combined record", files: [file] } },
+      { hook: useAggregateDocuments, args: { name: "For Brian", files: [file], owner: 7 } },
+      { hook: useAssignDocument, args: { id: "d1", owner: 7, allowDuplicate: false } },
       { hook: useDeleteDocument, args: "d1" },
       { hook: useStartIdentification, args: "d1" },
     ];
@@ -108,8 +116,14 @@ describe("useDocuments mutations", () => {
       await waitFor(() => expect(invalidated).toEqual([["documents"]]));
     }
 
-    expect(uploadDocument).toHaveBeenCalledWith(file);
-    expect(aggregateDocuments).toHaveBeenCalledWith("Combined record", [file]);
+    // The upload passes its target through untouched: nothing for one's own account, the reviewer
+    // and the confirmation for someone else's.
+    expect(uploadDocument).toHaveBeenCalledWith(file, {});
+    expect(uploadDocument).toHaveBeenCalledWith(file, { owner: 7, allowDuplicate: true });
+    expect(aggregateDocuments).toHaveBeenCalledWith("Combined record", [file], undefined);
+    expect(aggregateDocuments).toHaveBeenCalledWith("For Brian", [file], 7);
+    // Assigning moves a record OUT of the list on screen, so it must refetch like the rest.
+    expect(assignDocument).toHaveBeenCalledWith("d1", 7, false);
     expect(deleteDocument).toHaveBeenCalledWith("d1");
     expect(startIdentification).toHaveBeenCalledWith("d1");
   });

@@ -19,13 +19,19 @@ function isPdf(file: File) {
 }
 
 /** Combine several pre-split PDFs into one record (POST /api/documents/aggregate). A record name
- *  and the files (joined in listed order) are sent; the backend enqueues classification. */
+ *  and the files (joined in listed order) are sent; the backend enqueues classification.
+ *
+ *  `owner` is set when an admin opens it on another reviewer's records: the record goes into THAT
+ *  account, and the dialog says so in its title, its description and its button, so the confirming
+ *  click is the one that names the reviewer. */
 export function SplitUploadDialog({
   open,
   onOpenChange,
+  owner = null,
 }: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  owner?: { id: number; name: string } | null;
 }>) {
   const aggregate = useAggregateDocuments();
   const [name, setName] = useState("");
@@ -76,13 +82,20 @@ export function SplitUploadDialog({
       return;
     }
     try {
-      await aggregate.mutateAsync({ name, files });
-      toast.success("Records combined and uploaded.");
+      await aggregate.mutateAsync(owner ? { name, files, owner: owner.id } : { name, files });
+      toast.success(
+        owner
+          ? `Records combined and uploaded to ${owner.name}'s records.`
+          : "Records combined and uploaded.",
+      );
       close();
     } catch (err) {
       toast.error(humanizeError(err, { fallback: "Could not combine the records." }));
     }
   }
+
+  let submitLabel = owner ? `Combine & upload for ${owner.name}` : "Combine & upload";
+  if (aggregate.isPending) submitLabel = "Combining...";
 
   return (
     <Dialog
@@ -94,9 +107,12 @@ export function SplitUploadDialog({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Upload split records</DialogTitle>
+          <DialogTitle>
+            {owner ? `Upload split records for ${owner.name}` : "Upload split records"}
+          </DialogTitle>
           <DialogDescription>
             Combine several pre-split PDFs into one record. Files are joined in the order listed.
+            {owner ? ` The record goes into ${owner.name}'s records, not yours.` : null}
           </DialogDescription>
         </DialogHeader>
 
@@ -175,7 +191,7 @@ export function SplitUploadDialog({
             onClick={submit}
             disabled={aggregate.isPending || files.length < 2}
           >
-            {aggregate.isPending ? "Combining..." : "Combine & upload"}
+            {submitLabel}
           </button>
         </DialogFooter>
       </DialogContent>

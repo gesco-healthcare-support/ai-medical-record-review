@@ -133,10 +133,12 @@ register, reset and user update, so the API enforces what the sign-up form shows
 
 ### Per-user isolation
 
-Records are private to the account that uploaded them, with one exception: an admin can open and
-fix any account's record. The client's lead reviewer asked for it, to correct a mistake after the
-reviewer who made it has left. There is no sharing between reviewers and no view of everyone's
-records at once.
+Records are private to the account that owns them, with one exception: an admin can open and fix
+any account's record. The client's lead reviewer asked for it, to correct a mistake after the
+reviewer who made it has left. He later asked for an admin to be able to upload a record into a
+reviewer's account and to assign a record to someone to work on, so an admin can also put a record
+in another account. There is no sharing between reviewers - a record has one owner at a time - and
+no view of everyone's records at once.
 
 - `get_owned_document` (`backend/app/api/deps.py`) loads the document by id and admits the caller
   when `document.user_id` is the caller's id or the caller is an admin. A missing document and
@@ -151,13 +153,22 @@ records at once.
   audit row for a re-segment uses. The header, duplicate resolution and job-start routes all
   audit, and an admin opening a record they do not own writes a `view_record` row. The record
   stays with its owner.
+- An admin may name another account as an upload's `owner` (`upload_owner` in
+  `backend/app/api/ownership.py`); the record is then that account's, and the `upload` row, under
+  the admin, says `for user <id>`. Anyone else naming another account gets 403. Before a second copy
+  of a file lands in someone else's account, the admin is told and must confirm (`same_file`,
+  `duplicate_conflict`); into one's own account a duplicate stays a warning only.
+- An admin may move a record to another account (`assign_document` in
+  `backend/app/api/admin.py`, audited as `assign`). It is refused while a job is queued or running,
+  because that job is already in the old owner's queue lane; later jobs run in the new owner's.
 - Deleting stays owner-only, even for an admin (`delete_document`): deleting is not fixing, and it
   cannot be undone.
 - A prepared export's token is bound to both the user and the document that made it
   (`lookup` and `delivery_status` in `backend/app/services/downloads.py`). A mismatch is the same
   404 as an unknown token.
-- Files are stored under `<UPLOAD_FOLDER>/<user_id>/`, named by the document's UUID, never by the
-  upload's file name.
+- Files are stored under `<UPLOAD_FOLDER>/<user_id>/` of the account they were uploaded into,
+  named by the document's UUID, never by the upload's file name. An assigned record's file stays
+  where it was; `stored_path` holds the whole path, so nothing reads the owner from the folder.
 - `POST /api/admin/reprocess/{document_id}` is the one route that takes a document id with no
   ownership check. It starts a summarize job and returns `{"ok": true}`; it returns no record
   content.

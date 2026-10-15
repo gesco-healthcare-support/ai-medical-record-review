@@ -8,9 +8,10 @@ Sign-in, registration and user routes live in `../auth/`; request bodies live in
 | --- | --- |
 | `__init__.py` | Package docstring only. |
 | `deps.py` | `get_owned_document`: loads a document by id and answers 404 unless it belongs to the caller or the caller is an admin. Every document route depends on it (delete adds its own owner-only check). |
+| `ownership.py` | Putting a record in another reviewer's account: `upload_owner` and `reviewer_for` (which account, admins only), `same_file` and `duplicate_conflict` (the 409 that asks before a second copy lands there). Shared by the upload routes and the admin assign route. |
 | `documents.py` | 25 routes under `/api/documents`: upload (single and multi-file), list, get, header, delete, PDF, status, duplicates, rows, job start and cancel, summaries, exports and category bundles. Also the shared export builders, `_pipeline_error_response` and `_offer_download`. |
 | `downloads.py` | 2 routes: the GET that sends a prepared export file, and its delivery status. `_MeasuredFileResponse` logs each transfer and updates the delivery record. |
-| `admin.py` | 9 admin-only routes under `/api/admin`: whoami, users (the active accounts for the records page's "Show records for" list), categories, per-category summary prompts, reprocess. |
+| `admin.py` | 10 admin-only routes under `/api/admin`: whoami, users (the active accounts for the records page's "Show records for" list), categories, per-category summary prompts, reprocess, and assign (move a record to another reviewer). |
 
 ## How it is used
 
@@ -36,6 +37,8 @@ uv run pytest tests/test_documents_api.py tests/test_downloads.py tests/test_dow
 | `tests/test_downloads.py` | The download service and routes: tokens, expiry, another user's token, Redis down. |
 | `tests/test_download_delivery.py` | The delivery record and the status states. |
 | `tests/test_admin_api.py` | Every admin route, including reprocess on another owner's document. |
+| `tests/test_admin_record_access.py` | An admin opening and fixing another reviewer's record; everyone else still held to ownership. |
+| `tests/test_admin_uploads_and_assigns.py` | An admin uploading into another reviewer's account and assigning a record, the duplicate confirmation, and the queue lane a moved record's jobs use. |
 
 ## Documentation
 

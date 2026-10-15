@@ -5,19 +5,23 @@ AND a per-route superuser dependency here (defense in depth). Every successful e
 catalog revision - which invalidates the worker classifier caches (they poll catalog_version()) and
 stamps subsequent jobs - and writes an audit row. Category ids are immutable; deactivation
 soft-deletes. `reprocess` is admin-scoped: it acts on ANY owner's document (no owner filter).
+`assign` moves a record into another reviewer's account (see `api/ownership.py`).
 """
 
 import re
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_owned_document
+from app.api.ownership import duplicate_conflict, reviewer_for, same_file
 from app.auth.deps import current_superuser
 from app.config import get_settings
 from app.db import get_db
 from app.models import Category, Document, Prompt, ReviewRow, User
-from app.schemas.admin import CategoryCreate, CategoryUpdate, PromptPut
+from app.schemas.admin import AssignPayload, CategoryCreate, CategoryUpdate, PromptPut
 from app.services import catalog
 from app.services.audit import audit
 from app.services.gemini import PROMPT_VERSION
@@ -431,3 +435,50 @@ def reprocess(
         raise HTTPException(status_code=409, detail="a job is already running for this document")
     audit(session, "reprocess", user.id, document.id)
     return {"ok": True}
+
+
+def _owner_payload(document: Document, reviewer: User) -> dict:
+    return {"id": document.id, "owner": {"id": reviewer.id, "name": reviewer.name or ""}}
+
+
+@router.post(
+    "/documents/{document_id}/assign",
+    responses={
+        404: {"description": "No document has this id, or the reviewer is not an active account."},
+        409: {
+            "description": "A job is running for this record, or the reviewer already holds this "
+            "file (send allow_duplicate to assign it anyway)."
+        },
+    },
+)
+def assign_document(
+    payload: AssignPayload,
+    document: Annotated[Document, Depends(get_owned_document)],
+    session: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(current_superuser)],
+):
+    """Move a record into another reviewer's account so they work on it (the lead reviewer asked
+    to "assign people to work with it"). The record then IS theirs: it leaves the old list, shows in
+    the new one, and its later jobs run in the new reviewer's queue.
+
+    One owner at a time, by design - nothing here shares a record between two reviewers. Refused
+    while a job is running, because that job is already queued under the old owner and its results
+    would land on a record that has moved. The PDF stays where it was stored; `stored_path` is the
+    whole path, so nothing reads the owner out of the folder name.
+    """
+    reviewer = reviewer_for(session, payload.owner)
+    if reviewer.id == document.user_id:
+        return _owner_payload(document, reviewer)  # already theirs: nothing to move or record
+    if document.active_job is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="a job is running for this document; wait for it before assigning it",
+        )
+    copies = same_file(session, reviewer.id, document.sha256)
+    if copies and not payload.allow_duplicate:
+        return duplicate_conflict(reviewer, copies)
+    previous = document.user_id
+    document.user_id = reviewer.id
+    session.commit()
+    audit(session, "assign", user.id, document.id, detail=f"user {previous} -> {reviewer.id}")
+    return _owner_payload(document, reviewer)

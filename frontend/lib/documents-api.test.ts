@@ -102,3 +102,30 @@ describe("the plain document calls", () => {
     expect(lastCall().init.method).toBe("POST");
   });
 });
+
+describe("uploading into another reviewer's account", () => {
+  it("sends the reviewer as `owner`, and confirms a duplicate only when asked", async () => {
+    await uploadDocument(pdf(), { owner: 7 });
+    let body = lastCall().init.body as FormData;
+    expect(body.get("owner")).toBe("7");
+    expect(body.has("allow_duplicate")).toBe(false);
+
+    await uploadDocument(pdf(), { owner: 7, allowDuplicate: true });
+    body = lastCall().init.body as FormData;
+    expect(body.get("allow_duplicate")).toBe("true");
+  });
+
+  it("sends neither field on an ordinary upload", async () => {
+    await uploadDocument(pdf());
+    const body = lastCall().init.body as FormData;
+    expect(body.has("owner")).toBe(false);
+    expect(body.has("allow_duplicate")).toBe(false);
+  });
+
+  it("sends the reviewer on a split upload too, and nothing when there is none", async () => {
+    await aggregateDocuments("Combined", [pdf("a.pdf")], 7);
+    expect((lastCall().init.body as FormData).get("owner")).toBe("7");
+    await aggregateDocuments("Combined", [pdf("a.pdf")]);
+    expect((lastCall().init.body as FormData).has("owner")).toBe(false);
+  });
+});

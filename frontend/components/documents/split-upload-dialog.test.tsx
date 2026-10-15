@@ -146,3 +146,40 @@ describe("SplitUploadDialog queue editing", () => {
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 });
+
+describe("SplitUploadDialog for another reviewer", () => {
+  it("names the reviewer in its title and button, and sends the record to their account", async () => {
+    const user = userEvent.setup();
+    aggregate.mutateAsync.mockResolvedValueOnce({ id: "d9" });
+    render(<SplitUploadDialog open onOpenChange={vi.fn()} owner={{ id: 7, name: "Brian" }} />);
+    expect(
+      screen.getByRole("heading", { name: "Upload split records for Brian" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/goes into Brian's records, not yours/)).toBeInTheDocument();
+    fireEvent.change(document.querySelector('input[type="file"]')!, {
+      target: { files: [pdf("a.pdf"), pdf("b.pdf")] },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Combine & upload for Brian" }));
+
+    await waitFor(() =>
+      expect(aggregate.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ owner: 7 })),
+    );
+    expect(vi.mocked(toast).success).toHaveBeenCalledWith(
+      "Records combined and uploaded to Brian's records.",
+    );
+  });
+
+  it("sends no owner from one's own records", async () => {
+    // GUARD: a reviewer's own split upload is the request it always was.
+    const user = userEvent.setup();
+    aggregate.mutateAsync.mockResolvedValueOnce({ id: "d9" });
+    render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
+    fireEvent.change(document.querySelector('input[type="file"]')!, {
+      target: { files: [pdf("a.pdf"), pdf("b.pdf")] },
+    });
+    await user.click(await screen.findByRole("button", { name: "Combine & upload" }));
+    await waitFor(() => expect(aggregate.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(aggregate.mutateAsync.mock.calls[0][0]).not.toHaveProperty("owner");
+  });
+});

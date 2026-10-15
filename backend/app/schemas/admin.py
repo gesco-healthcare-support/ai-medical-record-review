@@ -33,3 +33,11 @@ class CategoryUpdate(BaseModel):
 
 class PromptPut(BaseModel):
     text: str = ""
+
+
+class AssignPayload(BaseModel):
+    """Move a record into another reviewer's account. `allow_duplicate` confirms it after a 409
+    said that reviewer already holds the same file."""
+
+    owner: int
+    allow_duplicate: bool = False

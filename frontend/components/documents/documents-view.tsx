@@ -11,8 +11,9 @@ import {
 } from "@/hooks/use-documents";
 import { useAccounts } from "@/hooks/use-admin";
 import { useCurrentUser } from "@/hooks/use-current-user";
-import { humanizeError } from "@/lib/errors";
+import { humanizeError, isDuplicateRecord } from "@/lib/errors";
 import type { AdminAccount, DocumentListItem } from "@/lib/types";
+import { AssignDialog } from "./assign-dialog";
 import { DocumentsTable } from "./documents-table";
 import { EmptyState, UPLOAD_INPUT_ID } from "./empty-state";
 import { SplitUploadDialog } from "./split-upload-dialog";
@@ -103,9 +104,9 @@ function useRecordsOwner() {
     setOwnerId(id);
     saveOwner(id);
   };
-  // Another reviewer's records. Uploading and deleting are left out while viewing them: an
-  // upload would land in the admin's own list, not this one, and deleting is not fixing (the
-  // server refuses it too).
+  // Another reviewer's records. Deleting is left out while viewing them - deleting is not fixing,
+  // and the server refuses it too. Uploading is NOT: it goes into that reviewer's account, after a
+  // confirmation that names them (the lead reviewer's request).
   const viewingOther = isAdmin && ownerId !== null && ownerId !== me?.id;
   return {
     meId: me?.id,
@@ -141,25 +142,58 @@ function OwnerBar({ owner }: Readonly<{ owner: RecordsOwner }>) {
   );
 }
 
-/** An empty list: the first-run upload screen for one's own records, a plain line for someone
- *  else's (whose records cannot be uploaded to from here). */
+/** The two upload buttons, on one's own records and - for an admin - on another reviewer's. */
+function UploadButtons({
+  uploading,
+  onSplit,
+  onPick,
+}: Readonly<{ uploading: boolean; onSplit: () => void; onPick: () => void }>) {
+  return (
+    <div className="flex flex-wrap gap-2.5">
+      <button type="button" className="ev-btn ev-btn-outline ev-btn-lg" onClick={onSplit}>
+        Upload split records
+      </button>
+      <button
+        type="button"
+        className="ev-btn ev-btn-primary ev-btn-lg"
+        onClick={onPick}
+        disabled={uploading}
+      >
+        {uploading ? "Uploading..." : "Upload a record"}
+      </button>
+    </div>
+  );
+}
+
+/** An empty list: the first-run upload screen for one's own records; for someone else's, a plain
+ *  line and the upload buttons (an admin can upload into that reviewer's account). */
 function NoRecords({
   owner,
   dragging,
   uploading,
   onBrowse,
-}: Readonly<{ owner: RecordsOwner; dragging: boolean; uploading: boolean; onBrowse: () => void }>) {
+  onSplit,
+}: Readonly<{
+  owner: RecordsOwner;
+  dragging: boolean;
+  uploading: boolean;
+  onBrowse: () => void;
+  onSplit: () => void;
+}>) {
   if (owner.viewingOther) {
     return (
       <section className="hd-column">
-        <p>{owner.ownerName} has no records.</p>
+        <div className="hd-header">
+          <p>{owner.ownerName} has no records.</p>
+          <UploadButtons uploading={uploading} onSplit={onSplit} onPick={onBrowse} />
+        </div>
       </section>
     );
   }
   return <EmptyState dragging={dragging} uploading={uploading} onBrowse={onBrowse} />;
 }
 
-/** The list heading, with the upload buttons on one's own records only. */
+/** The list heading, with the upload buttons. */
 function ListHeader({
   owner,
   uploading,
@@ -169,33 +203,112 @@ function ListHeader({
   return (
     <div className="hd-header">
       <h1>{owner.viewingOther ? `${owner.ownerName}'s documents` : "My documents"}</h1>
-      {owner.viewingOther ? null : (
-        <div className="flex flex-wrap gap-2.5">
-          <button type="button" className="ev-btn ev-btn-outline ev-btn-lg" onClick={onSplit}>
-            Upload split records
-          </button>
-          <button
-            type="button"
-            className="ev-btn ev-btn-primary ev-btn-lg"
-            onClick={onPick}
-            disabled={uploading}
-          >
-            {uploading ? "Uploading..." : "Upload a record"}
-          </button>
-        </div>
-      )}
+      <UploadButtons uploading={uploading} onSplit={onSplit} onPick={onPick} />
     </div>
   );
 }
 
+/** A file waiting on the admin's go-ahead to land in another reviewer's account. The reviewer is
+ *  captured WITH the file, so what the confirmation names is what the upload targets. */
+type CrossUpload = { file: File; ownerId: number; ownerName: string };
+
+/** Uploading: straight in on one's own records; into another reviewer's after a confirmation, and
+ *  a second one if the server says that reviewer already holds the file. */
+function useUploads(owner: RecordsOwner) {
+  const upload = useUploadDocument();
+  const [pending, setPending] = useState<CrossUpload | null>(null);
+  const [duplicate, setDuplicate] = useState<(CrossUpload & { message: string }) | null>(null);
+
+  async function uploadOwn(file: File) {
+    try {
+      const created = await upload.mutateAsync({ file });
+      if (created.sha256_duplicate) {
+        toast("You already uploaded an identical file. Continuing anyway.");
+      } else {
+        toast.success("Record uploaded.");
+      }
+    } catch (err) {
+      toast.error(errMessage(err, "Upload failed."));
+    }
+  }
+
+  async function uploadFor(to: CrossUpload, allowDuplicate: boolean) {
+    try {
+      await upload.mutateAsync({ file: to.file, owner: to.ownerId, allowDuplicate });
+      toast.success(`Record uploaded to ${to.ownerName}'s records.`);
+    } catch (err) {
+      if (isDuplicateRecord(err)) {
+        setDuplicate({ ...to, message: err.message });
+        return;
+      }
+      toast.error(
+        humanizeError(err, {
+          fallback: "Upload failed.",
+          notFound: `${to.ownerName}'s account is no longer active. Refresh the page.`,
+        }),
+      );
+    }
+  }
+
+  /** A picked or dropped file. */
+  function take(file: File) {
+    if (!isPdf(file)) {
+      toast.error("Only PDF files can be uploaded.");
+      return;
+    }
+    if (owner.viewingOther && owner.ownerId !== null) {
+      setPending({ file, ownerId: owner.ownerId, ownerName: owner.ownerName ?? "this reviewer" });
+      return;
+    }
+    void uploadOwn(file);
+  }
+
+  return { upload, pending, setPending, duplicate, setDuplicate, take, uploadFor };
+}
+
+type Uploads = ReturnType<typeof useUploads>;
+
+/** The confirmations an upload into another reviewer's account goes through. */
+function CrossUploadDialogs({ uploads }: Readonly<{ uploads: Uploads }>) {
+  const { pending, setPending, duplicate, setDuplicate, uploadFor } = uploads;
+  return (
+    <>
+      <ConfirmDialog
+        open={Boolean(pending)}
+        onOpenChange={(open) => !open && setPending(null)}
+        title={`Upload to ${pending?.ownerName ?? ""}'s records?`}
+        description={`"${pending?.file.name ?? ""}" will be added to ${pending?.ownerName ?? ""}'s records, not yours. If they already have this record, you will be asked again.`}
+        confirmLabel="Upload"
+        onConfirm={() => {
+          if (pending) void uploadFor(pending, false);
+          setPending(null);
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(duplicate)}
+        onOpenChange={(open) => !open && setDuplicate(null)}
+        title={`${duplicate?.ownerName ?? ""} already has this record`}
+        description={`${duplicate?.message ?? ""} Upload another copy anyway?`}
+        confirmLabel="Upload anyway"
+        onConfirm={() => {
+          if (duplicate) void uploadFor(duplicate, true);
+          setDuplicate(null);
+        }}
+      />
+    </>
+  );
+}
+
 /** My documents: the documents table + upload (button / browse / drag-drop) + first-run empty
- *  state. Upload does NOT start identification (a mis-clicked file must not spend model quota). */
+ *  state. Upload does NOT start identification (a mis-clicked file must not spend model quota).
+ *  An admin viewing another reviewer's records uploads into THAT account, after confirming, and
+ *  can assign any record shown to another reviewer. */
 export function DocumentsView() {
   const router = useRouter();
   const owner = useRecordsOwner();
   const viewingOther = owner.viewingOther;
   const { data: docs = [], isLoading, isError, refetch } = useDocuments(owner.ownerId);
-  const upload = useUploadDocument();
+  const uploads = useUploads(owner);
   const del = useDeleteDocument();
   const identify = useStartIdentification();
 
@@ -204,29 +317,16 @@ export function DocumentsView() {
   const [splitOpen, setSplitOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DocumentListItem | null>(null);
   const [reidentifyTarget, setReidentifyTarget] = useState<DocumentListItem | null>(null);
+  const [assignTarget, setAssignTarget] = useState<DocumentListItem | null>(null);
 
   function pickFile() {
     fileInput.current?.click();
   }
 
-  async function uploadFile(file: File | undefined) {
-    if (!file || viewingOther) return;
-    if (!isPdf(file)) {
-      toast.error("Only PDF files can be uploaded.");
-      return;
-    }
-    try {
-      const created = await upload.mutateAsync(file);
-      if (created.sha256_duplicate) {
-        toast("You already uploaded an identical file. Continuing anyway.");
-      } else {
-        toast.success("Record uploaded.");
-      }
-    } catch (err) {
-      toast.error(errMessage(err, "Upload failed."));
-    } finally {
-      if (fileInput.current) fileInput.current.value = "";
-    }
+  function onFile(file: File | undefined) {
+    // Cleared at once so picking the same file again still fires `change`; the File stays valid.
+    if (fileInput.current) fileInput.current.value = "";
+    if (file) uploads.take(file);
   }
 
   async function runIdentify(id: string) {
@@ -255,6 +355,11 @@ export function DocumentsView() {
     }
   }
 
+  const splitOwner =
+    viewingOther && owner.ownerId !== null
+      ? { id: owner.ownerId, name: owner.ownerName ?? "this reviewer" }
+      : null;
+
   return (
     <main
       className="flex flex-1 flex-col"
@@ -266,7 +371,7 @@ export function DocumentsView() {
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
-        void uploadFile(e.dataTransfer.files[0]);
+        onFile(e.dataTransfer.files[0]);
       }}
     >
       <input
@@ -275,7 +380,7 @@ export function DocumentsView() {
         type="file"
         accept="application/pdf"
         className="hidden"
-        onChange={(e) => void uploadFile(e.target.files?.[0])}
+        onChange={(e) => onFile(e.target.files?.[0])}
       />
 
       <OwnerBar owner={owner} />
@@ -294,15 +399,16 @@ export function DocumentsView() {
         <NoRecords
           owner={owner}
           dragging={dragging}
-          uploading={upload.isPending}
+          uploading={uploads.upload.isPending}
           onBrowse={pickFile}
+          onSplit={() => setSplitOpen(true)}
         />
       ) : null}
       {!isLoading && docs.length > 0 ? (
         <section className="hd-column">
           <ListHeader
             owner={owner}
-            uploading={upload.isPending}
+            uploading={uploads.upload.isPending}
             onSplit={() => setSplitOpen(true)}
             onPick={pickFile}
           />
@@ -310,12 +416,22 @@ export function DocumentsView() {
             docs={docs}
             onOpen={(id) => router.push(`/records/${id}`)}
             onIdentify={onIdentify}
+            onAssign={owner.isAdmin ? setAssignTarget : undefined}
             onDelete={viewingOther ? undefined : (doc) => setDeleteTarget(doc)}
           />
         </section>
       ) : null}
 
-      <SplitUploadDialog open={splitOpen} onOpenChange={setSplitOpen} />
+      <SplitUploadDialog open={splitOpen} onOpenChange={setSplitOpen} owner={splitOwner} />
+
+      <CrossUploadDialogs uploads={uploads} />
+
+      <AssignDialog
+        doc={assignTarget}
+        accounts={owner.accounts}
+        currentOwnerId={owner.ownerId ?? owner.meId}
+        onClose={() => setAssignTarget(null)}
+      />
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}

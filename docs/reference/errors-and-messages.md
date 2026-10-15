@@ -32,10 +32,10 @@ There is no response envelope: errors, like successes, are bare bodies.
 | 302 | Not signed in, on a browser navigation. |
 | 400 | The request is well-formed but refused by a business rule; the `detail` says which. |
 | 401 | No session cookie, an expired or deleted session, or an inactive user. |
-| 403 | Signed in but not an admin. |
-| 404 | The document is missing or belongs to someone else; or the job, summary, duplicate group, category, custom prompt, user or download token is not found; or the path does not exist. |
+| 403 | Signed in but not an admin, including a non-admin naming another account as an upload's `owner`. |
+| 404 | The document is missing or belongs to someone else; or the job, summary, duplicate group, category, custom prompt, user, reviewer account or download token is not found; or the path does not exist. |
 | 405 | The path exists but not for this method. |
-| 409 | A state conflict: a job is running, the duplicate check is missing or stale, nothing to export, no bundle match, bundle over the cap, category in use, summary boundaries changed. |
+| 409 | A state conflict: a job is running, the duplicate check is missing or stale, nothing to export, no bundle match, bundle over the cap, category in use, summary boundaries changed, or the reviewer an admin is uploading or assigning to already holds the same file (`{"detail", "code": "duplicate", "duplicates"}`). |
 | 413 | Request body over 500 MB. Answered by nginx (`client_max_body_size 500m` in `deploy/nginx.conf`) before the API sees it. |
 | 422 | Request validation failed (`{"detail": [...]}`), or a pipeline error that is a property of the document (`{"error": ...}`). |
 | 500 | A pipeline error with no specific mapping (`{"error": ...}`), or an unhandled exception (plain text). |
@@ -44,7 +44,7 @@ There is no response envelope: errors, like successes, are bare bodies.
 
 ## `detail` sentences sent by the routes
 
-Route numbers (D1 to D27, A1 to A8) are those of the [HTTP API reference](http-api.md).
+Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-api.md).
 
 | Status | `detail` | Sent by |
 | --- | --- | --- |
@@ -71,13 +71,17 @@ Route numbers (D1 to D27, A1 to A8) are those of the [HTTP API reference](http-a
 | 401 | `Not authenticated` | `enforce_auth`, every non-public route |
 | 403 | `Admin only` | `enforce_auth`, every `/api/admin` route |
 | 403 | `Forbidden` | `/api/users/{id}` routes |
+| 403 | `only an admin can upload into another reviewer's records` | D1, D2 (`owner` sent by a non-admin) |
 | 404 | `not found` | Every Owner route (`get_owned_document`); D14 (job not on this document); D18, D19 (no summary at `idx`); D26, D27 (download token); A4 (category); A8 (document) |
 | 404 | `no such duplicate group` | D12 |
+| 404 | `reviewer not found` | D1, D2 (`owner`), A10: the account is unknown or switched off |
 | 404 | `unknown category` | A6 |
 | 404 | `this category has no custom prompt` | A7 |
 | 404 | `Not Found` | `/api/users/{id}` routes; any unknown path |
 | 409 | `a job is running for this document; wait for it` | D7, D12, D13, D19 |
 | 409 | `a job is already running for this document` | D11, D15, D16, A8 |
+| 409 | `<reviewer> already has this record (uploaded <MM/DD/YYYY>, <N> pages).`, or `<reviewer> already has <N> copies of this record (the latest uploaded <MM/DD/YYYY>, <N> pages).`, with `code: "duplicate"` | D1 (`owner` sent), A10; not sent when `allow_duplicate` is true. `<reviewer>` is the account's name, or `This reviewer` when it has none |
+| 409 | `a job is running for this document; wait for it before assigning it` | A10 |
 | 409 | `this record has not been checked for duplicates` | D16 |
 | 409 | `the documents changed since the last duplicate check` | D16 |
 | 409 | `a job is running for this document; wait for it before changing the category` | D18 (`category` sent) |

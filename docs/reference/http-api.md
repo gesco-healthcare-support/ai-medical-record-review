@@ -43,8 +43,8 @@ columns list only the statuses beyond those.
 | users | `backend/app/auth/routes.py` `users_router` | `/api/users` | 5 |
 | documents | `backend/app/api/documents.py` `router` | `/api/documents` | 25 |
 | downloads | `backend/app/api/downloads.py` `router` | `/api/documents` | 2 |
-| admin | `backend/app/api/admin.py` `router` | `/api/admin` | 9 |
-| Total | | | 47 |
+| admin | `backend/app/api/admin.py` `router` | `/api/admin` | 10 |
+| Total | | | 48 |
 
 FastAPI also generates `/docs`, `/docs/oauth2-redirect`, `/redoc` and `/openapi.json` on the API
 process. They are not counted above and are public by prefix.
@@ -127,8 +127,8 @@ Every path below starts with `/api/documents`. `{document_id}` is the document's
 
 | # | Method | Path | Auth | Request | Success | Other statuses | Audit |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| D1 | POST | `/api/documents` | Login | Multipart file field `pdf` | 201 `{id, page_count, sha256_duplicate}` | 400 | `upload` |
-| D2 | POST | `/api/documents/aggregate` | Login | Multipart file field `pdfs` (repeated, one per file), optional form field `name` | 201 `{id, page_count, records}` | 400, 503 | `aggregate_upload` |
+| D1 | POST | `/api/documents` | Login | Multipart file field `pdf`, optional form fields `owner` (int, admins only) and `allow_duplicate` (bool) | 201 `{id, page_count, sha256_duplicate}` | 400, 403, 404, 409 | `upload` |
+| D2 | POST | `/api/documents/aggregate` | Login | Multipart file field `pdfs` (repeated, one per file), optional form fields `name` and `owner` (int, admins only) | 201 `{id, page_count, records}` | 400, 403, 404, 503 | `aggregate_upload` |
 | D3 | GET | `/api/documents` | Login | query `owner` (int, optional; honoured for an admin only) | 200 array of Document listing plus `rows_count` | none | none |
 | D4 | GET | `/api/documents/{document_id}` | Owner | none | 200 Document listing plus `rows`, `categories`, `doctors`, `letter_types`, `owner` | none | `view_record` when an admin opens another account's record |
 | D5 | POST | `/api/documents/{document_id}/extract-header` | Owner | none | 200 `{patient_first_name, patient_last_name, patient_dob, law_firm}` | 422, 503, 500 `{"error"}` | `header.extract` |
@@ -158,8 +158,8 @@ The `detail` string behind each 400, 404 and 409 is listed in
 
 | # | Behaviour |
 | --- | --- |
-| D1 | Streams the upload to `<UPLOAD_FOLDER>/<user_id>/<document_id>.pdf` in 1 MiB chunks. The file is valid when pypdf can count at least one page (`get_pdf_page_count` in `backend/app/services/pdf.py`); the extension and MIME type are not checked. An invalid file is deleted. `sha256_duplicate` is true when the same user already has a document with the same SHA-256; it never blocks the upload. `original_filename` is the upload name passed through `safe_name` (`backend/app/services/files.py`). The document starts in status `uploaded`; no job is started. |
-| D2 | Reads every file into memory and merges the readable PDFs in upload order (`merge_pdfs` in `backend/app/services/aggregate.py`); unreadable files are skipped. `records` is `[{filename, start, end, pages}]`, one per merged file. Stores the merged PDF like D1, names the document `name` (trimmed, first 512 characters) or `aggregated-records.pdf`, and creates one review row per source file with category `100`, placeholders `-` and `include` set from category 100's default. Source filenames are not stored. Then enqueues a `classify` job with model `GENAI_MODEL`. |
+| D1 | Streams the upload to `<UPLOAD_FOLDER>/<user_id>/<document_id>.pdf` in 1 MiB chunks, where `user_id` is the account the record goes into. The file is valid when pypdf can count at least one page (`get_pdf_page_count` in `backend/app/services/pdf.py`); the extension and MIME type are not checked. An invalid file is deleted. `original_filename` is the upload name passed through `safe_name` (`backend/app/services/files.py`). The document starts in status `uploaded`; no job is started. Without `owner` (or with the caller's own id) the record is the caller's, and `sha256_duplicate` is true when the caller already has a document with the same SHA-256; it never blocks the upload. With another account's id in `owner`: a non-admin gets 403 `only an admin can upload into another reviewer's records`; an unknown or switched-off account is 404 `reviewer not found`; the record goes into that account (`upload_owner` in `backend/app/api/ownership.py`); and when that account already holds a document with the same SHA-256 the file is deleted and the answer is 409 `{detail, code: "duplicate", duplicates: [{id, page_count}]}` unless `allow_duplicate` is true (`same_file`, `duplicate_conflict`). The `detail` names the reviewer, the newest copy's upload date and its page count, never a file name. |
+| D2 | Reads every file into memory and merges the readable PDFs in upload order (`merge_pdfs` in `backend/app/services/aggregate.py`); unreadable files are skipped. `records` is `[{filename, start, end, pages}]`, one per merged file. Stores the merged PDF like D1, names the document `name` (trimmed, first 512 characters) or `aggregated-records.pdf`, and creates one review row per source file with category `100`, placeholders `-` and `include` set from category 100's default. Source filenames are not stored. Then enqueues a `classify` job with model `GENAI_MODEL`, `requested_by` the caller. `owner` works as on D1 (403 for a non-admin naming another account, 404 for an account that is unknown or switched off); there is no duplicate check, because the merged file is built on the server. |
 | D3 | The caller's documents only, newest first. An admin may pass `owner` to list that account's documents instead; for anyone else `owner` is ignored (their own list, never an error). Three SQL queries whatever the count. |
 | D4 | `rows` are Editor rows. `categories` is `[{id, name}]` for active categories (`catalog.get_category_options`). `doctors` and `letter_types` come from `reporting.DOCTORS` and `reporting.LETTER_TYPES` in `backend/app/services/reporting.py`. `owner` is `{id, name}` of the account that owns the record, so the workbench can say so when an admin has opened another reviewer's record. |
 | D5 | Synchronous model call over pages 1 to min(15, page count) (`extract_header` in `backend/app/services/extraction.py`). A field the extraction found overwrites the stored value; a field it did not find keeps the stored value. The response is the merged, stored view. Nothing is stored on a `PipelineError`. |
@@ -219,6 +219,7 @@ addition to the gate's 403 for `/api/admin` paths.
 | A7 | DELETE | `/api/admin/prompts/{category_id}` | Admin | none | 200 `{category_id, text: null, effective_text, custom: false}` | 404 | `prompt.revert` |
 | A8 | POST | `/api/admin/reprocess/{document_id}` | Admin | none | 200 `{"ok": true}` | 400, 404, 409, 503 | `reprocess` |
 | A9 | GET | `/api/admin/users` | Admin | none | 200 array of `{id, name, email}` | none | none |
+| A10 | POST | `/api/admin/documents/{document_id}/assign` | Admin | JSON `AssignPayload` | 200 `{id, owner: {id, name}}` | 404, 409 | `assign` |
 
 | # | Behaviour |
 | --- | --- |
@@ -229,6 +230,7 @@ addition to the gate's 403 for `/api/admin` paths.
 | A6 | Writes the built-ins first when the table is empty (as A3), then 404 for an unknown category. The text is trimmed and must not be empty. Creates the custom row with revision 1, or replaces its text and adds 1 to its revision. Bumps the catalog revision, audits. |
 | A7 | Deletes the custom prompt row, so the category resolves its prompt from code again. Bumps the catalog revision, audits. |
 | A9 | The active accounts, ordered by name then email, for the records page's "Show records for" choice. Switched-off accounts are left out. Id, name and email only. |
+| A10 | Moves the record into the active account `owner` (`assign_document`). 404 for an unknown record or an account that is unknown or switched off (`reviewer not found`). Assigning a record to its current owner changes nothing and writes no audit row. 409 while a job is queued or running on the record. When the account already holds another document with the same SHA-256 the answer is 409 with `code: "duplicate"`, as on D1, unless `allow_duplicate` is true. The PDF is not moved: `stored_path` is the whole path. Later jobs for the record run in the new owner's queue lane. |
 | A8 | Acts on any owner's document (no ownership check). 400 when no review row is included. Enqueues a `summarize` job with `Settings.model_for("body")` and without clearing summaries; the summarize worker keeps every summary whose `(start, end, category)` still matches an included row and summarizes only the rows without one (`_reconcile_summaries` in `backend/app/worker/tasks.py`). The duplicate-check gate of D16 is not applied. |
 
 ## Request bodies
@@ -303,6 +305,8 @@ Row object (items of `rows` in D13 and D16):
 | `CategoryCreate` | `active`, `auto_assign`, `summarize_default` | boolean | true | |
 | `CategoryUpdate` | `name`, `description`, `examples`, `active`, `auto_assign`, `summarize_default` | as `CategoryCreate`, or null | absent | Only present fields are applied. No `id`. |
 | `PromptPut` | `text` | string | `""` | Must be non-empty after trimming. |
+| `AssignPayload` | `owner` | int | required | The account the record moves to. |
+| `AssignPayload` | `allow_duplicate` | bool | `false` | Assign even when that account already holds the same file. |
 
 ## Response shapes
 
@@ -327,8 +331,8 @@ the action, the document id where there is one, and `detail`.
 
 | Action | Written by | `detail` |
 | --- | --- | --- |
-| `upload` | D1 | none |
-| `aggregate_upload` | D2 | none |
+| `upload` | D1 | `for user <id>` when an admin uploaded into another account, else none |
+| `aggregate_upload` | D2 | `for user <id>` when an admin uploaded into another account, else none |
 | `delete` | D7 | none |
 | `view_record` | D4, only when an admin opens a record they do not own | none |
 | `header.extract` | D5 | `filled=<field names>` (names only, never values) |
@@ -355,6 +359,7 @@ the action, the document id where there is one, and `detail`.
 | `prompt.update` | A6 | `category <id> prompt created, <n> chars` or `category <id> prompt revision <a> -> <b>, <n> chars` |
 | `prompt.revert` | A7 | `category <id> prompt dropped: revision <r>, <n> chars` |
 | `reprocess` | A8 | none |
+| `assign` | A10, when the record moved | `user <old owner id> -> <new owner id>` |
 
 One more action, `segment.rows_replaced`, is written by the segment worker, not by a route
 (`backend/app/worker/tasks.py`). No route reads `audit_log`.

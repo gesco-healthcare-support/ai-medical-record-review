@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "@/lib/api";
-import { humanizeError } from "@/lib/errors";
+import { humanizeError, isDuplicateRecord } from "@/lib/errors";
 
 // Expected copy is derived from the contract (status -> guidance), NOT read off the implementation:
 // 404 must become guidance (the server keeps it IDOR-vague), network + bodiless-500 get safe copy,
@@ -51,5 +51,19 @@ describe("humanizeError", () => {
   it("preserves the friendly pipeline message on a 503 (does not clobber with generic)", () => {
     const ocr = "Text recognition (OCR) is unavailable on the server, so this document could not be read.";
     expect(humanizeError(new ApiError(ocr, 503))).toBe(ocr);
+  });
+});
+
+describe("isDuplicateRecord", () => {
+  it("is true only for the 409 the server marks as a duplicate", () => {
+    expect(isDuplicateRecord(new ApiError("Brian already has this record.", 409, "duplicate"))).toBe(
+      true,
+    );
+  });
+
+  it("is false for any other refusal, so 'upload anyway' is never offered past a running job", () => {
+    expect(isDuplicateRecord(new ApiError("a job is running", 409))).toBe(false);
+    expect(isDuplicateRecord(new ApiError("x", 400, "duplicate"))).toBe(false);
+    expect(isDuplicateRecord(new Error("duplicate"))).toBe(false);
   });
 });
