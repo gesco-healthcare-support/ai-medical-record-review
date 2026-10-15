@@ -6,6 +6,7 @@ instantiation fails fast if they are missing. Postgres + Redis + Vertex-only per
 """
 
 from functools import lru_cache
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -927,6 +928,16 @@ class Settings(BaseSettings):
     # runaway now costs ~8k tokens instead of ~60k. Thinking tokens count against it: raise it
     # before adding `segment` to VLLM_THINKING_STAGES.
     vllm_segment_max_output_tokens: int = 8192
+    # Where the seam between two overlapping segmentation windows sits on our model: "edge" (each
+    # window decides every start from its own second page on - Gemini's rule, and the default) or
+    # "middle" (the line sits in the middle of the overlap, so a start there is decided by the window
+    # that sees pages on both sides of it). A window that begins inside a document is answered as if
+    # its first page began one; see `segment_engine.merge_window_rows`. "realign" is "middle" plus
+    # one extra call per seam where two windows disagree inside their overlap: the later window is
+    # asked again from a page the earlier one says starts a document (`segment_engine._realigned`).
+    # Default "edge" until the pod-day measurement on the 27-record exam says otherwise. Gemini
+    # ignores it.
+    vllm_segment_ownership: Literal["edge", "middle", "realign"] = "edge"
     # Stages allowed to THINK on the vLLM path, comma-separated, empty for none.
     #
     # Empty is today's behaviour exactly, and this ships empty. It exists because the blanket
