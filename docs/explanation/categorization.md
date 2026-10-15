@@ -264,6 +264,12 @@ category-1 reason is the token "progress note" (`bare_progress_note()`) does not
   model, so `_categorize()` escalates to the row's first pages as above.
 - Asked with page text, the rule stands aside and the embedding and LLM vote on the pages. If
   neither vote comes back, rule 1's category stands, still flagged.
+- The pages never answer General (100) for a deferred title. If the votes come back General, the
+  rule's category stands, flagged for review. General is unticked by default, so a General answer
+  here would drop a treating report from the summary. On the read-only copy of the live box
+  (2026-10-15) reviewers filed 2 of 488 bare "Progress Note"/"Follow Up" rows General, while
+  Gemini, made to decide 344 such ticked rows on their pages, answered General on 21 a reviewer
+  filed 1. Our trained model answered General on none of the exam's 113.
 - The bare token "follow-up" (`bare_follow_up()`: "Follow Up Visit", "Follow-up Appointment") is
   deferred the same way. On the read-only copy of the live box (2026-10-15, reviewer-finished
   records) reviewers filed such titles 5 on 13 rows and 1 on 9, and on our model a reviewer moved
