@@ -1142,11 +1142,26 @@ def classify(title, page_text=None):
         embed_category = None
     llm_category = llm_classify(text)
 
+    result = _combined(embed_category, llm_category)
+    if deferred and result.category == DEFAULT_ID:
+        # A row whose title the pages decide is never answered General; the rule's answer stands,
+        # flagged. The deferral picks WHICH treating category a visit belongs to - a chiropractor's
+        # progress note is 5, a treating physician's 1 - and must not take the row out of the
+        # summary: General is unticked by default, so a General answer here drops a treating
+        # report the reviewer would have shipped. Reviewers almost never file these titles General:
+        # on the read-only copy of the live box (2026-10-15, reviewer-finished records) 2 of 488
+        # rows titled a bare "Progress Note" or "Follow Up". Gemini, made to decide 344 such
+        # TICKED rows on their pages, answered General on 21 a reviewer filed 1. Our trained model
+        # answered General on none of the exam's 113, so on our model this is a guard. Neither
+        # vote coming back lands here too, which is the fallback this replaced.
+        return Classification(deferred, "low", "rules", needs_review=True)
+    return result
+
+
+def _combined(embed_category, llm_category):
+    """The two votes combined: agreement is confident, anything else is flagged for review."""
     if embed_category is None:
         if llm_category is None:
-            if deferred:
-                # Neither vote came back on the pages: the rule's answer, flagged, beats General.
-                return Classification(deferred, "low", "rules", needs_review=True)
             return Classification(DEFAULT_ID, "low", "no-signal", needs_review=True)
         return Classification(llm_category, "low", "llm-only", needs_review=True)
     if llm_category is None:

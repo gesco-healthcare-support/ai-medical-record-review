@@ -2429,6 +2429,58 @@ def test_on_our_model_no_vote_on_the_pages_keeps_the_rule_answer_flagged(monkeyp
     assert result == classification.Classification("1", "low", "rules", needs_review=True)
 
 
+@pytest.mark.parametrize(
+    ("title", "embed", "llm", "rule"),
+    [
+        # Both votes say General: still not General.
+        ("Progress Note", "100", "100", "1"),
+        # One vote says General, the other a treating category - the LLM's answer would win.
+        ("Follow Up Visit", "5", "100", "1"),
+        # One vote only, and it is General.
+        ("Progress Note", None, "100", "1"),
+        ("Progress Note", "100", None, "1"),
+        # The authorization deferral is held to the same rule: its rule answers 10.
+        ("Primary Treating Physician's Report and Request for Authorization", "100", "100", "10"),
+    ],
+)
+def test_on_our_model_a_deferred_title_is_never_answered_general(
+    monkeypatch, title, embed, llm, rule
+):
+    """General is unticked by default, so a General answer would drop a treating report from the
+    summary. Reviewers filed 2 of 488 such rows General on the live box's read-only copy."""
+    _on_backend(monkeypatch, "vllm")
+    _votes(monkeypatch, embed, llm)
+
+    result = classification.classify(title, page_text="page text of a visit")
+
+    assert result == classification.Classification(rule, "low", "rules", needs_review=True)
+
+
+def test_on_our_model_a_deferred_title_still_moves_between_treating_categories(monkeypatch):
+    """GUARD: the never-General rule touches only General - a disagreement between two treating
+    categories keeps the LLM's answer, flagged, exactly as before."""
+    _on_backend(monkeypatch, "vllm")
+    _votes(monkeypatch, "1", "5")
+
+    result = classification.classify("Progress Note", page_text="page text of a visit")
+
+    assert result == classification.Classification("5", "low", "llm-disagree", needs_review=True)
+
+
+def test_a_title_no_rule_answers_can_still_be_general(monkeypatch):
+    """GUARD: only a DEFERRED title is held off General. A title no rule answers is decided by the
+    votes alone, General included, on either backend."""
+    for backend in ("vllm", "gemini"):
+        _on_backend(monkeypatch, backend)
+        _votes(monkeypatch, "100", "100")
+
+        result = classification.classify("Encounter Note", page_text="fax cover sheet")
+
+        assert result == classification.Classification(
+            "100", "high", "llm+embedding", needs_review=False
+        )
+
+
 def test_on_our_model_categorize_reads_the_pages_of_a_bare_progress_note(monkeypatch):
     """The whole path through segment_engine: the title-only answer escalates, the row's first pages
     are read, and the pages' answer is the one stored."""
