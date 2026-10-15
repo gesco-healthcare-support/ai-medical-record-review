@@ -284,14 +284,103 @@ def _ask_window(pdf_path, window_start, window_end):
     return sorted(rows, key=lambda r: (r["start"], r["end"]))
 
 
-def merge_window_rows(window_reports, windows, total_pages):
-    """Ownership merge: window k owns starts in (ws_k, ws_{k+1}]; the last window owns through the
-    end. Metadata comes from the owning window's row. Ends are re-derived so rows tile."""
+def _ownership_caps(windows, total_pages, ownership):
+    """The last start each window owns. ``edge``: window k owns starts in (ws_k, ws_{k+1}], so the
+    NEXT window decides every start from its own second page on. ``middle``: the line sits in the
+    middle of the overlap instead, so each start in it is decided by the window that sees pages on
+    both sides of it."""
+    caps = []
+    for k, (_ws, we) in enumerate(windows):
+        if k == len(windows) - 1:
+            caps.append(total_pages)
+            continue
+        nxt = windows[k + 1][0]
+        if ownership in ("middle", "realign"):
+            caps.append(nxt + max(0, (we - nxt + 1) // 2 - 1))
+        else:
+            caps.append(nxt)
+    return caps
+
+
+def _window_ownership(settings):
+    """Where the seam between two windows sits: ``vllm_segment_ownership`` on our model, the
+    original edge everywhere else - Gemini is untouched."""
+    if settings.backend_for("segment") == "vllm":
+        return settings.vllm_segment_ownership
+    return "edge"
+
+
+def _starts_between(rows, low, high):
+    """The row starts strictly between two pages."""
+    return {int(r["start"]) for r in rows if low < int(r["start"]) < high}
+
+
+def _realigned(pdf_path, windows, reports, total_pages, page_cap, ask=None):
+    """Re-ask a window that disagrees with the one before it, starting it on a real document start.
+
+    ``vllm_segment_ownership="realign"``. A window must answer with a row starting at its own first
+    page, so a window that begins inside a document answers as if it began one, and on a run of short
+    identical forms every boundary after that comes back a page off: on 2026-09-28 one reviewer
+    moved 67 of 117 boundaries of a 375-page record by exactly one page, five of six windows that
+    began on a form's second page having taken it for a first. The middle line alone cannot repair
+    that, because the window keeps the wrong rhythm through the half it owns.
+
+    So where two neighbouring windows disagree about which pages START a document inside their
+    overlap (its first and last page excluded - each window has no context on one side there), the
+    later window is asked again from the last start the earlier window found in the first half of
+    the overlap. Left to right, so a repaired window is what its right-hand neighbour is compared
+    with; at most one extra call per seam; a seam the earlier window saw no start in is left alone.
+    A failed re-ask keeps the window's first answer - it is already a complete one - except for a
+    reviewer's Stop and a missing OCR installation, which propagate.
+
+    Returns ``(windows, reports, asked)``; the caller merges with the middle line.
+    """
+    ask = ask or _window_rows
+    windows, reports, asked = list(windows), list(reports), 0
+    for k in range(len(windows) - 1):
+        nxt, end = windows[k + 1][0], windows[k][1]
+        mine = _starts_between(reports[k], nxt, end)
+        if mine == _starts_between(reports[k + 1], nxt, end):
+            continue
+        middle = nxt + max(0, (end - nxt + 1) // 2 - 1)
+        anchors = [s for s in mine if s <= middle]
+        if not anchors:
+            continue
+        start = max(anchors)
+        stop = min(total_pages, start + page_cap - 1)
+        try:
+            reports[k + 1] = ask(pdf_path, start, stop)
+        except (OcrUnavailableError, JobCancelled):
+            raise
+        except Exception as exc:
+            logger.warning(
+                "realigned window %s-%s failed; its first answer stands: %s", start, stop, exc
+            )
+            continue
+        windows[k + 1] = (start, stop)
+        asked += 1
+    if asked:
+        logger.info("segmentation: %d window(s) re-asked from a document start", asked)
+    return windows, reports, asked
+
+
+def merge_window_rows(window_reports, windows, total_pages, ownership="edge"):
+    """Ownership merge: window k owns starts in (cap_{k-1}, cap_k] (see `_ownership_caps`); the last
+    window owns through the end. Metadata comes from the owning window's row. Ends are re-derived so
+    rows tile.
+
+    ``ownership="middle"`` exists for our model (`vllm_segment_ownership`). A window that begins
+    inside a document is answered as if its first page began one - its reply must start a row at
+    page 1 - and on a run of short identical forms that puts every following boundary one page off.
+    Measured on the 27-record exam (2026-10-15): the base model missed 11.9% of the documents that
+    start within two pages of the window that owns them, against ~5.5% further in, and the trained
+    adapter made twice the false splits there. The windows overlap, so the previous window has
+    already seen those pages with context on both sides; the middle line hands them to it."""
+    caps = _ownership_caps(windows, total_pages, ownership)
     surviving = []
     for k, rows in enumerate(window_reports):
-        ws = windows[k][0]
-        owned_cap = total_pages if k == len(windows) - 1 else windows[k + 1][0]
-        floor = 0 if k == 0 else ws  # window 0 keeps its first-page row (absolute page 1)
+        owned_cap = caps[k]
+        floor = 0 if k == 0 else caps[k - 1]  # window 0 keeps its first-page row (absolute page 1)
         surviving.extend(r for r in rows if floor < r["start"] <= owned_cap)
 
     surviving.sort(key=lambda r: r["start"])
@@ -601,7 +690,13 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
                 f"segmentation timed out with {len(pt.unfinished)} window(s) unfinished"
             ) from pt
 
-    rows = merge_window_rows(reports, windows, total_pages)
+    ownership = _window_ownership(settings)
+    if ownership == "realign":
+        report("aligning", 0, len(windows))
+        windows, reports, _asked = _realigned(
+            pdf_path, windows, reports, total_pages, _window_page_cap(settings)
+        )
+    rows = merge_window_rows(reports, windows, total_pages, ownership=ownership)
 
     # Rows are independent, so categorize on a small pool. Each worker owns its row (no shared
     # mutation) and classify() opens its own short session for catalog reads (thread-safe).

@@ -254,6 +254,29 @@ After ownership filtering:
 So the output always tiles pages 1..N exactly, with no gaps and no overlaps, whatever the model
 returned. Only the start pages carry the model's judgement.
 
+### Where the seam sits on our model
+
+`VLLM_SEGMENT_OWNERSHIP` (default `edge`, the rule above) changes the seam on our model only;
+Gemini always uses `edge`.
+
+- `middle`: window `k` owns starts up to the middle of its overlap with window `k+1`
+  (`_ownership_caps()`), so a start inside the overlap is decided by the window that sees pages on
+  both sides of it, not by the window whose first pages it is.
+- `realign`: `middle`, plus one extra call where two neighbouring windows disagree about which
+  pages start a document inside their overlap (its first and last page excluded). The later window
+  is asked again from the last start the earlier window found in the first half of the overlap
+  (`_realigned()`), left to right, at most once per seam. A failed re-ask keeps the first answer.
+
+Why: a window must answer with a row starting at its own page 1, so a window that begins inside a
+document answers as if it began one. On a run of identical two-page forms that puts every boundary
+after it one page off: on 2026-09-28 a reviewer moved 67 of 117 boundaries of a 375-page record by
+exactly one page on our model, five of six windows that began on a form's second page having taken
+it for a first. On the 27-record exam (2026-10-15) the base model missed 11.9% of documents that
+start within two pages of the window owning them, against about 5.5% further in, and the trained
+adapter made twice the false splits there. Gemini showed no such effect. `middle` alone cannot
+repair a window that kept the wrong rhythm through the half it owns, which is what `realign` is
+for. Neither is the default until measured on the exam.
+
 ## Categorizing each row
 
 Each row is then categorized by `_categorize()`: the category cascade runs on the title first and,
