@@ -9,6 +9,7 @@ soft-deletes. `reprocess` is admin-scoped: it acts on ANY owner's document (no o
 """
 
 import re
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -452,9 +453,9 @@ def _owner_payload(document: Document, reviewer: User) -> dict:
 )
 def assign_document(
     payload: AssignPayload,
-    document: Document = Depends(get_owned_document),
-    session: Session = Depends(get_db),
-    user: User = Depends(current_superuser),
+    document: Annotated[Document, Depends(get_owned_document)],
+    session: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(current_superuser)],
 ):
     """Move a record into another reviewer's account so they work on it (the lead reviewer asked
     to "assign people to work with it"). The record then IS theirs: it leaves the old list, shows in
