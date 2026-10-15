@@ -473,7 +473,7 @@ def assign_document(
             status_code=409,
             detail="a job is running for this document; wait for it before assigning it",
         )
-    copies = same_file(session, reviewer.id, document.sha256, exclude=document.id)
+    copies = same_file(session, reviewer.id, document.sha256)
     if copies and not payload.allow_duplicate:
         return duplicate_conflict(reviewer, copies)
     previous = document.user_id

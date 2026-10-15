@@ -55,14 +55,12 @@ def upload_owner(session: Session, user: User, owner: int | None) -> User:
     return reviewer_for(session, owner)
 
 
-def same_file(
-    session: Session, owner_id: int, sha256: str, *, exclude: str | None = None
-) -> list[Document]:
-    """The records `owner_id` already holds with this exact file, newest first. `exclude` leaves
-    out the record being moved, which on an assignment is the one file guaranteed to match."""
+def same_file(session: Session, owner_id: int, sha256: str) -> list[Document]:
+    """The records `owner_id` already holds with this exact file, newest first.
+
+    On an assignment the record being moved is never among them: it still belongs to its old owner
+    when this is asked, and assigning a record to its own owner returns before asking."""
     query = select(Document).where(Document.user_id == owner_id, Document.sha256 == sha256)
-    if exclude is not None:
-        query = query.where(Document.id != exclude)
     return list(session.scalars(query.order_by(Document.created_at.desc())).all())
 
 
