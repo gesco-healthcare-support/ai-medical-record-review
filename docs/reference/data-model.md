@@ -392,15 +392,16 @@ ORM helper: `as_row()` returns `ROW_FIELDS` plus `suggest_merge`, `include`, `du
 
 ### `summaries`
 
-One delivered summary per summarized row. The raw `title` and `text` are never overwritten; what
-the reviewer sees is chosen by `effective_title()`, `effective_date()` and `effective_text()`.
+One delivered summary per summarized row, or one per visit when the row's pages record several
+separate dated visits (see `part`). The raw `title` and `text` are never overwritten; what the
+reviewer sees is chosen by `effective_title()`, `effective_date()` and `effective_text()`.
 
 | Column | Type | Null | Default | Meaning | Added by |
 | --- | --- | --- | --- | --- | --- |
 | `id` | Integer | no | serial | Primary key. | `73abdcd5ef01` |
 | `document_id` | String(36) | no | - | FK `documents.id`, indexed. | `73abdcd5ef01` |
 | `job_id` | Integer | no | - | FK `jobs.id` (the summarize job that wrote it). Not indexed. | `73abdcd5ef01` |
-| `idx` | Integer | no | - | Order of the summary within the document. Not the same number as `review_rows.idx`. | `73abdcd5ef01` |
+| `idx` | Integer | no | - | Order of the summary within the document: by row, then by visit. Not the same number as `review_rows.idx`. | `73abdcd5ef01` |
 | `title` | String(512) | no | - | Raw model title. Immutable. | `73abdcd5ef01` |
 | `date` | String(16) | no | ORM `'-'` | Raw date. | `73abdcd5ef01` |
 | `text` | Text | no | - | Raw model body. Immutable. | `73abdcd5ef01` |
@@ -425,6 +426,7 @@ the reviewer sees is chosen by `effective_title()`, `effective_date()` and `effe
 | `audit_fingerprint` | String(16) | yes | - | Hash of the audit prompt (`VERIFY_PROMPT`). Set together with `audit_model`, so NULL also when no audit was requested. | `b6d19f4c30a7` |
 | `unreadable` | Boolean | no | ORM `False`, server `false` | At least one page of the row failed extraction and the body carries a notice naming it. With `model IS NULL`: the body is only the notice. | `c4a7e2b91f60` |
 | `embedded_review` | Boolean | no | ORM `False`, server `false` | The body carries the embedded-records-review sentence. Only set on a row that was really summarized. | `d5b8c31a740e` |
+| `part` | Integer | no | ORM `0`, server `0` | Which visit of its row this summary is, in date order. 0 for the first and for every row that records one visit. Part of the summary's identity with `row_start`, `row_end` and `row_category`. | `c8e2f5a9d14b` |
 | `updated_at` | DateTime | yes | ORM `_utcnow`, ORM `onupdate` `_utcnow` | When the row was last written (by a reviewer edit or the verify pass). Provenance NULL: rows not written since 2026-08-26. | `a1e6f4d20c93` |
 
 Display precedence (ORM helpers):

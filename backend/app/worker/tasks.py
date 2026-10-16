@@ -530,12 +530,17 @@ def _seed_embedded_review_pages(session, document_id, rows) -> None:
         row["embedded_review_pages"] = by_span.get((int(row["start"]), int(row["end"])), [])
 
 
-def _build_summary(job, idx, row, output) -> Summary:
-    """One Summary ORM row from a summarize_row output + its source row (legacy shape)."""
+def _build_summary(job, idx, row, output, part=0) -> Summary:
+    """One Summary ORM row from a summarize_row output + its source row (legacy shape).
+
+    ``output`` is ONE visit's output and ``part`` its place among its row's visits - see
+    `summarize_engine.visit_outputs`. A row that records a single visit is part 0, as every row was
+    before a page could be split."""
     return Summary(
         document_id=job.document_id,
         job_id=job.id,
         idx=idx,
+        part=part,
         title=output["summaryTitle"],
         date=output.get("summaryDate") or "-",
         text=output["summaryText"],
@@ -1153,28 +1158,103 @@ def _seed_row_text(session, document_id: str, rows) -> None:
             row["source_text"] = "".join(pt.text or "" for pt in readable)
 
 
-def _reconcile_summaries(session, document_id: str, wanted: set) -> dict[tuple, Summary]:
-    """Keep the first persisted Summary for each still-wanted row; delete the stale and duplicate.
+def _summary_key(summary: Summary) -> tuple:
+    """A summary's row identity, the key it is reconciled and placed by."""
+    return (int(summary.row_start), int(summary.row_end), str(summary.row_category))
+
+
+def _reconcile_summaries(session, document_id: str, wanted: set) -> dict[tuple, list[Summary]]:
+    """Keep the first persisted Summary of each visit of each still-wanted row; delete the stale and
+    duplicate. Returns each kept row's summaries in visit order.
 
     Reconciled by ROW IDENTITY `(start, end, category)`, which is what makes a resume cheap: a row
     whose summary survives is reused with its reviewer edits intact. Never touches summaries for rows
     still in the set, so edits survive a resume or a re-run.
 
+    A row whose pages record several visits has one summary per visit (`Summary.part`), so a
+    duplicate is the same row AND the same part. Keyed by the row alone, a resume kept one visit and
+    deleted the others as duplicates of it. Taken in insertion order, so "first persisted" is what
+    is kept.
+
     The caller commits - the transaction boundary is its business, not this helper's.
     """
-    existing: dict[tuple, Summary] = {}
-    for summary in session.scalars(select(Summary).where(Summary.document_id == document_id)).all():
-        key = (int(summary.row_start), int(summary.row_end), str(summary.row_category))
+    existing: dict[tuple, list[Summary]] = {}
+    seen: set[tuple] = set()
+    for summary in session.scalars(
+        select(Summary).where(Summary.document_id == document_id).order_by(Summary.id)
+    ).all():
+        key = _summary_key(summary)
+        visit = (key, int(summary.part or 0))
         # A notice-only row is deleted rather than reused, so "summarize again" re-reads its pages
         # instead of skipping them as done - see _is_retryable_notice.
-        if key in wanted and key not in existing and not _is_retryable_notice(summary):
-            existing[key] = summary
+        if key in wanted and visit not in seen and not _is_retryable_notice(summary):
+            seen.add(visit)
+            existing.setdefault(key, []).append(summary)
         else:
             session.delete(summary)
+    for summaries in existing.values():
+        summaries.sort(key=lambda summary: int(summary.part or 0))
     return existing
 
 
-def _pending_rows(rows, existing: dict[tuple, Summary]) -> list[tuple[int, dict]]:
+class _Placement:
+    """Where each summary goes in the delivered order: by row, then by visit.
+
+    `Summary.idx` is a summary's position in that order, and the Summaries tab addresses a summary by
+    it. A row that records one visit takes its row's position - exactly what idx always was, so a
+    record with no split page is numbered as it always was. A row of several visits takes as many
+    positions, and every summary after it moves down by the visits beyond its first.
+
+    Held for the length of one summarize run because rows FINISH in any order: a split row can land
+    after the rows below it already have their numbers, and `make_room` then moves those down."""
+
+    def __init__(self, rows, existing: dict[tuple, list[Summary]]):
+        self._position = {
+            (int(row["start"]), int(row["end"]), str(row["category"])): i
+            for i, row in enumerate(rows)
+        }
+        # Row position -> how many visits that row has beyond its first.
+        self._extra = {
+            self._position[key]: len(summaries) - 1
+            for key, summaries in existing.items()
+            if key in self._position and len(summaries) > 1
+        }
+
+    def first_idx(self, position: int) -> int:
+        """The idx of the first visit of the row at ``position``."""
+        return position + sum(extra for row, extra in self._extra.items() if row < position)
+
+    def make_room(self, session, document_id: str, position: int, visits: int) -> int:
+        """Reserve ``visits`` consecutive positions for the row at ``position`` and return the first.
+
+        Only a row of several visits moves anything: every summary from the first reserved position
+        on belongs to a row after this one, and moves down by the visits beyond the first. ONE
+        UPDATE, not a row-by-row rewrite, because a long record can carry a thousand summaries. The
+        caller commits."""
+        first = self.first_idx(position)
+        if visits > 1:
+            session.execute(
+                update(Summary)
+                .where(Summary.document_id == document_id, Summary.idx >= first)
+                .values(idx=Summary.idx + (visits - 1))
+            )
+            self._extra[position] = visits - 1
+        return first
+
+
+def _store_row_summaries(session, job, placement: _Placement, positioned_row, visits) -> None:
+    """Add one Summary per visit of a finished row, in its place in the delivered order.
+
+    ``positioned_row`` is ``(position, row)`` as the pool reports it; ``visits`` is
+    `summarize_engine.visit_outputs` of the row's output - one entry for an ordinary row. The
+    caller commits, so the visits of one row land together."""
+    position, row = positioned_row
+    first = placement.make_room(session, job.document_id, position, len(visits))
+    for part, visit in enumerate(visits):
+        session.add(_build_summary(job, first + part, row, visit, part))
+
+
+def _pending_rows(rows, existing: dict[tuple, list[Summary]], placement: _Placement):
     """The rows still needing a summary, repositioning the reused ones to the current row order.
 
     Reposition rather than rewrite: a reused summary keeps the reviewer's edits, and only its place
@@ -1185,9 +1265,11 @@ def _pending_rows(rows, existing: dict[tuple, Summary]) -> list[tuple[int, dict]
     for i, row in enumerate(rows):
         key = (int(row["start"]), int(row["end"]), str(row["category"]))
         reused = existing.get(key)
-        if reused is not None:
-            if reused.idx != i:
-                reused.idx = i
+        if reused:
+            first = placement.first_idx(i)
+            for offset, summary in enumerate(reused):
+                if summary.idx != first + offset:
+                    summary.idx = first + offset
             continue
         pending.append((i, row))
     return pending
@@ -1414,6 +1496,7 @@ def _summarize_work(session, job, report) -> None:
         page_phrase,
         standalone_studies_from_rows,
         summarize_row,
+        visit_outputs,
     )
 
     settings = get_settings()
@@ -1435,7 +1518,8 @@ def _summarize_work(session, job, report) -> None:
     existing = _reconcile_summaries(session, job.document_id, wanted)
     session.commit()
 
-    pending = _pending_rows(rows, existing)
+    placement = _Placement(rows, existing)
+    pending = _pending_rows(rows, existing, placement)
     session.commit()
 
     run = _SummarizeRun(total=total, done_count=total - len(pending), document_id=job.document_id)
@@ -1486,8 +1570,10 @@ def _summarize_work(session, job, report) -> None:
                     if run.record_failure(exc, i, row, settings, futures) == "stop":
                         break
                     continue
-                # Success: persist immediately so a later failure never loses this row.
-                session.add(_build_summary(job, i, row, output))
+                # Success: persist immediately so a later failure never loses this row. One
+                # summary per visit when the row's pages record several, committed together so a
+                # crash can never leave a row with only some of its visits.
+                _store_row_summaries(session, job, placement, (i, row), visit_outputs(output))
                 session.commit()
                 run.record_success(output)
                 report("summarizing", run.done_count, total)

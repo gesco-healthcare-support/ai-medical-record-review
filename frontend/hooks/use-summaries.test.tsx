@@ -2,9 +2,13 @@
  * The summaries cache patch.
  *
  * Both write hooks replace ONE summary in the cache from the server's response rather than
- * refetching the list. That is the whole point - an edit or a re-draft must not make the other
- * nineteen cards flicker - but it means the match is load-bearing: matching too widely overwrites
- * summaries the reviewer never touched, and matching too narrowly leaves the edited one stale.
+ * refetching the list. That is the whole point - an edit must not make the other nineteen cards
+ * flicker - but it means the match is load-bearing: matching too widely overwrites summaries the
+ * reviewer never touched, and matching too narrowly leaves the edited one stale.
+ *
+ * A re-draft and a category change ALSO re-read the list, because they reach past the one summary
+ * returned: a page holding several visits has one summary per visit on one row, a category change
+ * lands on that row, and a re-draft can find more or fewer visits than before.
  *
  * The fixture therefore holds SEVERAL summaries. Against a single-entry cache a broken match still
  * produces the right answer, so the test would pass either way.
@@ -44,11 +48,12 @@ function harness() {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
+  const invalidate = vi.spyOn(client, "invalidateQueries");
   const cached = () =>
     (client.getQueryData(summariesKey("d1")) as ReturnType<typeof summary>[]).map(
       (s) => s.summaryText,
     );
-  return { wrapper, cached };
+  return { wrapper, cached, invalidate };
 }
 
 describe("useSaveSummary", () => {
@@ -78,5 +83,29 @@ describe("useResummarize", () => {
     await waitFor(() =>
       expect(cached()).toEqual(["first as written", "second as written", "third, re-drafted"]),
     );
+  });
+});
+
+describe("re-reading the list", () => {
+  it("a re-draft re-reads the list, since it can add or remove a row's visit summaries", async () => {
+    vi.mocked(resummarize).mockResolvedValue(summary(2, "third, re-drafted") as never);
+    const { wrapper, invalidate } = harness();
+    const { result } = renderHook(() => useResummarize("d1"), { wrapper });
+
+    await result.current.mutateAsync(2);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: summariesKey("d1") });
+  });
+
+  it("a category change re-reads the list, and a text edit does not", async () => {
+    vi.mocked(putSummary).mockResolvedValue(summary(1, "second as written") as never);
+    const { wrapper, invalidate } = harness();
+    const { result } = renderHook(() => useSaveSummary("d1"), { wrapper });
+
+    await result.current.mutateAsync({ idx: 1, body: { summaryText: "second, edited" } });
+    expect(invalidate).not.toHaveBeenCalled();
+
+    await result.current.mutateAsync({ idx: 1, body: { category: "5" } });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: summariesKey("d1") });
   });
 });
