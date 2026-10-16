@@ -48,22 +48,16 @@ def test_clean_dedups_preserving_order():
     assert sd._clean("09/25/2023 (see 09/25/2023)") == "09/25/23"
 
 
-class _FakeReader:
-    def __init__(self, path):
-        self.pages = [object()] * 60
+def _patch_pdf(monkeypatch, cuts=None):
+    """The PDF cut stands in for a real file; ``cuts`` records each (first, last) page range asked
+    for, which is what the page-cap tests count."""
 
+    def _slice(_path, first, last):
+        if cuts is not None:
+            cuts.append((int(first), int(last)))
+        return b"%PDF-1.4 fake"
 
-class _FakeWriter:
-    def add_page(self, page):
-        pass
-
-    def write(self, buffer):
-        buffer.write(b"%PDF-1.4 fake")
-
-
-def _patch_pdf(monkeypatch, writer=_FakeWriter):
-    monkeypatch.setattr(sd, "PdfReader", _FakeReader)
-    monkeypatch.setattr(sd, "PdfWriter", writer)
+    monkeypatch.setattr(sd, "slice_pdf", _slice)
 
 
 def _answers(text, truncated=False):
@@ -153,16 +147,11 @@ def test_extract_is_failsafe_on_error(monkeypatch):
 
 
 def test_extract_caps_pages_sent(monkeypatch):
-    added: list = []
-
-    class CountingWriter(_FakeWriter):
-        def add_page(self, page):
-            added.append(page)
-
-    _patch_pdf(monkeypatch, writer=CountingWriter)
+    cuts: list = []
+    _patch_pdf(monkeypatch, cuts)
     _stub_provider(monkeypatch, _answers("-"))
     sd.extract_injury_date("/x.pdf", 1, 50)  # 50-page span
-    assert len(added) == sd._MAX_PAGES
+    assert [last - first + 1 for first, last in cuts] == [sd._MAX_PAGES]
 
 
 @pytest.mark.parametrize("body", [None, ""])
@@ -275,16 +264,11 @@ def test_the_isolated_call_now_sends_up_to_ten_pages():
 
 def test_a_thirty_page_row_is_still_bounded(monkeypatch):
     """The cap has to keep BOUNDING the payload - raising it is not the same as removing it."""
-    added: list = []
-
-    class CountingWriter(_FakeWriter):
-        def add_page(self, page):
-            added.append(page)
-
-    _patch_pdf(monkeypatch, writer=CountingWriter)
+    cuts: list = []
+    _patch_pdf(monkeypatch, cuts)
     _stub_provider(monkeypatch, _answers("-"))
     sd.extract_injury_date("/x.pdf", 1, 30)
-    assert len(added) == 10
+    assert [last - first + 1 for first, last in cuts] == [10]
 
 
 # "Date of Onset" as a DOI synonym (Adrian's domain call, 2026-08-03). Claim forms label the same field

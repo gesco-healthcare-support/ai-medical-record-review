@@ -172,7 +172,9 @@ transport and the model resolved for the `segment` stage (`provider_for_stage("s
 (`_window_parts()`):
 
 - **Gemini** receives the window as one inline PDF. The Files API is not used: it existed only on
-  the non-BAA Developer endpoint and was removed with the Vertex port.
+  the non-BAA Developer endpoint and was removed with the Vertex port. The window is cut by
+  `backend/app/services/pdf.py` `slice_pdf()` from a reader opened once per record, not once per
+  window: on a 5,077-page record a fresh pypdf reader cost 2.2-2.4 s per cut, with identical bytes.
 - **vLLM** cannot take a PDF, so each page becomes a JPEG, preceded by a `Page N` text label
   (1-based within the window) and one preamble that says a label is a position only.
   `backend/app/services/rasterise.py` `page_image_parts()` builds these parts. Loose images carry no
