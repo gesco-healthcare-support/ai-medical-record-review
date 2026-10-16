@@ -27,6 +27,7 @@ def _empty_edges_cache():
     yield
     rasterise._edges_cache.clear()
 
+
 # --- page_dpi: the render resolution -----------------------------------------------------------
 
 
@@ -438,9 +439,9 @@ def test_the_boot_guard_agrees_with_what_page_dpi_actually_renders(
 
 # --- the page boxes are read once per file, not once per call -----------------------------------
 #
-# Measured 2026-10-16 on a 5,077-page record: a fresh PdfReader plus one page's box cost 2.3s of pure
-# Python per call, and the injury-date read makes one call per row - 1,637 rows, ~63 min under the
-# GIL, the model idle. See `rasterise._edges_cache`.
+# Measured 2026-10-16 on a 5,077-page record: a fresh PdfReader plus one page's box cost 2.3s of
+# pure Python per call, and the injury-date read makes one call per row - 1,637 rows, ~63 min
+# under the GIL, the model idle. See `rasterise._edges_cache`.
 
 
 def _counting_reader(monkeypatch, pages=20, delay=0.0):
@@ -514,7 +515,7 @@ def test_a_file_replaced_in_place_is_read_again(monkeypatch, tmp_path):
 
 
 def test_a_path_that_cannot_be_stated_is_never_cached(monkeypatch):
-    """GUARD. Nothing to key it on, so it is read every time - as every call was before the cache."""
+    """GUARD. Nothing to key it on, so it is read every time, as every call was before the cache."""
     opened = _counting_reader(monkeypatch)
 
     rasterise.page_image_parts("/no/such/record.pdf", 1, 1, 1)
