@@ -210,7 +210,10 @@ Model calls that need page images (for backends that cannot take a PDF, and some
 `backend/app/services/rasterise.py` `page_image_parts`, not OCR. It renders JPEG images at quality
 70, with `SUMMARY_IMAGE_DPI` as a ceiling for every caller, and requires the caller to pass a page
 cap. It renders one page at a time on purpose: batching was measured 2.2x faster but about 143 MB
-more peak memory per concurrent row. See [Model providers](model-providers.md).
+more peak memory per concurrent row. The page sizes it fits the DPI to are read once per file and
+cached (`_crop_long_edges`), not once per call: on a 5,077-page record a fresh pypdf parse cost
+2.3 s per call, and the injury-date read makes one call per row. See
+[Model providers](model-providers.md).
 
 ## Before you change it
 
