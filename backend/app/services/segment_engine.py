@@ -5,13 +5,10 @@ before it (ownership), so no document is cut at a window edge. Output rows alway
 This is the segment worker's core; it runs on the P4 `segment` (torch/classifier) worker tier.
 """
 
-import io
 import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
-
-from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
 from app.errors import OcrUnavailableError, PipelineTimeoutError
@@ -24,6 +21,7 @@ from app.services.gemini import (
 )
 from app.services.llm import DocumentPart, Part, TextPart, provider_for_stage
 from app.services.ocr import extract_pages_with_report
+from app.services.pdf import slice_pdf
 from app.services.pools import PoolTimeout, drain_pool
 from app.services.rasterise import page_image_parts
 from app.services.summary_doi import extract_injury_date
@@ -153,13 +151,8 @@ def _window_parts(pdf_path, window_start, window_end, settings) -> list[Part]:
             settings.vllm_segment_max_pages,
             label_pages=True,
         )
-    reader = PdfReader(pdf_path)
-    writer = PdfWriter()
-    for p in range(window_start - 1, window_end):
-        writer.add_page(reader.pages[p])
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    return [DocumentPart(data=buffer.getvalue(), mime_type="application/pdf")]
+    # The same bytes as a fresh PdfWriter cut, from a reader opened once per record (pdf._readers).
+    return [DocumentPart(data=slice_pdf(pdf_path, window_start, window_end), mime_type="application/pdf")]
 
 
 class _UnusableWindowReply(ValueError):

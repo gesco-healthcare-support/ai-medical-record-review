@@ -17,15 +17,13 @@ payload, fail-safe on every error. Fail-safe matters more here than usual - a WR
 than none, because a reviewer trusts it and then cannot find the testimony.
 """
 
-import io
 import json
 import logging
-
-from pypdf import PdfReader, PdfWriter
 
 from app.config import get_settings
 from app.errors import TranscriptPagesUnreadableError
 from app.services.llm import DocumentPart, Part, TextPart, provider_for_stage
+from app.services.pdf import slice_pdf
 from app.services.rasterise import page_image_parts
 from app.worker.failures import JobCancelled
 
@@ -101,13 +99,8 @@ def _isolated_parts(pdf_path, start, last, settings) -> list[Part]:
         return page_image_parts(
             pdf_path, start, last, _MAX_PAGES, settings.deposition_image_long_edge_px
         )
-    reader = PdfReader(pdf_path)
-    writer = PdfWriter()
-    for page in range(int(start) - 1, int(last)):
-        writer.add_page(reader.pages[page])
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    return [DocumentPart(data=buffer.getvalue(), mime_type="application/pdf")]
+    # The record is opened once, not once per deposition row (pdf._readers).
+    return [DocumentPart(data=slice_pdf(pdf_path, start, last), mime_type="application/pdf")]
 
 
 def transcript_page_offset(pdf_path, start, end, model=None) -> int | None:

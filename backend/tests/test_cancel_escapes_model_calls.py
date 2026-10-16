@@ -63,8 +63,7 @@ def test_a_stop_escapes_the_transcript_page_read(monkeypatch):
             raise JobCancelled(3, 170)
 
     monkeypatch.setattr(deposition_pages, "provider_for_stage", lambda *_a, **_k: _Provider())
-    monkeypatch.setattr(deposition_pages, "PdfReader", lambda *_a, **_k: _FakeReader())
-    monkeypatch.setattr(deposition_pages, "PdfWriter", _FakeWriter)
+    monkeypatch.setattr(deposition_pages, "slice_pdf", _fake_slice)
     with pytest.raises(JobCancelled):
         deposition_pages.transcript_page_offset("x.pdf", 1, 3)
 
@@ -80,8 +79,7 @@ def test_a_stop_escapes_the_injury_date_read(monkeypatch):
             raise JobCancelled(3, 170)
 
     monkeypatch.setattr(summary_doi, "provider_for_stage", lambda *_a, **_k: _Provider())
-    monkeypatch.setattr(summary_doi, "PdfReader", lambda *_a, **_k: _FakeReader())
-    monkeypatch.setattr(summary_doi, "PdfWriter", _FakeWriter)
+    monkeypatch.setattr(summary_doi, "slice_pdf", _fake_slice)
     with pytest.raises(JobCancelled):
         summary_doi.extract_injury_date("x.pdf", 1, 3)
 
@@ -125,19 +123,6 @@ def test_a_stop_escapes_the_summary_audit(monkeypatch):
         summary_verify.verify_summary("m", "source text", "summary text")
 
 
-class _FakePage:
-    pass
-
-
-class _FakeReader:
-    """pypdf stands in so the test never touches a real PDF - the model call is the subject."""
-
-    pages = [_FakePage() for _ in range(10)]
-
-
-class _FakeWriter:
-    def add_page(self, _page):
-        pass
-
-    def write(self, buffer):
-        buffer.write(b"%PDF-1.4\n")
+def _fake_slice(*_args, **_kwargs):
+    """The PDF cut stands in so the test never touches a real PDF - the model call is the subject."""
+    return b"%PDF-1.4\n"
