@@ -8,7 +8,7 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 
 | stage | module | what it does |
 | --- | --- | --- |
-| Upload | `pdf.py` | Page count and file size (pypdf). |
+| Upload | `pdf.py` | Page count, file size, and a page range cut out as its own PDF from a reader opened once per record (pypdf). |
 | | `files.py` | Filesystem-safe filename helper. |
 | | `aggregate.py` | Merges several already-split PDFs into one record and computes each source's page range. |
 | Page text | `page_text.py` | Extracts each page's text once (text layer or OCR), stores it in `page_texts`, and reuses it in every stage. |

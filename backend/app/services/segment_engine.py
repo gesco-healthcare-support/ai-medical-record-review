@@ -152,7 +152,11 @@ def _window_parts(pdf_path, window_start, window_end, settings) -> list[Part]:
             label_pages=True,
         )
     # The same bytes as a fresh PdfWriter cut, from a reader opened once per record (pdf._readers).
-    return [DocumentPart(data=slice_pdf(pdf_path, window_start, window_end), mime_type="application/pdf")]
+    return [
+        DocumentPart(
+            data=slice_pdf(pdf_path, window_start, window_end), mime_type="application/pdf"
+        )
+    ]
 
 
 class _UnusableWindowReply(ValueError):

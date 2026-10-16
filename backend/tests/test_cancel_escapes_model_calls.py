@@ -124,5 +124,5 @@ def test_a_stop_escapes_the_summary_audit(monkeypatch):
 
 
 def _fake_slice(*_args, **_kwargs):
-    """The PDF cut stands in so the test never touches a real PDF - the model call is the subject."""
+    """A stand-in for the PDF cut, so no real PDF is touched: the model call is the subject."""
     return b"%PDF-1.4\n"

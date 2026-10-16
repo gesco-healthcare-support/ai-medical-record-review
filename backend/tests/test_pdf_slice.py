@@ -68,12 +68,14 @@ def test_a_cut_is_byte_identical_to_a_fresh_reader(tmp_path):
 
     for first, last in ((1, 1), (3, 7), (10, 12)):
         ours = pdf.slice_pdf(path, first, last)
-        assert hashlib.sha256(ours).digest() == hashlib.sha256(_fresh_cut(path, first, last)).digest()
+        assert (
+            hashlib.sha256(ours).digest() == hashlib.sha256(_fresh_cut(path, first, last)).digest()
+        )
         assert len(PdfReader(io.BytesIO(ours)).pages) == last - first + 1
 
 
 def test_gemini_slices_open_the_record_once(monkeypatch, tmp_path):
-    """WHEN Gemini's three readers cut many slices from one record, THE SYSTEM SHALL open it once."""
+    """WHEN Gemini's three readers cut many slices of one record, THE SYSTEM SHALL open it once."""
     path = _record(tmp_path / "record.pdf")
     settings = get_settings()
     assert settings.backend_for("segment") == "gemini"
