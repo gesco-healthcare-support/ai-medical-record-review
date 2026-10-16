@@ -241,9 +241,11 @@ def test_each_visit_is_audited_against_its_own_body_and_date(monkeypatch):
     )
 
     assert [date for _, date in audits] == ["06/12/2026", "06/19/2026"]
-    assert "Cupping" in audits[0][0] and "Cupping" not in audits[1][0]
+    assert "Cupping" in audits[0][0]
+    assert "Cupping" not in audits[1][0]
     assert all(visit["verified"] for visit in visits)
-    assert "Lumbar" in visits[0]["verifiedText"] and "Cupping" in visits[0]["verifiedText"]
+    assert "Lumbar" in visits[0]["verifiedText"]
+    assert "Cupping" in visits[0]["verifiedText"]
     # The page's title correction is taken once, from the first visit's audit.
     assert visits[0]["verifiedTitle"] == visits[1]["verifiedTitle"]
     assert "(AUDITED 1)" in visits[1]["verifiedTitle"]
