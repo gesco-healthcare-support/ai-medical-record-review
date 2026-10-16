@@ -46,7 +46,7 @@ flowchart TD
 | Identify | `POST /api/documents/{id}/segment/start` | `segment` | OCR pass into the page-text store, segmentation, categorization, boundary verification, injury-date reads, then header extraction. | `segmenting` while running, then `reviewing` |
 | Review | `PUT /api/documents/{id}/rows` | none | The reviewer's rows are validated and stored. Refused with 409 while any job is active. | unchanged, or `reviewing` if the edit strands stored summaries |
 | Duplicate check | `POST /api/documents/{id}/dedup/start` | `dedup` | OCR text for each included row, clustering, one confirm call per candidate, then the grouping is rewritten in one transaction. | unchanged (advisory) |
-| Summarize | `POST /api/documents/{id}/summarize/start`, or an admin's `POST /api/admin/reprocess/{document_id}` | `summarize` | One summary per included row, each committed as it finishes; resumable. | `summarizing` while running, then `done` or `needs_attention` |
+| Summarize | `POST /api/documents/{id}/summarize/start`, or an admin's `POST /api/admin/reprocess/{document_id}` | `summarize` | One summary per included row (one per visit for a page of several dated visits), each row committed as it finishes; resumable. | `summarizing` while running, then `done` or `needs_attention` |
 | Export | the export routes | none | See [Exports and downloads](exports-and-downloads.md). | unchanged |
 
 Notes on the table:
@@ -428,7 +428,8 @@ paused or re-clicked run pays only for the rows still missing.
    excluded records-review blocks to the evaluation row they sit inside
    (`_seed_row_text`, `_seed_embedded_review_pages`).
 3. Reconciles existing summaries by row identity `(start, end, category)`: one summary per
-   still-wanted row is kept, with the reviewer's edits, and repositioned to the current order;
+   still-wanted row is kept (one per visit, by `part`, for a row whose pages record several
+   dated visits), with the reviewer's edits, and repositioned to the current order;
    stale and duplicate summaries are deleted. A notice-only summary (nothing on its pages could be
    read, no model output, no reviewer edit) is deleted so it is retried rather than reused
    (`_reconcile_summaries`, `_is_retryable_notice`).

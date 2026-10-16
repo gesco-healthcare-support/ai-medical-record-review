@@ -538,6 +538,16 @@ class Summary(Base):
     # `model IS NULL`; a tagged row with no model would mean the tag reached a notice-only row, which
     # is a defect rather than a state worth reading.
     embedded_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Which visit of its row this summary is. A page can hold several separate visits, each with its
+    # own date and the same heading - a sheet of daily therapy notes - and the reviewers asked for
+    # each to be its own entry in the report (2026-10-15). The row stays one row; summarization
+    # writes one summary per visit for it, numbered from 0 in date order. 0 for every row that
+    # holds a single visit, which is nearly all of them.
+    #
+    # Part of the summary's identity, beside its row's `(row_start, row_end, row_category)`: the
+    # summarize worker reconciles by that pair and would otherwise delete a second visit as a
+    # duplicate of the first on every resume.
+    part: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # When this row was last written. Reviewer edits land in edited_* in place, so unlike a ReviewRow
     # (which _store_rows deletes and recreates wholesale, making a timestamp meaningless there) a
     # Summary survives its own edits and can carry one.

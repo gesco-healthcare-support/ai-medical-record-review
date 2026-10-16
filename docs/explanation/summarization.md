@@ -72,7 +72,8 @@ flowchart TD
    below.
 7. **Trailing notices** are appended after the audit, to both the raw and the audited body.
 8. **Output.** `summarize_row` returns the dictionary the worker persists as one `summaries` row via
-   `backend/app/worker/tasks.py` `_build_summary()`.
+   `backend/app/worker/tasks.py` `_build_summary()`, or one per visit when the row's pages record
+   several dated visits (see [A page of several visits](#a-page-of-several-visits)).
 
 ## The system message
 
@@ -103,6 +104,10 @@ the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category set
 - **Category 100 is a known id with unknown content.** It takes the content blocks but not the three
   measurement blocks; whether it should get them is an open question the code records against
   issue #216.
+- **3 and 5 are also told to mark separate visits** (`_F_SEPARATE_VISITS`, in the format
+  section), because their pages can be a log of several dated visits - see
+  [A page of several visits](#a-page-of-several-visits). No other category gets it, an unknown
+  id included.
 - **15, 16 and 17 get the minimal preamble on purpose.** A discharge summary (16) would be told by
   `_C_NORMAL_FINDINGS` to omit what is normal, which is most of its content; a job description (17)
   describes a job, not a patient. Their requirements are stated in their own prompts instead.
@@ -425,6 +430,45 @@ Category 9 differs at every step:
 - **No stored text, no one-paragraph pass, no export flattening.**
 - **Audit guard** on paragraph and page-range counts, and the coverage warning described above.
 
+## A page of several visits
+
+A page can record several separate visits under one heading, each with its own date: a sheet of
+daily therapy or acupuncture notes, for example. Identification keeps the page one row (a row is
+whole pages, and two rows may not share a page), so it is split here, when the summaries are written.
+The reviewers asked for each visit to be its own entry in the report (2026-10-15).
+
+- **Which categories.** `_VISIT_LOG_CATEGORIES` in `summarize_engine.py`: 5 (therapy, chiropractic,
+  acupuncture), where the case came up, and 3 (diagnostic studies), where the reviewers said it could.
+  Only these are given the instruction, and only these have their body split; `writes_visits()` is
+  the one predicate both read. An unknown category id does not get it (it is a format the code acts
+  on, not a content rule).
+- **The instruction.** `_F_SEPARATE_VISITS`, in the format section of the preamble: when the pages
+  record several visits, begin each with a line `VISIT: MM/DD/YYYY` and write that visit's summary
+  under it. A date the document only mentions (the injury, an earlier visit, a next appointment, a
+  fax date) is not a visit, and a page of one visit gets no mark at all.
+- **The split.** `split_visits()` cuts the body at the marks, before the one-paragraph pass (which
+  would join the lines). Two marks naming one date are one visit; text before the first mark joins
+  the first visit; a mark with no text is not a visit. Fewer than two visits left means no split, and
+  `strip_visit_lines()` removes any stray mark. Visits are sorted by date. A mark without a year takes
+  the year nearest the row's own date; a date that is no calendar date is kept as written and shows
+  as Undated.
+- **One summary per visit.** Each visit gets its own date, its own body (with the row's date of
+  injury prefix and any unreadable-page notice) and its own audit call, which is given the visit's
+  date. The title is the page's one title; its audit correction is taken from the first visit's
+  audit for every visit. `summarize_row` returns the first visit at the top level and all of them
+  under `visits`; every caller that stores or delivers summaries reads them through
+  `visit_outputs()`.
+- **Stored.** The worker writes one `summaries` row per visit, numbered by `Summary.part` (0 = first,
+  and every single-visit row). `Summary.idx` stays the delivered order, by row then visit
+  (`tasks.py` `_Placement`): a row of one visit keeps its row's position, so a record without a split
+  page is numbered as before.
+- **Delivered.** Each visit is its own entry in the Word letter, the linked PDF (both link to the
+  page) and the Summaries tab, sorted by date with everything else. The bundle Word report lists each
+  visit too. The diagnostics cover page lists the page once, as one document, with the first visit's
+  date. Page accounting counts the page once: it reads rows, not summaries.
+- **Re-draft** rewrites every visit of the row, and can find more or fewer visits than before
+  (`documents.py` `_redraft_row()`); the Summaries tab re-reads its list afterwards.
+
 ## Record-level passes at export
 
 Some rules need the whole record, so they run over the delivered entries when the Word letter and
@@ -466,7 +510,8 @@ The summarize job (`tasks.py` `summarize_document()`) is resumable by design:
 
 - **Rows** are the included review rows in order. Summaries are matched to rows by identity
   `(start, end, category)` (`_reconcile_summaries()`): a match is reused with its reviewer edits
-  intact and only re-positioned; stale and duplicate summaries are deleted. A re-spanned or
+  intact and only re-positioned; stale and duplicate summaries are deleted. A row of several
+  visits keeps one summary per `part`, so a duplicate is the same row and the same part. A re-spanned or
   re-categorised row therefore gets a fresh summary.
 - **Notice-only entries are retried.** A notice entry with no model and no reviewer edit is deleted
   and re-attempted on the next run (`_is_retryable_notice()`), so a transient OCR failure does not
