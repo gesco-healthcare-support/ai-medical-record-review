@@ -91,6 +91,7 @@ from app.services.summarize_engine import (
     tidy_report_type,
     standalone_studies_from_rows,
     summarize_row,
+    visit_outputs,
 )
 from app.services.summary_doi import doi_prefix
 from app.worker.cancel import request_cancel
@@ -1618,6 +1619,123 @@ def put_summary(
     return _summary_response(document, summary)
 
 
+def _store_draft(summary: Summary, row: dict, output: dict) -> None:
+    """Write one fresh draft - one visit's `summarize_row` output - over a stored summary, clearing
+    the reviewer's edits to it."""
+    summary.title = output["summaryTitle"]
+    summary.date = output.get("summaryDate") or "-"
+    summary.text = output["summaryText"]
+    summary.source_text = output.get("sourceText")
+    summary.verified = bool(output.get("verified"))
+    summary.verified_text = output.get("verifiedText")
+    # Assigned, not left alone: effective_title() PREFERS verified_title over title, so a stale one
+    # from the previous draft would show the old header above the new body. output.get() both stores a
+    # fresh correction and clears an absent one.
+    summary.verified_title = output.get("verifiedTitle")
+    summary.verify_issues = output.get("verifyIssues")
+    # `bodyFallbackFrom` belongs here for the same reason it does in `_build_summary`: the row was
+    # answered by a LESSER model than the job asked for, and flagging it is how that downgrade
+    # surfaces in the UI rather than only in a log. This route predates the fallback (#126) and was
+    # never updated, so a single-row re-draft that silently downgraded reached the deliverable
+    # unflagged - the opposite of what the same downgrade does on the worker path.
+    summary.manual_check = (
+        bool(output.get("manualCheck"))
+        or bool(output.get("truncated"))
+        or bool(output.get("bodyFallbackFrom"))
+    )
+    # ASSIGNED, not left alone, for the same reason verified_title above is: a re-draft that now reads
+    # cleanly must CLEAR a stale notice flag, or the row would keep claiming pages were unreadable
+    # after a retry recovered them. summarize_row returns a notice instead of raising when the pages
+    # still cannot be read, so this route stores that notice rather than showing an error.
+    summary.unreadable = bool(output.get("unreadablePages"))
+    # Assigned for the same reason, and it will normally clear here: this route summarizes ONE row and
+    # does not seed `embedded_review_pages`, which needs the neighbouring rows. A re-draft of a tagged
+    # evaluation therefore drops its tag until the next full summarize run restores it. Recorded
+    # rather than worked around - re-deriving the neighbours on a single-row path would duplicate the
+    # worker's rule in a second place, which is how two copies of one decision start to drift.
+    summary.embedded_review = bool(output.get("embeddedReviewPages"))
+    summary.row_start = int(row["start"])
+    summary.row_end = int(row["end"])
+    summary.row_category = str(row["category"])
+    # Provenance, rewritten rather than left alone - and `model` is load-bearing, not bookkeeping.
+    #
+    # `_unreadable_output` returns `model=None` on purpose: "no model saw this row, so `model=None`
+    # beside `unreadablePages` is what tells a notice row apart from one that WAS summarized off its
+    # readable pages". `_is_retryable_notice` keys on exactly that, requiring `summary.model is None`
+    # before it will re-attempt a delivered notice.
+    #
+    # Leaving `model` at the PREVIOUS draft's value therefore produced the one state the retry logic
+    # cannot recognise: `unreadable=True` with a non-NULL model. A row that OCR'd cleanly first time
+    # and hit a transient extraction failure on re-draft became permanently un-retryable - the next
+    # Summarize reuses it, the pages are never re-read, and the reviewer's only escape is
+    # "Re-summarize all", which discards every hand edit in the record. It is also a FALSE RECORD by
+    # the column's own definition, where that combination means "summarized off the readable pages,
+    # with a notice appended".
+    #
+    # The other five are attribution: `summaries.model` is the column the pro-versus-flash quality
+    # work groups by, `backend` says which vendor served the calls, and the fingerprints are how a
+    # summary is traced to the prompt text that wrote it. A re-draft left all six describing a body
+    # that no longer exists.
+    summary.model = output.get("model")
+    summary.title_model = output.get("titleModel")
+    summary.audit_model = output.get("auditModel")
+    summary.backend = output.get("backend")
+    summary.prompt_fingerprint = output.get("promptFingerprint")
+    summary.audit_fingerprint = output.get("auditFingerprint")
+    # Fresh model output supersedes the prior hand-edits for this row.
+    summary.edited_title = None
+    summary.edited_date = None
+    summary.edited_text = None
+
+
+def _redraft_row(session, document: Document, summary: Summary, row: dict, outputs) -> Summary:
+    """Write a re-draft's visits over the summaries of ``summary``'s row; returns the first visit's.
+
+    A row whose pages record several visits has one summary per visit (`Summary.part`), and a
+    re-draft can find more or fewer visits than the draft it replaces. So the row's summaries are
+    matched to the new visits in order: the first ones are overwritten in place, a visit with no
+    summary to take gets a new one, and a summary left over is deleted. Every summary after the row
+    moves by the difference, keeping `Summary.idx` the delivered order - see `tasks._Placement`.
+    A row of one visit before and after is the one summary written in place, as it always was.
+
+    The caller commits."""
+    siblings = list(
+        session.scalars(
+            select(Summary)
+            .where(
+                Summary.document_id == document.id,
+                Summary.row_start == summary.row_start,
+                Summary.row_end == summary.row_end,
+                Summary.row_category == summary.row_category,
+            )
+            .order_by(Summary.part, Summary.id)
+        ).all()
+    )
+    first_idx = min(sibling.idx for sibling in siblings)
+    shift = len(outputs) - len(siblings)
+    if shift:
+        session.execute(
+            update(Summary)
+            .where(
+                Summary.document_id == document.id,
+                Summary.idx > max(sibling.idx for sibling in siblings),
+            )
+            .values(idx=Summary.idx + shift)
+        )
+    for leftover in siblings[len(outputs) :]:
+        session.delete(leftover)
+    targets = siblings[: len(outputs)]
+    while len(targets) < len(outputs):
+        added = Summary(document_id=document.id, job_id=summary.job_id)
+        session.add(added)
+        targets.append(added)
+    for part, (target, output) in enumerate(zip(targets, outputs, strict=True)):
+        target.idx = first_idx + part
+        target.part = part
+        _store_draft(target, row, output)
+    return targets[0]
+
+
 @router.post(
     "/{document_id}/summaries/{idx}/resummarize",
     responses={
@@ -1699,75 +1817,15 @@ def resummarize(
     except PipelineError as exc:
         return _pipeline_error_response(document.id, exc)
 
-    summary.title = output["summaryTitle"]
-    summary.date = output.get("summaryDate") or "-"
-    summary.text = output["summaryText"]
-    summary.source_text = output.get("sourceText")
-    summary.verified = bool(output.get("verified"))
-    summary.verified_text = output.get("verifiedText")
-    # Assigned, not left alone: effective_title() PREFERS verified_title over title, so a stale one
-    # from the previous draft would show the old header above the new body. output.get() both stores a
-    # fresh correction and clears an absent one.
-    summary.verified_title = output.get("verifiedTitle")
-    summary.verify_issues = output.get("verifyIssues")
-    # `bodyFallbackFrom` belongs here for the same reason it does in `_build_summary`: the row was
-    # answered by a LESSER model than the job asked for, and flagging it is how that downgrade
-    # surfaces in the UI rather than only in a log. This route predates the fallback (#126) and was
-    # never updated, so a single-row re-draft that silently downgraded reached the deliverable
-    # unflagged - the opposite of what the same downgrade does on the worker path.
-    summary.manual_check = (
-        bool(output.get("manualCheck"))
-        or bool(output.get("truncated"))
-        or bool(output.get("bodyFallbackFrom"))
-    )
-    # ASSIGNED, not left alone, for the same reason verified_title above is: a re-draft that now reads
-    # cleanly must CLEAR a stale notice flag, or the row would keep claiming pages were unreadable
-    # after a retry recovered them. summarize_row returns a notice instead of raising when the pages
-    # still cannot be read, so this route stores that notice rather than showing an error.
-    summary.unreadable = bool(output.get("unreadablePages"))
-    # Assigned for the same reason, and it will normally clear here: this route summarizes ONE row and
-    # does not seed `embedded_review_pages`, which needs the neighbouring rows. A re-draft of a tagged
-    # evaluation therefore drops its tag until the next full summarize run restores it. Recorded
-    # rather than worked around - re-deriving the neighbours on a single-row path would duplicate the
-    # worker's rule in a second place, which is how two copies of one decision start to drift.
-    summary.embedded_review = bool(output.get("embeddedReviewPages"))
-    summary.row_start = int(row["start"])
-    summary.row_end = int(row["end"])
-    summary.row_category = str(row["category"])
-    # Provenance, rewritten rather than left alone - and `model` is load-bearing, not bookkeeping.
-    #
-    # `_unreadable_output` returns `model=None` on purpose: "no model saw this row, so `model=None`
-    # beside `unreadablePages` is what tells a notice row apart from one that WAS summarized off its
-    # readable pages". `_is_retryable_notice` keys on exactly that, requiring `summary.model is None`
-    # before it will re-attempt a delivered notice.
-    #
-    # Leaving `model` at the PREVIOUS draft's value therefore produced the one state the retry logic
-    # cannot recognise: `unreadable=True` with a non-NULL model. A row that OCR'd cleanly first time
-    # and hit a transient extraction failure on re-draft became permanently un-retryable - the next
-    # Summarize reuses it, the pages are never re-read, and the reviewer's only escape is
-    # "Re-summarize all", which discards every hand edit in the record. It is also a FALSE RECORD by
-    # the column's own definition, where that combination means "summarized off the readable pages,
-    # with a notice appended".
-    #
-    # The other five are attribution: `summaries.model` is the column the pro-versus-flash quality
-    # work groups by, `backend` says which vendor served the calls, and the fingerprints are how a
-    # summary is traced to the prompt text that wrote it. A re-draft left all six describing a body
-    # that no longer exists.
-    summary.model = output.get("model")
-    summary.title_model = output.get("titleModel")
-    summary.audit_model = output.get("auditModel")
-    summary.backend = output.get("backend")
-    summary.prompt_fingerprint = output.get("promptFingerprint")
-    summary.audit_fingerprint = output.get("auditFingerprint")
-    # Fresh model output supersedes the prior hand-edits for this row.
-    summary.edited_title = None
-    summary.edited_date = None
-    summary.edited_text = None
+    first = _redraft_row(session, document, summary, row, visit_outputs(output))
     session.commit()
     audit(session, "resummarize", user.id, document.id)
+    # The re-draft can add or remove summaries - a page can now read as more or fewer visits than it
+    # did - so the record's summary list is re-read before the title passes run over it.
+    session.expire(document, ["summaries", "review_rows"])
     # Enriched, like every other summary response. A re-draft re-snapshots row_category from the row,
     # so this is also what CLEARS the "category changed" badge on the client.
-    return _summary_response(document, summary)
+    return _summary_response(document, first)
 
 
 _BUNDLE_NAME_CHARS = re.compile(r"[^a-z0-9]+")
@@ -2140,6 +2198,11 @@ def _delivered_entries(session: Session, document: Document) -> dict[int, tuple[
 
     Through `presentable_title` for the reason #162 exists: the stored title carries the internal
     review markers, and this is a page a client reads.
+
+    One line per DOCUMENT, keyed by its start page, and a page of several visits is one document in
+    the bundle. It is listed with its FIRST visit's date: the summaries are read in descending visit
+    order, so the first visit is the one left in the mapping. Unordered, whichever visit the
+    database returned last would have set the date.
     """
     return {
         summary.row_start: (
@@ -2151,10 +2214,12 @@ def _delivered_entries(session: Session, document: Document) -> dict[int, tuple[
             ),
         )
         for summary in session.scalars(
-            select(Summary).where(
+            select(Summary)
+            .where(
                 Summary.document_id == document.id,
                 Summary.excluded.is_(False),
             )
+            .order_by(Summary.part.desc())
         ).all()
         if summary.row_start is not None
     }

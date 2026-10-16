@@ -13,6 +13,7 @@ import difflib
 import logging
 import re
 from dataclasses import dataclass
+from datetime import date as calendar_date
 
 from app.config import get_settings
 from app.errors import EmptyExtractionError, is_rate_limited
@@ -27,6 +28,7 @@ from app.services.ocr import (
 from app.services.prompts import prompts
 from app.services.provenance import fingerprint, summary_prompt_fingerprint
 from app.services.rasterise import page_image_parts
+from app.services.reporting import parsed_date
 from app.services.summary_verify import VERIFY_PROMPT, verify_summary
 
 logger = logging.getLogger(__name__)
@@ -247,6 +249,27 @@ _F_DEPOSITION = (
     "NOT write one paragraph per page: the grouping is what a reader relies on to locate testimony.\n"
 )
 
+# A page can hold several separate visits under one heading, each with its own date - a sheet of daily
+# therapy or acupuncture notes, the case the reviewers raised on 2026-10-15 - and they asked for each
+# visit to be its own entry in the report. Identification cannot split the page (a row is whole
+# pages, and two rows may not share one), so the summary call marks each visit and `split_visits`
+# cuts the body there; every visit then becomes its own summary with its own date.
+#
+# The marker is a line of its own, and the one-paragraph rule is restated as applying to each visit,
+# because `house_style.one_paragraph` runs after the split and would otherwise erase the line breaks
+# the split reads. The excluded dates are named because a single visit's note routinely MENTIONS
+# others - the injury, the last visit, the next appointment - and those must not each become a visit.
+VISIT_MARKER = "VISIT:"
+_F_SEPARATE_VISITS = (
+    "- If these pages record SEVERAL SEPARATE VISITS or sessions, each with its own date (for "
+    "example a sheet of daily treatment notes), summarize each visit on its own: begin each visit "
+    f"on a new line with `{VISIT_MARKER} MM/DD/YYYY` giving that visit's date, then write that "
+    "visit's summary under it as one paragraph, and order the visits by date. Take a visit's year "
+    "from the page when the entry itself omits it. A date the document only MENTIONS - the date of "
+    "injury, an earlier visit, a next appointment, the date a form was printed or faxed - is not a "
+    f"visit. When the pages record ONE visit, write no {VISIT_MARKER} line at all.\n"
+)
+
 _F_BOLD = (
     "- Bold ONLY the short point/section labels, e.g. **Subjective Complaints**, **Diagnoses**, "
     "**Work Status**. Do NOT bold the text that follows a label, and NEVER bold a whole sentence, a "
@@ -435,6 +458,13 @@ _EXAM_CATEGORIES = frozenset({"1", "2", "5", "6", "12", "13"})
 _VERDICT_CATEGORIES = frozenset({"3", "14"})
 # Depositions and recorded statements: page-per-line, never one paragraph.
 _DEPOSITION_CATEGORIES = frozenset({"9"})
+# Categories whose documents can be a LOG of separate dated visits on one page: therapy, chiropractic
+# and acupuncture notes (5), the case the reviewers raised, and diagnostic studies (3), which they
+# said it "could possibly happen with" (2026-10-15). These alone are told to mark each visit
+# (`_F_SEPARATE_VISITS`) and have their body split at the marks (`split_visits`) - the two read this
+# one set, so a category can never be told to mark visits that nothing then splits. Adding a category
+# is adding it here.
+_VISIT_LOG_CATEGORIES = frozenset({"3", "5"})
 # Only categories 12 and 13 (QME/AME supplementals and evaluations) mention an embedded records
 # review - verified by scanning all 14 category prompts - so only they carry that rule and only they
 # can act on a list of the record's other studies.
@@ -513,6 +543,11 @@ def build_preamble(category) -> str:
     exactly the three measurement blocks, and that difference is the open question left on #216 -
     an unknown id is default-INCLUDE by policy, while 100 is a known id whose content is unknown and
     whose measurement instructions nobody has decided on.
+
+    `_F_SEPARATE_VISITS` is the one block an unknown id does NOT get, alongside the deposition
+    format. It is not a rule about content but a format that `summarize_row` has to act on - it
+    splits the body at the marks - and it does that only for `_VISIT_LOG_CATEGORIES`. Sending the
+    instruction anywhere else would put the marks into a delivered summary.
     """
     cat = str(category)
     unknown = cat not in _KNOWN_CATEGORIES
@@ -535,6 +570,8 @@ def build_preamble(category) -> str:
         parts += [_C_VITALS, _C_PAIN, _C_RANGE_OF_MOTION]
     parts += ["\n", _FORMAT_HEADER]
     parts.append(_F_DEPOSITION if deposition else _F_ONE_PARAGRAPH)
+    if writes_visits(cat):
+        parts.append(_F_SEPARATE_VISITS)
     parts += [_F_BOLD, _F_SENTENCE_CASE, "\n"]
     return "".join(parts)
 
@@ -2862,6 +2899,240 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
     return verified_text, verified_title, verify_issues, verify_ran
 
 
+def writes_visits(category) -> bool:
+    """Whether a row of this category is told to mark its separate visits and has its body split at
+    the marks. One predicate for both halves, so they cannot disagree - see `_VISIT_LOG_CATEGORIES`."""
+    return str(category) in _VISIT_LOG_CATEGORIES
+
+
+# A visit mark as the model writes it. Decoration it adds on its own - bold, a bullet, a heading, the
+# backticks the instruction quotes the mark in - is allowed in front of the word and read past
+# behind it. Bounded quantifiers throughout, so no line can make these backtrack.
+_VISIT_LINE = re.compile(
+    rf"^[ \t>#*_`-]{{0,8}}{VISIT_MARKER[:-1]}[ \t]{{0,4}}:([^\n]*)$", re.IGNORECASE | re.MULTILINE
+)
+_VISIT_DATE = re.compile(r"^[ \t*_`]{0,8}(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?")
+# What may sit between the date and the visit's first words when the model runs them onto one line:
+# closing decoration directly after the date - only when a space, a separator or the line end
+# follows it, so the opening `**` of a bold label written straight after the date is never eaten -
+# then a dash, colon or period.
+_AFTER_VISIT_DATE = re.compile(r"^(?:[*_`]{1,3}(?=[ \t:.-]|$))?[ \t]*(?:[-:.][ \t]*)?")
+
+
+def _visit_date(month: str, day: str, year: str | None, row_date) -> str:
+    """A visit mark's date as MM/DD/YYYY, the shape segmentation writes a row's date in.
+
+    A mark without a year - a log sheet writes "6/19" as often as not, and the instruction asks the
+    model to take the year from the page, which it cannot always do - takes the year that puts the
+    visit closest to the row's own date: the visits of one sheet sit around the document's date, and
+    the nearest year is also right across a new year ("12/28" beside a January row date is December
+    of the year before). A date that is no calendar date, or one with no row date to anchor it, is
+    kept as written, which the report shows as Undated rather than guessing at."""
+    written = f"{month}/{day}" + (f"/{year}" if year else "")
+    if year:
+        parsed = parsed_date({"summaryDate": written})
+        return parsed.strftime("%m/%d/%Y") if parsed else written
+    anchor_time = parsed_date({"summaryDate": str(row_date or "")})
+    if anchor_time is None:
+        return written
+    anchor = anchor_time.date()
+    nearest = None
+    for candidate_year in (anchor.year - 1, anchor.year, anchor.year + 1):
+        try:
+            candidate = calendar_date(candidate_year, int(month), int(day))
+        except ValueError:
+            continue
+        if nearest is None or abs(candidate - anchor) < abs(nearest - anchor):
+            nearest = candidate
+    return nearest.strftime("%m/%d/%Y") if nearest else written
+
+
+def _visit_header(after_marker: str, row_date) -> tuple[str, str]:
+    """``(date, rest)`` from what follows ``VISIT:`` on its line: the visit's date, and any of the
+    visit's own text the model ran onto the same line. ``"-"`` - the row-date sentinel for "states
+    none" - when the mark carries no date."""
+    match = _VISIT_DATE.match(after_marker)
+    if match is None:
+        return "-", _AFTER_VISIT_DATE.sub("", after_marker.lstrip(), count=1).rstrip()
+    rest = _AFTER_VISIT_DATE.sub("", after_marker[match.end() :], count=1).rstrip()
+    month, day, year = match.groups()
+    return _visit_date(month, day, year, row_date), rest
+
+
+def _visit_order(date: str, written_position: int) -> tuple:
+    """Date order, with an undated or unreadable date after the dated ones and ties kept in the order
+    the model wrote them."""
+    parsed = parsed_date({"summaryDate": date})
+    return (parsed is None, parsed.toordinal() if parsed else 0, written_position)
+
+
+def split_visits(body: str, row_date=None) -> list[tuple[str, str]]:
+    """``body`` cut at its visit marks into ``[(date, text), ...]`` in date order, or ``[]`` when it
+    marks fewer than two visits - the single-visit case, which nearly every row is.
+
+    Nothing the model wrote is dropped. Text before the first mark joins the first visit, and two
+    marks naming one date are one visit - the date is what makes a visit separate, so the reviewers'
+    report would otherwise carry the same visit twice. A mark followed by no text at all is not a
+    visit. When that leaves fewer than two, the caller takes the single-body path and removes the
+    marks with `strip_visit_lines`.
+    """
+    body = body or ""
+    marks = list(_VISIT_LINE.finditer(body))
+    if len(marks) < 2:
+        return []
+    by_date: dict[str, list[str]] = {}
+    for n, mark in enumerate(marks):
+        end = marks[n + 1].start() if n + 1 < len(marks) else len(body)
+        date, first_line = _visit_header(mark.group(1), row_date)
+        pieces = [first_line, body[mark.end() : end].strip()]
+        if n == 0:
+            pieces.insert(0, body[: mark.start()].strip())
+        text = " ".join(piece for piece in pieces if piece)
+        if text:
+            by_date.setdefault(date, []).append(text)
+    if len(by_date) < 2:
+        return []
+    written = {date: n for n, date in enumerate(by_date)}
+    return sorted(
+        ((date, " ".join(texts)) for date, texts in by_date.items()),
+        key=lambda visit: _visit_order(visit[0], written[visit[0]]),
+    )
+
+
+def strip_visit_lines(body: str) -> str:
+    """``body`` with every visit mark removed, keeping any text the model ran onto a mark's line.
+
+    For a row that marks one visit, or marks several that all turn out to be one: the mark is an
+    instruction to this code, never something a reader should see."""
+    return _VISIT_LINE.sub(lambda mark: _visit_header(mark.group(1), None)[1], body or "")
+
+
+def visit_outputs(output: dict) -> list[dict]:
+    """The summaries one `summarize_row` output stands for, in date order: one per visit when the row
+    records several, else the output itself. Every caller that STORES or DELIVERS summaries reads an
+    output through this - the top level of a split row is only its first visit."""
+    return output.get("visits") or [output]
+
+
+@dataclass(frozen=True)
+class _BodyFinish:
+    """What every body of one row is finished with: the audit, the DOI lead and the trailing notices.
+
+    One row can have several bodies - one per visit, see `split_visits` - and each is finished the
+    same way, so the inputs are gathered once rather than passed body by body past the
+    seven-parameter ceiling this module sits at."""
+
+    # None when the audit is not to run for this call (the `verify` switch is off).
+    audit_model: str | None
+    row: dict
+    source_text: str
+    title: str
+    doi_lead: str
+    notice_pages: list
+    embedded_review_pages: list
+
+
+def _finished_body(finishing: _BodyFinish, date: str, body: str) -> dict:
+    """One body's own fields: its date, its delivered text, and its audit.
+
+    Faithfulness verify pass (problem #3): audit the title AND the body against their source and,
+    ONLY when the pass flags issues, keep the corrected pair as verifiedTitle/verifiedText (the raw
+    summaryTitle/summaryText stay as the immutable model output). No issues -> both stay None, so
+    the summary is unchanged and unflagged. verify_summary is fail-safe (returns the originals on any
+    error). The title is audited because it is the first thing a client reads and it carries dates
+    and laterality that a body-only check never saw.
+
+    The audit is handed the VISIT's date as the row's. For a single body that is the row's own date,
+    exactly as before; for one visit of a split page it is that visit's, which is the document date
+    the audit's prior-visit rule must read wherever that rule applies.
+    """
+    verified_text = None
+    verified_title = None
+    verify_issues = None
+    # Whether the audit actually RAN, which is not the same question as whether it was switched on.
+    # Fail closed: anything that does not explicitly report success leaves this False.
+    verify_ran = False
+    if finishing.audit_model is not None:
+        verified_text, verified_title, verify_issues, verify_ran = _verified_outputs(
+            finishing.audit_model,
+            {**finishing.row, "date": date},
+            finishing.source_text,
+            body,
+            finishing.title,
+            finishing.doi_lead,
+        )
+
+    # PARTIAL unreadable row: the body above was summarized from the pages that COULD be read, so
+    # state the ones that could not. Without this a ten-page row that lost one page delivers a
+    # summary of nine with nothing said, which is the same invisibility the whole-row notice removes.
+    # Every visit of a split page carries it: each is summarized from the same pages.
+    #
+    # Appended AFTER the verify pass, deliberately. The audit checks the body against the SOURCE
+    # TEXT, and this sentence is by definition not in that source - letting the audit see it invites
+    # it to "correct" an unsupported claim, or to count it as a faithfulness issue and flag the row.
+    # Applied to the verified body too, so the notice survives whichever body effective_text()
+    # delivers, and after sentence_case_caps_runs so that transform never rewrites it.
+    partial_notice, verified_text = _trailing_notices(
+        verified_text, finishing.notice_pages, finishing.embedded_review_pages
+    )
+    return {
+        "summaryDate": date,
+        "summaryText": f"{finishing.doi_lead}{body}{partial_notice}",
+        # The audit RAN, not "the audit was requested". Setting this from the `verify` setting meant a
+        # row whose check threw or truncated was still stored claiming a faithfulness check had
+        # happened - a false record on a medical summary, and one no later query could detect.
+        "verified": verify_ran,
+        "verifiedText": verified_text,
+        "verifiedTitle": verified_title,
+        "verifyIssues": verify_issues,
+    }
+
+
+def _row_bodies(summary: str, row: dict, deposition: bool) -> list[tuple[str, str]]:
+    """The row's finished bodies as ``[(date, body), ...]``: one per visit for a page that records
+    several, else the one body under the row's own date.
+
+    The cut happens here, BEFORE the house-style pass: `one_paragraph` joins lines, and the visit
+    marks are lines. A row of any other category, or one whose body marks fewer than two visits,
+    takes the single-body path exactly as before - with any stray mark removed, so it can never
+    reach a delivered summary.
+
+    Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
+    The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
+    measured rows. Applied before the verify pass so the audit reads the text a reader will see.
+    """
+    if not writes_visits(row["category"]):
+        return [(row["date"], _house_body(summary, deposition))]
+    visits = split_visits(summary, row.get("date"))
+    if not visits:
+        return [(row["date"], _house_body(strip_visit_lines(summary), deposition))]
+    logger.info(
+        "pages %s-%s record %d separate visits; summarized each on its own",
+        row["start"],
+        row["end"],
+        len(visits),
+    )
+    return [(date, _house_body(body, deposition)) for date, body in visits]
+
+
+def _row_output(common: dict, finishing: _BodyFinish, bodies) -> dict:
+    """`summarize_row`'s output: ``common`` - everything about the row - with each body finished.
+
+    One body is the one output, as it always was. Several - a page of separate visits - return the
+    first visit at the top level, so a caller that reads one summary still reads a whole, correct
+    one, and all of them under ``visits``, which `visit_outputs` is how a caller takes.
+    """
+    outputs = [{**common, **_finished_body(finishing, date, body)} for date, body in bodies]
+    if len(outputs) == 1:
+        return outputs[0]
+    # One title for every visit of the page, so the audit's correction of it is taken once, from the
+    # first visit's audit. Each visit's audit reads the same title against the same source, and
+    # letting each keep its own verdict could print one page's heading two ways in one report.
+    for output in outputs[1:]:
+        output["verifiedTitle"] = outputs[0]["verifiedTitle"]
+    return {**outputs[0], "visits": outputs}
+
+
 def summarize_row(
     pdf_path,
     row,
@@ -2972,10 +3243,7 @@ def summarize_row(
     # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and
     # written to a varchar(512).
     title = category_title(_usable_title(title, row.get("title")), row.get("category"))
-    # Deterministic capitalisation fix on the BODY only (the title is an ALL CAPS header by design).
-    # The prompt rule and the audit rule both stay: this catches what they miss, which was 22% of
-    # measured rows. Applied before the verify pass so the audit reads the text a reader will see.
-    summary = _house_body(summary, deposition)
+    bodies = _row_bodies(summary, row, deposition)
 
     # The row IS the source of truth for the injury date. It was read once, per sub-document and in
     # isolation, at the END of segmentation (see segment_engine.run_segmentation), so a reviewer who
@@ -2986,57 +3254,30 @@ def summarize_row(
     # appearance only. "-" means the document states none, and produces no prefix.
     doi_lead = _doi_lead(row["injury_date"])
     manual_tag, diag_tag = _row_tags(row)
-
-    # Faithfulness verify pass (problem #3): audit the title AND the body against their source and,
-    # ONLY when the pass flags issues, keep the corrected pair as verifiedTitle/verifiedText (the raw
-    # summaryTitle/summaryText stay as the immutable model output). No issues -> both stay None, so
-    # the summary is unchanged and unflagged. verify_summary is fail-safe (returns the originals on
-    # any error). The title is audited because it is the first thing a client reads and it carries
-    # dates and laterality that a body-only check never saw.
-    verified_text = None
-    verified_title = None
-    verify_issues = None
-    # Whether the audit actually RAN, which is not the same question as whether it was switched on.
-    # Fail closed: anything that does not explicitly report success leaves this False.
-    verify_ran = False
-    if verify:
-        verified_text, verified_title, verify_issues, verify_ran = _verified_outputs(
-            audit_model, row, text, summary, title, doi_lead
-        )
-
-    # PARTIAL unreadable row: the body above was summarized from the pages that COULD be read, so
-    # state the ones that could not. Without this a ten-page row that lost one page delivers a
-    # summary of nine with nothing said, which is the same invisibility the whole-row notice removes.
-    #
-    # Appended AFTER the verify pass, deliberately. The audit checks the body against the SOURCE
-    # TEXT, and this sentence is by definition not in that source - letting the audit see it invites
-    # it to "correct" an unsupported claim, or to count it as a faithfulness issue and flag the row.
-    # Applied to the verified body too, so the notice survives whichever body effective_text()
-    # delivers, and after sentence_case_caps_runs so that transform never rewrites it.
-    partial_notice, verified_text = _trailing_notices(
-        verified_text, source.notice_pages, embedded_review_pages
-    )
     # Computed once, because the two are absent TOGETHER - a different fact from "not recorded",
     # which `verified` is what distinguishes.
     audit_model_used, audit_fingerprint = (
         (audit_model, fingerprint(VERIFY_PROMPT)) if verify else (None, None)
     )
+    finishing = _BodyFinish(
+        audit_model=audit_model if verify else None,
+        row=row,
+        source_text=text,
+        title=title,
+        doi_lead=doi_lead,
+        notice_pages=source.notice_pages,
+        embedded_review_pages=embedded_review_pages,
+    )
 
-    return {
-        "summaryDate": row["date"],
+    # Everything about the row rather than about one body: shared by every visit of a split page.
+    common = {
         "summaryTitle": f"{manual_tag}{title}{diag_tag} (Pages {row['start']}-{row['end']})",
         "manualCheck": manual_tag,
         # The body was cut off at the token budget: nothing is appended to the text (the report must
-        # not carry a marker), but callers flag the row so the reviewer knows to check it.
+        # not carry a marker), but callers flag the row so the reviewer knows to check it. On a split
+        # page every visit carries it: a cut-off reply can have lost whole visits after the last one
+        # it wrote, and no single visit's summary can say which.
         "truncated": truncated,
-        "summaryText": f"{doi_lead}{summary}{partial_notice}",
-        # The audit RAN, not "the audit was requested". Setting this from the `verify` setting meant a
-        # row whose check threw or truncated was still stored claiming a faithfulness check had
-        # happened - a false record on a medical summary, and one no later query could detect.
-        "verified": verify_ran,
-        "verifiedText": verified_text,
-        "verifiedTitle": verified_title,
-        "verifyIssues": verify_issues,
         # The exact model input, so callers can persist the fine-tuning pair.
         "sourceText": text,
         # PROVENANCE. Which models wrote this row and which prompt text they were given, so
@@ -3069,3 +3310,4 @@ def summarize_row(
         "embeddedReviewPages": embedded_review_pages,
         "noticeOnly": False,
     }
+    return _row_output(common, finishing, bodies)

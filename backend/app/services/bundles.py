@@ -426,17 +426,20 @@ def bundle_summary_entries(pdf_path, rows, model=None, prompt_for=None):
             )
             skipped_causes.add(TranscriptPagesUnreadableError)
             continue
-        categories.append(row.get("category"))
-        entries.append(
-            {
-                "summaryDate": output.get("summaryDate") or "-",
-                "summaryTitle": summarize_engine.presentable_title(
-                    output["summaryTitle"], category=row.get("category")
-                ),
-                "summaryText": output["summaryText"],
-                "diagnostic": is_diagnostic(row.get("category")),
-            }
-        )
+        # One entry per visit when the row's pages record several, exactly as the record export
+        # delivers them - see `summarize_engine.split_visits`.
+        for visit in summarize_engine.visit_outputs(output):
+            categories.append(row.get("category"))
+            entries.append(
+                {
+                    "summaryDate": visit.get("summaryDate") or "-",
+                    "summaryTitle": summarize_engine.presentable_title(
+                        visit["summaryTitle"], category=row.get("category")
+                    ),
+                    "summaryText": visit["summaryText"],
+                    "diagnostic": is_diagnostic(row.get("category")),
+                }
+            )
     if rows and not entries:
         # EVERY row was skipped. Skipping per-row must not turn a clear error into a silently empty
         # deliverable: without this the caller hands `[]` to `build_mrr_document` and streams a Word

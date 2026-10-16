@@ -84,6 +84,7 @@ shared `conftest.py`.
 | `test_summary_verify.py` | The summary faithfulness check. |
 | `test_user_manager.py` | The password rule: length, a number, a symbol. |
 | `test_verify_pass.py` | Which boundaries the segmentation verify pass sends to the model. |
+| `test_visit_split.py` | A page of several dated visits: the visit marks, the split, one summary per visit stored, resumed, re-drafted and exported. |
 | `test_window_ownership.py` | Where the seam between two segmentation windows sits on our model: edge, middle, and the realigned re-ask. |
 | `test_windows.py` | Window packing for segmentation: the byte budget and the page cap. |
 

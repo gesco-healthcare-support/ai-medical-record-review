@@ -28,10 +28,19 @@ function useSummaryPatch(documentId: string) {
     );
 }
 
+/** Re-read the whole list. For a change that reaches beyond the one summary the server returned: a
+ *  page holding several visits has one summary per visit, all on one row. */
+function useSummariesRefresh(documentId: string) {
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: summariesKey(documentId) });
+}
+
 /** Edit a summary (title/date/text), toggle its export inclusion, or re-classify it (`category`,
- *  which the server writes to the owning ReviewRow). */
+ *  which the server writes to the owning ReviewRow). A category change re-reads the list: it lands
+ *  on the ROW, so every other visit of that row changed too. */
 export function useSaveSummary(documentId: string) {
   const patch = useSummaryPatch(documentId);
+  const refresh = useSummariesRefresh(documentId);
   return useMutation({
     mutationFn: (vars: {
       idx: number;
@@ -43,15 +52,24 @@ export function useSaveSummary(documentId: string) {
         category: string;
       }>;
     }) => putSummary(documentId, vars.idx, vars.body),
-    onSuccess: patch,
+    onSuccess: (updated, vars) => {
+      patch(updated);
+      if ("category" in vars.body) void refresh();
+    },
   });
 }
 
-/** Re-draft one summary (discards evaluator edits, writes a fresh AI draft). */
+/** Re-draft one summary (discards evaluator edits, writes a fresh AI draft). Re-reads the list as
+ *  well: the re-draft rewrites every visit of the summary's row, and can find more or fewer visits
+ *  than before, which adds or removes summaries and renumbers the ones after them. */
 export function useResummarize(documentId: string) {
   const patch = useSummaryPatch(documentId);
+  const refresh = useSummariesRefresh(documentId);
   return useMutation({
     mutationFn: (idx: number) => resummarize(documentId, idx),
-    onSuccess: patch,
+    onSuccess: (updated) => {
+      patch(updated);
+      void refresh();
+    },
   });
 }
