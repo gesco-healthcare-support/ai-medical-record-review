@@ -67,6 +67,7 @@ shared `conftest.py`.
 | `test_pacing.py` | Adaptive pacing of model calls: request and token meters and the controller. |
 | `test_page_text.py` | The per-page OCR text store: extract once, reuse, keep errored and blank pages distinct. |
 | `test_password.py` | The Flask-Security-compatible password hashing, including its production cost. |
+| `test_pdf_slice.py` | Gemini's PDF slices: byte-identical to a fresh cut, and the record opened once, not once per slice. |
 | `test_pool_wiring.py` | Thread-pool timeouts in the pipeline, and that every key in `.env.example` is named in `docker-compose.yml`. |
 | `test_pools.py` | Bounded draining of thread pools. |
 | `test_prompt_content.py` | Required wording in the prompts. |

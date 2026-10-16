@@ -18,14 +18,12 @@ summarize_row, whose value won over the row and therefore discarded any reviewer
 backfill also uses it, with strict=True, to correct already-stored summaries.
 """
 
-import io
 import logging
 import re
 
-from pypdf import PdfReader, PdfWriter
-
 from app.config import get_settings
 from app.services.llm import DocumentPart, Part, TextPart, provider_for_stage
+from app.services.pdf import slice_pdf
 from app.services.rasterise import page_image_parts
 from app.worker.failures import JobCancelled
 
@@ -161,14 +159,9 @@ def _isolated_parts(pdf_path, start, end, settings) -> list[Part]:
     """
     if settings.backend_for("doi") == "vllm":
         return page_image_parts(pdf_path, start, end, _MAX_PAGES, settings.doi_image_long_edge_px)
-    reader = PdfReader(pdf_path)
-    writer = PdfWriter()
+    # Read once per row on Gemini; the record is opened once, not once per row (pdf._readers).
     last = min(int(end), int(start) + _MAX_PAGES - 1)
-    for page in range(int(start) - 1, last):
-        writer.add_page(reader.pages[page])
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    return [DocumentPart(data=buffer.getvalue(), mime_type="application/pdf")]
+    return [DocumentPart(data=slice_pdf(pdf_path, start, last), mime_type="application/pdf")]
 
 
 def extract_injury_date(pdf_path, start, end, model=None, strict=False) -> str:
