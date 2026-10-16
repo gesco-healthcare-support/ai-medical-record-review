@@ -10,12 +10,23 @@ The cap tests are new, and they are why this module exists at all rather than be
 """
 
 import io
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from app.config import _SMALLEST_PAGE_LONG_EDGE_PT, _STAGE_RENDER_TARGETS, get_settings
 from app.services import rasterise
+
+
+@pytest.fixture(autouse=True)
+def _empty_edges_cache():
+    """The page-box cache is module state; no test may see another test's files."""
+    rasterise._edges_cache.clear()
+    yield
+    rasterise._edges_cache.clear()
+
 
 # --- page_dpi: the render resolution -----------------------------------------------------------
 
@@ -424,3 +435,103 @@ def test_the_boot_guard_agrees_with_what_page_dpi_actually_renders(
         f"({'lands' if lands else 'falls short'}) but the boot guard "
         f"{'allows' if guard_allows_boot else 'refuses'} it"
     )
+
+
+# --- the page boxes are read once per file, not once per call -----------------------------------
+#
+# Measured 2026-10-16 on a 5,077-page record: a fresh PdfReader plus one page's box cost 2.3s of
+# pure Python per call, and the injury-date read makes one call per row - 1,637 rows, ~63 min
+# under the GIL, the model idle. See `rasterise._edges_cache`.
+
+
+def _counting_reader(monkeypatch, pages=20, delay=0.0):
+    """Replace pypdf and Poppler; return the list that records every PdfReader construction."""
+    opened = []
+    box = SimpleNamespace(width=612, height=792)
+
+    def _reader(path):
+        opened.append(path)
+        time.sleep(delay)
+        return SimpleNamespace(pages=[SimpleNamespace(cropbox=box) for _ in range(pages)])
+
+    monkeypatch.setattr(rasterise, "PdfReader", _reader)
+    monkeypatch.setattr(
+        rasterise, "convert_from_path", lambda _p, first_page, last_page, dpi: [_FakeImage()]
+    )
+    return opened
+
+
+def _record(tmp_path, name="record.pdf", size=100):
+    """A real file, so it can be stat'ed. Its bytes never reach pypdf - that is replaced."""
+    path = tmp_path / name
+    path.write_bytes(b"x" * size)
+    return str(path)
+
+
+def test_a_record_is_parsed_once_however_many_rows_read_it(monkeypatch, tmp_path):
+    """WHEN several rows of one record are rasterised, THE SYSTEM SHALL open its PDF once."""
+    opened = _counting_reader(monkeypatch)
+    path = _record(tmp_path)
+
+    for start in (1, 4, 7, 10, 13):
+        rasterise.page_image_parts(path, start, start + 2, 10)
+
+    assert len(opened) == 1
+
+
+def test_rows_read_at_the_same_time_still_parse_the_record_once(monkeypatch, tmp_path):
+    """WHEN a thread pool starts on one record, THE SYSTEM SHALL parse it once, not once a thread.
+
+    Twelve injury-date workers begin together; without the lock held over the read, each would
+    parse the same 5,000-page file before any of them could fill the cache."""
+    opened = _counting_reader(monkeypatch, delay=0.05)
+    path = _record(tmp_path)
+    gate = threading.Barrier(8)
+
+    def _row(start):
+        gate.wait()
+        rasterise.page_image_parts(path, start, start, 1)
+
+    threads = [threading.Thread(target=_row, args=(n + 1,)) for n in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(opened) == 1
+
+
+def test_a_file_replaced_in_place_is_read_again(monkeypatch, tmp_path):
+    """GUARD. Keyed on size and mtime as well as the path, so a new file under an old name is
+    never answered with the old file's page sizes."""
+    opened = _counting_reader(monkeypatch)
+    path = _record(tmp_path, size=100)
+    rasterise.page_image_parts(path, 1, 1, 1)
+
+    _record(tmp_path, size=200)
+    rasterise.page_image_parts(path, 1, 1, 1)
+
+    assert len(opened) == 2
+
+
+def test_a_path_that_cannot_be_stated_is_never_cached(monkeypatch):
+    """GUARD. Nothing to key it on, so it is read every time, as every call was before the cache."""
+    opened = _counting_reader(monkeypatch)
+
+    rasterise.page_image_parts("/no/such/record.pdf", 1, 1, 1)
+    rasterise.page_image_parts("/no/such/record.pdf", 1, 1, 1)
+
+    assert len(opened) == 2
+
+
+def test_the_cache_holds_a_bounded_number_of_records(monkeypatch, tmp_path):
+    """GUARD. A worker meets many records over its life; the oldest is dropped, not kept forever."""
+    opened = _counting_reader(monkeypatch)
+    paths = [_record(tmp_path, f"r{n}.pdf") for n in range(rasterise._EDGES_CACHE_SIZE + 1)]
+    for path in paths:
+        rasterise.page_image_parts(path, 1, 1, 1)
+
+    rasterise.page_image_parts(paths[0], 1, 1, 1)
+
+    assert len(rasterise._edges_cache) == rasterise._EDGES_CACHE_SIZE
+    assert len(opened) == len(paths) + 1
