@@ -34,6 +34,26 @@ FRAGMENT_PAGE_CAP = 2
 # Boundary-page OCR excerpts are clipped so the prompt stays small.
 BOUNDARY_TEXT_CHARS = 1200
 
+# What the reviewers count as ONE document although it looks like a second one: their answer of
+# 2026-10-16 on one visit's paperwork - an RFA goes with the same-date PR-2 ("usually the
+# information from the RFA is also in the PR-2, so it can be redundant to have them both"), the labs
+# of one date come out as one summary, and forms attached at the end of a report "should generally
+# all be combined together with the report". Without it the prompt's own caution - a shared type,
+# date or letterhead is NOT enough - answered NO to exactly these pieces: on a 27-record exam the
+# check offered a merge on 4 of the 102 places our model split one document, most of them a visit's
+# own forms. Each case names what the pages must show, so the caution still governs everything else.
+# The export joins a same-date RFA by the same doctor even when the two are not neighbours
+# (`summarize_engine.fold_record_entries`); this is the neighbouring case, at the boundary itself.
+_VISIT_PAPERWORK = (
+    "The reviewers also count these as ONE document, so answer YES when the pages show one of them:\n"
+    "- a form attached at the end of document A and filed with it - a patient questionnaire, an "
+    "intake or history form, a job description - rather than the start of a new visit or report;\n"
+    "- a Request for Authorization (RFA) by the same doctor and on the same date as document A, "
+    "when A is that doctor's progress report (PR-2) or visit note;\n"
+    "- more pages of laboratory results from the same date as document A, when A is laboratory "
+    "results too.\n"
+)
+
 
 def _page_image(pdf_path, page, dpi=120):
     """Rasterize one page ONCE; the caller reuses it for both PNG evidence and OCR."""
@@ -101,7 +121,9 @@ def _same_document(pdf_path, prev_row, row):
             "Answer YES only when the evidence clearly shows continuation: continued "
             "pagination, a sentence or table that flows across the boundary, the same "
             "author and visit continuing, or an attachment the report explicitly "
-            "references. Sharing a document type, date, or letterhead is NOT enough - "
+            "references.\n"
+            + _VISIT_PAPERWORK
+            + "Beyond those, sharing a document type, date, or letterhead is NOT enough - "
             "these records routinely contain same-day batches of separate short "
             "documents. If the evidence is unclear, answer NO."
         )
