@@ -2099,6 +2099,25 @@ def consistent_titles(
 #
 # Measured on the live box over the last 30 days before widening it past work status slips: 95
 # such visits across 25 records, 125 entries folding away; reviewers had excluded 2 of them by hand.
+#
+# A PR-2's RFA JOINS ITS VISIT. Asked whether a PR-2's own Request for Authorization is its own
+# entry, the reviewers answered (2026-10-16): "I try to put the Request for Authorizations with the
+# PR-2 if they are the same date since usually the information from the RFA is also in the PR-2,
+# so it can be redundant to have them both ... if we can combine them even if they aren't
+# subsequent pages, that would be good as well." This narrows the 2026-08-21 "same category" limit
+# for exactly this pair, an RFA being category 10. So a category 10 entry whose title names an RFA
+# joins the same-date, same-author group - wherever it sits in the record, which is why it is done
+# here over the delivered entries: merging rows can only join neighbours. It only JOINS a visit: an
+# RFA with no category 1 entry by that author on that date stays its own entry, and so do orders
+# and prescriptions, which share category 10 but were not in the answer (reviewers keep a PR-2 and
+# its orders page apart 9 times in 10). The report's body leads; the RFA adds only what the report
+# does not already say.
+_RFA_TITLE = re.compile(r"\bREQUEST FOR AUTHORI[SZ]ATION\b|\bRFA\b", re.I)
+# ONE ENTRY PER DATE OF LABORATORY RESULTS, from the same answer: "I think we can combine all the
+# labs from the same date and have it come out as one summary." Every category 14 entry of one date,
+# whoever wrote it, headed by the first in the record - see `_combined_lab_title` for its heading.
+_LAB_CATEGORY = "14"
+_COMBINED_LAB_TYPE = "LABORATORY REPORT"
 _WORK_STATUS_TITLE = re.compile(r"\bWORK (?:ACTIVITY )?STATUS\b|\bRETURN[- ]TO[- ]WORK\b", re.I)
 _PR2_TITLE = re.compile(r"\bPR-?2\b|\bPROGRESS REPORT\b", re.I)
 # A section starts at a LABEL - a bold span marked by its colon - never at bold content, so
@@ -2111,10 +2130,13 @@ def _is_pr2(title: str) -> bool:
 
 
 def _visit_key(entry: dict, category: str, title_key: str):
-    """``(date, author)`` for a category 1 entry that names both, else ``None``."""
-    author = _author_parts(entry.get(title_key) or "")
+    """``(date, author)`` for a category 1 entry or an RFA that names both, else ``None``."""
+    title = entry.get(title_key) or ""
+    if category not in ("1", "10") or (category == "10" and not _RFA_TITLE.search(title)):
+        return None
+    author = _author_parts(title)
     date = (entry.get("summaryDate") or "").strip()
-    if category != "1" or not author or date in ("", "-"):
+    if not author or date in ("", "-"):
         return None
     return date, author[0], author[1][2]
 
@@ -2123,18 +2145,24 @@ def _normal(section: str) -> str:
     return re.sub(r"\s+", " ", section).strip(" .;:").casefold()
 
 
-def _merged_body(bodies: list[str]) -> str:
+def _merged_body(bodies: list[str], leaders: list[int] | None = None) -> str:
     """The fullest body, with every section of the others it does not already carry appended.
+
+    ``leaders`` are the positions in ``bodies`` the kept body may come from, all of them when
+    omitted. A visit's report leads it and its RFA never does: the reviewers fold an RFA in BECAUSE
+    the report already says what it says.
 
     A section is dropped only when the kept body already holds the SAME TEXT. A repeated label with
     different text is appended beside it, and so is text under no label at all: the first version
     compared labels only, so a slip's "Work Status: Off work" vanished next to a PR-2's "Work Status:
     Modified duty", and an unlabelled note contributed nothing (Adrian, #396). Two statements of one
     point in one entry are visible to the reviewer; a lost one is not."""
-    kept = max(bodies, key=len)
+    candidates = range(len(bodies)) if leaders is None else leaders
+    kept_at = max(candidates, key=lambda i: len(bodies[i]))
+    kept = bodies[kept_at]
     have = {_normal(sec) for sec in _SECTION.split(kept) if sec.strip()}
     extra = []
-    for body in (b for b in bodies if b is not kept):
+    for body in (b for i, b in enumerate(bodies) if i != kept_at):
         for section in (sec.strip() for sec in _SECTION.split(body) if sec.strip()):
             if _normal(section) not in have:
                 have.add(_normal(section))
@@ -2145,7 +2173,10 @@ def _merged_body(bodies: list[str]) -> str:
 def _visit_heads(
     entries: list[dict], categories: list[str], title_key: str
 ) -> dict[int, list[int]]:
-    """Each same-visit group of two or more, keyed by the index of the entry that heads it."""
+    """Each same-visit group of two or more, keyed by the index of the entry that heads it.
+
+    A group needs a category 1 entry - RFAs alone are not a visit - and only a category 1 entry
+    heads it."""
     groups: dict[tuple, list[int]] = {}
     for i, (entry, category) in enumerate(zip(entries, categories, strict=True)):
         key = _visit_key(entry, category, title_key)
@@ -2153,25 +2184,63 @@ def _visit_heads(
             groups.setdefault(key, []).append(i)
     heads: dict[int, list[int]] = {}
     for members in (m for m in groups.values() if len(m) > 1):
-        pr2 = [i for i in members if _is_pr2(entries[i].get(title_key) or "")]
+        reports = [i for i in members if categories[i] == "1"]
+        if not reports:
+            continue
+        pr2 = [i for i in reports if _is_pr2(entries[i].get(title_key) or "")]
         head = (
-            pr2[0] if pr2 else max(members, key=lambda i: len(entries[i].get("summaryText") or ""))
+            pr2[0] if pr2 else max(reports, key=lambda i: len(entries[i].get("summaryText") or ""))
         )
         heads[head] = members
     return heads
 
 
-def fold_same_visit(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
-    """``entries`` with each same-visit group of category 1 entries made one - see above."""
-    heads = _visit_heads(entries, categories, title_key)
+def _lab_heads(entries: list[dict], categories: list[str]) -> dict[int, list[int]]:
+    """Each date's laboratory results of two or more entries, keyed by the first of them."""
+    groups: dict[str, list[int]] = {}
+    for i, (entry, category) in enumerate(zip(entries, categories, strict=True)):
+        date = (entry.get("summaryDate") or "").strip()
+        if category == _LAB_CATEGORY and date not in ("", "-"):
+            groups.setdefault(date, []).append(i)
+    return {members[0]: members for members in groups.values() if len(members) > 1}
+
+
+def _combined_lab_title(titles: list[str]) -> str:
+    """The heading of one date's laboratory results made one entry.
+
+    The first entry's heading when every entry's says the same (a page suffix aside). Otherwise its
+    author and facility with ``LABORATORY REPORT`` for the document type: the panels' own names
+    differ, so any one of them would misdescribe the rest, and ``LABORATORY REPORT`` is how the
+    human-written reviews head a lab entry - 46 of their 55, measured 2026-10-16, with one lab entry
+    per date on 52 of 53 dates. The first entry's page suffix, when the export prints one, stays."""
+    cores = [_PAGES_SUFFIX.sub("", title).rstrip() for title in titles]
+    if len(set(cores)) == 1:
+        return titles[0]
+    suffix = titles[0][len(cores[0]) :]
+    prefix = ". ".join(title_elements(cores[0])[:-1])
+    return (f"{prefix}. {_COMBINED_LAB_TYPE}" if prefix else _COMBINED_LAB_TYPE) + suffix
+
+
+def fold_record_entries(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
+    """``entries`` with each visit made one entry - its category 1 documents and its RFA - and each
+    date's laboratory results made one - see above. The two groupings never share an entry: they
+    are drawn from different categories."""
+    labs = _lab_heads(entries, categories)
+    heads = {**_visit_heads(entries, categories, title_key), **labs}
     folded = {i for members in heads.values() for i in members} - set(heads)
     out = []
     for i, entry in enumerate(entries):
         if i in folded:
             continue
         if i in heads:
-            bodies = [entries[j].get("summaryText") or "" for j in heads[i]]
-            entry = {**entry, "summaryText": _merged_body(bodies)}
+            members = heads[i]
+            bodies = [entries[j].get("summaryText") or "" for j in members]
+            leaders = [n for n, j in enumerate(members) if categories[j] == categories[i]]
+            entry = {**entry, "summaryText": _merged_body(bodies, leaders)}
+            if i in labs:
+                entry[title_key] = _combined_lab_title(
+                    [entries[j].get(title_key) or "" for j in members]
+                )
         out.append(entry)
     return out
 

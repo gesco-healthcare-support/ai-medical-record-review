@@ -495,12 +495,26 @@ provider, a clinic and a PR-2 the way the letter will:
 - **One name for a PR-2.** `consistent_report_types()` gives a category-1 document type of just
   `PROGRESS REPORT` the PR-2 name when the same author's category-1 entries in the record name the
   form; measured, 25 of 26 such titles sat on pages that print `PR-2`.
-- **Same-visit folding.** `fold_same_visit()` makes one entry of the category-1 entries with the same
-  author, credential and date string. The entry is headed by a PR-2 when the visit has one (a title
-  matching `PR-2` or `PROGRESS REPORT` that is not a work status slip), otherwise by the longest body.
-  Its body is the longest body plus every section of the others whose text it does not already hold.
-  The rows and summaries are untouched, so the review page still shows every document and a reviewer
-  can still separate them.
+- **Same-visit folding.** `fold_record_entries()` makes one entry of the category-1 entries with the
+  same author, credential and date string, and of a category-10 entry whose title names a Request for
+  Authorization (`_RFA_TITLE`) by that author on that date - wherever it sits in the record. The
+  reviewers' rule (2026-10-16): an RFA goes with the PR-2 of its date, since the PR-2 usually says
+  what the RFA says, including when the two are not on neighbouring pages. Orders and prescriptions
+  share category 10 and are not folded, and an RFA with no category-1 entry by its author that day
+  stays its own entry. The entry is headed by a PR-2 when the visit has one (a title matching `PR-2`
+  or `PROGRESS REPORT` that is not a work status slip), otherwise by the longest category-1 body. Its
+  body is the longest category-1 body plus every section of the others whose text it does not
+  already hold, so an RFA only ever adds. Measured on the live box (426 records, read-only,
+  2026-10-16): 83 of 386 delivered RFAs fold, 23 of them from non-neighbouring pages; 78 that share
+  a date with a category-1 entry stay apart because the author differs or the RFA's title names none.
+- **Laboratory folding.** The same function makes one entry of every category-14 entry of one date,
+  whoever wrote it (the reviewers, same day: "combine all the labs from the same date and have it
+  come out as one summary"). It is headed by the first entry; when the entries' headings differ, its
+  author and facility with `LABORATORY REPORT` as the document type (`_combined_lab_title()`), which
+  is how the human-written reviews head a lab entry. Measured as above: 65 entries fold away on 46
+  dates in 16 records.
+- The rows and summaries are untouched by either fold, so the review page and the Summaries tab still
+  show every document and a reviewer can still separate them.
 
 Bundle summarize and the Summaries tab apply `consistent_titles()` but not folding.
 
