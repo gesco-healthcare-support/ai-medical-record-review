@@ -84,7 +84,7 @@ from app.services.rows import validate_rows
 from app.services.summarize_engine import (
     category_title,
     consistent_titles,
-    fold_same_visit,
+    fold_record_entries,
     presentable_title,
     split_decoration,
     tidy_author_and_facility,
@@ -1892,8 +1892,10 @@ def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
 def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> list[dict]:
     """The record-level passes over a delivered entry list, in order: the title passes
     (`summarize_engine.consistent_titles` - one spelling per provider and per facility, a listed
-    system's abbreviation read as the system, one name for a PR-2), then one entry per visit for a
-    doctor's category 1 documents on one date (which needs the spellings to agree first). Both
+    system's abbreviation read as the system, one name for a PR-2), then the folds
+    (`summarize_engine.fold_record_entries`): one entry per visit for a doctor's category 1
+    documents and RFA on one date, which needs the spellings to agree first, and one entry per
+    date of laboratory results. Both
     renderers call this, so the Word and PDF deliverables list the same entries, and the Summaries
     tab runs the same title passes (`_tab_titles`). ``locked`` marks the entries whose title a
     reviewer edited: never rewritten, and they win."""
@@ -1901,7 +1903,7 @@ def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> lis
     categories = [str(s.row_category) for s in summaries]
     titles = consistent_titles([e[key] for e in entries], categories, locked)
     entries = [{**e, key: t} for e, t in zip(entries, titles, strict=True)]
-    return fold_same_visit(entries, categories, key)
+    return fold_record_entries(entries, categories, key)
 
 
 def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:
