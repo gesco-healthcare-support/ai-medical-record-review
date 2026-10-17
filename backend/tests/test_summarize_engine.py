@@ -2643,7 +2643,7 @@ def test_a_same_visit_work_status_slip_folds_into_its_pr2():
         _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Full duty."),
         _entry(_SLIP, "**Work Status**: Full duty."),
     ]
-    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    out = se.fold_record_entries(entries, ["1", "1"], "summaryTitle")
     assert [e["summaryTitle"] for e in out] == [_PR2]
     assert out[0]["summaryText"] == "**Diagnoses**: strain. **Work Status**: Full duty."
 
@@ -2651,7 +2651,7 @@ def test_a_same_visit_work_status_slip_folds_into_its_pr2():
 def test_a_pr2_without_a_work_status_point_takes_the_slips_text():
     """DEMONSTRATES that folding never loses the work status: it is appended when the PR-2 has none."""
     entries = [_entry(_PR2, "**Diagnoses**: strain."), _entry(_SLIP, "**Work Status**: Modified.")]
-    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    out = se.fold_record_entries(entries, ["1", "1"], "summaryTitle")
     assert [e["summaryTitle"] for e in out] == [_PR2]
     assert "**Diagnoses**: strain." in out[0]["summaryText"]
     assert "**Work Status**: Modified." in out[0]["summaryText"]
@@ -2668,7 +2668,7 @@ def test_a_pr2_without_a_work_status_point_takes_the_slips_text():
 def test_a_slip_from_another_doctor_visit_or_category_stays_its_own_entry(slip, date, categories):
     """GUARD on the reviewers' own limit: same doctor, same date, same category - or no fold."""
     entries = [_entry(_PR2, "**Work Status**: Full duty."), _entry(slip, "x", date=date)]
-    assert se.fold_same_visit(entries, categories, "summaryTitle") == entries
+    assert se.fold_record_entries(entries, categories, "summaryTitle") == entries
 
 
 _NOTE = "JANE ROE, N.P. VALLEY CLINIC. PROGRESS NOTE"
@@ -2680,7 +2680,9 @@ def test_a_pr2_form_and_the_visits_progress_note_become_one_entry():
     fuller body and every section only the form states."""
     note = "**Subjective**: neck pain. **Diagnoses**: strain. **Treatment Plan**: PT."
     form = "**Work Status**: Modified duty."
-    out = se.fold_same_visit([_entry(_NOTE, note), _entry(_PR2, form)], ["1", "1"], "summaryTitle")
+    out = se.fold_record_entries(
+        [_entry(_NOTE, note), _entry(_PR2, form)], ["1", "1"], "summaryTitle"
+    )
     assert [e["summaryTitle"] for e in out] == [_PR2]
     assert out[0]["summaryText"] == f"{note} {form}"
 
@@ -2689,7 +2691,7 @@ def test_two_same_day_notes_by_one_doctor_keep_every_section():
     """Two category 1 notes, no PR-2: headed by the fuller one, no section lost."""
     long_note = "**Subjective**: pain. **Diagnoses**: strain. **Physical Examination**: tender."
     short_note = "**Diagnoses**: strain. **Treatment Plan**: PT twice weekly."
-    out = se.fold_same_visit(
+    out = se.fold_record_entries(
         [_entry(_NOTE, short_note), _entry(_NOTE + " ADDENDUM", long_note)],
         ["1", "1"],
         "summaryTitle",
@@ -3401,7 +3403,7 @@ def test_a_repeated_label_with_different_text_is_kept_beside_it():
         _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified duty."),
         _entry(_SLIP, "**Work Status**: Off work until 03/16/2026."),
     ]
-    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    out = se.fold_record_entries(entries, ["1", "1"], "summaryTitle")
     assert len(out) == 1
     assert "Modified duty." in out[0]["summaryText"]
     assert "Off work until 03/16/2026." in out[0]["summaryText"]
@@ -3413,7 +3415,7 @@ def test_unlabelled_text_is_carried_into_the_entry():
         _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified duty."),
         _entry(_NOTE, "Patient reports new numbness in the left hand."),
     ]
-    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    out = se.fold_record_entries(entries, ["1", "1"], "summaryTitle")
     assert len(out) == 1
     assert "new numbness in the left hand" in out[0]["summaryText"]
 
@@ -3424,7 +3426,7 @@ def test_the_same_section_is_not_repeated_whatever_its_case():
         _entry(_PR2, "**Diagnoses**: strain. **Work Status**: Modified duty."),
         _entry(_SLIP, "**Work status**: modified duty"),
     ]
-    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    out = se.fold_record_entries(entries, ["1", "1"], "summaryTitle")
     assert out[0]["summaryText"] == "**Diagnoses**: strain. **Work Status**: Modified duty."
 
 
@@ -3439,7 +3441,7 @@ def test_two_doctors_with_one_suffix_do_not_share_a_visit():
     ]
     titles = se.consistent_authors([e["summaryTitle"] for e in entries])
     entries = [{**e, "summaryTitle": t} for e, t in zip(entries, titles, strict=True)]
-    out = se.fold_same_visit(entries, ["1", "1"], "summaryTitle")
+    out = se.fold_record_entries(entries, ["1", "1"], "summaryTitle")
     assert [e["summaryTitle"] for e in out] == [smith, davis]
 
 
@@ -4172,3 +4174,122 @@ def test_the_export_and_the_bundle_run_the_same_title_passes(monkeypatch):
     expected = [_NAMES_IT, "JOHN DOE, M.D. CONCENTRA. X-RAY OF THE CHEST.", _PTP, _PTP]
     assert exported == expected
     assert bundled == expected
+
+
+# --- the reviewers' visit-paperwork rule, 2026-10-16: an RFA joins its visit, a date's labs are one ---
+_RFA = "JANE ROE, N.P. VALLEY CLINIC. REQUEST FOR AUTHORIZATION"
+_ORDERS = "JANE ROE, N.P. VALLEY CLINIC. ORDERS"
+_OTHER_RFA = "JOHN DOE, M.D. OTHER CLINIC. REQUEST FOR AUTHORIZATION"
+
+
+def test_a_same_date_rfa_by_the_same_doctor_folds_into_the_visits_pr2():
+    """DEMONSTRATES: "I try to put the Request for Authorizations with the PR-2 if they are the same
+    date". The PR-2 heads the entry and the RFA adds what the report does not already say."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain. **Treatment Plan**: MRI."),
+        _entry(_RFA, "**Requested**: MRI of the lumbar spine."),
+    ]
+    out = se.fold_record_entries(entries, ["1", "10"], "summaryTitle")
+
+    assert [e["summaryTitle"] for e in out] == [_PR2]
+    assert out[0]["summaryText"] == (
+        "**Diagnoses**: strain. **Treatment Plan**: MRI. **Requested**: MRI of the lumbar spine."
+    )
+
+
+def test_an_rfa_folds_in_even_when_other_documents_sit_between_them():
+    """DEMONSTRATES the second half of the answer: "if we can combine them even if they aren't
+    subsequent pages, that would be good as well" - which merging rows cannot do."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain."),
+        _entry("RAY LEE, D.C. SPINE CENTER. TREATMENT NOTE", "**Treatment**: adjustment."),
+        _entry(_RFA, "**Requested**: physical therapy."),
+    ]
+    out = se.fold_record_entries(entries, ["1", "5", "10"], "summaryTitle")
+
+    assert [e["summaryTitle"] for e in out] == [_PR2, entries[1]["summaryTitle"]]
+    assert "**Requested**: physical therapy." in out[0]["summaryText"]
+
+
+def test_the_report_leads_the_entry_even_when_the_rfa_is_longer():
+    """The RFA is folded in BECAUSE the report already says it, so it never leads the body."""
+    report = "**Diagnoses**: strain."
+    rfa = (
+        "**Requested**: a long list of physical therapy, an MRI, a TENS unit and a follow-up visit."
+    )
+    out = se.fold_record_entries(
+        [_entry(_PR2, report), _entry(_RFA, rfa)], ["1", "10"], "summaryTitle"
+    )
+
+    assert out[0]["summaryText"].startswith(report)
+
+
+@pytest.mark.parametrize(
+    ("title", "date", "categories"),
+    [
+        (_OTHER_RFA, "02/04/2026", ["1", "10"]),  # another doctor's RFA
+        (_RFA, "03/11/2026", ["1", "10"]),  # another date
+        (_ORDERS, "02/04/2026", ["1", "10"]),  # orders share category 10 but were not in the answer
+        (_RFA, "-", ["1", "10"]),  # an undated RFA cannot be placed in a visit
+    ],
+    ids=["another doctor", "another date", "orders, not an RFA", "undated"],
+)
+def test_an_rfa_that_is_not_the_visits_stays_its_own_entry(title, date, categories):
+    """GUARD: the fold needs the same doctor and the same date, and an RFA by name."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain."),
+        _entry(title, "**Requested**: x.", date=date),
+    ]
+    assert se.fold_record_entries(entries, categories, "summaryTitle") == entries
+
+
+def test_rfas_with_no_report_that_day_are_not_a_visit():
+    """GUARD: an RFA joins a visit; two RFAs alone are not one."""
+    entries = [_entry(_RFA, "**Requested**: MRI."), _entry(_RFA, "**Requested**: PT.")]
+    assert se.fold_record_entries(entries, ["10", "10"], "summaryTitle") == entries
+
+
+def test_a_dates_lab_results_become_one_entry_headed_as_a_laboratory_report():
+    """DEMONSTRATES: "combine all the labs from the same date and have it come out as one summary".
+    Panels with different names take the human reviews' own heading for a lab entry."""
+    entries = [
+        _entry("LABCORP. LIPID PANEL", "**Results**: LDL 130."),
+        _entry("QUEST DIAGNOSTICS. COMPLETE BLOOD COUNT", "**Results**: WBC 7.1."),
+        _entry("LABCORP. HEMOGLOBIN A1C", "**Results**: A1c 5.6.", date="05/01/2026"),
+    ]
+    out = se.fold_record_entries(entries, ["14", "14", "14"], "summaryTitle")
+
+    assert [e["summaryTitle"] for e in out] == [
+        "LABCORP. LABORATORY REPORT",
+        "LABCORP. HEMOGLOBIN A1C",
+    ]
+    assert "LDL 130" in out[0]["summaryText"]
+    assert "WBC 7.1" in out[0]["summaryText"]
+
+
+def test_lab_pages_with_one_heading_keep_it_and_their_page_suffix():
+    entries = [
+        _entry("LABCORP. CBC (Pages 3-4)", "**Results**: WBC 7.1."),
+        _entry("LABCORP. CBC (Pages 5-5)", "**Results**: platelets 250."),
+    ]
+    out = se.fold_record_entries(entries, ["14", "14"], "summaryTitle")
+
+    assert [e["summaryTitle"] for e in out] == ["LABCORP. CBC (Pages 3-4)"]
+
+
+def test_a_combined_lab_heading_keeps_the_first_entrys_page_suffix():
+    entries = [
+        _entry("JOHN SMITH, M.D. LABCORP. CBC (Pages 3-4)", "a"),
+        _entry("QUEST. CMP (Pages 5-5)", "b"),
+    ]
+    out = se.fold_record_entries(entries, ["14", "14"], "summaryTitle")
+
+    assert out[0]["summaryTitle"] == "JOHN SMITH, M.D. LABCORP. LABORATORY REPORT (Pages 3-4)"
+
+
+def test_undated_labs_and_other_categories_are_never_folded_as_labs():
+    """GUARD: an undated lab has no date to group by, and a diagnostic study is not a lab."""
+    undated = [_entry("LABCORP. CBC", "a", date="-"), _entry("LABCORP. CMP", "b", date="-")]
+    assert se.fold_record_entries(undated, ["14", "14"], "summaryTitle") == undated
+    studies = [_entry("CITY IMAGING. MRI", "a"), _entry("CITY IMAGING. X-RAY", "b")]
+    assert se.fold_record_entries(studies, ["3", "3"], "summaryTitle") == studies

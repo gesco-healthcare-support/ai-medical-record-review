@@ -46,7 +46,8 @@ entry list (`documents.py`):
    the effective text; unedited machine text of a non-deposition row is run through `one_paragraph()`
    again, and a missing DOI prefix is restored from the raw body.
 3. **Record passes.** `_record_pass()` makes provider spellings consistent across the record
-   (reviewer-edited titles are locked and win) and then folds same-visit category-1 entries into one.
+   (reviewer-edited titles are locked and win) and then folds same-visit category-1 entries, with the visit's RFA, into one, and each date's
+   laboratory results into one.
    See [Summarization](summarization.md#record-level-passes-at-export).
 4. **Record facts.** `ReportDetails` carries the doctor (Word typeface only), the attorney, law firm,
    covering-letter type and date, the reviewer's display name from the signed-in account (which
