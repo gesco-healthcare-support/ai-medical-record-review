@@ -533,3 +533,25 @@ def test_the_progress_callback_is_told_how_many_boundaries_remain(monkeypatch):
 
     assert seen[0] == ("verifying", 0, 3)
     assert seen[-1] == ("verifying", 3, 3)
+
+
+def test_the_oracle_is_told_the_reviewers_visit_paperwork_convention(monkeypatch):
+    """WHEN `_same_document` asks about a boundary, THE SYSTEM SHALL tell the model the three pieces
+    the reviewers count as one document (2026-10-16) - an attached form, the same doctor's same-date
+    RFA after a progress report, more same-date lab pages - and keep the caution for everything else.
+
+    A content pin, not a quality claim: whether the model answers these better is measured against
+    reviewer-finished records, and that measurement is what decides the change ships."""
+    captured = {}
+    _stub_provider(monkeypatch, captured)
+
+    verify_pass._same_document("x.pdf", _row(1, 2), _row(3, 4))
+    prompt = captured["parts"][-1].text
+
+    assert verify_pass._VISIT_PAPERWORK in prompt
+    assert "questionnaire" in verify_pass._VISIT_PAPERWORK
+    assert "Request for Authorization (RFA) by the same doctor and on the same date" in prompt
+    assert "laboratory results from the same date" in prompt
+    # The caution still governs anything outside those three, and still comes last.
+    assert prompt.index(verify_pass._VISIT_PAPERWORK) < prompt.index("is NOT enough")
+    assert prompt.rstrip().endswith("If the evidence is unclear, answer NO.")

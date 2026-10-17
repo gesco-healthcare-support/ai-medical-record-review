@@ -320,8 +320,14 @@ separate switch.
    references.
 3. The prompt carries each row's pages, category, date and title, and the rule: answer YES only for
    clear continuation evidence (continued pagination, a sentence or table flowing across the
-   boundary, the same author and visit continuing, an attachment the report references); sharing a
-   type, date or letterhead is not enough; unclear means NO.
+   boundary, the same author and visit continuing, an attachment the report references), or for one
+   of the three pieces the reviewers count as one document (`_VISIT_PAPERWORK`, their answer of
+   2026-10-16): a form attached at the end of a report (a questionnaire, an intake form, a job
+   description), a Request for Authorization by the same doctor on the same date after that
+   doctor's progress report, and more pages of laboratory results from the same date. Beyond those,
+   sharing a type, date or letterhead is not enough; unclear means NO. The export joins a same-date
+   RFA by the same doctor even when it is not next to the report (see
+   [Summarization](summarization.md#record-level-passes-at-export)).
 4. When `verify_use_text` is true (the default), OCR text is appended: the last 1,200 characters of
    A's last page and the first 1,200 of B's first page. OCR failure falls back to images only.
 5. The answer is constrained to `YES` or `NO` (`generate_choice`, stage `verify`, model
