@@ -1359,6 +1359,126 @@ def test_a_title_only_rewrite_still_lets_the_title_itself_be_corrected(monkeypat
     assert out["verifiedTitle"] == "CORRECTED HEADER (Pages 1-2)"
 
 
+# VLLM_AUDIT_KEEPS_CONTENT: on our model the audit may delete what the pages do not support, but
+# not what they do. Its "unsupported" and "contradiction" findings are answered by removing
+# statements, and measured on stored summaries most of what our model's audit removed that way IS
+# on the pages - except on a runaway draft, which only the audit cut back (config.py).
+_KEEPS_HEADINGS = "**Body part being treated**: Lower back. **Treatment provided**: Shockwave."
+_WITH_ROM = "**Diagnoses**: Lumbar strain. **Range of motion**: Flexion 40 degrees, extension 15."
+_WITHOUT_ROM = "**Diagnoses**: Lumbar strain."
+
+
+def _audit_on(monkeypatch, backend, keeps_content):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "llm_backend", backend)
+    monkeypatch.setattr(settings, "llm_backend_overrides", "")
+    monkeypatch.setattr(settings, "vllm_audit_keeps_content", keeps_content)
+
+
+@pytest.mark.parametrize("issue_type", ["unsupported", "contradiction"])
+def test_on_our_model_a_content_deleting_rewrite_keeps_the_draft(monkeypatch, caplog, issue_type):
+    """WHEN the switch is on and our model's audit names a content issue and its rewrite deletes no
+    number, THE SYSTEM SHALL ship the draft, store the issues and warn - the same remedy as every
+    other rejected rewrite. A sentence the audit calls unsupported is not evidence of invention."""
+    _audit_on(monkeypatch, "vllm", keeps_content=True)
+    issues = [{"type": issue_type, "detail": "a statement the audit wants gone"}]
+    _stub_verify(monkeypatch, _KEEPS_HEADINGS, issues)
+
+    with caplog.at_level("WARNING"):
+        out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is None
+    assert "Shockwave therapy" in out["summaryText"]
+    assert out["verifyIssues"] == issues
+    assert "would delete content" in caplog.text
+    assert "1-2" in caplog.text
+
+
+def _numbered(monkeypatch, source, issues):
+    """The body is `_WITH_ROM`, the audit's rewrite deletes its two range-of-motion numbers, and
+    the pages read `source`."""
+    _stub_verify(monkeypatch, _WITHOUT_ROM, issues)
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: (source, _clean(pages)),
+    )
+
+    def generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        return ("Progress Note - Dr Smith" if system_msg == se.TITLE_PROMPT else _WITH_ROM), False
+
+    monkeypatch.setattr(se, "_generate", generate)
+
+
+@pytest.mark.parametrize(
+    ("source", "keeps_draft"),
+    [
+        ("Lumbar flexion 40 degrees, extension 15 degrees.", True),
+        ("Lumbar flexion 40 degrees.", True),
+        ("No measurements recorded.", False),
+    ],
+    ids=["both-on-the-pages", "one-of-two-a-tie", "neither-on-the-pages"],
+)
+def test_a_content_rewrite_ships_only_when_what_it_deletes_is_not_on_the_pages(
+    monkeypatch, source, keeps_draft
+):
+    """WHEN the rewrite deletes numbers, THE SYSTEM SHALL keep the draft if they are at least as
+    often in the source text as not, and ship the rewrite otherwise. The last case is the runaway:
+    a draft full of numbers no page carries, which only the audit cuts back."""
+    _audit_on(monkeypatch, "vllm", keeps_content=True)
+    _numbered(monkeypatch, source, _SUBSTANTIVE)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    if keeps_draft:
+        assert out["verifiedText"] is None
+        assert "Flexion 40 degrees" in out["summaryText"]
+    else:
+        assert out["verifiedText"] is not None
+        assert out["verifiedText"].endswith("Lumbar strain.")
+    assert out["verifyIssues"] == _SUBSTANTIVE
+
+
+def test_on_our_model_a_style_rewrite_is_still_applied(monkeypatch):
+    """Guard: the switch reaches only the two content issues. A house-style finding is a correction
+    and its rewrite ships, or the switch would be the same as turning the audit off."""
+    _audit_on(monkeypatch, "vllm", keeps_content=True)
+    _stub_verify(monkeypatch, _KEEPS_HEADINGS, [{"type": "vitals", "detail": "Height 70 inches."}])
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert out["verifiedText"].endswith("**Treatment provided**: Shockwave.")
+
+
+def test_a_kept_draft_still_lets_the_title_be_corrected(monkeypatch):
+    """The body and the title fall back independently here too: a wrong date in the title is a
+    correction, not a deletion."""
+    _audit_on(monkeypatch, "vllm", keeps_content=True)
+    _stub_verify(monkeypatch, _KEEPS_HEADINGS, _SUBSTANTIVE, fixed_title="CORRECTED HEADER")
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is None
+    assert out["verifiedTitle"] == "CORRECTED HEADER (Pages 1-2)"
+
+
+@pytest.mark.parametrize(
+    ("backend", "keeps_content"), [("vllm", False), ("gemini", True)], ids=["switch-off", "gemini"]
+)
+def test_a_content_rewrite_ships_when_the_switch_does_not_apply(
+    monkeypatch, backend, keeps_content
+):
+    """Guard on today's behaviour: off by default, and Gemini never reads the switch."""
+    _audit_on(monkeypatch, backend, keeps_content)
+    _stub_verify(monkeypatch, _KEEPS_HEADINGS, _SUBSTANTIVE)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is not None
+    assert out["verifiedText"].endswith("**Treatment provided**: Shockwave.")
+
+
 def test_the_guard_never_fires_on_a_body_that_had_no_headings(monkeypatch):
     """A prose-format category has nothing to lose, so the guard must stay out of the way entirely."""
     monkeypatch.setattr(

@@ -313,6 +313,41 @@ def _rewrite_shape(raw: str, fixed: str) -> str:
     )
 
 
+# The two issue types that make the audit DELETE content rather than correct it.
+_CONTENT_ISSUES = frozenset({"unsupported", "contradiction"})
+# A number as the keep-content check counts it: digits, optionally joined by "." or "/" (a date,
+# a dose, 5/5 strength), optionally a percentage. The same pattern the measurement used.
+_NUMBER = re.compile(r"\d+(?:[./]\d+)*%?")
+
+
+def _numbers(text: str | None) -> set[str]:
+    return set(_NUMBER.findall((text or "").replace("**", "")))
+
+
+def _would_delete_content_on_our_model(
+    issue_types: set[str], draft: str, rewrite: str, source_text: str
+) -> bool:
+    """True when `VLLM_AUDIT_KEEPS_CONTENT` keeps the draft over the audit's rewrite.
+
+    Only on our model, and only when the audit named an issue it answers by deleting content. Even
+    then the rewrite wins when the numbers it deletes are mostly NOT in the source text - that is
+    the audit cleaning an invention, and on a runaway draft (a looping list of numbers no page
+    carries) it is the only thing that cuts it back. When the deleted numbers are at least as often
+    ON the pages, or it deletes none, the draft ships. See config.vllm_audit_keeps_content.
+    """
+    settings = get_settings()
+    if not (
+        settings.vllm_audit_keeps_content
+        and settings.backend_for("summarize") == "vllm"
+        and issue_types & _CONTENT_ISSUES
+    ):
+        return False
+    deleted = _numbers(draft) - _numbers(rewrite)
+    source = (source_text or "").replace(" ", "")
+    on_pages = sum(number in source for number in deleted)
+    return on_pages >= len(deleted) - on_pages
+
+
 def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> bool:
     """True when the audit removed a bold point heading for a reason that cannot justify removing one.
 
@@ -2923,6 +2958,17 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
             logger.warning(
                 "verify pass returned only the title on pages %s-%s (issues: %s; %s); "
                 "keeping raw body",
+                row["start"],
+                row["end"],
+                ",".join(sorted(issue_types)),
+                _rewrite_shape(summary, result["fixed_text"]),
+            )
+        elif _would_delete_content_on_our_model(issue_types, summary, result["fixed_text"], text):
+            # Same remedy as the guards around it: the draft ships, the issues are stored so the
+            # reviewer sees what was flagged, and the rate is measurable from this line.
+            logger.warning(
+                "verify pass would delete content on pages %s-%s (issues: %s; %s); "
+                "keeping raw body (VLLM_AUDIT_KEEPS_CONTENT)",
                 row["start"],
                 row["end"],
                 ",".join(sorted(issue_types)),

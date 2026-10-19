@@ -125,6 +125,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `VLLM_THINKING_STAGES` | str | `""` | `""` | yes | Comma-separated exact stage names; an unknown name raises `ValueError` when a vLLM call is made, not at boot | Stages sent `enable_thinking: true` on vLLM (`Settings.vllm_thinking_for()`); every other stage is sent `false` |
 | `VLLM_CLASSIFY_FROM_PAGES` | bool | `false` | `false` | yes | none; read only when `classify` resolves to `vllm` | Segment-path categorization (`segment_engine._categorize`): `true` classifies every row no title rule answers on its first pages in one call instead of the title first; Gemini ignores it |
 | `VLLM_AUDIT_ISSUES_FIRST` | bool | `true` | `true` | yes | none; read only when `summarize` resolves to `vllm` | Summary audit (`summary_verify.verify_summary`): `true` asks our model for `issues`, then `corrected_title`, then `corrected_summary` (vLLM writes fields in schema order), mapped back to `fixed_text`/`fixed_title`; `false` sends the shared schema. Gemini ignores it |
+| `VLLM_AUDIT_KEEPS_CONTENT` | bool | `false` | `false` | yes | none; read only when `summarize` resolves to `vllm` | Summary audit (`summarize_engine._would_delete_content_on_our_model`): `true` keeps the draft when our model's audit names `unsupported` or `contradiction` and the numbers its rewrite deletes are at least as often in the source text as not (the issues are still stored); house-style fixes and deletions of numbers no page carries still apply. Gemini ignores it |
 
 ## Summarize stage
 
