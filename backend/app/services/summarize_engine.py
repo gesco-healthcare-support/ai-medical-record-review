@@ -2408,6 +2408,20 @@ def _resolved_models(model, title_model, audit_model) -> tuple[str, str, str]:
     )
 
 
+def _row_models(row, model, title_model, audit_model) -> tuple[str, str, str]:
+    """`_resolved_models`, then VLLM_SUMMARY_CATEGORY_MODELS for this row's category.
+
+    A category the summary adapter never trained on (a deposition, the catch-all) is written by the
+    model named there - body and title alike, the audit unchanged. Per ROW, so the output's model
+    fields name what really answered while the job records the adapter.
+    """
+    model, title_model, audit_model = _resolved_models(model, title_model, audit_model)
+    category_model = get_settings().summary_model_for_category(row.get("category"))
+    if category_model:
+        return category_model, category_model, audit_model
+    return model, title_model, audit_model
+
+
 def _build_system_message(row, prompt, standalone_studies):
     """The system message for one row and its prompt fingerprint.
 
@@ -3243,13 +3257,7 @@ def summarize_row(
         # read.
         return _illegible_output(row)
     settings = get_settings()
-    model, title_model, audit_model = _resolved_models(model, title_model, audit_model)
-    category_model = settings.summary_model_for_category(row.get("category"))
-    if category_model:
-        # VLLM_SUMMARY_CATEGORY_MODELS: a category the summary adapter never trained on (a
-        # deposition, the catch-all) is written by the model named there - body and title alike,
-        # the audit unchanged. Per ROW, so the output's model fields name what really answered.
-        model = title_model = category_model
+    model, title_model, audit_model = _row_models(row, model, title_model, audit_model)
     if verify is None:
         verify = settings.summary_verify
     if prompt is None:

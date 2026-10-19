@@ -4336,7 +4336,8 @@ def test_a_named_category_is_written_by_its_model_body_and_title(monkeypatch):
         verify=True,
     )
 
-    assert calls and set(calls) == {"base-model"}
+    assert calls, "no model was called"
+    assert set(calls) == {"base-model"}
     assert (out["model"], out["titleModel"]) == ("base-model", "base-model")
     assert audits == ["auditor"], "the audit keeps its own model"
 
@@ -4354,5 +4355,6 @@ def test_an_unnamed_category_keeps_the_jobs_models(monkeypatch):
         verify=True,
     )
 
-    assert calls and set(calls) == {"adapter"}
+    assert calls, "no model was called"
+    assert set(calls) == {"adapter"}
     assert out["model"] == "adapter"
