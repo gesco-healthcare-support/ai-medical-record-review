@@ -119,7 +119,10 @@ INFO, the per-row failure lines are WARNING. Numbers in angle brackets vary.
 - **Re-draft reports an error.** The route answers 422 when the row has no readable text, its
   transcript page numbers could not be read, or the PDF cannot be opened, and 503 when text
   recognition is unavailable. The texts are in [Errors and messages](../reference/errors-and-messages.md).
-- **Re-draft is refused with 409.** A job is running on the record; wait for it or stop it.
+- **Re-draft is refused with 409.** A job is running on the record; wait for it or stop it. The
+  route checks again after the model call, so a summarize run started while the re-draft computed
+  (Summarize pressed during a re-draft) also refuses it, with "this record's summaries changed";
+  nothing was written, the Summaries tab has re-read its list, and the re-draft can be pressed again.
 - **Re-draft and Re-summarize discard edits.** Re-draft clears the reviewer's edits to that summary;
   Re-summarize all from scratch clears every summary of the record. Copy any hand-written text first.
 

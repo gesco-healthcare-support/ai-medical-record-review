@@ -442,7 +442,10 @@ changed since they were written; those will be regenerated, so it asks for confi
   so a saved body has no DOI prefix; the export restores it from the model's original text
   (`backend/app/api/documents.py` `_export_title_and_text()`).
 - "In export" toggles `excluded`. "Re-draft" regenerates one summary (after a confirmation when it was
-  edited). Both, and Edit, patch the cached list in place with the item the server returns.
+  edited). Both, and Edit, patch the cached list in place with the item the server returns. A
+  re-draft also re-reads the list, and so does a refused one: the server refuses (409) when a
+  summarize run laid the summaries out again meanwhile, and a stale card would send its next
+  re-draft to whatever summary now holds its index.
 - The Category select writes the category to the owning review row, not to the summary. The server
   refuses it with 409 while any job runs. On success the card calls `reloadRows()` and says "Category
   saved - re-draft to apply it to the summary".
