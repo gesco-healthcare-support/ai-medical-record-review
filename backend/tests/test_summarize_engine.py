@@ -4293,3 +4293,68 @@ def test_undated_labs_and_other_categories_are_never_folded_as_labs():
     assert se.fold_record_entries(undated, ["14", "14"], "summaryTitle") == undated
     studies = [_entry("CITY IMAGING. MRI", "a"), _entry("CITY IMAGING. X-RAY", "b")]
     assert se.fold_record_entries(studies, ["3", "3"], "summaryTitle") == studies
+
+
+# --- VLLM_SUMMARY_CATEGORY_MODELS reaches summarize_row ------------------------------------------
+#
+# The setting itself is tested in test_openai_config_guards.py; this pins that summarize_row asks the
+# named model for a named category's body AND title, keeps the job's models for every other
+# category, never moves the audit, and reports per row what answered.
+
+
+def _category_model_calls(monkeypatch, named):
+    calls, audits = [], []
+
+    def fake_generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        calls.append(model)
+        return _fake_generate(model, system_msg, user_text, temperature)
+
+    def fake_verify(audit_model, *a, **k):
+        audits.append(audit_model)
+        return _NO_ISSUES
+
+    monkeypatch.setattr(se, "extract_pages_with_report", _stub_extract)
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", fake_verify)
+    monkeypatch.setattr(
+        type(get_settings()),
+        "summary_model_for_category",
+        lambda self, category: named.get(str(category)),
+    )
+    return calls, audits
+
+
+def test_a_named_category_is_written_by_its_model_body_and_title(monkeypatch):
+    calls, audits = _category_model_calls(monkeypatch, {"100": "base-model"})
+    out = se.summarize_row(
+        "/x.pdf",
+        _row(category="100"),
+        model="adapter",
+        title_model="adapter",
+        audit_model="auditor",
+        prompt="P",
+        verify=True,
+    )
+
+    assert calls, "no model was called"
+    assert set(calls) == {"base-model"}
+    assert (out["model"], out["titleModel"]) == ("base-model", "base-model")
+    assert audits == ["auditor"], "the audit keeps its own model"
+
+
+def test_an_unnamed_category_keeps_the_jobs_models(monkeypatch):
+    """GUARD: only a named category moves."""
+    calls, _ = _category_model_calls(monkeypatch, {"100": "base-model"})
+    out = se.summarize_row(
+        "/x.pdf",
+        _row(category="1"),
+        model="adapter",
+        title_model="adapter",
+        audit_model="auditor",
+        prompt="P",
+        verify=True,
+    )
+
+    assert calls, "no model was called"
+    assert set(calls) == {"adapter"}
+    assert out["model"] == "adapter"

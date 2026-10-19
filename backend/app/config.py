@@ -175,6 +175,30 @@ def _parsed_stage_models(raw: str) -> tuple[tuple[str, str], ...]:
     return tuple(pairs)
 
 
+@lru_cache(maxsize=16)
+def _parsed_summary_category_models(raw: str) -> tuple[tuple[str, str], ...]:
+    """``VLLM_SUMMARY_CATEGORY_MODELS`` -> validated ``(category id, model)`` pairs.
+
+    Same shape and the same reasons as ``_parsed_stage_models``: cached on the raw string, a tuple,
+    and a typo refuses startup rather than leaving a category on a model the operator believes it
+    left. A category is its catalog id as the rows carry it ("9", "100"); "09" reads as "9".
+    """
+    pairs: list[tuple[str, str]] = []
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        category, separator, model = entry.partition("=")
+        category, model = category.strip(), model.strip()
+        if not separator or not model or not category.isdigit():
+            raise RuntimeError(
+                f"VLLM_SUMMARY_CATEGORY_MODELS entry {entry!r} is not 'category=model' with the "
+                "category a catalog id such as 9 or 100."
+            )
+        pairs.append((str(int(category)), model))
+    return tuple(pairs)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -438,6 +462,20 @@ class Settings(BaseSettings):
     # `summarize` is refused here - it has its own three keys. Validated at startup, and a name here
     # passes the same model-versus-backend check as every other name the app sends.
     vllm_stage_models: str = ""
+    # Per-CATEGORY summary model on vLLM, `category=model` comma-separated, empty for none. A named
+    # category's summary BODY and TITLE ask for that served name instead of SUMMARY_BODY_MODEL /
+    # SUMMARY_TITLE_MODEL; the audit keeps AUDIT_MODEL.
+    #
+    # Same rule as VLLM_STAGE_MODELS, one level down: an adapter answers only what it was trained
+    # for. The summary adapter (2026-10-19) is trained on the eData deliverables, which hold no
+    # deposition (category 9) and leave out the catch-all (100) - so with it switched in for
+    # summaries it would also write those, and an earlier adapter (run-v2, 2026-10-07) halved the
+    # length of deposition summaries when it did. VLLM_MODEL is no fallback here: with an adapter
+    # switched in for segmentation it names THAT adapter, so the base model must be named.
+    #
+    # Ignored when summarize is not on vLLM. Validated at startup, and each name passes the same
+    # model-versus-backend check as every other name the app sends.
+    vllm_summary_category_models: str = ""
     # Read deadline in SECONDS, and much longer than the Gemini path's 120s because it is a different
     # kind of limit. genai_http_timeout_ms is forwarded to Vertex as a SERVER-side deadline; this one
     # is purely client-side, and the pod has no proxy in front of it since the SSH tunnel replaced
@@ -1165,6 +1203,15 @@ class Settings(BaseSettings):
             for stage in _LLM_STAGES
             if stage != "summarize"
         ]
+        if (
+            summarize == "vllm"
+        ):  # the names are ignored anywhere else - see summary_model_for_category
+            pairs += [
+                (f"the summarize model for category {category}", model, summarize)
+                for category, model in _parsed_summary_category_models(
+                    self.vllm_summary_category_models
+                )
+            ]
         return pairs
 
     def _validate_model_names_match_their_backend(self) -> None:
@@ -1278,6 +1325,7 @@ class Settings(BaseSettings):
         # process reuses it rather than re-validating.
         _parsed_overrides(self.llm_backend_overrides)
         _parsed_stage_models(self.vllm_stage_models)
+        _parsed_summary_category_models(self.vllm_summary_category_models)
 
     def resolved_backends(self) -> set[str]:
         """Every backend some stage can actually reach: the global default plus every override.
@@ -1586,6 +1634,18 @@ class Settings(BaseSettings):
             "doi": self.genai_model,
             "deposition": self.genai_model,
         }[stage]
+
+    def summary_model_for_category(self, category) -> str | None:
+        """The served name `VLLM_SUMMARY_CATEGORY_MODELS` gives this category's summary, else None.
+
+        None whenever summarize is not on vLLM, so Gemini and OpenAI keep their models exactly.
+        `summarize_row` uses it for the body and the title, never for the audit.
+        """
+        if self.backend_for("summarize") != "vllm":
+            return None
+        key = str(category).strip()
+        key = str(int(key)) if key.isdigit() else key
+        return dict(_parsed_summary_category_models(self.vllm_summary_category_models)).get(key)
 
 
 @lru_cache

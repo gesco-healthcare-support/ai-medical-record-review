@@ -114,7 +114,11 @@ so selecting Gemini never imports the OpenAI package.
   (`_apply_vllm_call_defaults()`); on OpenAI there is no default and all three must be set. The
   title is extraction and the audit is a check, so neither needs the body model. They are read once
   at job creation (`backend/app/services/jobs.py` `create_job()`) and persisted, so a job resumed
-  after a config change keeps the models it started with.
+  after a config change keeps the models it started with. On vLLM, `VLLM_SUMMARY_CATEGORY_MODELS`
+  (`category=model`, comma-separated) gives a category its own body and title model, per row in
+  `summarize_row`: a summary adapter is trained on no deposition and no catch-all row, so those
+  stay on the base model while it writes the rest. The audit keeps `AUDIT_MODEL`, and each
+  summary's model fields record what answered it.
 - **Every other stage** resolves through `Settings.model_for_stage(stage)`. On vLLM it returns
   `VLLM_MODEL`, unless `VLLM_STAGE_MODELS` (`stage=model`, comma-separated) names another served
   model for that stage. One vLLM process serves one base model but several names on it: with
