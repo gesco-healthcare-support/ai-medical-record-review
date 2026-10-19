@@ -125,7 +125,7 @@ Three placements show the pattern:
   carries a treating-visit phrase ("Office Visit Follow-Up MRI"), and not when another rule answered
   1 for its own reason (`_answered_for_another_reason()`).
 
-**Administrative rules (`_ADMIN_RULES`).** Eight patterns for the paperwork that wraps a record:
+**Administrative rules (`_ADMIN_RULES`).** Ten patterns for the paperwork that wraps a record:
 
 1. Routing sheets and slips.
 2. Cover and transmittal letters, AME/QME/PQME letters, correspondence, a title that opens with
@@ -143,6 +143,11 @@ Three placements show the pattern:
    sheets, medication lists, W-9 and taxpayer forms, provider lists, delivery confirmations,
    subpoenas, cover and separator sheets, attestations, record chronologies, billing and invoices,
    attachment information.
+9. A two-word title naming a company's authorization page ("<company> Authorization"). The
+   first word may not be treatment, prior, surgery, surgical, medication, procedure, therapy,
+   request, injection, MRI, DME or pharmacy, so a request for treatment never matches here.
+10. An authorization to release or disclose records, or a HIPAA authorization. A request for
+    authorization (an RFA) is a document-type rule and still wins (category 10).
 
 **How the two lists combine: document beats wrapper.**
 
