@@ -64,6 +64,7 @@ from app.services.jobs import (
     ACTIVE_STATES,
     SUMMARIZED_DOCUMENT_STATUSES,
     JobConflict,
+    active_job,
     enqueue,
 )
 from app.services.linked_pdf import build_linked_pdf
@@ -103,6 +104,10 @@ router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 _JOB_RUNNING_DETAIL = "a job is running for this document; wait for it"
 _JOB_ALREADY_RUNNING_DETAIL = "a job is already running for this document"
+_REDRAFT_STALE_DETAIL = (
+    "this record's summaries changed while the summary was being re-drafted (a summarize run "
+    "started or finished); nothing was changed - reload the summaries and try again"
+)
 _PDF_MEDIA_TYPE = "application/pdf"
 _NOT_FOUND_DETAIL = "not found"
 
@@ -1688,6 +1693,26 @@ def _store_draft(summary: Summary, row: dict, output: dict) -> None:
     summary.edited_text = None
 
 
+def _redraft_still_applies(session, document_id: str, summary_id: int, placed: tuple) -> bool:
+    """True when a re-draft computed for a summary may still be written: no job is active and the
+    summary is where it was - same position, pages and category - when the request started.
+
+    Takes the document's row lock first and holds it until the caller commits or rolls back.
+    `create_job` writes that row when it moves a summarize or identify job's status, so no such job
+    can start between this check and the commit: the job waits for the re-draft, then lays the
+    summaries out with it in place. Both reads below go to the database, not to objects this request
+    loaded before the model call, which may no longer match it."""
+    session.execute(select(Document.id).where(Document.id == document_id).with_for_update())
+    if active_job(session, document_id) is not None:
+        return False
+    now = session.execute(
+        select(Summary.idx, Summary.row_start, Summary.row_end, Summary.row_category).where(
+            Summary.id == summary_id
+        )
+    ).first()
+    return now is not None and tuple(now) == placed
+
+
 def _redraft_row(session, document: Document, summary: Summary, row: dict, outputs) -> Summary:
     """Write a re-draft's visits over the summaries of ``summary``'s row; returns the first visit's.
 
@@ -1740,7 +1765,10 @@ def _redraft_row(session, document: Document, summary: Summary, row: dict, outpu
     "/{document_id}/summaries/{idx}/resummarize",
     responses={
         404: {"description": "No summary exists at this index."},
-        409: {"description": "A job is running for this document."},
+        409: {
+            "description": "A job is running for this document, or one changed its summaries "
+            "while the re-draft was being computed."
+        },
     },
 )
 def resummarize(
@@ -1766,6 +1794,8 @@ def resummarize(
         raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
     if document.active_job is not None:
         raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
+    # Where the summary sits NOW; re-checked against the database after the model call.
+    placed = (summary.idx, summary.row_start, summary.row_end, summary.row_category)
 
     # Prefer the current review row (full, live metadata); fall back to the summary's snapshot.
     review_row = session.scalar(
@@ -1817,6 +1847,13 @@ def resummarize(
     except PipelineError as exc:
         return _pipeline_error_response(document.id, exc)
 
+    # The job check above ran BEFORE the model call, which takes seconds and holds nothing. A
+    # summarize run can start in that gap - a reviewer pressing Summarize while the re-draft computes
+    # is enough - and lay the record's summaries out again, so the one this draft is for can move or
+    # be removed. On the live box (2026-10-19) that removal made this route fail with a 500; a move
+    # would have written the draft at a position the run had just renumbered.
+    if not _redraft_still_applies(session, document.id, summary.id, placed):
+        raise HTTPException(status_code=409, detail=_REDRAFT_STALE_DETAIL)
     first = _redraft_row(session, document, summary, row, visit_outputs(output))
     session.commit()
     audit(session, "resummarize", user.id, document.id)
