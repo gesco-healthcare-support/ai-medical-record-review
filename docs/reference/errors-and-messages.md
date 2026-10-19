@@ -80,6 +80,7 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 404 | `Not Found` | `/api/users/{id}` routes; any unknown path |
 | 409 | `a job is running for this document; wait for it` | D7, D12, D13, D19 |
 | 409 | `a job is already running for this document` | D11, D15, D16, A8 |
+| 409 | `this record's summaries changed while the summary was being re-drafted (a summarize run started or finished); nothing was changed - reload the summaries and try again` | D19, after the model call: a job is active, or the summary moved or was removed meanwhile |
 | 409 | `<reviewer> already has this record (uploaded <MM/DD/YYYY>, <N> pages).`, or `<reviewer> already has <N> copies of this record (the latest uploaded <MM/DD/YYYY>, <N> pages).`, with `code: "duplicate"` | D1 (`owner` sent), A10; not sent when `allow_duplicate` is true. `<reviewer>` is the account's name, or `This reviewer` when it has none |
 | 409 | `a job is running for this document; wait for it before assigning it` | A10 |
 | 409 | `this record has not been checked for duplicates` | D16 |

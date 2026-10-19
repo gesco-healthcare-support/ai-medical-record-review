@@ -97,6 +97,22 @@ describe("re-reading the list", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: summariesKey("d1") });
   });
 
+  it("a REFUSED re-draft re-reads the list too, and patches nothing", async () => {
+    // The server refuses when a summarize run laid the summaries out again while the draft was
+    // computing - the cards on screen are then the ones that moved, and a card left in place would
+    // send its next re-draft to whatever summary now holds its index.
+    vi.mocked(resummarize).mockRejectedValue(new Error("summaries changed"));
+    const { wrapper, cached, invalidate } = harness();
+    const { result } = renderHook(() => useResummarize("d1"), { wrapper });
+
+    await expect(result.current.mutateAsync(2)).rejects.toThrow("summaries changed");
+
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: summariesKey("d1") }),
+    );
+    expect(cached()).toEqual(["first as written", "second as written", "third as written"]);
+  });
+
   it("a category change re-reads the list, and a text edit does not", async () => {
     vi.mocked(putSummary).mockResolvedValue(summary(1, "second as written") as never);
     const { wrapper, invalidate } = harness();
