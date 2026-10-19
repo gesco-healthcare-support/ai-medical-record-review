@@ -2699,10 +2699,10 @@ def test_from_pages_lets_a_reviewers_stop_through(monkeypatch):
         se._categorize("x.pdf", dict(_TITLE_ONLY_ROW), lambda p: "some page text")
 
 
-# A COMPANY'S AUTHORIZATION PAGE and an AUTHORIZATION TO RELEASE records, 2026-10-19. Measured on the
-# live box before the rule: reviewers ticked 0 of 33 two-word "<company> Authorization" rows and 0 of
-# 30 release/HIPAA rows, and kept the draft's own category on all 63. The company names below are
-# invented.
+# A COMPANY'S AUTHORIZATION PAGE and an AUTHORIZATION TO RELEASE records, 2026-10-19.
+# Measured on the live box before the rule: reviewers ticked 0 of 33 two-word
+# "<company> Authorization" rows and 0 of 30 release/HIPAA rows, and kept the draft's own
+# category on all 63. The company names below are invented.
 @pytest.mark.parametrize(
     "title",
     [
