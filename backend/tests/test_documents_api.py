@@ -8,6 +8,7 @@ response, without a live model call. Uploads are redirected to a tmp dir so no f
 
 import io
 import zipfile
+from functools import partial
 
 import pytest
 from pypdf import PdfReader
@@ -18,6 +19,7 @@ from app.api.documents import (
     _JOB_ALREADY_RUNNING_DETAIL,
     _JOB_RUNNING_DETAIL,
     _NOT_FOUND_DETAIL,
+    _REDRAFT_STALE_DETAIL,
     _pages_received,
     _separate_filename,
 )
@@ -5207,6 +5209,119 @@ async def test_a_row_cannot_be_resummarized_while_any_job_is_running(authed):
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == _JOB_RUNNING_DETAIL
+
+
+def _changed_during_the_call(change):
+    """A summarize_row stand-in that runs ``change`` - a write from ANOTHER session, standing in for a
+    summarize run - while the draft is being computed, then returns a fresh draft. That gap is where
+    the race lives: the route's job check has already passed and the model call holds nothing."""
+    draft = _fake_summarize()
+
+    def fake(*args, **kwargs):
+        change()
+        return draft(*args, **kwargs)
+
+    return fake
+
+
+def _summary_texts(doc_id):
+    """(idx, text) of the document's stored summaries, read from a fresh session."""
+    with get_sessionmaker()() as session:
+        summaries = session.scalars(
+            select(Summary).where(Summary.document_id == doc_id).order_by(Summary.idx)
+        )
+        return [(s.idx, s.text) for s in summaries]
+
+
+def _alter_summaries(doc_id, *, remove=False, move_to=None):
+    """Remove the document's summaries, or move them to another index, as a summarize run does."""
+    with get_sessionmaker()() as session:
+        for summary in session.scalars(select(Summary).where(Summary.document_id == doc_id)):
+            if remove:
+                session.delete(summary)
+            else:
+                summary.idx = move_to
+        session.commit()
+
+
+async def test_a_redraft_does_not_write_over_a_run_that_started_while_it_computed(
+    authed, monkeypatch
+):
+    """WHEN a summarize run starts while a re-draft's model call is in flight, THE SYSTEM SHALL
+    refuse the re-draft with 409 and write nothing.
+
+    The job check at the top of the route runs before the call, which takes seconds; a reviewer
+    pressing Summarize in that gap started a run the re-draft could not see (live box, 2026-10-19).
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_summary(doc_id)
+    start_a_run = partial(_seed_active_job, doc_id, kind="summarize")
+    monkeypatch.setattr(documents_api, "summarize_row", _changed_during_the_call(start_a_run))
+
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == _REDRAFT_STALE_DETAIL
+    assert _summary_texts(doc_id) == [(0, "old text")]
+
+
+async def test_a_redraft_whose_summary_was_removed_meanwhile_is_refused_not_a_500(
+    authed, monkeypatch
+):
+    """WHEN the summary a re-draft was computed for is gone by the time the draft is ready, THE
+    SYSTEM SHALL answer 409, not fail.
+
+    The live case: duplicates resolved, then Summarize pressed while a re-draft computed; the run
+    laid the summaries out again without that one, and the route's search for its row came back
+    empty and raised (`min()` of nothing) - a 500 the reviewer could do nothing with.
+    """
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_summary(doc_id)
+    remove = partial(_alter_summaries, doc_id, remove=True)
+    monkeypatch.setattr(documents_api, "summarize_row", _changed_during_the_call(remove))
+
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == _REDRAFT_STALE_DETAIL
+    assert _summary_texts(doc_id) == []
+
+
+async def test_a_redraft_whose_summary_moved_meanwhile_is_refused(authed, monkeypatch):
+    """WHEN a run renumbers the summary while its re-draft computes, THE SYSTEM SHALL answer 409.
+
+    Writing anyway would place the draft at the index this request loaded - one the run had just
+    given to something else."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_summary(doc_id)
+    move = partial(_alter_summaries, doc_id, move_to=3)
+    monkeypatch.setattr(documents_api, "summarize_row", _changed_during_the_call(move))
+
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 409
+    assert _summary_texts(doc_id) == [(3, "old text")]
+
+
+async def test_a_redraft_still_lands_when_a_run_came_and_went_without_moving_it(
+    authed, monkeypatch
+):
+    """GUARD: a run that started and FINISHED during the call, leaving the summary where it was,
+    SHALL NOT block the re-draft - the check is about the summary moving, not about a run having
+    happened. Passes before the fix too; it stops the fix over-refusing."""
+    client, _ = authed
+    doc_id = await _upload(client)
+    _seed_summary(doc_id)
+    finished_run = partial(_seed_active_job, doc_id, kind="summarize", state="done")
+    monkeypatch.setattr(documents_api, "summarize_row", _changed_during_the_call(finished_run))
+
+    resp = await client.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 200
+    assert _summary_texts(doc_id) == [(0, "new body")]
 
 
 async def test_a_bundle_larger_than_the_cap_is_refused(authed, monkeypatch):
