@@ -3,7 +3,7 @@
 # Dev-only: servers run docker-compose.yml, which has its own Postgres and Redis.
 services:
   postgres:
-    image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+    image: postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
     environment:
       POSTGRES_USER: mrr
       POSTGRES_PASSWORD: mrr_dev_only
