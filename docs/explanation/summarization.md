@@ -301,6 +301,16 @@ the title. It wrote the title there on 176 of about 300 audits on 2026-10-01, an
 rejected by the title guard below (#348). Gemini orders its fields alphabetically, which is the
 shared order, and gets the shared schema whatever the switch says.
 
+Our model's audit also writes far longer issue lists than Gemini's. Over 1,400 completed audits
+(2026-10-19) its issue details reached 22,204 characters (Gemini's maximum: 625) and its lists 80
+issues (Gemini's: 41), all rendered on the reviewer's Summaries card. On our model the issues are
+therefore stored through `readable_issues()`: at most 30, each detail cut at a word near 600
+characters and marked `...`. Every guard reads the full list first, so an issue type named only
+past the cap still counts. Switch `VLLM_AUDIT_BOUNDS` (off by default) writes the same two limits
+into the reply's grammar, so a runaway stops at the bound instead of spending the token cap; every
+audit failure in the saved worker log had used exactly the 8,192-token cap on a row of one to five
+pages. Compiling that grammar against Qwen's tokenizer takes about 23 seconds once per vLLM start.
+
 The audit is text-only, while the title call reads the first and last page images, so a name in a
 logo can be right in the title and broken letters in the source. `VERIFY_PROMPT` forbids writing
 such letters into the title: a name it writes must read as a name or as real words, and where the

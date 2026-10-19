@@ -538,3 +538,70 @@ def test_a_reply_in_the_old_names_still_reads_on_our_model(monkeypatch):
     result = sv.verify_summary("m", "src", "S. Extra.")
 
     assert result["fixed_text"] == "S."
+
+
+# Our model's audit writes issue lists and details far past anything Gemini writes (measured
+# 2026-10-19: details up to 22,204 characters against Gemini's 625, lists up to 80 issues against
+# 41). The bounds live in two places: the grammar (switch, off by default) and what is stored.
+def _issues_schema(schema):
+    return schema["properties"]["issues"]
+
+
+def test_the_bounded_schema_is_sent_only_when_switched_on(monkeypatch):
+    """WHEN VLLM_AUDIT_BOUNDS is on and the audit runs on our model, THE SYSTEM SHALL send the reply
+    schema with the issue count and detail length written into it; otherwise the plain one."""
+    _summarize_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(get_settings(), "vllm_audit_bounds", True)
+    bounded, renames = sv._reply_shape(get_settings())
+    issues = _issues_schema(bounded)
+    assert issues["maxItems"] == 30
+    assert issues["items"]["properties"]["detail"]["maxLength"] == 600
+    assert renames == sv._OUR_MODEL_FIELDS
+
+    monkeypatch.setattr(get_settings(), "vllm_audit_bounds", False)
+    plain, _ = sv._reply_shape(get_settings())
+    assert "maxItems" not in _issues_schema(plain)
+
+
+def test_gemini_never_gets_the_bounded_schema(monkeypatch):
+    """Guard: the switch is read only on our model."""
+    _summarize_backend(monkeypatch, "gemini")
+    monkeypatch.setattr(get_settings(), "vllm_audit_bounds", True)
+    schema, renames = sv._reply_shape(get_settings())
+    assert schema is sv._RESPONSE_SCHEMA
+    assert renames == {}
+
+
+def test_building_the_bounded_schema_left_the_shared_one_alone():
+    """Guard: the bounded copy is a DEEP copy - the shared schema Gemini gets has no bounds."""
+    issues = _issues_schema(sv._RESPONSE_SCHEMA)
+    assert "maxItems" not in issues
+    assert "maxLength" not in issues["items"]["properties"]["detail"]
+
+
+def test_a_long_detail_is_cut_at_a_word_and_marked():
+    detail = "word " * 300
+    [kept] = sv.readable_issues([{"type": "unsupported", "detail": detail}])
+    assert kept["detail"].endswith(" ...")
+    assert len(kept["detail"]) <= 600 + len(" ...")
+    assert kept["detail"][:-4].endswith("word")
+    assert kept["type"] == "unsupported"
+
+
+def test_a_short_detail_and_a_short_list_are_stored_unchanged():
+    """Guard: below both bounds nothing changes - which is every Gemini audit measured."""
+    issues = [{"type": "date", "detail": "The date reads 03/11."}, {"type": "vitals", "detail": ""}]
+    assert sv.readable_issues(issues) == issues
+
+
+def test_a_long_list_keeps_its_first_thirty_and_says_so(caplog):
+    issues = [{"type": "unsupported", "detail": f"claim {n}"} for n in range(80)]
+    with caplog.at_level(logging.WARNING):
+        kept = sv.readable_issues(issues)
+    assert kept == issues[:30]
+    assert "listed 80 issues" in caplog.text
+
+
+def test_an_issue_that_is_not_an_object_passes_through():
+    """Guard: the helper tidies, it does not validate - a malformed issue is kept as it came."""
+    assert sv.readable_issues(["odd", {"type": "date"}]) == ["odd", {"type": "date"}]

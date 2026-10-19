@@ -6,6 +6,7 @@ summary. Fail-safe: on any model or parse failure it returns the summary UNCHANG
 a broken check must never degrade a good summary.
 """
 
+import copy
 import json
 import logging
 
@@ -186,13 +187,65 @@ _OUR_MODEL_SCHEMA = {
     "additionalProperties": False,
 }
 
+# ON OUR MODEL ONLY: how much of the audit's issue list is worth keeping. Measured 2026-10-19 on
+# 1,400 completed audits on our model: issue details p95 269 characters, p99 1,415, max 22,204 - the
+# model pastes whole passages into one issue - and lists of up to 80 issues, each rendered in full
+# on the reviewer's Summaries card. Gemini on 9,709 audits of the live box: details p99 100, max
+# 625; lists max 41. Both numbers sit above nearly all Gemini writes, so they bite on our runaways.
+_OUR_MODEL_MAX_ISSUES = 30
+_OUR_MODEL_MAX_DETAIL = 600
+
+# The same reply with those two numbers written into the grammar (`vllm_audit_bounds`), so a
+# runaway list or detail is closed where the bound is reached instead of spending the token cap.
+# xgrammar 0.2.8 enforces both and vLLM 0.28 passes them to it (checked on CPU, 2026-10-19). Built
+# once, not per call: vLLM caches a compiled grammar by its schema, and a length-bounded string
+# costs ~23 s to compile against Qwen's tokenizer.
+_OUR_MODEL_BOUNDED_SCHEMA = copy.deepcopy(_OUR_MODEL_SCHEMA)
+_OUR_MODEL_BOUNDED_SCHEMA["properties"]["issues"]["maxItems"] = _OUR_MODEL_MAX_ISSUES
+_OUR_MODEL_BOUNDED_SCHEMA["properties"]["issues"]["items"]["properties"]["detail"]["maxLength"] = (
+    _OUR_MODEL_MAX_DETAIL
+)
+
 
 def _reply_shape(settings):
     """``(schema, field renames)`` for this deployment's audit call. Gemini always gets the shared
     schema; the audit resolves its provider through the summarize stage, so that is the gate."""
     if settings.vllm_audit_issues_first and settings.backend_for("summarize") == "vllm":
+        if settings.vllm_audit_bounds:
+            return _OUR_MODEL_BOUNDED_SCHEMA, _OUR_MODEL_FIELDS
         return _OUR_MODEL_SCHEMA, _OUR_MODEL_FIELDS
     return _RESPONSE_SCHEMA, {}
+
+
+def _readable_issue(issue):
+    """One issue with its detail cut to `_OUR_MODEL_MAX_DETAIL` characters at a word; else as is."""
+    detail = issue.get("detail") if isinstance(issue, dict) else None
+    if not isinstance(detail, str) or len(detail) <= _OUR_MODEL_MAX_DETAIL:
+        return issue
+    cut = detail[:_OUR_MODEL_MAX_DETAIL]
+    space = cut.rfind(" ")
+    if space > _OUR_MODEL_MAX_DETAIL // 2:
+        cut = cut[:space]
+    return {**issue, "detail": f"{cut.rstrip()} ..."}
+
+
+def readable_issues(issues):
+    """The audit's issues as they are worth storing and showing: at most `_OUR_MODEL_MAX_ISSUES`,
+    each detail cut to `_OUR_MODEL_MAX_DETAIL` characters at a word, marked with "...".
+
+    For STORAGE only. The caller decides on the full list first - every guard reads the issue
+    TYPES, and a type named only past the cap must still count. Applied on our model, where the
+    lists and details measured above reach a reviewer's card; Gemini's never come near either bound.
+    """
+    kept = [_readable_issue(issue) for issue in issues[:_OUR_MODEL_MAX_ISSUES]]
+    if len(issues) > _OUR_MODEL_MAX_ISSUES:
+        # Counts only. WARNING because the rate is the measurement: a list this long is a runaway.
+        logger.warning(
+            "summary audit listed %s issues; storing the first %s",
+            len(issues),
+            _OUR_MODEL_MAX_ISSUES,
+        )
+    return kept
 
 
 def _with_shared_names(data, renames):

@@ -29,7 +29,7 @@ from app.services.prompts import prompts
 from app.services.provenance import fingerprint, summary_prompt_fingerprint
 from app.services.rasterise import page_image_parts
 from app.services.reporting import parsed_date
-from app.services.summary_verify import VERIFY_PROMPT, verify_summary
+from app.services.summary_verify import VERIFY_PROMPT, readable_issues, verify_summary
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +346,15 @@ def _would_delete_content_on_our_model(
     source = (source_text or "").replace(" ", "")
     on_pages = sum(number in source for number in deleted)
     return on_pages >= len(deleted) - on_pages
+
+
+def _issues_to_store(issues: list) -> list:
+    """The audit's issues as stored and shown: on our model kept readable (`readable_issues` -
+    its lists and details reach sizes Gemini's never do), Gemini's exactly as they came. The
+    caller has already decided on the full list."""
+    if get_settings().backend_for("summarize") == "vllm":
+        return readable_issues(issues)
+    return issues
 
 
 def _drops_required_headings(raw: str, fixed: str, issue_types: set[str]) -> bool:
@@ -3003,7 +3012,7 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
             # The audit may reintroduce capitals while fixing something else, so the transform runs
             # over its output too - the verified text is what effective_text() delivers.
             verified_text = f"{doi_lead}{_house_body(result['fixed_text'], deposition)}"
-        verify_issues = result["issues"]
+        verify_issues = _issues_to_store(result["issues"])
         # The title is corrected INDEPENDENTLY of the body, including when the body rewrite was
         # rejected above: effective_title() and effective_text() fall back separately, and a wrong
         # date or laterality in the title is exactly what this pass exists to catch.
