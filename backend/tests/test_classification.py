@@ -2697,3 +2697,52 @@ def test_from_pages_lets_a_reviewers_stop_through(monkeypatch):
 
     with pytest.raises(JobCancelled):
         se._categorize("x.pdf", dict(_TITLE_ONLY_ROW), lambda p: "some page text")
+
+
+# A COMPANY'S AUTHORIZATION PAGE and an AUTHORIZATION TO RELEASE records, 2026-10-19. Measured on the
+# live box before the rule: reviewers ticked 0 of 33 two-word "<company> Authorization" rows and 0 of
+# 30 release/HIPAA rows, and kept the draft's own category on all 63. The company names below are
+# invented.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Acme Authorization",
+        "Northwind Authorization",
+        "HIPAA Authorization",
+        "Authorization for Release of Medical Information",
+        "Authorization to Disclose Health Information",
+        "Release of Information Authorization",
+    ],
+)
+def test_a_company_authorization_page_and_a_release_form_are_general(title):
+    assert classification.match_rules(title) == "100"
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        # Request-for-authorization wording: reviewers summarize it (544 of 624 rows ticked).
+        ("Request for Authorization", "10"),
+        ("RFA", "10"),
+        ("Primary Treating Physician Report and Request for Authorization", "10"),
+        # Two words, but clinical intent - not a company's page. "Treatment Authorization" is the
+        # case that made the lookahead load-bearing: three real RFAs reached segmentation titled
+        # exactly that, one of them ticked.
+        ("Treatment Authorization", None),
+        ("Prior Authorization", None),
+        ("Surgery Authorization", None),
+        ("Medication Authorization", None),
+        ("Authorization Request", None),
+        # Already answered elsewhere, and unchanged.
+        ("Utilization Review Authorization", "15"),
+        ("Referral Authorization", "100"),
+        # A release wrapper around a real study is still the study.
+        ("Authorization to Release - MRI of the Lumbar Spine", "3"),
+        # More than one word before "authorization" is not the company page shape.
+        ("Acme Authorization Letter", None),
+        ("Authorization", None),
+    ],
+)
+def test_the_authorization_rule_leaves_request_for_authorization_alone(title, expected):
+    """GUARD: every title here answered exactly this before the rule existed."""
+    assert classification.match_rules(title) == expected
