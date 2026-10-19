@@ -3244,6 +3244,12 @@ def summarize_row(
         return _illegible_output(row)
     settings = get_settings()
     model, title_model, audit_model = _resolved_models(model, title_model, audit_model)
+    category_model = settings.summary_model_for_category(row.get("category"))
+    if category_model:
+        # VLLM_SUMMARY_CATEGORY_MODELS: a category the summary adapter never trained on (a
+        # deposition, the catch-all) is written by the model named there - body and title alike,
+        # the audit unchanged. Per ROW, so the output's model fields name what really answered.
+        model = title_model = category_model
     if verify is None:
         verify = settings.summary_verify
     if prompt is None:

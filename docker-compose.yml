@@ -161,6 +161,11 @@ x-backend-env: &backend-env
   # adapter is switched in - 7_use_adapter.sh sets it, so it must reach a container without a
   # rebuild. Gemini ignores it.
   VLLM_STAGE_MODELS: ${VLLM_STAGE_MODELS:-}
+  # Per-category summary model on our model (`category=model`, comma-separated); empty keeps the
+  # summary keys for every category. Keeps the categories the summary adapter was not trained on
+  # (depositions, the catch-all) on the base model - 7_use_adapter.sh sets it with the adapter, so
+  # it must reach a container without a rebuild. Gemini ignores it.
+  VLLM_SUMMARY_CATEGORY_MODELS: ${VLLM_SUMMARY_CATEGORY_MODELS:-}
   # The render ceiling, and the two per-stage targets it caps. page_dpi fits the DPI to a stage's
   # pixel target and then caps it at SUMMARY_IMAGE_DPI - so lowering this silently shrinks the DOI
   # and deposition reads, which is why the app refuses to boot on the mismatch rather than rendering
