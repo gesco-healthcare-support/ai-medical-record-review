@@ -462,7 +462,7 @@ services:
 
   proxy:
     restart: unless-stopped
-    image: nginx:1.30@sha256:b972f831f200b19ef0767938224f9711e74cd783718738cd7405d5cabf75c442
+    image: nginx:1.30@sha256:eb1c896deef834f4e056829fd6dadac8305501f16cc71ba65fb252c8d0aa168e
     ports:
       - "8080:80"
     volumes:

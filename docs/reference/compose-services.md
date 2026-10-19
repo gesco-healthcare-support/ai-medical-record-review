@@ -115,7 +115,7 @@ the optional dependency sets installed, which is why `docker compose build api` 
 
 | Item | Value |
 | --- | --- |
-| Stages | `build` then `runtime`, both `node:22-slim` |
+| Stages | `build` then `runtime`, both `node:22-trixie-slim` (Debian 13, as the Python images) |
 | Build stage | `corepack enable`, `pnpm install --frozen-lockfile`, `pnpm build` |
 | Runtime contents | `.next/standalone`, `.next/static`, `public/`; the base image's npm, npx, corepack and yarn are removed (the server needs only `node`) |
 | Environment | `NODE_ENV=production`, `HOSTNAME=0.0.0.0`, `PORT=3000` |

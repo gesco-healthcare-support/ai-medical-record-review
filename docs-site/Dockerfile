@@ -7,7 +7,7 @@
 #
 # The build runs with --strict, so a broken link fails the image build as well as CI.
 
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS build
 
 # uv, pinned to the same version as backend/Dockerfile.
 COPY --from=ghcr.io/astral-sh/uv:0.11.2@sha256:c4f5de312ee66d46810635ffc5df34a1973ba753e7241ce3a08ef979ddd7bea5 /uv /uvx /bin/
@@ -25,7 +25,7 @@ RUN uv run --frozen mkdocs build --strict --site-dir /out
 
 # nginx only (the -alpine-slim variant has no njs or image-filter modules, so none of the image
 # libraries they pull in): the site is static files served by core directives (nginx.conf).
-FROM nginx:1.31-alpine-slim@sha256:f761b94f2cb9e8e05e2943d5f773609596113ef69b54e2433a996d109a8f78b7
+FROM nginx:1.31-alpine-slim@sha256:ebd058041a732a2b2dc0b606e34572dd8e0034de6a4aa4d50d8c13a240ac6005
 # Links the image to this repository in ghcr.io (see backend/Dockerfile).
 LABEL org.opencontainers.image.source="https://github.com/gesco-healthcare-support/ai-medical-record-review"
 COPY docs-site/nginx.conf /etc/nginx/conf.d/default.conf
