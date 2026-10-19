@@ -220,6 +220,28 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         r"|taxpayer identification|provider list(?:ing)?\b|confirmed delivery"
         r"|\bsubpoenas?\b|\bcover sheet\b|separator sheet\b|\battestations?\b"
         r"|record chronology|\bbillings?\b|\binvoices?\b|attachment information",
+        # A COMPANY'S AUTHORIZATION PAGE, and an AUTHORIZATION TO RELEASE records, 2026-10-19.
+        # Neither had a rule, so the model picked the category, and on the live box it filed the
+        # two-word "<company> Authorization" 10 or 7 on 21 of 33 rows - categories that are ticked
+        # for summary by default. The reviewers unticked every one by hand: 0 of 33 ticked, 0 of 30
+        # for the release/HIPAA form. And on all 63 they kept the DRAFT's category rather than
+        # choosing one, so the stored 10s are the model's, left in place as the tick came off - not
+        # a reviewer saying "request for authorization".
+        #
+        # The two-word form is ONE word and "authorization", anchored at both ends: a payer's or
+        # vendor's name. It is not request-for-authorization wording, which reviewers summarize
+        # (544 of 624 rows ticked) and which the RFA rule in _RULES answers 10 - a rule that
+        # outranks an administrative hit regardless. The lookahead keeps clinical-intent words out,
+        # and "treatment" is load-bearing: three real RFAs reached segmentation titled "Treatment
+        # Authorization", one of them ticked.
+        #
+        # Measured before shipping, read-only, on the live box (model draft titles AND reviewer
+        # titles): 29 of 8,324 distinct titles move, all from no rule to 100; 65 draft rows in 29
+        # records, every one the reviewer had unticked; no RFA-worded title moves.
+        r"^\s*(?!(?:treatment|prior|surgery|surgical|medication|procedure|therapy|request"
+        + r"|injection|mri|dme|pharmacy)\b)[a-z0-9&'.\-]+\s+authori[sz]ation\s*$",
+        r"authori[sz]ation\b.{0,60}\b(?:release|disclos\w*|hipaa)\b"
+        + r"|\b(?:release|disclos\w*|hipaa)\b.{0,60}authori[sz]ation",
     )
 )
 
