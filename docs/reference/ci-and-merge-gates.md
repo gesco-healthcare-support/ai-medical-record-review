@@ -477,24 +477,34 @@ can be moved to different code; a SHA cannot. Pin a new action the same way; Dep
 pins current (next section). `workflow-lint` runs
 zizmor, which audits the workflows for unpinned actions among other problems.
 
+The actions' versions are the comments beside their pins. Dependabot moves them every week and
+cannot edit this page, so it does not repeat them (a version column here went stale with every
+update).
+
+| Action | Where |
+| --- | --- |
+| `actions/checkout` | All jobs; always with `persist-credentials: false` |
+| `astral-sh/setup-uv` | `backend`, `docs`, `workflow-lint` |
+| `actions/setup-node` | `frontend`, `e2e`, with Node 24 |
+| `actions/upload-artifact`, `actions/download-artifact` | Coverage and report artifacts |
+| `github/codeql-action` (`init`, `analyze`, `upload-sarif`) | `analyze`, `analysis` |
+| `ossf/scorecard-action` | `analysis` |
+| `actions/dependency-review-action` | `dependency-review` |
+| `google/osv-scanner-action` reusable workflow | `osv-scan` |
+| `SonarSource/sonarqube-scan-action` | `sonarcloud` |
+| `actions/attest-build-provenance` | `acceptance` |
+| `actions/attest-sbom` | `acceptance` |
+
+The tools below are pinned by hand, in the workflow or script that installs them, and change only
+in a pull request that says so.
+
 | Tool | Version | Where |
 | --- | --- | --- |
-| `actions/checkout` | v5.1.0 | All jobs; always with `persist-credentials: false` |
-| `astral-sh/setup-uv` | v5.4.2 | `backend`, `docs`, `workflow-lint` |
-| `actions/setup-node` | v4.4.0, Node 24 | `frontend`, `e2e` |
-| `actions/upload-artifact`, `actions/download-artifact` | v5.0.0 | Coverage and report artifacts |
-| `github/codeql-action` (`init`, `analyze`, `upload-sarif`) | v4.38.2 | `analyze`, `analysis` |
-| `ossf/scorecard-action` | v2.4.4 | `analysis` |
-| `actions/dependency-review-action` | v5.0.0 | `dependency-review` |
-| `google/osv-scanner-action` reusable workflow | v2.6.0 | `osv-scan` |
-| `SonarSource/sonarqube-scan-action` | v8.2.0 | `sonarcloud` |
 | gitleaks | 8.30.0 | `secret-scan` (and the pre-commit hook) |
 | hadolint | 2.15.1, checksum verified | `container-lint` |
 | Grype | 0.119.0, checksum verified | `acceptance` |
 | ZAP | `ghcr.io/zaproxy/zaproxy:2.17.0`, pinned by digest | `acceptance` |
 | Syft | 1.52.0, checksum verified | `acceptance` (SBOMs) |
-| `actions/attest-build-provenance` | v4.2.2 | `acceptance` |
-| `actions/attest-sbom` | v4.1.0 | `acceptance` |
 | actionlint | 1.7.12, checksum verified | `workflow-lint` |
 | zizmor | 1.30.1 | `workflow-lint` |
 | pyright | 1.1.414 | `backend` |
@@ -520,9 +530,23 @@ release waits 7 days (`cooldown`) before it is proposed; security updates are ne
 | `docker` | the Dockerfiles in `backend/`, `frontend/`, `docs-site/` | `chore(tooling)` | one pull request each |
 | `docker-compose` | the images `docker-compose.yml` pulls (postgres, redis, nginx) | `chore(tooling)` | one pull request each |
 
-No entry covers the repository root: the retired Flask app that lived there was removed on 2026-09-30. A postgres major
-update (16 to 17) changes the on-disk data format, so never merge one without a dump-and-restore
-plan.
+No entry covers the repository root: the retired Flask app that lived there was removed on 2026-09-30.
+
+Some updates are a decision rather than a refresh, and `ignore` keeps them out of the pull
+requests:
+
+- a Python line after 3.12 or a Node line after 22 for the images. The digest of the tag in use
+  still refreshes, which is how 3.12's patch releases and the base image's Debian security fixes
+  arrive.
+- `@types/node` past the Node the frontend runs on (`node:22-trixie-slim`). The image and the
+  types move together.
+- a postgres major. It changes the on-disk data format, so the running database will not start on
+  it without a dump and restore.
+- ruff's minor releases. `backend/pyproject.toml` lints with ruff's default rule set, so a minor
+  release can change what passes: 0.17 widened the defaults and failed `backend` on hundreds of
+  existing lines. Patch releases still come.
+
+Each of these is a pull request of its own when it is wanted.
 
 ## Local hooks (`.pre-commit-config.yaml`)
 

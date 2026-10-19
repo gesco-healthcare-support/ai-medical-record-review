@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1
 # Next.js production image. Stage 1 installs deps + builds; stage 2 runs the minimal standalone
 # server emitted by next.config.ts `output: "standalone"`.
-FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS build
+#
+# Debian 13 (trixie), as the Python images are. node:22-slim is Debian 12, and on 2026-10-19 it
+# still carried a perl-base missing four Critical security fixes; the trixie variant is the same
+# Node.
+FROM node:22-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa AS build
 WORKDIR /app
 RUN corepack enable
 # Lockfile first for a cacheable install layer.
@@ -10,7 +14,7 @@ RUN corepack pnpm install --frozen-lockfile
 COPY . .
 RUN corepack pnpm build
 
-FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runtime
+FROM node:22-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa AS runtime
 # Links the image to this repository in ghcr.io (see backend/Dockerfile).
 LABEL org.opencontainers.image.source="https://github.com/gesco-healthcare-support/ai-medical-record-review"
 # The base image ships the package managers (npm, npx, corepack, yarn); the standalone server needs
