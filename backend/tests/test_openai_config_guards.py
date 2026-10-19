@@ -42,6 +42,7 @@ _PROVIDER_KEYS = (
     "VLLM_SEGMENT_MAX_PAGES",
     "VLLM_MAX_IMAGES_PER_PROMPT",
     "VLLM_STAGE_MODELS",
+    "VLLM_SUMMARY_CATEGORY_MODELS",
 )
 
 
@@ -1103,3 +1104,73 @@ def test_a_gemini_name_routed_to_the_pod_through_a_stage_is_refused(monkeypatch)
     """The second way in for #350: the model-versus-backend check reads `model_for_stage`."""
     with pytest.raises(RuntimeError, match="Gemini model name"):
         _settings(monkeypatch, **_VLLM_UP, VLLM_STAGE_MODELS="verify=gemini-2.5-flash")
+
+
+# --- VLLM_SUMMARY_CATEGORY_MODELS: a category's summary can ask for its own served name -------------
+#
+# The summary adapter is trained on no deposition (9) and no catch-all (100) row, so those categories
+# stay on the base model while the adapter writes the rest.
+
+_SUMMARY_ADAPTER = "mrr-lora-sum1"
+
+
+def test_a_named_category_gets_its_own_summary_model_and_the_rest_get_none(monkeypatch):
+    s = _settings(
+        monkeypatch,
+        **_VLLM_UP,
+        SUMMARY_BODY_MODEL=_SUMMARY_ADAPTER,
+        VLLM_SUMMARY_CATEGORY_MODELS=f"9={_BASE_MODEL}, 100={_BASE_MODEL}",
+    )
+
+    assert s.summary_model_for_category("9") == _BASE_MODEL
+    assert s.summary_model_for_category(100) == _BASE_MODEL
+    assert s.summary_model_for_category("09") == _BASE_MODEL
+    assert s.summary_model_for_category("1") is None
+
+
+def test_the_category_names_leave_the_summary_keys_alone(monkeypatch):
+    """GUARD: the job still records the adapter; only a named category's rows ask elsewhere."""
+    s = _settings(
+        monkeypatch,
+        **_VLLM_UP,
+        SUMMARY_BODY_MODEL=_SUMMARY_ADAPTER,
+        VLLM_SUMMARY_CATEGORY_MODELS=f"9={_BASE_MODEL}",
+    )
+
+    assert s.model_for("body") == _SUMMARY_ADAPTER
+
+
+def test_empty_names_no_category(monkeypatch):
+    """GUARD: unset ships today's resolution exactly."""
+    s = _settings(monkeypatch, **_VLLM_UP)
+
+    assert s.summary_model_for_category("9") is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["9", "9=", "=x", "deposition=x"],
+    ids=["no-separator", "no-model", "no-category", "not-an-id"],
+)
+def test_a_category_entry_nobody_can_act_on_refuses_startup(monkeypatch, value):
+    with pytest.raises(RuntimeError, match="VLLM_SUMMARY_CATEGORY_MODELS"):
+        _settings(monkeypatch, **_VLLM_UP, VLLM_SUMMARY_CATEGORY_MODELS=value)
+
+
+def test_summaries_on_gemini_ignore_the_category_names(monkeypatch):
+    """GUARD: the names apply only where summarize resolves to vLLM; Gemini keeps its models."""
+    s = _settings(
+        monkeypatch,
+        **_POD,
+        LLM_BACKEND="gemini",
+        LLM_BACKEND_OVERRIDES="segment=vllm",
+        VLLM_SUMMARY_CATEGORY_MODELS=f"9={_BASE_MODEL}",
+    )
+
+    assert s.summary_model_for_category("9") is None
+
+
+def test_a_gemini_name_for_a_category_on_the_pod_is_refused(monkeypatch):
+    """A third way in for #350: the model-versus-backend check reads these names too."""
+    with pytest.raises(RuntimeError, match="Gemini model name"):
+        _settings(monkeypatch, **_VLLM_UP, VLLM_SUMMARY_CATEGORY_MODELS="9=gemini-2.5-flash")
