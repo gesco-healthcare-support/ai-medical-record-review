@@ -61,7 +61,12 @@ export function useSaveSummary(documentId: string) {
 
 /** Re-draft one summary (discards evaluator edits, writes a fresh AI draft). Re-reads the list as
  *  well: the re-draft rewrites every visit of the summary's row, and can find more or fewer visits
- *  than before, which adds or removes summaries and renumbers the ones after them. */
+ *  than before, which adds or removes summaries and renumbers the ones after them.
+ *
+ *  A REFUSED re-draft re-reads it too. The server refuses (409) when a summarize run laid the
+ *  summaries out again while the draft was computing, and then the cards on screen are the ones
+ *  that moved: a card left in place would send its next re-draft to the summary now at its index,
+ *  which can be another document's, and a re-draft discards that summary's edits. */
 export function useResummarize(documentId: string) {
   const patch = useSummaryPatch(documentId);
   const refresh = useSummariesRefresh(documentId);
@@ -69,6 +74,9 @@ export function useResummarize(documentId: string) {
     mutationFn: (idx: number) => resummarize(documentId, idx),
     onSuccess: (updated) => {
       patch(updated);
+      void refresh();
+    },
+    onError: () => {
       void refresh();
     },
   });

@@ -481,6 +481,11 @@ The reviewers asked for each visit to be its own entry in the report (2026-10-15
   date. Page accounting counts the page once: it reads rows, not summaries.
 - **Re-draft** rewrites every visit of the row, and can find more or fewer visits than before
   (`documents.py` `_redraft_row()`); the Summaries tab re-reads its list afterwards.
+- **Re-draft against a running summarize.** The route checks for a job before its model call and
+  again after it (`_redraft_still_applies()`), under the document's row lock: a run that started
+  meanwhile, or a summary that moved or was removed, answers 409 and writes nothing. `create_job`
+  writes that row when it moves a summarize or identify job's status, so no run starts between the
+  re-check and the commit. The lock is held for the write only, never for the model call.
 
 ## Record-level passes at export
 
