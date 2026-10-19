@@ -331,7 +331,9 @@ flowchart TD
     C -- no --> V[verified = true, no rewrite stored]
     C -- yes --> D{Rewrite only restates the title?}
     D -- yes --> R[Keep raw body]
-    D -- no --> E{Drops required bold headings?}
+    D -- no --> K{Our model, VLLM_AUDIT_KEEPS_CONTENT on,<br/>unsupported or contradiction named,<br/>deleted numbers mostly on the pages?}
+    K -- yes --> R
+    K -- no --> E{Drops required bold headings?}
     E -- yes --> R
     E -- no --> F{Deposition and fewer paragraphs<br/>or page-range openers?}
     F -- yes --> R
@@ -342,6 +344,17 @@ flowchart TD
 
 - `_restates_the_title()` rejects a rewrite whose content words are all already in the title. A
   subset test needs no threshold and cannot reject a real correction.
+- `_would_delete_content_on_our_model()` applies only when `summarize` runs on vLLM and
+  `VLLM_AUDIT_KEEPS_CONTENT` is on (off by default). When the issues include `unsupported` or
+  `contradiction`, the two the audit answers by deleting content, it compares the numbers the
+  rewrite deletes with the source text: deleted numbers at least as often on the pages as not, or
+  none deleted, and the draft ships. So our model's audit may still fix house style, a date or a
+  left/right flip, and may still cut what no page carries, but not remove what the pages support.
+  Measured on two sets of stored base-model summaries of the six records with human summaries
+  (comment on the setting in `config.py`): higher word and number recall against the human
+  summaries than shipping every rewrite, with no more numbers off the pages. The number check is
+  what stops a runaway draft (a looping list of numbers no page carries) from shipping. Gemini
+  never takes this branch.
 - `_drops_required_headings()` compares counts of bold spans, never their text, because renaming a
   heading is allowed. If every issue is correction-only (`capitalization`, `range_of_motion`), any
   lost heading rejects the rewrite. Otherwise a body with at least three headings that loses more

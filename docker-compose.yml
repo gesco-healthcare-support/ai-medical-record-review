@@ -149,6 +149,11 @@ x-backend-env: &backend-env
   # title, then the corrected summary, under plain names. Off restores the shared Gemini-ordered
   # schema. Named here so a pod day can compare the two without a rebuild. Gemini ignores it.
   VLLM_AUDIT_ISSUES_FIRST: ${VLLM_AUDIT_ISSUES_FIRST:-true}
+  # Off ships today's audit. On, our model's summary audit may not delete what the pages
+  # support: when it names "unsupported" or "contradiction" and the numbers its rewrite deletes
+  # are mostly on the pages (or it deletes none), the draft ships; issues are still stored. A
+  # switch so a pod day can compare both without a rebuild. Gemini ignores it.
+  VLLM_AUDIT_KEEPS_CONTENT: ${VLLM_AUDIT_KEEPS_CONTENT:-false}
   # Our model's reply cap for one segmentation window (#383); a cut-off window is re-asked in
   # halves. Thinking tokens count against it, so it must move WITH VLLM_THINKING_STAGES - named
   # here so that is a restart, not a rebuild. Gemini's call carries no cap.

@@ -1026,6 +1026,25 @@ class Settings(BaseSettings):
     # keys map back to `fixed_text` / `fixed_title` before anything reads them. A switch so a pod
     # day can compare both shapes without a rebuild.
     vllm_audit_issues_first: bool = True
+    # ON OUR MODEL ONLY: the summary audit may delete what the pages do not support, but not what
+    # they do. When it names an `unsupported` or `contradiction` issue and the numbers its rewrite
+    # deletes are at least as often IN the source text as not (or it deletes none), the draft ships
+    # - the issues are still stored and shown, as when a rewrite drops required headings. Every
+    # other rewrite is applied as today: the house rules, a wrong date, a left/right flip, and a
+    # content fix whose deleted numbers are mostly NOT on the pages
+    # (summarize_engine._would_delete_content_on_our_model).
+    #
+    # Measured 2026-10-19 on stored base-model summaries of the 6 records with human summaries, two
+    # independent sets (the same records segmented twice; 299 and 275 summaries; no model call).
+    # Word / number recall against the human summaries, and the share of shipped numbers that
+    # appear nowhere on the pages:
+    #     set 1  today 0.660 / 0.692, 9.3%   with this 0.671 / 0.696, 9.2%
+    #     set 2  today 0.685 / 0.717, 9.0%   with this 0.694 / 0.731, 8.9%
+    # The simpler rule - draft whenever a content issue is named - scored the same recall but
+    # shipped 16.9% of numbers off the pages on set 1: one 20-page evaluation's draft ran into a
+    # looping list (12,227 characters, 195 numbers no page carries) that only the audit cut back.
+    # Off by default; a switch so a pod day can compare both without a rebuild. Gemini ignores it.
+    vllm_audit_keeps_content: bool = False
     verify_merge: bool = True
     verify_use_text: bool = True
     verify_suspect_cap: int = 200
