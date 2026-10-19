@@ -1045,6 +1045,20 @@ class Settings(BaseSettings):
     # looping list (12,227 characters, 195 numbers no page carries) that only the audit cut back.
     # Off by default; a switch so a pod day can compare both without a rebuild. Gemini ignores it.
     vllm_audit_keeps_content: bool = False
+    # ON OUR MODEL ONLY: bound the summary audit's reply in the grammar itself - at most 30 issues,
+    # each detail at most 600 characters (summary_verify._OUR_MODEL_BOUNDED_SCHEMA). Measured
+    # 2026-10-19 on 1,400 completed audits on our model: issue details p95 269 characters, p99
+    # 1,415, max 22,204 (whole passages pasted into one issue), and lists of up to 80 issues; every
+    # audit failure in the saved worker log used exactly the 8,192-token cap on a 1-5 page row.
+    # Gemini on 9,709 audits of the live box: details p99 100, max 625; lists max 41. A bound only
+    # changes a reply at the point it is reached, so audits below it are unchanged.
+    #
+    # Off by default, because its cost is unmeasured where it matters: compiling a length-bounded
+    # string against Qwen's tokenizer took ~23 s on a laptop CPU (unbounded: 0.14 s). vLLM compiles
+    # in a background pool and caches by schema, so that is once per server start - but whether
+    # bounded strings also slow decoding needs a pod. What is stored and shown is kept readable
+    # whatever this says (summary_verify.readable_issues). Gemini ignores it.
+    vllm_audit_bounds: bool = False
     verify_merge: bool = True
     verify_use_text: bool = True
     verify_suspect_cap: int = 200
