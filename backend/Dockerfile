@@ -9,7 +9,7 @@
 # that runs - they are build tools, and the release policy scans everything in the final image.
 # Both stages use the same base digest, so the venv's interpreter path (/usr/local/bin/python3.12)
 # is identical in each.
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS build
 
 # uv (pinned for reproducibility). Build stage only.
 COPY --from=ghcr.io/astral-sh/uv:0.11.2@sha256:c4f5de312ee66d46810635ffc5df34a1973ba753e7241ce3a08ef979ddd7bea5 /uv /uvx /bin/
@@ -43,7 +43,7 @@ RUN mkdir -p /opt/hf-cache && case "$UV_EXTRAS" in \
       *) echo "no classifier extra: skipping embedding-model bake" ;; \
     esac
 
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 # Links the image to this repository in ghcr.io, where the staging acceptance stage pushes it. Set at build
 # time so the pushed image is byte-for-byte the one the stage scanned.
 LABEL org.opencontainers.image.source="https://github.com/gesco-healthcare-support/ai-medical-record-review"

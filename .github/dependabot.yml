@@ -9,6 +9,9 @@
 # - For uv, npm and github-actions, minor and patch updates are grouped into one pull request per
 #   ecosystem each week. docker and docker-compose have no groups, so each of their updates comes
 #   on its own. A major update always comes on its own, because it is a change to review by itself.
+# - `ignore` keeps out the updates that are a decision rather than a refresh: a new Python, Node or
+#   Postgres line (the images still get their digests refreshed, which is how patch releases and
+#   Debian security fixes arrive), and ruff's minor releases. The reason is beside each entry.
 # - `cooldown` holds a new release for 7 days before it is proposed, so a version published by a
 #   compromised maintainer account is usually caught and pulled before it reaches a PR. It applies
 #   only to version updates; security updates are never delayed (GitHub's Dependabot options
@@ -34,6 +37,13 @@ updates:
       python-security:
         applies-to: security-updates
         patterns: ["*"]
+    ignore:
+      # backend/pyproject.toml lints with ruff's DEFAULT rule set, so a ruff minor release (0.x) can
+      # change what passes: 0.17 widened the defaults and failed the backend job on hundreds of
+      # existing lines (B008 on every FastAPI Depends). Patch releases still come; move ruff in a
+      # pull request of its own that pins the rule set first.
+      - dependency-name: "ruff"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   - package-ecosystem: "npm"
     directory: "/frontend"
@@ -50,6 +60,11 @@ updates:
       frontend-security:
         applies-to: security-updates
         patterns: ["*"]
+    ignore:
+      # The types follow the Node the frontend runs on, node:22-trixie-slim (frontend/Dockerfile).
+      # Move the image and the types together, in one pull request.
+      - dependency-name: "@types/node"
+        versions: [">= 23"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -75,6 +90,14 @@ updates:
       default-days: 7
     commit-message:
       prefix: "chore(tooling)"
+    ignore:
+      # The project targets Python 3.12 and Node 22. A newer tag (3.14-slim, node:24) is a runtime
+      # change of its own; the digest of the tag in use still refreshes, which is how 3.12's patch
+      # releases and the base image's Debian security fixes arrive.
+      - dependency-name: "python"
+        versions: [">= 3.13"]
+      - dependency-name: "node"
+        versions: [">= 23"]
 
   # The images the servers pull through docker-compose.yml (postgres, redis, nginx); the `docker`
   # entry above reads Dockerfiles only. A postgres MAJOR update (16 -> 17) changes the on-disk data
@@ -90,3 +113,7 @@ updates:
     ignore:
       # Built from this repository by compose, not pulled from a registry.
       - dependency-name: "mrr-*"
+      # A major changes the on-disk data format: the running database will not start on it without
+      # a dump and restore, so it is planned, never merged as an update.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
