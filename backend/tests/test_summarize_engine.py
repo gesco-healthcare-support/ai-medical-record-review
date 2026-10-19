@@ -1479,6 +1479,34 @@ def test_a_content_rewrite_ships_when_the_switch_does_not_apply(
     assert out["verifiedText"].endswith("**Treatment provided**: Shockwave.")
 
 
+def test_our_models_stored_issues_are_readable_and_the_full_list_still_decides(monkeypatch):
+    """WHEN our model's audit returns a long list with long details, THE SYSTEM SHALL store at most
+    thirty, each detail cut - and still decide on the FULL list: here the only content issue is the
+    31st, and the keep-content switch must still see it."""
+    _audit_on(monkeypatch, "vllm", keeps_content=True)
+    noisy = [{"type": "capitalization", "detail": "word " * 200}] * 30
+    _stub_verify(
+        monkeypatch, _KEEPS_HEADINGS, [*noisy, {"type": "unsupported", "detail": "a claim"}]
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedText"] is None
+    assert len(out["verifyIssues"]) == 30
+    assert out["verifyIssues"][0]["detail"].endswith(" ...")
+
+
+def test_gemini_stores_the_audits_issues_as_they_came(monkeypatch):
+    """Guard: Gemini's lists and details never come near the bounds, and are stored untouched."""
+    _audit_on(monkeypatch, "gemini", keeps_content=False)
+    long_detail = {"type": "capitalization", "detail": "word " * 200}
+    _stub_verify(monkeypatch, _KEEPS_HEADINGS, [long_detail])
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifyIssues"] == [long_detail]
+
+
 def test_the_guard_never_fires_on_a_body_that_had_no_headings(monkeypatch):
     """A prose-format category has nothing to lose, so the guard must stay out of the way entirely."""
     monkeypatch.setattr(

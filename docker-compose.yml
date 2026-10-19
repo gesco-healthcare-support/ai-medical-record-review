@@ -154,6 +154,10 @@ x-backend-env: &backend-env
   # are mostly on the pages (or it deletes none), the draft ships; issues are still stored. A
   # switch so a pod day can compare both without a rebuild. Gemini ignores it.
   VLLM_AUDIT_KEEPS_CONTENT: ${VLLM_AUDIT_KEEPS_CONTENT:-false}
+  # Off ships today's audit reply. On, our model's audit reply is bounded in the grammar (30
+  # issues, 600-character details) so a runaway cannot spend the token cap. A switch so a pod day
+  # can compare both without a rebuild. Gemini ignores it.
+  VLLM_AUDIT_BOUNDS: ${VLLM_AUDIT_BOUNDS:-false}
   # Our model's reply cap for one segmentation window (#383); a cut-off window is re-asked in
   # halves. Thinking tokens count against it, so it must move WITH VLLM_THINKING_STAGES - named
   # here so that is a restart, not a rebuild. Gemini's call carries no cap.
