@@ -48,6 +48,7 @@ _MUST_REACH_A_CONTAINER = {
     "VLLM_SEGMENT_MAX_OUTPUT_TOKENS": "counts thought tokens; moves with VLLM_THINKING_STAGES",
     "VLLM_STAGE_MODELS": "set by 7_use_adapter.sh whenever an adapter is switched in on a pod",
     "VLLM_SUMMARY_CATEGORY_MODELS": "set by 7_use_adapter.sh with a summary adapter; same reason",
+    "VLLM_SUMMARY_TRUNCATION_MODEL": "set by 7_use_adapter.sh with a summary adapter; same reason",
     "VLLM_SEGMENT_OWNERSHIP": "the window-seam A/B runs while a pod bills; same reason",
 }
 

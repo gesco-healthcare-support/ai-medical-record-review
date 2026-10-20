@@ -476,6 +476,18 @@ class Settings(BaseSettings):
     # Ignored when summarize is not on vLLM. Validated at startup, and each name passes the same
     # model-versus-backend check as every other name the app sends.
     vllm_summary_category_models: str = ""
+    # On vLLM, the served model a summary BODY is re-asked on when it hits the token cap, in place
+    # of re-asking the same model at a wider cap (summarize_engine._retry_if_truncated). Empty = the
+    # same model, as on Gemini. Meant to name the BASE model while a summary adapter is switched in.
+    #
+    # Measured 2026-10-20 on the summary exam (220 held-out human summaries): the summary adapter
+    # (run-sum1) hit the 8,192-token cap on 13 of them and the base model on none. 12 of the 13 are
+    # loops - one phrase of 4-50 words repeated hundreds of times, starting within the first
+    # sentences - so re-asking the adapter at twice the cap only loops for longer. A repetition
+    # penalty did not stop it (12 and 8 of 220 still looped at 1.05 and 1.1). Re-asking the base
+    # model gives the row a real summary; summaries.model then names the base model. Ignored when
+    # summarize is not on vLLM; validated at startup like every other model name the app sends.
+    vllm_summary_truncation_model: str = ""
     # Read deadline in SECONDS, and much longer than the Gemini path's 120s because it is a different
     # kind of limit. genai_http_timeout_ms is forwarded to Vertex as a SERVER-side deadline; this one
     # is purely client-side, and the pod has no proxy in front of it since the SSH tunnel replaced
@@ -1245,6 +1257,14 @@ class Settings(BaseSettings):
                     self.vllm_summary_category_models
                 )
             ]
+            if self.vllm_summary_truncation_model.strip():
+                pairs.append(
+                    (
+                        "the summarize model for a truncated body",
+                        self.vllm_summary_truncation_model.strip(),
+                        summarize,
+                    )
+                )
         return pairs
 
     def _validate_model_names_match_their_backend(self) -> None:

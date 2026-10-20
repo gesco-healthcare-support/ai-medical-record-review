@@ -2708,8 +2708,22 @@ def _log_incomplete_deposition(summary, text, row) -> None:
     )
 
 
+def _truncation_model(settings, model):
+    """The model a cut-off body is re-asked on: VLLM_SUMMARY_TRUNCATION_MODEL when summarize runs on
+    vLLM and it is set, else the model that was cut off. See config.vllm_summary_truncation_model -
+    a summary adapter that loops only loops for longer at a wider cap; the base model does not."""
+    name = settings.vllm_summary_truncation_model.strip()
+    if name and settings.backend_for("summarize") == "vllm":
+        return name
+    return model
+
+
 def _retry_if_truncated(model, system_msg, body_contents, row, summary, truncated):
-    """Re-ask ONCE at a wider cap when the body was cut off. Returns ``(summary, truncated)``.
+    """Re-ask ONCE at a wider cap when the body was cut off. Returns ``(summary, truncated, model)``,
+    the last naming the model that wrote the returned summary.
+
+    On vLLM the re-ask can go to another model (`_truncation_model`): a summary adapter's cut-off
+    body is a loop, not a long summary, so the base model answers it instead.
 
     A reply that hits the token cap is a HALF SUMMARY that reads like a whole one - it stops
     mid-clause and nothing downstream says so. `summaries` has no column for it, and the only
@@ -2733,19 +2747,21 @@ def _retry_if_truncated(model, system_msg, body_contents, row, summary, truncate
     settings = get_settings()
     multiplier = settings.summary_truncation_retry_multiplier
     if not truncated or multiplier <= 1:
-        return summary, truncated
+        return summary, truncated, model
     wider = int(settings.summary_max_output_tokens * multiplier)
+    retry_model = _truncation_model(settings, model)
     logger.warning(
-        "summary body hit the %d-token cap on pages %s-%s (%d chars); re-asking at %d",
+        "summary body hit the %d-token cap on pages %s-%s (%d chars); re-asking %s at %d",
         settings.summary_max_output_tokens,
         row["start"],
         row["end"],
         len(summary or ""),
+        retry_model,
         wider,
     )
     try:
         retried, still_truncated = _generate(
-            model,
+            retry_model,
             system_msg,
             body_contents,
             temperature=settings.summary_temperature,
@@ -2757,7 +2773,7 @@ def _retry_if_truncated(model, system_msg, body_contents, row, summary, truncate
             row["start"],
             row["end"],
         )
-        return summary, truncated
+        return summary, truncated, model
     # AN EMPTY REPLY IS NEVER AN IMPROVEMENT, and this is checked BEFORE the preference below.
     # Without it `not still_truncated` accepts a reply that is empty and merely reports itself
     # finished, so the usable partial body is discarded and nothing ships - a worse outcome than
@@ -2774,7 +2790,7 @@ def _retry_if_truncated(model, system_msg, body_contents, row, summary, truncate
             row["start"],
             row["end"],
         )
-        return summary, truncated
+        return summary, truncated, model
     if not still_truncated or len(retried) > len(summary or ""):
         logger.warning(
             "the wider re-ask returned %d chars on pages %s-%s (truncated=%s); keeping it",
@@ -2783,8 +2799,8 @@ def _retry_if_truncated(model, system_msg, body_contents, row, summary, truncate
             row["end"],
             still_truncated,
         )
-        return retried, still_truncated
-    return summary, truncated
+        return retried, still_truncated, retry_model
+    return summary, truncated, model
 
 
 def _generate_body(model, system_msg, body_contents, row):
@@ -2853,7 +2869,7 @@ def _generate_body(model, system_msg, body_contents, row):
     # AFTER the fallback, and against whichever model answered: a row that fell back to the lesser
     # model can be truncated too, and re-asking the model that just refused us would be the race
     # the fallback exists to avoid.
-    summary, truncated = _retry_if_truncated(
+    summary, truncated, model = _retry_if_truncated(
         model, system_msg, body_contents, row, summary, truncated
     )
     return summary, truncated, model, body_fallback_from

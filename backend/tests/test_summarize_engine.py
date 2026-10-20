@@ -3434,6 +3434,66 @@ def test_a_shorter_truncated_retry_is_discarded(monkeypatch):
     assert out["summaryText"].startswith("first attempt")
 
 
+# VLLM_SUMMARY_TRUNCATION_MODEL: on vLLM a cut-off body is re-asked on the named model instead of
+# the model that was cut off. Measured 2026-10-20: the summary adapter hit the cap on 13 of 220
+# exam bodies, 12 of them loops, the base model on none (config.vllm_summary_truncation_model).
+_LOOP = ("the patient reports pain. " * 400, True)
+_FINISHED = ("Low back pain after a fall; physical therapy was recommended.", False)
+
+
+def _truncation_model_on(monkeypatch, backend, name):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "llm_backend", backend)
+    monkeypatch.setattr(settings, "llm_backend_overrides", "")
+    monkeypatch.setattr(settings, "vllm_summary_truncation_model", name)
+
+
+def test_on_our_model_a_cut_off_body_is_re_asked_on_the_truncation_model(monkeypatch):
+    """WHEN summarize runs on vLLM and VLLM_SUMMARY_TRUNCATION_MODEL is set, THE SYSTEM SHALL re-ask
+    a cut-off body on that model, ship its finished reply, and name it as the row's model."""
+    calls = _truncating_body(monkeypatch, [_LOOP, _FINISHED])
+    _truncation_model_on(monkeypatch, "vllm", "base-model")
+    try:
+        out = se.summarize_row("/x.pdf", _row(), model="adapter", prompt="P")
+    finally:
+        get_settings.cache_clear()
+
+    assert [c["model"] for c in calls] == ["adapter", "base-model"]
+    assert calls[1]["cap"] == 16384, "the re-ask keeps the wider cap"
+    assert out["summaryText"].startswith("Low back pain")
+    assert out["truncated"] is False
+    assert out["model"] == "base-model"
+
+
+@pytest.mark.parametrize(("backend", "name"), [("vllm", ""), ("gemini", "base-model")])
+def test_without_the_setting_or_off_vllm_the_same_model_is_re_asked(monkeypatch, backend, name):
+    """GUARD: empty, or summarize not on vLLM, is exactly the old behaviour - the same model again."""
+    calls = _truncating_body(monkeypatch, [_LOOP, _FINISHED])
+    _truncation_model_on(monkeypatch, backend, name)
+    try:
+        out = se.summarize_row("/x.pdf", _row(), model="adapter", prompt="P")
+    finally:
+        get_settings.cache_clear()
+
+    assert [c["model"] for c in calls] == ["adapter", "adapter"]
+    assert out["model"] == "adapter"
+
+
+def test_a_discarded_re_ask_keeps_the_cut_off_models_name(monkeypatch):
+    """Provenance follows the text: when the re-ask on the other model is discarded (here a shorter
+    reply that is also cut off), the row still names the model that wrote what ships."""
+    calls = _truncating_body(monkeypatch, [_LOOP, ("short and cut", True)])
+    _truncation_model_on(monkeypatch, "vllm", "base-model")
+    try:
+        out = se.summarize_row("/x.pdf", _row(), model="adapter", prompt="P")
+    finally:
+        get_settings.cache_clear()
+
+    assert len(calls) == 2
+    assert out["summaryText"].startswith("the patient reports pain")
+    assert out["model"] == "adapter"
+
+
 def test_a_failing_re_ask_keeps_the_truncated_body(monkeypatch):
     """A partial summary beats losing the row.
 
