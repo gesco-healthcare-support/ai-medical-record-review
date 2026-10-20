@@ -68,6 +68,41 @@ def test_a_lone_short_capital_is_assumed_to_be_an_acronym():
     assert recase("Reported TMJ pain.") == "Reported TMJ pain."
 
 
+# A client reviewer, 2026-10-20: "sometimes with acronyms it tends to only capitalize the first
+# letter instead of the whole thing", reporting "Ptsd" in a delivered summary and naming PTSD, MTU,
+# LLC and CA. The same pass changed 11.9% of the capital-letter tokens human writers use in 23,744
+# eData summary entries, most of them acronyms it did not know.
+@pytest.mark.parametrize(
+    "given,expected",
+    [
+        # The reported sentence's shape: a lone acronym inside ordinary prose.
+        (
+            "Claimed stress, anxiety, and PTSD on 4-29-2022.",
+            "Claimed stress, anxiety, and PTSD on 4-29-2022.",
+        ),
+        # A company suffix and an unknown short acronym inside a title-cased run.
+        (
+            "**Employer**: CEDAR RIDGE LOGISTICS, LLC. Seen at MTU OCCUPATIONAL CLINIC.",
+            "**Employer**: Cedar Ridge Logistics, LLC. Seen at MTU Occupational Clinic.",
+        ),
+        # A town and its state: a place, so title case, with the state code kept.
+        ("Lives in SAN DIEGO, CA with family.", "Lives in San Diego, CA with family."),
+        # A spinal level inside a run used to become "l4-l5".
+        ("MRI OF THE LUMBAR SPINE AT L4-L5.", "MRI of the lumbar spine at L4-L5."),
+        # An acronym the list does not know: no vowel, so it keeps its capitals in a run too.
+        ("Diagnosed with CRPS OF THE RIGHT HAND.", "Diagnosed with CRPS of the right hand."),
+        # A digit marks a test or a code, never a shouted word.
+        ("Tested for COVID-19 and HGBA1C.", "Tested for COVID-19 and HGBA1C."),
+        # Short words written without vowels still recase, and a state code that is also an English
+        # word ("IN") is not taken for a state.
+        ("TAKES 10 MG DAILY.", "Takes 10 mg daily."),
+        ("REPORTS PAIN IN THE KNEE.", "Reports pain in the knee."),
+    ],
+)
+def test_an_acronym_keeps_its_capitals(given, expected):
+    assert recase(given) == expected
+
+
 def test_the_number_in_a_measurement_is_never_touched():
     # The whole point of the ROM rule is that the value is copied exactly; the transform must not be
     # the thing that changes it.

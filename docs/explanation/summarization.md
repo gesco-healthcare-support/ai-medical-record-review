@@ -388,9 +388,12 @@ not complete).
 body before the audit (so the audit reads what a reader will see) and on any accepted rewrite:
 
 - `sentence_case_caps_runs()`: runs of two or more capitalised words become sentence case, or title
-  case when the run contains an organisation word (`_PROPER_NOUN_MARKERS`); a lone capitalised word
-  of four or more letters becomes title case; allowlisted acronyms (`_ACRONYMS`) are untouched. It is
-  never applied to a title, which is ALL CAPS by design.
+  case when the run contains an organisation word (`_PROPER_NOUN_MARKERS`) or ends in a comma and a
+  state code ("San Diego, CA"); a lone capitalised word of four or more letters becomes title case.
+  An acronym keeps its capitals wherever it stands: an allowlisted one (`_ACRONYMS`), a state code
+  (`_STATE_CODES`), or any token carrying a digit ("L4-L5", "COVID-19") or no vowel ("PTSD", "LLC"),
+  except titles and units such as "Dr." and "mg" (`_SHORT_WORDS`). It is never applied to a title,
+  which is ALL CAPS by design.
 - `one_paragraph()`: joins lines into one paragraph, drops list markers, and removes a label that
   introduces nothing: one followed only by another label or the end, carrying no digit, and not
   in front of a result heading (Findings, Impression, Conclusion, Interpretation, Results). So
