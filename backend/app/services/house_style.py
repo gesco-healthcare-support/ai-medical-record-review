@@ -120,7 +120,118 @@ _ACRONYMS = frozenset(
         "C7",
         "T1",
         "T12",
+        # Added 2026-10-20 from the capitals human writers keep in their summaries (23,744 eData
+        # entries, every token here seen in five or more deliverables) and a reviewer's report.
+        # Only tokens WITH a vowel need an entry: _is_acronym already keeps any token carrying a
+        # digit or no vowel (PTSD, LLC, TTP, HGB, L4-L5, COVID-19).
+        "GERD",
+        "COPD",
+        "COVID",
+        "MRSA",
+        "ATFL",
+        "AOE",
+        "COE",
+        "ORIF",
+        "ACDF",
+        "HEP",
+        "SI",
+        "AC",
+        "ESI",
+        "LESI",
+        "CESI",
+        "TFESI",
+        "ILESI",
+        "TPI",
+        "TPIS",
+        "ESWT",
+        "ECSWT",
+        "FABER",
+        "FABERE",
+        "FADIR",
+        "PSIS",
+        "DROM",
+        "STIR",
+        "LVEF",
+        "SSEP",
+        "RUE",
+        "LUE",
+        "RLE",
+        "LLE",
+        "BUE",
+        "BLE",
+        "BI-RADS",
+        "DISI",
+        "OTC",
+        "ASA",
+        "SSRI",
+        "IM",
+        "ALT",
+        "AST",
+        "SGOT",
+        "BUN",
+        "POCT",
+        "TDAP",
+        "ETOH",
+        "MVA",
+        "ER",
+        "ED",
+        "PACU",
+        "STAT",
+        "ASAP",
+        "II",
+        "III",
+        "DASH",
+        "MTU",
+        "MTUS",
+        "MPN",
+        "MPNS",
+        "ACOEM",
+        "CURES",
+        "FMLA",
+        "DRUJ",
+        "AOE/COE",
+        "UCLA",
+        "SCOI",
+        "IHSS",
+        "HVAC",
+        "LAPD",
+        "LAUSD",
+        "LACMTA",
+        "MD",
+        "PA",
+        "PA-C",
+        "NP",
+        "PHD",
+        "PSYD",
+        "DPM",
+        "RN",
+        "LVN",
+        "LCSW",
     }
+)
+
+# Two-letter state codes, which follow a city in an address ("San Diego, CA"). Left out on purpose:
+# the ones that are also English words (IN, OR, ME, HI, OK, OH), CO, which names a company, and MS,
+# which is far likelier "Ms." here than Mississippi.
+_STATE_CODES = frozenset(
+    "AL AK AZ AR CA CT DE DC FL GA IA ID IL KS KY LA MA MD MI MN MO MT NC ND NE NH NJ NM NV NY "
+    "PA RI SC SD TN TX UT VA VT WA WI WV WY".split()
+)
+
+# A list can never know every acronym, so two shapes keep their capitals without an entry.
+# Measured 2026-10-20 over 23,744 human-written summary entries: this pass changed 11.9% of the
+# capital-letter tokens human writers use, and the commonest were acronyms and lab names it did not
+# know (GERD, TTP, PTSD, HGB, RBC, ORIF) and spinal levels inside a run ("L4-L5" became "l4-l5"). A
+# reviewer reported "Ptsd" in a delivered summary and named PTSD, MTU, LLC and CA.
+# - A token carrying a digit is never a shouted word: "L4-L5", "COVID-19", "HGBA1C", "T4".
+# - A token with no vowel (Y counts as one) is never a shouted word: "PTSD", "LLC", "TTP", "HGB".
+#   The exceptions are ordinary words written short - titles, units and street abbreviations -
+#   which recase as they always did.
+_VOWELS = frozenset("AEIOUY")
+# A run that ends in a comma and a state code is a town ("SAN DIEGO, CA") and is title-cased.
+_PLACE_END = re.compile(r",\s*([A-Z]{2})\.?$")
+_SHORT_WORDS = frozenset(
+    "DR MR MRS MS JR SR ST RD LN BLVD MG MCG ML KG LB LBS CM MM HR HRS".split()
 )
 
 # Words that mark a run as an organisation or facility name rather than a clinical phrase, so it is
@@ -198,16 +309,22 @@ _SENTENCE_START = re.compile(r"(?:^|[.!?:;]|\*\*)\s*$")
 
 
 def _is_acronym(word: str) -> bool:
-    """True for an allowlisted acronym, including a compound whose parts are all acronyms.
+    """True for a token that keeps its capitals: an allowlisted acronym or state code, a token
+    carrying a digit or no vowel, or a compound whose parts all qualify.
 
     The compound case matters: "EMG/NCS" is not in the list itself, and lowercasing half of it would
     read as a typo in a medico-legal document.
     """
     bare = word.rstrip(".,")
-    if word in _ACRONYMS or bare in _ACRONYMS:
+    if word in _ACRONYMS or bare in _ACRONYMS or bare in _STATE_CODES:
         return True
     pieces = [p for p in re.split(r"[/&]", bare) if p]
-    return len(pieces) > 1 and all(p in _ACRONYMS for p in pieces)
+    if len(pieces) > 1:
+        return all(_is_acronym(p) for p in pieces)
+    if any(ch.isdigit() for ch in bare):
+        return True
+    letters = re.sub(r"[^A-Z]", "", bare)
+    return bool(letters) and not set(letters) & _VOWELS and bare not in _SHORT_WORDS
 
 
 def _recase_run(run: str, *, start_of_sentence: bool, title_case: bool) -> str:
@@ -235,15 +352,18 @@ def sentence_case_caps_runs(text: str) -> str:
 
     Three behaviours, in order of precedence:
 
-    * a run of 2+ capitalised words containing an organisation marker becomes Title Case, because
-      lowercasing a company or facility name is worse than leaving it shouting;
+    * a run of 2+ capitalised words containing an organisation marker, or ending in a comma and a
+      state code ("SAN DIEGO, CA" is a place), becomes Title Case, because lowercasing a company,
+      facility or town is worse than leaving it shouting;
     * any other run of 2+ capitalised words becomes sentence case, capitalised only where the run
       begins a sentence so a mid-sentence run does not gain a stray capital;
     * a lone capitalised word of 4+ letters becomes Title case (LASIX -> Lasix).
 
-    A run made entirely of acronyms is untouched. Never call this on a TITLE: the header line is ALL
-    CAPS by convention in 812 of 813 measured human entries, so the transform would destroy the one
-    place capitals are correct.
+    An acronym keeps its capitals wherever it stands (see `_is_acronym`: the allowlist, a state
+    code, a token with a digit or no vowel), and a run made entirely of acronyms is untouched.
+
+    Never call this on a TITLE: the header line is ALL CAPS by convention in 812 of 813 measured
+    human entries, so the transform would destroy the one place capitals are correct.
     """
     if not text:
         return text
@@ -254,10 +374,11 @@ def sentence_case_caps_runs(text: str) -> str:
         if all(_is_acronym(w) for w in words):
             return run  # e.g. "EMG NCS ECG" - nothing to fix
         proper = any(w.rstrip(".,") in _PROPER_NOUN_MARKERS for w in words)
+        place = _PLACE_END.search(run)
         return _recase_run(
             run,
             start_of_sentence=bool(_SENTENCE_START.search(text[: match.start()])),
-            title_case=proper,
+            title_case=proper or bool(place and place.group(1) in _STATE_CODES),
         )
 
     out = _CAPS_RUN.sub(replace_run, text)
