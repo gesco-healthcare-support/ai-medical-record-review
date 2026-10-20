@@ -182,8 +182,8 @@ front of the combined pages.
 
 ### Bodies
 
-- Ordinary sentence case, with an allowlist of acronyms kept in capitals; organisation names in title
-  case (`house_style.py`).
+- Ordinary sentence case, with acronyms kept in capitals (an allowlist, plus any token with a digit
+  or no vowel); organisation names and towns in title case (`house_style.py`).
 - One paragraph, except depositions, which are grouped by transcript pages.
 - Only point labels are bold in the model's output, written `**Label**:`.
 
