@@ -43,6 +43,7 @@ _PROVIDER_KEYS = (
     "VLLM_MAX_IMAGES_PER_PROMPT",
     "VLLM_STAGE_MODELS",
     "VLLM_SUMMARY_CATEGORY_MODELS",
+    "VLLM_SUMMARY_TRUNCATION_MODEL",
 )
 
 
@@ -1174,3 +1175,24 @@ def test_a_gemini_name_for_a_category_on_the_pod_is_refused(monkeypatch):
     """A third way in for #350: the model-versus-backend check reads these names too."""
     with pytest.raises(RuntimeError, match="Gemini model name"):
         _settings(monkeypatch, **_VLLM_UP, VLLM_SUMMARY_CATEGORY_MODELS="9=gemini-2.5-flash")
+
+
+# --- VLLM_SUMMARY_TRUNCATION_MODEL: a cut-off body is re-asked on another served name ----------
+
+
+def test_a_truncation_model_on_the_pod_boots(monkeypatch):
+    s = _settings(
+        monkeypatch,
+        **_VLLM_UP,
+        SUMMARY_BODY_MODEL=_SUMMARY_ADAPTER,
+        VLLM_SUMMARY_TRUNCATION_MODEL=_BASE_MODEL,
+    )
+
+    assert s.vllm_summary_truncation_model == _BASE_MODEL
+    assert s.model_for("body") == _SUMMARY_ADAPTER, "the job still records the adapter"
+
+
+def test_a_gemini_name_as_the_truncation_model_on_the_pod_is_refused(monkeypatch):
+    """The model-versus-backend check reads this name too: on vLLM it is sent to the pod."""
+    with pytest.raises(RuntimeError, match="truncated body"):
+        _settings(monkeypatch, **_VLLM_UP, VLLM_SUMMARY_TRUNCATION_MODEL="gemini-2.5-flash")

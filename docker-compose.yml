@@ -175,6 +175,11 @@ x-backend-env: &backend-env
   # (depositions, the catch-all) on the base model - 7_use_adapter.sh sets it with the adapter, so
   # it must reach a container without a rebuild. Gemini ignores it.
   VLLM_SUMMARY_CATEGORY_MODELS: ${VLLM_SUMMARY_CATEGORY_MODELS:-}
+  # The served model a summary body that hit the token cap is re-asked on, on our model; empty
+  # re-asks the same model at a wider cap. A summary adapter's cut-off body is a loop, so
+  # 7_use_adapter.sh names the base model with the adapter - it must reach a container without a
+  # rebuild. Gemini ignores it.
+  VLLM_SUMMARY_TRUNCATION_MODEL: ${VLLM_SUMMARY_TRUNCATION_MODEL:-}
   # The render ceiling, and the two per-stage targets it caps. page_dpi fits the DPI to a stage's
   # pixel target and then caps it at SUMMARY_IMAGE_DPI - so lowering this silently shrinks the DOI
   # and deposition reads, which is why the app refuses to boot on the mismatch rather than rendering

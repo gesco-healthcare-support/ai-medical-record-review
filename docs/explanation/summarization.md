@@ -212,7 +212,10 @@ started with. Defaults per backend are in [Configuration](../reference/configura
   `SUMMARY_MAX_OUTPUT_TOKENS x SUMMARY_TRUNCATION_RETRY_MULTIPLIER` (a multiplier of 1 or less turns
   it off). A finished reply beats a truncated one; between two truncated replies the longer wins; an
   empty reply never wins; a retry that raises is swallowed because a partial body beats losing the
-  row. It runs against whichever model answered.
+  row. It runs against whichever model answered - or, with summarize on vLLM and
+  `VLLM_SUMMARY_TRUNCATION_MODEL` set, against that model instead (the base model while a summary
+  adapter writes: measured 2026-10-20, 12 of the adapter's 13 cut-off exam bodies were loops, so
+  re-asking the adapter only loops for longer). The row's `model` names whichever reply ships.
 - **Deposition coverage check.** For category 9, `_log_incomplete_deposition()` logs a warning when
   the body cites less than half of the transcript pages it was given. It changes nothing. It exists
   to separate a model that stopped early (reported as finished) from token truncation.
