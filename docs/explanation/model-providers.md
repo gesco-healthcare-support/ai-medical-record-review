@@ -118,7 +118,9 @@ so selecting Gemini never imports the OpenAI package.
   (`category=model`, comma-separated) gives a category its own body and title model, per row in
   `summarize_row`: a summary adapter is trained on no deposition and no catch-all row, so those
   stay on the base model while it writes the rest. The audit keeps `AUDIT_MODEL`, and each
-  summary's model fields record what answered it.
+  summary's model fields record what answered it. `VLLM_SUMMARY_TRUNCATION_MODEL` names the model
+  a body that hit the token cap is re-asked on (normally the base model while an adapter writes
+  summaries, whose cut-off bodies are loops); the row's `model` then names it.
 - **Every other stage** resolves through `Settings.model_for_stage(stage)`. On vLLM it returns
   `VLLM_MODEL`, unless `VLLM_STAGE_MODELS` (`stage=model`, comma-separated) names another served
   model for that stage. One vLLM process serves one base model but several names on it: with
