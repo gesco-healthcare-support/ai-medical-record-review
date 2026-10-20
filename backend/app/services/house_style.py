@@ -218,14 +218,15 @@ _STATE_CODES = frozenset(
     "PA RI SC SD TN TX UT VA VT WA WI WV WY".split()
 )
 
-# A list can never know every acronym, so two shapes keep their capitals without an entry. Measured
-# 2026-10-20 over 23,744 human-written summary entries: this pass changed 11.9% of the capital-letter
-# tokens human writers use, and the commonest were acronyms and lab names it did not know (GERD, TTP,
-# PTSD, HGB, RBC, ORIF) and spinal levels inside a run ("L4-L5" became "l4-l5"). A reviewer reported
-# "Ptsd" in a delivered summary and named PTSD, MTU, LLC and CA.
+# A list can never know every acronym, so two shapes keep their capitals without an entry.
+# Measured 2026-10-20 over 23,744 human-written summary entries: this pass changed 11.9% of the
+# capital-letter tokens human writers use, and the commonest were acronyms and lab names it did not
+# know (GERD, TTP, PTSD, HGB, RBC, ORIF) and spinal levels inside a run ("L4-L5" became "l4-l5"). A
+# reviewer reported "Ptsd" in a delivered summary and named PTSD, MTU, LLC and CA.
 # - A token carrying a digit is never a shouted word: "L4-L5", "COVID-19", "HGBA1C", "T4".
-# - A token with no vowel (Y counts as one) is never a shouted word: "PTSD", "LLC", "TTP", "HGB". The
-#   exceptions are ordinary words written short - titles and units - which recase as they always did.
+# - A token with no vowel (Y counts as one) is never a shouted word: "PTSD", "LLC", "TTP", "HGB".
+#   The exceptions are ordinary words written short - titles, units and street abbreviations -
+#   which recase as they always did.
 _VOWELS = frozenset("AEIOUY")
 # A run that ends in a comma and a state code is a town ("SAN DIEGO, CA") and is title-cased.
 _PLACE_END = re.compile(r",\s*([A-Z]{2})\.?$")
