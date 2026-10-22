@@ -199,8 +199,72 @@ def test_verified_title_is_stored_decorated_when_the_pass_corrects_it(monkeypatc
     out = se.summarize_row("/x.pdf", _row(category="3", flag="x"), prompt="P", verify=True)
 
     assert out["verifiedTitle"] == "[ManualCheck] CORRECTED HEADER [Diagnostic Study] (Pages 1-2)"
-    # The raw title keeps the model's own output.
-    assert "Progress Note" in out["summaryTitle"]
+    # The raw title keeps the model's own wording, in capitals.
+    assert "PROGRESS NOTE" in out["summaryTitle"]
+
+
+def _audit_correcting_title_to(fixed_title):
+    return lambda model, source, summary, title=None, document_date=None: {
+        "fixed_text": "Summary body",
+        "fixed_title": fixed_title,
+        "issues": [{"type": "unsupported", "detail": "d"}],
+    }
+
+
+def test_an_audited_title_in_title_case_is_stored_in_capitals(monkeypatch):
+    """DEMONSTRATES the reviewer's report (2026-10-22): titles must always be capitals. On our model
+    39 of 189 audit-corrected titles came back in Title Case; nothing upper-cased them."""
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se, "verify_summary", _audit_correcting_title_to("Valley Clinic. Office Visit")
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedTitle"] == "VALLEY CLINIC. OFFICE VISIT (Pages 1-2)"
+
+
+def test_an_audited_title_that_only_changes_the_case_is_not_a_correction(monkeypatch):
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("raw OCR text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se, "verify_summary", _audit_correcting_title_to("progress note - dr smith")
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert out["verifiedTitle"] is None
+
+
+@pytest.mark.parametrize(
+    ("generated", "fallback", "expected"),
+    [
+        (
+            "Jane Doe, M.D. Valley Clinic. Office Visit",
+            "-",
+            "JANE DOE, M.D. VALLEY CLINIC. OFFICE VISIT",
+        ),
+        (
+            "JANE DOE, L.Ac. VALLEY ACUPUNCTURE. TREATMENT NOTE",
+            "-",
+            "JANE DOE, L.AC. VALLEY ACUPUNCTURE. TREATMENT NOTE",
+        ),
+        # The row-title fallback is a segmentation title, written in title case.
+        ("   ", "Progress Note", "PROGRESS NOTE"),
+        ("X" * 620, "Follow Up Visit", "FOLLOW UP VISIT"),
+    ],
+)
+def test_a_stored_title_is_always_in_capitals(generated, fallback, expected):
+    assert se._usable_title(generated, fallback) == expected
 
 
 def test_verified_title_stays_none_when_the_pass_finds_nothing(monkeypatch):
@@ -240,8 +304,9 @@ def test_the_title_is_handed_to_the_verify_pass(monkeypatch):
 
     monkeypatch.setattr(se, "verify_summary", fake_verify)
     se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
-    # The BARE model title, without the page suffix or tags - those are added after verification.
-    assert seen["title"] == "Progress Note - Dr Smith"
+    # The BARE model title, without the page suffix or tags - those are added after verification -
+    # in capitals.
+    assert seen["title"] == "PROGRESS NOTE - DR SMITH"
 
 
 def test_the_doi_call_runs_on_the_flash_model_not_the_summary_model(monkeypatch):

@@ -249,6 +249,12 @@ read-only measurement the next day put 38 of the 45 such one-off facility spelli
 The 150-character limit in the prompt is a hint only: the call has no response schema and Gemini
 does not enforce `maxLength`. `_usable_title()` is the enforcement:
 
+- Every stored title is in **capitals**: the reply is upper-cased before anything else reads it, and
+  so is the segmentation-title fallback. The prompt asks for capitals but nothing enforced it, and
+  the audit's corrected title was the hole. On our model 39 of 189 audit-corrected titles came back
+  in Title Case (Gemini 5 of 1,318), and a reviewer reported it on 2026-10-22: "titles should be
+  capital always". A corrected title that differs from the current one only in case is no
+  correction, so it stores nothing.
 - A generated title that is empty or longer than `MAX_GENERATED_TITLE` (200) is **rejected** and the
   row's segmentation title is used instead. Rejected rather than truncated: a 620-character answer
   (seen once, deterministically, on one document) is the wrong kind of answer, and storing it

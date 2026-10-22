@@ -884,7 +884,13 @@ def _usable_title(generated, fallback, source="generated"):
     is a real header, already shown elsewhere in the UI, so falling back keeps that view coherent.
     Mirrors summary_verify's existing rule that a blank fixed_title falls back to the original.
     """
-    cleaned = (generated or "").strip()
+    # CAPITALS, whatever case the reply came in. TITLE_PROMPT asks for the whole line in capitals and
+    # reviewers expect it ("titles should be capital always", the senior reviewer, 2026-10-22), but
+    # nothing enforced it, and the audit's corrected title is the hole: on our model 39 of 189
+    # audit-corrected titles came back in Title Case (Gemini 5 of 1,318), and every lowercase title
+    # on that reviewer's retest records was one. Upper-cased BEFORE the tidy rules, so an audited
+    # title goes through the same clean-up as a generated one.
+    cleaned = (generated or "").strip().upper()
     if cleaned and len(cleaned) <= MAX_GENERATED_TITLE:
         return tidy_title(cleaned)
     logger.warning(
@@ -902,7 +908,8 @@ def _usable_title(generated, fallback, source="generated"):
     # is the wrong KIND of answer and its first 512 characters are not a header either; a long
     # SEGMENTATION title is a real header that is merely long, and its front carries the author and
     # facility a reviewer identifies it by. There is also nothing further to fall back to.
-    kept = ((fallback or "").strip() or "-")[:MAX_STORED_TITLE]
+    # In capitals too: the row title is a segmentation title, written in title case.
+    kept = ((fallback or "").strip().upper() or "-")[:MAX_STORED_TITLE]
     if len((fallback or "").strip()) > MAX_STORED_TITLE:
         logger.warning("row title truncated to %d chars to fit the column", MAX_STORED_TITLE)
     return kept
