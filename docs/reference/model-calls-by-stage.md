@@ -76,7 +76,7 @@ Three calls per summary row. The three models are resolved once when the summari
 | Parts | With `SUMMARY_MULTIMODAL` true: the row's FIRST and LAST page images (one when the row is one page), then `OCR TEXT:` plus the row's OCR text, then `_TITLE_IMAGE_INSTRUCTION`. If rasterising fails, or `SUMMARY_MULTIMODAL` is false: the OCR text only |
 | Temperature | 0.0 |
 | Max output tokens | `SUMMARY_MAX_OUTPUT_TOKENS` |
-| Reply handling | `truncated` is ignored. `_usable_title()` keeps a reply of 1 to 200 characters (`MAX_GENERATED_TITLE`) and otherwise falls back to the row's segmentation title |
+| Reply handling | `truncated` is ignored. `_usable_title()` upper-cases the reply, keeps it when it is 1 to 200 characters (`MAX_GENERATED_TITLE`) and otherwise falls back to the row's segmentation title, also upper-cased |
 | Failure | Exceptions propagate to the summarize worker |
 
 ### Audit
