@@ -279,9 +279,14 @@ category-1 reason is the token "progress note" (`bare_progress_note()`) does not
   deferred the same way. On the read-only copy of the live box (2026-10-15, reviewer-finished
   records) reviewers filed such titles 5 on 13 rows and 1 on 9, and on our model a reviewer moved
   eight two-page "Follow Up Visit" rows of one record from 1 to 5 by hand.
-- "Progress report", "PR-2", "office visit", "work status" and "activity status" keep the rule. So
-  does any title another rule answers on its own word: rule 5's therapy words, the return-to-work
-  voucher, the emergency-department visit, History & Physical.
+- The bare token "progress report" (`bare_progress_report()`) is deferred the same way, unless the
+  title names the primary treating physician or PTP. Measured 2026-10-22: on our model's titles the
+  rule was right on 6 of 10 such rows (the other 4 were therapy reports filed 5), while a title
+  naming the primary treating physician was 1 on 42 of 42 rows on the read-only copy of the live
+  box, so that one keeps the rule.
+- "PR-2", "office visit", "work status" and "activity status" keep the rule. So does any title
+  another rule answers on its own word: rule 5's therapy words, the return-to-work voucher, the
+  emergency-department visit, History & Physical.
 
 Why: on the 27-record exam of 2026-10-06, rule 1 answered 84 bare "Progress Note" rows on our
 trained model and 28 of them were chiropractic, physical-therapy or acupuncture notes the reviewer

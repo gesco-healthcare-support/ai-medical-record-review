@@ -833,8 +833,9 @@ def match_rules(title):
 # them (33%) were chiropractic, physical-therapy or acupuncture notes the reviewer filed under 5.
 # Our model titles a therapy visit "Progress Note" without the discipline, so rule 5 never sees the
 # word that would claim it, and rule 1 answered before anything read the pages - where the author's
-# credential is. The other treating tokens stay with the rule: "progress report", "PR-2",
-# "office visit" and "work status" were 63 right against 4 wrong on the same exam.
+# credential is. The other treating tokens stay with the rule: "PR-2", "office visit" and "work
+# status" were among 63 right against 4 wrong on the same exam. "Progress report" was in that count
+# too and was later moved to the pages as well (`bare_progress_report`, below).
 #
 # Such a row is decided ON ITS PAGES. Not on its title, which is exactly what cannot tell the two
 # apart; and the trained adapter was taught on page text (mrr-training's categorization builder uses
@@ -886,6 +887,39 @@ def bare_follow_up(title):
     return _rule_one_by_itself(title, text)
 
 
+# ON OUR MODEL ONLY: a bare "Progress Report" is decided on its pages too - unless the title names
+# the PRIMARY treating physician, whose progress report is a PR-2 by definition.
+#
+# Measured 2026-10-22, reviewer categories of rows whose only category-1 token is "progress report":
+# on our model's titles (the 27-record exam's seg5 rows and one reviewer's finished records on the
+# test box) the rule was right on 6 of 10 - the other 4 were therapy notes the reviewer filed 5. Our
+# model leaves the discipline out of a therapy report's title exactly as it does a therapy note's. A
+# title naming the primary treating physician or PTP was 1 on 42 of 42 rows on the read-only copy
+# of the live box, so it keeps the rule. The pages decided deferred bare titles right on 112 of 119
+# (run-v3) and 109 of 113 (run-v4) exam rows (2026-10-15).
+_PROGRESS_REPORT = re.compile(r"progress report")
+_TOKENS_BUT_PROGRESS_REPORT = re.compile(
+    "|".join(
+        [alt for alt in _TREATING_VISIT_TOKENS.split("|") if alt != _PROGRESS_REPORT.pattern]
+        + [_FOLLOWUP_TOKEN_SOURCE]
+    )
+)
+_PRIMARY_TREATING = re.compile(r"primary treating|\bptp\b")
+
+
+def bare_progress_report(title):
+    """Is the bare "progress report" token the only reason category 1 answered this title, with no
+    primary treating physician named?"""
+    text = (title or "").lower()
+    if (
+        not _PROGRESS_REPORT.search(text)
+        or _TOKENS_BUT_PROGRESS_REPORT.search(text)
+        or _PRIMARY_TREATING.search(text)
+    ):
+        return False
+    return _rule_one_by_itself(title, text)
+
+
 def _rule_one_by_itself(title, text):
     """Did rule 1 - and no other rule that answers category 1 on its own evidence - answer this?"""
     if match_rules(title) != _FOLLOWUP_MENTION:
@@ -932,6 +966,7 @@ def _decided_by_pages(title):
     return (
         bare_progress_note(title)
         or bare_follow_up(title)
+        or bare_progress_report(title)
         or treating_report_with_authorization(title)
     )
 

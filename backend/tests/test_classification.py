@@ -2339,6 +2339,58 @@ def test_a_bare_follow_up_is_one_whose_only_category_one_reason_is_that_token(ti
     assert classification.bare_follow_up(title) is bare
 
 
+@pytest.mark.parametrize(
+    ("title", "bare"),
+    [
+        ("Progress Report", True),
+        ("PROGRESS REPORT", True),
+        ("Secondary Treating Physician Progress Report", True),
+        # The primary treating physician's progress report is a PR-2 by definition.
+        ("Primary Treating Physician's Progress Report", False),
+        ("PTP Progress Report", False),
+        # Another rule-1 token names the visit outright, so the rule keeps it.
+        ("PR-2 Progress Report", False),
+        ("Office Visit Progress Report", False),
+        ("Follow-Up Progress Report", False),
+        ("Work Status Progress Report", False),
+        # Rule 5 sits above rule 1 and answers these on its own word.
+        ("Physical Therapy Progress Report", False),
+        ("Chiropractic Progress Report", False),
+        ("Progress Note", False),
+    ],
+)
+def test_a_bare_progress_report_is_one_whose_only_category_one_reason_is_that_token(title, bare):
+    assert classification.bare_progress_report(title) is bare
+
+
+def test_on_our_model_the_pages_decide_a_bare_progress_report(monkeypatch):
+    """Measured 2026-10-22: on our model's titles the rule was right on 6 of 10 such rows."""
+    _on_backend(monkeypatch, "vllm")
+    _no_model_call(monkeypatch)
+    assert classification.classify("Progress Report") == classification.Classification(
+        "1", "low", "rules", needs_review=True
+    )
+
+    seen = []
+    _votes(monkeypatch, "5", "5", seen)
+    pages = "Physical therapy re-evaluation by Jane Roe, P.T., D.P.T."
+
+    result = classification.classify("Progress Report", page_text=pages)
+
+    assert result == classification.Classification("5", "high", "llm+embedding", needs_review=False)
+    assert seen == [("embed", pages), ("llm", pages)]
+
+
+def test_on_gemini_a_bare_progress_report_is_still_decided_by_the_rule(monkeypatch):
+    """GUARD: Gemini is untouched."""
+    _on_backend(monkeypatch, "gemini")
+    _no_model_call(monkeypatch)
+
+    result = classification.classify("Progress Report", page_text="any page text")
+
+    assert result == classification.Classification("1", "high", "rules", needs_review=False)
+
+
 def test_on_our_model_the_pages_decide_a_bare_follow_up_visit(monkeypatch):
     """Measured 2026-10-15: reviewers filed bare follow-up titles 5 on 13 rows and 1 on 9."""
     _on_backend(monkeypatch, "vllm")
@@ -2413,7 +2465,12 @@ def test_on_our_model_other_treating_titles_keep_the_rule(monkeypatch):
     _on_backend(monkeypatch, "vllm")
     _no_model_call(monkeypatch)
 
-    for title in ("PR-2 Progress Note", "Progress Report", "Physical Therapy Progress Note"):
+    for title in (
+        "PR-2 Progress Note",
+        "Primary Treating Physician's Progress Report",
+        "Office Visit",
+        "Physical Therapy Progress Note",
+    ):
         result = classification.classify(title, page_text="any page text")
         assert result.method == "rules"
         assert result.needs_review is False
