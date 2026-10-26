@@ -32,6 +32,7 @@ from app.config import get_settings
 from app.db import get_db
 from app.errors import (
     EmptyExtractionError,
+    ModelServerOfflineError,
     OcrUnavailableError,
     PdfUnreadableError,
     PipelineError,
@@ -122,8 +123,9 @@ def _sha256(path: str) -> str:
 
 def _pipeline_error_response(document_id: str, exc: PipelineError) -> JSONResponse:
     """Surface a sync-AI failure as a friendly message (never the raw vendor error). Log the
-    technical detail server-side (ids only). OCR-unavailable is a server config problem (503);
-    an unopenable PDF and an empty extraction are properties of the document (422).
+    technical detail server-side (ids only). OCR-unavailable is a server config problem and a
+    switched-off model server is a server that is down, so both are 503; an unopenable PDF and an
+    empty extraction are properties of the document (422).
 
     `PdfUnreadableError` is tested BEFORE `OcrUnavailableError` and the order is load-bearing: it
     subclasses it, because every internal layer that refuses to degrade on unreadable pages must
@@ -134,7 +136,7 @@ def _pipeline_error_response(document_id: str, exc: PipelineError) -> JSONRespon
     logger.warning("pipeline error on document %s: %s", document_id, exc)
     if isinstance(exc, (PdfUnreadableError, EmptyExtractionError, TranscriptPagesUnreadableError)):
         code = status.HTTP_422_UNPROCESSABLE_ENTITY
-    elif isinstance(exc, OcrUnavailableError):
+    elif isinstance(exc, (OcrUnavailableError, ModelServerOfflineError)):
         code = status.HTTP_503_SERVICE_UNAVAILABLE
     else:
         code = status.HTTP_500_INTERNAL_SERVER_ERROR

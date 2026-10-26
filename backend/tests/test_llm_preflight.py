@@ -12,10 +12,14 @@ foreign-key violation in an unrelated test's teardown, several files away. Injec
 keeps the real config behaviour under test without reaching into state other tests share.
 """
 
+import logging
+
+import httpx
 import pytest
 
 from app.config import Settings
-from app.services.llm import preflight
+from app.errors import ModelServerOfflineError
+from app.services.llm import preflight, vllm
 
 _BASE = {
     "SECRET_KEY": "x" * 32,
@@ -41,14 +45,31 @@ _VLLM = {
 
 
 def _install_settings(monkeypatch, **env):
-    """Build a real Settings from a known environment and hand it to preflight only."""
+    """Build a real Settings from a known environment and hand it to preflight only.
+
+    The per-process record of servers that passed is replaced too, so one test's pass can never
+    stand in for another test's probe.
+    """
     for name in _KEYS:
         monkeypatch.delenv(name, raising=False)
     for name, value in {**_BASE, **env}.items():
         monkeypatch.setenv(name, value)
     settings = Settings()  # type: ignore[call-arg]
     monkeypatch.setattr(preflight, "get_settings", lambda: settings)
+    monkeypatch.setattr(preflight, "_verified", set())
     return settings
+
+
+def _probe_silent(monkeypatch):
+    """A server nobody answers for: what httpx raises when the pod is off or the tunnel is down."""
+    calls = []
+
+    def _silent(root):
+        calls.append(root)
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(preflight, "_probe_vllm_version", _silent)
+    return calls
 
 
 def _probe_returning(monkeypatch, version):
@@ -128,21 +149,155 @@ def test_the_version_we_actually_run_is_accepted(monkeypatch):
 # --- failure is loud --------------------------------------------------------------------------------
 
 
-def test_an_unreachable_server_refuses_to_start(monkeypatch):
+def test_a_server_that_answers_wrongly_refuses_everywhere(monkeypatch):
     """The fail-LOUD half, and the one a neighbouring idiom would have got wrong.
 
-    Both call sites sit next to a deliberate `except Exception` - orphan recovery in main, queue-lane
-    enumeration in the worker. Copying that shape here would boot the app against a pod nobody
-    reached. Recovery is LLM_BACKEND=gemini plus a redeploy, which needs no code change.
+    Something answered, and not the way a vetted server does - a deployment fault. Both startup
+    paths raise: the web app's (which serves through a SILENT server) and the worker's (which waits
+    for one). Both call sites sit next to a deliberate `except Exception`; copying that shape would
+    boot the app against a server that failed its check.
     """
     _install_settings(monkeypatch, **_VLLM)
 
-    def _unreachable(root):
-        raise ConnectionError("connection refused")
+    def _garbled(root):
+        raise ValueError(f"GET {root}/version returned list, expected an object")
 
-    monkeypatch.setattr(preflight, "_probe_vllm_version", _unreachable)
-    with pytest.raises(RuntimeError, match="Refusing to start"):
+    monkeypatch.setattr(preflight, "_probe_vllm_version", _garbled)
+    with pytest.raises(RuntimeError, match="Refusing to send records"):
         preflight.assert_backends_ready()
+    with pytest.raises(RuntimeError, match="Refusing to send records"):
+        preflight.check_backends_before_serving()
+    slept = []
+    with pytest.raises(RuntimeError, match="Refusing to send records"):
+        preflight.wait_for_backends(sleep=slept.append)
+    assert slept == [], "a worker must not wait out a server that answered wrongly"
+
+
+def test_a_version_below_the_floor_stops_the_web_app_too(monkeypatch):
+    # Serving through a silent server must not become serving through a wrong one.
+    _install_settings(monkeypatch, VLLM_MIN_VERSION="0.24.0", **_VLLM)
+    _probe_returning(monkeypatch, "0.23.9")
+    with pytest.raises(RuntimeError, match="below the required floor"):
+        preflight.check_backends_before_serving()
+
+
+# --- a silent server: the pod is switched off -----------------------------------------------------
+
+
+def test_a_silent_server_is_reported_offline_never_as_a_pass(monkeypatch):
+    """Nobody answered, so nothing was verified: the strict check must raise, and say which case."""
+    _install_settings(monkeypatch, **_VLLM)
+    _probe_silent(monkeypatch)
+    with pytest.raises(ModelServerOfflineError, match="did not answer"):
+        preflight.assert_backends_ready()
+
+
+def test_the_web_app_serves_through_a_silent_server_and_says_so(monkeypatch, caplog):
+    """WHEN the model server does not answer at startup, THE web app SHALL start and log it.
+
+    The records are in this app's database, so with the pod off a reviewer can still open, edit and
+    export them. Model calls stay refused (see the client test below), so nothing is sent anywhere.
+    """
+    _install_settings(monkeypatch, **_VLLM)
+    _probe_silent(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger=preflight.__name__):
+        preflight.check_backends_before_serving()
+    assert any("serving without it" in r.getMessage() for r in caplog.records)
+
+
+def test_a_worker_waits_for_a_silent_server_and_then_takes_jobs(monkeypatch):
+    """WHEN the model server does not answer at a worker's startup, THE worker SHALL wait for it.
+
+    It asks again every poll and returns only once the server has answered and passed - so no job is
+    failed row by row against a silent server, and jobs queued overnight start by themselves.
+    """
+    _install_settings(monkeypatch, **_VLLM)
+    answers = iter(["silent", "silent", "0.28.0"])
+
+    def _probe(root):
+        answer = next(answers)
+        if answer == "silent":
+            raise httpx.ConnectTimeout("timed out")
+        return answer
+
+    monkeypatch.setattr(preflight, "_probe_vllm_version", _probe)
+    slept = []
+    preflight.wait_for_backends(poll_s=7.0, sleep=slept.append)
+    assert slept == [7.0, 7.0]
+    assert next(answers, "drained") == "drained", "it must stop asking once the server passed"
+
+
+def test_a_waiting_worker_does_not_log_every_check(monkeypatch, caplog):
+    # A night of 30-second checks is ~1,400 lines; one warning per ten minutes is enough to read.
+    _install_settings(monkeypatch, **_VLLM)
+    remaining = [preflight._WAIT_LOG_EVERY + 1]
+
+    def _probe(root):
+        if remaining[0]:
+            remaining[0] -= 1
+            raise httpx.ConnectError("connection refused")
+        return "0.28.0"
+
+    monkeypatch.setattr(preflight, "_probe_vllm_version", _probe)
+    with caplog.at_level(logging.WARNING, logger=preflight.__name__):
+        preflight.wait_for_backends(sleep=lambda _s: None)
+    waiting = [r for r in caplog.records if "takes no job" in r.getMessage()]
+    assert len(waiting) == 2
+
+
+def test_the_gemini_path_never_waits_or_probes(monkeypatch):
+    _install_settings(monkeypatch, LLM_BACKEND="gemini")
+
+    def _explode(root):
+        raise AssertionError(f"the gemini path must not probe anything, but it probed {root}")
+
+    monkeypatch.setattr(preflight, "_probe_vllm_version", _explode)
+    preflight.check_backends_before_serving()
+    preflight.wait_for_backends(sleep=lambda _s: pytest.fail("the gemini path must not wait"))
+
+
+# --- no client before a pass ----------------------------------------------------------------------
+
+
+def test_no_vllm_client_is_handed_out_while_the_server_is_silent(monkeypatch):
+    """The guarantee the web app's serving rests on: a model call cannot reach an unverified server.
+
+    `_cached_client` is made to explode, so the test fails if a client is BUILT, not merely if one
+    is used - a check placed after construction would still pass a weaker assertion.
+    """
+    settings = _install_settings(monkeypatch, **_VLLM)
+    monkeypatch.setattr(vllm, "get_settings", lambda: settings)
+    _probe_silent(monkeypatch)
+
+    def _built(*_args):
+        raise AssertionError("a vLLM client was built for a server that was never verified")
+
+    monkeypatch.setattr(vllm, "_cached_client", _built)
+    with pytest.raises(ModelServerOfflineError):
+        vllm._client()
+
+
+def test_a_pass_is_remembered_for_the_process_and_a_failure_is_not(monkeypatch):
+    """One request per process once the server has passed; a server that comes up later is seen."""
+    settings = _install_settings(monkeypatch, **_VLLM)
+    monkeypatch.setattr(vllm, "get_settings", lambda: settings)
+    monkeypatch.setattr(vllm, "_cached_client", lambda *_args: "client")
+    probes = []
+    answers = iter(["silent", "0.28.0"])
+
+    def _probe(root):
+        probes.append(root)
+        answer = next(answers)
+        if answer == "silent":
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        return answer
+
+    monkeypatch.setattr(preflight, "_probe_vllm_version", _probe)
+    with pytest.raises(ModelServerOfflineError):
+        vllm._client()
+    assert vllm._client() == "client"
+    assert vllm._client() == "client"
+    assert len(probes) == 2, "the failure must be asked again, the pass must not"
 
 
 def test_an_unparseable_base_url_refuses_to_start(monkeypatch):

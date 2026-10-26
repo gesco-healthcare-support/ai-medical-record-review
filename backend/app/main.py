@@ -34,13 +34,15 @@ async def _lifespan(app: FastAPI):
         stream=sys.stdout,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # Refuse to serve against a model server we have not verified. DELIBERATELY NOT inside the try
+    # Refuse to serve against a model server that answers wrongly. DELIBERATELY NOT inside the try
     # below, and the distinction is the whole point: that block swallows so a Redis outage cannot
     # stop the web app serving, which is right for orphan recovery and wrong here. A PHI destination
-    # that fails its check must stop the boot, not log a warning and carry on.
-    from app.services.llm.preflight import assert_backends_ready
+    # that fails its check must stop the boot, not log a warning and carry on. A server that does not
+    # answer at all (the pod is off) is the one case the check lets the app serve through, and it
+    # decides that itself: model calls stay refused until the server answers and passes.
+    from app.services.llm.preflight import check_backends_before_serving
 
-    assert_backends_ready()
+    check_backends_before_serving()
     # Heartbeat-aware orphan recovery: interrupt jobs whose worker died, but never a live job.
     # Guarded so a Redis outage at boot cannot block the web app from starting.
     try:
