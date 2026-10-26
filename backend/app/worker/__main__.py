@@ -68,10 +68,11 @@ def main(argv: list[str] | None = None) -> None:
     # Before this process takes a single job. NOT wrapped in a try: _user_ids() below deliberately
     # swallows so that a database blip cannot stop a worker serving the base queues, and copying that
     # shape here would let a worker start against an unverified PHI destination and fail rows one by
-    # one instead. See services/llm/preflight.
-    from app.services.llm.preflight import assert_backends_ready
+    # one instead. A silent server (the pod is off) is waited for here, not crash-looped on: queued
+    # jobs stay queued until it answers and passes. See services/llm/preflight.
+    from app.services.llm.preflight import wait_for_backends
 
-    assert_backends_ready()
+    wait_for_backends()
 
     if "segment" in bases:
         # Segment workers run the classifier; reset its per-process catalog cache at startup so a

@@ -44,7 +44,7 @@ from typing import Any
 from app.config import get_settings
 from app.errors import ContextTooLongError
 from app.services import genai_metrics
-from app.services.llm import pacing
+from app.services.llm import pacing, preflight
 from app.services.llm.base import _DEFAULT_STAGE, DelegatingProvider
 from app.services.llm.openai import _strict_schema, _to_messages, _to_response
 from app.services.llm.tokens import estimate_tokens
@@ -76,11 +76,18 @@ _THINKING_ON: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": True
 
 
 def _client():
-    """Lazily built, cached vLLM client.
+    """Lazily built, cached vLLM client - handed out only once the server has passed its version check.
+
+    The check (``preflight.ensure_vllm_verified``) costs one request per process and nothing after
+    that. It is what keeps a web app that started while the pod was off from sending a record to a
+    server nobody has checked: until the server answers and passes, every call here raises
+    ``ModelServerOfflineError``. A worker passes it before taking its first job, so for workers
+    this is a no-op.
 
     The SDK import sits inside ``_cached_client`` so that selecting Gemini never requires the openai
     package to be installed, matching the OpenAI provider.
     """
+    preflight.ensure_vllm_verified()
     settings = get_settings()
     return _cached_client(
         settings.vllm_api_key or _PLACEHOLDER_API_KEY,

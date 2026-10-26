@@ -3909,6 +3909,26 @@ def test_an_unopenable_pdf_answers_422_not_503():
     assert _pipeline_error_response("doc-1", EmptyExtractionError("blank")).status_code == 422
 
 
+def test_a_switched_off_model_server_answers_503_with_a_plain_message():
+    """WHEN a model call from the web app finds our model server switched off, THE SYSTEM SHALL
+    answer 503 with the class's user_message and never the connection detail.
+
+    503 because it is the server that is down, not the document: the same request succeeds once the
+    pod is up. The technical text names the server root, which is no business of the reviewer's."""
+    import json
+
+    from app.api.documents import _pipeline_error_response
+    from app.errors import ModelServerOfflineError
+
+    response = _pipeline_error_response(
+        "doc-1", ModelServerOfflineError("the vLLM server at http://127.0.0.1:8000 did not answer")
+    )
+    assert response.status_code == 503
+    shown = json.loads(response.body)["error"]
+    assert shown == ModelServerOfflineError.user_message
+    assert "127.0.0.1" not in shown
+
+
 def test_unreadable_transcript_pages_answer_422_and_never_leak_the_vendor_error():
     """WHEN _pipeline_error_response is given a TranscriptPagesUnreadableError, THE SYSTEM SHALL
     answer 422 with the class's user_message and never the technical detail.

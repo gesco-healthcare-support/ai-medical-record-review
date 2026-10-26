@@ -34,9 +34,10 @@ have their own `CLAUDE.md`.
 
 ## main.py
 
-- `assert_backends_ready()` runs OUTSIDE the try blocks on purpose: a failing model destination
-  must stop the boot. Never wrap it in `except Exception`, even though the steps after it are
-  wrapped.
+- `check_backends_before_serving()` runs OUTSIDE the try blocks on purpose: a model destination
+  that answers its check wrongly must stop the boot (a silent one is let through by the preflight
+  itself, and model calls stay refused). Never wrap it in `except Exception`, even though the
+  steps after it are wrapped.
 - Every route is authenticated by the app-level `enforce_auth` dependency unless its path is in
   the public list in `auth/deps.py`. Adding a public path is a security decision.
 

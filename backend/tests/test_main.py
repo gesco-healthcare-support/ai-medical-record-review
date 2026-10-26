@@ -14,7 +14,8 @@ distinction explicitly. A failed model-backend preflight MUST stop the boot - it
 try beneath it precisely so that a PHI destination failing its check cannot be logged and carried
 past. A Redis outage during orphan recovery MUST NOT - that block is wrapped so the web tier still
 serves. Each is tested here, because a test of either alone passes against code that does the same
-thing to both.
+thing to both. The one narrow exception - a model server that does not answer at all, which the
+preflight itself lets the web app serve through - has its own test too.
 """
 
 import logging
@@ -71,6 +72,29 @@ async def test_a_backend_that_fails_its_preflight_stops_the_boot(monkeypatch):
     with pytest.raises(RuntimeError, match="not fit to receive traffic"):
         async with LifespanManager(main.app):
             pass
+
+
+async def test_a_switched_off_model_server_does_not_stop_the_web_app(monkeypatch):
+    """WHEN the model server does not answer at startup, THE web app SHALL still start and serve.
+
+    The one carve-out from the rule above, and it is narrow on purpose: only "nobody answered"
+    (ModelServerOfflineError) is let through, never a server that answered wrongly. Between pod days
+    that is the test box's normal state, and refusing to boot left reviewers unable to open or
+    export finished records. Model calls stay refused until the server passes (`vllm._client`).
+    """
+    from app.errors import ModelServerOfflineError
+
+    monkeypatch.setattr("app.worker.recovery.recover_orphans", lambda _session: 0)
+
+    def silent():
+        raise ModelServerOfflineError("the vLLM server did not answer")
+
+    monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", silent)
+
+    async with LifespanManager(main.app):
+        transport = ASGITransport(app=main.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.get("/health")).status_code == 200
 
 
 async def test_a_recovery_failure_does_not_stop_the_boot(monkeypatch):

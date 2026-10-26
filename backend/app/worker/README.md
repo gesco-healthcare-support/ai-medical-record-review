@@ -12,7 +12,7 @@ killed or abandoned job, and the orphan recovery the API runs at start-up.
 | File | What it holds |
 | --- | --- |
 | `__init__.py` | Package docstring: the two queues, and which worker needs torch. |
-| `__main__.py` | Entry point `python -m app.worker [segment] [summarize]`: model-backend preflight, lane expansion, `RoundRobinWorker` with the scheduler on. |
+| `__main__.py` | Entry point `python -m app.worker [segment] [summarize]`: model-backend preflight (waits while the model server does not answer), lane expansion, `RoundRobinWorker` with the scheduler on. |
 | `queues.py` | Kind -> base queue and kind -> task dotted path; per-user lane names; the lazy Redis connection. Import-light so the API can enqueue without torch. |
 | `tasks.py` | The runner `_run`, the `_finalize_*` functions, and the four task functions `segment_document`, `classify_document`, `dedup_document`, `summarize_document`. |
 | `cancel.py` | The Redis cancel flag `mrr:cancel:<job_id>` and this process's current job id. |
