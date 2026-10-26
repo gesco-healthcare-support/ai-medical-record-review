@@ -1057,6 +1057,20 @@ class Settings(BaseSettings):
     # looping list (12,227 characters, 195 numbers no page carries) that only the audit cut back.
     # Off by default; a switch so a pod day can compare both without a rebuild. Gemini ignores it.
     vllm_audit_keeps_content: bool = False
+    # ON OUR MODEL ONLY, and only with VLLM_AUDIT_KEEPS_CONTENT on: before a number the audit deletes
+    # counts as "not on the pages" because the OCR text lacks it, the audit model is shown the row's
+    # page images (the same ones the body was written from) and asked which of those numbers are
+    # written there; a number it confirms counts as on the pages (summarize_engine.
+    # _numbers_on_the_page). The audit checks the OCR TEXT only, and OCR misses handwriting, so on a
+    # hand-filled page a number the body read correctly looks unsupported and is deleted.
+    #
+    # Measured 2026-10-26 on two sets of large eData records (6,120 and 5,525 pages, hand-filled forms
+    # on 15% and 33% of pages): of 344 numbers the audit deleted from summaries of hand-filled rows,
+    # the base model shown the page images judged 285 (83%) written on the page, against 9% of made-up
+    # decoys in the same format (mrr-training scripts/hw_audit_judge.py). One extra call, only for a
+    # row whose audit deletes numbers the OCR does not carry. Off by default until a pod day measures
+    # the delivered summaries with it on. Gemini ignores it.
+    vllm_audit_image_check: bool = False
     # ON OUR MODEL ONLY: bound the summary audit's reply in the grammar itself - at most 30 issues,
     # each detail at most 600 characters (summary_verify._OUR_MODEL_BOUNDED_SCHEMA). Measured
     # 2026-10-19 on 1,400 completed audits on our model: issue details p95 269 characters, p99
