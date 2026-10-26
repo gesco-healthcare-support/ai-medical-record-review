@@ -154,6 +154,7 @@ x-backend-env: &backend-env
   # are mostly on the pages (or it deletes none), the draft ships; issues are still stored. A
   # switch so a pod day can compare both without a rebuild. Gemini ignores it.
   VLLM_AUDIT_KEEPS_CONTENT: ${VLLM_AUDIT_KEEPS_CONTENT:-false}
+  VLLM_AUDIT_IMAGE_CHECK: ${VLLM_AUDIT_IMAGE_CHECK:-false}
   # Off ships today's audit reply. On, our model's audit reply is bounded in the grammar (30
   # issues, 600-character details) so a runaway cannot spend the token cap. A switch so a pod day
   # can compare both without a rebuild. Gemini ignores it.

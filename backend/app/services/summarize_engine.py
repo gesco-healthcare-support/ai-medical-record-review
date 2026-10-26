@@ -10,6 +10,7 @@ import. This module no longer names an SDK.
 """
 
 import difflib
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -325,7 +326,7 @@ def _numbers(text: str | None) -> set[str]:
 
 
 def _would_delete_content_on_our_model(
-    issue_types: set[str], draft: str, rewrite: str, source_text: str
+    issue_types: set[str], draft: str, rewrite: str, source_text: str, confirm=None
 ) -> bool:
     """True when `VLLM_AUDIT_KEEPS_CONTENT` keeps the draft over the audit's rewrite.
 
@@ -334,6 +335,11 @@ def _would_delete_content_on_our_model(
     the audit cleaning an invention, and on a runaway draft (a looping list of numbers no page
     carries) it is the only thing that cuts it back. When the deleted numbers are at least as often
     ON the pages, or it deletes none, the draft ships. See config.vllm_audit_keeps_content.
+
+    ``confirm``, when given (`VLLM_AUDIT_IMAGE_CHECK`), is asked only when the text alone would let
+    the rewrite win: it receives the deleted numbers the OCR text does not carry and returns those
+    the page IMAGES show. A handwritten number is missing from the OCR, not from the page, so a
+    confirmed one counts as on the pages. See config.vllm_audit_image_check.
     """
     settings = get_settings()
     if not (
@@ -344,8 +350,79 @@ def _would_delete_content_on_our_model(
         return False
     deleted = _numbers(draft) - _numbers(rewrite)
     source = (source_text or "").replace(" ", "")
-    on_pages = sum(number in source for number in deleted)
-    return on_pages >= len(deleted) - on_pages
+    on_pages = {number for number in deleted if number in source}
+    if confirm is not None and len(on_pages) < len(deleted) - len(on_pages):
+        on_pages |= set(confirm(deleted - on_pages)) & deleted
+    return len(on_pages) >= len(deleted) - len(on_pages)
+
+
+# The image check's question, its reply shape and its cap. Worded as the measurement asked it
+# (mrr-training scripts/hw_audit_judge.py, 2026-10-26: 83% of numbers the audit deleted from
+# hand-filled summaries judged on the page, 9% of decoys).
+_ON_THE_PAGE_SYSTEM = (
+    "You check whether values are written on pages of a medical document. Some of it is handwritten "
+    "or filled in by hand. Name a value only if you can see it written on the pages, in print or in "
+    "handwriting, exactly as given."
+)
+_ON_THE_PAGE_SCHEMA = {
+    "type": "object",
+    "properties": {"present": {"type": "array", "items": {"type": "string"}}},
+    "required": ["present"],
+}
+
+
+def _image_confirmer(audit_model, pdf_path, row):
+    """The image check `_would_delete_content_on_our_model` may ask, or None when it is off.
+
+    A callable rather than a flag, so the rule asks only when its text-only count would let the
+    rewrite win - one extra call for those rows, none for the rest. See config.vllm_audit_image_check.
+    """
+    if not get_settings().vllm_audit_image_check:
+        return None
+    return lambda numbers: _numbers_on_the_page(audit_model, pdf_path, row, numbers)
+
+
+def _numbers_on_the_page(audit_model, pdf_path, row, numbers) -> set[str]:
+    """Which of ``numbers`` the audit model sees written on the row's page images.
+
+    The images are the body's own (`page_image_parts`, the first `summary_image_max_pages` pages), so
+    the check sees exactly what the summary was written from. Any failure - no PDF, a render error, a
+    reply that is not the expected JSON - confirms nothing, which leaves today's text-only rule in
+    charge: the check can only ever keep a draft the text alone would have kept or one whose numbers
+    it saw, never ship more than today on its own failure.
+    """
+    asked = sorted(numbers)
+    if not asked or not pdf_path:
+        return set()
+    try:
+        parts = page_image_parts(
+            pdf_path, row["start"], row["end"], get_settings().summary_image_max_pages
+        )
+        response = get_provider().generate_structured(
+            model=audit_model,
+            system=_ON_THE_PAGE_SYSTEM,
+            parts=[
+                *parts,
+                TextPart(
+                    "Which of these values are written on the pages above? List only those you can "
+                    "see, exactly as given:\n" + "\n".join(asked)
+                ),
+            ],
+            schema=_ON_THE_PAGE_SCHEMA,
+            temperature=0.0,
+            stage="summarize",
+            max_output_tokens=64 + 16 * len(asked),
+        )
+        present = json.loads(response.text or "{}").get("present") or []
+    except Exception:  # noqa: BLE001 - a failed check confirms nothing; today's rule then decides
+        logger.warning(
+            "image check failed for pages %s-%s; the text-only rule decides",
+            row["start"],
+            row["end"],
+            exc_info=True,
+        )
+        return set()
+    return {str(value).strip() for value in present} & set(asked)
 
 
 def _issues_to_store(issues: list) -> list:
@@ -3001,7 +3078,7 @@ def _house_body(text: str, deposition: bool) -> str:
     return text if deposition else one_paragraph(text)
 
 
-def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
+def _verified_outputs(audit_model, row, text, summary, title, doi_lead, pdf_path=None):
     """Audit the body and title, and turn the verdict into the four fields the row stores.
 
     Returns ``(verified_text, verified_title, verify_issues, verify_ran)``.
@@ -3106,7 +3183,13 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead):
                 ",".join(sorted(issue_types)),
                 _rewrite_shape(summary, result["fixed_text"]),
             )
-        elif _would_delete_content_on_our_model(issue_types, summary, result["fixed_text"], text):
+        elif _would_delete_content_on_our_model(
+            issue_types,
+            summary,
+            result["fixed_text"],
+            text,
+            confirm=_image_confirmer(audit_model, pdf_path, row),
+        ):
             # Same remedy as the guards around it: the draft ships, the issues are stored so the
             # reviewer sees what was flagged, and the rate is measurable from this line.
             logger.warning(
@@ -3297,6 +3380,8 @@ class _BodyFinish:
     # None when the audit is not to run for this call (the `verify` switch is off).
     audit_model: str | None
     row: dict
+    # The record, for the audit's image check (`_numbers_on_the_page`).
+    pdf_path: str
     source_text: str
     title: str
     doi_lead: str
@@ -3332,6 +3417,7 @@ def _finished_body(finishing: _BodyFinish, date: str, body: str) -> dict:
             body,
             finishing.title,
             finishing.doi_lead,
+            finishing.pdf_path,
         )
 
     # PARTIAL unreadable row: the body above was summarized from the pages that COULD be read, so
@@ -3533,6 +3619,7 @@ def summarize_row(
     finishing = _BodyFinish(
         audit_model=audit_model if verify else None,
         row=row,
+        pdf_path=pdf_path,
         source_text=text,
         title=title,
         doi_lead=doi_lead,
