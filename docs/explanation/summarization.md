@@ -227,7 +227,9 @@ A body that is still truncated after the re-ask is stored, and the row is flagge
 
 `_body_or_parts()` wraps `_generate_body()`. When the model server refuses the prompt as longer than
 its context window, the vLLM provider raises `ContextTooLongError` (`backend/app/errors.py`) instead
-of a bare 400, and the body is read in parts:
+of a bare 400, and the body is read in parts. vLLM words that refusal two ways - the prompt plus the
+reply do not fit ("maximum context length is ..."), or the prompt alone does not ("Input length (...)
+exceeds model's maximum context length (...)") - and `_context_too_long()` recognises both:
 
 1. `_text_parts()` cuts the OCR text at line breaks into consecutive pieces that each fill at most
    60% of the window, sized from the refused prompt's own token count when the server states it,
@@ -396,6 +398,15 @@ flowchart TD
   summaries than shipping every rewrite, with no more numbers off the pages. The number check is
   what stops a runaway draft (a looping list of numbers no page carries) from shipping. Gemini
   never takes this branch.
+- With `VLLM_AUDIT_IMAGE_CHECK` also on (off by default), a deleted number the OCR text lacks is
+  not yet counted against the draft: when the text alone would let the rewrite win, the audit model
+  is shown the row's page images (the body's own, `page_image_parts`) and asked which of those
+  numbers are written there (`_numbers_on_the_page()`), and each one it sees counts as on the pages.
+  The audit reads the OCR text only, and OCR misses handwriting, so on a hand-filled form a number
+  the body read correctly looks unsupported. Measured 2026-10-26 on two sets of large records with
+  hand-filled pages: 83% of the numbers the audit deleted from hand-filled summaries were judged on
+  the page, against 9% of made-up decoys. A failed check confirms nothing, so the text-only rule
+  decides. One extra call, only for rows whose audit deletes numbers the OCR does not carry.
 - `_drops_required_headings()` compares counts of bold spans, never their text, because renaming a
   heading is allowed. If every issue is correction-only (`capitalization`, `range_of_motion`), any
   lost heading rejects the rewrite. Otherwise a body with at least three headings that loses more

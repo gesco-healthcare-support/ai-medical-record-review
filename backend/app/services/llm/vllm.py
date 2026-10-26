@@ -149,19 +149,29 @@ def _retryable(exc) -> bool:
 
 # Bounded digit runs, and the prompt count anchored so a search cannot restart inside a number: an
 # unbounded `(\d+) input tokens` backtracks super-linearly on a long run of digits (Sonar S8786).
-_CONTEXT_LIMIT = re.compile(r"maximum context length is (\d{1,9})", re.IGNORECASE)
-_PROMPT_TOKENS = re.compile(r"(?<!\d)(\d{1,9}) input tokens", re.IGNORECASE)
+# vLLM words the refusal two ways, so each pattern accepts both: "maximum context length is 131072"
+# and "maximum context length (131072)"; "... 122881 input tokens" and "Input length (131858)".
+_CONTEXT_LIMIT = re.compile(r"maximum context length (?:is |\()(\d{1,9})", re.IGNORECASE)
+_PROMPT_TOKENS = re.compile(
+    r"(?<!\d)(\d{1,9}) input tokens|input length \((\d{1,9})\)", re.IGNORECASE
+)
 
 
 def _context_too_long(exc) -> ContextTooLongError | None:
     """A ``ContextTooLongError`` when ``exc`` is the server refusing an over-long prompt, else None.
 
-    vLLM answers such a prompt with a 400 whose message reads "This model's maximum context length is
-    131072 tokens. However, you requested 8192 output tokens and your prompt contains at least 122881
-    input tokens ...". It is not retryable - the same prompt is refused every time - so it used to fail
-    the row outright (2 of 941 summaries on 2026-10-23, both whole hospital stays). Naming it lets the
-    summary step split the document instead. The prompt size is optional: a message that does not
-    state it still maps, and the caller falls back to a conservative estimate.
+    vLLM answers such a prompt with a 400, worded one of two ways, both seen on 2026-10-26:
+
+    - the prompt plus the requested reply do not fit: "This model's maximum context length is 131072
+      tokens. However, you requested 8192 output tokens and your prompt contains at least 122881
+      input tokens ...";
+    - the prompt alone does not fit: "Input length (131858) exceeds model's maximum context length
+      (131072)." Recognising only the first left a 149-page hospital stay failing its row.
+
+    It is not retryable - the same prompt is refused every time - so it used to fail the row outright
+    (2 of 941 summaries on 2026-10-23, both whole hospital stays). Naming it lets the summary step
+    split the document instead. The prompt size is optional: a message that does not state it still
+    maps, and the caller falls back to a conservative estimate.
     """
     if getattr(exc, "status_code", None) != 400:
         return None
@@ -171,9 +181,10 @@ def _context_too_long(exc) -> ContextTooLongError | None:
     if limit is None:
         return None
     prompt = _PROMPT_TOKENS.search(message)
+    tokens = (prompt.group(1) or prompt.group(2)) if prompt else None
     return ContextTooLongError(
         "the prompt is longer than the model's context window",
-        input_tokens=int(prompt.group(1)) if prompt else None,
+        input_tokens=int(tokens) if tokens else None,
         limit=int(limit.group(1)),
     )
 

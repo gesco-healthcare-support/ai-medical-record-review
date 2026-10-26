@@ -5,6 +5,7 @@ Pure (no DB, no Vertex): _generate, the OCR call, and verify_summary are monkeyp
 tests assert what summarize_row FEEDS the model and how it threads the verify result.
 """
 
+import json
 import logging
 import re
 
@@ -4714,3 +4715,126 @@ def test_a_document_that_fits_is_written_in_one_call(monkeypatch):
     assert calls.count(False) == 1
     assert calls.count(True) == 1
     assert out["auditModel"] is not None
+
+
+# VLLM_AUDIT_IMAGE_CHECK: the audit reads the OCR text only, and OCR misses handwriting, so on a
+# hand-filled page a number the body read correctly looks unsupported. Measured 2026-10-26: 83% of
+# the numbers the audit deleted from hand-filled summaries were on the page, 9% of decoys (config.py).
+class _PageChecker:
+    """A provider stand-in for the image check: answers which values it 'sees', records the ask."""
+
+    name = "vllm"
+
+    def __init__(self, present):
+        self.present = present
+        self.asked = []
+
+    def generate_structured(
+        self, *, model, system, parts, schema, temperature, stage, max_output_tokens
+    ):
+        from types import SimpleNamespace
+
+        self.asked.append(parts[-1].text)
+        return SimpleNamespace(text=json.dumps({"present": self.present}))
+
+
+def _image_check_on(monkeypatch, present):
+    _audit_on(monkeypatch, "vllm", keeps_content=True)
+    monkeypatch.setattr(get_settings(), "vllm_audit_image_check", True)
+    checker = _PageChecker(present)
+    monkeypatch.setattr(se, "get_provider", lambda: checker)
+    monkeypatch.setattr(se, "page_image_parts", lambda *a, **k: [])
+    return checker
+
+
+@pytest.mark.parametrize(
+    ("seen", "keeps_draft"),
+    [(["40", "15"], True), (["40"], True), ([], False)],
+    ids=["both-seen", "one-of-two-a-tie", "none-seen"],
+)
+def test_a_handwritten_number_the_pages_show_keeps_the_draft(monkeypatch, seen, keeps_draft):
+    """WHEN the OCR lacks the numbers the rewrite deletes and the image check sees them written on
+    the page, THE SYSTEM SHALL count them as on the pages and keep the draft; unseen ones still
+    count against it, so a draft whose numbers are on no page is still cut back."""
+    checker = _image_check_on(monkeypatch, seen)
+    _numbered(monkeypatch, "No measurements recorded.", _SUBSTANTIVE)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert len(checker.asked) == 1
+    assert "40" in checker.asked[0]
+    assert "15" in checker.asked[0]
+    if keeps_draft:
+        assert out["verifiedText"] is None
+        assert "Flexion 40 degrees" in out["summaryText"]
+    else:
+        assert out["verifiedText"].endswith("Lumbar strain.")
+
+
+def test_the_image_check_is_not_asked_when_the_text_already_keeps_the_draft(monkeypatch):
+    """One extra call only where it can change the answer: numbers the OCR already carries need no
+    second look."""
+    checker = _image_check_on(monkeypatch, [])
+    _numbered(monkeypatch, "Lumbar flexion 40 degrees, extension 15 degrees.", _SUBSTANTIVE)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert checker.asked == []
+    assert out["verifiedText"] is None
+
+
+def test_with_the_image_check_off_nothing_is_asked(monkeypatch):
+    """Guard on today's behaviour: off by default, the rule reads the OCR text alone."""
+    _audit_on(monkeypatch, "vllm", keeps_content=True)
+    checker = _PageChecker(["40", "15"])
+    monkeypatch.setattr(se, "get_provider", lambda: checker)
+    _numbered(monkeypatch, "No measurements recorded.", _SUBSTANTIVE)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+
+    assert checker.asked == []
+    assert out["verifiedText"].endswith("Lumbar strain.")
+
+
+def test_the_image_check_confirms_only_what_it_was_asked(monkeypatch):
+    """A reply naming a value nobody asked about cannot add it, and the asked list is what counts."""
+    checker = _PageChecker(["40", "999", " 15 "])
+    monkeypatch.setattr(se, "get_provider", lambda: checker)
+    monkeypatch.setattr(se, "page_image_parts", lambda *a, **k: [])
+
+    assert se._numbers_on_the_page("m", "/x.pdf", _row(), {"40", "15"}) == {"40", "15"}
+
+
+@pytest.mark.parametrize("failure", ["render", "reply"])
+def test_a_failed_image_check_confirms_nothing(monkeypatch, caplog, failure):
+    """WHEN the check cannot run - a render error, a reply that is not the expected JSON - THE
+    SYSTEM SHALL confirm nothing, so today's text-only rule decides and nothing extra ships."""
+
+    class _Broken:
+        name = "vllm"
+
+        def generate_structured(self, **_kw):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(text="not json")
+
+    def no_render(*_a, **_k):
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr(se, "get_provider", lambda: _Broken())
+    if failure == "render":
+        monkeypatch.setattr(se, "page_image_parts", no_render)
+    else:
+        monkeypatch.setattr(se, "page_image_parts", lambda *a, **k: [])
+
+    with caplog.at_level("WARNING"):
+        assert se._numbers_on_the_page("m", "/x.pdf", _row(), {"40"}) == set()
+    assert "image check failed for pages 1-2" in caplog.text
+
+
+def test_the_image_check_needs_a_record_and_numbers(monkeypatch):
+    calls = []
+    monkeypatch.setattr(se, "get_provider", lambda: calls.append(1))
+    assert se._numbers_on_the_page("m", None, _row(), {"40"}) == set()
+    assert se._numbers_on_the_page("m", "/x.pdf", _row(), set()) == set()
+    assert calls == []
