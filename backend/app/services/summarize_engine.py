@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date as calendar_date
 
 from app.config import get_settings
-from app.errors import EmptyExtractionError, is_rate_limited
+from app.errors import ContextTooLongError, EmptyExtractionError, is_rate_limited
 from app.services.deposition_pages import transcript_page_offset
 from app.services.house_style import one_paragraph, sentence_case_caps_runs
 from app.services.llm import Part, TextPart, get_provider
@@ -2882,6 +2882,117 @@ def _generate_body(model, system_msg, body_contents, row):
     return summary, truncated, model, body_fallback_from
 
 
+# A document too long for one request is read in consecutive parts, then summarized from the parts.
+# Measured 2026-10-23: two whole hospital stays of 149 and 253 pages (~280k and ~1.06M OCR characters)
+# overflowed our model's 131,072-token window, and those rows failed outright. Gemini's window is far
+# larger, so in practice only the vLLM path reaches this; it is provider-neutral in case that changes.
+_PART_INSTRUCTION = (
+    "The text above is part {i} of {n} of ONE document that is too long to read at once. Summarize "
+    "only what THIS part contains, following the rules above. A later step combines the parts, so do "
+    "not write an introduction or say that this is a part."
+)
+_PARTS_HEADER = "SUMMARIES OF THE CONSECUTIVE PARTS OF ONE DOCUMENT, IN ORDER:\n\n"
+_MERGE_INSTRUCTION = (
+    "The text above holds the summaries of the {n} consecutive parts of ONE document, in order. Write "
+    "the single summary of the whole document, following the rules above. Use only facts the part "
+    "summaries state - add none - and state a fact the parts repeat only once."
+)
+# Share of the context window a part may fill: the system message, the instruction and the reply all
+# need room, and the token count per character is an estimate.
+_PART_SHARE = 0.6
+# Tokens per OCR character when the server did not say how long the prompt was. Measured 2026-10-23
+# on the overflowing hospital stay: 122,881 prompt tokens for ~280k characters plus 15 page images,
+# i.e. under 0.45 per character of text. 0.5 errs on the side of more, smaller parts.
+_TOKENS_PER_CHAR = 0.5
+_FALLBACK_CONTEXT = 131_072
+
+
+def _text_parts(text, too_long) -> list:
+    """``text`` cut at line breaks into pieces that each fit the window ``too_long`` reported."""
+    limit = too_long.limit or _FALLBACK_CONTEXT
+    per_char = _TOKENS_PER_CHAR
+    if too_long.input_tokens and text:
+        # The refused prompt's own size, spread over its text. It also counted the system message and
+        # any page images, so this OVER-states a character's cost - which only makes the parts smaller.
+        per_char = max(per_char, too_long.input_tokens / len(text))
+    max_chars = max(1_000, int(limit * _PART_SHARE / per_char))
+    pieces, start = [], 0
+    while start < len(text):
+        end = min(len(text), start + max_chars)
+        if end < len(text):
+            cut = text.rfind("\n", start + max_chars // 2, end)
+            end = cut + 1 if cut > start else end
+        pieces.append(text[start:end])
+        start = end
+    return pieces
+
+
+def _body_or_parts(model, system_msg, body_contents, row, text):
+    """The summary body, read in parts when the document is too long for one request.
+
+    Returns ``(summary, truncated, model, fallback_from, parts)``; ``parts`` is 0 when the body was
+    written in one call, as it is for every document that fits. Only a ``ContextTooLongError`` takes
+    the parts path. Each part is OCR text alone - the page images of a 250-page stay could not fit
+    either - and the parts' summaries are then summarized once more under the same house rules, so
+    the delivered body reads like any other.
+    """
+    try:
+        return (*_generate_body(model, system_msg, body_contents, row), 0)
+    except ContextTooLongError as too_long:
+        pieces = _text_parts(text, too_long)
+        prompt_tokens = too_long.input_tokens
+    n = len(pieces)
+    logger.warning(
+        "pages %s-%s are too long for one request (%s tokens); summarizing them in %s parts",
+        row["start"],
+        row["end"],
+        prompt_tokens,
+        n,
+    )
+    partials, truncated, fallback_from = [], False, None
+    for i, piece in enumerate(pieces, start=1):
+        contents = [
+            TextPart(_OCR_TEXT_HEADER + piece),
+            TextPart(_PART_INSTRUCTION.format(i=i, n=n)),
+        ]
+        part, cut, model, fell_back = _generate_body(model, system_msg, contents, row)
+        partials.append(f"PART {i}:\n{part.strip()}")
+        truncated, fallback_from = truncated or cut, fallback_from or fell_back
+    contents = [
+        TextPart(_PARTS_HEADER + "\n\n".join(partials)),
+        TextPart(_MERGE_INSTRUCTION.format(n=n)),
+    ]
+    summary, cut, model, fell_back = _generate_body(model, system_msg, contents, row)
+    return summary, truncated or cut, model, fallback_from or fell_back, n
+
+
+def _audit_fits(verify, parts) -> bool:
+    """Whether to audit: never a body written in parts.
+
+    Its source is the same text that did not fit one request, so the audit would be refused too and
+    ship the body unaudited anyway - not attempting it saves a call that cannot succeed.
+    """
+    return bool(verify) and not parts
+
+
+def _title_or_head(title_model, pdf_path, row, text) -> str:
+    """The raw title reply; for a document too long for one request, read off its first part.
+
+    A title is read from the first and last page images and the opening of the text, so the first
+    part of an over-long document carries everything the title call needs.
+    """
+    try:
+        title, _ = _generate(
+            title_model, TITLE_PROMPT, _title_contents(pdf_path, row, text), temperature=0.0
+        )
+    except ContextTooLongError as too_long:
+        head = _text_parts(text, too_long)[0]
+        title, _ = _generate(
+            title_model, TITLE_PROMPT, _title_contents(pdf_path, row, head), temperature=0.0
+        )
+    return title
+
+
 def _house_body(text: str, deposition: bool) -> str:
     """The deterministic house-style passes over a body, generated or audited alike: capitals, then
     one paragraph - see `house_style.one_paragraph` - for everything but a deposition, which is
@@ -3389,17 +3500,16 @@ def summarize_row(
             )
     # `model` is REBOUND from the return: it names the model that actually answered, and the output
     # dict records it as this row's provenance.
-    summary, truncated, model, body_fallback_from = _generate_body(
-        model, system_msg, body_contents, row
+    summary, truncated, model, body_fallback_from, parts = _body_or_parts(
+        model, system_msg, body_contents, row, text
     )
     if deposition:
         # Here rather than inside `_generate_body`, which is handed neither the source text nor
         # the row's deposition-ness - and passing both would take it, and the helper below it,
         # past the seven-parameter ceiling this module already sits at.
         _log_incomplete_deposition(summary, text, row)
-    title, _ = _generate(
-        title_model, TITLE_PROMPT, _title_contents(pdf_path, row, text), temperature=0.0
-    )
+    title = _title_or_head(title_model, pdf_path, row, text)
+    verify = _audit_fits(verify, parts)
     # The title call has no response_schema, and Gemini does not enforce maxLength on strings even
     # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and
     # written to a varchar(512).

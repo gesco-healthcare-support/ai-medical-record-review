@@ -37,10 +37,12 @@ until a sweep that measures a constrained configuration can set them honestly.
 
 import logging
 import random
+import re
 import time
 from typing import Any
 
 from app.config import get_settings
+from app.errors import ContextTooLongError
 from app.services import genai_metrics
 from app.services.llm import pacing
 from app.services.llm.base import _DEFAULT_STAGE, DelegatingProvider
@@ -143,6 +145,35 @@ def _retryable(exc) -> bool:
     if status == 429:
         return True
     return status is not None and 500 <= status < 600
+
+
+_CONTEXT_LIMIT = re.compile(r"maximum context length is (\d+)", re.IGNORECASE)
+_PROMPT_TOKENS = re.compile(r"(\d+) input tokens", re.IGNORECASE)
+
+
+def _context_too_long(exc) -> ContextTooLongError | None:
+    """A ``ContextTooLongError`` when ``exc`` is the server refusing an over-long prompt, else None.
+
+    vLLM answers such a prompt with a 400 whose message reads "This model's maximum context length is
+    131072 tokens. However, you requested 8192 output tokens and your prompt contains at least 122881
+    input tokens ...". It is not retryable - the same prompt is refused every time - so it used to fail
+    the row outright (2 of 941 summaries on 2026-10-23, both whole hospital stays). Naming it lets the
+    summary step split the document instead. The prompt size is optional: a message that does not
+    state it still maps, and the caller falls back to a conservative estimate.
+    """
+    if getattr(exc, "status_code", None) != 400:
+        return None
+    # The SDK's own `message` and the exception text, since either may be the one that carries it.
+    message = f"{getattr(exc, 'message', '') or ''} {exc}"
+    limit = _CONTEXT_LIMIT.search(message)
+    if limit is None:
+        return None
+    prompt = _PROMPT_TOKENS.search(message)
+    return ContextTooLongError(
+        "the prompt is longer than the model's context window",
+        input_tokens=int(prompt.group(1)) if prompt else None,
+        limit=int(limit.group(1)),
+    )
 
 
 def _cancellable_sleep(total: float) -> None:
@@ -288,6 +319,9 @@ class VLLMProvider(DelegatingProvider):
                 completion = client.chat.completions.create(**kwargs)
             except Exception as exc:  # noqa: BLE001 - classified immediately below
                 genai_metrics.record(model, genai_metrics.OUTCOME_SERVER_ERROR)
+                too_long = _context_too_long(exc)
+                if too_long is not None:
+                    raise too_long from exc
                 if not _retryable(exc):
                     raise
                 last = exc

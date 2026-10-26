@@ -564,3 +564,46 @@ def test_omitting_the_sampling_parameters_leaves_the_vllm_request_unchanged(sent
     VLLMProvider().generate_text(model="m", system=None, parts=[TextPart("hi")], temperature=0.0)
     assert "top_p" not in sent
     assert "top_k" not in sent["extra_body"]
+
+
+def _bad_request(message):
+    import openai
+
+    exc = openai.BadRequestError.__new__(openai.BadRequestError)
+    exc.status_code = 400
+    exc.message = message
+    exc.response = None
+    return exc
+
+
+# The server's wording, as logged on 2026-10-23 when a 253-page hospital stay was summarized.
+_OVERLONG = (
+    "This model's maximum context length is 131072 tokens. However, you requested 8192 output "
+    "tokens and your prompt contains at least 122881 input tokens, for a total of at least 131073 "
+    "tokens."
+)
+
+
+def test_an_overlong_prompt_is_named_and_not_retried(monkeypatch):
+    """The same prompt is refused every time, so a retry only wastes the card; and naming it lets
+    the summary step read the document in parts instead of failing the row."""
+    from app.errors import ContextTooLongError
+
+    state = _provider_with(monkeypatch, [_bad_request(_OVERLONG), _Completion("never")])
+    with pytest.raises(ContextTooLongError) as caught:
+        _run_vllm()
+    assert state["i"] == 1
+    assert caught.value.limit == 131072
+    assert caught.value.input_tokens == 122881
+
+
+def test_any_other_bad_request_is_raised_unchanged(monkeypatch):
+    import openai
+
+    from app.errors import ContextTooLongError
+
+    state = _provider_with(monkeypatch, [_bad_request("invalid schema"), _Completion("never")])
+    with pytest.raises(openai.BadRequestError) as caught:
+        _run_vllm()
+    assert not isinstance(caught.value, ContextTooLongError)
+    assert state["i"] == 1

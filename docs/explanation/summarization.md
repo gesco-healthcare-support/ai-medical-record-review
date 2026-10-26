@@ -189,9 +189,9 @@ backend for the `summarize` stage. See [Model providers](model-providers.md) and
 
 | Call | Prompt | Input | Temperature | Output cap | On failure |
 | --- | --- | --- | --- | --- | --- |
-| Body | Preamble + category prompt + per-row blocks | Page images (when `SUMMARY_MULTIMODAL`), OCR text, instruction | `SUMMARY_TEMPERATURE` (0.0) | `SUMMARY_MAX_OUTPUT_TOKENS` (8192) | 429 fallback, one truncation re-ask |
-| Title | `TITLE_PROMPT` | First and last page images + OCR text (multimodal on) | 0.0 | `SUMMARY_MAX_OUTPUT_TOKENS` | Rejected answer falls back to the segmentation title |
-| Audit | `VERIFY_PROMPT` (`summary_verify.py`) | Source, document date (categories 1 and 2 only), title, body | 0.0 | Argument, else `AUDIT_MAX_OUTPUT_TOKENS`, else the body cap | Fail-safe: body ships unaudited |
+| Body | Preamble + category prompt + per-row blocks | Page images (when `SUMMARY_MULTIMODAL`), OCR text, instruction | `SUMMARY_TEMPERATURE` (0.0) | `SUMMARY_MAX_OUTPUT_TOKENS` (8192) | 429 fallback, one truncation re-ask; read in parts when the prompt is too long |
+| Title | `TITLE_PROMPT` | First and last page images + OCR text (multimodal on) | 0.0 | `SUMMARY_MAX_OUTPUT_TOKENS` | Rejected answer falls back to the segmentation title; a too-long prompt is retried with the first part of the text |
+| Audit | `VERIFY_PROMPT` (`summary_verify.py`) | Source, document date (categories 1 and 2 only), title, body | 0.0 | Argument, else `AUDIT_MAX_OUTPUT_TOKENS`, else the body cap | Fail-safe: body ships unaudited; not attempted for a body written in parts |
 
 The three models are resolved once, when the Job is created (`backend/app/services/jobs.py`
 `create_job()`), and stored on it, so a job resumed after a configuration change keeps the models it
@@ -222,6 +222,28 @@ started with. Defaults per backend are in [Configuration](../reference/configura
 
 A body that is still truncated after the re-ask is stored, and the row is flagged
 `manual_check`.
+
+#### A document too long for one request
+
+`_body_or_parts()` wraps `_generate_body()`. When the model server refuses the prompt as longer than
+its context window, the vLLM provider raises `ContextTooLongError` (`backend/app/errors.py`) instead
+of a bare 400, and the body is read in parts:
+
+1. `_text_parts()` cuts the OCR text at line breaks into consecutive pieces that each fill at most
+   60% of the window, sized from the refused prompt's own token count when the server states it,
+   else from an estimate of 0.5 tokens per character.
+2. Each piece is summarized under the same system message, as OCR text alone with an instruction that
+   it is part *i* of *n*. Page images are not sent: the document's images would not fit either.
+3. The part summaries are summarized once more, under the same system message, into the one body
+   that ships. Each call goes through `_generate_body()`, so the 429 fallback and the truncation
+   re-ask still apply.
+
+The title call is retried with the first piece when its prompt is refused the same way
+(`_title_or_head()`), and the audit is not attempted for a body written in parts
+(`_audit_fits()`): its source is the same text that did not fit. Every document that fits keeps its
+single call. Measured 2026-10-23: our model's window is 131,072 tokens, and two whole hospital stays of
+149 and 253 pages (about 280,000 and 1,060,000 characters of OCR text) failed their rows before this.
+Gemini's window is far larger, so in practice only the vLLM path reaches it.
 
 ### Title
 
