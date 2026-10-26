@@ -607,3 +607,17 @@ def test_any_other_bad_request_is_raised_unchanged(monkeypatch):
         _run_vllm()
     assert not isinstance(caught.value, ContextTooLongError)
     assert state["i"] == 1
+
+
+def test_the_second_wording_of_an_overlong_prompt_is_named_too(monkeypatch):
+    """vLLM's other wording, for a prompt that does not fit even before the reply: seen on
+    2026-10-26 on a 149-page hospital stay, which kept failing while only the first wording mapped."""
+    from app.errors import ContextTooLongError
+
+    message = "Input length (131858) exceeds model's maximum context length (131072)."
+    state = _provider_with(monkeypatch, [_bad_request(message), _Completion("never")])
+    with pytest.raises(ContextTooLongError) as caught:
+        _run_vllm()
+    assert state["i"] == 1
+    assert caught.value.limit == 131072
+    assert caught.value.input_tokens == 131858

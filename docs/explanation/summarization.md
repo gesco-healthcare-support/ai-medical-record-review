@@ -227,7 +227,9 @@ A body that is still truncated after the re-ask is stored, and the row is flagge
 
 `_body_or_parts()` wraps `_generate_body()`. When the model server refuses the prompt as longer than
 its context window, the vLLM provider raises `ContextTooLongError` (`backend/app/errors.py`) instead
-of a bare 400, and the body is read in parts:
+of a bare 400, and the body is read in parts. vLLM words that refusal two ways - the prompt plus the
+reply do not fit ("maximum context length is ..."), or the prompt alone does not ("Input length (...)
+exceeds model's maximum context length (...)") - and `_context_too_long()` recognises both:
 
 1. `_text_parts()` cuts the OCR text at line breaks into consecutive pieces that each fill at most
    60% of the window, sized from the refused prompt's own token count when the server states it,
