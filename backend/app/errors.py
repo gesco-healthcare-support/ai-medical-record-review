@@ -85,6 +85,31 @@ class PdfUnreadableError(OcrUnavailableError):
     )
 
 
+class ContextTooLongError(PipelineError):
+    """The model server refused a prompt because it is longer than the model's context window.
+
+    Raised by the vLLM provider when the server answers 400 "maximum context length". Our model's
+    window is 131,072 tokens, and a single very long document (a 253-page hospital stay measured
+    2026-10-23, ~1 million OCR characters) does not fit in one request. Gemini's window is far
+    larger, so only the vLLM path raises this today.
+
+    ``input_tokens`` and ``limit`` are read from the server's message when it states them, so a caller
+    can size the parts it splits the text into; either is None when the message did not say.
+    """
+
+    user_message = "This document is too long for the AI to read in one pass. Please contact your administrator."
+
+    def __init__(
+        self,
+        technical: str | None = None,
+        input_tokens: int | None = None,
+        limit: int | None = None,
+    ) -> None:
+        super().__init__(technical)
+        self.input_tokens = input_tokens
+        self.limit = limit
+
+
 class EmptyExtractionError(PipelineError):
     """OCR ran but produced no text for the pages, so there is nothing to summarize."""
 

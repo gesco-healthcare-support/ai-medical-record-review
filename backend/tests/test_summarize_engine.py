@@ -4631,3 +4631,86 @@ def test_an_unnamed_category_keeps_the_jobs_models(monkeypatch):
     assert calls, "no model was called"
     assert set(calls) == {"adapter"}
     assert out["model"] == "adapter"
+
+
+def test_a_document_too_long_for_one_request_is_summarized_in_parts(monkeypatch):
+    """2026-10-23: two whole hospital stays (149 and 253 pages) overflowed our model's window and their
+    rows failed. Now the body is read in parts and summarized once more from the parts, the title is
+    read off the first part, and the audit - whose source would not fit either - is not attempted."""
+    from app.errors import ContextTooLongError
+
+    long_text = "\n".join(f"line {i} " + "x" * 90 for i in range(4000))  # ~400k characters
+    calls = []
+
+    def fake_generate(model, system_msg, contents, temperature, max_output_tokens=None):
+        sent = (
+            contents
+            if isinstance(contents, str)
+            else " ".join(getattr(p, "text", "") for p in contents)
+        )
+        calls.append((system_msg == se.TITLE_PROMPT, sent))
+        if len(sent) > 200_000:
+            raise ContextTooLongError("too long", input_tokens=180_000, limit=131_072)
+        if system_msg == se.TITLE_PROMPT:
+            return "Hospital Records - Dr Smith", False
+        if "SUMMARIES OF THE CONSECUTIVE PARTS" in sent:
+            return "The merged summary.", False
+        return "A part summary.", False
+
+    def no_audit(*_a, **_k):
+        raise AssertionError("the audit must not run on a body written in parts")
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: (long_text, _clean(pages)),
+    )
+    monkeypatch.setattr(se, "page_image_parts", lambda *a, **k: [])
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", no_audit)
+
+    out = se.summarize_row(
+        "/x.pdf", _row(start=1, end=253, category="16"), prompt="CATEGORY PROMPT"
+    )
+
+    assert "The merged summary." in out["summaryText"]
+    bodies = [sent for is_title, sent in calls if not is_title]
+    parts = [b for b in bodies if "is part " in b]
+    assert len(parts) >= 2, "the document must be read in more than one part"
+    assert all(len(p) < 200_000 for p in parts)
+    assert sum(1 for b in bodies if "SUMMARIES OF THE CONSECUTIVE PARTS" in b) == 1
+    titles = [sent for is_title, sent in calls if is_title]
+    assert len(titles[-1]) < 200_000, "the title is read off the first part"
+    assert out["auditModel"] is None
+
+
+def test_text_parts_cut_at_line_breaks_and_lose_nothing():
+    from app.errors import ContextTooLongError
+
+    text = "\n".join(f"page line {i}" for i in range(50_000))
+    pieces = se._text_parts(text, ContextTooLongError("x", input_tokens=None, limit=20_000))
+    assert len(pieces) > 1
+    assert "".join(pieces) == text
+    assert all(p.endswith("\n") for p in pieces[:-1])
+    assert max(len(p) for p in pieces) <= int(20_000 * se._PART_SHARE / se._TOKENS_PER_CHAR)
+
+
+def test_a_document_that_fits_is_written_in_one_call(monkeypatch):
+    """The parts path is ONLY for a refused prompt: every ordinary row keeps its single call."""
+    calls = []
+
+    def fake_generate(model, system_msg, contents, temperature, max_output_tokens=None):
+        calls.append(system_msg == se.TITLE_PROMPT)
+        return ("Title - Dr", False) if system_msg == se.TITLE_PROMPT else ("Body", False)
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("short text", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    out = se.summarize_row("/x.pdf", _row(), prompt="CATEGORY PROMPT")
+    assert calls.count(False) == 1
+    assert calls.count(True) == 1
+    assert out["auditModel"] is not None
