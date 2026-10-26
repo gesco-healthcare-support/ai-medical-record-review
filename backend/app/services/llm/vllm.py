@@ -147,8 +147,10 @@ def _retryable(exc) -> bool:
     return status is not None and 500 <= status < 600
 
 
-_CONTEXT_LIMIT = re.compile(r"maximum context length is (\d+)", re.IGNORECASE)
-_PROMPT_TOKENS = re.compile(r"(\d+) input tokens", re.IGNORECASE)
+# Bounded digit runs, and the prompt count anchored so a search cannot restart inside a number: an
+# unbounded `(\d+) input tokens` backtracks super-linearly on a long run of digits (Sonar S8786).
+_CONTEXT_LIMIT = re.compile(r"maximum context length is (\d{1,9})", re.IGNORECASE)
+_PROMPT_TOKENS = re.compile(r"(?<!\d)(\d{1,9}) input tokens", re.IGNORECASE)
 
 
 def _context_too_long(exc) -> ContextTooLongError | None:
