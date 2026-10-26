@@ -124,6 +124,27 @@ def test_the_entrypoint_expands_lanes_and_passes_the_scheduler_through(monkeypat
     assert _FakeWorker.last["work_kwargs"] == {"with_scheduler": True}
 
 
+def test_the_entrypoint_waits_for_the_model_server_before_building_its_worker(monkeypatch):
+    """A worker takes no job until the model server has passed: the wait comes BEFORE the RQ worker
+    exists, so nothing can be dequeued meanwhile and queued jobs simply stay queued."""
+    from app.worker import __main__ as worker_main
+
+    order = []
+
+    class _Recording(_FakeWorker):
+        def __init__(self, queues, connection=None, **kwargs):
+            order.append("worker built")
+            super().__init__(queues, connection, **kwargs)
+
+    monkeypatch.setattr(
+        "app.services.llm.preflight.wait_for_backends", lambda: order.append("waited")
+    )
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _Recording)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [2])
+    worker_main.main(["summarize"])
+    assert order == ["waited", "worker built"]
+
+
 def test_the_entrypoint_serves_both_bases_when_given_no_arguments(monkeypatch):
     from app.worker import __main__ as worker_main
 

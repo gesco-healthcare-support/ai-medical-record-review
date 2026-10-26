@@ -402,10 +402,11 @@ On Gemini a non-429 client error is re-raised before any counter is written. Rea
 ## Boot-time guards
 
 Settings are built once per process (`get_settings()` is cached) and `Settings._derive()` runs every
-guard during construction. The API lifespan (`backend/app/main.py` `_lifespan()`) and each worker
-(`backend/app/worker/__main__.py` `main()`) then call
-`backend/app/services/llm/preflight.py` `assert_backends_ready()` before serving a request or taking
-a job. Any failure raises `RuntimeError` and the process does not start.
+guard during construction. The API lifespan (`backend/app/main.py` `_lifespan()`) then calls
+`backend/app/services/llm/preflight.py` `check_backends_before_serving()`, and each worker
+(`backend/app/worker/__main__.py` `main()`) calls `wait_for_backends()`, before serving a request or
+taking a job. Every guard failure raises `RuntimeError` and the process does not start. The one
+exception is a vLLM server that does not answer at all (next section).
 
 ```mermaid
 flowchart TD
@@ -419,7 +420,7 @@ flowchart TD
     G --> H["_validate_vllm_backend"]
     H --> I["_apply_vllm_call_defaults"]
     I --> J["_validate_model_names_match_their_backend"]
-    J --> K["assert_backends_ready: vLLM version probe"]
+    J --> K["preflight: vLLM version probe"]
     K --> L["serve requests or take jobs"]
     E -.->|fails| X
     G -.->|fails| X
@@ -444,20 +445,32 @@ and the name check runs last because it judges the names the defaulting passes l
 | vLLM render targets | `doi` or `deposition` is on vLLM and `SUMMARY_IMAGE_DPI` caps its render below `DOI_IMAGE_LONG_EDGE_PX` or `DEPOSITION_IMAGE_LONG_EDGE_PX` (tolerance one dpi step, on the tightest page geometry in the corpus) | The dpi ceiling is a summarize setting; lowering it would silently shrink these reads |
 | vLLM origin | `ENVIRONMENT=prod` and the origin (scheme, host, port) of `VLLM_BASE_URL` is not in `_APPROVED_VLLM_ORIGINS` (`http://127.0.0.1:8000`, `http://localhost:8000`) | A compliance control: widening it is a reviewed code change and a deploy. The path is not compared, so `/v1` against `/v1/` cannot cause an outage |
 | Model name matches backend | Any resolved model starting `gemini-` is routed to a non-Gemini backend, or a name with a `/` and no `gemini` in it is routed to Gemini | Converts a per-row 404 mid-job into a refusal at boot. Deliberately coarse: it cannot know whether a name is real, and a guard that guessed would refuse working deployments |
-| vLLM version preflight | Any stage resolves to `vllm` and `GET {scheme://host:port}/version` fails, times out (10 s), returns no usable `version`, or reports a version below `VLLM_MIN_VERSION` | The floor is a CVE boundary. Only a running server can report its version |
+| vLLM version preflight | Any stage resolves to `vllm` and `GET {scheme://host:port}/version` returns an error status, no usable `version`, or a version below `VLLM_MIN_VERSION` | The floor is a CVE boundary. Only a running server can report its version |
 
 Notes on the vLLM preflight, from the `preflight.py` module docstring:
 
 - It is not in `Settings` because Settings is built by pytest, alembic and every eval script, none
   of which can reach a pod.
-- It is not on the first call because a worker that fails per row burns a job and leaves the
-  reviewer with a half-processed document.
+- It tells apart a server that answers WRONGLY (the row above: every process refuses to start) from
+  one that does not answer at all - no connection, a dropped connection or a 10-second timeout
+  (`httpx.TransportError`), reported as `ModelServerOfflineError`. On the test box a silent server
+  is the normal state between pod days, so:
+    - the API serves without it (`check_backends_before_serving()` logs a warning), so reviewers can
+      open, edit and export records;
+    - a worker waits (`wait_for_backends()`, every 30 s, a log line every 10 minutes) and takes no
+      job until the server passes, so queued jobs start by themselves and none is failed row by row
+      against a silent server;
+    - no vLLM client is handed out before the server has passed: `vllm._client()` calls
+      `ensure_vllm_verified()`, so a model call from an API that booted without the server is
+      refused with `ModelServerOfflineError` (503) until it answers. A pass is remembered for the
+      process; a failure is not.
 - `/version` is served at the server root, not under `/v1`, is unauthenticated, and is
-  undocumented upstream, so any unexpected shape fails the boot.
+  undocumented upstream, so any unexpected shape fails the check.
 - Gemini is never probed: it is the backend a deployment rolls back to, so it must not gain a new
   way to fail at boot.
 - Both call sites sit next to a block that deliberately swallows exceptions. The preflight must
-  never be wrapped the same way, or a failed check would log a warning and boot anyway.
+  never be wrapped the same way, or a server that answered wrongly would log a warning and boot
+  anyway. Only `ModelServerOfflineError` is caught, and only inside `preflight.py`.
 
 ## Design decisions recorded in code
 
@@ -478,7 +491,8 @@ Approaches the comments record as considered and rejected:
 | A pacer budget per attempt | One budget per logical call | Comment in `generate_with_retry()` |
 | Treating every 504 as final | One retry at a longer deadline | `backend/app/errors.py` `is_deadline_exceeded()` docstring |
 | An env-editable vLLM allowlist in production | A code constant; the env value is ignored in production | `Settings._approved_vllm_origins()` docstring |
-| The version check in `Settings` or on the first call | A boot-time preflight | `preflight.py` module docstring |
+| The version check in `Settings` | A preflight at startup, plus a once-per-process check before the first vLLM client when the server was silent at startup | `preflight.py` module docstring |
+| Refusing to start while the model server is switched off | The API serves and workers wait; nothing reaches an unverified server | `preflight.py` module docstring |
 
 ## Before you change it
 
@@ -505,7 +519,9 @@ Approaches the comments record as considered and rejected:
 - **Do not send vLLM a thinking budget,** and do not add `summarize` to `VLLM_THINKING_STAGES`
   without re-running the empty-summary case.
 - **Do not step `SUMMARY_THINKING_BUDGET` to 0** without re-scoring against the human baselines.
-- **Never wrap `assert_backends_ready()` in `except Exception`.**
+- **Never wrap the preflight (`check_backends_before_serving()`, `wait_for_backends()`,
+  `assert_backends_ready()`) in `except Exception`,** and never hand out a vLLM client without
+  `ensure_vllm_verified()`.
 - **A new setting that a guard compares, or that a comment promises is env-settable, must be named
   in `docker-compose.yml`.** Tests enforce this; see
   [Configuration model](configuration-model.md).

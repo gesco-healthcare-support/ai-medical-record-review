@@ -110,6 +110,22 @@ class ContextTooLongError(PipelineError):
         self.limit = limit
 
 
+class ModelServerOfflineError(PipelineError):
+    """Our model server did not answer at all: the rented GPU is switched off, or the tunnel to it is down.
+
+    Distinct from a server that answers WRONGLY (a version below the floor, an unexpected reply),
+    which is a deployment fault and still stops a process at boot. A silent server is the normal
+    state of the test box between pod days, so the web app serves without it (reviewers can open,
+    edit and export their records) and a worker waits for it instead of crash-looping - see
+    ``services/llm/preflight``. Raised only on the vLLM path; Gemini is never probed.
+    """
+
+    user_message = (
+        "The AI model server is not running right now, so this step could not run. "
+        "Please try again once it has been switched on."
+    )
+
+
 class EmptyExtractionError(PipelineError):
     """OCR ran but produced no text for the pages, so there is nothing to summarize."""
 

@@ -64,9 +64,14 @@ the openai SDK anywhere else in `backend/app` to make a call.
 
 ## Boot-time invariants
 
-- Never wrap `preflight.assert_backends_ready()` in `except Exception`. Its two call sites
-  (`backend/app/main.py` `_lifespan()`, `backend/app/worker/__main__.py` `main()`) sit next to blocks
-  that deliberately swallow; do not copy that shape.
+- Never wrap the preflight in `except Exception`. Its two call sites
+  (`backend/app/main.py` `_lifespan()` -> `check_backends_before_serving()`,
+  `backend/app/worker/__main__.py` `main()` -> `wait_for_backends()`) sit next to blocks that
+  deliberately swallow; do not copy that shape. Only `ModelServerOfflineError` (nobody answered) is
+  caught, and only inside `preflight.py`; a server that answers wrongly must stop the process.
+- `vllm._client()` calls `preflight.ensure_vllm_verified()` before handing out a client. Keep it
+  there: it is what stops an API that started while the pod was off from sending a record to an
+  unverified server.
 - Do not move the version check into `Settings`: pytest, alembic and eval scripts build `Settings`
   and cannot reach a pod. Do not probe Gemini at boot.
 - Provider configuration guards live in `Settings._derive()` and its helpers. Their order is

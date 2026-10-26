@@ -19,7 +19,7 @@ boot-time version check for vLLM.
 | `vllm.py` | `VLLMProvider`. The OpenAI wire dialect against a self-hosted server, without `store` or `strict`, with thinking sent explicitly on or off, and no retry after a client read timeout |
 | `pacing.py` | Two Redis token buckets per provider and model (requests and estimated tokens) driven by an AIMD controller; fails open when Redis is unavailable |
 | `tokens.py` | `estimate_tokens()`: the pre-call token estimate the pacer charges and the Gemini deadline scales with |
-| `preflight.py` | `assert_backends_ready()`: when any stage is on vLLM, reads the server's `GET /version` and refuses startup below `VLLM_MIN_VERSION` |
+| `preflight.py` | When any stage is on vLLM, reads the server's `GET /version`: a wrong answer or a version below `VLLM_MIN_VERSION` refuses startup; no answer at all lets the API serve (`check_backends_before_serving()`) and makes a worker wait (`wait_for_backends()`); `ensure_vllm_verified()` gates every vLLM client |
 | `README.md` | This file |
 | `CLAUDE.md` | Rules for an AI coding agent working in this folder |
 
@@ -39,8 +39,9 @@ Modules outside the folder that belong to the same seam:
   `get_provider()` with the models stored on the summarize job. Every other stage (`segment_engine`,
   `extraction`, `dedup`, `classification`, `verify_pass`, `summary_doi`, `deposition_pages`) uses
   `provider_for_stage(stage)` with `Settings.model_for_stage(stage)`.
-- The API (`backend/app/main.py` `_lifespan()`) and every worker (`backend/app/worker/__main__.py`
-  `main()`) call `preflight.assert_backends_ready()` before serving or taking jobs.
+- The API (`backend/app/main.py` `_lifespan()`) calls `preflight.check_backends_before_serving()`
+  and every worker (`backend/app/worker/__main__.py` `main()`) calls `preflight.wait_for_backends()`
+  before serving or taking jobs.
 - Operator scripts read its Redis state: `backend/scripts/eval/vertex_stats.py` (attempt counters)
   and `backend/scripts/eval/pacer_watch.py` (pacer rates).
 

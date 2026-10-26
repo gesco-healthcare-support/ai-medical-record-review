@@ -24,9 +24,11 @@ Everything that runs in the backend containers. The same package serves the `api
 When the `api` container starts, `main._lifespan`:
 
 1. configures `app.*` logging to stdout at INFO;
-2. checks every configured model server (`services/llm/preflight.py` `assert_backends_ready()`) and
-   **refuses to start** if one fails - a model destination that fails its check must not receive
-   patient data;
+2. checks every configured model server (`services/llm/preflight.py`
+   `check_backends_before_serving()`) and **refuses to start** if one answers wrongly - a model
+   destination that fails its check must not receive patient data. A vLLM server that does not
+   answer at all (the pod is off) is logged and the app serves; its model calls are refused until
+   the server answers and passes;
 3. recovers jobs orphaned by a dead worker (`worker/recovery.py`) - a failure here is logged and
    the app starts anyway;
 4. sweeps prepared downloads whose delete timer was lost in a restart - also log-and-continue.
