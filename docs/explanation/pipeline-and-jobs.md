@@ -154,8 +154,10 @@ about a minute.
 1. Configures logging to stdout at INFO, so `docker compose logs` shows the pipeline's own lines.
 2. Rejects an unknown queue name. With no arguments it serves both base queues (a development
    convenience).
-3. Calls `assert_backends_ready()` from `backend/app/services/llm/preflight.py`, outside any
-   `try`, so a worker never takes a job against a model backend that failed its check. See
+3. Calls `wait_for_backends()` from `backend/app/services/llm/preflight.py`, outside any `try`,
+   so a worker never takes a job against a model backend that failed its check. A server that
+   answers wrongly stops the worker; one that does not answer at all (the pod is off) is asked again
+   every 30 s, and jobs queued meanwhile stay queued until it passes. See
    [Model providers](model-providers.md).
 4. On segment workers, resets the classifier's per-process category cache, so a category edit made
    before the worker started cannot be served stale.

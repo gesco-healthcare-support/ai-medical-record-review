@@ -107,7 +107,10 @@ docker compose logs --since 1h api 2>&1 | grep -i -e "orphan recovery" -e "force
 ```
 
 If a worker container keeps restarting, read the end of its log; a worker refuses to start when the
-model-backend preflight fails (see [How to switch model backends](switch-model-backends.md)):
+model server answers its preflight wrongly (see [How to switch model backends](switch-model-backends.md)).
+If jobs stay `queued` and the worker log repeats `model server not answering ... this worker takes
+no job until it does`, the vLLM server is off or its tunnel is down; the jobs start by themselves
+once it answers:
 
 ```bash
 docker compose ps

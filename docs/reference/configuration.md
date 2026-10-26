@@ -117,7 +117,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `VLLM_READ_TIMEOUT_S` | float | `600.0` | `600.0` | yes | none | Client read timeout in seconds (connect timeout is fixed at 10 s); a read timeout is not retried |
 | `VLLM_MAX_RPM` | int | `0` | `0` | yes | 0 or less turns that meter off | Pacer request ceiling for `vllm`; both at 0 admits every call at once |
 | `VLLM_MAX_TPM` | int | `0` | `0` | yes | 0 or less turns that meter off | Pacer token ceiling for `vllm` |
-| `VLLM_MIN_VERSION` | str | `0.24.0` | `0.24.0` | yes | Compared at boot with the server's `GET /version` by leading numeric components; lower refuses startup | Version floor enforced by `backend/app/services/llm/preflight.py` `assert_backends_ready()` |
+| `VLLM_MIN_VERSION` | str | `0.24.0` | `0.24.0` | yes | Compared with the server's `GET /version` by leading numeric components, at boot and before the first vLLM client of a process; lower refuses startup | Version floor enforced by `backend/app/services/llm/preflight.py` `ensure_vllm_verified()` |
 | `VLLM_APPROVED_ORIGINS` | str | `""` | `""` | yes | Comma-separated origins | Read only by `Settings._approved_vllm_origins()`, which returns the code constant in production; outside production no origin check runs |
 | `VLLM_MAX_IMAGES_PER_PROMPT` | int | `40` | `40` | yes | Each vLLM stage's image cap must not exceed it | Must equal the pod's `--limit-mm-per-prompt`; the boot guard compares `SUMMARY_IMAGE_MAX_PAGES`, `VLLM_SEGMENT_MAX_PAGES` and the DOI (10) and deposition (6) caps against it for stages on vLLM |
 | `VLLM_SEGMENT_MAX_PAGES` | int | `30` | `30` | yes | Must not exceed `VLLM_MAX_IMAGES_PER_PROMPT` when `segment` is on vLLM | Pages per segmentation window on vLLM (the smaller of this and `WINDOW_MAX_PAGES`) and the image cap for that window |
@@ -215,8 +215,12 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 Every check below stops the API or a worker from starting. The required-settings check is pydantic
 validation when `Settings` is built; the next ten raise `RuntimeError` in `Settings._derive()`; the
 vLLM preflight raises `RuntimeError` in `backend/app/services/llm/preflight.py`
-`assert_backends_ready()`, called from `backend/app/main.py` `_lifespan()` and
-`backend/app/worker/__main__.py` `main()`.
+`assert_backends_ready()`, called through `check_backends_before_serving()` from
+`backend/app/main.py` `_lifespan()` and through `wait_for_backends()` from
+`backend/app/worker/__main__.py` `main()`. A vLLM server that does not answer at all (no
+connection, a dropped connection, a 10-second timeout) is not in this table: the API serves without
+it and a worker waits for it, and no vLLM client is handed out until it passes
+(`ModelServerOfflineError`; see [Model providers](../explanation/model-providers.md)).
 
 | Check | Condition that refuses startup |
 | --- | --- |
@@ -231,7 +235,7 @@ vLLM preflight raises `RuntimeError` in `backend/app/services/llm/preflight.py`
 | vLLM render targets | `doi` or `deposition` on `vllm` and `SUMMARY_IMAGE_DPI` caps its render more than one dpi step below its long-edge target |
 | vLLM origin | `ENVIRONMENT=prod`, any stage on `vllm`, and the origin of `VLLM_BASE_URL` not in `_APPROVED_VLLM_ORIGINS` |
 | Model name versus backend | A resolved model starting `gemini-` on a non-Gemini backend, or a name with `/` and without `gemini` on Gemini |
-| vLLM preflight | Any stage on `vllm` and `GET {root}/version` fails, times out after 10 s, returns no usable `version`, or reports a version below `VLLM_MIN_VERSION` |
+| vLLM preflight | Any stage on `vllm` and `GET {root}/version` answers with an error status, no usable `version`, or a version below `VLLM_MIN_VERSION` |
 
 ## Settings methods
 
