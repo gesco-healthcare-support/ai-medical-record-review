@@ -15,15 +15,22 @@ Two design points worth keeping:
 Concurrency: population uses a small thread pool because Tesseract is the slow part. It must stay
 modest - `OMP_THREAD_LIMIT=1` in compose is what stops concurrent tesseract processes deadlocking on
 a shared CPU, and the box also runs the Vertex pacing work.
+
+Two passes over the same record are normal: the upload queues one (``worker.tasks.ocr_uploaded_document``)
+and an Identify started before it finishes runs its own. Each pass reads its pages in a shuffled
+order and skips a page the other has stored meanwhile, so between them each page is read about once;
+the unique constraint makes any page both happen to read harmless (see ``_store``).
 """
 
 import logging
+import random
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
+from app.db import get_sessionmaker
 from app.errors import OcrUnavailableError
 from app.models import PageText
 from app.services.ocr import extract_pages_with_report
@@ -168,8 +175,10 @@ def populate_document(
 ) -> int:
     """OCR every page of a document that is not already stored. Returns how many pages were added.
 
-    Called once at the start of the segment job, before segmentation, so every later stage finds the
-    text already there. Idempotent: a second call stores nothing.
+    Called by the reading job queued at upload (``worker.tasks.ocr_uploaded_document``, no model
+    needed) and again at the start of the segment job, before segmentation, so every later stage
+    finds the text already there. Idempotent: a second call stores nothing, and two calls running at
+    once share the pages between them (see the shuffle below).
 
     ``progress`` is the job's ``report(stage, current, total)``, and it is what makes this pass
     interruptible. Without it the whole pass was ONE blocking ``pool.map`` with no progress write and
@@ -213,23 +222,30 @@ def populate_document(
     missing = [p for p in range(1, int(total_pages) + 1) if p not in have]
     if not missing:
         return 0
+    # SHUFFLED, because another pass may be reading this record right now (the upload's own reading
+    # job and an Identify started before it finished). In page order the two would march in step,
+    # each reading the page the other is reading, and read almost every page twice; in different
+    # random orders they rarely meet, and `_read_unless_stored` skips what the other already stored.
+    random.shuffle(missing)
 
     # OCR off-session in the pool, then store on the caller's session: a Session is not thread-safe,
     # so the threads must not touch it. This is the same rule the summarize pool follows.
-    stored = 0
+    stored = done = 0
     total = len(missing)
     with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
         futures = [
-            pool.submit(lambda page: (page, *_extract(pdf_path, page)), page) for page in missing
+            pool.submit(_read_unless_stored, document_id, pdf_path, page) for page in missing
         ]
         try:
             for future in drain_pool(futures, get_settings().pool_timeout(int(total_pages))):
                 page, text, ok = future.result()
-                _store(session, document_id, page, text, ok)
-                stored += 1
+                if text is not None:  # None: another pass stored this page while this one ran
+                    _store(session, document_id, page, text, ok)
+                    stored += 1
+                done += 1
                 if progress is not None:
                     # Raises JobCancelled on a stop, and is itself rate-limited by the caller.
-                    progress("reading", stored, total)
+                    progress("reading", done, total)
         except BaseException:
             # WITHOUT THIS THE STOP DOES NOT STOP. Every page is submitted up front, and leaving the
             # `with` block calls shutdown(wait=True) - cancel_futures defaults to False - so the
@@ -246,6 +262,26 @@ def populate_document(
             raise
     logger.info("stored OCR text for %d page(s) of document %s", stored, document_id)
     return stored
+
+
+def _read_unless_stored(document_id: str, pdf_path, page: int):
+    """``(page, text, ok)``, or ``(page, None, False)`` when the page was stored successfully by
+    another pass after this one listed it as missing.
+
+    Runs on a pool thread, so it asks through its OWN short session, never the caller's (a Session is
+    not thread-safe). One indexed lookup against a Tesseract read of half a second or more.
+    """
+    with get_sessionmaker()() as reader:
+        already = reader.scalar(
+            select(PageText.id).where(
+                PageText.document_id == document_id,
+                PageText.page == page,
+                PageText.extract_ok.is_(True),
+            )
+        )
+    if already is not None:
+        return page, None, False
+    return (page, *_extract(pdf_path, page))
 
 
 def _load_page(session, document_id: str, page: int, row, pdf_path):

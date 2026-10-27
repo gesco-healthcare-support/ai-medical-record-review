@@ -18,6 +18,7 @@ fallback for a job whose document has no owner, and it keeps jobs enqueued under
 runnable across the deploy that introduces lanes, rather than orphaning them.
 """
 
+import logging
 from functools import lru_cache
 
 from redis import Redis
@@ -25,9 +26,17 @@ from rq import Queue
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
+
 SEGMENT_QUEUE = "segment"
 SUMMARIZE_QUEUE = "summarize"
 QUEUE_NAMES = (SEGMENT_QUEUE, SUMMARIZE_QUEUE)
+# Reading a just-uploaded record's pages into the page-text store (no model). NOT a base queue a
+# worker is started with: every SEGMENT worker reads it as well (it has Tesseract and Poppler), also
+# while it waits for a silent model server (worker/__main__.py). No user lanes: nobody waits on it -
+# Identify reads whatever pages are still missing itself.
+OCR_QUEUE = "ocr"
+_OCR_FN = "app.worker.tasks.ocr_uploaded_document"
 
 # `classify` (individual-record auto-categorization, P6) runs the classifier, so it goes on the
 # segment (torch) queue - not the torch-free summarize queue. `dedup` (duplicate clustering) is OCR
@@ -89,3 +98,27 @@ def lanes_for(base: str, user_ids) -> list[str]:
 
 def worker_fn(kind: str) -> str:
     return _WORKER_FN[kind]
+
+
+def enqueue_upload_ocr(document_id: str, page_count: int) -> bool:
+    """Queue the reading of a just-uploaded record's pages. Best effort: False when it could not be
+    queued, and the upload goes on regardless - Identify reads any page still missing itself.
+
+    UNTRACKED on purpose: no ``jobs`` row. One active job per document is enforced by a partial unique
+    index, so a tracked reading job would make the reviewer's Identify answer 409 while it ran. A
+    5,000-page record takes ~45 min to read on the test box's CPU; done here, that time is no longer
+    spent inside Identify, where it holds a rented model server that has nothing to do yet.
+    """
+    try:
+        Queue(OCR_QUEUE, connection=get_redis()).enqueue(
+            _OCR_FN,
+            document_id,
+            job_timeout=get_settings().effective_job_timeout(page_count or 0),
+        )
+    except Exception:
+        # Redis down at upload time must not fail the upload: the pages are read by Identify instead.
+        logger.warning(
+            "could not queue the page reading for document %s", document_id, exc_info=True
+        )
+        return False
+    return True
