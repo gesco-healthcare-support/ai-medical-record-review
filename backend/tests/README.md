@@ -65,7 +65,8 @@ shared `conftest.py`.
 | `test_ocr_cap_word_recall.py` | The eval instrument for word recall under a capped OCR render. |
 | `test_openai_config_guards.py` | Startup guards for the OpenAI provider settings. |
 | `test_pacing.py` | Adaptive pacing of model calls: request and token meters and the controller. |
-| `test_page_text.py` | The per-page OCR text store: extract once, reuse, keep errored and blank pages distinct. |
+| `test_page_text.py` | The per-page OCR text store: extract once, reuse, keep errored and blank pages distinct; two passes over one record share the pages. |
+| `test_upload_ocr.py` | The reading of a record's pages at upload: the untracked `ocr` queue, its job, and segment workers reading it (also while they wait for the model server). |
 | `test_password.py` | The Flask-Security-compatible password hashing, including its production cost. |
 | `test_pdf_slice.py` | Gemini's PDF slices: byte-identical to a fresh cut, and the record opened once, not once per slice. |
 | `test_pool_wiring.py` | Thread-pool timeouts in the pipeline, and that every key in `.env.example` is named in `docker-compose.yml`. |

@@ -700,3 +700,89 @@ def test_a_second_failure_does_not_promote_a_stored_failure_to_a_success():
     row = _stored(doc_id, 6)
     assert row.extract_ok is False, "a twice-failed page was recorded as successfully read"
     assert row.text == "first attempt"
+
+
+# --- two passes over one record at once: the upload's reading job and an Identify -------------------
+
+
+def _rows(doc_id: str) -> list[int]:
+    with get_sessionmaker()() as session:
+        return list(session.scalars(select(PageText.page).where(PageText.document_id == doc_id)))
+
+
+def test_a_page_another_pass_stored_meanwhile_is_not_read_again(monkeypatch):
+    """WHERE another pass stores a page after this one listed it as missing, THIS pass SHALL skip it.
+
+    The upload queues a reading job and a reviewer may press Identify before it finishes, so two
+    passes over one record are normal. One worker thread makes the order deterministic: the first
+    page read stores every other page "from the other pass", and nothing after it may be read again.
+    """
+    doc_id = _doc(pages=6)
+    reads = []
+
+    def read_and_let_the_other_pass_finish(_path, page):
+        reads.append(page)
+        if len(reads) == 1:
+            with get_sessionmaker()() as other:
+                for p in range(1, 7):
+                    if p != page:
+                        pt._store(other, doc_id, p, f"page {p} from the other pass", ok=True)
+        return f"page {page} text", True
+
+    monkeypatch.setattr(pt, "_extract", read_and_let_the_other_pass_finish)
+    with get_sessionmaker()() as session:
+        added = pt.populate_document(session, doc_id, "/x.pdf", 6, workers=1)
+
+    assert len(reads) == 1, f"pages the other pass had stored were read again: {sorted(reads)}"
+    assert added == 1
+    assert sorted(_rows(doc_id)) == [1, 2, 3, 4, 5, 6]
+
+
+def test_two_passes_over_one_record_at_once_read_each_page_about_once(monkeypatch):
+    """WHEN two passes read the same record at the same time, THE SYSTEM SHALL store every page exactly
+    once, raise nothing, and read well under twice the pages.
+
+    In page order the two march in step - each reading the page the other is reading - and read every
+    page twice: measured 240 reads of these 120 pages, ten runs out of ten. Shuffled, with a check
+    before each read, they share the work: 130-157 reads in ten runs (one 182 under a loaded machine).
+    The bound (200) sits between the two. The 40 ms read keeps the store ahead of the readers, as a
+    real Tesseract read (~0.5 s) does; with a near-instant read the threads outrun the store and every
+    page is "in flight" at once, which no real record looks like.
+    """
+    import threading
+    import time
+
+    doc_id = _doc(pages=120)
+    reads = []
+    lock = threading.Lock()
+
+    def slow_read(_path, page):
+        with lock:
+            reads.append(page)
+        time.sleep(0.04)
+        return f"page {page} text", True
+
+    monkeypatch.setattr(pt, "_extract", slow_read)
+    errors = []
+    added = []
+
+    def one_pass():
+        try:
+            with get_sessionmaker()() as session:
+                added.append(pt.populate_document(session, doc_id, "/x.pdf", 120, workers=3))
+        except Exception as exc:  # noqa: BLE001 - the test reports any failure of either pass
+            errors.append(exc)
+
+    passes = [threading.Thread(target=one_pass) for _ in range(2)]
+    for thread in passes:
+        thread.start()
+    for thread in passes:
+        thread.join()
+
+    assert errors == []
+    stored = _rows(doc_id)
+    assert sorted(stored) == list(range(1, 121)), "a page is missing or stored twice"
+    assert sum(added) >= 120, "every page was added by one pass or the other"
+    assert len(reads) < 200, (
+        f"{len(reads)} reads of 120 pages: the two passes did not share the work"
+    )

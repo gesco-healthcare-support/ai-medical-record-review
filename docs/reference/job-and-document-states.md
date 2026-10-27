@@ -22,7 +22,9 @@ For how these fit together, see [Pipeline and jobs](../explanation/pipeline-and-
 | `summarize` | `summarize` | `app.worker.tasks.summarize_document` | `summarize-worker` (`mrr-backend-web`) | `POST /api/documents/{id}/summarize/start`; `POST /api/admin/reprocess/{document_id}` | the request's `model`, else `Settings.model_for("body")` | `summarizing`, `paused` |
 
 Each job is enqueued on the owner's lane, `<base>:<user_id>`, or on the bare base queue when the
-document has no owner (`backend/app/worker/queues.py` `queue_for`). Only `summarize` jobs also record
+document has no owner (`backend/app/worker/queues.py` `queue_for`). The reading of a record's pages
+at upload is not a job kind: `app.worker.tasks.ocr_uploaded_document` runs on the `ocr` queue with
+no `jobs` row (`queues.enqueue_upload_ocr`), on segment workers. Only `summarize` jobs also record
 `title_model`, `audit_model` and `backend` (`create_job`).
 
 ### Document status by kind
@@ -232,4 +234,5 @@ A new active state needs every place above plus a migration that rebuilds the in
 | `mrr:cancel:<job_id>` | `"1"` | `max(60, JOB_CANCEL_GRACE_SECONDS * 60)` seconds | `backend/app/worker/cancel.py` `request_cancel` | `is_cancel_requested`, `current_job_cancelled`; deleted by `clear_cancel` in `_finalize_cancelled` |
 
 RQ's own queue, registry and scheduler keys are managed by the library. The queue names are
-`segment`, `summarize`, `segment:<user_id>` and `summarize:<user_id>`.
+`segment`, `summarize`, `segment:<user_id>`, `summarize:<user_id>` and `ocr` (the untracked reading
+of uploaded records' pages).

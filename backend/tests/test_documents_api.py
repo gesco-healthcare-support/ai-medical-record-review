@@ -2705,6 +2705,61 @@ async def test_extract_header_still_corrects_a_stored_field_it_does_find(authed,
     assert got["law_firm"] == "Right Firm LLP"
 
 
+async def test_an_upload_queues_the_reading_of_its_pages(authed):
+    """WHEN a record is uploaded, THE SYSTEM SHALL queue the reading of its pages at once (no model),
+    so Identify no longer spends the rented model server's time reading them."""
+    from rq import Queue
+
+    from app.worker.queues import OCR_QUEUE, get_redis
+
+    client, _ = authed
+    queue = Queue(OCR_QUEUE, connection=get_redis())
+    queue.empty()
+    try:
+        doc_id = await _upload(client, pages=3)
+        assert queue.count == 1
+        assert queue.jobs[0].func_name == "app.worker.tasks.ocr_uploaded_document"
+        assert queue.jobs[0].args == (doc_id,)
+    finally:
+        queue.empty()
+
+
+async def test_an_upload_still_succeeds_when_its_reading_cannot_be_queued(authed, monkeypatch):
+    from rq import Queue
+
+    def refuse(*_args, **_kwargs):
+        raise ConnectionError("redis is down")
+
+    monkeypatch.setattr(Queue, "enqueue", refuse)
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    assert (await client.get(f"/api/documents/{doc_id}")).status_code == 200
+
+
+async def test_an_aggregate_upload_queues_the_reading_of_its_pages(authed):
+    from rq import Queue
+
+    from app.worker.queues import OCR_QUEUE, get_redis
+    from tests.conftest import lanes
+
+    client, _ = authed
+    queue = Queue(OCR_QUEUE, connection=get_redis())
+    queue.empty()
+    classify = lanes("segment")
+    classify.empty()
+    try:
+        resp = await client.post(
+            "/api/documents/aggregate",
+            files=[("pdfs", ("a.pdf", _pdf_bytes(2), "application/pdf"))],
+        )
+        assert resp.status_code == 201
+        assert queue.count == 1
+        assert queue.jobs[0].args == (resp.json()["id"],)
+    finally:
+        queue.empty()
+        classify.empty()
+
+
 async def test_aggregate_merges_creates_rows_and_enqueues_classify(authed):
     """P6: multi-file upload merges into one Document, seeds a row per record, enqueues classify."""
     from tests.conftest import lanes

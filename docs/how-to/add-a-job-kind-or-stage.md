@@ -31,7 +31,9 @@ In `backend/app/worker/queues.py`, add the kind to `_QUEUE_FOR_KIND` and its tas
 
 Both base queues already have worker services, per-user lanes and a scheduler. A new base queue
 would also need an entry in `QUEUE_NAMES` and a new worker service in `docker-compose.yml`; prefer an
-existing one.
+existing one. The `ocr` queue shows the other shape: an untracked, model-free task that an existing
+worker service reads in addition to its lanes (`OCR_QUEUE` in `queues.py`, added in
+`backend/app/worker/__main__.py`), with no `jobs` row and no new service.
 
 ### 2. Give the kind its document statuses
 

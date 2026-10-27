@@ -41,9 +41,9 @@ flowchart TD
 
 | Step | Started by | Job kind | What happens | Document status afterwards |
 | --- | --- | --- | --- | --- |
-| Upload | `POST /api/documents` | none | The PDF is stored under the upload folder and a `documents` row is inserted. | `uploaded` |
-| Individual-records upload | `POST /api/documents/aggregate` | `classify` (enqueued by the route) | `merge_pdfs` joins the files, one review row per source file is seeded at category `100`, then each row is categorized from its first page. | `segmenting` while running, then `reviewing` |
-| Identify | `POST /api/documents/{id}/segment/start` | `segment` | OCR pass into the page-text store, segmentation, categorization, boundary verification, injury-date reads, then header extraction. | `segmenting` while running, then `reviewing` |
+| Upload | `POST /api/documents` | none (an untracked reading job on the `ocr` queue) | The PDF is stored under the upload folder, a `documents` row is inserted, and the reading of its pages into the page-text store is queued (no model). | `uploaded` |
+| Individual-records upload | `POST /api/documents/aggregate` | `classify` (enqueued by the route), plus the untracked reading job | `merge_pdfs` joins the files, one review row per source file is seeded at category `100`, then each row is categorized from its first page. | `segmenting` while running, then `reviewing` |
+| Identify | `POST /api/documents/{id}/segment/start` | `segment` | OCR pass for any pages the upload's reading has not stored yet, segmentation, categorization, boundary verification, injury-date reads, then header extraction. | `segmenting` while running, then `reviewing` |
 | Review | `PUT /api/documents/{id}/rows` | none | The reviewer's rows are validated and stored. Refused with 409 while any job is active. | unchanged, or `reviewing` if the edit strands stored summaries |
 | Duplicate check | `POST /api/documents/{id}/dedup/start` | `dedup` | OCR text for each included row, clustering, one confirm call per candidate, then the grouping is rewritten in one transaction. | unchanged (advisory) |
 | Summarize | `POST /api/documents/{id}/summarize/start`, or an admin's `POST /api/admin/reprocess/{document_id}` | `summarize` | One summary per included row (one per visit for a page of several dated visits), each row committed as it finishes; resumable. | `summarizing` while running, then `done` or `needs_attention` |
@@ -51,9 +51,9 @@ flowchart TD
 
 Notes on the table:
 
-- The individual-records path has no segment job and therefore no full OCR pass. Classify reads
-  each row's first page through the page-text store, which OCRs a page the first time it is asked
-  for (`backend/app/worker/tasks.py` `classify_document`).
+- The individual-records path has no segment job. Classify reads each row's first page through the
+  page-text store, which the upload's reading job fills and which OCRs a page itself the first time
+  it is asked for one not stored yet (`backend/app/worker/tasks.py` `classify_document`).
 - Classify selects every row of the document, not only the included ones. The seeded rows are all
   category `100`, which is off by default, so a filter on `include` would select nothing; the loop
   re-derives `include` from the category it assigns (comment in `classify_document`).
@@ -116,6 +116,32 @@ lanes, or re-reading the user set periodically.
 If listing users fails at start-up, the worker logs a warning and serves the base queues only, on
 the reasoning that a worker serving fewer lanes is better than one that refuses to boot.
 
+### The ocr queue: reading pages at upload
+
+Both upload routes queue `app.worker.tasks.ocr_uploaded_document` on the `ocr` queue
+(`queues.OCR_QUEUE`, `queues.enqueue_upload_ocr`). It reads every page of the new record into the
+page-text store and needs no model:
+
+- **Untracked.** No `jobs` row, so the one-active-job-per-document index never makes the reviewer's
+  Identify answer 409 while the reading runs. Its job timeout scales with the page count like any
+  other job's. A Redis failure at upload is logged and the upload succeeds; Identify then reads the
+  pages itself, as it always did.
+- **Segment workers only.** `ocr` is not a base queue a worker is started with. Every segment worker
+  adds it after its lanes (no user lanes: nobody waits on it), and it is not handed to the
+  fairness rule below, which counts reviewer lanes only.
+- **Also while the model server is off.** A segment worker waiting in `wait_for_backends()` (see
+  [What a worker does before its first job](#what-a-worker-does-before-its-first-job)) spends each
+  pause draining the `ocr` queue in an RQ burst (`_read_uploads_then_sleep`, `_drain_ocr_queue` in
+  `backend/app/worker/__main__.py`), then sleeps what is left of the pause. Only the `ocr` queue is
+  read there, so no model job is taken before the server has passed its check. A long record keeps
+  that worker reading for as long as it takes, which delays only its own next check; an empty queue
+  starts no RQ worker at all.
+
+On the test box this moves a 5,000-page record's ~45-minute reading out of Identify, where it held a
+rented model server with nothing to do yet. An Identify pressed before the reading finishes reads
+the remaining pages alongside it, sharing the work (see
+[OCR and page text](ocr-and-page-text.md#filling-the-store-the-ocr-pass)).
+
 ### One reviewer's batch cannot hold every identify worker
 
 Round-robin hands out a turn only when a worker frees, and a job keeps its worker until it ends. So
@@ -158,12 +184,13 @@ about a minute.
    so a worker never takes a job against a model backend that failed its check. A server that
    answers wrongly stops the worker; one that does not answer at all (the pod is off) is asked again
    every 30 s, and jobs queued meanwhile stay queued until it passes. See
-   [Model providers](model-providers.md).
+   [Model providers](model-providers.md). A segment worker spends each pause reading uploaded
+   records' pages from the `ocr` queue ([above](#the-ocr-queue-reading-pages-at-upload)).
 4. On segment workers, resets the classifier's per-process category cache, so a category edit made
    before the worker started cannot be served stale.
-5. Starts `RoundRobinWorker(...).work(with_scheduler=True)`. The in-process scheduler is what fires
-   the delayed resume of a paused summarize run; RQ coordinates several schedulers with a Redis
-   lock.
+5. Starts `RoundRobinWorker(...).work(with_scheduler=True)` on its lanes, plus the `ocr` queue on a
+   segment worker. The in-process scheduler is what fires the delayed resume of a paused summarize
+   run; RQ coordinates several schedulers with a Redis lock.
 
 ### The worker containers
 

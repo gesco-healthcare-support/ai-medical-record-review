@@ -22,6 +22,10 @@ what each file does. Full docs: `docs/explanation/pipeline-and-jobs.md`,
   queued futures first; `with ThreadPoolExecutor` waits for all of them otherwise. Pattern:
   `services/page_text.populate_document`. Drain with `services/pools.drain_pool` and
   `settings.pool_timeout(page_count)`.
+- `ocr_uploaded_document` (the `ocr` queue) is UNTRACKED on purpose: a `jobs` row would make Identify
+  answer 409 while it runs. Keep it best effort and model-free. A segment worker drains it while it
+  waits for the model server (`__main__._read_uploads_then_sleep`), listening to the `ocr` queue
+  ONLY there - never a model lane before the server has passed.
 - Terminal outcomes other than the job's own success go through `services/jobs.mark_terminal`
   (conditional UPDATE on active states; first writer wins). Never hand-write a terminal UPDATE in
   recovery, callbacks or scripts.
