@@ -129,7 +129,7 @@ def test_a_segment_worker_reads_the_ocr_queue_but_hands_only_lanes_to_fairness(m
     from app.worker import __main__ as worker_main
     from app.worker import fairness
 
-    _FakeWorker.built = []
+    monkeypatch.setattr(_FakeWorker, "built", [])
     monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
     monkeypatch.setattr(worker_main, "_user_ids", lambda: [7])
     worker_main.main(["segment"])
@@ -140,7 +140,7 @@ def test_a_segment_worker_reads_the_ocr_queue_but_hands_only_lanes_to_fairness(m
 def test_a_summarize_worker_does_not_read_the_ocr_queue(monkeypatch):
     from app.worker import __main__ as worker_main
 
-    _FakeWorker.built = []
+    monkeypatch.setattr(_FakeWorker, "built", [])
     monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
     monkeypatch.setattr(worker_main, "_user_ids", lambda: [7])
     worker_main.main(["summarize"])
@@ -197,7 +197,7 @@ def test_an_empty_ocr_queue_starts_no_rq_worker(monkeypatch):
     from app.worker import __main__ as worker_main
 
     Queue(queues.OCR_QUEUE, connection=queues.get_redis()).empty()
-    _FakeWorker.built = []
+    monkeypatch.setattr(_FakeWorker, "built", [])
     monkeypatch.setattr(worker_main, "Worker", _FakeWorker)
     worker_main._drain_ocr_queue()
     assert _FakeWorker.built == []
@@ -218,7 +218,7 @@ def test_the_drain_reads_only_the_ocr_queue_in_a_burst_and_restores_signal_handl
             _FakeWorker.work_kwargs = kwargs
             signal.signal(signal.SIGTERM, lambda *_a: None)  # what RQ does during work()
 
-    _FakeWorker.built = []
+    monkeypatch.setattr(_FakeWorker, "built", [])
     monkeypatch.setattr(worker_main, "Worker", _Burst)
     try:
         worker_main._drain_ocr_queue()

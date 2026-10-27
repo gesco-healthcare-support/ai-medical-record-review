@@ -23,7 +23,7 @@ the unique constraint makes any page both happen to read harmless (see ``_store`
 """
 
 import logging
-import random
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import select
@@ -226,7 +226,9 @@ def populate_document(
     # job and an Identify started before it finished). In page order the two would march in step,
     # each reading the page the other is reading, and read almost every page twice; in different
     # random orders they rarely meet, and `_read_unless_stored` skips what the other already stored.
-    random.shuffle(missing)
+    # `secrets` only because a code scanner reads any `random` call as a security question; the order
+    # has no security role, and either generator does the job.
+    secrets.SystemRandom().shuffle(missing)
 
     # OCR off-session in the pool, then store on the caller's session: a Session is not thread-safe,
     # so the threads must not touch it. This is the same rule the summarize pool follows.
