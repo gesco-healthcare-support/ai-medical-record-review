@@ -15,6 +15,9 @@ The pipeline modules. Model providers have their own rules in `llm/CLAUDE.md`.
 - Never log patient content: page text, header fields, filenames, prompts, model responses. Log
   ids, counts, stage names and error types.
 - Page text comes from `page_text.py` (the `page_texts` store); do not OCR a page again elsewhere.
+- `populate_document` may run twice at once on one record (the upload's reading and an Identify).
+  Keep its shuffled order and the per-page `_read_unless_stored` check: in page order the two passes
+  read every page twice.
   Stored good pages are never re-read, so an OCR change does not affect records already processed.
 - The catalog is DB-first (`catalog.py`): once any `categories` row exists the constants in
   `taxonomy.py` and `seed_catalog.py` are ignored for that database, and inserting a single

@@ -93,8 +93,11 @@ matter here (`backend/app/worker/tasks.py`, `backend/app/worker/finalizers.py`,
 | `job N finalized as cancelled by the stopped callback` | Force stop landed. |
 | `job N finalized as interrupted by the failure callback` | RQ reported the work-horse failed or abandoned. |
 | `page text population failed for D` | The OCR pass failed; later stages read pages on demand. |
+| `upload page reading stored N page(s) of document D` | The reading queued at upload finished (segment worker, `ocr` queue). |
+| `upload page reading failed for document D` | The reading queued at upload failed; Identify reads the missing pages itself and reports an OCR problem through its own job. |
+| `could not queue the page reading for document D` | At upload, Redis refused the `ocr` queue; the upload still succeeded. |
 | `OCR gave up on page P after 2 attempt(s)` | One page errored twice. |
-| `worker listening round-robin on N queue(s): [...]` | Printed at worker start: the lanes this worker serves. |
+| `worker listening round-robin on N queue(s): [...]` | Printed at worker start: the lanes this worker serves, plus `ocr` on a segment worker. |
 | `job N stepped aside: its reviewer is at the identify cap and another reviewer is waiting` | The job went back to the front of its own lane, still `queued`, so a waiting reviewer goes first (`backend/app/worker/fairness.py`). |
 | `job N could not step aside; running it now` | The step-aside re-dispatch failed (usually Redis), so the job ran as picked. |
 | `fairness check failed; running the job as picked` | The cap check itself could not read Redis; the job ran as picked. |
