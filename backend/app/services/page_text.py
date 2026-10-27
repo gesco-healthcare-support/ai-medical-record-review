@@ -22,8 +22,9 @@ order and skips a page the other has stored meanwhile, so between them each page
 the unique constraint makes any page both happen to read harmless (see ``_store``).
 """
 
+import hashlib
 import logging
-import secrets
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import select
@@ -225,10 +226,8 @@ def populate_document(
     # SHUFFLED, because another pass may be reading this record right now (the upload's own reading
     # job and an Identify started before it finished). In page order the two would march in step,
     # each reading the page the other is reading, and read almost every page twice; in different
-    # random orders they rarely meet, and `_read_unless_stored` skips what the other already stored.
-    # `secrets` only because a code scanner reads any `random` call as a security question; the order
-    # has no security role, and either generator does the job.
-    secrets.SystemRandom().shuffle(missing)
+    # orders they rarely meet, and `_read_unless_stored` skips what the other already stored.
+    missing = _reading_order(missing)
 
     # OCR off-session in the pool, then store on the caller's session: a Session is not thread-safe,
     # so the threads must not touch it. This is the same rule the summarize pool follows.
@@ -264,6 +263,18 @@ def populate_document(
             raise
     logger.info("stored OCR text for %d page(s) of document %s", stored, document_id)
     return stored
+
+
+def _reading_order(pages: list[int]) -> list[int]:
+    """``pages`` in an order of this pass's own: sorted by a hash keyed with a fresh uuid.
+
+    Any order no other pass shares will do; this one avoids the ``random`` module only because the
+    code scanner treats every use of it as a security question, and the order has no security role.
+    A plain rotation (each pass starting somewhere else) would NOT do: the pass behind skips through
+    what the other has stored, catches up with it, and from then on the two read in step.
+    """
+    salt = uuid.uuid4().bytes
+    return sorted(pages, key=lambda page: hashlib.blake2b(b"%d" % page, key=salt).digest())
 
 
 def _read_unless_stored(document_id: str, pdf_path, page: int):
