@@ -151,7 +151,14 @@ def test_the_entrypoint_serves_both_bases_when_given_no_arguments(monkeypatch):
     monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
     monkeypatch.setattr(worker_main, "_user_ids", lambda: [4])
     worker_main.main([])
-    assert _FakeWorker.last["names"] == ["segment", "segment:4", "summarize", "summarize:4"]
+    # A segment worker also reads uploaded records' pages (the ocr queue, no lanes).
+    assert _FakeWorker.last["names"] == [
+        "segment",
+        "segment:4",
+        "summarize",
+        "summarize:4",
+        "ocr",
+    ]
 
 
 def test_the_entrypoint_rejects_an_unknown_queue(monkeypatch):
@@ -169,7 +176,7 @@ def test_no_users_still_yields_a_workable_base_queue(monkeypatch):
     monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
     monkeypatch.setattr(worker_main, "_user_ids", lambda: [])
     worker_main.main(["segment"])
-    assert _FakeWorker.last["names"] == ["segment"]
+    assert _FakeWorker.last["names"] == ["segment", "ocr"]
 
 
 def test_the_user_lookup_fails_soft(monkeypatch):

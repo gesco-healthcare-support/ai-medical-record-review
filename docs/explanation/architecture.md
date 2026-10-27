@@ -106,6 +106,8 @@ sequenceDiagram
     participant P as Postgres
     B->>A: POST /api/documents (upload PDF)
     A->>P: documents row; PDF saved to the uploads volume
+    A->>R: enqueue the page reading on the ocr queue (no jobs row)
+    R->>S: ocr_uploaded_document - page text, no model
     B->>A: POST /documents/{id}/segment/start
     A->>P: jobs row (one active job per document)
     A->>R: enqueue on the owner's segment lane

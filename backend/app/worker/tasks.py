@@ -584,6 +584,35 @@ def _build_summary(job, idx, row, output, part=0) -> Summary:
     )
 
 
+def ocr_uploaded_document(document_id) -> None:
+    """RQ entry, UNTRACKED (no ``jobs`` row): read every page of a just-uploaded record into the
+    page-text store, with no model. Queued by the upload routes (``queues.enqueue_upload_ocr``).
+
+    This is the same pass the segment job starts with (``_populate_page_text``), moved earlier: on
+    the test box a 5,000-page record spent ~45 of its first minutes in Identify reading pages while
+    the rented model server waited. Segment workers run it even while they wait for a silent model
+    server, so a record uploaded with the server switched off is read before it is switched on.
+
+    Best effort, entirely: a record deleted before or during the pass, a missing binary or an
+    unreadable file is logged and left for Identify, which reads whatever is still missing itself
+    and reports an OCR or file problem to the reviewer through its own job. Logs ids only.
+    """
+    from app.services.page_text import populate_document
+
+    with get_sessionmaker()() as session:
+        document = session.get(Document, document_id)
+        if document is None or not document.page_count:
+            return
+        try:
+            stored = populate_document(
+                session, document.id, document.stored_path, document.page_count
+            )
+        except Exception:
+            logger.warning("upload page reading failed for document %s", document_id, exc_info=True)
+            return
+    logger.info("upload page reading stored %d page(s) of document %s", stored, document_id)
+
+
 def _populate_page_text(session, document, report) -> None:
     """OCR every page ONCE, before segmentation, so classify/dedup/summarize and any later re-run
     read stored text instead of re-extracting the same pages. Idempotent, so a re-segment pays

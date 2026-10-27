@@ -12,9 +12,9 @@ killed or abandoned job, and the orphan recovery the API runs at start-up.
 | File | What it holds |
 | --- | --- |
 | `__init__.py` | Package docstring: the two queues, and which worker needs torch. |
-| `__main__.py` | Entry point `python -m app.worker [segment] [summarize]`: model-backend preflight (waits while the model server does not answer), lane expansion, `RoundRobinWorker` with the scheduler on. |
-| `queues.py` | Kind -> base queue and kind -> task dotted path; per-user lane names; the lazy Redis connection. Import-light so the API can enqueue without torch. |
-| `tasks.py` | The runner `_run`, the `_finalize_*` functions, and the four task functions `segment_document`, `classify_document`, `dedup_document`, `summarize_document`. |
+| `__main__.py` | Entry point `python -m app.worker [segment] [summarize]`: model-backend preflight (waits while the model server does not answer; a segment worker reads the `ocr` queue meanwhile), lane expansion, `RoundRobinWorker` with the scheduler on (plus the `ocr` queue on a segment worker). |
+| `queues.py` | Kind -> base queue and kind -> task dotted path; per-user lane names; the `ocr` queue and `enqueue_upload_ocr` (the untracked reading of a record's pages at upload); the lazy Redis connection. Import-light so the API can enqueue without torch. |
+| `tasks.py` | The runner `_run`, the `_finalize_*` functions, the four task functions `segment_document`, `classify_document`, `dedup_document`, `summarize_document`, and the untracked `ocr_uploaded_document` (no `jobs` row, no model). |
 | `cancel.py` | The Redis cancel flag `mrr:cancel:<job_id>` and this process's current job id. |
 | `failures.py` | `classify_failure` (transient or permanent), `job_outcome` / `is_failure` for stored jobs, and the control signals `JobPaused`, `JobCancelled`, `JobNeedsAttention`. |
 | `finalizers.py` | RQ `on_stopped` / `on_failure` callbacks, run in the worker parent. |
@@ -33,7 +33,7 @@ In the compose stack, two services run this package (`docker-compose.yml`):
 | `segment-worker` (5 replicas) | `mrr-backend-classifier`, built with `--extra docs --extra classifier` | `python -m app.worker segment` |
 | `summarize-worker` (3 replicas) | `mrr-backend-web`, built with `--extra docs` | `python -m app.worker summarize` |
 
-With no arguments the entry point serves both queues. RQ's `RoundRobinWorker` forks a work-horse
+With no arguments the entry point serves both queues. A segment worker also reads the `ocr` queue, the reading of uploaded records' pages, and keeps reading it while it waits for a silent model server. RQ's `RoundRobinWorker` forks a work-horse
 per job with `os.fork()`, which Windows does not have, so run workers in the containers (or on a
 Linux or macOS host with Redis and Postgres reachable and the backend settings in the environment).
 

@@ -97,7 +97,7 @@ from app.services.summarize_engine import (
 )
 from app.services.summary_doi import doi_prefix
 from app.worker.cancel import request_cancel
-from app.worker.queues import get_redis
+from app.worker.queues import enqueue_upload_ocr, get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -450,6 +450,9 @@ def create_document(
     # Recorded under whoever uploaded it; the detail says whose account it went into.
     detail = f"for user {reviewer.id}" if for_someone_else else None
     audit(session, "upload", user.id, document_id, detail=detail)
+    # Read the pages now, with no model, rather than at the start of Identify. Best effort: a refused
+    # queue leaves them for Identify, as before.
+    enqueue_upload_ocr(document_id, page_count)
     return {"id": document_id, "page_count": page_count, "sha256_duplicate": bool(copies)}
 
 
@@ -522,6 +525,8 @@ def aggregate_documents(
     session.commit()
     detail = f"for user {reviewer.id}" if reviewer.id != user.id else None
     audit(session, "aggregate_upload", user.id, document_id, detail=detail)
+    # Queued before the classify job, which reads its rows' pages from the same store.
+    enqueue_upload_ocr(document_id, page_count)
     try:
         enqueue(
             session,

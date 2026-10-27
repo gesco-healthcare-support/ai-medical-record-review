@@ -17,7 +17,8 @@ and thrown away on every re-run (`backend/app/services/page_text.py` and `backen
 
 The comments put numbers on it: the OCR pass is roughly half the wall-clock time of a segment job.
 One 297-page record segmented three times took 1,463 s, then 810 s and 715 s once its page text was
-stored (`backend/app/config.py` comment on `page_text_workers`).
+stored (`backend/app/config.py` comment on `page_text_workers`). That is why the pass now starts at
+upload, before anyone presses Identify (below).
 
 ## How one page is read
 
@@ -101,17 +102,30 @@ Two design points from the module docstring:
 
 ### Filling the store: the OCR pass
 
-Every segment job starts with `_populate_page_text` (`backend/app/worker/tasks.py`), which runs
-`populate_document`:
+The pass runs twice for most records, and the second run finds little or nothing left to read:
 
-1. Reports stage `reading` at `0 / page_count`.
+- **At upload.** Both upload routes queue `ocr_uploaded_document` (`backend/app/worker/tasks.py`)
+  on the `ocr` queue (`queues.enqueue_upload_ocr`). It is untracked (no `jobs` row, so it never
+  blocks Identify with a 409) and needs no model, so segment workers run it even while they wait for
+  a silent model server (see
+  [Pipeline and jobs](pipeline-and-jobs.md#the-ocr-queue-reading-pages-at-upload)). A refused queue
+  never fails the upload. Measured on the test box: a 5,525-page record spent 46 minutes in this
+  pass; done at upload, that time no longer holds a rented model server.
+- **At the start of every segment job,** `_populate_page_text` reads whatever is still missing.
+
+Both call `populate_document`:
+
+1. Reports stage `reading` at `0 / page_count` (segment job only).
 2. Lists the pages with no row stored as `extract_ok = true`. Pages stored as errored count as
    missing, so they are attempted again.
-3. Submits every missing page to a pool of `PAGE_TEXT_WORKERS` threads (default 6). The threads
-   only OCR; each result is stored on the job's own session by the calling thread, because a session
-   is not thread-safe.
+3. Puts them in an order of this pass's own (`_reading_order`: sorted by a hash keyed with a fresh
+   uuid) and submits every missing page to a pool of `PAGE_TEXT_WORKERS` threads
+   (default 6). Just before reading a page, a thread checks (on its own short session) whether
+   another pass has stored it since this one started, and skips it if so. The threads only OCR;
+   each result is stored on the caller's session by the calling thread, because a session is not
+   thread-safe.
 4. Consumes results in completion order, stores each one, and calls
-   `report("reading", stored, number_missing)`. That call is what moves the progress bar and what
+   `report("reading", done, number_missing)`. That call is what moves the progress bar and what
    lets a Stop be heard during the pass.
 5. On any exception, including a Stop, cancels every page still queued before leaving the pool.
    Without that, leaving the `with` block waits for the whole remaining pass (measured: 12.6 s
@@ -124,8 +138,14 @@ the job carries on, because every reader can extract a missing page on demand. T
 re-raised instead: `OcrUnavailableError` (and its subclass `PdfUnreadableError`), because no reader
 can fall back when nothing can extract; and `JobCancelled`, because a Stop is not a failure.
 
-A document created by the individual-records upload never gets this pass: it goes straight to a
-classify job, and its pages are read on demand.
+**Two passes at once** (an Identify pressed before the upload's reading finished) are normal. In
+page order they would march in step and read every page twice; shuffled, with the check before each
+read, they share the work. Measured in `backend/tests/test_page_text.py`: two passes over 120 pages
+made 240 reads in page order and 130-157 shuffled. A page both happen to read is harmless: the
+unique constraint on `(document_id, page)` keeps one row (`_store`).
+
+A document created by the individual-records upload gets the upload pass but no segment-job pass:
+its classify job reads each row's first page from the store, or on demand when it is not there yet.
 
 ### Reading from the store
 
