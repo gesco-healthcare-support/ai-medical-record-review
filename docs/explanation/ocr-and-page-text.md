@@ -118,7 +118,8 @@ Both call `populate_document`:
 1. Reports stage `reading` at `0 / page_count` (segment job only).
 2. Lists the pages with no row stored as `extract_ok = true`. Pages stored as errored count as
    missing, so they are attempted again.
-3. Shuffles them and submits every missing page to a pool of `PAGE_TEXT_WORKERS` threads
+3. Puts them in an order of this pass's own (`_reading_order`: sorted by a hash keyed with a fresh
+   uuid) and submits every missing page to a pool of `PAGE_TEXT_WORKERS` threads
    (default 6). Just before reading a page, a thread checks (on its own short session) whether
    another pass has stored it since this one started, and skips it if so. The threads only OCR;
    each result is stored on the caller's session by the calling thread, because a session is not
