@@ -572,18 +572,32 @@ provider, a clinic and a PR-2 the way the letter will:
 - **One name for a PR-2.** `consistent_report_types()` gives a category-1 document type of just
   `PROGRESS REPORT` the PR-2 name when the same author's category-1 entries in the record name the
   form; measured, 25 of 26 such titles sat on pages that print `PR-2`.
-- **Same-visit folding.** `fold_record_entries()` makes one entry of the category-1 entries with the
-  same author, credential and date string, and of a category-10 entry whose title names a Request for
-  Authorization (`_RFA_TITLE`) by that author on that date - wherever it sits in the record. The
-  reviewers' rule (2026-10-16): an RFA goes with the PR-2 of its date, since the PR-2 usually says
-  what the RFA says, including when the two are not on neighbouring pages. Orders and prescriptions
-  share category 10 and are not folded, and an RFA with no category-1 entry by its author that day
-  stays its own entry. The entry is headed by a PR-2 when the visit has one (a title matching `PR-2`
-  or `PROGRESS REPORT` that is not a work status slip), otherwise by the longest category-1 body. Its
-  body is the longest category-1 body plus every section of the others whose text it does not
-  already hold, so an RFA only ever adds. Measured on the live box (426 records, read-only,
-  2026-10-16): 83 of 386 delivered RFAs fold, 23 of them from non-neighbouring pages; 78 that share
-  a date with a category-1 entry stay apart because the author differs or the RFA's title names none.
+- **Same-visit folding.** `fold_record_entries()` makes one entry of a visit: the category-1
+  entries with the same author, credential and date string, or the category-5 entries (therapy,
+  chiropractic, acupuncture) with the same author, credential and date string, together with the
+  entries that JOIN that visit - wherever they sit in the record. Two kinds join: a category-10
+  entry whose title names a Request for Authorization (`_RFA_TITLE`), and a work status entry (its
+  title matches `_WORK_STATUS_TITLE`), whatever category it was filed under, by the same author on
+  the same date. The reviewers' rules: an RFA goes with the PR-2 of its date, since the PR-2 usually
+  says what the RFA says, including when the two are not on neighbouring pages (2026-10-16); "for
+  visits you can always merge them if it's from the same doctor", an RFA or a work status from the
+  same doctor and date joins the visit, and "Diagnostics are always separate" (2026-10-28). So:
+  - a category-1 and a category-5 entry by one author on one date stay two entries (not in the
+    answer, not measured); a work status by an author who has both that day joins the category-1
+    visit;
+  - an RFA or a work status with no visit entry by its author that day stays its own entry, and
+    orders and prescriptions, which share category 10, are not folded;
+  - a diagnostic study (category 3) never folds, and several visits written from one page
+    (`split_visits()`) carry different dates, so they stay separate entries;
+  - the entry is headed by a PR-2 when the visit has one (a title matching `PR-2` or `PROGRESS
+    REPORT` that is not a work status), otherwise by the visit's longest body. Its body is that
+    visit document's body plus every section of the others whose text it does not already hold, so
+    an RFA or a work status only ever adds, and never leads.
+
+  Measured on the live box (426 records, read-only, 2026-10-16): 83 of 386 delivered RFAs fold, 23
+  of them from non-neighbouring pages; 78 that share a date with a category-1 entry stay apart
+  because the author differs or the RFA's title names none. The category-5 and work status parts
+  (2026-10-28) have not been counted on stored records.
 - **Laboratory folding.** The same function makes one entry of every category-14 entry of one date,
   whoever wrote it (the reviewers, same day: "combine all the labs from the same date and have it
   come out as one summary"). It is headed by the first entry; when the entries' headings differ, its

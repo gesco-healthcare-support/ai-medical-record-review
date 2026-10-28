@@ -2308,6 +2308,20 @@ _LAB_CATEGORY = "14"
 _COMBINED_LAB_TYPE = "LABORATORY REPORT"
 _WORK_STATUS_TITLE = re.compile(r"\bWORK (?:ACTIVITY )?STATUS\b|\bRETURN[- ]TO[- ]WORK\b", re.I)
 _PR2_TITLE = re.compile(r"\bPR-?2\b|\bPROGRESS REPORT\b", re.I)
+# A THERAPY VISIT FOLDS TOO, AND A WORK STATUS JOINS ITS VISIT. The reviewers, 2026-10-28: "for
+# visits you can always merge them if it's from the same doctor ... if there is an RFA (category 10)
+# or a Work Status from the same doctor and the same date, you can also merge them with the
+# PR-2/Visit ... Even if they aren't next to each other on the pdf ... Diagnostics are always
+# separate." So an author's category 5 notes of one date (physical therapy, chiropractic,
+# acupuncture) become one entry, like category 1 - in a group of their own: a category 1 and a
+# category 5 entry by one author on one date are left apart, since nothing has measured how often
+# that pair is one visit. A work status joins its visit's entry the way an RFA does, whatever
+# category it was filed under (the 2026-08-21 answer already counted a work status as category 1),
+# and only joins: with no visit document by its author that day it stays its own entry. A
+# diagnostic study (category 3) never folds. Several visits written from one page (`split_visits`)
+# carry different dates, so they never meet here.
+_VISIT_KINDS = ("1", "5")
+_DIAGNOSTIC_CATEGORY = "3"
 # A section starts at a LABEL - a bold span marked by its colon - never at bold content, so
 # "**Work Status**: **Modified duty.**" stays one section.
 _SECTION = re.compile(r"(?=\*\*[^*\n]{1,60}(?:\*\*:|:\*\*))")
@@ -2317,12 +2331,22 @@ def _is_pr2(title: str) -> bool:
     return bool(_PR2_TITLE.search(title)) and not _WORK_STATUS_TITLE.search(title)
 
 
-def _visit_key(entry: dict, category: str, title_key: str):
-    """``(date, author)`` for a category 1 entry or an RFA that names both, else ``None``."""
-    title = entry.get(title_key) or ""
-    if category not in ("1", "10") or (category == "10" and not _RFA_TITLE.search(title)):
+def _visit_role(entry: dict, category: str, title_key: str):
+    """How an entry takes part in a visit: ``"1"`` or ``"5"`` for a visit's own document of that
+    category, ``"join"`` for one that joins a visit (a work status, whatever its category, or an
+    RFA), ``None`` for one that never folds into a visit."""
+    if category in (_DIAGNOSTIC_CATEGORY, _LAB_CATEGORY):
         return None
-    author = _author_parts(title)
+    title = entry.get(title_key) or ""
+    if _WORK_STATUS_TITLE.search(title) or (category == "10" and _RFA_TITLE.search(title)):
+        return "join"
+    return category if category in _VISIT_KINDS else None
+
+
+def _visit_key(entry: dict, title_key: str):
+    """``(date, author, credential)`` for an entry whose title names its author and that is
+    dated, else ``None``."""
+    author = _author_parts(entry.get(title_key) or "")
     date = (entry.get("summaryDate") or "").strip()
     if not author or date in ("", "-"):
         return None
@@ -2358,28 +2382,46 @@ def _merged_body(bodies: list[str], leaders: list[int] | None = None) -> str:
     return " ".join([kept, *extra]).strip()
 
 
+def _visit_groups(entries: list[dict], categories: list[str], title_key: str) -> dict:
+    """``{(date, author, credential, kind): (documents, joining)}``: each author's visit documents
+    of one date and kind, and the entries that join them - category 1 first when the author has
+    both kinds that day. Index lists in record order."""
+    documents: dict[tuple, list[int]] = {}
+    joining: list[tuple[int, tuple]] = []
+    for i, (entry, category) in enumerate(zip(entries, categories, strict=True)):
+        role = _visit_role(entry, category, title_key)
+        key = _visit_key(entry, title_key) if role else None
+        if key is None:
+            continue
+        if role == "join":
+            joining.append((i, key))
+        else:
+            documents.setdefault((*key, role), []).append(i)
+    groups = {key: (docs, []) for key, docs in documents.items()}
+    for i, key in joining:
+        home = next((k for kind in _VISIT_KINDS if (k := (*key, kind)) in groups), None)
+        if home is not None:
+            groups[home][1].append(i)
+    return groups
+
+
 def _visit_heads(
     entries: list[dict], categories: list[str], title_key: str
-) -> dict[int, list[int]]:
-    """Each same-visit group of two or more, keyed by the index of the entry that heads it.
+) -> dict[int, tuple[list[int], list[int]]]:
+    """Each same-visit group of two or more, keyed by the index of the entry that heads it, as
+    ``(members, documents)``: every entry folded into it, and the visit documents among them.
 
-    A group needs a category 1 entry - RFAs alone are not a visit - and only a category 1 entry
-    heads it."""
-    groups: dict[tuple, list[int]] = {}
-    for i, (entry, category) in enumerate(zip(entries, categories, strict=True)):
-        key = _visit_key(entry, category, title_key)
-        if key:
-            groups.setdefault(key, []).append(i)
-    heads: dict[int, list[int]] = {}
-    for members in (m for m in groups.values() if len(m) > 1):
-        reports = [i for i in members if categories[i] == "1"]
-        if not reports:
+    A group needs a visit document - RFAs and work status entries alone are not a visit - and only
+    a visit document heads it and leads its body: a category 1 visit's PR-2 when it has one,
+    otherwise its longest body."""
+    heads: dict[int, tuple[list[int], list[int]]] = {}
+    for docs, joins in _visit_groups(entries, categories, title_key).values():
+        members = sorted(docs + joins)
+        if len(members) < 2:
             continue
-        pr2 = [i for i in reports if _is_pr2(entries[i].get(title_key) or "")]
-        head = (
-            pr2[0] if pr2 else max(reports, key=lambda i: len(entries[i].get("summaryText") or ""))
-        )
-        heads[head] = members
+        pr2 = [i for i in docs if categories[i] == "1" and _is_pr2(entries[i].get(title_key) or "")]
+        head = pr2[0] if pr2 else max(docs, key=lambda i: len(entries[i].get("summaryText") or ""))
+        heads[head] = (members, docs)
     return heads
 
 
@@ -2410,11 +2452,13 @@ def _combined_lab_title(titles: list[str]) -> str:
 
 
 def fold_record_entries(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
-    """``entries`` with each visit made one entry - its category 1 documents and its RFA - and each
-    date's laboratory results made one - see above. The two groupings never share an entry: they
-    are drawn from different categories."""
+    """``entries`` with each visit made one entry - an author's category 1 documents of one date
+    with their RFA and work status, or their category 5 notes of one date - and each date's
+    laboratory results made one - see above. The groupings never share an entry: a visit never takes
+    a lab (category 14) or a diagnostic study (category 3)."""
     labs = _lab_heads(entries, categories)
-    heads = {**_visit_heads(entries, categories, title_key), **labs}
+    visits = _visit_heads(entries, categories, title_key)
+    heads = {**{head: members for head, (members, _) in visits.items()}, **labs}
     folded = {i for members in heads.values() for i in members} - set(heads)
     out = []
     for i, entry in enumerate(entries):
@@ -2423,7 +2467,8 @@ def fold_record_entries(entries: list[dict], categories: list[str], title_key: s
         if i in heads:
             members = heads[i]
             bodies = [entries[j].get("summaryText") or "" for j in members]
-            leaders = [n for n, j in enumerate(members) if categories[j] == categories[i]]
+            documents = visits[i][1] if i in visits else members
+            leaders = [n for n, j in enumerate(members) if j in documents]
             entry = {**entry, "summaryText": _merged_body(bodies, leaders)}
             if i in labs:
                 entry[title_key] = _combined_lab_title(
