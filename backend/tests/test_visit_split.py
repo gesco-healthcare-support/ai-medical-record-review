@@ -180,6 +180,16 @@ def test_only_therapy_notes_and_diagnostic_studies_are_told_to_mark_visits():
         assert se.VISIT_MARKER not in se.build_preamble(category), category
 
 
+def test_a_visits_date_is_the_date_of_the_visit():
+    """DEMONSTRATES the reviewers' answer of 2026-10-28 on a hand-filled sheet with several dates:
+    "It would be the date of the visit." The instruction names the encounter's day as the date and
+    the sheet's other dates - signed, printed, faxed, received - as not it."""
+    told = se.build_preamble("5")
+    assert "the date of the visit - the day the encounter took place" in told
+    assert "not the date the sheet was signed, printed, faxed or received" in told
+    assert "on a hand-filled sheet that lists several dates, it is the date of the visit" in told
+
+
 def test_the_instruction_and_the_split_read_one_set_for_every_catalog_category():
     """A category told to mark visits that nothing then splits would put the marks into a delivered
     summary; one split but never told would never split. Neither may happen for any category."""
