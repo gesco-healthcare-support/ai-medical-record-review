@@ -261,15 +261,26 @@ _F_DEPOSITION = (
 # because `house_style.one_paragraph` runs after the split and would otherwise erase the line breaks
 # the split reads. The excluded dates are named because a single visit's note routinely MENTIONS
 # others - the injury, the last visit, the next appointment - and those must not each become a visit.
+#
+# WHICH date is a visit's own is the reviewers' answer of 2026-10-28, asked about hand-filled forms
+# that carry several dates: "It would be the date of the visit." So the mark's date is the day the
+# visit took place, and the dates a sheet also carries - its signature, print, fax or received
+# stamp, the injury - are named as NOT it; on a hand-filled sheet that lists several dates, the one
+# to take is the date of the visit the sheet records. This block is the only place the summary call
+# chooses an entry's date: a row of one visit keeps the date segmentation gave it (`d`), and that
+# prompt is not changed here - a segmentation prompt change needs a measurement first.
 VISIT_MARKER = "VISIT:"
 _F_SEPARATE_VISITS = (
     "- If these pages record SEVERAL SEPARATE VISITS or sessions, each with its own date (for "
     "example a sheet of daily treatment notes), summarize each visit on its own: begin each visit "
     f"on a new line with `{VISIT_MARKER} MM/DD/YYYY` giving that visit's date, then write that "
-    "visit's summary under it as one paragraph, and order the visits by date. Take a visit's year "
-    "from the page when the entry itself omits it. A date the document only MENTIONS - the date of "
-    "injury, an earlier visit, a next appointment, the date a form was printed or faxed - is not a "
-    f"visit. When the pages record ONE visit, write no {VISIT_MARKER} line at all.\n"
+    "visit's summary under it as one paragraph, and order the visits by date. A visit's date is "
+    "the date of the visit - the day the encounter took place - not the date the sheet was signed, "
+    "printed, faxed or received; on a hand-filled sheet that lists several dates, it is the date "
+    "of the visit that sheet records. Take a visit's year from the page when the entry itself "
+    "omits it. A date the document only MENTIONS - the date of injury, an earlier visit, a next "
+    "appointment, the date a form was printed or faxed - is not a visit. When the pages record ONE "
+    f"visit, write no {VISIT_MARKER} line at all.\n"
 )
 
 _F_BOLD = (

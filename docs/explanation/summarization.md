@@ -518,6 +518,15 @@ The reviewers asked for each visit to be its own entry in the report (2026-10-15
   record several visits, begin each with a line `VISIT: MM/DD/YYYY` and write that visit's summary
   under it. A date the document only mentions (the injury, an earlier visit, a next appointment, a
   fax date) is not a visit, and a page of one visit gets no mark at all.
+- **Which date.** A visit's date is the date of the visit, the day the encounter took place - not
+  the date the sheet was signed, printed, faxed or received; on a hand-filled sheet that lists
+  several dates, it is the date of the visit that sheet records (the reviewers, 2026-10-28: "It
+  would be the date of the visit"). This instruction is the only place the summary call chooses an
+  entry's date. A row of one visit keeps the date identification gave it (`d`, see
+  [Segmentation](segmentation.md)); that prompt already asks for the visit or encounter date and
+  excludes fax, print, re-send and injury dates, but does not name signature or received dates or
+  multi-date hand-filled sheets. It is left unchanged because a segmentation prompt change needs a
+  measurement first: the same call draws the boundaries, and a missed document is never summarized.
 - **The split.** `split_visits()` cuts the body at the marks, before the one-paragraph pass (which
   would join the lines). Two marks naming one date are one visit; text before the first mark joins
   the first visit; a mark with no text is not a visit. Fewer than two visits left means no split, and
