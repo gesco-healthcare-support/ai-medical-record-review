@@ -2876,11 +2876,11 @@ def test_a_pr2_without_a_work_status_point_takes_the_slips_text():
     [
         ("JOHN DOE, M.D. OTHER CLINIC. WORK STATUS", "02/04/2026", ["1", "1"]),  # another doctor
         (_SLIP, "03/11/2026", ["1", "1"]),  # another visit
-        (_SLIP, "02/04/2026", ["1", "5"]),  # another category
+        (_SLIP, "02/04/2026", ["1", "3"]),  # filed a diagnostic study, which never folds
     ],
 )
-def test_a_slip_from_another_doctor_visit_or_category_stays_its_own_entry(slip, date, categories):
-    """GUARD on the reviewers' own limit: same doctor, same date, same category - or no fold."""
+def test_a_slip_from_another_doctor_or_visit_stays_its_own_entry(slip, date, categories):
+    """GUARD on the reviewers' own limit: the same doctor and the same date - or no fold."""
     entries = [_entry(_PR2, "**Work Status**: Full duty."), _entry(slip, "x", date=date)]
     assert se.fold_record_entries(entries, categories, "summaryTitle") == entries
 
@@ -4567,6 +4567,117 @@ def test_undated_labs_and_other_categories_are_never_folded_as_labs():
     assert se.fold_record_entries(undated, ["14", "14"], "summaryTitle") == undated
     studies = [_entry("CITY IMAGING. MRI", "a"), _entry("CITY IMAGING. X-RAY", "b")]
     assert se.fold_record_entries(studies, ["3", "3"], "summaryTitle") == studies
+
+
+# --- the reviewers' answer of 2026-10-28: a therapy visit folds, a work status joins its visit ---
+_THERAPY = "RAY LEE, D.C. SPINE CENTER. CHIROPRACTIC TREATMENT NOTE"
+_THERAPY_SLIP = "RAY LEE, D.C. SPINE CENTER. WORK STATUS"
+
+
+def test_an_authors_therapy_notes_of_one_date_become_one_entry():
+    """DEMONSTRATES: "for visits you can always merge them if it's from the same doctor" -
+    category 5 (therapy, chiropractic, acupuncture) as category 1 does. The fuller note heads the
+    entry and no section of the other is lost."""
+    short = "**Treatment**: adjustment C5-C6."
+    full = "**Subjective**: neck pain 6/10. **Treatment**: adjustment C5-C6. **Plan**: weekly."
+    entries = [
+        _entry(_THERAPY, short),
+        _entry(_PR2, "**Diagnoses**: strain.", date="03/11/2026"),
+        _entry(_THERAPY + " (CONTINUED)", full),
+    ]
+    out = se.fold_record_entries(entries, ["5", "1", "5"], "summaryTitle")
+
+    assert [e["summaryTitle"] for e in out] == [_PR2, _THERAPY + " (CONTINUED)"]
+    assert out[1]["summaryText"] == full
+
+
+@pytest.mark.parametrize("category", ["1", "5", "10", "100"])
+def test_a_work_status_joins_its_visit_whatever_its_category(category):
+    """DEMONSTRATES: "if there is an RFA (category 10) or a Work Status from the same doctor and the
+    same date, you can also merge them with the PR-2/Visit". The PR-2 heads the entry and its body
+    leads even when the slip's is longer."""
+    report = "**Diagnoses**: strain."
+    slip = "**Work Status**: Modified duty, no lifting over 10 lbs, no overhead work for 4 weeks."
+    entries = [_entry(_SLIP, slip), _entry(_PR2, report)]
+    out = se.fold_record_entries(entries, [category, "1"], "summaryTitle")
+
+    assert [e["summaryTitle"] for e in out] == [_PR2]
+    assert out[0]["summaryText"] == f"{report} {slip}"
+
+
+def test_a_therapists_work_status_joins_the_therapy_visit():
+    """DEMONSTRATES the same for a category 5 visit: the therapist's own work status joins it."""
+    entries = [
+        _entry(_THERAPY, "**Treatment**: adjustment."),
+        _entry(_THERAPY_SLIP, "**Work Status**: Full duty."),
+    ]
+    out = se.fold_record_entries(entries, ["5", "100"], "summaryTitle")
+
+    assert [e["summaryTitle"] for e in out] == [_THERAPY]
+    assert "**Work Status**: Full duty." in out[0]["summaryText"]
+
+
+def test_a_work_status_joins_the_category_1_visit_when_its_author_has_both():
+    """A work status joins one entry, never two: the category 1 visit first."""
+    entries = [
+        _entry("JANE ROE, N.P. VALLEY CLINIC. TREATMENT NOTE", "**Treatment**: massage."),
+        _entry(_PR2, "**Diagnoses**: strain."),
+        _entry(_SLIP, "**Work Status**: Full duty."),
+    ]
+    out = se.fold_record_entries(entries, ["5", "1", "100"], "summaryTitle")
+
+    assert [e["summaryTitle"] for e in out] == [entries[0]["summaryTitle"], _PR2]
+    assert "**Work Status**: Full duty." in out[1]["summaryText"]
+    assert "Work Status" not in out[0]["summaryText"]
+
+
+@pytest.mark.parametrize("categories", [["1", "100"], ["5", "5"], ["100", "100"]])
+def test_a_work_status_with_no_visit_that_day_stays_its_own_entry(categories):
+    """GUARD: a work status only JOINS a visit; slips alone are not one."""
+    entries = [
+        _entry(_SLIP, "**Work Status**: Full duty."),
+        _entry(_SLIP, "**Work Status**: Modified duty."),
+    ]
+    assert se.fold_record_entries(entries, categories, "summaryTitle") == entries
+
+
+@pytest.mark.parametrize(
+    ("titles", "categories"),
+    [
+        (["JOHN DOE, M.D. CITY IMAGING. MRI", "JOHN DOE, M.D. CITY IMAGING. X-RAY"], ["3", "3"]),
+        ([_PR2, "JANE ROE, N.P. VALLEY CLINIC. X-RAY OF THE LUMBAR SPINE"], ["1", "3"]),
+        ([_THERAPY, "RAY LEE, D.C. SPINE CENTER. X-RAY OF THE CERVICAL SPINE"], ["5", "3"]),
+    ],
+    ids=["two studies", "a visit and its study", "a therapy visit and its study"],
+)
+def test_a_diagnostic_study_never_folds(titles, categories):
+    """GUARD: "Diagnostics are always separate" - even by the visit's own author on its date."""
+    entries = [_entry(titles[0], "**Findings**: a."), _entry(titles[1], "**Impression**: b.")]
+    assert se.fold_record_entries(entries, categories, "summaryTitle") == entries
+
+
+@pytest.mark.parametrize(
+    ("second", "date"),
+    [
+        (_THERAPY, "03/11/2026"),  # another date: one page's visits split by #581 land here
+        ("ANN POE, P.T. MOTION THERAPY. PHYSICAL THERAPY NOTE", "02/04/2026"),  # another provider
+    ],
+    ids=["another date", "another provider"],
+)
+def test_therapy_notes_of_another_date_or_provider_stay_apart(second, date):
+    """GUARD: the same provider and the same date - or no fold."""
+    entries = [_entry(_THERAPY, "**Treatment**: a."), _entry(second, "**Plan**: b.", date=date)]
+    assert se.fold_record_entries(entries, ["5", "5"], "summaryTitle") == entries
+
+
+def test_one_authors_category_1_and_category_5_documents_stay_apart():
+    """GUARD: whether a doctor's report and a therapy note of one date are one visit was not in the
+    answer and has not been measured, so they are left as two entries."""
+    entries = [
+        _entry(_PR2, "**Diagnoses**: strain."),
+        _entry("JANE ROE, N.P. VALLEY CLINIC. ACUPUNCTURE NOTE", "**Treatment**: acupuncture."),
+    ]
+    assert se.fold_record_entries(entries, ["1", "5"], "summaryTitle") == entries
 
 
 # --- VLLM_SUMMARY_CATEGORY_MODELS reaches summarize_row ------------------------------------------
