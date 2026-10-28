@@ -405,7 +405,7 @@ export function RowsTable({
                 <td className="col-check">
                   <input
                     type="checkbox"
-                    className="ev-cb"
+                    className="ev-cb ev-cb-manual"
                     aria-label="Flag for manual review"
                     checked={String(row.flag).toLowerCase() === "x"}
                     onClick={stop}

@@ -67,6 +67,35 @@ describe("SummariesView verify flag", () => {
     );
     expect(screen.getByText(/AI-fixed/i)).toBeInTheDocument();
   });
+
+  // The reviewers (2026-10-28): "Maybe make it a different color from the other flags so it is more
+  // noticeable". Every other flag chip is amber (ev-chip-review); the Manual check chip is not.
+  it("draws the Manual check chip in its own colour, apart from the other flags", () => {
+    summariesState.error = null;
+    summariesState.isLoading = false;
+    summariesState.data = [
+      {
+        idx: 0,
+        summaryTitle: "[ManualCheck] Progress Note (Pages 1-1)",
+        summaryDate: "01/02/2026",
+        summaryText: "Body.",
+        manualCheck: true,
+        excluded: false,
+        edited: false,
+        verified: true,
+        verifyChanged: true,
+        verifyIssues: [],
+        row: { start: 1, end: 1, category: "1" },
+      },
+    ];
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+    const manual = screen.getByText("Manual check");
+    expect(manual).toHaveClass("ev-chip", "ev-chip-manual");
+    expect(manual).not.toHaveClass("ev-chip-review");
+    expect(screen.getByText("AI-fixed")).toHaveClass("ev-chip-review");
+  });
 });
 
 describe("SummariesView category", () => {

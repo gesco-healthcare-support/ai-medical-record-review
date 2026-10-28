@@ -39,6 +39,11 @@
     --warning-100: #FAF0D9;
     --danger-500: #C23934;
     --danger-100: #FBE7E6;
+    /* Violet - the manual check flag and nothing else. The reviewers (2026-10-28) asked for the
+       manual check on hand-filled records to stand out from the other flags, which are amber, so it
+       takes a hue no other flag, state or brand colour uses. #6D28D9 on #EDE9FE is 5.98:1. */
+    --violet-600: #6D28D9;
+    --violet-100: #EDE9FE;
     /* Roles */
     --color-border: var(--gray-200);
     --color-border-strong: var(--gray-300);
@@ -213,6 +218,8 @@ textarea:focus-visible, a:focus-visible {
     margin-bottom: 6px; display: block;
 }
 .ev-cb { width: 17px; height: 17px; accent-color: var(--navy-600); cursor: pointer; }
+/* The Review & correct table's manual-check box: violet, like the Manual check chip. */
+.ev-cb-manual { accent-color: var(--violet-600); }
 
 /* ---------- chips ---------- */
 
@@ -224,6 +231,8 @@ textarea:focus-visible, a:focus-visible {
 .ev-chip-review { background: var(--warning-100); color: var(--warning-500); }
 .ev-chip-edit { background: var(--blue-100); color: var(--blue-500); }
 .ev-chip-off { background: var(--danger-100); color: var(--danger-500); }
+/* Manual check: violet, never amber - every other flag on a summary card is amber. */
+.ev-chip-manual { background: var(--violet-100); color: var(--violet-600); }
 
 /* ---------- summaries step (settled Summaries.dc.html) ---------- */
 

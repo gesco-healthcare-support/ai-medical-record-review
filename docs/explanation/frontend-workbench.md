@@ -453,6 +453,11 @@ changed since they were written; those will be regenerated, so it asks for confi
   Category guessed, Pages changed - re-summarize, Category changed - re-draft to apply, Excluded. What
   the reviewer did comes first, then what the system flagged, then what is stale, then the export
   state.
+- Manual check has a colour of its own, violet (`ev-chip-manual`), and the Review & correct table's
+  review box is drawn in the same violet (`ev-cb-manual`); every other flag chip is amber. The
+  reviewers asked for it on 2026-10-28: the manual check marks the hand-filled records they always
+  want a second look at, and they wanted it more noticeable than the other flags. It appears exactly
+  when it did before.
 - The faithfulness check's issues are listed in a collapsed "N things the AI check flagged" section
   with no chip. The code comment records that 61% of audited summaries carry issues, which would make a
   chip noise; the rare "Flagged, not applied" case does get a chip.
