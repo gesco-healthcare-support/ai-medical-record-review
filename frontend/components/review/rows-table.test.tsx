@@ -193,6 +193,14 @@ describe("RowsTable", () => {
     expect(onField).toHaveBeenCalledWith(0, { flag: "-" }); // was checked -> unchecks -> '-'
   });
 
+  // The reviewers (2026-10-28) asked for the manual check to stand out from the other flags. The
+  // review box carries the manual-check colour; the Summarize box keeps the plain one.
+  it("draws the manual-check box in its own colour", () => {
+    renderTable([erow({ flag: "x" })]);
+    expect(screen.getByLabelText("Flag for manual review")).toHaveClass("ev-cb", "ev-cb-manual");
+    expect(screen.getByLabelText("Include in summarization")).not.toHaveClass("ev-cb-manual");
+  });
+
   // A document occupies TWO rows - the title line and the dense fields line - and both must select
   // it. Wiring only one leaves half of every document inert, which reads as an intermittent
   // "clicking does nothing" rather than as a missing handler.

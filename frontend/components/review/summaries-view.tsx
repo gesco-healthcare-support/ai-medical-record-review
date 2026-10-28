@@ -151,7 +151,7 @@ function SummaryChips({
         </span>
       ) : null}
       {item.manualCheck ? (
-        <span className="ev-chip ev-chip-review">
+        <span className="ev-chip ev-chip-manual">
           <Flag width={12} height={12} aria-hidden />
           Manual check
         </span>
