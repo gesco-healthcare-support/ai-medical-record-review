@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 _VISIT_CATEGORIES = ("1", "5")
 _RFA_CATEGORY = "10"
 _DIAGNOSTIC_CATEGORY = "3"
+# The first and last page of each of the two rows: the most images one check sends. Mirrored in
+# `config._VERIFY_IMAGE_CAP` for the pod's image guard.
+_MAX_IMAGES = 4
 
 _SAME_AUTHOR_SYSTEM = (
     "You review the segmentation of a scanned workers' compensation medical record. Given two "

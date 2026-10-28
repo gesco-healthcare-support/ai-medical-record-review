@@ -69,13 +69,18 @@ _STAGE_RENDER_TARGETS = {
 # number an env knob invites changing it without redoing the measurement.
 _DOI_IMAGE_CAP = 10
 _DEPOSITION_IMAGE_CAP = 6
+# The verify stage's most page images in one request: the visit merge shows the first and last
+# page of each of two rows (`visit_merge._MAX_IMAGES`, 4); the verify pass shows the last page of
+# one row and up to `verify_pass.FRAGMENT_PAGE_CAP` (2) of the next, 3. Tied to both by the same
+# test. A count by construction, not a measured value.
+_VERIFY_IMAGE_CAP = 4
 
 # Every stage that sends PAGE IMAGES to a pod. Module-level so a test can read it WITHOUT building a
 # `Settings`: constructing one in a test picks up whatever env that run happens to carry, which is
 # how a fake DATABASE_URL once leaked and surfaced as a foreign-key violation in an unrelated file.
 # An earlier version of the coverage test did exactly that and produced an intermittent setup error.
 # `Settings._stage_image_caps` is keyed on this tuple, so the two cannot disagree.
-_IMAGE_CAPPED_STAGES = ("summarize", "segment", "doi", "deposition")
+_IMAGE_CAPPED_STAGES = ("summarize", "segment", "doi", "deposition", "verify")
 
 # Destinations approved to receive PHI in production, as ORIGINS (scheme + host + port).
 #
@@ -1537,9 +1542,10 @@ class Settings(BaseSettings):
     def _stage_image_caps(self) -> dict[str, tuple[int, str | None]]:
         """Every stage that sends PAGE IMAGES to a pod: how many at most, and what changes it.
 
-        FOUR stages rasterise, not one. The guard below compared only segmentation until 2026-09-16,
-        which was safe for as long as `vllm_max_images_per_prompt` was pinned in code and unreachable
-        - 15, 10 and 6 are all under 40, so the unchecked three could not be wrong. Making that
+        FIVE stages rasterise, not one (`verify` joined with the visit merge). The guard below
+        compared only segmentation until 2026-09-16, which was safe for as long as
+        `vllm_max_images_per_prompt` was pinned in code and unreachable - 15, 10 and 6 are all
+        under 40, so the unchecked three could not be wrong. Making that
         limit settable is correct and is the point of this change, but it opens a configuration
         nobody could previously reach: a pod at `--limit-mm-per-prompt 10` would refuse segmentation
         at boot, you would lower VLLM_SEGMENT_MAX_PAGES to clear it, the app would start, and
@@ -1558,6 +1564,7 @@ class Settings(BaseSettings):
             "segment": (self.vllm_segment_max_pages, "VLLM_SEGMENT_MAX_PAGES"),
             "doi": (_DOI_IMAGE_CAP, None),
             "deposition": (_DEPOSITION_IMAGE_CAP, None),
+            "verify": (_VERIFY_IMAGE_CAP, None),
         }
         # Keyed on the module tuple rather than returning the literal, so a stage added to one and
         # not the other raises here instead of being silently unguarded.
