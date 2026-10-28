@@ -1111,6 +1111,17 @@ class Settings(BaseSettings):
     # Defaults FALSE, which is today's behaviour. It is a live change to what a reviewer is shown,
     # so it ships as a capability and gets turned on deliberately rather than by upgrading.
     verify_triggered_only: bool = False
+    # At the end of segmentation, after the verify pass: merge two adjacent draft rows of one visit
+    # - same date, and the stage's model confirms one provider wrote both - before the reviewer
+    # sees the draft (`visit_merge.merge_visit_pieces`). The reviewers' answer of 2026-10-28: "for
+    # visits you can always merge them if it's from the same doctor", an RFA or work status of the
+    # same doctor and date included, "Diagnostics are always separate". One reviewer's 1,885-page
+    # record on our model took 122 such merges by hand. One `verify`-stage call per candidate
+    # boundary; any failure or unclear reply merges nothing.
+    #
+    # Off by default: it changes what segmentation decides, and a wrong merge hides a document. Turn
+    # it on per box once it has been measured there.
+    merge_visit_pieces: bool = False
     bundle_summarize_cap: int = 40
 
     def effective_job_timeout(self, pages: int) -> int:

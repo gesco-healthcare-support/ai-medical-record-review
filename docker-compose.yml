@@ -302,6 +302,10 @@ x-backend-env: &backend-env
   VERIFY_SUSPECT_CAP: ${VERIFY_SUSPECT_CAP:-200}
   VERIFY_USE_TEXT: ${VERIFY_USE_TEXT:-true}
   VERIFY_MERGE: ${VERIFY_MERGE:-true}
+  # Merge one visit's pieces (same date, same provider confirmed by the verify-stage model) into one
+  # draft row before review. Off until measured on the box that turns it on: it changes what
+  # segmentation decides, and a wrong merge hides a document.
+  MERGE_VISIT_PIECES: ${MERGE_VISIT_PIECES:-false}
   # Per-attempt deadline (ms). NOT merely a client-side stall guard: google-genai forwards it to
   # Vertex as the SERVER-side deadline, so exceeding it returns a server 504 DEADLINE_EXCEEDED
   # (proven 2026-08-12 - an 8000 value produced a server 504 at 6.2s). It is therefore the ceiling on

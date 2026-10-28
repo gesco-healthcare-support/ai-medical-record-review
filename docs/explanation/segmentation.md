@@ -345,6 +345,38 @@ The engine logs `verify pass: {'suspects': n, 'suggested': k}` for every run.
 > images-first reordering and have not been re-measured. The code comments say only the shape of
 > the trade survives: the narrow net buys precision with recall. Do not quote the levels as current.
 
+## Merging one visit's pieces (off by default)
+
+When `merge_visit_pieces` is true (`MERGE_VISIT_PIECES`, default false), a second boundary pass
+runs after the verify pass and before the injury dates
+(`backend/app/services/visit_merge.py` `merge_visit_pieces()`). It applies the reviewers' answer of
+2026-10-28 - "for visits you can always merge them if it's from the same doctor", an RFA or a work
+status of the same doctor and date included, "Diagnostics are always separate" - to the draft, so
+the reviewer does not merge a visit's pieces by hand. On one reviewer's 1,885-page record on our
+model, 122 of 148 row edits were such merges. The export folds these entries anyway
+(see [Summarization](summarization.md)); this pass makes the review page show one row too.
+
+**Candidates (`candidate_indices()`).** Two adjacent rows with the same known date where both are
+visit documents of one category (1 and 1, or 5 and 5), or one is a visit document and the other
+joins a visit: a category-10 row whose title names a Request for Authorization, or a row whose title
+names a work status, whatever its category. The title patterns are the export fold's own. Never a
+diagnostic study (category 3), never two dates, and never a category-1 row next to a category-5 row:
+the fold leaves that pair apart too, since nothing has measured how often it is one visit.
+
+**The check (`_same_author()`).** One `verify`-stage call per candidate, through the provider seam:
+the first and last page of each row as images, then the rows' metadata and the question whether the
+same doctor or provider wrote or signed both. The same clinic, date or form is not enough. Only an
+exact `YES` merges; any error, an unclear reply, or a boundary the pool did not reach before its
+deadline keeps the split.
+
+**The merge.** The merged row keeps the visit document's category, title and classification, starts
+where the first piece starts and ends where the second ends, and carries the review flag `x` when
+either piece had it. A run of confirmed boundaries collapses into one row. The engine logs
+`visit merge: {'candidates': n, 'merged': k}` and one line per merge with the two page ranges.
+
+> **Note:** Not measured. It changes what segmentation decides, and a wrong merge hides a document,
+> so it ships off and is turned on per box after a measurement there.
+
 ## Injury dates, read last
 
 After verification, each row's injury date is read once, in isolation, by
@@ -461,8 +493,8 @@ measurement, not an opinion.
 - **Keep `stage="segment"` on the call, and resolve transport and model through the same stage.**
   Another stage string silently selects a different thinking budget, and a bare `get_provider()`
   resolves the transport for `summarize` while the model resolves for `segment`.
-- **Rebuild the classifier image.** `segment_engine.py`, `windows.py`, `verify_pass.py` and
-  `classification.py` run on `segment-worker`, which uses `mrr-backend-classifier`. Building only
+- **Rebuild the classifier image.** `segment_engine.py`, `windows.py`, `verify_pass.py`,
+  `visit_merge.py` and `classification.py` run on `segment-worker`, which uses `mrr-backend-classifier`. Building only
   `api` leaves the worker on the old code. See [Deploy to the server](../how-to/deploy-to-the-server.md).
 - **Window settings are environment-tunable without a rebuild.** `WINDOW_BUDGET_MB`,
   `WINDOW_MAX_PAGES`, `WINDOW_OVERLAP` and `SEGMENT_WINDOW_WORKERS` are passed through
@@ -470,7 +502,8 @@ measurement, not an opinion.
   [The configuration model](configuration-model.md)).
 - **Re-segmenting destroys reviewer corrections** for that document (audited, not prevented).
 - **Tests:** `backend/tests/test_windows.py`, `test_segment_engine.py`,
-  `test_segment_engine_request.py`, `test_segment_thinking.py` and `test_verify_pass.py`. See
+  `test_segment_engine_request.py`, `test_segment_thinking.py`, `test_verify_pass.py` and
+  `test_visit_merge.py`. See
   [Run the tests](../how-to/run-the-tests.md).
 
 ## Related pages
