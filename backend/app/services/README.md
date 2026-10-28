@@ -14,10 +14,11 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 | Page text | `page_text.py` | Extracts each page's text once (text layer or OCR), stores it in `page_texts`, and reuses it in every stage. Filled at upload (the `ocr` queue) and again at Identify for anything missing; two passes at once share the pages. |
 | | `ocr.py` | Tesseract OCR over pages rasterized by Poppler; reads a condensed deposition sheet a quarter at a time. |
 | | `rasterise.py` | Renders pages to images for backends that cannot take an inline PDF. |
-| Segmentation | `segment_engine.py` | Runs identification: windows, the model call per window, the merge, categorizing, the verify pass, injury dates. |
+| Segmentation | `segment_engine.py` | Runs identification: windows, the model call per window, the merge, categorizing, the verify pass, the visit merge, injury dates. |
 | | `windows.py` | Packs pages into overlapping windows by byte budget and page cap. |
 | | `gemini.py` | The segmentation prompt, response schema and tolerant row parsing. |
 | | `verify_pass.py` | Checks suspect boundaries and marks merge suggestions for the reviewer. |
+| | `visit_merge.py` | Merges one visit's same-date, same-provider pieces into one draft row (`MERGE_VISIT_PIECES`, off by default). |
 | | `summary_doi.py` | Reads each row's date of injury; formats the DOI prefix for summaries. |
 | | `deposition_pages.py` | Finds a deposition transcript's own printed page numbers. |
 | Categorization | `classification.py` | The cascade: title rules, then an embedding model and a constrained LLM call that must agree. |

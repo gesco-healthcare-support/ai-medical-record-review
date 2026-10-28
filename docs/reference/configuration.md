@@ -119,7 +119,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `VLLM_MAX_TPM` | int | `0` | `0` | yes | 0 or less turns that meter off | Pacer token ceiling for `vllm` |
 | `VLLM_MIN_VERSION` | str | `0.24.0` | `0.24.0` | yes | Compared with the server's `GET /version` by leading numeric components, at boot and before the first vLLM client of a process; lower refuses startup | Version floor enforced by `backend/app/services/llm/preflight.py` `ensure_vllm_verified()` |
 | `VLLM_APPROVED_ORIGINS` | str | `""` | `""` | yes | Comma-separated origins | Read only by `Settings._approved_vllm_origins()`, which returns the code constant in production; outside production no origin check runs |
-| `VLLM_MAX_IMAGES_PER_PROMPT` | int | `40` | `40` | yes | Each vLLM stage's image cap must not exceed it | Must equal the pod's `--limit-mm-per-prompt`; the boot guard compares `SUMMARY_IMAGE_MAX_PAGES`, `VLLM_SEGMENT_MAX_PAGES` and the DOI (10) and deposition (6) caps against it for stages on vLLM |
+| `VLLM_MAX_IMAGES_PER_PROMPT` | int | `40` | `40` | yes | Each vLLM stage's image cap must not exceed it | Must equal the pod's `--limit-mm-per-prompt`; the boot guard compares `SUMMARY_IMAGE_MAX_PAGES`, `VLLM_SEGMENT_MAX_PAGES` and the DOI (10), deposition (6) and verify (4) caps against it for stages on vLLM |
 | `VLLM_SEGMENT_MAX_PAGES` | int | `30` | `30` | yes | Must not exceed `VLLM_MAX_IMAGES_PER_PROMPT` when `segment` is on vLLM | Pages per segmentation window on vLLM (the smaller of this and `WINDOW_MAX_PAGES`) and the image cap for that window |
 | `VLLM_SEGMENT_MAX_OUTPUT_TOKENS` | int | `8192` | `8192` | yes | Thinking tokens count against it; raise it before adding `segment` to `VLLM_THINKING_STAGES` | Reply cap for one segmentation window on vLLM (`segment_engine._segment_output_cap()`); a reply cut off at it, or one that is not a JSON list, is asked again as two overlapping halves. Gemini's call carries no cap |
 | `VLLM_SEGMENT_OWNERSHIP` | str | `edge` | `edge` | yes | `edge` or `middle`; read only when `segment` resolves to `vllm` | Where the seam between two overlapping segmentation windows sits on vLLM (`segment_engine.merge_window_rows`): `edge` lets each window decide every start from its own second page on, `middle` gives a start inside the overlap to the window that sees pages on both sides of it. Gemini always uses `edge` |
@@ -172,6 +172,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `VERIFY_USE_TEXT` | bool | `True` | `true` | yes | none | Adds OCR text from the two boundary pages to the verify prompt |
 | `VERIFY_SUSPECT_CAP` | int | `200` | `200` | yes | none | Maximum boundaries checked per record (`verify_pass.suspect_indices()`) |
 | `VERIFY_TRIGGERED_ONLY` | bool | `False` | `false` | yes | none | Checks only the boundaries the trigger heuristic selects |
+| `MERGE_VISIT_PIECES` | bool | `False` | `false` | yes | none | After the verify pass, merges two adjacent same-date draft rows of one visit (both category 1, both category 5, or a visit and its RFA or work status; never category 3) when the `verify`-stage model confirms one provider wrote both (`visit_merge.merge_visit_pieces()`); off until measured |
 
 ## Duplicate detection
 
@@ -260,7 +261,8 @@ it and a worker waits for it, and no vLLM client is handed out until it passes
 | `_APPROVED_VLLM_ORIGINS` | `http://127.0.0.1:8000`, `http://localhost:8000` | Origins approved for `VLLM_BASE_URL` in production |
 | `_DOI_IMAGE_CAP` | `10` | Mirror of `summary_doi._MAX_PAGES` for the image guard |
 | `_DEPOSITION_IMAGE_CAP` | `6` | Mirror of `deposition_pages._MAX_PAGES` for the image guard |
-| `_IMAGE_CAPPED_STAGES` | `summarize`, `segment`, `doi`, `deposition` | Stages that send page images on vLLM |
+| `_VERIFY_IMAGE_CAP` | `4` | The `verify` stage's most images per request: `visit_merge._MAX_IMAGES` (4), the verify pass 3 |
+| `_IMAGE_CAPPED_STAGES` | `summarize`, `segment`, `doi`, `deposition`, `verify` | Stages that send page images on vLLM |
 | `_STAGE_RENDER_TARGETS` | `doi` -> `doi_image_long_edge_px`, `deposition` -> `deposition_image_long_edge_px` | Stages with their own render target |
 | `_SMALLEST_PAGE_LONG_EDGE_PT` | `790.0` | Page geometry the render-target guard evaluates |
 | `_GEMINI_FLASH_MODEL` | `gemini-2.5-flash` | Vertex default for `GENAI_MODEL`; Gemini default for the title and audit models |

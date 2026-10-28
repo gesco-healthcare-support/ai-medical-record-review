@@ -27,6 +27,7 @@ from app.services.rasterise import page_image_parts
 from app.services.summary_doi import extract_injury_date
 from app.services.taxonomy import DEFAULT_ID
 from app.services.verify_pass import verify_and_merge
+from app.services.visit_merge import merge_visit_pieces
 from app.services.windows import byte_budgeted_windows
 from app.worker.failures import JobCancelled
 
@@ -728,6 +729,17 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
     if settings.verify_merge:
         rows, stats = verify_and_merge(pdf_path, rows, progress=progress, pool_timeout=pool_timeout)
         logger.info("verify pass: %s", stats)
+
+    # One visit's pieces - same date, same provider: a PR-2 cut in two, its RFA, its work status -
+    # made one row before the reviewer sees the draft (the reviewers, 2026-10-28). After the
+    # categories, which choose the candidates, and before the injury dates, which read a row's
+    # pages. Off by default: it changes what segmentation decides, and is turned on per box once
+    # measured.
+    if settings.merge_visit_pieces:
+        rows, stats = merge_visit_pieces(
+            pdf_path, rows, progress=progress, pool_timeout=pool_timeout
+        )
+        logger.info("visit merge: %s", stats)
 
     # Injury date, read per sub-document in ISOLATION. This runs LAST and that is load-bearing:
     # verify_and_merge can MERGE rows, and the read is defined by a page range, so reading before the

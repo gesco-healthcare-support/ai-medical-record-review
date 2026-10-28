@@ -106,6 +106,12 @@ def test_the_mirrored_page_caps_match_their_modules():
     assert _DEPOSITION_IMAGE_CAP == deposition_pages._MAX_PAGES, (
         "config's mirror of the deposition page cap has drifted from the module that owns it"
     )
+    from app.config import _VERIFY_IMAGE_CAP
+    from app.services import verify_pass, visit_merge
+
+    assert _VERIFY_IMAGE_CAP == max(visit_merge._MAX_IMAGES, 1 + verify_pass.FRAGMENT_PAGE_CAP), (
+        "config's verify-stage image cap no longer matches what the verify stage sends"
+    )
 
 
 def test_every_stage_that_rasterises_is_covered_by_the_image_guard():
@@ -137,6 +143,7 @@ def test_every_stage_that_rasterises_is_covered_by_the_image_guard():
         "segment_engine": "segment",
         "summary_doi": "doi",
         "deposition_pages": "deposition",
+        "visit_merge": "verify",
     }
     assert callers == set(expected), (
         f"the services calling page_image_parts have changed: {sorted(callers)}. Update `expected` "

@@ -1937,9 +1937,9 @@ def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> lis
     """The record-level passes over a delivered entry list, in order: the title passes
     (`summarize_engine.consistent_titles` - one spelling per provider and per facility, a listed
     system's abbreviation read as the system, one name for a PR-2), then the folds
-    (`summarize_engine.fold_record_entries`): one entry per visit for a doctor's category 1
-    documents and RFA on one date, which needs the spellings to agree first, and one entry per
-    date of laboratory results. Both
+    (`summarize_engine.fold_record_entries`): one entry per visit - a provider's category 1
+    documents, or their category 5 notes, of one date, with that visit's RFA and work status -
+    which needs the spellings to agree first, and one entry per date of laboratory results. Both
     renderers call this, so the Word and PDF deliverables list the same entries, and the Summaries
     tab runs the same title passes (`_tab_titles`). ``locked`` marks the entries whose title a
     reviewer edited: never rewritten, and they win."""
