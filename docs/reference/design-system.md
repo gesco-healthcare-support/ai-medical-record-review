@@ -59,6 +59,8 @@ All defined on `:root` in `frontend/app/evaluators-ds.css`.
 | `--warning-100` | `#FAF0D9` | Attention background |
 | `--danger-500` | `#C23934` | Errors, destructive actions |
 | `--danger-100` | `#FBE7E6` | Error background |
+| `--violet-600` | `#6D28D9` | The manual check only: "Manual check" chip text, the Review & correct table's review box |
+| `--violet-100` | `#EDE9FE` | "Manual check" chip background |
 
 ### Roles, shadows, shape, layout, type
 
@@ -149,8 +151,8 @@ it. State modifiers (for example `active`, `selected`) are listed with the famil
 | App shell | `ev-topbar`, `ev-crest-chip`, `ev-wordmark`, `ev-topbar-divider`, `ev-topbar-app`, `ev-topbar-nav`, `ev-brand-home`, `ev-backlink`, `ev-page-back` | `AppBar`, `Brand`, `BackLink`, route pages |
 | Stepper | `ev-stepper`, `ev-step` (with `active`, `done`, `busy`), `ev-step-line`, `ev-step-circle`, `ev-step-label` | `Stepper` (rendered only by its test) |
 | Buttons | `ev-btn`, `ev-btn-primary`, `ev-btn-outline`, `ev-btn-ghost`, `ev-btn-gold`, `ev-btn-del`, `ev-btn-sm`, `ev-btn-lg`, `ev-btn-block` | Every page |
-| Form controls | `ev-inp` (with `invalid`), `ev-lbl`, `ev-cb`, `ev-check`, `ev-eyebrow` | Every form |
-| Chips | `ev-chip`, `ev-chip-review` (amber), `ev-chip-edit` (blue), `ev-chip-neutral` (gray), `ev-chip-off` (red) | Summary cards, duplicate clusters |
+| Form controls | `ev-inp` (with `invalid`), `ev-lbl`, `ev-cb`, `ev-cb-manual` (violet), `ev-check`, `ev-eyebrow` | Every form; `ev-cb-manual` is the review box in `RowsTable` |
+| Chips | `ev-chip`, `ev-chip-review` (amber), `ev-chip-edit` (blue), `ev-chip-manual` (violet), `ev-chip-neutral` (gray), `ev-chip-off` (red) | Summary cards, duplicate clusters; `ev-chip-manual` is the Manual check chip alone |
 | Segmented tabs | `ev-segtabs`, `ev-segtab` (with `active`) | `SegmentedTabs` |
 | Split pane | `ev-split` (with `dragging`), `ev-split-pane`, `ev-split-left`, `ev-split-right`, `ev-split-handle` | `SplitPane` |
 | Dialog helpers | `ev-dialog-wide`, `ev-dialog-row`, `ev-field-1`, `ev-field-2`, `ev-mono`, `ev-refpanel`, `ev-refpanel-head`, `ev-refpanel-body` | `CategoryDialog`, `PromptDialog`, bundle aside |
