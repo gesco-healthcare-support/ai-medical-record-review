@@ -400,13 +400,17 @@ flowchart TD
   never takes this branch.
 - With `VLLM_AUDIT_IMAGE_CHECK` also on (off by default), a deleted number the OCR text lacks is
   not yet counted against the draft: when the text alone would let the rewrite win, the audit model
-  is shown the row's page images (the body's own, `page_image_parts`) and asked which of those
-  numbers are written there (`_numbers_on_the_page()`), and each one it sees counts as on the pages.
-  The audit reads the OCR text only, and OCR misses handwriting, so on a hand-filled form a number
-  the body read correctly looks unsupported. Measured 2026-10-26 on two sets of large records with
-  hand-filled pages: 83% of the numbers the audit deleted from hand-filled summaries were judged on
-  the page, against 9% of made-up decoys. A failed check confirms nothing, so the text-only rule
-  decides. One extra call, only for rows whose audit deletes numbers the OCR does not carry.
+  is shown the row's page images (the body's own, `page_image_parts`) and asked, true or false per
+  value, whether each of those numbers is written there (`_numbers_on_the_page()`); each one it
+  sees counts as on the pages. Every number is listed beside a made-up near miss of it (its last
+  digit moved by one, `_near_miss()`), and a reply that says a near miss is written confirms
+  nothing. The audit reads the OCR text only, and OCR misses handwriting, so on a hand-filled form
+  a number the body read correctly looks unsupported. Measured 2026-10-28 on 253 stored rewrites of
+  two sets of large records with hand-filled pages: true for 74% of the deleted numbers on
+  hand-filled rows and 81% on typed ones, against 7% and 2% of the near misses. Asked as a plain
+  list of the deleted numbers, the same model had also said yes to 23-32% of made-up numbers. A
+  failed check confirms nothing, so the text-only rule decides. One extra call, only for rows whose
+  audit deletes numbers the OCR does not carry.
 - `_drops_required_headings()` compares counts of bold spans, never their text, because renaming a
   heading is allowed. If every issue is correction-only (`capitalization`, `range_of_motion`), any
   lost heading rejects the rewrite. Otherwise a body with at least three headings that loses more

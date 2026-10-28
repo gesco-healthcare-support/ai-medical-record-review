@@ -1067,9 +1067,14 @@ class Settings(BaseSettings):
     # Measured 2026-10-26 on two sets of large eData records (6,120 and 5,525 pages, hand-filled forms
     # on 15% and 33% of pages): of 344 numbers the audit deleted from summaries of hand-filled rows,
     # the base model shown the page images judged 285 (83%) written on the page, against 9% of made-up
-    # decoys in the same format (mrr-training scripts/hw_audit_judge.py). One extra call, only for a
-    # row whose audit deletes numbers the OCR does not carry. Off by default until a pod day measures
-    # the delivered summaries with it on. Gemini ignores it.
+    # decoys in the same format (mrr-training scripts/hw_audit_judge.py). The app's first wording - a
+    # list of only the deleted numbers, "which are written here" - also said yes to 23-32% of made-up
+    # numbers (2026-10-27), so since 2026-10-28 each number is asked beside a near miss of it (its last
+    # digit moved by one), true/false per value, and a call that says a near miss is written confirms
+    # nothing: on the 253 stored rewrites of those records, true for 74% (hand-filled rows) / 81%
+    # (typed) of the deleted numbers and 7% / 2% of the near misses (hw_imagecheck_mixed.py). One extra
+    # call, only for a row whose audit deletes numbers the OCR does not carry. Off by default. Gemini
+    # ignores it.
     vllm_audit_image_check: bool = False
     # ON OUR MODEL ONLY: bound the summary audit's reply in the grammar itself - at most 30 issues,
     # each detail at most 600 characters (summary_verify._OUR_MODEL_BOUNDED_SCHEMA). Measured

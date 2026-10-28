@@ -10,6 +10,7 @@ import. This module no longer names an SDK.
 """
 
 import difflib
+import hashlib
 import json
 import logging
 import re
@@ -356,19 +357,54 @@ def _would_delete_content_on_our_model(
     return len(on_pages) >= len(deleted) - len(on_pages)
 
 
-# The image check's question, its reply shape and its cap. Worded as the measurement asked it
-# (mrr-training scripts/hw_audit_judge.py, 2026-10-26: 83% of numbers the audit deleted from
-# hand-filled summaries judged on the page, 9% of decoys).
+# The image check's question and its reply shape. Asked as a list of only the deleted numbers ("which
+# of these are written here") the model named 72-75% of them, but also 23-32% of made-up numbers
+# asked the same way, so it could not tell a reading from an invention (2026-10-27). Mixed into ONE
+# list with a near miss of each (the same number, its last digit moved by one) and answered
+# true/false per value, it said true to 74% of the deleted numbers on hand-filled rows and 81% on
+# typed ones, but to 7% and 2% of the near misses (mrr-training scripts/hw_imagecheck_mixed.py,
+# 2026-10-28, the 253 rewrites of the two large-record sets). A call that says true to any near
+# miss confirms nothing.
 _ON_THE_PAGE_SYSTEM = (
     "You check whether values are written on pages of a medical document. Some of it is handwritten "
-    "or filled in by hand. Name a value only if you can see it written on the pages, in print or in "
-    "handwriting, exactly as given."
+    "or filled in by hand. Some of the values you are given are NOT on the pages. Answer true only for "
+    "a value you can see written on the pages, in print or in handwriting, exactly as given."
 )
 _ON_THE_PAGE_SCHEMA = {
     "type": "object",
-    "properties": {"present": {"type": "array", "items": {"type": "string"}}},
-    "required": ["present"],
+    "properties": {
+        "answers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"value": {"type": "string"}, "written": {"type": "boolean"}},
+                "required": ["value", "written"],
+            },
+        }
+    },
+    "required": ["answers"],
 }
+
+
+def _near_miss(value: str, taken: set[str]) -> str | None:
+    """``value`` with its last digit moved by one: a made-up control the image check must answer
+    false for. None when both neighbours are themselves values being asked."""
+    last = max((i for i, ch in enumerate(value) if ch.isdigit()), default=None)
+    if last is None:
+        return None
+    for step in (1, -1):
+        digit = int(value[last]) + step
+        if 0 <= digit <= 9:
+            control = f"{value[:last]}{digit}{value[last + 1 :]}"
+            if control not in taken:
+                return control
+    return None
+
+
+def _mixed(values) -> list[str]:
+    """``values`` in an order that interleaves the real ones and their controls without sorting a
+    number next to its own near miss - a stable keyed hash, so a row always asks the same way."""
+    return sorted(values, key=lambda v: hashlib.blake2b(v.encode(), digest_size=8).digest())
 
 
 def _image_confirmer(audit_model, pdf_path, row):
@@ -386,14 +422,20 @@ def _numbers_on_the_page(audit_model, pdf_path, row, numbers) -> set[str]:
     """Which of ``numbers`` the audit model sees written on the row's page images.
 
     The images are the body's own (`page_image_parts`, the first `summary_image_max_pages` pages), so
-    the check sees exactly what the summary was written from. Any failure - no PDF, a render error, a
-    reply that is not the expected JSON - confirms nothing, which leaves today's text-only rule in
-    charge: the check can only ever keep a draft the text alone would have kept or one whose numbers
-    it saw, never ship more than today on its own failure.
+    the check sees exactly what the summary was written from. Each number is asked beside a made-up
+    near miss of it (`_near_miss`), all in one list, true/false per value; a reply that says a near
+    miss is written confirms nothing. Any failure - no PDF, a render error, a reply that is not the
+    expected JSON - confirms nothing too, which leaves today's text-only rule in charge: the check can
+    only ever keep a draft the text alone would have kept or one whose numbers it saw, never ship
+    more than today on its own failure.
     """
-    asked = sorted(numbers)
+    asked = set(numbers)
     if not asked or not pdf_path:
         return set()
+    controls = {c for c in (_near_miss(v, asked) for v in sorted(asked)) if c}
+    if not controls:
+        return set()
+    listing = _mixed(asked | controls)
     try:
         parts = page_image_parts(
             pdf_path, row["start"], row["end"], get_settings().summary_image_max_pages
@@ -404,16 +446,17 @@ def _numbers_on_the_page(audit_model, pdf_path, row, numbers) -> set[str]:
             parts=[
                 *parts,
                 TextPart(
-                    "Which of these values are written on the pages above? List only those you can "
-                    "see, exactly as given:\n" + "\n".join(asked)
+                    "For EACH value below, answer whether that exact value is written on the pages "
+                    "above (true) or not (false). One answer per value, in the same order:\n"
+                    + "\n".join(listing)
                 ),
             ],
             schema=_ON_THE_PAGE_SCHEMA,
             temperature=0.0,
             stage="summarize",
-            max_output_tokens=64 + 16 * len(asked),
+            max_output_tokens=64 + 24 * len(listing),
         )
-        present = json.loads(response.text or "{}").get("present") or []
+        written = _written(response.text)
     except Exception:  # noqa: BLE001 - a failed check confirms nothing; today's rule then decides
         logger.warning(
             "image check failed for pages %s-%s; the text-only rule decides",
@@ -422,7 +465,24 @@ def _numbers_on_the_page(audit_model, pdf_path, row, numbers) -> set[str]:
             exc_info=True,
         )
         return set()
-    return {str(value).strip() for value in present} & set(asked)
+    if written & controls:
+        logger.info(
+            "image check for pages %s-%s said a made-up value is written; it confirms nothing",
+            row["start"],
+            row["end"],
+        )
+        return set()
+    return written & asked
+
+
+def _written(reply) -> set[str]:
+    """The values an image-check reply answered ``written: true`` for."""
+    answers = json.loads(reply or "{}").get("answers") or []
+    return {
+        str(a.get("value", "")).strip()
+        for a in answers
+        if isinstance(a, dict) and a.get("written") is True
+    }
 
 
 def _issues_to_store(issues: list) -> list:

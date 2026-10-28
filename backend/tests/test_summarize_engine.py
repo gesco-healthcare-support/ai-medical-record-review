@@ -4718,16 +4718,22 @@ def test_a_document_that_fits_is_written_in_one_call(monkeypatch):
 
 
 # VLLM_AUDIT_IMAGE_CHECK: the audit reads the OCR text only, and OCR misses handwriting, so on a
-# hand-filled page a number the body read correctly looks unsupported. Measured 2026-10-26: 83% of
-# the numbers the audit deleted from hand-filled summaries were on the page, 9% of decoys (config.py).
+# hand-filled page a number the body read correctly looks unsupported. Asked beside a near miss of
+# each value, the model said true to 74% of the deleted numbers on hand-filled rows and 7% of the
+# near misses (2026-10-28, summarize_engine._ON_THE_PAGE_SYSTEM).
 class _PageChecker:
-    """A provider stand-in for the image check: answers which values it 'sees', records the ask."""
+    """A provider stand-in for the image check: answers true for the values it 'sees' and false for
+    every other value listed, and records the ask (the instruction line, then one value per line)."""
 
     name = "vllm"
 
-    def __init__(self, present):
+    def __init__(self, present, extra=()):
         self.present = present
+        self.extra = list(extra)  # (value, written) answers for values nobody asked about
         self.asked = []
+
+    def values(self, n=-1):
+        return self.asked[n].splitlines()[1:]
 
     def generate_structured(
         self, *, model, system, parts, schema, temperature, stage, max_output_tokens
@@ -4735,7 +4741,9 @@ class _PageChecker:
         from types import SimpleNamespace
 
         self.asked.append(parts[-1].text)
-        return SimpleNamespace(text=json.dumps({"present": self.present}))
+        answers = [{"value": v, "written": v.strip() in self.present} for v in self.values()]
+        answers += [{"value": v, "written": w} for v, w in self.extra]
+        return SimpleNamespace(text=json.dumps({"answers": answers}))
 
 
 def _image_check_on(monkeypatch, present):
@@ -4798,11 +4806,59 @@ def test_with_the_image_check_off_nothing_is_asked(monkeypatch):
 
 def test_the_image_check_confirms_only_what_it_was_asked(monkeypatch):
     """A reply naming a value nobody asked about cannot add it, and the asked list is what counts."""
-    checker = _PageChecker(["40", "999", " 15 "])
+    checker = _PageChecker(["40", "15"], extra=[("999", True), (" 15 ", True)])
     monkeypatch.setattr(se, "get_provider", lambda: checker)
     monkeypatch.setattr(se, "page_image_parts", lambda *a, **k: [])
 
     assert se._numbers_on_the_page("m", "/x.pdf", _row(), {"40", "15"}) == {"40", "15"}
+
+
+def test_each_number_is_asked_beside_a_near_miss_of_it(monkeypatch):
+    """WHEN the image check asks about the deleted numbers THE SYSTEM SHALL list each beside a made-up
+    near miss (its last digit moved by one), every value once, in one list - so a model that says
+    true to whatever it is asked shows it on the near misses."""
+    checker = _PageChecker([])
+    monkeypatch.setattr(se, "get_provider", lambda: checker)
+    monkeypatch.setattr(se, "page_image_parts", lambda *a, **k: [])
+
+    se._numbers_on_the_page("m", "/x.pdf", _row(), {"40", "15", "1.9", "09/12/2024"})
+
+    assert sorted(checker.values()) == sorted(
+        ["40", "41", "15", "16", "1.9", "1.8", "09/12/2024", "09/12/2025"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "taken", "control"),
+    [("40", set(), "41"), ("9", set(), "8"), ("41", {"42"}, "40"), ("3/4", set(), "3/5")],
+)
+def test_a_near_miss_moves_the_last_digit_and_never_repeats_an_asked_value(value, taken, control):
+    assert se._near_miss(value, {value, *taken}) == control
+
+
+def test_no_near_miss_without_a_free_neighbour():
+    assert se._near_miss("5", {"5", "6", "4"}) is None
+    assert se._near_miss("40", {"40", "41"}) is None
+    assert se._near_miss("abc", {"abc"}) is None
+
+
+def test_a_near_miss_said_written_confirms_nothing(monkeypatch, caplog):
+    """WHEN the check says a made-up near miss is written THE SYSTEM SHALL confirm nothing from that
+    call - it cannot tell a reading from an invention there - so the text-only rule decides."""
+    checker = _PageChecker(["40", "41", "15"])
+    monkeypatch.setattr(se, "get_provider", lambda: checker)
+    monkeypatch.setattr(se, "page_image_parts", lambda *a, **k: [])
+
+    with caplog.at_level("INFO"):
+        assert se._numbers_on_the_page("m", "/x.pdf", _row(), {"40", "15"}) == set()
+    assert "said a made-up value is written" in caplog.text
+
+
+def test_the_order_mixes_values_and_is_stable():
+    values = {"40", "41", "15", "16"}
+    first = se._mixed(values)
+    assert sorted(first) == sorted(values)
+    assert se._mixed(set(reversed(sorted(values)))) == first
 
 
 @pytest.mark.parametrize("failure", ["render", "reply"])
