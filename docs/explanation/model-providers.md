@@ -41,7 +41,7 @@ the running app.
 
 ```mermaid
 flowchart TD
-    SVC["Non-summarize service<br/>segment_engine, classification, dedup,<br/>extraction, verify_pass, summary_doi, deposition_pages"] --> PFS["provider_for_stage(stage)"]
+    SVC["Non-summarize service<br/>segment_engine, classification, dedup,<br/>extraction, verify_pass, visit_merge,<br/>summary_doi, deposition_pages"] --> PFS["provider_for_stage(stage)"]
     SUM["summarize_engine, summary_verify"] --> GP["get_provider()"]
     PFS --> BF["Settings.backend_for(stage)"]
     GP --> SP{"SUMMARY_PROVIDER is openai?"}

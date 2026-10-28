@@ -87,7 +87,7 @@ it; a stage change always writes, same-stage ticks at most once per second excep
 | `reading` | `segment` | `_populate_page_text` (0 of page count), then `populate_document` | pages stored / pages missing from the store | Reading the pages |
 | `segmenting` | `segment` | `segment_engine.run_segmentation` | windows | Finding document boundaries |
 | `categorizing` | `segment`, `classify` | `segment_engine.run_segmentation`; `classify_document` | rows | Categorizing each document |
-| `verifying` | `segment`, when `VERIFY_MERGE` is true | `verify_pass.verify_and_merge` | suspect boundaries checked | Double-checking uncertain boundaries |
+| `verifying` | `segment`, when `VERIFY_MERGE` or `MERGE_VISIT_PIECES` is true | `verify_pass.verify_and_merge`, then `visit_merge.merge_visit_pieces` | suspect boundaries checked, then same-visit boundaries checked | Double-checking uncertain boundaries |
 | `injury-dates` | `segment` | `segment_engine.run_segmentation` | rows | none; the raw stage string is shown |
 | `deduping` | `dedup` | `dedup_document` | included rows read | not used; the Duplicates tab shows its own "checking" text with `current/total` |
 | `summarizing` | `summarize` | `_summarize_work` | included rows with a summary, reused ones included | Writing summaries |

@@ -21,6 +21,7 @@ call sites named in each section. The routing and retry machinery is explained i
 | `dedup` | `backend/app/services/dedup.py` `confirm_cluster()` | `provider_for_stage("dedup").generate_structured` | `CLASSIFY_MODEL` (`gemini-2.5-flash-lite`) | `GEMINI_THINKING_BUDGET` (0) | 256 (hardcoded) | JSON |
 | `classify` | `backend/app/services/classification.py` `llm_classify()` | `provider_for_stage("classify").generate_choice` | `CLASSIFY_MODEL` (`gemini-2.5-flash-lite`) | `GEMINI_THINKING_BUDGET` (0) | not set | One category id |
 | `verify` | `backend/app/services/verify_pass.py` `_same_document()` | `provider_for_stage("verify").generate_choice` | `VERIFY_MODEL` (<- `GENAI_MODEL`) | `GEMINI_THINKING_BUDGET` (0) | not set | `YES` or `NO` |
+| `verify` (visit merge) | `backend/app/services/visit_merge.py` `_same_author()` | `provider_for_stage("verify").generate_choice` | `VERIFY_MODEL` (<- `GENAI_MODEL`) | `GEMINI_THINKING_BUDGET` (0) | not set | `YES` or `NO` |
 | `doi` | `backend/app/services/summary_doi.py` `extract_injury_date()` | `provider_for_stage("doi").generate_text` | `GENAI_MODEL` | `SUMMARY_THINKING_BUDGET` (-1) | `DOI_MAX_OUTPUT_TOKENS` (2048) | Free text |
 | `deposition` | `backend/app/services/deposition_pages.py` `transcript_page_offset()` | `provider_for_stage("deposition").generate_structured` | `GENAI_MODEL` | `SUMMARY_THINKING_BUDGET` (-1) | `DEPOSITION_MAX_OUTPUT_TOKENS` (2048) | JSON |
 
@@ -174,6 +175,21 @@ bundle export pass `verify=False`.
 | Reply handling | True only when the stripped reply is `YES` |
 | Failure | Any exception: WARNING and `False` (the boundary is kept). `JobCancelled` is re-raised |
 | When it runs | At the end of segmentation when `VERIFY_MERGE` is true, on the boundaries `verify_pass.suspect_indices()` selects (`VERIFY_SUSPECT_CAP`, `VERIFY_TRIGGERED_ONLY`), on `CLASSIFY_WORKERS` threads |
+
+### The visit merge's call
+
+The same stage, model and thinking as the verify pass; only the question differs.
+
+| Item | Value |
+| --- | --- |
+| Entry point | `provider_for_stage("verify").generate_choice(stage="verify")` from `visit_merge._same_author()` |
+| System | `visit_merge._SAME_AUTHOR_SYSTEM` |
+| Parts | JPEG images first (`rasterise.page_image_parts`): the first and last page of the previous row, then the first and last page of this row (a one-page row once); then the prompt, which carries each row's pages, category, date and title and asks whether the same doctor or provider wrote or signed both - the same clinic, date or form is not enough |
+| Choices | `YES`, `NO` |
+| Max output tokens | Not set |
+| Reply handling | True only when the stripped reply is `YES` |
+| Failure | Any exception: WARNING and `False` (no merge). `JobCancelled` is re-raised |
+| When it runs | At the end of segmentation when `MERGE_VISIT_PIECES` is true (off by default), after the verify pass, on the boundaries `visit_merge.candidate_indices()` selects, on `CLASSIFY_WORKERS` threads |
 
 ## doi
 
