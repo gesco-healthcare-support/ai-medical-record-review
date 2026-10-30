@@ -989,8 +989,13 @@ def _admitted(cluster, by_id, document_id) -> list[dict]:
     from app.services.dedup import admitted_candidates
 
     admitted = admitted_candidates(cluster)
-    if admitted and admitted[0] is cluster:
-        return admitted
+    if not (admitted and admitted[0] is cluster):
+        _log_rejection(cluster, admitted, by_id, document_id)
+    return admitted
+
+
+def _log_rejection(cluster, recovered, by_id, document_id) -> None:
+    """Log a cluster the gate rejected, then each same-date part recovered from it."""
     members = cluster["members"]
     # No shared date, or a shared date with neither title nor category agreeing, and the content
     # is not near-identical: a recurring form series, not copies. Rejected without spending a
@@ -1003,7 +1008,7 @@ def _admitted(cluster, by_id, document_id) -> list[dict]:
         cluster["similarity"],
         _pages(members, by_id),
     )
-    for part in admitted:
+    for part in recovered:
         logger.info(
             "dedup kept a %d-member same-date part of that %d-member candidate on document %s "
             "(similarity %s, pages %s)",
@@ -1013,7 +1018,6 @@ def _admitted(cluster, by_id, document_id) -> list[dict]:
             part["similarity"],
             _pages(part["members"], by_id),
         )
-    return admitted
 
 
 def _adjudicate(
