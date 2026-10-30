@@ -752,8 +752,26 @@ def entry_body_segments(
     return [(t, b or whole_bold, i, u) for t, b, i, u in segments if t]
 
 
+# What a Word file (XML 1.0) cannot hold: control characters other than tab, line feed and carriage
+# return, lone surrogates, and the non-characters U+FFFE / U+FFFF. Exactly the set python-docx
+# refuses - probed character by character - and it refuses with a ValueError that fails the WHOLE
+# export, letter and ZIP alike. A model can write one: on the live box an audit rewrite carried a
+# stray 0x10 between a space and a word, and every Word export of that record failed until it was
+# found. Text from the model, the OCR and the reviewer all reaches the letter through `_run`.
+_NOT_IN_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")
+# A vertical tab or form feed separates words, so it becomes a space; anything else goes.
+_SEPARATORS = "\x0b\x0c"
+
+
+def _xml_safe(s):
+    """``s`` without the characters a Word file cannot hold (``None`` and ``""`` pass through)."""
+    if not s:
+        return s
+    return _NOT_IN_XML.sub(lambda m: " " if m.group() in _SEPARATORS else "", s)
+
+
 def _run(paragraph, s, *, bold=False, italic=False, size=None, underline=False, font=None):
-    run = paragraph.add_run(s)
+    run = paragraph.add_run(_xml_safe(s))
     run.bold = bold
     run.italic = italic
     run.underline = underline
