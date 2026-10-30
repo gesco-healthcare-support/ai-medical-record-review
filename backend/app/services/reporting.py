@@ -88,11 +88,17 @@ def report_font(doctor: str | None) -> str:
 # the opening paragraph then omits the clause entirely.
 LETTER_TYPES: tuple[str, ...] = ("advocacy", "interrogatory", "none")
 
-# The article travels WITH the label because it changes: `a defense advocacy letter` but
-# `an interrogatory letter`. Computing it from the first letter would be a rule that happens
-# to work on two values and breaks on the third someone adds.
+# The article travels WITH the label because it changes: `a defense advocacy letter` became
+# `an advocacy letter` with one edit to this line. Computing it from the first letter would be a
+# rule that happens to work on the values of the day and breaks on the next one someone adds.
+#
+# NO SIDE is named. The label said `a defense advocacy letter` whatever the letter was, and a
+# letter from the applicant's attorney printed as a defense letter in delivered reports. The
+# record does not say which side sent it, and the senior reviewer asked for the side to go
+# (2026-10-30): "just have it say advocacy/interrogatory letter, since it says the name of the
+# law firm anyway" - the sender clause after it names the attorney and the firm.
 LETTER_LABELS: dict[str, str] = {
-    "advocacy": "a defense advocacy letter",
+    "advocacy": "an advocacy letter",
     "interrogatory": "an interrogatory letter",
 }
 
@@ -164,7 +170,7 @@ def _sender_clause(attorney_name, lawfirm) -> str:
 
 
 def _letter_clause(letter_type, letter_date) -> str:
-    """The covering letter: `a defense advocacy letter dated 08/12/2026 along with `, or nothing.
+    """The covering letter: `an advocacy letter dated 08/12/2026 along with `, or nothing.
 
     A letter with no date still gets its clause, because the TYPE is the fact worth stating
     and "dated" with nothing after it is worse than no date at all.
@@ -468,7 +474,7 @@ def memo_opening(accounting, details: MemoDetails) -> str:
     """The memo's first sentence: what arrived and from whom.
 
     Their memo and their report open with the same sentence in different voices - "I have
-    received a defense advocacy letter dated 07/31/26 along with 191 pages of medical records
+    received an advocacy letter dated 07/31/26 along with 191 pages of medical records
     from ..." on the report, `We have received ...` on the memo, because one is the evaluator
     writing and the other the office. So the WORDS differ by one pronoun and nothing else, and
     both halves that carry a fact are the letter's own: `_letter_clause` and `_sender_clause`.
