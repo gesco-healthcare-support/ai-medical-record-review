@@ -29,6 +29,28 @@ logger = logging.getLogger(__name__)
 
 _EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 
+# ALLERGY AND IMMUNIZATION RECORDS, answered 2026-10-30: "we can disregard things such as allergy
+# and immunization records". Anchored to list and record wording, because an allergist is a
+# treating doctor: "Allergy Consultation" and "Allergy and Immunology Progress Note" are visits and
+# must keep their answer. So the allergy half claims a title that IS the list ("Allergies",
+# "Drug Allergies", "Allergy History") or names an allergy list or record; the immunization half
+# claims the record words themselves ("immunization", "vaccine", "vaccination"), which a visit title
+# does not carry - "immunology" is a different word.
+#
+# Measured before shipping, read-only, on the live box (draft and reviewer titles): 37 distinct
+# titles move, all from no rule to 100. On finished records reviewers had unticked 56 of their 62
+# rows; the 6 ticked were vaccine visits and a lab panel printed with the immunization list.
+#
+# Its own constant because the one-entry-per-date review action asks the same question: such a row
+# is never folded into a date's entry.
+_ALLERGY_OR_IMMUNIZATION_SOURCE = (
+    r"^\s*(?:(?:drug|medication|food)\s+)?allerg(?:y|ies)"
+    + r"(?:\s+(?:list|records?|history|information))?\s*$"
+    + r"|\ballerg(?:y|ies)\s+(?:list|records?)\b"
+    + r"|\bimmuni[sz]ations?\b|\bvaccin(?:e|es|ation|ations)\b"
+)
+_ALLERGY_OR_IMMUNIZATION = re.compile(_ALLERGY_OR_IMMUNIZATION_SOURCE)
+
 # Administrative paperwork that wraps a record: routing slips, cover letters, emails, declarations,
 # proofs of service, records requests, appointment/evaluation notices. These are checked SEPARATELY
 # from the document-type rules below (see match_rules), because such a title routinely names the
@@ -242,8 +264,48 @@ _ADMIN_RULES: tuple[re.Pattern, ...] = tuple(
         + r"|injection|mri|dme|pharmacy)\b)[a-z0-9&'.\-]+\s+authori[sz]ation\s*$",
         r"authori[sz]ation\b.{0,60}\b(?:release|disclos\w*|hipaa)\b"
         + r"|\b(?:release|disclos\w*|hipaa)\b.{0,60}authori[sz]ation",
+        _ALLERGY_OR_IMMUNIZATION_SOURCE,
     )
 )
+
+# QME / AME LETTERS AND NOTICES, answered 2026-10-30: "The QME/AME letters at the beginning of the
+# record we don't need summarized, only the actual QME/AME reports."
+#
+# A title naming the evaluator AND a letter or notice word, within a bounded gap either way round.
+# Kept out of _ADMIN_RULES because it carries an exclusion the tuple cannot express: a title that
+# also names an evaluation, a re-evaluation, a supplemental or a deposition reads as the evaluator's
+# own document, so this rule stands aside and rule 13 (or 12, or 9) keeps it. "Report" needs no
+# entry: _DOCUMENT_NOUN already stands every administrative rule down on it, so "QME Report Cover
+# Letter" stays 13 by the document-beats-wrapper principle.
+#
+# "Panel" counts only AFTER the evaluator ("QME Panel", "Request for QME Panel" - the list of three
+# doctors a party is sent). Before it, "Panel QME" is the evaluator's own name, and the first draft
+# of this rule moved "Initial ... Consultation - Panel QME with Review of ... Records", a report the
+# reviewer ticked as 13, to category 2.
+#
+# Measured before shipping, read-only, on the live box (draft and reviewer titles): 77 distinct
+# titles move, all from 13 to 100, and no report title moves. On finished records reviewers had
+# unticked 166 of their 174 rows. Titles that also name an evaluation ("QME Re-Evaluation Letter")
+# stay 13 by the exclusion, and reviewers untick most of those too; they are left for a measured
+# second step rather than taken on a guess.
+_EVALUATOR_PAPERWORK_WORDS = (
+    r"letters?|notices?|notifications?|appointments?|(?:re)?schedul\w*|cancel\w*|cover"
+    r"|correspondence|objections?|requests?|declarations?"
+)
+_EVALUATOR_PAPERWORK = re.compile(
+    rf"\b(?:qme|ame|pqme)\b.{{0,60}}\b(?:{_EVALUATOR_PAPERWORK_WORDS})\b"
+    rf"|\b(?:{_EVALUATOR_PAPERWORK_WORDS})\b.{{0,60}}\b(?:qme|ame|pqme)\b"
+    r"|\b(?:qme|pqme)\s+panels?\b"
+)
+_EVALUATOR_OWN_DOCUMENT = re.compile(
+    r"\b(?:re-?)?evaluations?\b|\breports?\b|supplement|\bdeposition"
+)
+
+
+def _evaluator_paperwork(text: str) -> bool:
+    """Is this lowercased title a letter or notice ABOUT a QME/AME rather than their report?"""
+    return bool(_EVALUATOR_PAPERWORK.search(text)) and not _EVALUATOR_OWN_DOCUMENT.search(text)
+
 
 # The one rule that fires on a MENTION of the evaluator rather than on a document type. A cover
 # letter or an appointment notice about an AME says "AME" too, so this category alone does not
@@ -817,7 +879,9 @@ def match_rules(title):
         and not _FOLLOWUP_YIELDS_TO.isdisjoint(matches)
     ):
         matches = [c for c in matches if c != _FOLLOWUP_MENTION]
-    administrative = any(pattern.search(text) for pattern in _ADMIN_RULES)
+    administrative = any(pattern.search(text) for pattern in _ADMIN_RULES) or (
+        _evaluator_paperwork(text)
+    )
     carries_a_document = _DOCUMENT_NOUN.search(text) and not _PAPERWORK_ABOUT_A_DOCUMENT.search(
         text
     )
