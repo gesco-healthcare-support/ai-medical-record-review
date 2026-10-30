@@ -2803,3 +2803,108 @@ def test_a_company_authorization_page_and_a_release_form_are_general(title):
 def test_the_authorization_rule_leaves_request_for_authorization_alone(title, expected):
     """GUARD: every title here answered exactly this before the rule existed."""
     assert classification.match_rules(title) == expected
+
+
+# ALLERGY AND IMMUNIZATION RECORDS, 2026-10-30. The senior reviewer: "we can disregard things such
+# as allergy and immunization records". Measured on the live box before the rule: 37 distinct
+# titles, every one with no rule; reviewers had unticked 56 of their 62 rows on finished records.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Allergies",
+        "Allergy",
+        "Drug Allergies",
+        "Allergy List",
+        "Allergy History",
+        "Allergy Information",
+        "Allergies and Immunizations",
+        "Immunizations",
+        "Immunization Record",
+        "Immunisation Record and History",
+        "Vaccine Administration Record",
+        "COVID-19 Vaccination Record",
+        "Influenza Vaccine",
+        "Vaccination History",
+    ],
+)
+def test_an_allergy_list_or_immunization_record_is_general(title):
+    """DEMONSTRATES: each answered no rule before; the answer is now 100."""
+    assert classification.match_rules(title) == "100"
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        # An allergist is a treating doctor: the visit keeps the answer it had.
+        ("Allergy Consultation", None),
+        ("Allergy and Immunology Progress Note", "1"),
+        ("Allergy Clinic Office Visit", "1"),
+        # A result is a result, and a document-type rule beats the administrative match.
+        ("Allergy Test Results", "14"),
+        ("History and Physical - Allergies", "1"),
+        ("Discharge Summary - Allergies", "16"),
+        # "Report" names a document, so the administrative rules stand down.
+        ("Immunization Report", None),
+    ],
+)
+def test_the_allergy_rule_leaves_an_allergists_visit_alone(title, expected):
+    """GUARD: every title here answered exactly this before the rule existed."""
+    assert classification.match_rules(title) == expected
+
+
+# QME / AME LETTERS AND NOTICES, 2026-10-30. The senior reviewer: "The QME/AME letters at the
+# beginning of the record we don't need summarized, only the actual QME/AME reports." Measured on
+# the live box before the rule: 77 distinct titles move from 13 to 100; reviewers had unticked 166
+# of their 174 rows on finished records. The physician names below are invented.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "QME Appointment Letter",
+        "QME Appointment Notification Form",
+        "QME Request Letter",
+        "PQME Request Letter",
+        "Letter to QME",
+        "Letter to QME Dr Sample",
+        "Defense Attorney Letter to AME",
+        "AME Scheduling Letter",
+        "AME Cancellation Notice",
+        "QME Reschedule Notice",
+        "QME Declaration",
+        "Request for QME Panel",
+        "QME Panel",
+        "Objection to QME Panel",
+    ],
+)
+def test_a_letter_or_notice_about_a_qme_or_ame_is_general(title):
+    """DEMONSTRATES: each answered 13 before; the answer is now 100."""
+    assert classification.match_rules(title) == "100"
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        # The evaluator's own documents keep their category.
+        ("QME Report", "13"),
+        ("Panel QME Report", "13"),
+        ("QME Panel Report", "13"),
+        ("Panel QME Evaluation", "13"),
+        ("Panel QME", "13"),
+        ("AME Re-Evaluation", "13"),
+        ("Objection to QME Report", "13"),
+        ("Letter - Summary of AME Reports", "13"),
+        ("Email Correspondence - QME Report", "13"),
+        # "Panel QME" before the evaluator token is the evaluator's name, not a panel list - the
+        # first draft of the rule moved this report to 2.
+        ("Initial Comprehensive Consultation - Panel QME with Review of Medical Records", "13"),
+        # A title that also names an evaluation reads as the evaluator's own document.
+        ("QME Re-Evaluation Letter", "13"),
+        ("Panel QME Evaluation Letter", "13"),
+        # Other document types still answer for themselves.
+        ("Supplemental AME Letter", "12"),
+        ("AME Deposition Notice", "9"),
+        ("Request for Authorization for QME evaluation", "10"),
+    ],
+)
+def test_the_evaluator_letter_rule_leaves_the_evaluators_reports_alone(title, expected):
+    """GUARD: every title here answered exactly this before the rule existed."""
+    assert classification.match_rules(title) == expected
