@@ -469,26 +469,54 @@ def admitted_candidates(cluster, override=None) -> list[dict]:
     this: two copies of one daily note (same date, title and category, text 0.91 alike, one of
     them re-faxed) inside a 27-row candidate across many dates, rejected twice.
 
-    A part is judged by the same gate as any candidate, so nothing is admitted here that the gate
-    would refuse if the chain had not formed. The rest of a rejected cluster stays rejected, as
-    before: in particular its content-only joins across dates are NOT re-offered, because across
+    A part the gate refuses - and a cluster that is one date and refused - is split once more, by
+    CATEGORY (`_by_category`). Within a date the same-date join chains different kinds of document
+    whose words overlap, a progress report and the visit's own RFA, and a part holding both
+    shares neither one title nor one category, so the gate refused it with the copy of the report
+    inside. Measured on the live box after the date split above (2026-10-30, 606 records): 336
+    same-date same-kind pairs still hidden that way, 15 of them near-identical copies, 319 of them
+    sharing a category.
+
+    Each group is judged by the same gate as any candidate, so nothing is admitted here that the
+    gate would refuse if the chain had not formed. The rest of a rejected cluster stays rejected,
+    as before: in particular its content-only joins across dates are NOT re-offered, because across
     dates high similarity is a visit form filled in again far more often than a re-scan
-    (`spans_dates`). Parts are disjoint, so the groups confirmed from them never share a row.
+    (`spans_dates`). The groups are disjoint, so those confirmed from them never share a row.
     """
     members, similarity = cluster["members"], cluster["similarity"]
     if duplicate_gate(members, similarity, override, content_joined=cluster["content_joined"]):
         return [cluster]
     admitted = []
     for part in cluster.get("parts", []):
-        if len(part) == len(members):
-            # One date already: the gate has just judged exactly these members.
-            continue
-        part_similarity = _min_difflib([m.get("text") or "" for m in part])
-        if duplicate_gate(part, part_similarity, override):
-            admitted.append(
-                {"members": part, "similarity": part_similarity, "content_joined": False}
-            )
+        # A part that IS the cluster has just been judged; only a smaller one gets the gate again.
+        candidate = _gated(part, override) if len(part) < len(members) else None
+        if candidate:
+            admitted.append(candidate)
+        else:
+            admitted.extend(_by_category(part, override))
     return admitted
+
+
+def _gated(members, override):
+    """``members`` as a candidate of their own when the gate admits them, else None."""
+    similarity = _min_difflib([m.get("text") or "" for m in members])
+    if not duplicate_gate(members, similarity, override):
+        return None
+    return {"members": members, "similarity": similarity, "content_joined": False}
+
+
+def _by_category(part, override) -> list[dict]:
+    """A refused one-date ``part``'s rows of each known category, every group of two or more the
+    gate admits, in input order. A group that is the whole part was refused already."""
+    groups: dict[str, list[dict]] = {}
+    for member in part:
+        category = _norm(member.get("category"))
+        if category:
+            groups.setdefault(category, []).append(member)
+    candidates = (
+        _gated(group, override) for group in groups.values() if 2 <= len(group) < len(part)
+    )
+    return [candidate for candidate in candidates if candidate]
 
 
 def confirm_cluster(members, model=None):
