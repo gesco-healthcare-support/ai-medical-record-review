@@ -913,3 +913,123 @@ def test_a_side_veto_leaves_the_other_pairs_alone():
 )
 def test_spans_dates_counts_known_dates_only(dates, expected):
     assert dedup.spans_dates([{"date": d} for d in dates]) is expected
+
+
+# --- a chain across a visit series hid a copy (a reviewer's report, 2026-10-29) -------------------
+# A therapy daily-note form repeats the clinic's header, the patient and the diagnoses at every
+# visit, so notes of DIFFERENT visits clear the cross-date content join on their first 1,500
+# characters. Two copies of one visit's note (one of them re-faxed) were carried into that chain and
+# rejected with it, with no model call: on the live record 27 rows across many dates, weakest pair
+# 0.223, while the copies alone shared their date, title and category and scored 0.913.
+
+_FORM_HEADER = " ".join(
+    f"clinic{i % 7} therapy services daily note billing sheet patient field{i} diagnosis code{i}"
+    for i in range(24)
+)
+_FAX_LINE = " ".join(
+    f"fax transmission from sender{i} to receiver{i} page {i} of seven" for i in range(5)
+)
+
+
+def _visit(idx, date, visit, fax=False, title="Daily Note", category="5"):
+    text = (
+        f"{_FORM_HEADER} subjective complaints for visit {visit} pain level {visit} tolerated "
+        f"session assessment {visit} plan continue exercise minutes {visit * 7}"
+    )
+    if fax:
+        text = f"{_FAX_LINE} {text}"
+    return {"idx": idx, "date": date, "title": title, "category": category, "text": text}
+
+
+def _series_with_a_faxed_copy():
+    """Three visits of one series and a re-faxed copy of the third. The fax line shifts the copy's
+    excerpt, so it joins its original on the date alone and joins nothing across dates on content.
+    """
+    return [
+        _visit(0, "08/13/2025", 11),
+        _visit(1, "08/20/2025", 22),
+        _visit(2, "08/27/2025", 33),
+        _visit(3, "08/27/2025", 33, fax=True),
+    ]
+
+
+def _idx(members):
+    return sorted(m["idx"] for m in members)
+
+
+def test_the_premise_the_series_chains_and_the_gate_rejects_the_chain():
+    """GUARD on the fixture: it must be the reported shape, or the tests below prove nothing."""
+    items = _series_with_a_faxed_copy()
+    [cluster] = dedup.cluster_rows(items)
+    assert _idx(cluster["members"]) == [0, 1, 2, 3]
+    assert cluster["content_joined"] is False
+    gate = dedup.duplicate_gate(
+        cluster["members"], cluster["similarity"], content_joined=cluster["content_joined"]
+    )
+    assert gate is False
+    # while the copies, on their own, are exactly what the gate's first rule admits
+    copies = items[2:]
+    assert dedup.duplicate_gate(copies, dedup._min_difflib([m["text"] for m in copies])) is True
+
+
+def test_a_copy_inside_a_rejected_visit_series_is_still_a_candidate():
+    """DEMONSTRATES the fix: the rejected chain is judged again date by date, and the two copies of
+    the third visit come back as a candidate of their own, with their own similarity."""
+    [cluster] = dedup.cluster_rows(_series_with_a_faxed_copy())
+    [candidate] = dedup.admitted_candidates(cluster)
+    assert _idx(candidate["members"]) == [2, 3]
+    assert candidate["similarity"] == dedup._min_difflib([m["text"] for m in candidate["members"]])
+    assert candidate["content_joined"] is False
+
+
+def test_the_recovered_copy_still_goes_to_the_model():
+    """GUARD: the copies differ (one is re-faxed), so they cannot skip the confirm call. The fix
+    finds a candidate; it accepts nothing on its own."""
+    from app.config import get_settings
+
+    [cluster] = dedup.cluster_rows(_series_with_a_faxed_copy())
+    [candidate] = dedup.admitted_candidates(cluster)
+    assert candidate["similarity"] < get_settings().dupe_model_override
+
+
+def test_a_cluster_the_gate_admits_is_returned_unchanged():
+    """GUARD: an admitted cluster is not split - its members go to the model together, as before."""
+    items = [_visit(0, "08/27/2025", 33), _visit(1, "08/27/2025", 33, fax=True)]
+    [cluster] = dedup.cluster_rows(items)
+    assert dedup.admitted_candidates(cluster) == [cluster]
+    assert dedup.admitted_candidates(cluster)[0] is cluster
+
+
+def test_a_same_date_part_the_gate_refuses_on_its_own_stays_out():
+    """GUARD: nothing is admitted that the gate would refuse without the chain. The fourth row
+    shares the first visit's date and most of its words, but neither its title nor its category,
+    and its text is not near-identical: a different document of that day."""
+    items = _series_with_a_faxed_copy()
+    items.append(_visit(4, "08/13/2025", 11, fax=True, title="Billing Statement", category="100"))
+    [cluster] = dedup.cluster_rows(items)
+    assert [_idx(part) for part in cluster["parts"]] == [[0, 4], [2, 3]]
+    admitted = dedup.admitted_candidates(cluster)
+    assert [_idx(c["members"]) for c in admitted] == [[2, 3]]
+
+
+def test_each_part_holds_one_date_and_no_row_twice():
+    """GUARD: parts are cut by the same-date joins alone, so a confirmed group can never mix
+    visits, and two groups can never claim one row."""
+    items = _series_with_a_faxed_copy()
+    items.append(_visit(4, "08/13/2025", 11, fax=True, title="Billing Statement", category="100"))
+    [cluster] = dedup.cluster_rows(items)
+    seen = []
+    for part in cluster["parts"]:
+        assert len({m["date"] for m in part}) == 1
+        seen.extend(m["idx"] for m in part)
+    assert len(seen) == len(set(seen))
+
+
+def test_parts_do_not_depend_on_row_order():
+    items = _series_with_a_faxed_copy()
+
+    def parts(rows):
+        [cluster] = dedup.cluster_rows(rows)
+        return sorted(_idx(c["members"]) for c in dedup.admitted_candidates(cluster))
+
+    assert parts(items) == parts(list(reversed(items))) == [[2, 3]]
