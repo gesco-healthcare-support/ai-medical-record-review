@@ -233,8 +233,9 @@ def test_each_visit_is_audited_against_its_own_body_and_date(monkeypatch):
     split is exercised on a category that is handed one."""
     audits = []
 
-    def audit(model, source, summary, title=None, document_date=None):
+    def audit(model, source, summary, title=None, document_date=None, visit_date=None):
         audits.append((summary, document_date))
+        assert visit_date == document_date  # and each is told which visit of the page it reads
         issue = [{"type": "unsupported", "detail": "x"}]
         return {
             "fixed_text": summary.replace("Low back", "Lumbar"),
@@ -259,6 +260,121 @@ def test_each_visit_is_audited_against_its_own_body_and_date(monkeypatch):
     # The page's title correction is taken once, from the first visit's audit.
     assert visits[0]["verifiedTitle"] == visits[1]["verifiedTitle"]
     assert "(AUDITED 1)" in visits[1]["verifiedTitle"]
+
+
+# A page of dated studies, the shape a reviewer reported on 2026-10-30: one long study and two short
+# ones. The audit, reading the whole page beside one study's summary, rewrote every visit into the
+# long study and flagged each a "prior visit".
+_LONG_STUDY = (
+    "**Impression**: Soft tissue changes at L4 down to L5 compatible with posterior surgery. "
+    "Disc desiccation with loss of disc height from L2-L3 down to L5-S1. Disc protrusion at "
+    "T12-L1 measuring 3.3 mm. Mild narrowing of the bilateral neural foramen at L1-L2. Moderate "
+    "to severe bilateral foraminal narrowing at L3-L4 with annular fissure."
+)
+_THREE_STUDIES = (
+    "VISIT: 07/15/2025\n**Impression**: Right foraminal disc protrusion at L4-L5.\n"
+    "VISIT: 11/10/2025\n**Impression**: No acute osseous abnormality of the shoulder.\n"
+    f"VISIT: 02/04/2026\n{_LONG_STUDY}\n"
+)
+
+
+def _audit_into_the_long_study(seen):
+    def audit(model, source, summary, title=None, document_date=None, visit_date=None):
+        seen.append(visit_date)
+        return {
+            "fixed_text": _LONG_STUDY,
+            "fixed_title": None,
+            "issues": [{"type": "prior_visit", "detail": "earlier study"}],
+            "ok": True,
+        }
+
+    return audit
+
+
+def test_an_audit_that_rewrites_a_visit_into_another_visit_is_rejected(monkeypatch, caplog):
+    """DEMONSTRATES the fix for the reviewer's report: a visit whose audited text is a copy of
+    another visit ships its own draft, with the issues still shown; the long study's own audit,
+    which is a copy of itself, stands."""
+    seen = []
+    _stub_model(monkeypatch, _THREE_STUDIES, audit=_audit_into_the_long_study(seen))
+
+    with caplog.at_level("WARNING", logger=se.logger.name):
+        visits = se.visit_outputs(
+            se.summarize_row(
+                "/x.pdf", _row(category="3", date="04/13/2026"), prompt="P", verify=True
+            )
+        )
+
+    assert [visit["summaryDate"] for visit in visits] == ["07/15/2025", "11/10/2025", "02/04/2026"]
+    assert visits[0]["verifiedText"] is None
+    assert visits[1]["verifiedText"] is None
+    assert "Right foraminal" in (visits[0]["verifiedText"] or visits[0]["summaryText"])
+    assert "shoulder" in (visits[1]["verifiedText"] or visits[1]["summaryText"])
+    assert visits[0]["verifyIssues"]  # what the audit flagged is still shown
+    assert visits[2]["verifiedText"] is not None
+    assert caplog.text.count("rewrote one visit into another") == 2
+    # and each visit's audit was told which visit it reads
+    assert seen == ["07/15/2025", "11/10/2025", "02/04/2026"]
+
+
+def test_a_correction_of_visits_on_one_template_is_kept(monkeypatch):
+    """GUARD: a therapy sheet's visits are near-identical by nature, so a real correction of one
+    must not read as a copy of its neighbour."""
+    two = (
+        "VISIT: 06/12/2026\n**Treatment provided**: Therapeutic exercise and manual therapy for "
+        "the low back, forty minutes, tolerated well.\n"
+        "VISIT: 06/19/2026\n**Treatment provided**: Therapeutic exercise and manual therapy for "
+        "the low back, thirty minutes, tolerated well.\n"
+    )
+
+    def audit(model, source, summary, title=None, document_date=None, visit_date=None):
+        fixed = summary.replace("low back", "lumbar spine")
+        issue = [{"type": "unsupported", "detail": "x"}]
+        return {"fixed_text": fixed, "fixed_title": None, "issues": issue, "ok": True}
+
+    _stub_model(monkeypatch, two, audit=audit)
+    visits = se.visit_outputs(se.summarize_row("/x.pdf", _row(), prompt="P", verify=True))
+
+    assert "forty minutes" in visits[0]["verifiedText"]
+    assert "lumbar spine" in visits[0]["verifiedText"]
+    assert "thirty minutes" in visits[1]["verifiedText"]
+
+
+def test_a_visit_copied_from_its_near_identical_neighbour_is_rejected(monkeypatch):
+    """DEMONSTRATES the template case: two therapy visits differ in one number, and an audit that
+    hands back the neighbour's text word for word has moved this visit into that one."""
+    first = (
+        "**Treatment provided**: Therapeutic exercise and manual therapy for the low back, "
+        "forty minutes, tolerated well."
+    )
+    second = first.replace("forty", "thirty")
+    page = f"VISIT: 06/12/2026\n{first}\nVISIT: 06/19/2026\n{second}\n"
+
+    def audit(model, source, summary, title=None, document_date=None, visit_date=None):
+        issue = [{"type": "unsupported", "detail": "minutes"}]
+        return {"fixed_text": second, "fixed_title": None, "issues": issue, "ok": True}
+
+    _stub_model(monkeypatch, page, audit=audit)
+    visits = se.visit_outputs(se.summarize_row("/x.pdf", _row(), prompt="P", verify=True))
+
+    assert visits[0]["verifiedText"] is None  # the copy of the 06/19 visit is rejected
+    assert "forty minutes" in visits[0]["summaryText"]
+    assert visits[1]["verifiedText"] is not None  # the 06/19 visit's own text stands
+
+
+def test_a_row_that_is_not_split_is_audited_exactly_as_before(monkeypatch):
+    """GUARD: one body - every row but a page of visits - gets no visit date and no comparison."""
+    calls = []
+
+    def audit(*args, **kwargs):
+        calls.append(kwargs)
+        return {"fixed_text": _LONG_STUDY, "fixed_title": None, "issues": [], "ok": True}
+
+    _stub_model(monkeypatch, "**Impression**: Normal study.", audit=audit)
+    se.summarize_row("/x.pdf", _row(category="3"), prompt="P", verify=True)
+
+    assert len(calls) == 1
+    assert "visit_date" not in calls[0]
 
 
 def test_a_single_marked_visit_keeps_the_rows_date_and_loses_the_mark(monkeypatch):

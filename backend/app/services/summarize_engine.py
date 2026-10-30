@@ -601,6 +601,61 @@ def _restates_the_title(fixed: str, title: str) -> bool:
     )
 
 
+# How alike an audited visit must be to ANOTHER visit's body to count as a copy of it. Measured on
+# the live box 2026-10-30 over every row split into visits (40 rows, 123 visits): the 12 visits
+# that shipped another visit's text all scored 0.9 or more against that visit's draft and less
+# against their own.
+_SAME_VISIT_TEXT = 0.9
+
+
+def _visit_context(row: dict) -> dict:
+    """The audit's extra argument for one visit of a split page: its date, as ``visit_date``.
+
+    ``{}`` for every other body, which `_finished_body` marks by putting no ``other_visits`` on the
+    row - so a single body calls the audit exactly as before."""
+    if row.get("other_visits") is None:
+        return {}
+    return {"visit_date": row.get("date")}
+
+
+def _alike(first: str, second: str) -> float:
+    """Character similarity of two bodies over their first 1,500 characters, argument order pinned.
+
+    The duplicate check's measure (`dedup._min_difflib`), for its reasons: autojunk off, because it
+    junks the common letters of character sequences, and the pair sorted, because `ratio()` is not
+    symmetric."""
+    a, b = sorted(((first or "")[:1500], (second or "")[:1500]))
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
+def _became_another_visit(summary: str, fixed: str, other_visits) -> bool:
+    """True when the audit's rewrite of ONE VISIT of a split page is a copy of a DIFFERENT visit.
+
+    Each visit is audited against the whole page, which holds every visit. A reviewer reported a
+    page of seven dated studies whose summaries all read as the same MRI: the drafts were seven
+    different studies (0.04-0.38 alike), and the audit rewrote six of them into the seventh,
+    flagging each a "prior visit". This guard does not depend on the audit being told which visit
+    it reads (`verify_summary`'s ``visit_date``). A rewrite is that other visit, never this one,
+    when it is at least `_SAME_VISIT_TEXT` alike to the other visit's body, more alike to it than
+    to its own draft, AND more alike to it than its own draft ever was - the audit moved this visit
+    toward that one. The last test is for a therapy sheet, whose visits are near-identical by
+    nature: a real correction of one moves AWAY from both drafts and is kept, while a rewrite that
+    copies the neighbour moves toward it. Replayed on the live box's stored rewrites (89 audited
+    visits of 40 split rows), it rejects the 12 that shipped another visit's text plus one that was
+    an exact copy of its neighbour, and keeps a correction that ended up a hair nearer its
+    neighbour.
+    ``other_visits`` is None for a row that is not split, and then nothing is compared.
+    """
+    if not other_visits:
+        return False
+    own = _alike(fixed, summary)
+    for other in other_visits:
+        score = _alike(fixed, other)
+        if score >= _SAME_VISIT_TEXT and score > own and score > _alike(summary, other):
+            return True
+    return False
+
+
 # "On pages 4 to 6," / "On pages 34 and 35," - the opener every deposition paragraph carries. Matched
 # loosely (any leading whitespace, either joiner, optional comma) because the guard's job is to notice
 # that citations STOPPED EXISTING, not to police their punctuation.
@@ -3245,6 +3300,9 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead, pdf_path
     # house rule 4 (#109, where the audit deleted directions the generator was required to add).
     # Rule 6's generation-side counterpart was the one omission from that module's
     # "must be edited together" list.
+    #
+    # One visit of a page that records several is told so (`_visit_context`).
+    other_visits = row.get("other_visits")
     result = verify_summary(
         audit_model,
         text,
@@ -3253,6 +3311,7 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead, pdf_path
         document_date=(
             row.get("date") if str(row["category"]) in _CURRENT_VISIT_CATEGORIES else None
         ),
+        **_visit_context(row),
     )
     verify_ran = bool(result.get("ok"))
     if not verify_ran:
@@ -3293,6 +3352,17 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead, pdf_path
             # this is the failure a reviewer reported, and on gemini it should never fire.
             logger.warning(
                 "verify pass returned only the title on pages %s-%s (issues: %s; %s); "
+                "keeping raw body",
+                row["start"],
+                row["end"],
+                ",".join(sorted(issue_types)),
+                _rewrite_shape(summary, result["fixed_text"]),
+            )
+        elif _became_another_visit(summary, result["fixed_text"], other_visits):
+            # A visit's rewrite that IS another visit of the same page: the draft ships, the
+            # issues are stored, and the rate is measurable from this line.
+            logger.warning(
+                "verify pass rewrote one visit into another on pages %s-%s (issues: %s; %s); "
                 "keeping raw body",
                 row["start"],
                 row["end"],
@@ -3505,7 +3575,7 @@ class _BodyFinish:
     embedded_review_pages: list
 
 
-def _finished_body(finishing: _BodyFinish, date: str, body: str) -> dict:
+def _finished_body(finishing: _BodyFinish, date: str, body: str, other_visits=None) -> dict:
     """One body's own fields: its date, its delivered text, and its audit.
 
     Faithfulness verify pass (problem #3): audit the title AND the body against their source and,
@@ -3518,6 +3588,10 @@ def _finished_body(finishing: _BodyFinish, date: str, body: str) -> dict:
     The audit is handed the VISIT's date as the row's. For a single body that is the row's own date,
     exactly as before; for one visit of a split page it is that visit's, which is the document date
     the audit's prior-visit rule must read wherever that rule applies.
+
+    ``other_visits`` - the page's other visit bodies - is given for one visit of a split page only.
+    The audit is then told it reads one visit, and a rewrite that turns into another visit is
+    rejected (`_became_another_visit`).
     """
     verified_text = None
     verified_title = None
@@ -3526,9 +3600,12 @@ def _finished_body(finishing: _BodyFinish, date: str, body: str) -> dict:
     # Fail closed: anything that does not explicitly report success leaves this False.
     verify_ran = False
     if finishing.audit_model is not None:
+        row = {**finishing.row, "date": date}
+        if other_visits is not None:
+            row["other_visits"] = other_visits
         verified_text, verified_title, verify_issues, verify_ran = _verified_outputs(
             finishing.audit_model,
-            {**finishing.row, "date": date},
+            row,
             finishing.source_text,
             body,
             finishing.title,
@@ -3595,10 +3672,21 @@ def _row_output(common: dict, finishing: _BodyFinish, bodies) -> dict:
     One body is the one output, as it always was. Several - a page of separate visits - return the
     first visit at the top level, so a caller that reads one summary still reads a whole, correct
     one, and all of them under ``visits``, which `visit_outputs` is how a caller takes.
+
+    Each visit of several is audited knowing the others (`_finished_body`'s ``other_visits``).
     """
-    outputs = [{**common, **_finished_body(finishing, date, body)} for date, body in bodies]
-    if len(outputs) == 1:
-        return outputs[0]
+    if len(bodies) == 1:
+        date, body = bodies[0]
+        return {**common, **_finished_body(finishing, date, body)}
+    outputs = [
+        {
+            **common,
+            **_finished_body(
+                finishing, date, body, [other for m, (_, other) in enumerate(bodies) if m != n]
+            ),
+        }
+        for n, (date, body) in enumerate(bodies)
+    ]
     # One title for every visit of the page, so the audit's correction of it is taken once, from the
     # first visit's audit. Each visit's audit reads the same title against the same source, and
     # letting each keep its own verdict could print one page's heading two ways in one report.

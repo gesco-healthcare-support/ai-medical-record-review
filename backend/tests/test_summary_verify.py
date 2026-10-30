@@ -284,6 +284,36 @@ def test_a_missing_document_date_is_omitted_rather_than_asserted(monkeypatch, da
     assert "THIS DOCUMENT'S DATE" not in "".join(seen["contents"])
 
 
+def _sent(monkeypatch, **kwargs):
+    """The text one audit call sends, with the model stubbed."""
+    seen = {}
+
+    def gen(client, *, model, contents, config, **_kw):
+        seen["contents"] = contents
+        return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
+
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", gen)
+    sv.verify_summary("m", "the source", "Body.", **kwargs)
+    return "".join(seen["contents"])
+
+
+def test_one_visit_of_a_page_of_several_is_told_which_visit_it_is(monkeypatch):
+    """DEMONSTRATES the reviewer's report of 2026-10-30: told nothing, the audit read one visit's
+    summary against a page of seven studies as incomplete and rewrote it into another study."""
+    assert "THIS SUMMARY'S VISIT:\n02/04/2026" in _sent(monkeypatch, visit_date="02/04/2026")
+    assert "THIS SUMMARY'S VISIT:\nundated" in _sent(monkeypatch, visit_date="-")
+    assert "THIS SUMMARY'S VISIT" in sv.VERIFY_PROMPT
+    assert "never replace this visit's content with it" in sv.VERIFY_PROMPT
+
+
+@pytest.mark.parametrize("visit", [None, "", "   "])
+def test_a_body_that_is_not_one_visit_of_several_is_told_nothing(monkeypatch, visit):
+    """GUARD: every other summary's audit call is unchanged."""
+    assert "THIS SUMMARY'S VISIT" not in _sent(monkeypatch, visit_date=visit)
+    assert "THIS SUMMARY'S VISIT" not in _sent(monkeypatch)
+
+
 def test_blank_fixed_title_falls_back_to_the_original(monkeypatch):
     monkeypatch.setattr(gm, "get_genai_client", lambda: None)
     monkeypatch.setattr(
