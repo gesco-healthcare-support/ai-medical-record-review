@@ -227,10 +227,13 @@ rendered empty. The template, with the two optional clauses in braces:
 I have received {covering-letter clause}<N> pages of medical records{sender clause}. I have reviewed all of the pages received and my opinion is based upon such records.
 ```
 
-- **Covering-letter clause** (`_letter_clause()`): `a defense advocacy letter dated <date> along with `
+- **Covering-letter clause** (`_letter_clause()`): `an advocacy letter dated <date> along with `
   or `an interrogatory letter dated <date> along with `, without `dated <date>` when no date is
   entered, and nothing for `none` or a blank type. The article travels with the label in
-  `LETTER_LABELS`.
+  `LETTER_LABELS`. No label names the side that sent the letter: it read `a defense advocacy
+  letter` whatever the letter was, so an applicant attorney's letter was delivered as a defense
+  one, and the senior reviewer asked for the side to go (2026-10-30). The sender clause names the
+  attorney and the firm.
 - **Sender clause** (`_sender_clause()`): ` from <person>, of <firm>` with both, ` from <either>` with
   one, nothing with neither.
 - **Labor Code disclosure**: only when the signed-in reviewer has a display name, the paragraph adds

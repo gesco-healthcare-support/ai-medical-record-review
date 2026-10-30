@@ -4595,7 +4595,7 @@ async def test_the_export_writes_the_letter_paragraph_and_the_doctors_typeface(a
 
     built = docxlib.Document(io.BytesIO(resp.content))
     intro = next(p.text for p in built.paragraphs if p.text.startswith("I have received"))
-    assert "a defense advocacy letter dated 08/12/2026 along with" in intro
+    assert "an advocacy letter dated 08/12/2026 along with" in intro
     assert "from Mitchell Garrett, of Blitstein, Young & Blinder" in intro
     assert "performed by Jane Roe, Trained Medical Record Processor" in intro
     assert "4628" in intro
