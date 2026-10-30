@@ -6,7 +6,8 @@ Two steps:
   `similarity` per cluster so true re-scans (high) are distinguishable from a recurring form series
   that merely shares boilerplate (low). A pair sharing a known date and a known category or title
   joins without the word-set test, so the same report in two formats reaches the confirm step.
-  Pure - no I/O.
+  `admitted_candidates` applies `duplicate_gate`, and judges a rejected cluster again date by date
+  so a chain across a visit series cannot take a copy down with it. Pure - no I/O.
 - `confirm_cluster` asks the cheapest model to adjudicate which candidate members are copies of the
   SAME document (vs different visits sharing a template). Text-only; no page images.
 """
@@ -245,7 +246,7 @@ def _comparable_pairs(sides):
 
 
 def _union_pairs(items, jaccard_threshold, cross_date_override):
-    """Join every qualifying pair, returning the two union-find structures ``cluster_rows`` reads.
+    """Join every qualifying pair, returning the three union-find structures ``cluster_rows`` reads.
 
     Extracted from ``cluster_rows`` to keep that function under the cognitive-complexity ceiling.
     Note this MOVES the nesting rather than removing it: the double loop was already at the top
@@ -263,8 +264,12 @@ def _union_pairs(items, jaccard_threshold, cross_date_override):
     # below. It has to be a second structure rather than a tally taken while unioning, because a
     # tally can only see the unions this pass happened to perform: in a cycle one edge is always
     # redundant, and which one that is follows the row order.
+    # `dated` is the third, joined by the two SAME-DATE branches alone and never by the content
+    # branch, so each of its components carries one date. It is what `admitted_candidates` splits a
+    # rejected chain into.
     parent = list(range(n))
     strong = list(range(n))
+    dated = list(range(n))
 
     for i, j in _comparable_pairs([_side(title) for title in titles]):
         # A pair that shares a known date AND a known category or title is exactly what
@@ -279,6 +284,7 @@ def _union_pairs(items, jaccard_threshold, cross_date_override):
         # dissimilar text never clears `dupe_model_override`, so it cannot skip that call.
         if _same_dated_kind(i, j, dates, categories, titles):
             parent[_find(parent, i)] = _find(parent, j)
+            dated[_find(dated, i)] = _find(dated, j)
             continue
         # Jaccard first for every other pair, same date or not: it is a set intersection, and it
         # is the cheap gate that keeps the quadratic difflib below off pairs that share nothing.
@@ -286,13 +292,14 @@ def _union_pairs(items, jaccard_threshold, cross_date_override):
             continue
         if dates[i] == dates[j]:
             parent[_find(parent, i)] = _find(parent, j)
+            dated[_find(dated, i)] = _find(dated, j)
         elif _min_difflib([items[i].get("text") or "", items[j].get("text") or ""]) >= (
             cross_date_override
         ):
             parent[_find(parent, i)] = _find(parent, j)
             strong[_find(strong, i)] = _find(strong, j)
 
-    return parent, strong
+    return parent, strong, dated
 
 
 def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
@@ -314,6 +321,10 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
        0.998 with exactly that shape. Without this pass the date becomes an absolute veto and that
        pair - and every future one like it - is lost silently.
 
+    Each cluster also carries ``parts``: its members split by the same-date joins alone, so every
+    part holds one date. A cluster the gate rejects is judged again part by part
+    (`admitted_candidates`), because the two passes chain: see there.
+
     Both thresholds default from config so they are tunable by env.
     """
     settings = get_settings()
@@ -322,7 +333,7 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
     if cross_date_override is None:
         cross_date_override = settings.dupe_similarity_override
     n = len(items)
-    parent, strong = _union_pairs(items, jaccard_threshold, cross_date_override)
+    parent, strong, dated = _union_pairs(items, jaccard_threshold, cross_date_override)
 
     groups: dict[int, list[int]] = {}
     for k in range(n):
@@ -346,9 +357,18 @@ def cluster_rows(items, jaccard_threshold=None, cross_date_override=None):
                 # BESIDE a content path revokes nothing: it adds no member the content did not
                 # already reach, and connectivity does not depend on which edge came first.
                 "content_joined": len({_find(strong, k) for k in members_idx}) == 1,
+                "parts": _parts(items, members_idx, dated),
             }
         )
     return clusters
+
+
+def _parts(items, members_idx, dated):
+    """``members_idx`` grouped by the same-date structure, in input order, groups of two or more."""
+    parts: dict[int, list[dict]] = {}
+    for k in members_idx:
+        parts.setdefault(_find(dated, k), []).append(items[k])
+    return [part for part in parts.values() if len(part) >= 2]
 
 
 _UNKNOWN = {"", "-", "n/a", "none", "unknown"}
@@ -430,6 +450,45 @@ def duplicate_gate(members, similarity, override=None, content_joined=False) -> 
     if content_joined:
         return True
     return similarity is not None and similarity >= override
+
+
+def admitted_candidates(cluster, override=None) -> list[dict]:
+    """The candidates the gate admits from one `cluster_rows` cluster.
+
+    The cluster itself when `duplicate_gate` admits it. Otherwise each of its same-date ``parts``
+    that the gate admits on its own, as a candidate of its own: ``members``, its own
+    ``similarity``, and ``content_joined`` false (a part is joined on dates, not content).
+
+    WHY: the two passes of `cluster_rows` chain. A therapy or chiropractic series is one form filled
+    in at every visit, and its first 1,500 characters are the clinic's header, the patient and the
+    diagnoses - the same on every note - so notes of DIFFERENT visits clear the cross-date content
+    join with each other. Union-find then carries every same-date pair along: a copy of one visit's
+    note, which the gate's first rule admits on its own (one date, one title, one category), ends
+    up inside a candidate spanning a dozen dates whose weakest pair scores near 0.2. The gate
+    rejects that whole, and the copy with it, without a model call. A reviewer reported exactly
+    this: two copies of one daily note (same date, title and category, text 0.91 alike, one of
+    them re-faxed) inside a 27-row candidate across many dates, rejected twice.
+
+    A part is judged by the same gate as any candidate, so nothing is admitted here that the gate
+    would refuse if the chain had not formed. The rest of a rejected cluster stays rejected, as
+    before: in particular its content-only joins across dates are NOT re-offered, because across
+    dates high similarity is a visit form filled in again far more often than a re-scan
+    (`spans_dates`). Parts are disjoint, so the groups confirmed from them never share a row.
+    """
+    members, similarity = cluster["members"], cluster["similarity"]
+    if duplicate_gate(members, similarity, override, content_joined=cluster["content_joined"]):
+        return [cluster]
+    admitted = []
+    for part in cluster.get("parts", []):
+        if len(part) == len(members):
+            # One date already: the gate has just judged exactly these members.
+            continue
+        part_similarity = _min_difflib([m.get("text") or "" for m in part])
+        if duplicate_gate(part, part_similarity, override):
+            admitted.append(
+                {"members": part, "similarity": part_similarity, "content_joined": False}
+            )
+    return admitted
 
 
 def confirm_cluster(members, model=None):

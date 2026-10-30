@@ -48,7 +48,9 @@ flowchart TD
     B --> C["Read each row's text once<br/>(page-text store, saved as source_text)"]
     C --> D["cluster_rows: candidate clusters<br/>same date + category/title join,<br/>Jaccard pre-filter, date join,<br/>cross-date join on high similarity"]
     D --> E{"duplicate_gate passes?"}
-    E -->|no| X["Rejected, no model call"]
+    E -->|no| P{"a same-date part of it<br/>passes on its own?"}
+    P -->|no| X["Rejected, no model call"]
+    P -->|yes, each such part| F
     E -->|yes| F{"one date, and similarity >= dupe_model_override?"}
     F -->|yes| G["Accepted whole, no model call"]
     F -->|no| H["confirm_groups: model picks the copies,<br/>asked again about the remainder"]
@@ -112,6 +114,9 @@ gets:
 - `content_joined`: true when the cross-date content joins alone connect every member. A second
   union-find structure tracks those joins, because which edge of a cycle counts as redundant would
   otherwise depend on row order.
+- `parts`: its members split by the same-date joins alone (steps 0 and 2, never step 3), groups of
+  two or more. A third union-find structure tracks them, so every part holds one date and no row is
+  in two parts. Step 4 uses them when it rejects the cluster.
 
 **The similarity measure** (`_min_difflib()`) is Python's `difflib.SequenceMatcher(...).ratio()`
 over the first 1,500 characters of each text, with dates masked. Each detail was measured:
@@ -154,6 +159,24 @@ can be wrong, and as an alternative a wrong category can only admit a pair, neve
 A rejected candidate costs nothing further; the job logs `dedup rejected a N-member candidate ...`
 with its pages and similarity. The gate runs before the model call because it both raises precision
 and saves a model request per rejected cluster.
+
+**A rejected chain is judged again, date by date** (`admitted_candidates()`). The two kinds of join
+chain into each other. A therapy or chiropractic series is one form filled in at every visit, and
+its first 1,500 characters are the clinic's header, the patient and the diagnoses, the same on every
+note. So notes of different visits clear the cross-date join (step 3), and union-find carries every
+same-date pair along with them. A copy of one visit's note, which rule 1 admits on its own, ends up
+inside a candidate spanning many dates whose weakest pair scores near 0.2, and the gate rejected it
+together with the chain. A reviewer reported exactly this on 2026-10-29: two copies of one daily
+note (same date, title and category, 0.91 alike, one of them re-faxed) inside a 27-row candidate,
+rejected on two runs.
+
+So when the gate rejects a cluster, each of its `parts` (step 3) is put to the same gate as a
+candidate of its own, with its own similarity, and each part that passes goes on to steps 5 and 6
+like any candidate. The job logs `dedup kept a N-member same-date part of that M-member candidate`.
+Nothing is admitted that the gate would refuse had the chain not formed, and the rest of the
+rejected cluster stays rejected as before; in particular its cross-date content joins are not
+offered again, because across dates high similarity is a visit form filled in again far more often
+than a re-scan (step 5). Parts are disjoint, so the groups confirmed from them never share a row.
 
 ### 5. Skip the model when the text has already answered
 

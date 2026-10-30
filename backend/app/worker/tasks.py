@@ -966,73 +966,114 @@ def _confirm_clusters(
     "app.services.dedup.cluster_rows" by dotted path, which lands only while the name is re-bound on
     each call.
     """
-    from app.services.dedup import cluster_rows, confirm_groups, duplicate_gate, spans_dates
+    from app.services.dedup import cluster_rows
 
     confirmed_clusters = []
     for cluster in cluster_rows(items):
-        members, similarity = cluster["members"], cluster["similarity"]
-        pages = ", ".join(f"{by_id[m['id']].start}-{by_id[m['id']].end}" for m in members)
-        if not duplicate_gate(members, similarity, content_joined=cluster["content_joined"]):
-            # No shared date, or a shared date with neither title nor category agreeing, and
-            # the content is not near-identical: a recurring form series, not copies.
-            # Rejected without spending a confirm call.
-            logger.info(
-                "dedup rejected a %d-member candidate on document %s (similarity %s, pages %s): "
-                "date plus title-or-category did not agree",
-                len(members),
-                document_id,
-                similarity,
-                pages,
-            )
-            continue
-        # Above dupe_model_override the text has already settled it. Skipping the call both saves
-        # quota and removes the confirm step's silent-discard failure mode, which is the one way a
-        # real duplicate can vanish with no trace anywhere.
-        #
-        # This reads `similarity` - the closure MINIMUM - and must keep doing so. The gate above
-        # now also admits a cluster whose every EDGE cleared the override, which is a weaker
-        # statement: a chain A~B~C says nothing about A against C. Letting that provenance skip
-        # the confirm call would accept a whole chain wholesale with nothing adjudicating it.
-        #
-        # Never across dates (`spans_dates`): there high similarity is a visit form filled in again,
-        # as often as a re-scan, and reviewers dismissed 101 of 109 such skipped groups.
-        if similarity is not None and similarity >= model_override and not spans_dates(members):
-            logger.info(
-                "dedup accepted a %d-member candidate on document %s by similarity %s "
-                "(pages %s); confirm call skipped",
-                len(members),
-                document_id,
-                similarity,
-                pages,
-            )
-            confirmed_clusters.append((members, similarity))
-            continue
-        groups = confirm_groups(members)
-        confirmed_clusters.extend(_split_confirmed_groups(members, similarity, groups))
-        if len(groups) > 1:
-            # The event #213 is about. Logged because it is otherwise invisible: before this,
-            # every group after the first was dropped without a line anywhere.
-            logger.info(
-                "dedup found %d separate duplicate groups in one %d-member candidate on "
-                "document %s (sizes %s, pages %s)",
-                len(groups),
-                len(members),
-                document_id,
-                [len(g) for g in groups],
-                pages,
-            )
-        if not groups:
-            # Previously invisible: the candidate was dropped with no record, so a reported miss
-            # could not be explained from the logs at all.
-            logger.warning(
-                "dedup discarded a %d-member candidate on document %s after confirm "
-                "(similarity %s, pages %s): the model judged them distinct documents",
-                len(members),
-                document_id,
-                similarity,
-                pages,
-            )
+        for candidate in _admitted(cluster, by_id, document_id):
+            confirmed_clusters.extend(_adjudicate(candidate, by_id, document_id, model_override))
     return confirmed_clusters
+
+
+def _pages(members, by_id) -> str:
+    """The members' page ranges for a log line: ids and pages only, never content."""
+    return ", ".join(f"{by_id[m['id']].start}-{by_id[m['id']].end}" for m in members)
+
+
+def _admitted(cluster, by_id, document_id) -> list[dict]:
+    """The candidates the gate admits from ``cluster``, logging a rejection and what it recovered.
+
+    A rejected cluster is judged again date by date (`dedup.admitted_candidates`): a chain across
+    a visit series used to take a copy of one visit's note down with it.
+    """
+    from app.services.dedup import admitted_candidates
+
+    admitted = admitted_candidates(cluster)
+    if not (admitted and admitted[0] is cluster):
+        _log_rejection(cluster, admitted, by_id, document_id)
+    return admitted
+
+
+def _log_rejection(cluster, recovered, by_id, document_id) -> None:
+    """Log a cluster the gate rejected, then each same-date part recovered from it."""
+    members = cluster["members"]
+    # No shared date, or a shared date with neither title nor category agreeing, and the content
+    # is not near-identical: a recurring form series, not copies. Rejected without spending a
+    # confirm call.
+    logger.info(
+        "dedup rejected a %d-member candidate on document %s (similarity %s, pages %s): "
+        "date plus title-or-category did not agree",
+        len(members),
+        document_id,
+        cluster["similarity"],
+        _pages(members, by_id),
+    )
+    for part in recovered:
+        logger.info(
+            "dedup kept a %d-member same-date part of that %d-member candidate on document %s "
+            "(similarity %s, pages %s)",
+            len(part["members"]),
+            len(members),
+            document_id,
+            part["similarity"],
+            _pages(part["members"], by_id),
+        )
+
+
+def _adjudicate(
+    candidate, by_id, document_id, model_override
+) -> list[tuple[list[dict], float | None]]:
+    """One admitted candidate -> its confirmed groups, each paired with its similarity."""
+    from app.services.dedup import confirm_groups, spans_dates
+
+    members, similarity = candidate["members"], candidate["similarity"]
+    pages = _pages(members, by_id)
+    # Above dupe_model_override the text has already settled it. Skipping the call both saves
+    # quota and removes the confirm step's silent-discard failure mode, which is the one way a
+    # real duplicate can vanish with no trace anywhere.
+    #
+    # This reads `similarity` - the closure MINIMUM - and must keep doing so. The gate now also
+    # admits a cluster whose every EDGE cleared the override, which is a weaker statement: a chain
+    # A~B~C says nothing about A against C. Letting that provenance skip the confirm call would
+    # accept a whole chain wholesale with nothing adjudicating it.
+    #
+    # Never across dates (`spans_dates`): there high similarity is a visit form filled in again,
+    # as often as a re-scan, and reviewers dismissed 101 of 109 such skipped groups.
+    if similarity is not None and similarity >= model_override and not spans_dates(members):
+        logger.info(
+            "dedup accepted a %d-member candidate on document %s by similarity %s "
+            "(pages %s); confirm call skipped",
+            len(members),
+            document_id,
+            similarity,
+            pages,
+        )
+        return [(members, similarity)]
+    groups = confirm_groups(members)
+    if len(groups) > 1:
+        # The event #213 is about. Logged because it is otherwise invisible: before this, every
+        # group after the first was dropped without a line anywhere.
+        logger.info(
+            "dedup found %d separate duplicate groups in one %d-member candidate on "
+            "document %s (sizes %s, pages %s)",
+            len(groups),
+            len(members),
+            document_id,
+            [len(g) for g in groups],
+            pages,
+        )
+    if not groups:
+        # Previously invisible: the candidate was dropped with no record, so a reported miss
+        # could not be explained from the logs at all.
+        logger.warning(
+            "dedup discarded a %d-member candidate on document %s after confirm "
+            "(similarity %s, pages %s): the model judged them distinct documents",
+            len(members),
+            document_id,
+            similarity,
+            pages,
+        )
+    return _split_confirmed_groups(members, similarity, groups)
 
 
 def dedup_document(job_id) -> None:

@@ -1538,6 +1538,74 @@ def test_dedup_document_still_honours_a_confirm_rejection_below_the_override(mon
     assert all(r.dupe_group is None for r in rows.values())  # and the model's rejection stands
 
 
+def _visit_series_with_a_faxed_copy(doc_id):
+    """A therapy form at three visits plus a re-faxed copy of the third (rows 2 and 3).
+
+    The form's header fills the first 1,500 characters at every visit, so the visits chain across
+    dates on content; the fax line shifts the copy's excerpt, so it joins its original on the date
+    alone. That chain is rejected whole - the shape a reviewer reported on 2026-10-29.
+    """
+    header = " ".join(
+        f"clinic{i % 7} therapy services daily note form patient field{i} diagnosis code{i}"
+        for i in range(24)
+    )
+    fax = " ".join(
+        f"fax transmission from sender{i} to receiver{i} page {i} of seven" for i in range(5)
+    )
+
+    def visit(n):
+        return f"{header} subjective complaints for visit {n} pain level {n} plan minutes {n * 7}"
+
+    return _dedup_rows(
+        doc_id,
+        [
+            (1, 2, True, False, None, visit(11)),
+            (3, 4, True, False, None, visit(22)),
+            (5, 6, True, False, None, visit(33)),
+            (7, 8, True, False, None, f"{fax} {visit(33)}"),
+        ],
+        dates=["08/13/2025", "08/20/2025", "08/27/2025", "08/27/2025"],
+        titles=["Daily Note"] * 4,
+    )
+
+
+def test_dedup_document_finds_a_copy_inside_a_rejected_visit_series(monkeypatch, caplog):
+    """WHEN two copies of one visit's note sit inside a candidate chained across a visit series,
+    THE SYSTEM SHALL still put the copies to the confirm call and group them.
+
+    The reviewer's report end to end: before this the whole chain was rejected without a model call,
+    and the copies were never shown."""
+    doc_id = _make_user_and_doc(page_count=8)
+    job_id = _visit_series_with_a_faxed_copy(doc_id)
+    asked = []
+    monkeypatch.setattr(
+        "app.services.dedup.confirm_cluster",
+        lambda members, model=None: asked.append(len(members)) or members,
+    )
+
+    with caplog.at_level("INFO", logger="app.worker.tasks"):
+        dedup_document(job_id)
+
+    rows = _rows_by_idx(doc_id)
+    assert rows[2].dupe_group is not None
+    assert rows[2].dupe_group == rows[3].dupe_group
+    assert rows[0].dupe_group is None
+    assert rows[1].dupe_group is None
+    assert asked == [2]  # one call, and only the two copies reached the model
+    assert "same-date part of that 4-member candidate" in caplog.text
+
+
+def test_dedup_document_still_lets_the_model_refuse_a_recovered_copy(monkeypatch):
+    """GUARD: a recovered part is a candidate like any other - the model's "distinct" stands."""
+    doc_id = _make_user_and_doc(page_count=8)
+    job_id = _visit_series_with_a_faxed_copy(doc_id)
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: [])
+
+    dedup_document(job_id)
+
+    assert all(r.dupe_group is None for r in _rows_by_idx(doc_id).values())
+
+
 def test_dedup_document_counts_rows_it_could_not_read(monkeypatch):
     """WHEN a row's pages yield no text, THE SYSTEM SHALL leave it ungrouped and record that it was
     never compared - empty text scores 0.0 against everything, so such a row is invisible to the
