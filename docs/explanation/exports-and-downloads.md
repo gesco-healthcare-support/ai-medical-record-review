@@ -62,7 +62,13 @@ one, else the PDF's own page count (`_letter_pages()`).
 
 - **MRR Word letter.** python-docx builds the document in memory: page header, evaluation line and
   heading, opening paragraph, a two-column table of entries sorted by date with undated entries
-  last, the page accounting, and the conclusion.
+  last, the page accounting, and the conclusion. Every piece of text enters the file through
+  `reporting._run()`, which first drops the characters a Word file (XML 1.0) cannot hold: control
+  characters other than tab, line feed and carriage return (a vertical tab or form feed becomes a
+  space), lone surrogates, and U+FFFE / U+FFFF. python-docx refuses them with a `ValueError` that
+  fails the whole export, and a model can write one: on 2026-10-29 an audit rewrite carrying a
+  stray `0x10` made every Word and ZIP export of its record answer 500. The memo is built the same
+  way.
 - **Linked PDF.** `linked_pdf.py` renders the same letter as HTML through PyMuPDF's `Story`, which
   reports where it laid out each title (every title carries an element id `t{i}`). The rectangles are
   unioned per title and page into one hotspot, the whole uploaded source PDF is appended after the
