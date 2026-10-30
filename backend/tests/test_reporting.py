@@ -2054,3 +2054,67 @@ def test_a_credential_followed_by_a_comma_is_left_alone():
     from app.services.summarize_engine import tidy_title
 
     assert tidy_title("JANE SMITH, M.D., PH.D.. ACME") == "JANE SMITH, M.D., PH.D. ACME"
+
+
+# --- a character Word cannot hold (live box, 2026-10-29) ----------------------------------------
+# An audit rewrite carried a stray 0x10 between a space and a word. python-docx refuses it with a
+# ValueError, so every Word and ZIP export of that record failed with a 500.
+
+
+def _all_text(doc) -> str:
+    cells = [cell.text for table in doc.tables for row in table.rows for cell in row.cells]
+    return "\n".join([p.text for p in doc.paragraphs] + cells)
+
+
+def test_a_summary_holding_a_control_character_still_exports():
+    """DEMONSTRATES the fix in the live shape: the letter builds and saves, the stray character is
+    gone, and the words around it are intact."""
+    entries = [_entry("01/02/2020", title="A\x00 REPORT", text="Diagnosis: pain in the \x10knee.")]
+    doc = build_mrr_document(entries, 10, "A B", "01/01/1980", "QME", details=ReportDetails())
+    doc.save(io.BytesIO())
+    text = _all_text(doc)
+    assert "pain in the knee." in text
+    assert "A REPORT" in text
+    assert not re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", text)
+
+
+def test_a_vertical_tab_or_form_feed_becomes_a_space():
+    """They separate words, so dropping them would run two words together. (In a summary BODY they
+    never get this far: the body is split into lines first, and both count as line ends.)"""
+    from app.services.reporting import _xml_safe
+
+    assert _xml_safe("left\x0cknee and right\x0bshoulder") == "left knee and right shoulder"
+    entries = [_entry("01/02/2020", title="LEFT\x0cKNEE")]
+    doc = build_mrr_document(entries, 10, "A B", "01/01/1980", "QME", details=ReportDetails())
+    assert "LEFT KNEE" in _all_text(doc)
+
+
+def test_the_memo_survives_a_control_character_in_its_header():
+    doc = build_memo_document(_memo_accounting(), MemoDetails(reviewer_name="Jane\x1f Roe"))
+    doc.save(io.BytesIO())
+    assert "FROM:\tJane Roe" in _memo_text(doc)
+
+
+def test_no_character_at_all_can_fail_a_run():
+    """GUARD over the whole range python-docx checks: after `_run`, no character of the Basic
+    Multilingual Plane, nor one beyond it, can raise. A narrower pattern would pass the tests above
+    and still fail an export on the next stray character."""
+    from docx import Document
+
+    from app.services.reporting import _run
+
+    paragraph = Document().add_paragraph()
+    everything = "".join(chr(cp) for cp in range(0x10000)) + "\U0001f600\U0010fffd"
+    run = _run(paragraph, everything)
+    assert "\t" in run.text  # tab, line feed and carriage return are legal, and kept
+    assert "\U0001f600" in run.text
+
+
+def test_ordinary_text_is_left_exactly_as_it_was():
+    """GUARD: only what Word cannot hold changes - tabs, line breaks, accents and symbols stay."""
+    from app.services.reporting import _xml_safe
+
+    text = "Name\tValue\nLine two\r\nCafé ½ ’ – § °"
+    assert _xml_safe(text) == text
+    assert _xml_safe("") == ""
+    assert _xml_safe(None) is None
