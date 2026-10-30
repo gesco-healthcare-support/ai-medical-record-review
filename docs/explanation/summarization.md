@@ -323,7 +323,10 @@ title and body for faithfulness to the source and for six house rules (`_HOUSE_R
 | 6 Previous visits removed (only when a document date is given) | `prior_visit` | yes |
 
 Faithfulness issues are `unsupported`, `contradiction`, `date` and `laterality`. The reply schema is
-`{fixed_text, fixed_title, issues: [{type, detail}]}`.
+`{fixed_text, fixed_title, issues: [{type, detail}]}`. The call sends the SOURCE, the document's
+date (categories 1 and 2 only, for rule 6), the visit's date when the body is one visit of a page
+that records several (see [A page of several visits](#a-page-of-several-visits)), the TITLE and the
+SUMMARY.
 
 On our model (`summarize` on vLLM) the same reply is asked for as `{issues, corrected_title,
 corrected_summary}` (`_reply_shape()`, switch `VLLM_AUDIT_ISSUES_FIRST`, on by default) and mapped
@@ -374,7 +377,9 @@ flowchart TD
     C -- no --> V[verified = true, no rewrite stored]
     C -- yes --> D{Rewrite only restates the title?}
     D -- yes --> R[Keep raw body]
-    D -- no --> K{Our model, VLLM_AUDIT_KEEPS_CONTENT on,<br/>unsupported or contradiction named,<br/>deleted numbers mostly on the pages?}
+    D -- no --> P{One visit of a split page,<br/>rewrite a copy of another visit?}
+    P -- yes --> R
+    P -- no --> K{Our model, VLLM_AUDIT_KEEPS_CONTENT on,<br/>unsupported or contradiction named,<br/>deleted numbers mostly on the pages?}
     K -- yes --> R
     K -- no --> E{Drops required bold headings?}
     E -- yes --> R
@@ -387,6 +392,16 @@ flowchart TD
 
 - `_restates_the_title()` rejects a rewrite whose content words are all already in the title. A
   subset test needs no threshold and cannot reject a real correction.
+- `_became_another_visit()` applies only to one visit of a page split into several (see
+  [A page of several visits](#a-page-of-several-visits)). It rejects a rewrite that is at least 0.9
+  alike to ANOTHER visit's body (character similarity over the first 1,500 characters, the
+  duplicate check's measure), more alike to it than to its own draft, and more alike to it than
+  its own draft ever was: the audit moved this visit toward that one, so the rewrite is the other
+  visit, not a correction of this one. It does not depend on the audit following its visit
+  instruction. The last test is for a therapy sheet, whose visits are near-identical by nature: a
+  real correction moves away from both drafts and is kept. Replayed on the live box's 89 audited
+  visits of split rows (2026-10-30), it rejects the 12 that shipped another visit's text and one
+  exact copy of a neighbour, and keeps a correction that ended a hair nearer its neighbour.
 - `_would_delete_content_on_our_model()` applies only when `summarize` runs on vLLM and
   `VLLM_AUDIT_KEEPS_CONTENT` is on (off by default). When the issues include `unsupported` or
   `contradiction`, the two the audit answers by deleting content, it compares the numbers the
@@ -534,11 +549,19 @@ The reviewers asked for each visit to be its own entry in the report (2026-10-15
   the year nearest the row's own date; a date that is no calendar date is kept as written and shows
   as Undated.
 - **One summary per visit.** Each visit gets its own date, its own body (with the row's date of
-  injury prefix and any unreadable-page notice) and its own audit call, which is given the visit's
-  date. The title is the page's one title; its audit correction is taken from the first visit's
-  audit for every visit. `summarize_row` returns the first visit at the top level and all of them
-  under `visits`; every caller that stores or delivers summaries reads them through
-  `visit_outputs()`.
+  injury prefix and any unreadable-page notice) and its own audit call. The audit reads the whole
+  page, so it is told it checks one visit of several: the visit's date goes in as
+  `THIS SUMMARY'S VISIT` (`verify_summary()`'s `visit_date`), and the prompt says what the page
+  records under any other date belongs to another summary - never added, never put in place of this
+  visit's content. Told nothing, it read a one-line X-ray summary beside a page of seven studies as
+  incomplete: on the live box (2026-10-30) it rewrote six visits of one page into the seventh, so
+  six dates shipped the same MRI. Over every split row there (40 rows, 123 visits), 12 visits in 5
+  records shipped another visit's text, 9 of them diagnostics. A rewrite that still copies another
+  visit is rejected (`_became_another_visit()`, in
+  [Guards on the audit's rewrite](#guards-on-the-audits-rewrite)). The title is the page's one
+  title; its audit correction is taken from the first visit's audit for every visit.
+  `summarize_row` returns the first visit at the top level and all of them under `visits`; every
+  caller that stores or delivers summaries reads them through `visit_outputs()`.
 - **Stored.** The worker writes one `summaries` row per visit, numbered by `Summary.part` (0 = first,
   and every single-visit row). `Summary.idx` stays the delivered order, by row then visit
   (`tasks.py` `_Placement`): a row of one visit keeps its row's position, so a record without a split

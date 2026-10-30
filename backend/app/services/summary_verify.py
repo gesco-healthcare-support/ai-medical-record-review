@@ -104,6 +104,11 @@ VERIFY_PROMPT = (
     "run-together letters. Never put such letters into the title: a name you write there must read "
     "as a name or as real words. Where the SOURCE gives the name only as garbled letters, leave "
     "the title's name as it is.\n"
+    "- When THIS SUMMARY'S VISIT is given below, the SOURCE records several separate visits or "
+    "studies, each with a summary of its own, and this SUMMARY covers only the one of that date. "
+    "Check it against that visit's own entry in the SOURCE. What the SOURCE records under any "
+    "other date belongs to another summary: it is not missing from this one and it is not a "
+    "previous visit to remove. Never add it here, and never replace this visit's content with it.\n"
     "- Then apply the HOUSE RULES. These are the one reason you may edit a sentence that is "
     "perfectly faithful.\n"
     "- Return a corrected summary and a corrected title that fix ONLY those problems: the "
@@ -335,7 +340,13 @@ def _verified_reply(data, summary_text, title, response):
 
 
 def verify_summary(
-    model, source_text, summary_text, title=None, document_date=None, max_output_tokens=None
+    model,
+    source_text,
+    summary_text,
+    title=None,
+    document_date=None,
+    max_output_tokens=None,
+    visit_date=None,
 ):
     """Audit ``summary_text`` and (when given) ``title`` against ``source_text`` and the house rules.
 
@@ -352,6 +363,13 @@ def verify_summary(
     ``document_date`` is this sub-document's own date. It is what makes house rule 6 checkable: a
     complaint or finding the source attributes to an earlier date is a recap of a visit that has its
     own document elsewhere in the record. Omit it and the rule is skipped rather than guessed at.
+
+    ``visit_date`` is given only for ONE VISIT of a page that records several (a split row, see
+    `summarize_engine.split_visits`): the SOURCE is the whole page, while this summary is one of its
+    visits. Without it the audit read a one-line X-ray summary beside a page of seven studies as
+    incomplete and rewrote it into the page's longest study - on the live box six visits of one page
+    shipped the same MRI under six dates (a reviewer's report, 2026-10-30). ``"-"`` is an undated
+    visit of such a page.
     """
     if not (summary_text or "").strip():
         return _unverified(summary_text, title)
@@ -359,6 +377,9 @@ def verify_summary(
     date = str(document_date or "").strip()
     if date and date != "-":
         prompt += f"THIS DOCUMENT'S DATE:\n{date}\n\n"
+    visit = str(visit_date or "").strip()
+    if visit:
+        prompt += f"THIS SUMMARY'S VISIT:\n{'undated' if visit == '-' else visit}\n\n"
     if title:
         prompt += f"TITLE:\n{title}\n\n"
     prompt += f"SUMMARY:\n{summary_text}"
