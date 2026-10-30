@@ -475,7 +475,9 @@ def admitted_candidates(cluster, override=None) -> list[dict]:
     shares neither one title nor one category, so the gate refused it with the copy of the report
     inside. Measured on the live box after the date split above (2026-10-30, 606 records): 336
     same-date same-kind pairs still hidden that way, 15 of them near-identical copies, 319 of them
-    sharing a category.
+    sharing a category. With this split 1,717 of the 1,734 hidden pairs reach the gate again; the
+    17 left share only a title across two categories and none is near-identical. It adds 22
+    candidates over the 606 records, most of them for the confirm call.
 
     Each group is judged by the same gate as any candidate, so nothing is admitted here that the
     gate would refuse if the chain had not formed. The rest of a rejected cluster stays rejected,

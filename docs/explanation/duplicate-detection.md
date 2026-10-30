@@ -186,8 +186,9 @@ happened to a cluster that is one date from the start. So a part the gate refuse
 one-date cluster, is split by known category, and each group of two or more is put to the same
 gate as a candidate of its own. Measured on the live box after the date split (2026-10-30, 606
 records): 336 same-date pairs of one category or title were still hidden this way, 15 of them
-near-identical copies, 319 sharing a category. Rows of different categories are never grouped by
-this split.
+near-identical copies, 319 sharing a category. With both splits, 1,717 of the 1,734 pairs the
+chains had hidden reach the gate again, every near-identical one among them; the 17 left share
+only a title across two categories. Rows of different categories are never grouped by this split.
 
 ### 5. Skip the model when the text has already answered
 
