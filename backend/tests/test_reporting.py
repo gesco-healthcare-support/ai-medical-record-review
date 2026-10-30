@@ -1120,11 +1120,23 @@ def test_the_letter_vocabulary_is_what_the_reviewers_named():
     distinction, 2026-09-14. `none` is a real answer: many records arrive with no letter and the
     opening paragraph then omits the clause rather than leaving a gap."""
     assert LETTER_TYPES == ("advocacy", "interrogatory", "none")
-    # The article is part of the label: `a defense advocacy letter` but `an interrogatory
-    # letter`. Deriving it would be a rule that happens to work on two values.
-    assert LETTER_LABELS["advocacy"] == "a defense advocacy letter"
+    # The article is part of the label, so it can change with the words: `an advocacy letter`,
+    # `an interrogatory letter`. Deriving it would be a rule that happens to work on two values.
+    assert LETTER_LABELS["advocacy"] == "an advocacy letter"
     assert LETTER_LABELS["interrogatory"] == "an interrogatory letter"
     assert "none" not in LETTER_LABELS
+
+
+def test_no_letter_names_the_side_that_sent_it():
+    """DEMONSTRATES the senior reviewer's request (2026-10-30): the label said `a defense
+    advocacy letter` whatever the letter was, so an applicant attorney's letter was delivered as
+    a defense letter. The sender clause names the attorney and the firm; the label names no side."""
+    for label in LETTER_LABELS.values():
+        assert "defense" not in label.lower()
+        assert "applicant" not in label.lower()
+    text = intro_sentence(21, "Example Law Firm", attorney_name="Jane Roe", letter_type="advocacy")
+    assert text.startswith("I have received an advocacy letter along with 21 pages")
+    assert "from Jane Roe, of Example Law Firm." in text
 
 
 def test_the_opening_paragraph_follows_the_format_the_reviewers_supplied():
@@ -1142,7 +1154,7 @@ def test_the_opening_paragraph_follows_the_format_the_reviewers_supplied():
         reviewer_name="Jane Roe",
     )
     assert text == (
-        "I have received a defense advocacy letter dated 08/12/2026 along with 241 pages of "
+        "I have received an advocacy letter dated 08/12/2026 along with 241 pages of "
         "medical records from Mitchell Garrett, of Blitstein, Young & Blinder. I have reviewed "
         "all of the pages received and my opinion is based upon such records. The initial "
         "organization, outlining, and excerpting of medical records were performed by Jane Roe, "
@@ -1154,7 +1166,7 @@ def test_the_opening_paragraph_follows_the_format_the_reviewers_supplied():
 
 
 def test_an_interrogatory_letter_takes_the_other_article():
-    """`a defense advocacy letter` but `an interrogatory letter`. The article travels with the label
+    """`an interrogatory letter`, like `an advocacy letter`. The article travels with the label
     rather than being computed, so a third type added later cannot inherit a wrong rule."""
     text = intro_sentence(50, "Acme LLP", letter_type="interrogatory")
     assert "I have received an interrogatory letter along with 50 pages" in text
@@ -1164,7 +1176,7 @@ def test_a_letter_with_no_date_still_says_which_letter():
     """The TYPE is the fact worth stating, and "dated" with nothing after it reads worse
     than no date at all."""
     text = intro_sentence(50, "Acme LLP", letter_type="advocacy")
-    assert "a defense advocacy letter along with 50 pages" in text
+    assert "an advocacy letter along with 50 pages" in text
     assert "dated" not in text
 
 
@@ -1293,7 +1305,7 @@ def test_both_renderers_open_with_the_same_paragraph():
     )
     assert _intro(doc) == expected
     assert html.escape(expected) in letter
-    for fragment in ("a defense advocacy letter dated 08/12/2026", "Mitchell Garrett", "4628"):
+    for fragment in ("an advocacy letter dated 08/12/2026", "Mitchell Garrett", "4628"):
         assert fragment in _intro(doc)
         assert html.escape(fragment) in letter
 
@@ -1740,7 +1752,7 @@ def test_the_memo_and_the_letter_open_with_the_same_two_clauses():
         letter_date="07/31/26",
     )
     clauses = (
-        "a defense advocacy letter dated 07/31/26 along with 191 pages of medical "
+        "an advocacy letter dated 07/31/26 along with 191 pages of medical "
         "records from Mitchell Garrett, of Acme LLP"
     )
     assert memo == f"We have received {clauses}."
