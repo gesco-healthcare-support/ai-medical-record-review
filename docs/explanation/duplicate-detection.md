@@ -178,6 +178,18 @@ rejected cluster stays rejected as before; in particular its cross-date content 
 offered again, because across dates high similarity is a visit form filled in again far more often
 than a re-scan (step 5). Parts are disjoint, so the groups confirmed from them never share a row.
 
+**A refused date is judged again, category by category** (`_by_category()`). Within one date the
+same-date join (step 2) chains different kinds of document whose words overlap, such as a
+progress report and the visit's own request form. A part holding both shares neither one title
+nor one category, so the gate refused it, and a copy of the report inside went with it. The same
+happened to a cluster that is one date from the start. So a part the gate refuses, or a refused
+one-date cluster, is split by known category, and each group of two or more is put to the same
+gate as a candidate of its own. Measured on the live box after the date split (2026-10-30, 606
+records): 336 same-date pairs of one category or title were still hidden this way, 15 of them
+near-identical copies, 319 sharing a category. With both splits, 1,717 of the 1,734 pairs the
+chains had hidden reach the gate again, every near-identical one among them; the 17 left share
+only a title across two categories. Rows of different categories are never grouped by this split.
+
 ### 5. Skip the model when the text has already answered
 
 A candidate whose `similarity` (the closure minimum) is at least `dupe_model_override` (0.95) is

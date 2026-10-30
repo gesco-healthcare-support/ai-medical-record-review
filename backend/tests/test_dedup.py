@@ -1033,3 +1033,65 @@ def test_parts_do_not_depend_on_row_order():
         return sorted(_idx(c["members"]) for c in dedup.admitted_candidates(cluster))
 
     assert parts(items) == parts(list(reversed(items))) == [[2, 3]]
+
+
+# --- one date, two kinds of document: the refused group splits by category ------------------------
+# The same-date join chains different kinds of document whose words overlap - a progress report
+# and the visit's own request form - and a group holding both shares neither one title nor one
+# category, so the gate refused the copy of the report inside it.
+
+_REPORT = " ".join(
+    f"progress report finding{i} lumbar spine plan{i} work status note{i}" for i in range(30)
+)
+
+
+def _report_its_copy_and_the_visits_form():
+    """A report, a re-faxed copy of it, and a request form of the same day built from the report's
+    words in another order: same words (so the form joins on the date), different text."""
+    return [
+        _visit(0, "05/08/2022", 0, title="Progress Report", category="1") | {"text": _REPORT},
+        _visit(1, "05/08/2022", 0, title="Progress Report", category="1")
+        | {"text": f"{_FAX_LINE} {_REPORT}"},
+        _visit(2, "05/08/2022", 0, title="Request for Authorization", category="10")
+        | {"text": " ".join(reversed(_REPORT.split()))},
+    ]
+
+
+def test_the_premise_one_date_of_two_kinds_is_refused_whole():
+    """GUARD on the fixture: one date, one cluster, refused - the shape that hid the copy."""
+    [cluster] = dedup.cluster_rows(_report_its_copy_and_the_visits_form())
+    assert _idx(cluster["members"]) == [0, 1, 2]
+    assert [_idx(part) for part in cluster["parts"]] == [[0, 1, 2]]
+    assert dedup.duplicate_gate(cluster["members"], cluster["similarity"]) is False
+
+
+def test_a_refused_date_splits_by_category_and_the_copy_comes_back():
+    """DEMONSTRATES: the report and its copy share the category, so they are a candidate of their
+    own, with their own similarity; the form, alone in its category, is not."""
+    [cluster] = dedup.cluster_rows(_report_its_copy_and_the_visits_form())
+    [candidate] = dedup.admitted_candidates(cluster)
+    assert _idx(candidate["members"]) == [0, 1]
+    assert candidate["similarity"] == dedup._min_difflib([m["text"] for m in candidate["members"]])
+
+
+def test_the_same_split_reaches_a_date_part_of_a_longer_chain():
+    """DEMONSTRATES the two splits together: a visit series chained across dates whose third date
+    also holds a form of another kind - the date part is refused, its copies come back."""
+    items = _series_with_a_faxed_copy()
+    items.append(
+        _visit(4, "08/27/2025", 33, title="Request for Authorization", category="10")
+        | {"text": " ".join(reversed(items[2]["text"].split()))}
+    )
+    [cluster] = dedup.cluster_rows(items)
+    assert [_idx(part) for part in cluster["parts"]] == [[2, 3, 4]]
+    assert [_idx(c["members"]) for c in dedup.admitted_candidates(cluster)] == [[2, 3]]
+
+
+def test_a_category_group_never_holds_two_kinds():
+    """GUARD: two documents of one date that share neither category nor title - here near-copies in
+    wording - are never put together by this split."""
+    rows = _report_its_copy_and_the_visits_form()
+    rows[1] |= {"category": "5", "title": "Therapy Note"}
+    [cluster] = dedup.cluster_rows(rows)
+    assert _idx(cluster["members"]) == [0, 1, 2]  # still one refused cluster
+    assert dedup.admitted_candidates(cluster) == []
