@@ -98,6 +98,32 @@ export function saveRows(id: string, rows: Row[]) {
   });
 }
 
+/** What "One entry per date" did, and the rows it left. */
+export type OneEntryPerDateResult = {
+  ok: boolean;
+  rows: Row[];
+  runs: number;
+  rows_folded: number;
+  labs_unticked: number;
+  reopened: boolean;
+};
+
+/** POST /api/documents/{id}/rows/one-entry-per-date - for a Kaiser or hospital record: merge the
+ *  neighbouring same-date rows of `rows` (the editor's current rows), untick the lab results, and
+ *  mark the record so the letter folds its other same-date entries (409 if a job runs). */
+export function applyOneEntryPerDate(id: string, rows: Row[]) {
+  return apiFetch<OneEntryPerDateResult>(`/documents/${id}/rows/one-entry-per-date`, {
+    method: "POST",
+    body: JSON.stringify({ rows }),
+  });
+}
+
+/** DELETE /api/documents/{id}/one-entry-per-date - the letter stops folding by date. The rows
+ *  are left as they are. */
+export function stopOneEntryPerDate(id: string) {
+  return apiFetch<{ ok: boolean }>(`/documents/${id}/one-entry-per-date`, { method: "DELETE" });
+}
+
 /** POST /api/documents/{id}/segment/start - enqueue identification (409 if a job runs).
  *  `fresh` discards any segmentation checkpoints so every window is recomputed. */
 export function startSegment(id: string, fresh = false) {

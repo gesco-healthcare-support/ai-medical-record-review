@@ -259,6 +259,8 @@ reach the reviewer as the call site's fallback.
 | `frontend/hooks/use-review-workflow.ts` | Load the record | `Could not load this document: ` followed by the sentence, fallback `error` |
 | `frontend/hooks/use-review-workflow.ts` | Start identification | Could not start identification. |
 | `frontend/hooks/use-review-workflow.ts` | Start summarization | Could not start summarization. |
+| `frontend/hooks/use-review-workflow.ts` | One entry per date | Could not combine the entries by date. (With invalid rows nothing is sent: Fix the highlighted page ranges first, then combine the entries by date.) |
+| `frontend/hooks/use-review-workflow.ts` | Turn off one entry per date | Could not turn off one entry per date. |
 | `frontend/components/bundle/bundle-page-client.tsx` | Bundle PDF | The download failed. |
 | `frontend/components/bundle/bundle-page-client.tsx` | Bundle report | The report failed. |
 | `frontend/components/bundle/bundle-page-client.tsx` | Detect the header | Could not read the header. |

@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { CategoryOption, Row } from "@/lib/types";
+import type { OneEntryPerDateResult } from "@/lib/review-api";
 import {
   categoryWasGuessed,
   clearFlagOnEdit,
@@ -16,6 +17,31 @@ import {
 import { RowsTable } from "./rows-table";
 import { PdfViewer, type PdfViewerHandle } from "./pdf-viewer";
 import { SplitPane } from "./split-pane";
+
+/** What the confirm dialog says before "One entry per date" changes anything. */
+export const ONE_ENTRY_PER_DATE_CONFIRM = [
+  "One entry per date - for a Kaiser or hospital record.",
+  "",
+  "This will:",
+  "- merge neighbouring documents that share a date into one progress note (category 1)",
+  "- leave diagnostic studies, lab results and allergy or immunization records as they are",
+  "- untick every lab result",
+  "- in the letter, also combine same-date entries that are not next to each other",
+  "",
+  "A merge is undone by splitting the row, and the letter's combining can be turned off here.",
+  "Continue?",
+].join("\n");
+
+const STOP_ONE_ENTRY_PER_DATE_CONFIRM =
+  "Stop combining same-date entries in the letter? The rows stay as they are.";
+
+function oneEntryPerDateNote(result: OneEntryPerDateResult): string {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  return `Combined ${plural(result.rows_folded, "row")} into their dates; unticked ${plural(
+    result.labs_unticked,
+    "lab result",
+  )}.`;
+}
 
 /**
  * The "Review & correct" workbench body (DS §3): a slim toolbar (Insert document, apply suggested
@@ -32,6 +58,9 @@ export function ReviewEditor({
   totalPages,
   onRowsChange,
   attentionPages,
+  oneEntryPerDate = false,
+  onOneEntryPerDate,
+  onStopOneEntryPerDate,
 }: Readonly<{
   documentId: string;
   filename: string;
@@ -40,6 +69,10 @@ export function ReviewEditor({
   totalPages: number;
   onRowsChange: (rows: EditorRow[]) => void;
   attentionPages?: Set<string>;
+  /** The record's "One entry per date" choice (a Kaiser or hospital record). */
+  oneEntryPerDate?: boolean;
+  onOneEntryPerDate?: () => Promise<OneEntryPerDateResult | null>;
+  onStopOneEntryPerDate?: () => Promise<void>;
 }>) {
   const pdfRef = useRef<PdfViewerHandle>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -48,6 +81,7 @@ export function ReviewEditor({
   const [onlyUnidentified, setOnlyUnidentified] = useState(false);
   const [addStart, setAddStart] = useState("");
   const [addEnd, setAddEnd] = useState("");
+  const [dateNote, setDateNote] = useState("");
 
   const errors = rowErrors(rows, totalPages);
   const selected = rows.findIndex((r) => r._key === selectedKey);
@@ -146,6 +180,20 @@ export function ReviewEditor({
     onRowsChange(next);
   }
 
+  async function combineByDate() {
+    if (!onOneEntryPerDate || !window.confirm(ONE_ENTRY_PER_DATE_CONFIRM)) return;
+    setSelectedKey(null);
+    setSplittingKey(null);
+    const result = await onOneEntryPerDate();
+    setDateNote(result ? oneEntryPerDateNote(result) : "");
+  }
+
+  async function stopCombiningByDate() {
+    if (!onStopOneEntryPerDate || !window.confirm(STOP_ONE_ENTRY_PER_DATE_CONFIRM)) return;
+    setDateNote("");
+    await onStopOneEntryPerDate();
+  }
+
   function openAdd() {
     const last = rows.at(-1);
     const start = last ? Math.min(Number(last.end) + 1, totalPages) : 1;
@@ -222,6 +270,31 @@ export function ReviewEditor({
             Apply {suggested} suggested merge{suggested === 1 ? "" : "s"}
           </button>
         ) : null}
+        {onOneEntryPerDate ? (
+          <button
+            type="button"
+            className="ev-btn ev-btn-outline ev-btn-sm"
+            title="For a Kaiser or hospital record: one entry per date, diagnostics and labs apart"
+            onClick={() => void combineByDate()}
+          >
+            One entry per date
+          </button>
+        ) : null}
+        {oneEntryPerDate ? (
+          <>
+            <span className="ev-chip ev-chip-edit">Letter: one entry per date</span>
+            {onStopOneEntryPerDate ? (
+              <button
+                type="button"
+                className="ev-btn ev-btn-sm ev-btn-ghost"
+                onClick={() => void stopCombiningByDate()}
+              >
+                Turn off
+              </button>
+            ) : null}
+          </>
+        ) : null}
+        {dateNote ? <output className="muted">{dateNote}</output> : null}
         {/* Stays rendered at zero while the filter is ON: clearing the last one must not remove the
             only control that turns the filter back off. */}
         {unidentifiedKeys.size > 0 || onlyUnidentified ? (

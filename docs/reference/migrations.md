@@ -6,7 +6,7 @@ carry catalog data.
 Source of truth: `backend/alembic/versions/` (one file per revision, named
 `<revision>_<slug>.py`), `backend/alembic/env.py` and `backend/alembic.ini`.
 
-**Current head: `c8e2f5a9d14b`.** The chain has 33 revisions, one head and no branches. How to add
+**Current head: `d6a2f9c3e481`.** The chain has 34 revisions, one head and no branches. How to add
 a revision is in [How to create a database migration](../how-to/create-a-database-migration.md).
 
 ## Chain
@@ -49,7 +49,8 @@ columns or indexes; **data** changes rows only; **schema + data** does both.
 | 30 | `f5c8d2a19e47` | `e4b7a2c91d05` | 2026-09-29 | schema | Adds `jobs.requested_by` (nullable, no backfill). |
 | 31 | `a3d6f0b81e57` | `f5c8d2a19e47` | 2026-10-02 | schema | Creates `replaced_review_rows`: the reviewer rows a re-segment replaces, kept per replacing job. No backfill. |
 | 32 | `b7e4c1a9d203` | `a3d6f0b81e57` | 2026-10-02 | data | Inserts category 18 (illegible document, `auto_assign` false, so only a reviewer assigns it), only on a seeded catalog, `ON CONFLICT DO NOTHING`; downgrade keeps the row while any review row uses it. |
-| 33 | `c8e2f5a9d14b` | `b7e4c1a9d203` | 2026-10-16 | schema | Adds `summaries.part` (server default `0`): which visit of its row a summary is, when a page records several dated visits. Downgrade drops it, after which the old worker deletes a row's extra visits as duplicates. **Current head.** |
+| 33 | `c8e2f5a9d14b` | `b7e4c1a9d203` | 2026-10-16 | schema | Adds `summaries.part` (server default `0`): which visit of its row a summary is, when a page records several dated visits. Downgrade drops it, after which the old worker deletes a row's extra visits as duplicates. |
+| 34 | `d6a2f9c3e481` | `c8e2f5a9d14b` | 2026-10-30 | schema | Adds `documents.one_entry_per_date` (server default `false`): the reviewer chose one entry per date for the record. Downgrade drops it; merged rows stay merged and the export stops folding by date. **Current head.** |
 
 Totals: 22 schema, 9 data, 1 schema + data.
 

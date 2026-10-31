@@ -300,6 +300,7 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `letter_type` | String(32) | yes | - | The covering letter: one of `reporting.LETTER_TYPES` (`advocacy`, `interrogatory`, `none`). An unrecognised value is saved as `''`. NULL = never set. | `c2f1a7d94e63` |
 | `letter_date` | String(32) | yes | - | Free text. | `c2f1a7d94e63` |
 | `pages_received` | Integer | yes | - | Pages actually received, which is not `page_count`. NULL = nobody has said; every consumer then uses `page_count`. | `c2f1a7d94e63` |
+| `one_entry_per_date` | Boolean | no | ORM `False`, server `false` | The reviewer chose "One entry per date" for this record (a Kaiser or hospital record): its neighbouring same-date rows were merged, and the export folds every same-date entry but a diagnostic study's and a lab's into one. Kept when the record is identified again; turned off on the workbench. | `d6a2f9c3e481` |
 
 ORM helpers on `Document`: `active_job` (the job in `queued`, `running` or `paused`, else `None`)
 and `listing()` (the wire shape; see [HTTP API reference](http-api.md)).
@@ -552,6 +553,7 @@ Every `action` value written by the repository:
 | `segment.start`, `dedup.start` | `backend/app/api/documents.py` (job start) |
 | `duplicates.resolve` | `backend/app/api/documents.py` (duplicate group resolution) |
 | `rows.edit` | `backend/app/api/documents.py` (row save; `detail` carries the boundary counts) |
+| `rows.one_entry_per_date`, `one_entry_per_date.off` | `backend/app/api/documents.py` (the one-entry-per-date action and turning it off; `detail` carries the counts) |
 | `job.cancel` | `backend/app/api/documents.py` (cancel) |
 | `summarize.skip_duplicate_check` | `backend/app/api/documents.py` (summarize start without a current duplicate check) |
 | `summary.edit` | `backend/app/api/documents.py` (summary edit) |

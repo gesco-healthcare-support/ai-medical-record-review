@@ -38,7 +38,7 @@ from app.errors import (
     PipelineError,
     TranscriptPagesUnreadableError,
 )
-from app.models import Document, Job, ReviewRow, Summary, User
+from app.models import AuditLog, Document, Job, ReviewRow, Summary, User
 from app.schemas.documents import (
     BundlePayload,
     CancelPayload,
@@ -57,6 +57,7 @@ from app.services import bundles, catalog, downloads
 from app.services.aggregate import merge_pdfs
 from app.services.audit import audit
 from app.services.classification import DEFAULT_ID, match_rules
+from app.services.date_entries import merge_by_date
 from app.services.extraction import extract_header
 from app.services.files import safe_name
 from app.services.gemini import PROMPT_VERSION
@@ -1254,6 +1255,80 @@ def put_rows(
 
 
 @router.post(
+    "/{document_id}/rows/one-entry-per-date",
+    responses={
+        400: {"description": "The submitted rows failed validation."},
+        409: {"description": "A job is running for this document."},
+    },
+)
+def one_entry_per_date(
+    payload: RowsPayload | None = None,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """The reviewer's "One entry per date" for a Kaiser or hospital record
+    (`services/date_entries.py`): neighbouring same-date rows merged, lab results unticked, and the
+    record marked so the letter folds its other same-date entries too.
+
+    Takes the editor's CURRENT rows, as Summarize does, so an edit still waiting for its autosave is
+    neither lost nor written back over the merge afterwards. The merge is stored through
+    `_store_rows`, the save a hand merge goes through, so source text, the duplicate fields and
+    `method` follow the same rule there - a re-spanned row starts fresh and its cluster's dismissal
+    is reopened. The rows, the flag and the audit row are one commit.
+    """
+    if document.active_job is not None:
+        raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
+    rows = (payload.rows if payload else None) or []
+    error = validate_rows(session, rows, document.page_count)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    result = merge_by_date(rows)
+    document.one_entry_per_date = True
+    session.add(
+        AuditLog(
+            user_id=user.id,
+            action="rows.one_entry_per_date",
+            document_id=document.id,
+            detail=(
+                f"rows {len(rows)}->{len(result.rows)} "
+                f"(runs {result.runs}, labs unticked {result.labs_unticked})"
+            ),
+        )
+    )
+    error, _stats = _store_rows(session, document, result.rows)
+    if error:
+        # Not reachable from validated rows - a merge keeps their order and their pages - but a
+        # flag with no merged rows behind it would fold the letter of a record nobody merged.
+        session.rollback()
+        raise HTTPException(status_code=400, detail=error)
+    reopened = _reopen_if_summaries_stranded(session, document)
+    return {
+        "ok": True,
+        "rows": [_editor_row(row) for row in document.review_rows],
+        "runs": result.runs,
+        "rows_folded": result.rows_folded,
+        "labs_unticked": result.labs_unticked,
+        "reopened": reopened,
+    }
+
+
+@router.delete("/{document_id}/one-entry-per-date")
+def stop_one_entry_per_date(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Turn the record's one-entry-per-date choice off: the letter stops folding same-date entries
+    that are not neighbours. The rows are not touched - a merge is undone row by row on the
+    workbench, like any other."""
+    document.one_entry_per_date = False
+    session.add(AuditLog(user_id=user.id, action="one_entry_per_date.off", document_id=document.id))
+    session.commit()
+    return {"ok": True}
+
+
+@router.post(
     "/{document_id}/jobs/{job_id}/cancel",
     responses={404: {"description": "No job with this id belongs to this document."}},
 )
@@ -1933,7 +2008,9 @@ def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     }
 
 
-def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> list[dict]:
+def _record_pass(
+    entries: list[dict], summaries: list[Summary], key: str, *, by_date: bool = False
+) -> list[dict]:
     """The record-level passes over a delivered entry list, in order: the title passes
     (`summarize_engine.consistent_titles` - one spelling per provider and per facility, a listed
     system's abbreviation read as the system, one name for a PR-2), then the folds
@@ -1942,12 +2019,14 @@ def _record_pass(entries: list[dict], summaries: list[Summary], key: str) -> lis
     which needs the spellings to agree first, and one entry per date of laboratory results. Both
     renderers call this, so the Word and PDF deliverables list the same entries, and the Summaries
     tab runs the same title passes (`_tab_titles`). ``locked`` marks the entries whose title a
-    reviewer edited: never rewritten, and they win."""
+    reviewer edited: never rewritten, and they win. ``by_date`` is the record's one-entry-per-date
+    choice (`Document.one_entry_per_date`): every same-date entry but a diagnostic study's and a
+    lab's folds into one, in place of the visit fold."""
     locked = [s.edited_title is not None for s in summaries]
     categories = [str(s.row_category) for s in summaries]
     titles = consistent_titles([e[key] for e in entries], categories, locked)
     entries = [{**e, key: t} for e, t in zip(entries, titles, strict=True)]
-    return fold_record_entries(entries, categories, key)
+    return fold_record_entries(entries, categories, key, by_date=by_date)
 
 
 def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:
@@ -2172,6 +2251,7 @@ def _mrr_docx_bytes(
         [_export_entry(s, with_pages=payload.includePageNumbers) for s in summaries],
         summaries,
         "summaryTitle",
+        by_date=document.one_entry_per_date,
     )
     docx = build_mrr_document(
         entries,
@@ -2211,6 +2291,7 @@ def _linked_pdf_bytes(
         [_pdf_entry(s, with_pages=payload.includePageNumbers) for s in summaries],
         summaries,
         "linkTitle",
+        by_date=document.one_entry_per_date,
     )
     return build_linked_pdf(
         document.stored_path,
