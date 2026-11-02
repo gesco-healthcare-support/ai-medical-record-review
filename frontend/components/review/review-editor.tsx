@@ -44,6 +44,61 @@ function oneEntryPerDateNote(result: OneEntryPerDateResult): string {
 }
 
 /**
+ * The "One entry per date" toolbar controls, for a Kaiser or hospital record: the button behind
+ * its confirm dialog, the note saying what changed, and - while the record is marked - the chip
+ * and Turn off. `onApplying` runs once the reviewer has confirmed, before the request, so the
+ * editor drops a selection that is about to name a row that no longer exists.
+ */
+function OneEntryPerDateControls({
+  on,
+  onApply,
+  onStop,
+  onApplying,
+}: Readonly<{
+  on: boolean;
+  onApply?: () => Promise<OneEntryPerDateResult | null>;
+  onStop?: () => Promise<void>;
+  onApplying: () => void;
+}>) {
+  const [note, setNote] = useState("");
+
+  async function apply() {
+    if (!onApply || !window.confirm(ONE_ENTRY_PER_DATE_CONFIRM)) return;
+    onApplying();
+    const result = await onApply();
+    setNote(result ? oneEntryPerDateNote(result) : "");
+  }
+
+  async function stop() {
+    if (!onStop || !window.confirm(STOP_ONE_ENTRY_PER_DATE_CONFIRM)) return;
+    setNote("");
+    await onStop();
+  }
+
+  return (
+    <>
+      {onApply ? (
+        <button
+          type="button"
+          className="ev-btn ev-btn-outline ev-btn-sm"
+          title="For a Kaiser or hospital record: one entry per date, diagnostics and labs apart"
+          onClick={() => void apply()}
+        >
+          One entry per date
+        </button>
+      ) : null}
+      {on ? <span className="ev-chip ev-chip-edit">Letter: one entry per date</span> : null}
+      {on && onStop ? (
+        <button type="button" className="ev-btn ev-btn-sm ev-btn-ghost" onClick={() => void stop()}>
+          Turn off
+        </button>
+      ) : null}
+      {note ? <output className="muted">{note}</output> : null}
+    </>
+  );
+}
+
+/**
  * The "Review & correct" workbench body (DS §3): a slim toolbar (Insert document, apply suggested
  * merges, first validation error) over a resizable SplitPane - the single-row sub-documents table
  * on the left, the PDF viewer on the right. Row selection jumps the viewer to that row's first
@@ -81,7 +136,6 @@ export function ReviewEditor({
   const [onlyUnidentified, setOnlyUnidentified] = useState(false);
   const [addStart, setAddStart] = useState("");
   const [addEnd, setAddEnd] = useState("");
-  const [dateNote, setDateNote] = useState("");
 
   const errors = rowErrors(rows, totalPages);
   const selected = rows.findIndex((r) => r._key === selectedKey);
@@ -180,20 +234,6 @@ export function ReviewEditor({
     onRowsChange(next);
   }
 
-  async function combineByDate() {
-    if (!onOneEntryPerDate || !window.confirm(ONE_ENTRY_PER_DATE_CONFIRM)) return;
-    setSelectedKey(null);
-    setSplittingKey(null);
-    const result = await onOneEntryPerDate();
-    setDateNote(result ? oneEntryPerDateNote(result) : "");
-  }
-
-  async function stopCombiningByDate() {
-    if (!onStopOneEntryPerDate || !window.confirm(STOP_ONE_ENTRY_PER_DATE_CONFIRM)) return;
-    setDateNote("");
-    await onStopOneEntryPerDate();
-  }
-
   function openAdd() {
     const last = rows.at(-1);
     const start = last ? Math.min(Number(last.end) + 1, totalPages) : 1;
@@ -270,31 +310,15 @@ export function ReviewEditor({
             Apply {suggested} suggested merge{suggested === 1 ? "" : "s"}
           </button>
         ) : null}
-        {onOneEntryPerDate ? (
-          <button
-            type="button"
-            className="ev-btn ev-btn-outline ev-btn-sm"
-            title="For a Kaiser or hospital record: one entry per date, diagnostics and labs apart"
-            onClick={() => void combineByDate()}
-          >
-            One entry per date
-          </button>
-        ) : null}
-        {oneEntryPerDate ? (
-          <>
-            <span className="ev-chip ev-chip-edit">Letter: one entry per date</span>
-            {onStopOneEntryPerDate ? (
-              <button
-                type="button"
-                className="ev-btn ev-btn-sm ev-btn-ghost"
-                onClick={() => void stopCombiningByDate()}
-              >
-                Turn off
-              </button>
-            ) : null}
-          </>
-        ) : null}
-        {dateNote ? <output className="muted">{dateNote}</output> : null}
+        <OneEntryPerDateControls
+          on={oneEntryPerDate}
+          onApply={onOneEntryPerDate}
+          onStop={onStopOneEntryPerDate}
+          onApplying={() => {
+            setSelectedKey(null);
+            setSplittingKey(null);
+          }}
+        />
         {/* Stays rendered at zero while the filter is ON: clearing the last one must not remove the
             only control that turns the filter back off. */}
         {unidentifiedKeys.size > 0 || onlyUnidentified ? (

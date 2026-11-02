@@ -1284,17 +1284,15 @@ def one_entry_per_date(
     if error:
         raise HTTPException(status_code=400, detail=error)
     result = merge_by_date(rows)
-    document.one_entry_per_date = True
-    session.add(
-        AuditLog(
-            user_id=user.id,
-            action="rows.one_entry_per_date",
-            document_id=document.id,
-            detail=(
-                f"rows {len(rows)}->{len(result.rows)} "
-                f"(runs {result.runs}, labs unticked {result.labs_unticked})"
-            ),
-        )
+    _choose_one_entry_per_date(
+        session,
+        document,
+        user,
+        True,
+        detail=(
+            f"rows {len(rows)}->{len(result.rows)} "
+            f"(runs {result.runs}, labs unticked {result.labs_unticked})"
+        ),
     )
     error, _stats = _store_rows(session, document, result.rows)
     if error:
@@ -1322,10 +1320,25 @@ def stop_one_entry_per_date(
     """Turn the record's one-entry-per-date choice off: the letter stops folding same-date entries
     that are not neighbours. The rows are not touched - a merge is undone row by row on the
     workbench, like any other."""
-    document.one_entry_per_date = False
-    session.add(AuditLog(user_id=user.id, action="one_entry_per_date.off", document_id=document.id))
+    _choose_one_entry_per_date(session, document, user, False)
     session.commit()
     return {"ok": True}
+
+
+def _choose_one_entry_per_date(
+    session: Session, document: Document, user: User, chosen: bool, *, detail: str | None = None
+) -> None:
+    """Record the reviewer's one-entry-per-date choice and its audit row. Commits nothing: the
+    caller's commit carries both, together with whatever else it writes (the merged rows)."""
+    document.one_entry_per_date = chosen
+    session.add(
+        AuditLog(
+            user_id=user.id,
+            action="rows.one_entry_per_date" if chosen else "one_entry_per_date.off",
+            document_id=document.id,
+            detail=detail,
+        )
+    )
 
 
 @router.post(
