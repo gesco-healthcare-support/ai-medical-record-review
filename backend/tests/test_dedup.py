@@ -1095,3 +1095,91 @@ def test_a_category_group_never_holds_two_kinds():
     [cluster] = dedup.cluster_rows(rows)
     assert _idx(cluster["members"]) == [0, 1, 2]  # still one refused cluster
     assert dedup.admitted_candidates(cluster) == []
+
+
+# --- a near-identical pair the model judged distinct (near_copies) --------------------------------
+# The confirm model reads 1,500 characters of each text; at 0.90+ there is little there to tell two
+# documents apart, so with `dupe_show_near_copies` on, the reviewer is asked instead.
+
+_NOTE = " ".join(
+    f"visit finding{i} lumbar tenderness grade{i} plan therapy week{i}" for i in range(40)
+)
+
+
+def _faxed(lines):
+    """``_NOTE`` behind ``lines`` lines of a fax header: 2 lines score 0.93, 4 lines 0.86."""
+    fax = " ".join(
+        f"fax header line{i} sent from office{i} to clinic{i} page {i}" for i in range(lines)
+    )
+    return f"{fax} {_NOTE}"
+
+
+def _near_row(idx, text, date="05/08/2022", category="1", title="Progress Report"):
+    return {"idx": idx, "date": date, "title": title, "category": category, "text": text}
+
+
+def test_the_premise_the_pair_is_near_identical_yet_below_the_model_override():
+    """GUARD on the fixture: between the near-copy bar and `dupe_model_override`, so the model IS
+    asked, and its "distinct" is what the rule overrides."""
+    from app.config import get_settings
+
+    score = dedup._min_difflib([_NOTE, _faxed(2)])
+    assert dedup.NEAR_COPY_SIMILARITY <= score < get_settings().dupe_model_override
+    assert dedup._min_difflib([_NOTE, _faxed(4)]) < dedup.NEAR_COPY_SIMILARITY
+
+
+def test_a_near_identical_pair_the_model_judged_distinct_is_a_group():
+    """DEMONSTRATES: one date, one category, 0.93 alike, and the model returned no group."""
+    members = [_near_row(0, _NOTE), _near_row(1, _faxed(2))]
+    [group] = dedup.near_copies(members, [])
+    assert [m["idx"] for m in group] == [0, 1]
+    assert all(a is b for a, b in zip(group, members))
+
+
+def test_members_the_model_grouped_are_not_grouped_again():
+    """GUARD: only what the model left out is looked at; its groups stand as they are."""
+    members = [
+        _near_row(0, _NOTE),
+        _near_row(1, _faxed(2)),
+        _near_row(2, _faxed(1)),
+        _near_row(3, _NOTE),
+    ]
+    groups = [[members[0], members[1]]]
+    [group] = dedup.near_copies(members, groups)
+    assert [m["idx"] for m in group] == [2, 3]
+    assert dedup.near_copies(members, [[members[0], members[1]], [members[2], members[3]]]) == []
+
+
+@pytest.mark.parametrize(
+    ("change", "why"),
+    [
+        ({"date": "05/09/2022"}, "another date"),
+        ({"date": "-"}, "an unknown date"),
+        ({"category": "5"}, "another category"),
+        ({"category": ""}, "an unknown category"),
+    ],
+)
+def test_a_pair_needs_one_known_date_and_one_known_category(change, why):
+    """GUARD: across dates high similarity is a visit form filled in again (`spans_dates`), and an
+    unknown value is never a match."""
+    members = [_near_row(0, _NOTE), _near_row(1, _faxed(2)) | change]
+    assert dedup.near_copies(members, []) == [], why
+
+
+def test_diagnostics_are_never_grouped_against_the_model():
+    """GUARD: the senior reviewer's exception - two studies of one day differ in a few words."""
+    members = [_near_row(0, _NOTE, category="3"), _near_row(1, _faxed(2), category="3")]
+    assert dedup.near_copies(members, []) == []
+
+
+def test_opposite_sides_are_never_grouped_against_the_model():
+    members = [
+        _near_row(0, _NOTE, title="Left Knee Report"),
+        _near_row(1, _faxed(2), title="Right Knee Report"),
+    ]
+    assert dedup.near_copies(members, []) == []
+
+
+def test_text_below_the_bar_is_left_to_the_model():
+    """GUARD: 0.86 alike - the model's "distinct" stands."""
+    assert dedup.near_copies([_near_row(0, _NOTE), _near_row(1, _faxed(4))], []) == []

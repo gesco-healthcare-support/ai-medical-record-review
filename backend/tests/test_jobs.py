@@ -3842,3 +3842,56 @@ def test_a_row_reusing_the_duplicate_checks_text_still_names_its_unreadable_page
         assert "unintelligible" in summary.text.lower(), (
             "and must say that page was unreadable, rather than omitting it silently"
         )
+
+
+def _near_copy_pair(doc_id):
+    """Two rows of one date and title, 0.93 alike: below `dupe_model_override`, so the model is
+    asked, and near-identical."""
+    note = " ".join(
+        f"visit finding{i} lumbar tenderness grade{i} plan therapy week{i}" for i in range(40)
+    )
+    fax = " ".join(
+        f"fax header line{i} sent from office{i} to clinic{i} page {i}" for i in range(2)
+    )
+    return _dedup_rows(
+        doc_id,
+        [(1, 2, True, False, None, note), (3, 4, True, False, None, f"{fax} {note}")],
+        dates=["05/08/2022", "05/08/2022"],
+        titles=["Progress Report", "Progress Report"],
+    )
+
+
+def test_dedup_document_shows_a_near_copy_the_model_judged_distinct(monkeypatch, caplog):
+    """WHEN `dupe_show_near_copies` is on and the model judges a near-identical same-date,
+    same-category pair distinct, THE SYSTEM SHALL still store it as a group for the reviewer."""
+    monkeypatch.setattr(get_settings(), "dupe_show_near_copies", True)
+    doc_id = _make_user_and_doc(page_count=4)
+    job_id = _near_copy_pair(doc_id)
+    asked = []
+    monkeypatch.setattr(
+        "app.services.dedup.confirm_cluster",
+        lambda members, model=None: asked.append(len(members)) or [],
+    )
+
+    with caplog.at_level("INFO", logger="app.worker.tasks"):
+        dedup_document(job_id)
+
+    rows = _rows_by_idx(doc_id)
+    assert asked == [2]  # the model was asked and said "distinct"
+    assert rows[0].dupe_group is not None
+    assert rows[0].dupe_group == rows[1].dupe_group
+    assert rows[0].dupe_similarity == rows[1].dupe_similarity
+    assert rows[0].dupe_similarity >= 0.90
+    assert "near-identical group" in caplog.text
+
+
+def test_dedup_document_leaves_the_models_distinct_alone_by_default(monkeypatch):
+    """GUARD: the setting is off by default, and off means the model's answer stands."""
+    assert Settings.model_fields["dupe_show_near_copies"].default is False
+    doc_id = _make_user_and_doc(page_count=4)
+    job_id = _near_copy_pair(doc_id)
+    monkeypatch.setattr("app.services.dedup.confirm_cluster", lambda members, model=None: [])
+
+    dedup_document(job_id)
+
+    assert all(r.dupe_group is None for r in _rows_by_idx(doc_id).values())
