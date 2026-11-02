@@ -302,3 +302,82 @@ def test_segmentation_leaves_the_draft_alone_when_the_setting_is_off(monkeypatch
     """GUARD: off - the default - changes nothing."""
     rows = _segment_two_pieces(monkeypatch, enabled=False)
     assert [(r["start"], r["end"]) for r in rows] == [(1, 2), (3, 3)]
+
+
+# --- merge HINTS for one visit's pieces (VISIT_MERGE_HINTS) -----------------------------------
+
+
+def _no_model(*_a, **_k):
+    raise AssertionError("a visit hint must not call the model")
+
+
+def test_a_visit_piece_boundary_gets_a_hint_with_no_model_call(monkeypatch):
+    """DEMONSTRATES: the candidate rule turned into hints - the reviewer decides, nothing merges."""
+    monkeypatch.setattr(visit_merge, "_same_author", _no_model)
+    rows = [dict(_PR2), dict(_RFA), _row(4, 6, "1", date="02/05/2026")]
+    out, hinted = visit_merge.hint_visit_pieces(rows)
+    assert [(r["start"], r["end"]) for r in out] == [(1, 2), (3, 3), (4, 6)]
+    assert [bool(r.get("suggest_merge")) for r in out] == [False, True, False]
+    assert hinted == 1
+    assert "suggest_merge" not in rows[1], "the caller's own rows must come back untouched"
+
+
+@pytest.mark.parametrize(
+    ("prev", "row"),
+    [
+        (_PR2, _STUDY),  # a diagnostic study is always its own entry
+        (_THERAPY, _row(2, 2, "1", "PR-2 PROGRESS REPORT")),  # 1 next to 5 is not one visit
+        (_PR2, _row(3, 3, date="02/05/2026")),  # two dates
+    ],
+    ids=["study", "1+5", "two dates"],
+)
+def test_no_hint_where_the_pieces_are_not_one_visit(prev, row):
+    """GUARD: the hint follows the candidate rule exactly."""
+    out, hinted = visit_merge.hint_visit_pieces([dict(prev), dict(row)])
+    assert hinted == 0
+    assert not any(r.get("suggest_merge") for r in out)
+
+
+def test_a_boundary_the_verify_pass_already_hinted_is_not_counted_twice():
+    rows = [dict(_PR2), {**_RFA, "suggest_merge": True}]
+    out, hinted = visit_merge.hint_visit_pieces(rows)
+    assert hinted == 0
+    assert out[1]["suggest_merge"] is True
+
+
+def test_the_hint_setting_is_off_by_default():
+    assert get_settings().__class__.model_fields["visit_merge_hints"].default is False
+
+
+def _segment_with_hints(monkeypatch, hints, merge):
+    import app.services.segment_engine as se
+
+    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
+    monkeypatch.setattr(se, "byte_budgeted_windows", lambda *a, **k: [(1, 3)])
+    monkeypatch.setattr(se, "_window_rows", lambda *_a: [dict(_PR2), dict(_RFA)])
+    monkeypatch.setattr(se, "_categorize", lambda pdf_path, row, *_a, **_kw: row)
+    monkeypatch.setattr(se.get_settings(), "verify_merge", False)
+    monkeypatch.setattr(se.get_settings(), "visit_merge_hints", hints)
+    monkeypatch.setattr(se.get_settings(), "merge_visit_pieces", merge)
+    monkeypatch.setattr(visit_merge, "_same_author", lambda *_a: True)
+    return se.run_segmentation("/x.pdf", total_pages=3)
+
+
+def test_segmentation_hints_a_visits_pieces_when_the_setting_is_on(monkeypatch):
+    """DEMONSTRATES the wiring: the rows stay as segmentation cut them; the boundary has a hint."""
+    rows = _segment_with_hints(monkeypatch, hints=True, merge=False)
+    assert [(r["start"], r["end"]) for r in rows] == [(1, 2), (3, 3)]
+    assert [bool(r.get("suggest_merge")) for r in rows] == [False, True]
+
+
+def test_segmentation_hints_nothing_when_the_setting_is_off(monkeypatch):
+    """GUARD: off - the default - is today's draft."""
+    rows = _segment_with_hints(monkeypatch, hints=False, merge=False)
+    assert not any(r.get("suggest_merge") for r in rows)
+
+
+def test_merged_pieces_are_not_hinted_as_well(monkeypatch):
+    """GUARD: with MERGE_VISIT_PIECES on, the pieces are merged, not offered."""
+    rows = _segment_with_hints(monkeypatch, hints=True, merge=True)
+    assert [(r["start"], r["end"]) for r in rows] == [(1, 3)]
+    assert not rows[0].get("suggest_merge")
