@@ -237,14 +237,29 @@ a candidate. The job logs `dedup kept a N-member near-identical group ... the mo
 distinct`.
 
 Why: the senior reviewer reported on 2026-11-02 that 2-3 duplicates per 200+ page record still go
-unflagged. Measured read-only on the live box (627 records with a finished check), most such
-same-date, same-category pairs never reached the model at all, which the splits in step 4 fix.
-Of the rest, 57 pairs at least 0.90 alike were put to the model and judged distinct, and the
-reviewer later unticked one row of 19 of them by hand. The model reads 1,500 characters of each
-text, and at this similarity there is little in them to tell two documents apart, so the
-reviewer is asked instead: a wrong group costs one "Not duplicates" click, a missed one ships the
-same paragraph twice. Diagnostics are left out on the senior reviewer's word (two studies of one
-day share a template), and a pair across dates is never grouped this way (step 5's reason).
+unflagged. Most such same-date, same-category pairs never reached the model at all, which the
+splits in step 4 fix. For the rest, measured read-only on the live box (630 records with a
+finished check, the candidates rebuilt with the code that made the stored groups):
+
+- The rule finds 20 pairs the model left out of every group, in 12 records, 11 of them over 200
+  pages. Both rows were still ticked in all 20, so both were summarized.
+- When a group of one date and one category (not diagnostics) was shown, reviewers kept one copy
+  in most near-identical ones (table below).
+
+| Similarity of a shown group | Reviewer kept one copy | Reviewer dismissed it |
+| --- | --- | --- |
+| 0.95 and above | 114 | 20 |
+| 0.90 to 0.95 | 25 | 10 |
+| 0.80 to 0.90 | 40 | 8 |
+| below 0.80 | 142 | 143 |
+
+The model reads 1,500 characters of each text, and at this similarity there is little in them to
+tell two documents apart, so the reviewer is asked instead: a wrong group costs one "Not
+duplicates" click, a missed one ships the same paragraph twice. A pair across dates is never
+grouped this way (step 5's reason). Diagnostics are left out on the senior reviewer's word (two
+studies of one day share a template). They hold 33 more such pairs, and reviewers kept a copy in
+41 of 50 shown near-identical (0.90+) diagnostic groups, so that exception is worth asking about
+again.
 
 ### 7. Write the result in one transaction
 

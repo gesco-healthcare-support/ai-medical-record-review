@@ -652,13 +652,23 @@ def near_copies(members, groups, floor=NEAR_COPY_SIMILARITY):
     identity, as in `confirm_groups`.
 
     WHY: the senior reviewer, 2026-11-02, still finds 2-3 duplicates per 200+ page record left
-    unflagged. Measured read-only on the live box (627 records with a finished check), most of those
-    pairs never reached the model at all (the chained-series fault `admitted_candidates` fixes),
-    and 57 same-date, same-category pairs at least 0.90 alike were put to the model and judged
-    distinct; the reviewer unticked one row of 19 of them by hand later. The model answers from the
-    first 1,500 characters of each text, and at this similarity there is little there to tell two
-    documents apart, so the reviewer gets the question instead: a wrong group costs one "Not
-    duplicates" click, a missed one ships the same paragraph twice. Nothing is removed either way.
+    unflagged. Most of those pairs never reached the model at all (the chained-series fault
+    `admitted_candidates` fixes). Measured read-only on the live box for the rest (630 records with
+    a finished check, candidates rebuilt with the code that made the stored groups):
+
+    - this rule finds 20 pairs the model left out of every group, in 12 records (11 of them 200+
+      pages). Both rows were still ticked in all 20, so both were summarized;
+    - when a group of one date and one category (not diagnostics) WAS shown, the reviewer kept one
+      copy in 114 of 134 decided groups at 0.95+ alike, 25 of 35 at 0.90-0.95 and 40 of 48 at
+      0.80-0.90, against 142 of 285 below 0.80.
+
+    The model answers from the first 1,500 characters of each text, and at this similarity there is
+    little there to tell two documents apart, so the reviewer gets the question instead: a wrong
+    group costs one "Not duplicates" click, a missed one ships the same paragraph twice. Nothing is
+    removed either way.
+
+    Diagnostics hold 33 more such pairs and stay out on the senior reviewer's word, although shown
+    near-identical diagnostic groups (0.90+) were kept as copies in 41 of 50 decided.
     """
     left = [m for m in members if not any(m is c for group in groups for c in group)]
     parent = list(range(len(left)))
