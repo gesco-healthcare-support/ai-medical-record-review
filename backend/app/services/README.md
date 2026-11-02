@@ -18,6 +18,7 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 | | `windows.py` | Packs pages into overlapping windows by byte budget and page cap. |
 | | `gemini.py` | The segmentation prompt, response schema and tolerant row parsing. |
 | | `verify_pass.py` | Checks suspect boundaries and marks merge suggestions for the reviewer. |
+| | `evaluation_pieces.py` | Suggests as merges the rows that continue a QME/AME evaluation cut at its records review (`SUGGEST_EVALUATION_PIECES`, off by default). |
 | | `visit_merge.py` | Merges one visit's same-date, same-provider pieces into one draft row (`MERGE_VISIT_PIECES`, off by default). |
 | | `summary_doi.py` | Reads each row's date of injury; formats the DOI prefix for summaries. |
 | | `deposition_pages.py` | Finds a deposition transcript's own printed page numbers. |

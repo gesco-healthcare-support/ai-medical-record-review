@@ -44,6 +44,7 @@ shared `conftest.py`.
 | `test_documents_api.py` | The `/api/documents` routes against the database. |
 | `test_download_delivery.py` | The delivery status a page can ask about for each prepared download. |
 | `test_downloads.py` | Prepared exports: stored on the server, fetched by the browser, deleted on expiry. |
+| `test_evaluation_pieces.py` | A QME/AME evaluation's pieces suggested as merges: which rows, where the walk stops, suggestions only, the setting. |
 | `test_eval_corpus.py` | The eval corpus rule: one row per distinct PDF for anything pooled across records. |
 | `test_extraction.py` | Header extraction and how it reports a partial OCR read. |
 | `test_failures.py` | The failure taxonomy and control signals behind resumable summarizing. |
