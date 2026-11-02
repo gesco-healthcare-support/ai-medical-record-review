@@ -4,7 +4,13 @@ import { useRef, useState } from "react";
 import { FileText, Flag, Pencil, ShieldAlert, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
-import { useResummarize, useSaveSummary, useSummaries } from "@/hooks/use-summaries";
+import {
+  MAX_PARALLEL_REDRAFTS,
+  usePendingRedrafts,
+  useResummarize,
+  useSaveSummary,
+  useSummaries,
+} from "@/hooks/use-summaries";
 import { categoryOptions } from "@/components/review/rows-table";
 import { categoryWasGuessed } from "@/lib/review-rows";
 import { findSummaries, orderSummaries, type SummaryOrder } from "@/lib/summary-order";
@@ -316,7 +322,9 @@ export function SummariesView({
   const [editDate, setEditDate] = useState("");
   const [editText, setEditText] = useState("");
 
-  const redraftingIdx = redraft.isPending ? (redraft.variables ?? -1) : -1;
+  // Read from the mutation cache, not from `redraft` - see `redraftKey`.
+  const redrafting = usePendingRedrafts(documentId);
+  const redraftsFull = redrafting.size >= MAX_PARALLEL_REDRAFTS;
   const loadError = error ? humanizeError(error, { fallback: "Could not load summaries." }) : "";
 
   function categoryLabel(id: string) {
@@ -473,6 +481,7 @@ export function SummariesView({
               ]
                 .filter(Boolean)
                 .join(" · ");
+              const busy = redrafting.has(item.idx);
 
               if (editingIdx === item.idx) {
                 return (
@@ -528,7 +537,7 @@ export function SummariesView({
                   className={cn(
                     "summary-card",
                     item.excluded && "excluded",
-                    redraftingIdx === item.idx && "busy",
+                    busy && "busy",
                     selectedIdx === item.idx && "selected",
                   )}
                 >
@@ -543,10 +552,16 @@ export function SummariesView({
                       <button
                         type="button"
                         className="ev-btn ev-btn-ghost ev-btn-sm"
-                        disabled={redraftingIdx === item.idx}
+                        disabled={busy || redraftsFull}
+                        title={
+                          !busy && redraftsFull
+                            ? `${MAX_PARALLEL_REDRAFTS} summaries are re-drafting - ` +
+                              "wait for one to finish"
+                            : undefined
+                        }
                         onClick={() => reDraft(item)}
                       >
-                        {redraftingIdx === item.idx ? "Re-drafting..." : "Re-draft"}
+                        {busy ? "Re-drafting..." : "Re-draft"}
                       </button>
                       <button
                         type="button"
@@ -580,7 +595,7 @@ export function SummariesView({
                         className="rc-sel"
                         aria-label="Document category"
                         value={item.rowCategoryLive ?? item.row.category}
-                        disabled={redraftingIdx === item.idx}
+                        disabled={busy}
                         onClick={(e) => e.stopPropagation()}
                         onChange={(e) => changeCategory(item.idx, e.target.value)}
                       >

@@ -16,6 +16,8 @@ vi.mock("@/hooks/use-summaries", () => ({
   useSummaries: () => summariesState,
   useSaveSummary: () => ({ mutateAsync: saveMock }),
   useResummarize: () => ({ mutateAsync: redraftMock }),
+  usePendingRedrafts: () => new Set<number>(),
+  MAX_PARALLEL_REDRAFTS: 3,
 }));
 const jumpTo = vi.fn();
 // jsdom cannot run the pdf.js iframe; stub the viewer and record the page it is asked to show.
