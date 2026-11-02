@@ -352,6 +352,9 @@ x-backend-env: &backend-env
   DUPE_JACCARD_THRESHOLD: ${DUPE_JACCARD_THRESHOLD:-0.70}
   DUPE_SIMILARITY_OVERRIDE: ${DUPE_SIMILARITY_OVERRIDE:-0.90}
   DUPE_MODEL_OVERRIDE: ${DUPE_MODEL_OVERRIDE:-0.95}
+  # Show a near-identical same-date, same-category pair the confirm model judged distinct
+  # (dedup.near_copies). Off unless a box's .env turns it on; read by the summarize worker.
+  DUPE_SHOW_NEAR_COPIES: ${DUPE_SHOW_NEAR_COPIES:-false}
   # Grace period before the Stop button offers a hard "Force stop". Named here for the same reason as
   # every block above: an unreferenced key never reaches a container. The API reads it to tell the UI
   # how long to wait, so a mismatch between processes would make the button offer Force stop at a

@@ -628,3 +628,55 @@ def confirm_groups(members, model=None):
         if len(remaining) >= before:
             break
     return groups
+
+
+# How alike two rows' date-masked text must be for `near_copies` to show them against the model's
+# answer. The same value as `dupe_similarity_override`'s default, the bar this module already uses
+# for "near-identical", but a constant of its own: that setting guards a different question (may
+# two DATES join), and moving it must not move this.
+NEAR_COPY_SIMILARITY = 0.90
+
+# Diagnostic studies and imaging. The senior reviewer, 2026-10-30, asking for every same-date,
+# same-category group to be flagged: "except diagnostics". Two studies of one day share a template
+# and differ in a few words, which is exactly what this score cannot tell from a re-scan.
+_DIAGNOSTICS = "3"
+
+
+def near_copies(members, groups, floor=NEAR_COPY_SIMILARITY):
+    """The ``members`` that `confirm_groups` left out of every one of its ``groups`` and that are
+    near-identical copies of each other anyway, as groups of two or more, in input order.
+
+    Two such members pair when they carry one known date and one known category other than
+    diagnostics (3), their titles do not name opposite sides (`_comparable_pairs`), and their
+    date-masked text is at least ``floor`` alike. Pairs join transitively. Members are matched by
+    identity, as in `confirm_groups`.
+
+    WHY: the senior reviewer, 2026-11-02, still finds 2-3 duplicates per 200+ page record left
+    unflagged. Measured read-only on the live box (627 records with a finished check), most of those
+    pairs never reached the model at all (the chained-series fault `admitted_candidates` fixes),
+    and 57 same-date, same-category pairs at least 0.90 alike were put to the model and judged
+    distinct; the reviewer unticked one row of 19 of them by hand later. The model answers from the
+    first 1,500 characters of each text, and at this similarity there is little there to tell two
+    documents apart, so the reviewer gets the question instead: a wrong group costs one "Not
+    duplicates" click, a missed one ships the same paragraph twice. Nothing is removed either way.
+    """
+    left = [m for m in members if not any(m is c for group in groups for c in group)]
+    parent = list(range(len(left)))
+    sides = [_side(_norm(m.get("title"))) for m in left]
+    for i, j in _comparable_pairs(sides):
+        if _near_copy(left[i], left[j], floor):
+            parent[_find(parent, i)] = _find(parent, j)
+    found: dict[int, list[dict]] = {}
+    for k, member in enumerate(left):
+        found.setdefault(_find(parent, k), []).append(member)
+    return [group for group in found.values() if len(group) >= 2]
+
+
+def _near_copy(a, b, floor) -> bool:
+    """One known date, one known category other than diagnostics, and text ``floor`` alike."""
+    date, category = _norm(a.get("date")), _norm(a.get("category"))
+    if not date or date != _norm(b.get("date")):
+        return False
+    if not category or category == _DIAGNOSTICS or category != _norm(b.get("category")):
+        return False
+    return _min_difflib([a.get("text") or "", b.get("text") or ""]) >= floor

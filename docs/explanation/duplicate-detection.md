@@ -55,8 +55,9 @@ flowchart TD
     F -->|yes| G["Accepted whole, no model call"]
     F -->|no| H["confirm_groups: model picks the copies,<br/>asked again about the remainder"]
     H --> I["0, 1 or more confirmed groups"]
+    I --> N["near_copies: near-identical pairs it left out<br/>(off by default)"]
     G --> J["One transaction: clear old groups,<br/>number new groups, re-apply dismissals"]
-    I --> J
+    N --> J
 ```
 
 ### 1. Remember what the reviewer dismissed
@@ -225,6 +226,26 @@ Gemini, or `vllm_model` when the stage is routed to vLLM (see
 The job logs when one candidate splits into several groups, and warns when the model discards a
 whole candidate.
 
+### 6a. Show a near copy the model judged distinct (off by default)
+
+With `dupe_show_near_copies` on (`DUPE_SHOW_NEAR_COPIES`, default false), the members the model
+left out of every group are looked at once more (`near_copies()`). Two of them form a group when
+they carry one known date and one known category other than diagnostics (3), their titles do not
+name opposite sides (step 3), and their date-masked text is at least `NEAR_COPY_SIMILARITY` (0.90)
+alike. Pairs join transitively, and the group gets its own similarity like any group carved out of
+a candidate. The job logs `dedup kept a N-member near-identical group ... the model judged
+distinct`.
+
+Why: the senior reviewer reported on 2026-11-02 that 2-3 duplicates per 200+ page record still go
+unflagged. Measured read-only on the live box (627 records with a finished check), most such
+same-date, same-category pairs never reached the model at all, which the splits in step 4 fix.
+Of the rest, 57 pairs at least 0.90 alike were put to the model and judged distinct, and the
+reviewer later unticked one row of 19 of them by hand. The model reads 1,500 characters of each
+text, and at this similarity there is little in them to tell two documents apart, so the
+reviewer is asked instead: a wrong group costs one "Not duplicates" click, a missed one ships the
+same paragraph twice. Diagnostics are left out on the senior reviewer's word (two studies of one
+day share a template), and a pair across dates is never grouped this way (step 5's reason).
+
 ### 7. Write the result in one transaction
 
 At the end, in a single transaction, the job:
@@ -244,6 +265,7 @@ until the end, a run that fails or is cancelled part-way leaves the previous clu
 | `dupe_jaccard_threshold` | 0.70 | Which pairs are compared at all, except a pair sharing a known date and a known category or title (step 0) |
 | `dupe_similarity_override` | 0.90 | Whether rows with different dates may join, and the gate's content escape hatch |
 | `dupe_model_override` | 0.95 | Whether a candidate is accepted without the confirm call |
+| `dupe_show_near_copies` | false | Whether a near-identical same-date, same-category pair the model judged distinct is still shown (step 6a) |
 
 `dupe_similarity_override` cannot be derived from data. The comment on it in `config.py` records a
 re-derivation over 39 reviewer-labelled clusters (19 dismissed, 20 kept), on the corrected
