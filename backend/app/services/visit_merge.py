@@ -81,6 +81,21 @@ def candidate_indices(rows):
     return [i for i in range(1, len(rows)) if _is_candidate(rows[i - 1], rows[i])]
 
 
+def hint_visit_pieces(rows):
+    """Every candidate boundary as a merge HINT (``suggest_merge`` on the second row), with no
+    model call and no merge - the reviewer decides (``VISIT_MERGE_HINTS``). Returns
+    ``(rows, hinted)``, ``hinted`` counting only rows that were not already hinted. The caller's
+    rows are not changed."""
+    marked = set(candidate_indices(rows))
+    out, hinted = [], 0
+    for i, row in enumerate(rows):
+        if i in marked and not row.get("suggest_merge"):
+            row = {**row, "suggest_merge": True}
+            hinted += 1
+        out.append(row)
+    return out, hinted
+
+
 def _row_line(name, row):
     return (
         f"{name}: pages {row['start']}-{row['end']}, category {row['category']}, "

@@ -188,6 +188,12 @@ def suspect_indices(rows, cap=None, triggered_only=None):
     return sorted(candidates[: max(cap, 0)])
 
 
+def _same_known_date(prev, row):
+    """Do two rows carry the same date, and is it a real one? A shared '-' is no date."""
+    date = str(row.get("date") or "").strip()
+    return date not in ("", "-") and str(prev.get("date") or "").strip() == date
+
+
 def _apply_verdicts(rows, same_doc, auto):
     """Turn boundary verdicts into rows: absorb a refuted row when ``auto``, otherwise mark it.
 
@@ -256,6 +262,13 @@ def verify_and_merge(
             progress("verifying", current, total)
 
     suspects = suspect_indices(rows, triggered_only=triggered_only)
+    # `visit_merge_hints`: a hint across two dates is mostly wrong (on 283 finished records 19-23%
+    # right against 54% on one date), so the model is not asked about such a boundary at all.
+    dropped_cross_date = None
+    if settings.visit_merge_hints:
+        kept = [i for i in suspects if _same_known_date(rows[i - 1], rows[i])]
+        dropped_cross_date = len(suspects) - len(kept)
+        suspects = kept
     report(0, len(suspects))
     same_doc = {}
     if suspects:
@@ -279,4 +292,7 @@ def verify_and_merge(
 
     out, affected = _apply_verdicts(rows, same_doc, auto)
     key = "merged_away" if auto else "suggested"
-    return out, {"suspects": len(suspects), key: affected}
+    stats = {"suspects": len(suspects), key: affected}
+    if dropped_cross_date is not None:
+        stats["dropped_cross_date"] = dropped_cross_date
+    return out, stats
