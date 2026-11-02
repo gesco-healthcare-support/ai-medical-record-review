@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { summariesKey } from "@/hooks/use-summaries";
 import { humanizeError } from "@/lib/errors";
 import {
+  applyOneEntryPerDate,
   cancelJob,
   getDocument,
   getStatus,
@@ -12,7 +13,9 @@ import {
   startDedup,
   startSegment,
   startSummarize,
+  stopOneEntryPerDate,
   type HeaderFields,
+  type OneEntryPerDateResult,
 } from "@/lib/review-api";
 import type { CategoryOption, FailedRow, JobKind, RecordOwner, Row } from "@/lib/types";
 import {
@@ -145,6 +148,9 @@ export function useReviewWorkflow(
     applyRows(sortRows(withKeys(next)));
   };
   const [header, setHeader] = useState<HeaderFields | null>(null);
+  // The record's "One entry per date" choice (a Kaiser or hospital record): the letter folds its
+  // same-date entries. Read with the record and set by the two handlers below.
+  const [oneEntryPerDate, setOneEntryPerDate] = useState(false);
   // A calm, non-error notice when a summarize run ended "needs attention" (item 7): the message
   // plus the sub-documents that failed, so the UI can list + highlight exactly which ones.
   const [attention, setAttention] = useState<{ message: string; rows: FailedRow[] } | null>(null);
@@ -450,6 +456,7 @@ export function useReviewWorkflow(
       // The document switch. Whatever the previous document left in the touched set describes rows
       // that are gone; carrying it into this one is the leak.
       replaceRows(detail.rows || []);
+      setOneEntryPerDate(detail.one_entry_per_date === true);
       setFilename(detail.original_filename || "");
       setHeader({
         patient_first_name: detail.patient_first_name || "",
@@ -589,6 +596,44 @@ export function useReviewWorkflow(
     }
   }
 
+  // "One entry per date", for a Kaiser or hospital record. The editor's CURRENT rows go with the
+  // request, as Summarize sends them, so the debounced copy is stood down rather than flushed:
+  // written after the merge, it would put the pre-merge rows straight back. The server answers with
+  // the merged rows, which replace the buffer - there is nothing local left to protect.
+  async function onOneEntryPerDate(): Promise<OneEntryPerDateResult | null> {
+    if (!documentId) return null;
+    const current = sortRows(rowsRef.current);
+    if (rowErrors(current, totalPagesRef.current).size) {
+      setBanner("Fix the highlighted page ranges first, then combine the entries by date.");
+      return null;
+    }
+    const pending = takePendingSave();
+    try {
+      const result = await applyOneEntryPerDate(documentId, stripKeys(current));
+      replaceRows(result.rows);
+      applySaveState({ kind: "saved" });
+      setOneEntryPerDate(true);
+      setBanner("");
+      return result;
+    } catch (err) {
+      // Nothing changed on the server, so the save that was stood down is still owed.
+      if (pending) onRowsChange(pending);
+      setBanner(message(err, "Could not combine the entries by date."));
+      return null;
+    }
+  }
+
+  // The letter stops folding by date. The rows are left as the reviewer has them.
+  async function onStopOneEntryPerDate() {
+    if (!documentId) return;
+    try {
+      await stopOneEntryPerDate(documentId);
+      setOneEntryPerDate(false);
+    } catch (err) {
+      setBanner(message(err, "Could not turn off one entry per date."));
+    }
+  }
+
   function onRowsChange(next: EditorRow[]) {
     if (!documentId) return;
     const sorted = sortRows(next);
@@ -631,5 +676,8 @@ export function useReviewWorkflow(
     onRowsChange,
     reloadRows,
     gotoStep,
+    oneEntryPerDate,
+    onOneEntryPerDate,
+    onStopOneEntryPerDate,
   };
 }

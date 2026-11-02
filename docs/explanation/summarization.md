@@ -636,7 +636,16 @@ provider, a clinic and a PR-2 the way the letter will:
   author and facility with `LABORATORY REPORT` as the document type (`_combined_lab_title()`), which
   is how the human-written reviews head a lab entry. Measured as above: 65 entries fold away on 46
   dates in 16 records.
-- The rows and summaries are untouched by either fold, so the review page and the Summaries tab still
+- **One entry per date.** On a record the reviewer marked "One entry per date" (a Kaiser or hospital
+  record, `documents.one_entry_per_date`), `fold_record_entries(..., by_date=True)` folds every
+  entry of one date into one, in place of the visit fold, wherever the entries sit in the record
+  (`_date_heads()`). A diagnostic study (category 3) and a lab result (category 14) never join it;
+  labs still fold by date among themselves. A progress note (category 1) heads the date and leads
+  the body when the date has one, otherwise the date's first entry. Dates are read with
+  `reporting.parsed_date`. The senior reviewer, 2026-10-30: "keep everything from one date as one
+  entry ... summarized as a progress note ... The exception would be for diagnostics". The rows'
+  own merge is the workbench action (`backend/app/services/date_entries.py`, HTTP API D13a).
+- The rows and summaries are untouched by every fold, so the review page and the Summaries tab still
   show every document and a reviewer can still separate them.
 
 Bundle summarize and the Summaries tab apply `consistent_titles()` but not folding.

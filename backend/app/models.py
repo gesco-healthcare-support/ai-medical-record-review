@@ -205,6 +205,13 @@ class Document(Base):
     # cover sheet carries the real figure and this is where it goes. NULL means nobody has
     # said, and every consumer falls back to `page_count` exactly as before.
     pages_received: Mapped[int | None] = mapped_column(Integer)
+    # The reviewer chose "One entry per date" for this record (a Kaiser or hospital record,
+    # services/date_entries.py): its neighbouring same-date rows were merged, and the letter folds
+    # every same-date entry but a diagnostic study's and a lab's into one. A property of the record,
+    # not of one row set, so a re-identify keeps it; the reviewer turns it off on the workbench.
+    one_entry_per_date: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
 
     jobs: Mapped[list["Job"]] = relationship(
         "Job", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Job.id"
@@ -278,6 +285,7 @@ class Document(Base):
             # Empty string rather than 0 for an unset count: the field is a text input and 0
             # would read as a real answer of zero pages.
             "pages_received": "" if self.pages_received is None else self.pages_received,
+            "one_entry_per_date": bool(self.one_entry_per_date),
         }
 
 

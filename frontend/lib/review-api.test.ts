@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  applyOneEntryPerDate,
   cancelJob,
   extractHeader,
   getDocument,
@@ -23,6 +24,7 @@ import {
   startDedup,
   startSegment,
   startSummarize,
+  stopOneEntryPerDate,
 } from "@/lib/review-api";
 
 const ok = (body: unknown) =>
@@ -159,5 +161,17 @@ describe("the remaining review writes", () => {
     await resummarize("doc-1", 2);
     expect(lastCall().url).toBe("/api/documents/doc-1/summaries/2/resummarize");
     expect(lastCall().init?.method).toBe("POST");
+  });
+
+  it("one entry per date sends the editor's rows, and is turned off without any", async () => {
+    const rows = [{ start: 1, end: 1, category: "1", title: "-", date: "-" }] as never;
+    await applyOneEntryPerDate("doc-1", rows);
+    expect(lastCall().url).toBe("/api/documents/doc-1/rows/one-entry-per-date");
+    expect(lastCall().init?.method).toBe("POST");
+    expect(lastCall().body).toEqual({ rows });
+
+    await stopOneEntryPerDate("doc-1");
+    expect(lastCall().url).toBe("/api/documents/doc-1/one-entry-per-date");
+    expect(lastCall().init?.method).toBe("DELETE");
   });
 });

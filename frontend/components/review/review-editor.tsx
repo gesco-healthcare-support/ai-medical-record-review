@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { CategoryOption, Row } from "@/lib/types";
+import type { OneEntryPerDateResult } from "@/lib/review-api";
 import {
   categoryWasGuessed,
   clearFlagOnEdit,
@@ -16,6 +17,86 @@ import {
 import { RowsTable } from "./rows-table";
 import { PdfViewer, type PdfViewerHandle } from "./pdf-viewer";
 import { SplitPane } from "./split-pane";
+
+/** What the confirm dialog says before "One entry per date" changes anything. */
+export const ONE_ENTRY_PER_DATE_CONFIRM = [
+  "One entry per date - for a Kaiser or hospital record.",
+  "",
+  "This will:",
+  "- merge neighbouring documents that share a date into one progress note (category 1)",
+  "- leave diagnostic studies, lab results and allergy or immunization records as they are",
+  "- untick every lab result",
+  "- in the letter, also combine same-date entries that are not next to each other",
+  "",
+  "A merge is undone by splitting the row, and the letter's combining can be turned off here.",
+  "Continue?",
+].join("\n");
+
+const STOP_ONE_ENTRY_PER_DATE_CONFIRM =
+  "Stop combining same-date entries in the letter? The rows stay as they are.";
+
+function oneEntryPerDateNote(result: OneEntryPerDateResult): string {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  return `Combined ${plural(result.rows_folded, "row")} into their dates; unticked ${plural(
+    result.labs_unticked,
+    "lab result",
+  )}.`;
+}
+
+/**
+ * The "One entry per date" toolbar controls, for a Kaiser or hospital record: the button behind
+ * its confirm dialog, the note saying what changed, and - while the record is marked - the chip
+ * and Turn off. `onApplying` runs once the reviewer has confirmed, before the request, so the
+ * editor drops a selection that is about to name a row that no longer exists.
+ */
+function OneEntryPerDateControls({
+  on,
+  onApply,
+  onStop,
+  onApplying,
+}: Readonly<{
+  on: boolean;
+  onApply?: () => Promise<OneEntryPerDateResult | null>;
+  onStop?: () => Promise<void>;
+  onApplying: () => void;
+}>) {
+  const [note, setNote] = useState("");
+
+  async function apply() {
+    if (!onApply || !window.confirm(ONE_ENTRY_PER_DATE_CONFIRM)) return;
+    onApplying();
+    const result = await onApply();
+    setNote(result ? oneEntryPerDateNote(result) : "");
+  }
+
+  async function stop() {
+    if (!onStop || !window.confirm(STOP_ONE_ENTRY_PER_DATE_CONFIRM)) return;
+    setNote("");
+    await onStop();
+  }
+
+  return (
+    <>
+      {onApply ? (
+        <button
+          type="button"
+          className="ev-btn ev-btn-outline ev-btn-sm"
+          title="For a Kaiser or hospital record: one entry per date, diagnostics and labs apart"
+          onClick={() => void apply()}
+        >
+          One entry per date
+        </button>
+      ) : null}
+      {on ? <span className="ev-chip ev-chip-edit">Letter: one entry per date</span> : null}
+      {on && onStop ? (
+        <button type="button" className="ev-btn ev-btn-sm ev-btn-ghost" onClick={() => void stop()}>
+          Turn off
+        </button>
+      ) : null}
+      {note ? <output className="muted">{note}</output> : null}
+    </>
+  );
+}
 
 /**
  * The "Review & correct" workbench body (DS §3): a slim toolbar (Insert document, apply suggested
@@ -32,6 +113,9 @@ export function ReviewEditor({
   totalPages,
   onRowsChange,
   attentionPages,
+  oneEntryPerDate = false,
+  onOneEntryPerDate,
+  onStopOneEntryPerDate,
 }: Readonly<{
   documentId: string;
   filename: string;
@@ -40,6 +124,10 @@ export function ReviewEditor({
   totalPages: number;
   onRowsChange: (rows: EditorRow[]) => void;
   attentionPages?: Set<string>;
+  /** The record's "One entry per date" choice (a Kaiser or hospital record). */
+  oneEntryPerDate?: boolean;
+  onOneEntryPerDate?: () => Promise<OneEntryPerDateResult | null>;
+  onStopOneEntryPerDate?: () => Promise<void>;
 }>) {
   const pdfRef = useRef<PdfViewerHandle>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -222,6 +310,15 @@ export function ReviewEditor({
             Apply {suggested} suggested merge{suggested === 1 ? "" : "s"}
           </button>
         ) : null}
+        <OneEntryPerDateControls
+          on={oneEntryPerDate}
+          onApply={onOneEntryPerDate}
+          onStop={onStopOneEntryPerDate}
+          onApplying={() => {
+            setSelectedKey(null);
+            setSplittingKey(null);
+          }}
+        />
         {/* Stays rendered at zero while the filter is ON: clearing the last one must not remove the
             only control that turns the filter back off. */}
         {unidentifiedKeys.size > 0 || onlyUnidentified ? (

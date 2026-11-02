@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // (nothing else refreshed that query, so "Re-summarize all" left the old text on screen). So every
 // render goes through `renderWorkflow`, which supplies a provider and hands the client back.
 vi.mock("@/lib/review-api", () => ({
+  applyOneEntryPerDate: vi.fn(),
   cancelJob: vi.fn(),
   getDocument: vi.fn(),
   getStatus: vi.fn(),
@@ -16,16 +17,19 @@ vi.mock("@/lib/review-api", () => ({
   startDedup: vi.fn(),
   startSegment: vi.fn(),
   startSummarize: vi.fn(),
+  stopOneEntryPerDate: vi.fn(),
 }));
 
 import { useReviewWorkflow } from "@/hooks/use-review-workflow";
 import {
+  applyOneEntryPerDate,
   cancelJob,
   getDocument,
   getStatus,
   saveRows,
   startSegment,
   startSummarize,
+  stopOneEntryPerDate,
 } from "@/lib/review-api";
 import type { DocumentDetail, DocumentStatus, JobState } from "@/lib/types";
 
@@ -35,6 +39,8 @@ const mockSave = vi.mocked(saveRows);
 const mockCancel = vi.mocked(cancelJob);
 const mockStartSegment = vi.mocked(startSegment);
 const mockStartSummarize = vi.mocked(startSummarize);
+const mockApplyByDate = vi.mocked(applyOneEntryPerDate);
+const mockStopByDate = vi.mocked(stopOneEntryPerDate);
 
 function renderWorkflow(...args: Parameters<typeof useReviewWorkflow>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -1020,5 +1026,100 @@ describe("step navigation and re-running identification", () => {
     expect(mockStartSegment).toHaveBeenCalled();
 
     confirmSpy.mockRestore();
+  });
+});
+
+describe("useReviewWorkflow one entry per date", () => {
+  const editorRow = (over: Record<string, unknown> = {}) => ({
+    start: 1,
+    end: 3,
+    category: "1",
+    title: "",
+    date: "",
+    injury_date: "",
+    flag: "-",
+    suggest_merge: false,
+    include: true,
+    _key: "k1",
+    ...over,
+  });
+  const merged = {
+    start: 1,
+    end: 5,
+    category: "1",
+    title: "Progress Note",
+    date: "03/02/2026",
+    injury_date: "-",
+    flag: "-",
+    suggest_merge: false,
+    include: true,
+  };
+
+  it("reads the record's choice when it opens", async () => {
+    mockDoc.mockResolvedValue(detail({ one_entry_per_date: true }));
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+    expect(result.current.oneEntryPerDate).toBe(true);
+  });
+
+  it("sends the editor's rows, stands the pending save down, shows the merge", async () => {
+    // The pending save would put the pre-merge rows back over the merge if it fired afterwards.
+    mockDoc.mockResolvedValue(detail());
+    mockSave.mockResolvedValue({ ok: true, count: 1 });
+    mockApplyByDate.mockResolvedValue({
+      ok: true,
+      rows: [merged],
+      runs: 1,
+      rows_folded: 1,
+      labs_unticked: 0,
+      reopened: false,
+    });
+    const { result, unmount } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() => result.current.onRowsChange([editorRow({ start: 2, end: 5 })]));
+    await act(async () => {
+      await result.current.onOneEntryPerDate();
+    });
+
+    expect(mockApplyByDate).toHaveBeenCalledWith("d1", [
+      expect.objectContaining({ start: 2, end: 5 }),
+    ]);
+    expect(result.current.rows.map((r) => [r.start, r.end])).toEqual([[1, 5]]);
+    expect(result.current.oneEntryPerDate).toBe(true);
+    expect(result.current.saveState.kind).toBe("saved");
+    act(() => unmount());
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it("keeps the reviewer's rows and their save when the server refuses", async () => {
+    mockDoc.mockResolvedValue(detail());
+    mockApplyByDate.mockRejectedValue(new Error("boom"));
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.section).toBe("editor"));
+
+    act(() => result.current.onRowsChange([editorRow({ start: 2, end: 5 })]));
+    await act(async () => {
+      expect(await result.current.onOneEntryPerDate()).toBeNull();
+    });
+
+    expect(result.current.rows.map((r) => [r.start, r.end])).toEqual([[2, 5]]);
+    expect(result.current.saveState.kind).toBe("dirty");
+    expect(result.current.oneEntryPerDate).toBe(false);
+    expect(result.current.banner).toContain("Could not combine the entries by date");
+  });
+
+  it("turns the record's choice off", async () => {
+    mockDoc.mockResolvedValue(detail({ one_entry_per_date: true }));
+    mockStopByDate.mockResolvedValue({ ok: true });
+    const { result } = renderWorkflow("d1");
+    await waitFor(() => expect(result.current.oneEntryPerDate).toBe(true));
+
+    await act(async () => {
+      await result.current.onStopOneEntryPerDate();
+    });
+
+    expect(mockStopByDate).toHaveBeenCalledWith("d1");
+    expect(result.current.oneEntryPerDate).toBe(false);
   });
 });

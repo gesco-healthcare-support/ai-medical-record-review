@@ -307,6 +307,14 @@ def _evaluator_paperwork(text: str) -> bool:
     return bool(_EVALUATOR_PAPERWORK.search(text)) and not _EVALUATOR_OWN_DOCUMENT.search(text)
 
 
+def is_allergy_or_immunization(title) -> bool:
+    """Does ``title`` name an allergy list or record, or an immunization or vaccine record?
+
+    The administrative rule's own pattern, asked on its own by the one-entry-per-date review action
+    (`services/date_entries.py`), which never folds such a row into a date's entry."""
+    return bool(_ALLERGY_OR_IMMUNIZATION.search((title or "").lower()))
+
+
 # The one rule that fires on a MENTION of the evaluator rather than on a document type. A cover
 # letter or an appointment notice about an AME says "AME" too, so this category alone does not
 # outrank an administrative match - any other rule does.

@@ -37,6 +37,7 @@ shared `conftest.py`.
 | `test_date_vs_human_entries.py` | The eval comparison of dates against human-written reports. |
 | `test_condensed_transcript.py` | A deposition printed four pages to a sheet: grid detection, quarter numbering, markers and notices. |
 | `test_db.py` | The session factory's flags, which the thread pools depend on. |
+| `test_date_entries.py` | "One entry per date": which neighbouring rows merge, what stays apart, labs unticked. |
 | `test_dedup.py` | The duplicate-clustering service and its thresholds. |
 | `test_deposition_pages.py` | Deposition page grouping: the transcript-page offset, marker labels and the audit guard. |
 | `test_deposition_pages_request.py` | What the transcript page-number read sends, and how it handles a truncated reply. |

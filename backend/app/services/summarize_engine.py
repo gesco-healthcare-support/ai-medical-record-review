@@ -2517,13 +2517,52 @@ def _combined_lab_title(titles: list[str]) -> str:
     return (f"{prefix}. {_COMBINED_LAB_TYPE}" if prefix else _COMBINED_LAB_TYPE) + suffix
 
 
-def fold_record_entries(entries: list[dict], categories: list[str], title_key: str) -> list[dict]:
+def _date_heads(
+    entries: list[dict], categories: list[str]
+) -> dict[int, tuple[list[int], list[int]]]:
+    """Each date's entries of two or more, but a diagnostic study's and a lab's, as `_visit_heads`
+    shapes a group: keyed by the entry that heads it, ``(members, documents)``.
+
+    The senior reviewer's answer of 2026-10-30, for a Kaiser or hospital record: "keep everything
+    from one date as one entry ... summarized as a progress note ... The exception would be for
+    diagnostics, which should be separated." Only on a record the reviewer marked
+    (`Document.one_entry_per_date`); the rows' own merge (`services/date_entries.py`) joins the
+    neighbours, and this joins the same-date entries a printout scattered through the record. A
+    progress note heads its date and leads the body when the date has one; otherwise the first
+    entry. Dates are read the export's way (`reporting.parsed_date`), so "10/01/2025" and
+    "10-01-2025" are one day."""
+    groups: dict = {}
+    for i, (entry, category) in enumerate(zip(entries, categories, strict=True)):
+        date = parsed_date(entry)
+        if category in (_DIAGNOSTIC_CATEGORY, _LAB_CATEGORY) or date is None:
+            continue
+        groups.setdefault(date, []).append(i)
+    heads: dict[int, tuple[list[int], list[int]]] = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        notes = [i for i in members if categories[i] == "1"]
+        heads[(notes or members)[0]] = (members, notes or members)
+    return heads
+
+
+def fold_record_entries(
+    entries: list[dict], categories: list[str], title_key: str, *, by_date: bool = False
+) -> list[dict]:
     """``entries`` with each visit made one entry - an author's category 1 documents of one date
     with their RFA and work status, or their category 5 notes of one date - and each date's
     laboratory results made one - see above. The groupings never share an entry: a visit never takes
-    a lab (category 14) or a diagnostic study (category 3)."""
+    a lab (category 14) or a diagnostic study (category 3).
+
+    ``by_date`` is the record's one-entry-per-date choice: every entry of a date, but a diagnostic
+    study and a lab result, folds into one (`_date_heads`) in place of the visit fold. Labs still
+    fold by date among themselves."""
     labs = _lab_heads(entries, categories)
-    visits = _visit_heads(entries, categories, title_key)
+    visits = (
+        _date_heads(entries, categories)
+        if by_date
+        else _visit_heads(entries, categories, title_key)
+    )
     heads = {**{head: members for head, (members, _) in visits.items()}, **labs}
     folded = {i for members in heads.values() for i in members} - set(heads)
     out = []
