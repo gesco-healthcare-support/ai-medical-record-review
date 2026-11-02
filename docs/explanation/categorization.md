@@ -125,7 +125,8 @@ Three placements show the pattern:
   carries a treating-visit phrase ("Office Visit Follow-Up MRI"), and not when another rule answered
   1 for its own reason (`_answered_for_another_reason()`).
 
-**Administrative rules (`_ADMIN_RULES`).** Ten patterns for the paperwork that wraps a record:
+**Administrative rules (`_ADMIN_RULES`, plus `_evaluator_paperwork()`).** Twelve patterns for the
+paperwork that wraps a record:
 
 1. Routing sheets and slips.
 2. Cover and transmittal letters, AME/QME/PQME letters, correspondence, a title that opens with
@@ -148,6 +149,24 @@ Three placements show the pattern:
    request, injection, MRI, DME or pharmacy, so a request for treatment never matches here.
 10. An authorization to release or disclose records, or a HIPAA authorization. A request for
     authorization (an RFA) is a document-type rule and still wins (category 10).
+11. An allergy list or record, and an immunization or vaccine record (`_ALLERGY_OR_IMMUNIZATION`).
+    The senior reviewer, 2026-10-30: "we can disregard things such as allergy and immunization
+    records". The allergy half claims only a title that is the list ("Allergies", "Drug Allergies",
+    "Allergy History") or names an allergy list or record, so an allergist's visit ("Allergy
+    Consultation", "Allergy and Immunology Progress Note") keeps its answer.
+12. A letter or notice about a QME or AME (`_evaluator_paperwork()`): the evaluator named together
+    with letter, notice, notification, appointment, scheduling, cancellation, cover,
+    correspondence, objection, request or declaration, or "QME Panel". It stands aside when the
+    title also names an evaluation, a re-evaluation, a report, a supplemental or a deposition, so
+    the evaluator's own document keeps 13 (or 12, or 9). The senior reviewer, 2026-10-30: "The
+    QME/AME letters at the beginning of the record we don't need summarized, only the actual QME/AME
+    reports." "Panel QME" before the evaluator token is the evaluator's name, not a panel list, so
+    it does not count.
+
+Measured before shipping, read-only on the live box (draft and reviewer titles): 114 of 10,271
+distinct titles move, all to 100 - 37 from no rule (allergy and immunization) and 77 from 13
+(evaluator letters). On finished records reviewers had unticked 56 of the 62 allergy and
+immunization rows and 166 of the 174 letter rows; no report title moves.
 
 **How the two lists combine: document beats wrapper.**
 
@@ -155,7 +174,7 @@ Three placements show the pattern:
 flowchart TD
     A["lowercased title"] --> B["every _RULES match, in order"]
     B --> C["apply the evaluator and follow-up adjustments"]
-    C --> D{"any _ADMIN_RULES match?"}
+    C --> D{"any _ADMIN_RULES match,<br/>or evaluator paperwork?"}
     D -->|no| F["first remaining match, or no rule"]
     D -->|yes| E{"title names a document<br/>(_DOCUMENT_NOUN) and is not<br/>paperwork about a document?"}
     E -->|yes| F

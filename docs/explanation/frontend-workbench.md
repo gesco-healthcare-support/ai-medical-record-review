@@ -284,6 +284,7 @@ rules before calling `onRowsChange()`:
 | --- | --- |
 | Merge up | `mergeRows()`: the upper row keeps its identity (title, date, category); `end` is the larger end; the flag is `x` if either row had it; `include` is true if either row was included |
 | Apply N suggested merges | Merges every row with `suggest_merge` into the row above, top to bottom |
+| One entry per date | For a Kaiser or hospital record. After a confirm dialog that lists what it does, sends the editor's current rows to the server (HTTP API D13a, the pending autosave stood down), which merges each run of neighbouring same-date rows into one category-1 row, leaves diagnostic studies, lab results and allergy or immunization rows as they are, unticks every lab result, and marks the record so the letter folds its other same-date entries. The answer's rows replace the buffer, and a note says how many rows were combined and labs unticked. While the record is marked, a "Letter: one entry per date" chip and a Turn off button (D13b) show; turning it off leaves the rows as they are |
 | Split | Asks for the first page of the second half, in `(start, end]`; the second half gets a new key, title `-`, the same category and dates, flag `x`, and the first half's `include` |
 | Insert document | Page range defaults to the page after the last row; the new row is category `100`, title "(added manually)", flag `x`, included |
 | Delete | Removes the row; a gap strip appears where it was |

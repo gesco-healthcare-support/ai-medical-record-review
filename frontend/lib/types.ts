@@ -237,6 +237,10 @@ export type DocumentDetail = {
   letter_type?: string;
   letter_date?: string;
   pages_received?: number | string;
+  /** The reviewer chose "One entry per date" for this record (a Kaiser or hospital record): the
+   *  letter folds every same-date entry but a study's and a lab's into one. Optional: a server from
+   *  before the field sends none, which reads as off. */
+  one_entry_per_date?: boolean;
   rows: Row[];
   categories: CategoryOption[];
   /** Served with the record so the dropdown and the Word renderer read ONE list - the

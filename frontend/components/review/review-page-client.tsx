@@ -351,6 +351,9 @@ function ReviewBody({
               totalPages={wf.totalPages}
               onRowsChange={wf.onRowsChange}
               attentionPages={attentionPages}
+              oneEntryPerDate={wf.oneEntryPerDate}
+              onOneEntryPerDate={wf.onOneEntryPerDate}
+              onStopOneEntryPerDate={wf.onStopOneEntryPerDate}
             />
           </div>
         </>

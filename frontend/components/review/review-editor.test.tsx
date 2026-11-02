@@ -324,3 +324,72 @@ describe("ReviewEditor insert document", () => {
     expect(screen.getByRole("button", { name: /Insert document/ })).toBeInTheDocument();
   });
 });
+
+describe("ReviewEditor one entry per date", () => {
+  const result = {
+    ok: true,
+    rows: [],
+    runs: 1,
+    rows_folded: 2,
+    labs_unticked: 1,
+    reopened: false,
+  };
+
+  function renderWith(props: Partial<Parameters<typeof ReviewEditor>[0]> = {}) {
+    return render(
+      <ReviewEditor
+        documentId="d1"
+        filename="f.pdf"
+        rows={[row({})]}
+        categories={categories}
+        totalPages={10}
+        onRowsChange={() => {}}
+        {...props}
+      />,
+    );
+  }
+
+  it("is not offered where no handler is wired", () => {
+    renderWith();
+    expect(screen.queryByRole("button", { name: "One entry per date" })).toBeNull();
+  });
+
+  it("says what it will do and changes nothing when the reviewer declines", () => {
+    const apply = vi.fn().mockResolvedValue(result);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderWith({ onOneEntryPerDate: apply });
+
+    fireEvent.click(screen.getByRole("button", { name: "One entry per date" }));
+
+    expect(confirm.mock.calls[0][0]).toContain("untick every lab result");
+    expect(confirm.mock.calls[0][0]).toContain("leave diagnostic studies");
+    expect(apply).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it("runs on confirm and reports what changed", async () => {
+    const apply = vi.fn().mockResolvedValue(result);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderWith({ onOneEntryPerDate: apply });
+
+    fireEvent.click(screen.getByRole("button", { name: "One entry per date" }));
+
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByText("Combined 2 rows into their dates; unticked 1 lab result."),
+    ).toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it("shows the record's choice and turns it off on confirm", () => {
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderWith({ oneEntryPerDate: true, onStopOneEntryPerDate: stop });
+
+    expect(screen.getByText("Letter: one entry per date")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+  });
+});

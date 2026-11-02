@@ -5005,3 +5005,69 @@ def test_the_image_check_needs_a_record_and_numbers(monkeypatch):
     assert se._numbers_on_the_page("m", None, _row(), {"40"}) == set()
     assert se._numbers_on_the_page("m", "/x.pdf", _row(), set()) == set()
     assert calls == []
+
+
+# --- one entry per date: a Kaiser or hospital record the reviewer marked (2026-10-30) -------------
+_KAISER_NOTE = "JANE ROE, M.D. KAISER PERMANENTE. PROGRESS NOTE"
+_NURSE_CALL = "JOHN DOE, R.N. KAISER PERMANENTE. TELEPHONE ENCOUNTER"
+_KAISER_THERAPY = "MARY MAJOR, P.T. KAISER PERMANENTE. PHYSICAL THERAPY NOTE"
+
+
+def test_on_a_marked_record_every_entry_of_a_date_folds_into_one():
+    """DEMONSTRATES the answer: "keep everything from one date as one entry". Different authors and
+    categories, not next to each other in the record, one entry - headed by the progress note."""
+    entries = [
+        _entry(_KAISER_THERAPY, "**Treatment**: Heat."),
+        _entry(_KAISER_THERAPY, "**Treatment**: Exercises.", date="03/09/2026"),
+        _entry(_KAISER_NOTE, "**Diagnoses**: strain. **Plan**: Rest."),
+        _entry(_NURSE_CALL, "**Plan**: Call back."),
+    ]
+    out = se.fold_record_entries(entries, ["5", "5", "1", "100"], "summaryTitle", by_date=True)
+    assert [e["summaryTitle"] for e in out] == [_KAISER_THERAPY, _KAISER_NOTE]
+    body = out[1]["summaryText"]
+    assert body.startswith("**Diagnoses**: strain. **Plan**: Rest.")
+    assert "**Plan**: Call back." in body
+    assert "**Treatment**: Heat." in body
+
+
+def test_on_a_marked_record_a_date_without_a_progress_note_is_headed_by_its_first_entry():
+    """DEMONSTRATES: with no category 1 entry that day, the first entry heads the date."""
+    entries = [
+        _entry(_KAISER_THERAPY, "**Treatment**: Heat."),
+        _entry(_NURSE_CALL, "**Plan**: Rest."),
+    ]
+    out = se.fold_record_entries(entries, ["5", "100"], "summaryTitle", by_date=True)
+    assert [e["summaryTitle"] for e in out] == [_KAISER_THERAPY]
+
+
+def test_on_a_marked_record_diagnostics_and_labs_keep_their_own_entries():
+    """GUARD: "The exception would be for diagnostics" - a study never joins the date's entry, and a
+    lab joins only the date's other labs, as on every record."""
+    study = "JOHN DOE, M.D. KAISER PERMANENTE. MRI LUMBAR SPINE"
+    lab = "KAISER PERMANENTE. CBC"
+    entries = [
+        _entry(_KAISER_NOTE, "**Plan**: Rest."),
+        _entry(study, "**Impression**: Normal."),
+        _entry(lab, "Results were unremarkable."),
+        _entry(_NURSE_CALL, "**Plan**: Call back."),
+        _entry("KAISER PERMANENTE. BMP", "Results were unremarkable."),
+    ]
+    out = se.fold_record_entries(entries, ["1", "3", "14", "1", "14"], "summaryTitle", by_date=True)
+    assert [e["summaryTitle"] for e in out] == [
+        _KAISER_NOTE,
+        study,
+        "KAISER PERMANENTE. LABORATORY REPORT",
+    ]
+    assert out[1]["summaryText"] == "**Impression**: Normal."
+
+
+def test_an_unmarked_record_keeps_the_visit_fold():
+    """GUARD: without the reviewer's choice, two authors' entries of one date stay apart."""
+    entries = [_entry(_KAISER_NOTE, "**Plan**: Rest."), _entry(_NURSE_CALL, "**Plan**: Call.")]
+    assert se.fold_record_entries(entries, ["1", "1"], "summaryTitle") == entries
+
+
+def test_on_a_marked_record_an_undated_entry_never_folds():
+    """GUARD: only a known date joins entries."""
+    entries = [_entry(_KAISER_NOTE, "a", date="-"), _entry(_NURSE_CALL, "b", date="-")]
+    assert se.fold_record_entries(entries, ["1", "1"], "summaryTitle", by_date=True) == entries

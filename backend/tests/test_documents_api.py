@@ -6202,3 +6202,177 @@ def test_a_reviewer_typed_title_on_the_tab_is_kept_and_still_names_the_clinic():
     document = _record_of(edited, xray)
     assert _summary_response(document, edited)["summaryTitle"] == typed
     assert _summary_response(document, xray)["summaryTitle"] == "JOHN DOE, M.D. CONCENTRA. X-RAY."
+
+
+# --- One entry per date (Kaiser / hospital records), the senior reviewer's answer of 2026-10-30 ---
+def _dated(start, end, category="1", title="Progress Note", date="03/02/2026"):
+    return {"start": start, "end": end, "category": category, "title": title, "date": date}
+
+
+def _stored_rows(doc_id):
+    with get_sessionmaker()() as session:
+        rows = session.scalars(
+            select(ReviewRow).where(ReviewRow.document_id == doc_id).order_by(ReviewRow.idx)
+        ).all()
+        return [(r.start, r.end, r.category, r.include, r.method) for r in rows]
+
+
+async def test_one_entry_per_date_merges_the_rows_and_marks_the_record(authed):
+    """DEMONSTRATES the action: neighbouring same-date rows made one progress note, a lab unticked,
+    a study left alone, the record marked for the letter, and one audit row with the counts."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=6)
+    rows = [
+        _dated(1, 1, category="100", title="Facesheet"),
+        _dated(2, 3),
+        _dated(4, 4, category="3", title="Chest X-Ray"),
+        _dated(5, 5, category="14", title="CBC"),
+        _dated(6, 6, date="03/03/2026"),
+    ]
+    # The client's CURRENT rows go with the request, so an edit still waiting for its autosave is
+    # part of what is merged rather than written back over it later.
+    resp = await client.post(
+        f"/api/documents/{doc_id}/rows/one-entry-per-date", json={"rows": rows}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["runs"], body["rows_folded"], body["labs_unticked"]) == (1, 1, 1)
+    assert [(r["start"], r["end"], r["category"], r["include"]) for r in body["rows"]] == [
+        (1, 3, "1", True),
+        (4, 4, "3", True),
+        (5, 5, "14", False),
+        (6, 6, "1", True),
+    ]
+    assert [row[:4] for row in _stored_rows(doc_id)] == [
+        (1, 3, "1", True),
+        (4, 4, "3", True),
+        (5, 5, "14", False),
+        (6, 6, "1", True),
+    ]
+    assert (await client.get(f"/api/documents/{doc_id}")).json()["one_entry_per_date"] is True
+    with get_sessionmaker()() as session:
+        details = session.scalars(
+            select(AuditLog.detail).where(
+                AuditLog.document_id == doc_id, AuditLog.action == "rows.one_entry_per_date"
+            )
+        ).all()
+    assert details == ["rows 5->4 (runs 1, labs unticked 1)"]
+
+
+async def test_one_entry_per_date_stores_through_the_hand_merge_save(authed):
+    """GUARD: the merge is stored the way a reviewer's hand merge is (`_store_rows`): a row whose
+    pages did not change keeps what the server owns, and the merged row starts fresh."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    rows = [_dated(1, 1), _dated(2, 2), _dated(3, 4, category="3", title="MRI")]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    _set_method(doc_id, "rules", 1, 1)
+    _set_method(doc_id, "llm+embedding", 3, 4)
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/rows/one-entry-per-date", json={"rows": rows}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert [(row[0], row[1], row[4]) for row in _stored_rows(doc_id)] == [
+        (1, 2, None),
+        (3, 4, "llm+embedding"),
+    ]
+
+
+async def test_an_ordinary_record_is_never_marked_without_the_action(authed):
+    """GUARD: neither rule applies to a record nobody chose it for - its rows save as sent and its
+    letter keeps the ordinary fold."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    rows = [_dated(1, 1), _dated(2, 2, category="14", title="CBC")]
+    assert (
+        await client.put(f"/api/documents/{doc_id}/rows", json={"rows": rows})
+    ).status_code == 200
+    assert (await client.get(f"/api/documents/{doc_id}")).json()["one_entry_per_date"] is False
+    assert [row[:4] for row in _stored_rows(doc_id)] == [
+        (1, 1, "1", True),
+        (2, 2, "14", True),
+    ]
+
+
+async def test_one_entry_per_date_is_refused_while_a_job_runs(authed):
+    """GUARD: a finishing segment job would replace the merge; a summarize job is reading the
+    rows. Nothing is merged and the record is not marked."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _one_row(client, doc_id)
+    _seed_active_job(doc_id)
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/rows/one-entry-per-date",
+        json={"rows": [_dated(1, 1), _dated(2, 2)]},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == _JOB_RUNNING_DETAIL
+    assert (await client.get(f"/api/documents/{doc_id}")).json()["one_entry_per_date"] is False
+
+
+async def test_one_entry_per_date_refuses_invalid_rows_and_marks_nothing(authed):
+    """GUARD: rows the editor would refuse to save are refused here too, before anything changes."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _one_row(client, doc_id)
+
+    resp = await client.post(
+        f"/api/documents/{doc_id}/rows/one-entry-per-date", json={"rows": [_dated(1, 9)]}
+    )
+
+    assert resp.status_code == 400
+    assert (await client.get(f"/api/documents/{doc_id}")).json()["one_entry_per_date"] is False
+    assert [row[:2] for row in _stored_rows(doc_id)] == [(1, 1)]
+
+
+async def test_one_entry_per_date_can_be_turned_off_without_touching_the_rows(authed):
+    """DEMONSTRATES the way back for the letter: the flag goes, audited; the rows stay merged, and
+    a reviewer splits them by hand like any other row."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await client.post(
+        f"/api/documents/{doc_id}/rows/one-entry-per-date",
+        json={"rows": [_dated(1, 1), _dated(2, 2)]},
+    )
+
+    resp = await client.delete(f"/api/documents/{doc_id}/one-entry-per-date")
+
+    assert resp.status_code == 200
+    assert (await client.get(f"/api/documents/{doc_id}")).json()["one_entry_per_date"] is False
+    assert [row[:2] for row in _stored_rows(doc_id)] == [(1, 2)]
+    with get_sessionmaker()() as session:
+        actions = session.scalars(
+            select(AuditLog.action).where(AuditLog.document_id == doc_id).order_by(AuditLog.id)
+        ).all()
+    assert actions[-2:] == ["rows.one_entry_per_date", "one_entry_per_date.off"]
+
+
+@pytest.mark.parametrize("marked", [True, False])
+async def test_the_letter_folds_by_date_only_on_a_marked_record(authed, monkeypatch, marked):
+    """GUARD on the wiring: the Word letter passes the record's choice to the fold, so an ordinary
+    record keeps the ordinary visit fold."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    await _one_row(client, doc_id)
+    _seed_summary(doc_id)
+    with get_sessionmaker()() as session:
+        session.get(Document, doc_id).one_entry_per_date = marked
+        session.commit()
+    seen = []
+
+    def recording_fold(entries, categories, title_key, *, by_date=False):
+        seen.append(by_date)
+        return entries
+
+    monkeypatch.setattr(documents_api, "fold_record_entries", recording_fold)
+
+    resp = await _download(client, f"/api/documents/{doc_id}/export", json={})
+
+    assert resp.status_code == 200
+    assert seen == [marked]
