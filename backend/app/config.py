@@ -1140,6 +1140,16 @@ class Settings(BaseSettings):
     # 19%, no date 15%. Off by default: it changes what a reviewer is shown; turned on per box. The
     # visit pieces get no hint when `merge_visit_pieces` is on (those are merged instead).
     visit_merge_hints: bool = False
+    # At the end of segmentation, after the verify pass: mark as a suggested merge every draft row
+    # that continues the QME/AME evaluation before it - both pages carry the evaluator's wording and
+    # the page numbering runs on (`evaluation_pieces.suggest_evaluation_pieces`). The senior
+    # reviewer, 2026-11-02: an evaluation's records review is split into entries that belong to the
+    # report. Suggestions only, on stored page text, no model call. Measured read-only on the live
+    # box: finds 67 of the 80 such cuts reviewers merged by hand; 6 of the 104 rows it marks are
+    # real documents a reviewer kept.
+    #
+    # Off by default: it changes the draft a reviewer is shown. Turn it on per box.
+    suggest_evaluation_pieces: bool = False
     bundle_summarize_cap: int = 40
 
     def effective_job_timeout(self, pages: int) -> int:
