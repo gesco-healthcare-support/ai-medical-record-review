@@ -445,8 +445,17 @@ changed since they were written; those will be regenerated, so it asks for confi
 - "In export" toggles `excluded`. "Re-draft" regenerates one summary (after a confirmation when it was
   edited). Both, and Edit, patch the cached list in place with the item the server returns. A
   re-draft also re-reads the list, and so does a refused one: the server refuses (409) when a
-  summarize run laid the summaries out again meanwhile, and a stale card would send its next
-  re-draft to whatever summary now holds its index.
+  summarize run, or another re-draft that changed its row's number of visits, laid the summaries
+  out again meanwhile, and a stale card would send its next re-draft to whatever summary now holds
+  its index.
+- A re-draft is one request held open for the whole model call. Which cards are re-drafting is read
+  from the query client's mutation cache (`usePendingRedrafts()`, key `redraftKey()` in
+  `frontend/hooks/use-summaries.ts`), not from the view's own state, so it survives leaving the
+  Summaries view (My documents and back) and every running re-draft shows its own "Re-drafting...".
+  At most `MAX_PARALLEL_REDRAFTS` (3) run at once; the other cards' Re-draft buttons are disabled
+  until one finishes, because over HTTP/1.1 a browser opens six connections to one server and long
+  re-drafts would queue the page images and status polls behind them. A full reload forgets the
+  pending state (the cache lives in the page); the server finishes the re-draft either way.
 - The Category select writes the category to the owning review row, not to the summary. The server
   refuses it with 409 while any job runs. On success the card calls `reloadRows()` and says "Category
   saved - re-draft to apply it to the summary".
