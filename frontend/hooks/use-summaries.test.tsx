@@ -14,7 +14,7 @@
  * produces the right answer, so the test would pass either way.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
@@ -25,7 +25,12 @@ vi.mock("@/lib/review-api", () => ({
 }));
 
 import { putSummary, resummarize } from "@/lib/review-api";
-import { summariesKey, useResummarize, useSaveSummary } from "@/hooks/use-summaries";
+import {
+  summariesKey,
+  usePendingRedrafts,
+  useResummarize,
+  useSaveSummary,
+} from "@/hooks/use-summaries";
 
 const summary = (idx: number, text: string) => ({
   idx,
@@ -123,5 +128,50 @@ describe("re-reading the list", () => {
 
     await result.current.mutateAsync({ idx: 1, body: { category: "5" } });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: summariesKey("d1") });
+  });
+});
+
+describe("usePendingRedrafts", () => {
+  /** Re-drafts that wait until the test finishes them. */
+  function held() {
+    const finish = new Map<number, () => void>();
+    vi.mocked(resummarize).mockImplementation(
+      (_documentId: string, idx: number) =>
+        new Promise((resolve) =>
+          finish.set(idx, () => resolve(summary(idx, "re-drafted") as never)),
+        ) as never,
+    );
+    return finish;
+  }
+
+  it("lists every running re-draft, and outlives the hook that started them", async () => {
+    const finish = held();
+    const { wrapper } = harness();
+    const starter = renderHook(() => useResummarize("d1"), { wrapper });
+    const pending = renderHook(() => usePendingRedrafts("d1"), { wrapper });
+
+    act(() => {
+      starter.result.current.mutate(0);
+      starter.result.current.mutate(2);
+    });
+    await waitFor(() => expect([...pending.result.current].sort()).toEqual([0, 2]));
+
+    starter.unmount(); // the Summaries view goes away while both requests are open
+    expect([...pending.result.current].sort()).toEqual([0, 2]);
+
+    await act(async () => finish.get(0)?.());
+    await waitFor(() => expect([...pending.result.current]).toEqual([2]));
+  });
+
+  it("is per record", async () => {
+    held();
+    const { wrapper } = harness();
+    const starter = renderHook(() => useResummarize("d1"), { wrapper });
+    const other = renderHook(() => usePendingRedrafts("d2"), { wrapper });
+
+    act(() => starter.result.current.mutate(1));
+
+    await waitFor(() => expect(vi.mocked(resummarize)).toHaveBeenCalledWith("d1", 1));
+    expect(other.result.current.size).toBe(0);
   });
 });

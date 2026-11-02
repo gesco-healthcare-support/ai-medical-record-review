@@ -26,6 +26,7 @@ row rules live in `frontend/lib/review-rows.ts`.
 | `header-bar.test.tsx` | Save, Auto-fill and Re-detect, the doctor select, the pages-received value |
 | `duplicates-view.test.tsx` | Cluster states, resolve actions, banners |
 | `summaries-view.test.tsx`, `summaries-view.header.test.tsx` | Cards, chips, edits, re-classify, the header on the Summaries tab |
+| `summaries-view.redraft.test.tsx` | Re-drafts with the real hooks: several running at once, still shown after leaving the view and coming back, the cap |
 | `summaries-view.title.test.ts` | `displayTitle()`: each decoration stripped, look-alikes kept, a whitespace-only title returning promptly |
 | `export-dialog.test.tsx` | Prefill, the four endpoints, download watching |
 | `pdf-viewer.test.tsx`, `split-pane.test.tsx`, `markdown-text.test.tsx`, `start-panel.test.tsx`, `progress-panel.test.tsx`, `stepper.test.tsx` | The smaller components |

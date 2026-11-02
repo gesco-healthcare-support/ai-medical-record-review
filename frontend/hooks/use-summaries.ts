@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getSummaries, putSummary, resummarize } from "@/lib/review-api";
 import type { SummaryItem } from "@/lib/types";
 
@@ -59,6 +59,30 @@ export function useSaveSummary(documentId: string) {
   });
 }
 
+/** react-query key of one record's re-drafts. A re-draft is one request held open for the whole
+ *  model call, and a pending one lives in the client's mutation cache, which outlives the Summaries
+ *  view: a reviewer who goes to My documents while a re-draft computes, then comes back, finds the
+ *  card still "Re-drafting...". The view used to read the state of its own mutation instead, which
+ *  ended with the view and named only the latest re-draft, so a second one made the first card look
+ *  idle while it was still running (reviewer report, 2026-11-02). */
+export function redraftKey(documentId: string) {
+  return ["resummarize", documentId] as const;
+}
+
+/** How many of a record's summaries may be re-drafting at once. Each holds a request open for the
+ *  whole model call, and over HTTP/1.1 a browser opens only six connections to one server, so more
+ *  would queue the page images and status polls behind them. */
+export const MAX_PARALLEL_REDRAFTS = 3;
+
+/** The indices of the record's summaries whose re-draft is still running. */
+export function usePendingRedrafts(documentId: string): ReadonlySet<number> {
+  const pending = useMutationState({
+    filters: { mutationKey: redraftKey(documentId), status: "pending" },
+    select: (mutation) => mutation.state.variables as number,
+  });
+  return new Set(pending);
+}
+
 /** Re-draft one summary (discards evaluator edits, writes a fresh AI draft). Re-reads the list as
  *  well: the re-draft rewrites every visit of the summary's row, and can find more or fewer visits
  *  than before, which adds or removes summaries and renumbers the ones after them.
@@ -71,6 +95,7 @@ export function useResummarize(documentId: string) {
   const patch = useSummaryPatch(documentId);
   const refresh = useSummariesRefresh(documentId);
   return useMutation({
+    mutationKey: redraftKey(documentId),
     mutationFn: (idx: number) => resummarize(documentId, idx),
     onSuccess: (updated) => {
       patch(updated);

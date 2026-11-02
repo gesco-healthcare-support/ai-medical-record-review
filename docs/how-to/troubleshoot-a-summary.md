@@ -123,6 +123,13 @@ INFO, the per-row failure lines are WARNING. Numbers in angle brackets vary.
   route checks again after the model call, so a summarize run started while the re-draft computed
   (Summarize pressed during a re-draft) also refuses it, with "this record's summaries changed";
   nothing was written, the Summaries tab has re-read its list, and the re-draft can be pressed again.
+  So does another re-draft of the same record finishing first, when it found more or fewer visits
+  on its row and so renumbered the summaries after it.
+- **Several re-drafts at once.** Up to three summaries of a record can be re-drafting together;
+  the other cards' Re-draft buttons wait until one finishes. A card keeps saying "Re-drafting..."
+  while the reviewer is elsewhere in the app (My documents, another tab of the record) and returns.
+  A full page reload forgets it: the re-draft still finishes on the server, and the new text shows
+  once the Summaries tab reloads.
 - **Re-draft and Re-summarize discard edits.** Re-draft clears the reviewer's edits to that summary;
   Re-summarize all from scratch clears every summary of the record. Copy any hand-written text first.
 

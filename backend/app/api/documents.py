@@ -107,8 +107,9 @@ router = APIRouter(prefix="/api/documents", tags=["documents"])
 _JOB_RUNNING_DETAIL = "a job is running for this document; wait for it"
 _JOB_ALREADY_RUNNING_DETAIL = "a job is already running for this document"
 _REDRAFT_STALE_DETAIL = (
-    "this record's summaries changed while the summary was being re-drafted (a summarize run "
-    "started or finished); nothing was changed - reload the summaries and try again"
+    "this record's summaries changed while the summary was being re-drafted (a summarize run, or "
+    "another re-draft that found more or fewer visits); nothing was changed - reload the "
+    "summaries and try again"
 )
 _PDF_MEDIA_TYPE = "application/pdf"
 _NOT_FOUND_DETAIL = "not found"
