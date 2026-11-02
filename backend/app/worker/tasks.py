@@ -1073,7 +1073,27 @@ def _adjudicate(
             similarity,
             pages,
         )
+    groups = groups + _near_copies_kept(members, groups, by_id, document_id)
     return _split_confirmed_groups(members, similarity, groups)
+
+
+def _near_copies_kept(members, groups, by_id, document_id) -> list[list[dict]]:
+    """With `dupe_show_near_copies` on, the near-identical copies the model left out of ``groups``
+    (`dedup.near_copies`), each logged; otherwise none. Off by default."""
+    from app.services.dedup import near_copies
+
+    if not get_settings().dupe_show_near_copies:
+        return []
+    kept = near_copies(members, groups)
+    for group in kept:
+        logger.info(
+            "dedup kept a %d-member near-identical group on document %s the model judged "
+            "distinct (pages %s)",
+            len(group),
+            document_id,
+            _pages(group, by_id),
+        )
+    return kept
 
 
 def dedup_document(job_id) -> None:

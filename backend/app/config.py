@@ -925,6 +925,11 @@ class Settings(BaseSettings):
     dupe_jaccard_threshold: float = 0.70
     dupe_similarity_override: float = 0.90
     dupe_model_override: float = 0.95
+    # Show a near-identical pair the confirm model judged distinct anyway: one known date, one
+    # category other than diagnostics, text at least `dedup.NEAR_COPY_SIMILARITY` alike
+    # (`dedup.near_copies`). The reviewer decides, as for every group; nothing is removed. Off by
+    # default: it adds groups to the Duplicates tab, so a box turns it on when reviewers want it.
+    dupe_show_near_copies: bool = False
 
     # How long the UI waits for a COOPERATIVE stop before offering "Force stop". The cooperative path
     # normally lands within a second, because the retry backoff polls for a cancel between one-second

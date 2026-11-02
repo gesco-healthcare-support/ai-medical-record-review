@@ -183,6 +183,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `DUPE_JACCARD_THRESHOLD` | float | `0.70` | `0.70` | yes | none | Word-set similarity cut of the candidate finder (`backend/app/services/dedup.py`); a pair sharing a known date and a known category or title skips it |
 | `DUPE_SIMILARITY_OVERRIDE` | float | `0.90` | `0.90` | yes | none | Date-masked text similarity at which rows with different dates can still be treated as copies (cross-date admission and the gate's escape hatch) |
 | `DUPE_MODEL_OVERRIDE` | float | `0.95` | `0.95` | yes | none | Similarity at or above which the confirm model call is skipped (`backend/app/worker/tasks.py`) |
+| `DUPE_SHOW_NEAR_COPIES` | bool | `False` | `false` | yes | none | Stores as a group a pair the confirm model judged distinct when both rows share a known date and a category other than diagnostics (3) and their text is at least 0.90 alike (`dedup.near_copies()`, `dedup.NEAR_COPY_SIMILARITY`). The reviewer decides on the Duplicates tab; nothing is removed |
 
 ## OCR and page text
 
