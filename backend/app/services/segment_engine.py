@@ -636,6 +636,24 @@ def _categorize(pdf_path, row, page_text_fn=None):
     return row
 
 
+def _suggested_merges(rows, settings, page_text_fn):
+    """The merge SUGGESTIONS made after the verify pass, with no model call; never a merge."""
+    # A merge HINT on every boundary between one visit's pieces (`VISIT_MERGE_HINTS`): the same
+    # candidates the visit merge would ask about, offered to the reviewer. Not when the pieces are
+    # merged instead.
+    if settings.visit_merge_hints and not settings.merge_visit_pieces:
+        rows, hinted = hint_visit_pieces(rows)
+        logger.info("visit merge hints: %d", hinted)
+
+    # A QME/AME evaluation cut into pieces at its records review, offered back as one: suggestions
+    # only, on stored page text (the senior reviewer, 2026-11-02). After the verify pass, so its own
+    # suggestions are never cleared, and with no page text there is nothing to read.
+    if settings.suggest_evaluation_pieces and page_text_fn is not None:
+        rows, stats = suggest_evaluation_pieces(rows, page_text_fn)
+        logger.info("evaluation pieces: %s", stats)
+    return rows
+
+
 def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
     """PDF -> tiled, categorized sub-document rows, reporting progress per stage.
 
@@ -731,19 +749,7 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
         rows, stats = verify_and_merge(pdf_path, rows, progress=progress, pool_timeout=pool_timeout)
         logger.info("verify pass: %s", stats)
 
-    # A merge HINT on every boundary between one visit's pieces (`VISIT_MERGE_HINTS`): the same
-    # candidates the merge below would ask about, offered to the reviewer with no model call. Not
-    # when the pieces are merged instead.
-    if settings.visit_merge_hints and not settings.merge_visit_pieces:
-        rows, hinted = hint_visit_pieces(rows)
-        logger.info("visit merge hints: %d", hinted)
-
-    # A QME/AME evaluation cut into pieces at its records review, offered back as one: suggestions
-    # only, on stored page text (the senior reviewer, 2026-11-02). After the verify pass, so its own
-    # suggestions are never cleared, and with no page text there is nothing to read.
-    if settings.suggest_evaluation_pieces and page_text_fn is not None:
-        rows, stats = suggest_evaluation_pieces(rows, page_text_fn)
-        logger.info("evaluation pieces: %s", stats)
+    rows = _suggested_merges(rows, settings, page_text_fn)
 
     # One visit's pieces - same date, same provider: a PR-2 cut in two, its RFA, its work status -
     # made one row before the reviewer sees the draft (the reviewers, 2026-10-28). After the
