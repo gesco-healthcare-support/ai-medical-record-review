@@ -5010,20 +5010,20 @@ def test_the_image_check_needs_a_record_and_numbers(monkeypatch):
 # --- one entry per date: a Kaiser or hospital record the reviewer marked (2026-10-30) -------------
 _KAISER_NOTE = "JANE ROE, M.D. KAISER PERMANENTE. PROGRESS NOTE"
 _NURSE_CALL = "JOHN DOE, R.N. KAISER PERMANENTE. TELEPHONE ENCOUNTER"
-_THERAPY = "MARY MAJOR, P.T. KAISER PERMANENTE. PHYSICAL THERAPY NOTE"
+_KAISER_THERAPY = "MARY MAJOR, P.T. KAISER PERMANENTE. PHYSICAL THERAPY NOTE"
 
 
 def test_on_a_marked_record_every_entry_of_a_date_folds_into_one():
     """DEMONSTRATES the answer: "keep everything from one date as one entry". Different authors and
     categories, not next to each other in the record, one entry - headed by the progress note."""
     entries = [
-        _entry(_THERAPY, "**Treatment**: Heat."),
-        _entry(_THERAPY, "**Treatment**: Exercises.", date="03/09/2026"),
+        _entry(_KAISER_THERAPY, "**Treatment**: Heat."),
+        _entry(_KAISER_THERAPY, "**Treatment**: Exercises.", date="03/09/2026"),
         _entry(_KAISER_NOTE, "**Diagnoses**: strain. **Plan**: Rest."),
         _entry(_NURSE_CALL, "**Plan**: Call back."),
     ]
     out = se.fold_record_entries(entries, ["5", "5", "1", "100"], "summaryTitle", by_date=True)
-    assert [e["summaryTitle"] for e in out] == [_THERAPY, _KAISER_NOTE]
+    assert [e["summaryTitle"] for e in out] == [_KAISER_THERAPY, _KAISER_NOTE]
     body = out[1]["summaryText"]
     assert body.startswith("**Diagnoses**: strain. **Plan**: Rest.")
     assert "**Plan**: Call back." in body
@@ -5032,9 +5032,12 @@ def test_on_a_marked_record_every_entry_of_a_date_folds_into_one():
 
 def test_on_a_marked_record_a_date_without_a_progress_note_is_headed_by_its_first_entry():
     """DEMONSTRATES: with no category 1 entry that day, the first entry heads the date."""
-    entries = [_entry(_THERAPY, "**Treatment**: Heat."), _entry(_NURSE_CALL, "**Plan**: Rest.")]
+    entries = [
+        _entry(_KAISER_THERAPY, "**Treatment**: Heat."),
+        _entry(_NURSE_CALL, "**Plan**: Rest."),
+    ]
     out = se.fold_record_entries(entries, ["5", "100"], "summaryTitle", by_date=True)
-    assert [e["summaryTitle"] for e in out] == [_THERAPY]
+    assert [e["summaryTitle"] for e in out] == [_KAISER_THERAPY]
 
 
 def test_on_a_marked_record_diagnostics_and_labs_keep_their_own_entries():

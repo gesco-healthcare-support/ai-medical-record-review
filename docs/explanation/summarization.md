@@ -644,7 +644,7 @@ provider, a clinic and a PR-2 the way the letter will:
   the body when the date has one, otherwise the date's first entry. Dates are read with
   `reporting.parsed_date`. The senior reviewer, 2026-10-30: "keep everything from one date as one
   entry ... summarized as a progress note ... The exception would be for diagnostics". The rows'
-  own merge is the workbench action (`services/date_entries.py`, HTTP API D13a).
+  own merge is the workbench action (`backend/app/services/date_entries.py`, HTTP API D13a).
 - The rows and summaries are untouched by every fold, so the review page and the Summaries tab still
   show every document and a reviewer can still separate them.
 
