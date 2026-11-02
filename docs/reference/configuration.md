@@ -173,6 +173,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `VERIFY_SUSPECT_CAP` | int | `200` | `200` | yes | none | Maximum boundaries checked per record (`verify_pass.suspect_indices()`) |
 | `VERIFY_TRIGGERED_ONLY` | bool | `False` | `false` | yes | none | Checks only the boundaries the trigger heuristic selects |
 | `MERGE_VISIT_PIECES` | bool | `False` | `false` | yes | none | After the verify pass, merges two adjacent same-date draft rows of one visit (both category 1, both category 5, or a visit and its RFA or work status; never category 3) when the `verify`-stage model confirms one provider wrote both (`visit_merge.merge_visit_pieces()`); off until measured |
+| `VISIT_MERGE_HINTS` | bool | `False` | `false` | yes | none | Merge hints that follow the reviewers' joins, never a merge: the verify pass asks only about two rows of the same known date (`verify_pass.verify_and_merge()`), and every visit-piece boundary gets `suggest_merge` with no model call (`visit_merge.hint_visit_pieces()`); not when `MERGE_VISIT_PIECES` is on |
 
 ## Duplicate detection
 

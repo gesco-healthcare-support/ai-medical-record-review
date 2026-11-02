@@ -27,7 +27,7 @@ from app.services.rasterise import page_image_parts
 from app.services.summary_doi import extract_injury_date
 from app.services.taxonomy import DEFAULT_ID
 from app.services.verify_pass import verify_and_merge
-from app.services.visit_merge import merge_visit_pieces
+from app.services.visit_merge import hint_visit_pieces, merge_visit_pieces
 from app.services.windows import byte_budgeted_windows
 from app.worker.failures import JobCancelled
 
@@ -729,6 +729,13 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
     if settings.verify_merge:
         rows, stats = verify_and_merge(pdf_path, rows, progress=progress, pool_timeout=pool_timeout)
         logger.info("verify pass: %s", stats)
+
+    # A merge HINT on every boundary between one visit's pieces (`VISIT_MERGE_HINTS`): the same
+    # candidates the merge below would ask about, offered to the reviewer with no model call. Not
+    # when the pieces are merged instead.
+    if settings.visit_merge_hints and not settings.merge_visit_pieces:
+        rows, hinted = hint_visit_pieces(rows)
+        logger.info("visit merge hints: %d", hinted)
 
     # One visit's pieces - same date, same provider: a PR-2 cut in two, its RFA, its work status -
     # made one row before the reviewer sees the draft (the reviewers, 2026-10-28). After the

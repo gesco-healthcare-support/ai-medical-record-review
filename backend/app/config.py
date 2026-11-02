@@ -1127,6 +1127,19 @@ class Settings(BaseSettings):
     # Off by default: it changes what segmentation decides, and a wrong merge hides a document. Turn
     # it on per box once it has been measured there.
     merge_visit_pieces: bool = False
+    # Merge HINTS that follow what reviewers actually join, never a merge. Two parts:
+    # - the verify pass asks the model only about two rows of the SAME known date - across two dates
+    #   (or with a date missing) it sends nothing and no hint is shown;
+    # - every visit-piece boundary (`visit_merge.candidate_indices`: same date, 1+1 / 5+5 or a visit
+    #   and its RFA / work status, never a diagnostic study) gets a hint with NO model call.
+    # Measured against reviewers' joins (a hint is right when the reviewer joined that boundary
+    # away; "covers" = share of all their joins the hints point at), today -> with this: a Kaiser
+    # printout 26% right / 58% covered -> 65% / 83%; one reviewer's 1,885-page record 67% / 3% ->
+    # 97% / 84%; Gemini drafts of three reviewers' finished records 35-41% / 21-27% -> 55-71% /
+    # 57-60%. Hints by date gap on 283 finished records: same date 54% right, 1-7 days 23%, 8+ days
+    # 19%, no date 15%. Off by default: it changes what a reviewer is shown; turned on per box. The
+    # visit pieces get no hint when `merge_visit_pieces` is on (those are merged instead).
+    visit_merge_hints: bool = False
     bundle_summarize_cap: int = 40
 
     def effective_job_timeout(self, pages: int) -> int:

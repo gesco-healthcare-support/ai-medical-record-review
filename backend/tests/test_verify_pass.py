@@ -533,3 +533,48 @@ def test_the_progress_callback_is_told_how_many_boundaries_remain(monkeypatch):
 
     assert seen[0] == ("verifying", 0, 3)
     assert seen[-1] == ("verifying", 3, 3)
+
+
+# --------------------------------------------------------------------------------------------
+# VISIT_MERGE_HINTS: the model is asked only about two rows of the same known date.
+# --------------------------------------------------------------------------------------------
+
+
+def test_with_visit_hints_only_same_date_boundaries_reach_the_model(monkeypatch):
+    """DEMONSTRATES: a cross-date or undated boundary is not sent, so it can carry no hint."""
+    asked = []
+
+    def spy(pdf_path, prev, row):
+        asked.append(int(row["start"]))
+        return True
+
+    rows = [
+        _row(1, 10, "1", "01/01/2026"),
+        _row(11, 20, "1", "01/01/2026"),  # same date as the row before -> asked
+        _row(21, 30, "1", "02/01/2026"),  # another date -> not asked
+        _row(31, 40, "1", "-"),  # no date -> not asked
+        _row(41, 50, "1", "-"),  # a shared "-" is no date -> not asked
+    ]
+    monkeypatch.setattr(verify_pass, "_same_document", spy)
+    monkeypatch.setattr(get_settings(), "visit_merge_hints", True)
+
+    out, stats = verify_pass.verify_and_merge("x.pdf", rows, auto=False, triggered_only=False)
+
+    assert asked == [11]
+    assert [bool(r.get("suggest_merge")) for r in out] == [False, True, False, False, False]
+    assert stats == {"suspects": 1, "suggested": 1, "dropped_cross_date": 3}
+
+
+def test_without_visit_hints_every_suspect_is_still_asked(monkeypatch):
+    """GUARD: off - the default - asks about every suspect and logs today's stats."""
+    asked = []
+
+    def spy(pdf_path, prev, row):
+        asked.append(int(row["start"]))
+        return False
+
+    monkeypatch.setattr(verify_pass, "_same_document", spy)
+    monkeypatch.setattr(get_settings(), "visit_merge_hints", False)
+    _out, stats = verify_pass.verify_and_merge("x.pdf", _ROWS, triggered_only=False)
+    assert sorted(asked) == [11, 21, 41]
+    assert "dropped_cross_date" not in stats

@@ -340,6 +340,24 @@ carrying an `x` flag over); production does not use it.
 
 The engine logs `verify pass: {'suspects': n, 'suggested': k}` for every run.
 
+**Hints that follow the reviewers' joins (`VISIT_MERGE_HINTS`, off by default).** When
+`visit_merge_hints` is true, two things change, and neither ever merges a row:
+
+- the verify pass asks the model only about a boundary between two rows of the SAME known date; a
+  boundary across two dates, or with a date missing, is not sent and gets no hint, and the log adds
+  `'dropped_cross_date': n`. On 283 finished records a hint was right 54% of the time on one date
+  against 19-23% across dates;
+- every boundary between one visit's pieces (`visit_merge.candidate_indices()`, described below)
+  gets `suggest_merge` with no model call (`visit_merge.hint_visit_pieces()`, logged as
+  `visit merge hints: m`). Not when `merge_visit_pieces` is on, which merges those pieces instead.
+
+Measured against what reviewers joined (a hint is right when the reviewer joined that boundary away;
+"covers" is the share of all their joins the hints point at), today against with the setting: a
+Kaiser printout 26% right and 58% covered against 65% and 83%; one reviewer's 1,885-page record 67%
+and 3% against 97% and 84%; Gemini's drafts of three reviewers' finished records 35-41% and 21-27%
+against 55-71% and 57-60%. With so many right hints the "Apply N suggested merges" button becomes
+worth using, but it also applies the few wrong ones, and a wrong merge hides a document.
+
 > **Note:** The oracle's measured figures (wide net 57.4% precision at 49.0% recall, narrow net
 > 60.2% at 45.6% on 31% fewer calls, over 28 reviewer-corrected records) were taken before the
 > images-first reordering and have not been re-measured. The code comments say only the shape of
