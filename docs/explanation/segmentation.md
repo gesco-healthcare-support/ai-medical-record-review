@@ -345,6 +345,39 @@ The engine logs `verify pass: {'suspects': n, 'suggested': k}` for every run.
 > images-first reordering and have not been re-measured. The code comments say only the shape of
 > the trade survives: the narrow net buys precision with recall. Do not quote the levels as current.
 
+## Suggesting an evaluation's pieces as merges (off by default)
+
+When `suggest_evaluation_pieces` is true (`SUGGEST_EVALUATION_PIECES`, default false), a pass runs
+after the verify pass (`backend/app/services/evaluation_pieces.py` `suggest_evaluation_pieces()`).
+The senior reviewer, 2026-11-02: "for QME/AME reports (or any report that has a Medical Record
+Review as part of the report), the segmentation is splitting the individual summaries as different
+entries, despite just being a summary as part of the larger report." The prompt already says to keep
+an evaluation whole, but a window that starts inside its records review sees a run of dated
+summaries of other records, each looking like a document.
+
+**A piece.** From each category 12 or 13 row the pass walks forward over the following boundaries
+while both pages of the cut carry evaluator wording (the evaluation's running header names the QME
+or AME). A row is a piece when the page numbering runs on across the cut (page k, then page k + 1).
+The walk stops at the first cut whose pages do not both carry the wording, and after a category 12
+or 13 row of its own, which starts its own walk. A supplemental report that restarts its numbering
+is not a piece.
+
+**Suggestions only.** A piece gets `suggest_merge`, the flag the verify pass sets, so the reviewer
+merges it into the evaluation with one click. No boundary moves, nothing already suggested is
+cleared, and there is no model call: it reads the stored page text. With no page text it does
+nothing.
+
+**Measured before shipping**, read-only on the live box: every draft cut inside a category 12/13
+row's evaluator-worded pages on 448 finished records, against the reviewer's final rows. Of 376 such
+cuts, reviewers merged 80 away, kept 178 as unticked rows and 118 as ticked documents. The 104 cuts
+whose numbering runs on: merged 67, kept unticked 31, kept ticked 6. So the pass suggests 67 of the
+80 the reviewers merged by hand, and 6 of its suggestions name a real document a reviewer kept. The
+running header alone and a page of dated entries were measured as well and added no merged cut the
+numbering missed. Such cuts rose in October: merged pieces inside evaluations were 1-2 a month July
+to September and 75 in October.
+
+The engine logs `evaluation pieces: {'evaluation_pieces': n}` when the pass runs.
+
 ## Merging one visit's pieces (off by default)
 
 When `merge_visit_pieces` is true (`MERGE_VISIT_PIECES`, default false), a second boundary pass

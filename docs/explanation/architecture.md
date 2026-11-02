@@ -132,8 +132,9 @@ The job model - lanes, stop and force stop, pause and resume, recovery after a r
 
 Inside the segment job the order is fixed: extract the page text once (OCR where needed), find
 boundaries window by window, categorize every row, run the boundary verify pass (on by default,
-`VERIFY_MERGE`), merge one visit's pieces (off by default, `MERGE_VISIT_PIECES`), then read each
-row's injury date. See [Segmentation](segmentation.md).
+`VERIFY_MERGE`), suggest the pieces of a QME/AME evaluation as merges (off by default,
+`SUGGEST_EVALUATION_PIECES`), merge one visit's pieces (off by default, `MERGE_VISIT_PIECES`), then
+read each row's injury date. See [Segmentation](segmentation.md).
 
 ## Where patient data lives
 

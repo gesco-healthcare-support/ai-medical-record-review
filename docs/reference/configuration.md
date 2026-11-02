@@ -172,6 +172,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `VERIFY_USE_TEXT` | bool | `True` | `true` | yes | none | Adds OCR text from the two boundary pages to the verify prompt |
 | `VERIFY_SUSPECT_CAP` | int | `200` | `200` | yes | none | Maximum boundaries checked per record (`verify_pass.suspect_indices()`) |
 | `VERIFY_TRIGGERED_ONLY` | bool | `False` | `false` | yes | none | Checks only the boundaries the trigger heuristic selects |
+| `SUGGEST_EVALUATION_PIECES` | bool | `False` | `false` | yes | none | After the verify pass, marks as a suggested merge each draft row that continues the QME/AME evaluation before it: a category 12 or 13 row, both pages of the cut carry evaluator wording, and the page numbering runs on across them (`evaluation_pieces.suggest_evaluation_pieces()`). Suggestions only, on stored page text, no model call |
 | `MERGE_VISIT_PIECES` | bool | `False` | `false` | yes | none | After the verify pass, merges two adjacent same-date draft rows of one visit (both category 1, both category 5, or a visit and its RFA or work status; never category 3) when the `verify`-stage model confirms one provider wrote both (`visit_merge.merge_visit_pieces()`); off until measured |
 
 ## Duplicate detection
