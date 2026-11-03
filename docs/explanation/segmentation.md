@@ -347,6 +347,12 @@ The engine logs `verify pass: {'suspects': n, 'suggested': k}` for every run.
   boundary across two dates, or with a date missing, is not sent and gets no hint, and the log adds
   `'dropped_cross_date': n`. On 283 finished records a hint was right 54% of the time on one date
   against 19-23% across dates;
+- nor does it ask about a boundary with a diagnostic study (category 3) on either side, or with a
+  lab result (category 14) on exactly one side (`verify_pass._kept_apart()`, logged as
+  `'dropped_diagnostic_or_lab': n`). Two labs (14 | 14) are still asked; reviewers split those
+  about evenly. The senior reviewer's rule is that diagnostics are always separate, and on two
+  records reviewers finished with these hints, 8 of the 11 verify-pass hints they rejected were such
+  a boundary, against 1 of the 13 they applied;
 - every boundary between one visit's pieces (`visit_merge.candidate_indices()`, described below)
   gets `suggest_merge` with no model call (`visit_merge.hint_visit_pieces()`, logged as
   `visit merge hints: m`). Not when `merge_visit_pieces` is on, which merges those pieces instead.
