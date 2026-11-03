@@ -124,11 +124,11 @@ bundle export pass `verify=False`.
 | Entry point | `provider_for_stage("extract").generate_structured(stage="extract")` from `extraction.extract_header()` |
 | Model | `Settings.model_for_stage("extract")`: `GENAI_MODEL` on Gemini, `VLLM_MODEL` on vLLM |
 | Thinking | Gemini `GEMINI_THINKING_BUDGET` (0); vLLM on only if `extract` is in `VLLM_THINKING_STAGES` |
-| System | `extraction._HEADER_SYSTEM` |
+| System | `extraction._HEADER_SYSTEM`, plus `_LETTER_SYSTEM` when a covering-letter field is asked for (`HEADER_PREFILL_FIELDS`) |
 | Parts | One text part: an instruction plus the OCR text of the first pages (callers pass pages 1 to `min(15, page_count)`) |
 | Max output tokens | Not set |
-| Schema | `extraction._HEADER_SCHEMA`: object with `first_name`, `last_name`, `dob`, `lawfirm`, all strings, all required |
-| Reply handling | `json.loads`; a decode error returns all four fields empty. Missing keys become empty strings. Empty OCR text returns all four empty without a call |
+| Schema | `extraction._HEADER_SCHEMA`: object with `first_name`, `last_name`, `dob`, `lawfirm`, all strings, all required. Each field `HEADER_PREFILL_FIELDS` names (`attorney_name`, `doctor`, `letter_date`, `pages_received`) is added as a required string from `_LETTER_PROPERTIES`; with the setting empty (the default) the schema is exactly the four |
+| Reply handling | `json.loads`; a decode error returns all four fields empty. Missing keys become empty strings. Empty OCR text returns all four empty without a call. A letter field is kept only as stored: `doctor` when it names exactly one `reporting.DOCTORS` entry, `letter_date` as mm/dd/yyyy, `pages_received` as a whole number above 0; otherwise empty. `prefill_letter_fields()` then writes each onto the record only where still empty (`pages_received` only when at most the page count) |
 | Failure | Provider exceptions are not caught in `extract_header()`. The segment worker's call (`backend/app/worker/tasks.py`) logs a WARNING and continues; the API route (`backend/app/api/documents.py` `extract_header_route()`) handles `PipelineError` |
 
 ## dedup

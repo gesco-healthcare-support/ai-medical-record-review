@@ -562,7 +562,68 @@ def test_with_visit_hints_only_same_date_boundaries_reach_the_model(monkeypatch)
 
     assert asked == [11]
     assert [bool(r.get("suggest_merge")) for r in out] == [False, True, False, False, False]
-    assert stats == {"suspects": 1, "suggested": 1, "dropped_cross_date": 3}
+    assert stats == {
+        "suspects": 1,
+        "suggested": 1,
+        "dropped_cross_date": 3,
+        "dropped_diagnostic_or_lab": 0,
+    }
+
+
+def _pair_asked_and_hinted(monkeypatch, first, second, hints=True):
+    """One same-date boundary between categories ``first`` and ``second``, the oracle saying YES."""
+    asked = []
+
+    def spy(pdf_path, prev, row):
+        asked.append(int(row["start"]))
+        return True
+
+    rows = [_row(1, 10, first, "01/01/2026"), _row(11, 20, second, "01/01/2026")]
+    monkeypatch.setattr(verify_pass, "_same_document", spy)
+    monkeypatch.setattr(get_settings(), "visit_merge_hints", hints)
+    out, stats = verify_pass.verify_and_merge("x.pdf", rows, auto=False, triggered_only=False)
+    return asked == [11], bool(out[1].get("suggest_merge")), stats
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [("3", "1"), ("1", "3"), ("3", "3"), ("14", "100"), ("100", "14"), ("1", "14")],
+)
+def test_with_visit_hints_a_diagnostic_or_a_single_lab_gets_no_hint(monkeypatch, first, second):
+    """DEMONSTRATES: a study (3) on either side, or one lab (14), is not asked and not hinted."""
+    asked, hinted, stats = _pair_asked_and_hinted(monkeypatch, first, second)
+    assert not asked
+    assert not hinted
+    assert stats == {
+        "suspects": 0,
+        "suggested": 0,
+        "dropped_cross_date": 0,
+        "dropped_diagnostic_or_lab": 1,
+    }
+
+
+@pytest.mark.parametrize("first, second", [("14", "14"), ("1", "1"), ("1", "5"), ("10", "1")])
+def test_with_visit_hints_two_labs_or_two_visits_are_still_asked(monkeypatch, first, second):
+    """GUARD: two labs, and boundaries with no study or lab, are asked and hinted as before."""
+    asked, hinted, stats = _pair_asked_and_hinted(monkeypatch, first, second)
+    assert asked
+    assert hinted
+    assert stats["dropped_diagnostic_or_lab"] == 0
+
+
+def test_a_category_given_as_a_number_is_kept_apart_the_same(monkeypatch):
+    """GUARD: a row whose category is an int rather than text is judged by the same rule."""
+    asked, hinted, _stats = _pair_asked_and_hinted(monkeypatch, 3, 1)
+    assert not asked
+    assert not hinted
+
+
+def test_without_visit_hints_a_diagnostic_boundary_is_still_asked(monkeypatch):
+    """GUARD: off - the default - leaves a study's boundary to the model, as today."""
+    asked, hinted, stats = _pair_asked_and_hinted(monkeypatch, "3", "1", hints=False)
+    assert asked
+    assert hinted
+    assert "dropped_diagnostic_or_lab" not in stats
 
 
 def test_without_visit_hints_every_suspect_is_still_asked(monkeypatch):

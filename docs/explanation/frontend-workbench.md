@@ -486,7 +486,10 @@ the hook, so both bars and the export dialog read one copy.
 - Auto-fill (labelled "Re-detect" once any of first name, last name, DOB or law firm is stored) calls
   `POST /api/documents/{id}/extract-header`. The server reads the record's first 15 pages, stores the
   fields it found, and answers with first name, last name, DOB and law firm, merged with what was
-  already stored. There is no separate Save step for it.
+  already stored. There is no separate Save step for it. With `HEADER_PREFILL_FIELDS` set, the same
+  call also reads the covering letter's attorney, doctor, letter date and pages received (the ones
+  the setting names) and stores each only where the field is still empty; the answer then carries
+  them too. The Identify job does the same at the end of segmentation.
 - The doctor select always includes the stored value, even before the list arrives or when the list no
   longer has it, so a blur cannot write a different doctor. The doctor list comes from the backend with
   the record (`doctors`). The letter options are a constant in the component (`LETTER_OPTIONS`); the

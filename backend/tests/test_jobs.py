@@ -3895,3 +3895,54 @@ def test_dedup_document_leaves_the_models_distinct_alone_by_default(monkeypatch)
     dedup_document(job_id)
 
     assert all(r.dupe_group is None for r in _rows_by_idx(doc_id).values())
+
+
+def test_segment_document_prefills_only_the_empty_letter_fields(monkeypatch):
+    """WHEN identify reads the header, THE SYSTEM SHALL fill a covering-letter field only where it
+    is still empty, so a re-identify keeps what the reviewer typed (HEADER_PREFILL_FIELDS)."""
+    import app.services.extraction as extraction_mod
+    import app.services.page_text as page_text_mod
+    import app.services.segment_engine as se
+
+    monkeypatch.setattr(page_text_mod, "populate_document", lambda *a, **k: 0)
+    row = {
+        "start": 1,
+        "end": 2,
+        "category": "1",
+        "title": "A",
+        "date": "-",
+        "injury_date": "-",
+        "flag": "-",
+        "suggest_merge": False,
+    }
+    monkeypatch.setattr(se, "run_segmentation", lambda *a, **k: [dict(row)])
+    monkeypatch.setattr(
+        extraction_mod,
+        "extract_header",
+        lambda pdf_path, pages: {
+            "first_name": "A",
+            "last_name": "B",
+            "dob": "",
+            "lawfirm": "",
+            "attorney_name": "Found Person",
+            "doctor": "Pelton",
+            "letter_date": "08/05/2026",
+            "pages_received": "2",
+        },
+    )
+    doc_id = _make_user_and_doc(page_count=2)
+    with get_sessionmaker()() as session:
+        session.get(Document, doc_id).attorney_name = "Typed Person"
+        session.commit()
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+
+    segment_document(job_id)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        document = session.get(Document, doc_id)
+        assert document.attorney_name == "Typed Person"
+        assert document.doctor == "Pelton"
+        assert document.letter_date == "08/05/2026"
+        assert document.pages_received == 2
+        assert document.patient_first_name == "A"

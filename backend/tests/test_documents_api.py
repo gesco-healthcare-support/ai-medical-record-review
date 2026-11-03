@@ -6376,3 +6376,62 @@ async def test_the_letter_folds_by_date_only_on_a_marked_record(authed, monkeypa
 
     assert resp.status_code == 200
     assert seen == [marked]
+
+
+async def test_extract_header_first_fills_the_letter_fields_and_returns_them(authed, monkeypatch):
+    """WHEN HEADER_PREFILL_FIELDS turns letter fields on, THE SYSTEM SHALL store each found one
+    only where the record has none, never over a typed value, and return the stored view - the page
+    count as text, like every other header field on the wire."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _put_header(client, doc_id, attorney_name="Typed Person")
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "extract_header",
+        lambda pdf_path, pages: {
+            "first_name": "",
+            "last_name": "",
+            "dob": "",
+            "lawfirm": "",
+            "attorney_name": "Found Person",
+            "doctor": "Pelton",
+            "letter_date": "",
+            "pages_received": "2",
+        },
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["attorney_name"] == "Typed Person"
+    assert body["doctor"] == "Pelton"
+    assert body["letter_date"] == ""
+    assert body["pages_received"] == "2"
+
+    got = (await client.get(f"/api/documents/{doc_id}")).json()
+    assert got["attorney_name"] == "Typed Person"
+    assert got["doctor"] == "Pelton"
+    assert got["pages_received"] == 2
+
+
+async def test_extract_header_without_letter_fields_replies_with_the_four(authed, monkeypatch):
+    """GUARD: the default four-field extraction keeps the four-key reply the callers know."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+
+    import app.api.documents as documents_module
+
+    monkeypatch.setattr(
+        documents_module,
+        "extract_header",
+        lambda pdf_path, pages: {"first_name": "A", "last_name": "B", "dob": "", "lawfirm": ""},
+    )
+    resp = await client.post(f"/api/documents/{doc_id}/extract-header")
+    assert sorted(resp.json()) == [
+        "law_firm",
+        "patient_dob",
+        "patient_first_name",
+        "patient_last_name",
+    ]

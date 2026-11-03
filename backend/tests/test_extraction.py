@@ -14,10 +14,13 @@ The two failures are not equally safe, which is the whole point:
 The provider is stubbed throughout; no model call and no Tesseract.
 """
 
+import json
 import logging
 from types import SimpleNamespace
 
-from app.config import get_settings
+import pytest
+
+from app.config import Settings, get_settings
 from app.services import extraction
 
 
@@ -204,3 +207,167 @@ def test_the_model_is_resolved_for_the_backend_not_read_from_genai_model(monkeyp
     assert seen["model"] == "served-by-the-pod/model"
     # Control: the two genuinely differ here, or the assertion above passes trivially.
     assert settings.genai_model != "served-by-the-pod/model"
+
+
+# --- the covering letter's fields (HEADER_PREFILL_FIELDS) -------------------------------------
+#
+# Reviewers type attorney, doctor, letter date and pages received on every record. The same call can
+# read them from the covering letter, but only the fields the setting turns on are asked for, and a
+# value is kept only in the form the header stores it in.
+
+_LETTER = ("attorney_name", "doctor", "letter_date", "pages_received")
+
+
+def _letter_reply(**fields):
+    return json.dumps({"first_name": "A", "last_name": "B", "dob": "", "lawfirm": "", **fields})
+
+
+def test_with_no_letter_field_asked_the_call_is_the_four_field_one(monkeypatch):
+    """GUARD: the default (empty setting) sends today's system, schema and instruction exactly."""
+    monkeypatch.setattr(get_settings(), "header_prefill_fields", "")
+    seen = _capture(monkeypatch, payload=_letter_reply(doctor="Pelton"))
+    _stub_ocr(monkeypatch, "some text", errored=[])
+
+    header = extraction.extract_header("x.pdf", [1])
+
+    assert seen["system"] == extraction._HEADER_SYSTEM
+    assert seen["schema"] is extraction._HEADER_SCHEMA
+    assert seen["parts"][0].text.startswith(
+        "Extract the patient's first name and last name (separately), the patient's date of birth "
+        "(mm/dd/yyyy), and the attorney/law firm that sent the record from this text:\n\n"
+    )
+    assert sorted(header) == ["dob", "first_name", "last_name", "lawfirm"]
+
+
+def test_the_setting_decides_which_letter_fields_are_asked(monkeypatch):
+    """DEMONSTRATES: a field the setting names joins the schema, the required list and the reply."""
+    monkeypatch.setattr(get_settings(), "header_prefill_fields", "pages_received, doctor")
+    seen = _capture(monkeypatch, payload=_letter_reply(doctor="Pelton", pages_received="120"))
+    _stub_ocr(monkeypatch, "some text", errored=[])
+
+    header = extraction.extract_header("x.pdf", [1])
+
+    assert seen["system"] == extraction._HEADER_SYSTEM + extraction._LETTER_SYSTEM
+    assert sorted(seen["schema"]["properties"]) == [
+        "dob",
+        "doctor",
+        "first_name",
+        "last_name",
+        "lawfirm",
+        "pages_received",
+    ]
+    assert seen["schema"]["required"][-2:] == ["doctor", "pages_received"]
+    assert "covering letter also the evaluating physician's last name" in seen["parts"][0].text
+    assert header["doctor"] == "Pelton"
+    assert header["pages_received"] == "120"
+    assert "attorney_name" not in header
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        ({"doctor": "Dr. Pelton"}, {"doctor": "Pelton"}),
+        ({"doctor": "PELTON, M.D."}, {"doctor": "Pelton"}),
+        ({"doctor": "Someone Elsewhere"}, {"doctor": ""}),
+        ({"doctor": "Pelton and Ziv"}, {"doctor": ""}),
+        ({"letter_date": "8/5/2026"}, {"letter_date": "08/05/2026"}),
+        ({"letter_date": "August 5, 2026"}, {"letter_date": ""}),
+        ({"letter_date": "13/05/2026"}, {"letter_date": ""}),
+        ({"pages_received": "0120"}, {"pages_received": "120"}),
+        ({"pages_received": "about 120"}, {"pages_received": ""}),
+        ({"pages_received": "0"}, {"pages_received": ""}),
+        ({"attorney_name": "  Jane   Synthetic, Esq. "}, {"attorney_name": "Jane Synthetic, Esq."}),
+    ],
+)
+def test_a_letter_field_is_kept_only_in_the_form_the_header_stores(monkeypatch, reply, expected):
+    """DEMONSTRATES: a doctor off the dropdown list, a date not mm/dd/yyyy or a count that is not
+    a whole number above 0 comes back '' - nothing to pre-fill - rather than a wrong value."""
+    _capture(monkeypatch, payload=_letter_reply(**reply))
+    _stub_ocr(monkeypatch, "some text", errored=[])
+
+    header = extraction.extract_header("x.pdf", [1], letter_fields=_LETTER)
+
+    assert {field: header[field] for field in expected} == expected
+
+
+def test_a_blank_or_malformed_read_blanks_the_asked_letter_fields_too(monkeypatch):
+    """GUARD: the reply always carries every asked field, as '' when nothing could be read."""
+    _stub_provider(monkeypatch, payload="not json at all")
+    _stub_ocr(monkeypatch, "some text", errored=[])
+    assert extraction.extract_header("x.pdf", [1], letter_fields=("doctor",))["doctor"] == ""
+
+    _stub_ocr(monkeypatch, "   ", errored=[1])
+    blank = extraction.extract_header("x.pdf", [1], letter_fields=_LETTER)
+    assert {field: blank[field] for field in _LETTER} == dict.fromkeys(_LETTER, "")
+
+
+def _record(page_count=50, **stored):
+    fields = dict.fromkeys(_LETTER, None)
+    fields.update(stored)
+    return SimpleNamespace(page_count=page_count, **fields)
+
+
+_FOUND = {
+    "attorney_name": "Jane Synthetic",
+    "doctor": "Pelton",
+    "letter_date": "08/05/2026",
+    "pages_received": "47",
+}
+
+
+def test_prefill_fills_an_empty_field_and_names_it():
+    """DEMONSTRATES: every found field lands on a record that has none of them, the count as int."""
+    record = _record()
+
+    filled = extraction.prefill_letter_fields(record, _FOUND)
+
+    assert filled == list(_LETTER)
+    assert record.pages_received == 47
+    assert record.doctor == "Pelton"
+
+
+def test_prefill_never_overwrites_a_value_a_reviewer_typed():
+    """DEMONSTRATES: a re-identify or a second detect leaves a typed value alone - '' counts as
+    empty, whitespace too, and a typed page count of any size is a value."""
+    record = _record(attorney_name="Typed Person", doctor="", letter_date="  ", pages_received=12)
+
+    filled = extraction.prefill_letter_fields(record, _FOUND)
+
+    assert filled == ["doctor", "letter_date"]
+    assert record.attorney_name == "Typed Person"
+    assert record.pages_received == 12
+
+
+def test_prefill_keeps_a_page_count_only_up_to_the_pages_on_file():
+    """DEMONSTRATES: a stated count above the record's own page count is not stored."""
+    over = _record(page_count=40)
+    assert extraction.prefill_letter_fields(over, {"pages_received": "41"}) == []
+    assert over.pages_received is None
+
+    equal = _record(page_count=40)
+    assert extraction.prefill_letter_fields(equal, {"pages_received": "40"}) == ["pages_received"]
+
+
+def test_prefill_with_nothing_found_changes_nothing():
+    """GUARD: the default four-field reply carries no letter field, so nothing is written."""
+    record = _record()
+    assert extraction.prefill_letter_fields(record, {"first_name": "A", "lawfirm": "B"}) == []
+    assert all(getattr(record, field) is None for field in _LETTER)
+
+
+@pytest.mark.parametrize("value", ["doctor,fax_number", "Doctor"])
+def test_a_prefill_field_nobody_can_act_on_refuses_startup(monkeypatch, value):
+    """A typo refuses startup instead of leaving a field the operator turned on never filled."""
+    monkeypatch.setenv("HEADER_PREFILL_FIELDS", value)
+    with pytest.raises(RuntimeError, match="HEADER_PREFILL_FIELDS"):
+        Settings()  # type: ignore[call-arg]
+
+
+def test_the_prefill_fields_parse_in_one_order(monkeypatch):
+    """GUARD: spaces and empty entries are ignored, and the order is the fields' own."""
+    monkeypatch.setenv("HEADER_PREFILL_FIELDS", " pages_received ,attorney_name,, ")
+    parsed = Settings().header_letter_fields()  # type: ignore[call-arg]
+    assert parsed == ("attorney_name", "pages_received")
+
+    monkeypatch.setenv("HEADER_PREFILL_FIELDS", "")
+    assert Settings().header_letter_fields() == ()  # type: ignore[call-arg]
