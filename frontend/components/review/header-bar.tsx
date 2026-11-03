@@ -104,9 +104,10 @@ export function HeaderBar({
     try {
       const detected = await extractHeader(documentId);
       // extractHeader persists server-side; reflect it as the shared saved header (no Save step).
-      // The reply holds only the four detected fields, so it is merged over the STORED header: the
-      // other five are whatever the server still has. Replacing the header with the reply left
-      // them undefined, and the next manual Save then stored each of them as "".
+      // The reply holds only the detected fields (the four, plus any covering-letter field the
+      // server pre-fills), so it is merged over the STORED header: the rest are whatever the server
+      // still has. Replacing the header with the reply left them undefined, and the next manual
+      // Save then stored each of them as "".
       const saved = { ...(header ?? EMPTY), ...detected };
       setFields(saved);
       setDirty(false);

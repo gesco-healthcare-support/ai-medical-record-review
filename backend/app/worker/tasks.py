@@ -787,7 +787,9 @@ def segment_document(job_id) -> None:
         # Best-effort report header: auto-extract name/DOB/law firm so Review opens pre-filled. A
         # failure (429, empty OCR) must NOT fail identify - the rows are the primary output and the
         # reviewer can re-run extraction from the header bar. Logged ids-only, never the values.
-        from app.services.extraction import extract_header
+        # The covering letter's fields `HEADER_PREFILL_FIELDS` turns on are filled only where empty,
+        # so a re-identify keeps what the reviewer typed.
+        from app.services.extraction import extract_header, prefill_letter_fields
 
         pages = list(range(1, min(15, document.page_count) + 1))
         try:
@@ -796,6 +798,9 @@ def segment_document(job_id) -> None:
             document.patient_last_name = header["last_name"]
             document.patient_dob = header["dob"]
             document.law_firm = header["lawfirm"]
+            filled = prefill_letter_fields(document, header)
+            if filled:
+                logger.info("header letter fields filled for document %s: %s", document.id, filled)
         except Exception:
             logger.warning("header extraction skipped for document %s", document.id, exc_info=True)
 

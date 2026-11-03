@@ -164,16 +164,19 @@ export type HeaderFields = {
   pages_received: string;
 };
 
-/** The four header fields extraction detects - the whole reply of POST /extract-header. */
+/** The header fields extraction detects - the whole reply of POST /extract-header: always the four
+ *  below, plus whichever covering-letter fields the server's HEADER_PREFILL_FIELDS turns on. */
 export type DetectedHeaderFields = Pick<
   HeaderFields,
   "patient_first_name" | "patient_last_name" | "patient_dob" | "law_firm"
->;
+> &
+  Partial<Pick<HeaderFields, "attorney_name" | "doctor" | "letter_date" | "pages_received">>;
 
 /** POST /api/documents/{id}/extract-header - re-extract the header from the record's first pages
  *  (a model call) AND persist it: a field the extraction found overwrites the stored one, a field it
- *  did not find keeps the stored value. The reply is ONLY the four detected fields, so a caller
- *  holding the whole header merges it in rather than replacing the header with it. */
+ *  did not find keeps the stored value. A covering-letter field is only ever filled where empty.
+ *  The reply carries only the detected fields, so a caller holding the whole header merges it in
+ *  rather than replacing the header with it. */
 export function extractHeader(id: string) {
   return apiFetch<DetectedHeaderFields>(`/documents/${id}/extract-header`, { method: "POST" });
 }

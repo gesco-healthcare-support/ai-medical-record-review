@@ -28,7 +28,7 @@ from app.api.deps import get_owned_document
 from app.api.downloads import DOWNLOADS_UNAVAILABLE
 from app.api.ownership import duplicate_conflict, same_file, upload_owner
 from app.auth.deps import current_active_user
-from app.config import get_settings
+from app.config import HEADER_LETTER_FIELDS, get_settings
 from app.db import get_db
 from app.errors import (
     EmptyExtractionError,
@@ -58,7 +58,7 @@ from app.services.aggregate import merge_pdfs
 from app.services.audit import audit
 from app.services.classification import DEFAULT_ID, match_rules
 from app.services.date_entries import merge_by_date
-from app.services.extraction import extract_header
+from app.services.extraction import extract_header, prefill_letter_fields
 from app.services.files import safe_name
 from app.services.gemini import PROMPT_VERSION
 from app.services.house_style import one_paragraph
@@ -666,7 +666,8 @@ def extract_header_route(
     first pages (Vertex) AND persist them onto the document, so a single detect is available
     everywhere (Review, Summaries, Export, bundles) without a separate Save. On a PipelineError
     nothing is persisted, and a field the extraction did not FIND does not overwrite a stored one.
-    Sync-AI: FastAPI runs this sync handler in its threadpool."""
+    The letter fields `HEADER_PREFILL_FIELDS` turns on are added to the reply and stored only where
+    still empty. Sync-AI: FastAPI runs this sync handler in its threadpool."""
     pages = list(range(1, min(15, document.page_count) + 1))
     try:
         data = extract_header(document.stored_path, pages)
@@ -692,9 +693,18 @@ def extract_header_route(
             setattr(document, field, found)
         else:
             shape[field] = getattr(document, field) or ""
+    # The covering letter's fields `HEADER_PREFILL_FIELDS` turned on are FIRST-FILLED instead: only
+    # an empty one is written, so a reviewer's typed value survives a re-detect.
+    letter_filled = prefill_letter_fields(document, data)
+    for field in HEADER_LETTER_FIELDS:
+        if field in data:
+            stored = getattr(document, field)
+            shape[field] = "" if stored is None else str(stored)
     session.commit()
     # Field names only, never the values: they are the patient's name and date of birth.
-    filled = sorted(field for field, found in _header_shape(data).items() if found)
+    filled = sorted(
+        [field for field, found in _header_shape(data).items() if found] + letter_filled
+    )
     audit(session, "header.extract", user.id, document.id, detail="filled=" + ",".join(filled))
     # The MERGED view, so the two callers show what is stored rather than the raw extraction - a
     # kept field would otherwise vanish from the form while surviving in the database.
