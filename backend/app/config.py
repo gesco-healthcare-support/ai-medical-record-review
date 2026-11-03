@@ -204,6 +204,27 @@ def _parsed_summary_category_models(raw: str) -> tuple[tuple[str, str], ...]:
     return tuple(pairs)
 
 
+# The letter-header fields the header call can also read (`HEADER_PREFILL_FIELDS`), by the
+# document attribute each one fills.
+HEADER_LETTER_FIELDS = ("attorney_name", "doctor", "letter_date", "pages_received")
+
+
+@lru_cache(maxsize=16)
+def _parsed_header_prefill_fields(raw: str) -> tuple[str, ...]:
+    """``HEADER_PREFILL_FIELDS`` -> the named letter fields, in ``HEADER_LETTER_FIELDS`` order.
+
+    A name outside that list refuses startup rather than being ignored: a field an operator turned
+    on that is silently never filled would look like the extraction finding nothing.
+    """
+    named = {entry.strip() for entry in (raw or "").split(",") if entry.strip()}
+    unknown = sorted(named - set(HEADER_LETTER_FIELDS))
+    if unknown:
+        raise RuntimeError(
+            f"HEADER_PREFILL_FIELDS names {unknown}; expected any of {list(HEADER_LETTER_FIELDS)}."
+        )
+    return tuple(field for field in HEADER_LETTER_FIELDS if field in named)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -1155,6 +1176,14 @@ class Settings(BaseSettings):
     #
     # Off by default: it changes the draft a reviewer is shown. Turn it on per box.
     suggest_evaluation_pieces: bool = False
+    # Letter-header fields the header call (`extraction.extract_header`, the record's first 15
+    # pages, the same call that reads name / date of birth / law firm) also reads and PRE-FILLS,
+    # comma-separated, any of `HEADER_LETTER_FIELDS`: attorney_name, doctor, letter_date,
+    # pages_received. Only a field that is still empty is filled - never a value a reviewer typed -
+    # and pages_received only when it is at most the record's page count. Reviewers type these four
+    # on every record. Empty by default: each field is turned on once its extraction has been
+    # replayed against what reviewers typed and matches about 90% of the time.
+    header_prefill_fields: str = ""
     bundle_summarize_cap: int = 40
 
     def effective_job_timeout(self, pages: int) -> int:
@@ -1210,6 +1239,8 @@ class Settings(BaseSettings):
         # are untouched, so neither can regress. SUMMARY_MODEL overrides.
         self.summary_model = self.summary_model or "gemini-3.5-flash"
         self.verify_model = self.verify_model or self.genai_model
+        # Called for its exception: a field name nobody can act on refuses startup.
+        _parsed_header_prefill_fields(self.header_prefill_fields)
         if self.environment == "prod" and not self.use_vertex:
             raise RuntimeError(
                 "GOOGLE_GENAI_USE_VERTEXAI must be true in production: PHI may only go to the "
@@ -1764,6 +1795,10 @@ class Settings(BaseSettings):
         key = str(category).strip()
         key = str(int(key)) if key.isdigit() else key
         return dict(_parsed_summary_category_models(self.vllm_summary_category_models)).get(key)
+
+    def header_letter_fields(self) -> tuple[str, ...]:
+        """The letter fields `HEADER_PREFILL_FIELDS` turns on, in `HEADER_LETTER_FIELDS` order."""
+        return _parsed_header_prefill_fields(self.header_prefill_fields)
 
 
 @lru_cache

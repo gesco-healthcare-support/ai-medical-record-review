@@ -313,6 +313,10 @@ x-backend-env: &backend-env
   # Mark the pieces of a QME/AME evaluation cut at its records review as suggested merges (page
   # numbering runs on under the evaluator's header). Suggestions only, no model call.
   SUGGEST_EVALUATION_PIECES: ${SUGGEST_EVALUATION_PIECES:-false}
+  # Covering-letter fields the header call also reads and pre-fills where still empty: any of
+  # attorney_name, doctor, letter_date, pages_received. Empty by default: a field is turned on
+  # once its extraction matches what reviewers type.
+  HEADER_PREFILL_FIELDS: ${HEADER_PREFILL_FIELDS:-}
   # Per-attempt deadline (ms). NOT merely a client-side stall guard: google-genai forwards it to
   # Vertex as the SERVER-side deadline, so exceeding it returns a server 504 DEADLINE_EXCEEDED
   # (proven 2026-08-12 - an 8000 value produced a server 504 at 6.2s). It is therefore the ceiling on

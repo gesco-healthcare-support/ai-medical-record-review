@@ -173,6 +173,7 @@ vLLM thinking is `VLLM_THINKING_STAGES` in the vLLM group. OpenAI takes no think
 | `VERIFY_SUSPECT_CAP` | int | `200` | `200` | yes | none | Maximum boundaries checked per record (`verify_pass.suspect_indices()`) |
 | `VERIFY_TRIGGERED_ONLY` | bool | `False` | `false` | yes | none | Checks only the boundaries the trigger heuristic selects |
 | `SUGGEST_EVALUATION_PIECES` | bool | `False` | `false` | yes | none | After the verify pass, marks as a suggested merge each draft row that continues the QME/AME evaluation before it: a category 12 or 13 row, both pages of the cut carry evaluator wording, and the page numbering runs on across them (`evaluation_pieces.suggest_evaluation_pieces()`). Suggestions only, on stored page text, no model call |
+| `HEADER_PREFILL_FIELDS` | str | `""` | `""` | yes | Comma-separated, any of `attorney_name`, `doctor`, `letter_date`, `pages_received`; another name refuses startup | Covering-letter fields the header call (`extraction.extract_header()`, the record's first 15 pages) also reads, and `extraction.prefill_letter_fields()` writes onto a record where still empty - on Identify and on "Detect header" - never over a reviewer's value. `doctor` only when it names one `DOCTORS` entry, `letter_date` only as mm/dd/yyyy, `pages_received` only when at most the page count. Empty: the call is the four-field one |
 | `MERGE_VISIT_PIECES` | bool | `False` | `false` | yes | none | After the verify pass, merges two adjacent same-date draft rows of one visit (both category 1, both category 5, or a visit and its RFA or work status; never category 3) when the `verify`-stage model confirms one provider wrote both (`visit_merge.merge_visit_pieces()`); off until measured |
 | `VISIT_MERGE_HINTS` | bool | `False` | `false` | yes | none | Merge hints that follow the reviewers' joins, never a merge: the verify pass asks only about two rows of the same known date, never beside a diagnostic study (3) or a single lab result (14) (`verify_pass.verify_and_merge()`), and every visit-piece boundary gets `suggest_merge` with no model call (`visit_merge.hint_visit_pieces()`); not when `MERGE_VISIT_PIECES` is on |
 
@@ -232,6 +233,7 @@ it and a worker waits for it, and no vLLM client is handed out until it passes
 | Vertex in production | `ENVIRONMENT=prod` and `GOOGLE_GENAI_USE_VERTEXAI` false |
 | Backend name | `LLM_BACKEND` not `gemini`, `openai` or `vllm` |
 | Overrides | An `LLM_BACKEND_OVERRIDES` entry without `=`, with an unknown stage, or with an unknown backend |
+| Header prefill fields | A `HEADER_PREFILL_FIELDS` name that is not one of the four letter fields |
 | OpenAI keys | `SUMMARY_PROVIDER=openai` or any stage on `openai`, and `OPENAI_API_KEY`, `SUMMARY_BODY_MODEL`, `SUMMARY_TITLE_MODEL` or `AUDIT_MODEL` empty |
 | OpenAI Zero Data Retention | Same condition, `ENVIRONMENT=prod`, and `OPENAI_ZDR_ACKNOWLEDGED` not true |
 | vLLM keys | Any stage on `vllm` and `VLLM_BASE_URL` or `VLLM_MODEL` empty |
