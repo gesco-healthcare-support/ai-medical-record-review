@@ -194,6 +194,21 @@ def _same_known_date(prev, row):
     return date not in ("", "-") and str(prev.get("date") or "").strip() == date
 
 
+# A diagnostic study (3) is always its own entry (the senior reviewer, 2026-10-28), and a lab
+# result (14) beside another category was rejected as a hint far more often than applied.
+_DIAGNOSTIC_CATEGORY = "3"
+_LAB_CATEGORY = "14"
+
+
+def _kept_apart(prev, row):
+    """Is this a boundary no merge hint may cross: a diagnostic on either side, or one lab?
+
+    Two labs (14 | 14) stay askable - reviewers split those about evenly.
+    """
+    categories = (str(prev.get("category") or "").strip(), str(row.get("category") or "").strip())
+    return _DIAGNOSTIC_CATEGORY in categories or categories.count(_LAB_CATEGORY) == 1
+
+
 def _apply_verdicts(rows, same_doc, auto):
     """Turn boundary verdicts into rows: absorb a refuted row when ``auto``, otherwise mark it.
 
@@ -263,11 +278,17 @@ def verify_and_merge(
 
     suspects = suspect_indices(rows, triggered_only=triggered_only)
     # `visit_merge_hints`: a hint across two dates is mostly wrong (on 283 finished records 19-23%
-    # right against 54% on one date), so the model is not asked about such a boundary at all.
-    dropped_cross_date = None
+    # right against 54% on one date), so the model is not asked about such a boundary at all. Nor
+    # about one beside a diagnostic study or a single lab result: on two records reviewers finished
+    # with these hints, 8 of the 11 they rejected were such a boundary, against 1 of the 13 applied.
+    dropped = None
     if settings.visit_merge_hints:
-        kept = [i for i in suspects if _same_known_date(rows[i - 1], rows[i])]
-        dropped_cross_date = len(suspects) - len(kept)
+        same_date = [i for i in suspects if _same_known_date(rows[i - 1], rows[i])]
+        kept = [i for i in same_date if not _kept_apart(rows[i - 1], rows[i])]
+        dropped = {
+            "dropped_cross_date": len(suspects) - len(same_date),
+            "dropped_diagnostic_or_lab": len(same_date) - len(kept),
+        }
         suspects = kept
     report(0, len(suspects))
     same_doc = {}
@@ -293,6 +314,6 @@ def verify_and_merge(
     out, affected = _apply_verdicts(rows, same_doc, auto)
     key = "merged_away" if auto else "suggested"
     stats = {"suspects": len(suspects), key: affected}
-    if dropped_cross_date is not None:
-        stats["dropped_cross_date"] = dropped_cross_date
+    if dropped is not None:
+        stats.update(dropped)
     return out, stats
