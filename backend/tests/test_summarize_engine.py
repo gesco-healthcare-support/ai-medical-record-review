@@ -5061,6 +5061,34 @@ def test_on_a_marked_record_diagnostics_and_labs_keep_their_own_entries():
     assert out[1]["summaryText"] == "**Impression**: Normal."
 
 
+def test_on_a_marked_record_an_operative_report_keeps_its_own_entry():
+    """DEMONSTRATES the 2026-11-04 answer: "the only things that should be its own entry would be
+    Operative Reports (Category 8) and Diagnostics (Category 3)". The date's other entries fold; the
+    operative report stays its own entry with its own body."""
+    surgery = "JOHN DOE, M.D. KAISER PERMANENTE. OPERATIVE REPORT"
+    entries = [
+        _entry(_KAISER_NOTE, "**Plan**: Surgery today."),
+        _entry(surgery, "**Procedure**: Arthroscopy."),
+        _entry(_NURSE_CALL, "**Plan**: Call back."),
+    ]
+    out = se.fold_record_entries(entries, ["1", "8", "1"], "summaryTitle", by_date=True)
+    assert [e["summaryTitle"] for e in out] == [_KAISER_NOTE, surgery]
+    assert out[1]["summaryText"] == "**Procedure**: Arthroscopy."
+    assert "**Plan**: Call back." in out[0]["summaryText"]
+
+
+def test_on_a_marked_record_a_discharge_summary_still_folds_into_its_date():
+    """GUARD: "for discharge summaries, those can be merged together"."""
+    discharge = "KAISER PERMANENTE. DISCHARGE SUMMARY"
+    entries = [
+        _entry(_KAISER_NOTE, "**Plan**: Home."),
+        _entry(discharge, "**Discharge Diagnosis**: Strain."),
+    ]
+    out = se.fold_record_entries(entries, ["1", "16"], "summaryTitle", by_date=True)
+    assert [e["summaryTitle"] for e in out] == [_KAISER_NOTE]
+    assert "**Discharge Diagnosis**: Strain." in out[0]["summaryText"]
+
+
 def test_an_unmarked_record_keeps_the_visit_fold():
     """GUARD: without the reviewer's choice, two authors' entries of one date stay apart."""
     entries = [_entry(_KAISER_NOTE, "**Plan**: Rest."), _entry(_NURSE_CALL, "**Plan**: Call.")]

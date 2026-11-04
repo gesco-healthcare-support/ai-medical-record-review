@@ -26,7 +26,7 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 | | `taxonomy.py`, `seed_catalog.py` | The category constants; used only while the `categories` table is empty. |
 | | `catalog.py` | Reads the editable catalog (categories and prompts) from the database, with the constants as fallback. |
 | Review | `rows.py` | Validates reviewer-edited rows. |
-| | `date_entries.py` | "One entry per date" for a Kaiser or hospital record: merges neighbouring same-date rows (diagnostics, labs and allergy or immunization rows apart) and unticks the labs. |
+| | `date_entries.py` | "One entry per date" for a Kaiser or hospital record: merges neighbouring same-date rows (diagnostics, operative reports, labs and allergy or immunization rows apart) and unticks the labs. |
 | | `extraction.py` | Reads the report header fields from a record's first pages. |
 | Duplicates | `dedup.py` | Groups included rows that look like copies, gates them by date and title/category, and asks a model to confirm. |
 | Summaries | `summarize_engine.py` | Summarizes one row: prompt assembly, the body, title and audit calls, notices, provenance. |
