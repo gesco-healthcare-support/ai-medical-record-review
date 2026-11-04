@@ -582,8 +582,8 @@ const one = (over: Record<string, unknown> = {}) => [
   },
 ];
 
-/** The edit card's own Save / Cancel. The report HeaderBar above the list carries a Save button
- *  too, so an unscoped query matches both - and would be satisfied by the wrong one. */
+/** The edit card's own Save / Cancel, scoped to the card so a button elsewhere on the page (the
+ *  report HeaderBar carried a Save button until it began saving itself) can never satisfy it. */
 const editActions = () => within(document.querySelector(".edit-actions") as HTMLElement);
 
 function renderOne(over: Record<string, unknown> = {}) {

@@ -242,7 +242,7 @@ reach the reviewer as the call site's fallback.
 | `frontend/components/admin/prompt-dialog.tsx` | Save a prompt | Could not save the prompt. |
 | `frontend/components/admin/prompt-dialog.tsx` | Revert a prompt | Could not revert the prompt. |
 | `frontend/components/review/export-dialog.tsx` | Export | Export failed. |
-| `frontend/components/review/header-bar.tsx` | Save the header | Could not save the header. |
+| `frontend/components/review/header-bar.tsx` | Header autosave | `Not saved: ` followed by the sentence, fallback `please try again`, on the bar with a Retry button |
 | `frontend/components/review/header-bar.tsx` | Detect the header | Could not read the header. |
 | `frontend/components/review/duplicates-view.tsx` | Resolve a cluster | Could not save - please try again. |
 | `frontend/components/review/duplicates-view.tsx` | Load duplicates | Could not load duplicates. |

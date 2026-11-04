@@ -480,24 +480,32 @@ changed since they were written; those will be regenerated, so it asks for confi
 DOB, attorney, law firm, doctor, letter type, letter date and pages received. The header state lives in
 the hook, so both bars and the export dialog read one copy.
 
-- Save sends the bar's `fields` object with `PUT /api/documents/{id}/header`. The server treats a field
-  missing from the body as empty, stores an unrecognised letter type as empty, and stores an
-  unparseable "pages received" as unset.
+- The header saves itself; there is no Save button (a reviewer asked for it on 2026-11-04 - people
+  forgot to click Save because everything else on the page saves by itself). Each save sends the
+  bar's whole `fields` object with `PUT /api/documents/{id}/header`: `HEADER_SAVE_DELAY_MS` (800 ms,
+  the rows' delay) after the last keystroke, at once when a field loses focus or a dropdown changes,
+  and when the bar goes away (another tab or page) with an edit still waiting. Saves run one at a
+  time in order, so the last edit is the one stored. Beside the buttons the bar says "Unsaved
+  changes...", "Saving...", "Saved", or `Not saved: ` and why, with a Retry button. The server
+  treats a field missing from the body as empty, stores an unrecognised letter type as empty, and
+  stores an unparseable "pages received" as unset.
 - Auto-fill (labelled "Re-detect" once any of first name, last name, DOB or law firm is stored) calls
   `POST /api/documents/{id}/extract-header`. The server reads the record's first 15 pages, stores the
   fields it found, and answers with first name, last name, DOB and law firm, merged with what was
-  already stored. There is no separate Save step for it. With `HEADER_PREFILL_FIELDS` set, the same
-  call also reads the covering letter's attorney, doctor, letter date and pages received (the ones
-  the setting names) and stores each only where the field is still empty; the answer then carries
-  them too. The Identify job does the same at the end of segmentation.
+  already stored. An edit still waiting is saved first, and a save that failed stops the detection,
+  so the detection never overwrites an unsaved edit. The fields are locked while it reads. With
+  `HEADER_PREFILL_FIELDS` set, the same call also reads the covering letter's attorney, doctor,
+  letter date and pages received (the ones the setting names) and stores each only where the field
+  is still empty; the answer then carries them too. The Identify job does the same at the end of
+  segmentation.
 - The doctor select always includes the stored value, even before the list arrives or when the list no
   longer has it, so a blur cannot write a different doctor. The doctor list comes from the backend with
   the record (`doctors`). The letter options are a constant in the component (`LETTER_OPTIONS`); the
   record's `letter_types` list is typed but not read.
 - A "pages received" figure far from the file's own page count shows a warning under the field
   naming both numbers (`pageCountWarning()`, #330): past the larger of 10 pages and a tenth of the
-  file, since real cover sheets run a few pages short of the file. It never blocks Save; the figure
-  is stored as typed. Both bars get the count from the hook (`pageCount`, `filePages` on
+  file, since real cover sheets run a few pages short of the file. It never blocks the save; the
+  figure is stored as typed. Both bars get the count from the hook (`pageCount`, `filePages` on
   `SummariesView`).
 
 ## Exports handed to the browser

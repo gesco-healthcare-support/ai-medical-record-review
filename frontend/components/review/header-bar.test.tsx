@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -8,11 +8,23 @@ vi.mock("@/lib/review-api", () => ({ saveHeader: vi.fn(), extractHeader: vi.fn()
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api";
 import { extractHeader, saveHeader } from "@/lib/review-api";
-import { HeaderBar, pageCountWarning } from "@/components/review/header-bar";
+import {
+  HEADER_SAVE_DELAY_MS,
+  HeaderBar,
+  pageCountWarning,
+} from "@/components/review/header-bar";
 
 const mockToast = vi.mocked(toast);
+/** The header the most recent save sent. */
+const lastSent = () => vi.mocked(saveHeader).mock.calls.at(-1)?.[1];
 
-afterEach(() => vi.clearAllMocks());
+afterEach(async () => {
+  // Unmounting sends an edit still waiting - the bar's own promise - so unmount and let that save
+  // settle HERE, or it lands in the next test's mocks.
+  cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  vi.clearAllMocks();
+});
 
 describe("HeaderBar error handling", () => {
   it("toasts a humanized 404 when auto-fill fails", async () => {
@@ -25,17 +37,20 @@ describe("HeaderBar error handling", () => {
     );
   });
 
-  it("toasts a humanized network error when saving the header fails", async () => {
+  it("says on the bar, humanized, when a save fails, and offers Retry", async () => {
     const user = userEvent.setup();
-    vi.mocked(saveHeader).mockRejectedValue(new ApiError("network", 0));
+    vi.mocked(saveHeader).mockRejectedValueOnce(new ApiError("network", 0));
+    vi.mocked(saveHeader).mockResolvedValueOnce(undefined);
     render(<HeaderBar documentId="d1" header={null} onSaved={vi.fn()} />);
-    await user.type(screen.getByPlaceholderText("First"), "Jane"); // dirties the form -> Save enables
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(mockToast.error).toHaveBeenCalledWith(
-        expect.stringMatching(/couldn't reach the server/i),
-      ),
-    );
+    await user.type(screen.getByPlaceholderText("First"), "Jane");
+    await user.tab();
+    expect(await screen.findByText(/Not saved: .*couldn't reach the server/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    expect(saveHeader).toHaveBeenCalledTimes(2);
+    expect(lastSent()).toMatchObject({ patient_first_name: "Jane" });
   });
 });
 
@@ -56,11 +71,10 @@ describe("HeaderBar fields", () => {
     await user.type(screen.getByLabelText("Law firm"), "Acme");
     await user.selectOptions(screen.getByLabelText("Letter"), "advocacy");
     await user.type(screen.getByLabelText("Letter date"), "06/07/2026");
+    await user.tab();
 
-    await user.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => expect(saveHeader).toHaveBeenCalled());
-    expect(vi.mocked(saveHeader).mock.calls[0][1]).toMatchObject({
+    await waitFor(() => expect(lastSent()).toMatchObject({ letter_date: "06/07/2026" }));
+    expect(lastSent()).toMatchObject({
       patient_last_name: "Roe",
       patient_dob: "04/05/1980",
       attorney_name: "Reyes",
@@ -112,10 +126,10 @@ describe("HeaderBar persistence", () => {
     expect(saveHeader).not.toHaveBeenCalled(); // detect alone persists; no manual Save needed
   });
 
-  it("keeps the five fields Auto-fill does not detect, in the saved header and the next Save", async () => {
+  it("keeps the five fields Auto-fill does not detect, in the saved header and the next save", async () => {
     // The server's reply carries ONLY the four detected fields (`_header_shape` in
     // backend/app/api/documents.py). Replacing the form with it left the other five undefined,
-    // so a later manual Save sent a payload without them and HeaderPayload stored each as "" -
+    // so a later save sent a payload without them and HeaderPayload stored each as "" -
     // the reviewer's attorney, doctor, letter and page count erased by an unrelated edit. The
     // fixture above carries all nine keys, which is why this was never seen in a test.
     const user = userEvent.setup();
@@ -148,10 +162,9 @@ describe("HeaderBar persistence", () => {
 
     await user.clear(screen.getByLabelText("Law firm"));
     await user.type(screen.getByLabelText("Law firm"), "Acme");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.tab();
 
-    await waitFor(() => expect(saveHeader).toHaveBeenCalled());
-    expect(vi.mocked(saveHeader).mock.calls[0][1]).toEqual({ ...stored, ...reply, law_firm: "Acme" });
+    await waitFor(() => expect(lastSent()).toEqual({ ...stored, ...reply, law_firm: "Acme" }));
   });
 
   it("labels the button Re-detect once a header value is present", () => {
@@ -221,8 +234,8 @@ describe("HeaderBar doctor selection", () => {
         onSaved={vi.fn()}
       />,
     );
+    // A dropdown saves the moment it changes - no blur, no wait.
     await user.selectOptions(screen.getByLabelText("Doctor"), "Pelton");
-    await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(saveHeader).toHaveBeenCalledWith(
         "d1",
@@ -236,7 +249,7 @@ describe("HeaderBar doctor selection", () => {
     vi.mocked(saveHeader).mockResolvedValue(undefined);
     render(<HeaderBar documentId="d1" header={FILLED} onSaved={vi.fn()} />);
     await user.type(screen.getByPlaceholderText("From cover sheet"), "418");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.tab();
     await waitFor(() =>
       expect(saveHeader).toHaveBeenCalledWith(
         "d1",
@@ -299,7 +312,7 @@ describe("Pages received against the file (#330)", () => {
     vi.mocked(saveHeader).mockResolvedValue(undefined);
     render(<HeaderBar documentId="d1" header={HEADER} pageCount={52} onSaved={vi.fn()} />);
     await user.type(screen.getByLabelText("Pages received"), "500");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.tab();
     await waitFor(() =>
       expect(saveHeader).toHaveBeenCalledWith(
         "d1",
@@ -313,5 +326,126 @@ describe("Pages received against the file (#330)", () => {
     render(<HeaderBar documentId="d1" header={HEADER} pageCount={244} onSaved={vi.fn()} />);
     await user.type(screen.getByLabelText("Pages received"), "241");
     expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+describe("HeaderBar autosave (the reviewers asked for it, 2026-11-04)", () => {
+  const HEADER = {
+    patient_first_name: "Jane",
+    patient_last_name: "Roe",
+    patient_dob: "01/02/1990",
+    law_firm: "Acme LLP",
+    attorney_name: "",
+    doctor: "",
+    letter_type: "",
+    letter_date: "",
+    pages_received: "",
+  };
+
+  it("has no Save button: an edit saves itself", () => {
+    render(<HeaderBar documentId="d1" header={HEADER} onSaved={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
+  it("saves a pause after the last keystroke, with no blur, and says so", async () => {
+    const user = userEvent.setup();
+    const onSaved = vi.fn();
+    vi.mocked(saveHeader).mockResolvedValue(undefined);
+    render(<HeaderBar documentId="d1" header={HEADER} onSaved={onSaved} />);
+
+    await user.type(screen.getByLabelText("Attorney"), "Reyes");
+    expect(saveHeader).not.toHaveBeenCalled();
+    expect(screen.getByText("Unsaved changes...")).toBeInTheDocument();
+
+    await waitFor(() => expect(saveHeader).toHaveBeenCalledTimes(1), {
+      timeout: HEADER_SAVE_DELAY_MS * 3,
+    });
+    expect(lastSent()).toEqual({ ...HEADER, attorney_name: "Reyes" });
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    expect(onSaved).toHaveBeenCalledWith({ ...HEADER, attorney_name: "Reyes" });
+  });
+
+  it("sends what is still waiting when the bar goes away", async () => {
+    // Leaving the tab or the page inside the pause must not drop the edit.
+    vi.mocked(saveHeader).mockResolvedValue(undefined);
+    const { unmount } = render(<HeaderBar documentId="d1" header={HEADER} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Attorney"), { target: { value: "Reyes" } });
+    expect(saveHeader).not.toHaveBeenCalled();
+
+    unmount();
+
+    await waitFor(() =>
+      expect(saveHeader).toHaveBeenCalledWith("d1", { ...HEADER, attorney_name: "Reyes" }),
+    );
+    expect(saveHeader).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends saves one at a time, in order, so the last edit is the one stored", async () => {
+    const user = userEvent.setup();
+    let release: () => void = () => undefined;
+    vi.mocked(saveHeader).mockImplementationOnce(
+      () => new Promise<undefined>((resolve) => (release = () => resolve(undefined))),
+    );
+    vi.mocked(saveHeader).mockResolvedValue(undefined);
+    render(<HeaderBar documentId="d1" header={HEADER} onSaved={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Attorney"), "A");
+    await user.tab(); // first save goes out and hangs
+    await user.type(screen.getByLabelText("Law firm"), "X");
+    await user.tab(); // second save waits behind it
+
+    expect(saveHeader).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Saved")).toBeNull();
+    act(() => release());
+
+    await waitFor(() => expect(saveHeader).toHaveBeenCalledTimes(2));
+    expect(lastSent()).toEqual({ ...HEADER, attorney_name: "A", law_firm: "Acme LLPX" });
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+  });
+
+  it("sends a typed edit before Re-detect reads the record", async () => {
+    // Sent after the detection instead, it would put back the values the detection replaced.
+    const user = userEvent.setup();
+    vi.mocked(saveHeader).mockResolvedValue(undefined);
+    vi.mocked(extractHeader).mockResolvedValue({ ...HEADER, patient_last_name: "Doe" });
+    render(<HeaderBar documentId="d1" header={HEADER} onSaved={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Attorney"), "R");
+    await user.click(screen.getByRole("button", { name: "Re-detect" }));
+
+    await waitFor(() => expect(extractHeader).toHaveBeenCalled());
+    expect(vi.mocked(saveHeader).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(extractHeader).mock.invocationCallOrder[0],
+    );
+    expect(lastSent()).toMatchObject({ attorney_name: "R" });
+  });
+
+  it("does not detect over an edit that failed to save", async () => {
+    const user = userEvent.setup();
+    vi.mocked(saveHeader).mockRejectedValue(new ApiError("network", 0));
+    render(<HeaderBar documentId="d1" header={HEADER} onSaved={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Attorney"), "R");
+    await user.click(screen.getByRole("button", { name: "Re-detect" }));
+
+    expect(await screen.findByText(/Not saved:/)).toBeInTheDocument();
+    expect(extractHeader).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Attorney")).toHaveValue("R");
+  });
+
+  it("takes a new header from the record, but never over an edit still open", async () => {
+    vi.mocked(saveHeader).mockImplementation(() => new Promise(() => undefined)); // never lands
+    const { rerender } = render(<HeaderBar documentId="d1" header={HEADER} onSaved={vi.fn()} />);
+
+    const withFirm = (law_firm: string) => (
+      <HeaderBar documentId="d1" header={{ ...HEADER, law_firm }} onSaved={vi.fn()} />
+    );
+    rerender(withFirm("Beta"));
+    expect(screen.getByLabelText("Law firm")).toHaveValue("Beta");
+
+    fireEvent.change(screen.getByLabelText("Attorney"), { target: { value: "Reyes" } });
+    rerender(withFirm("Gamma"));
+    expect(screen.getByLabelText("Law firm")).toHaveValue("Beta");
+    expect(screen.getByLabelText("Attorney")).toHaveValue("Reyes");
   });
 });
