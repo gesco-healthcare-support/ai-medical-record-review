@@ -4,7 +4,9 @@ The senior reviewer's answers of 2026-10-30, for Kaiser and hospital records: "F
 think we can keep everything from one date as one entry moving forward, and have it summarized as a
 progress note ... The exception would be for diagnostics, which should be separated." And: "Things
 such as allergies and immunization records aren't important", and "Especially for Kaiser/Hospital
-records, I think it would help to untick [labs] so we can save time".
+records, I think it would help to untick [labs] so we can save time". And on 2026-11-04: "for
+discharge summaries, those can be merged together. I think the only things that should be its own
+entry would be Operative Reports (Category 8) and Diagnostics (Category 3)".
 
 ONLY ON THE REVIEWER'S CHOICE. On ordinary records reviewers keep same-date neighbours apart - 2,089
 same-date neighbouring rows kept apart across 276 live records - and keep most lab results ticked
@@ -17,8 +19,9 @@ not neighbours (`summarize_engine.fold_record_entries`, ``by_date``).
 What it does to the rows, in page order:
 
 - every run of NEIGHBOURING rows that share one known date becomes one row. A diagnostic study
-  (category 3), a lab result (category 14) and an allergy or immunization row stay as they are and
-  break a run, so a study never disappears into a visit;
+  (category 3), an operative report (category 8), a lab result (category 14) and an allergy or
+  immunization row stay as they are and break a run, so a study or an operation never disappears
+  into a visit. A discharge summary (category 16) merges like any other row;
 - the merged row is category 1 (a progress note, the reviewer's first choice) with the run's date
   and the title of its first ticked piece. A run of General (100) rows only stays General;
 - it is ticked when any piece was, the rule a hand merge keeps (`mergeRows` in
@@ -38,7 +41,10 @@ from app.services.reporting import parsed_date
 _GENERAL = "100"
 _PROGRESS_NOTE = "1"
 _DIAGNOSTIC = "3"
+_OPERATIVE = "8"
 _LAB = "14"
+# The categories that keep their own entry, whatever their date.
+_OWN_ENTRY = (_DIAGNOSTIC, _OPERATIVE, _LAB)
 
 
 @dataclass(frozen=True)
@@ -52,9 +58,7 @@ class DateMerge:
 
 
 def _keeps_its_own_entry(row: dict) -> bool:
-    return str(row.get("category")) in (_DIAGNOSTIC, _LAB) or is_allergy_or_immunization(
-        row.get("title")
-    )
+    return str(row.get("category")) in _OWN_ENTRY or is_allergy_or_immunization(row.get("title"))
 
 
 def _date_of(row: dict):

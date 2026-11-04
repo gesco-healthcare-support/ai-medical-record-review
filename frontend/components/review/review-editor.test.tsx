@@ -362,7 +362,7 @@ describe("ReviewEditor one entry per date", () => {
     fireEvent.click(screen.getByRole("button", { name: "One entry per date" }));
 
     expect(confirm.mock.calls[0][0]).toContain("untick every lab result");
-    expect(confirm.mock.calls[0][0]).toContain("leave diagnostic studies");
+    expect(confirm.mock.calls[0][0]).toContain("leave diagnostic studies, operative reports");
     expect(apply).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
