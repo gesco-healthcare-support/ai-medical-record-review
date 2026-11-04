@@ -1,6 +1,6 @@
 """One entry per date (`services/date_entries.py`): a Kaiser or hospital record's neighbouring
-same-date rows made one, diagnostics, labs and allergy or immunization rows left alone, labs
-unticked. Synthetic rows only."""
+same-date rows made one, diagnostics, operative reports, labs and allergy or immunization rows left
+alone, labs unticked. Synthetic rows only."""
 
 from app.services.date_entries import merge_by_date
 
@@ -84,6 +84,25 @@ def test_a_diagnostic_study_is_never_merged():
         (4, 4, "1"),
     ]
     assert result.rows[1] == _row(3, category="3", title="MRI Lumbar Spine")
+
+
+def test_an_operative_report_keeps_its_own_entry():
+    """DEMONSTRATES the 2026-11-04 answer: "the only things that should be its own entry would be
+    Operative Reports (Category 8) and Diagnostics (Category 3)". In a 1 | 8 | 1 run of one date the
+    operative report keeps its row, category and tick, and the notes either side stay apart."""
+    surgery = _row(2, end=4, category="8", title="Operative Report")
+    rows = [_row(1), surgery, _row(5)]
+    result = merge_by_date(rows)
+    assert result.rows == rows
+    assert result.runs == 0
+
+
+def test_a_discharge_summary_still_merges_into_its_date():
+    """GUARD: "for discharge summaries, those can be merged together" - a category 16 row of the
+    date joins the run like any other."""
+    rows = [_row(1), _row(2, category="16", title="Discharge Summary"), _row(3)]
+    result = merge_by_date(rows)
+    assert [(r["start"], r["end"], r["category"]) for r in result.rows] == [(1, 3, "1")]
 
 
 def test_an_allergy_or_immunization_row_is_never_merged():

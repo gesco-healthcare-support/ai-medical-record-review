@@ -24,13 +24,18 @@ export const ONE_ENTRY_PER_DATE_CONFIRM = [
   "",
   "This will:",
   "- merge neighbouring documents that share a date into one progress note (category 1)",
-  "- leave diagnostic studies, lab results and allergy or immunization records as they are",
+  "- leave diagnostic studies, operative reports, lab results and allergy or immunization " +
+    "records as they are",
   "- untick every lab result",
   "- in the letter, also combine same-date entries that are not next to each other",
   "",
   "A merge is undone by splitting the row, and the letter's combining can be turned off here.",
   "Continue?",
 ].join("\n");
+
+const ONE_ENTRY_PER_DATE_TITLE =
+  "For a Kaiser or hospital record: one entry per date; diagnostics, operative reports and labs " +
+  "apart";
 
 const STOP_ONE_ENTRY_PER_DATE_CONFIRM =
   "Stop combining same-date entries in the letter? The rows stay as they are.";
@@ -81,7 +86,7 @@ function OneEntryPerDateControls({
         <button
           type="button"
           className="ev-btn ev-btn-outline ev-btn-sm"
-          title="For a Kaiser or hospital record: one entry per date, diagnostics and labs apart"
+          title={ONE_ENTRY_PER_DATE_TITLE}
           onClick={() => void apply()}
         >
           One entry per date

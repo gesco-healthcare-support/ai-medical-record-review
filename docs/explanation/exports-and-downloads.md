@@ -50,7 +50,7 @@ entry list (`documents.py`):
    provider's category-1 entries, or category-5 entries, of one date, with that visit's RFA and
    work status - and each date's laboratory results into one. On a record the reviewer marked
    "One entry per date" (`documents.one_entry_per_date`), every entry of one date but a diagnostic
-   study's and a lab's folds into one instead of the visit fold.
+   study's, an operative report's and a lab's folds into one instead of the visit fold.
    See [Summarization](summarization.md#record-level-passes-at-export).
 4. **Record facts.** `ReportDetails` carries the doctor (Word typeface only), the attorney, law firm,
    covering-letter type and date, the reviewer's display name from the signed-in account (which

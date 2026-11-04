@@ -2388,6 +2388,8 @@ _PR2_TITLE = re.compile(r"\bPR-?2\b|\bPROGRESS REPORT\b", re.I)
 # carry different dates, so they never meet here.
 _VISIT_KINDS = ("1", "5")
 _DIAGNOSTIC_CATEGORY = "3"
+# An operative report keeps its own entry on a one-entry-per-date record (`_date_heads`).
+_OPERATIVE_CATEGORY = "8"
 # A section starts at a LABEL - a bold span marked by its colon - never at bold content, so
 # "**Work Status**: **Modified duty.**" stays one section.
 _SECTION = re.compile(r"(?=\*\*[^*\n]{1,60}(?:\*\*:|:\*\*))")
@@ -2520,12 +2522,15 @@ def _combined_lab_title(titles: list[str]) -> str:
 def _date_heads(
     entries: list[dict], categories: list[str]
 ) -> dict[int, tuple[list[int], list[int]]]:
-    """Each date's entries of two or more, but a diagnostic study's and a lab's, as `_visit_heads`
-    shapes a group: keyed by the entry that heads it, ``(members, documents)``.
+    """Each date's entries of two or more, but a diagnostic study's, an operative report's and a
+    lab's, as `_visit_heads` shapes a group: keyed by the entry that heads it, ``(members,
+    documents)``.
 
     The senior reviewer's answer of 2026-10-30, for a Kaiser or hospital record: "keep everything
     from one date as one entry ... summarized as a progress note ... The exception would be for
-    diagnostics, which should be separated." Only on a record the reviewer marked
+    diagnostics, which should be separated." And on 2026-11-04: "for discharge summaries, those can
+    be merged together. I think the only things that should be its own entry would be Operative
+    Reports (Category 8) and Diagnostics (Category 3)". Only on a record the reviewer marked
     (`Document.one_entry_per_date`); the rows' own merge (`services/date_entries.py`) joins the
     neighbours, and this joins the same-date entries a printout scattered through the record. A
     progress note heads its date and leads the body when the date has one; otherwise the first
@@ -2534,7 +2539,7 @@ def _date_heads(
     groups: dict = {}
     for i, (entry, category) in enumerate(zip(entries, categories, strict=True)):
         date = parsed_date(entry)
-        if category in (_DIAGNOSTIC_CATEGORY, _LAB_CATEGORY) or date is None:
+        if category in (_DIAGNOSTIC_CATEGORY, _OPERATIVE_CATEGORY, _LAB_CATEGORY) or date is None:
             continue
         groups.setdefault(date, []).append(i)
     heads: dict[int, tuple[list[int], list[int]]] = {}
@@ -2555,8 +2560,8 @@ def fold_record_entries(
     a lab (category 14) or a diagnostic study (category 3).
 
     ``by_date`` is the record's one-entry-per-date choice: every entry of a date, but a diagnostic
-    study and a lab result, folds into one (`_date_heads`) in place of the visit fold. Labs still
-    fold by date among themselves."""
+    study, an operative report and a lab result, folds into one (`_date_heads`) in place of the
+    visit fold. Labs still fold by date among themselves."""
     labs = _lab_heads(entries, categories)
     visits = (
         _date_heads(entries, categories)
