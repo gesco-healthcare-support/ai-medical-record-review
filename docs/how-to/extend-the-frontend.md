@@ -126,7 +126,7 @@ check is the TypeScript compiler (`pnpm typecheck`); SonarCloud analyses the cod
     Every `HeaderPayload` field defaults to empty, so a save that leaves a field out clears it.
 2. Add the field to `HeaderFields` in `frontend/lib/review-api.ts`, and as an optional field to
     `DocumentListItem` and `DocumentDetail` in `frontend/lib/types.ts`.
-3. Add it to `EMPTY` and to the form in `frontend/components/review/header-bar.tsx`. The Save button
+3. Add it to `EMPTY` and to the form in `frontend/components/review/header-bar.tsx`. Every autosave
     sends the whole `fields` object, so the new field is sent once it is in the state.
 4. Seed it in both `setHeader({ ... })` calls in `frontend/hooks/use-review-workflow.ts`: in the boot
     effect and in `watchSegment()`.
