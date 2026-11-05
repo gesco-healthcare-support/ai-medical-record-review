@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from app.config import get_settings
 from app.errors import OcrUnavailableError, PipelineTimeoutError
 from app.services.classification import classify
+from app.services.deposition_tail import hint_deposition_paperwork
 from app.services.gemini import (
     SEGMENT_RESPONSE_SCHEMA,
     SEGMENTATION_PROMPT,
@@ -638,12 +639,18 @@ def _categorize(pdf_path, row, page_text_fn=None):
 
 def _suggested_merges(rows, settings, page_text_fn):
     """The merge SUGGESTIONS made after the verify pass, with no model call; never a merge."""
-    # A merge HINT on every boundary between one visit's pieces (`VISIT_MERGE_HINTS`): the same
-    # candidates the visit merge would ask about, offered to the reviewer. Not when the pieces are
+    # A merge HINT on every boundary between one visit's pieces (`VISIT_MERGE_HINTS`): the visit
+    # merge's candidates and a PR-4's pieces, offered to the reviewer. Not when the pieces are
     # merged instead.
     if settings.visit_merge_hints and not settings.merge_visit_pieces:
         rows, hinted = hint_visit_pieces(rows)
         logger.info("visit merge hints: %d", hinted)
+
+    # A deposition's closing paperwork (certificate, errata, signature page ...) cut off as a short
+    # row of its own: a hint to join it back, on the same switch (`deposition_tail`).
+    if settings.visit_merge_hints:
+        rows, hinted = hint_deposition_paperwork(rows)
+        logger.info("deposition paperwork hints: %d", hinted)
 
     # A QME/AME evaluation cut into pieces at its records review, offered back as one: suggestions
     # only, on stored page text (the senior reviewer, 2026-11-02). After the verify pass, so its own

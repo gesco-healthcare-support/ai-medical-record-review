@@ -1153,11 +1153,15 @@ class Settings(BaseSettings):
     # Off by default: it changes what segmentation decides, and a wrong merge hides a document. Turn
     # it on per box once it has been measured there.
     merge_visit_pieces: bool = False
-    # Merge HINTS that follow what reviewers actually join, never a merge. Two parts:
+    # Merge HINTS that follow what reviewers actually join, never a merge. Three parts:
     # - the verify pass asks the model only about two rows of the SAME known date - across two dates
     #   (or with a date missing) it sends nothing and no hint is shown;
-    # - every visit-piece boundary (`visit_merge.candidate_indices`: same date, 1+1 / 5+5 or a visit
-    #   and its RFA / work status, never a diagnostic study) gets a hint with NO model call.
+    # - every visit-piece boundary (`visit_merge.hint_candidate_indices`: same date, 1+1 / 5+5 /
+    #   2+2 / 1+2 or a visit and its RFA / work status, never a diagnostic study) gets a hint with
+    #   NO model call. The 2+2 and 1+2 pairs (a PR-4's pieces) were added 2026-11-05: 134 of 179
+    #   new hints joined on Gemini drafts, 19 of 29 on our model's;
+    # - a deposition's short paperwork row (certificate, errata, signature ...) right after it
+    #   (`deposition_tail`), NO model call: joined back 15 of 16 / 2 of 2.
     # Measured against reviewers' joins (a hint is right when the reviewer joined that boundary
     # away; "covers" = share of all their joins the hints point at), today -> with this: a Kaiser
     # printout 26% right / 58% covered -> 65% / 83%; one reviewer's 1,885-page record 67% / 3% ->
