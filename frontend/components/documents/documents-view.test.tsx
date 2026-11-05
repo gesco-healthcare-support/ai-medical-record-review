@@ -22,6 +22,7 @@ const del = { mutateAsync: vi.fn(), isPending: false };
 const identify = { mutateAsync: vi.fn(), isPending: false };
 const aggregate = { mutateAsync: vi.fn(), isPending: false };
 const assign = { mutateAsync: vi.fn(), isPending: false };
+const complete = { mutate: vi.fn(), isPending: false };
 // Who the list was asked for: `useDocuments(owner)` receives the reviewer an admin picked.
 const docsArgs: unknown[] = [];
 vi.mock("@/hooks/use-documents", () => ({
@@ -34,6 +35,7 @@ vi.mock("@/hooks/use-documents", () => ({
   useStartIdentification: () => identify,
   useAggregateDocuments: () => aggregate,
   useAssignDocument: () => assign,
+  useSetCompleted: () => complete,
 }));
 
 // A plain reviewer unless a test says otherwise, so every test written before admins could pick a
@@ -254,6 +256,39 @@ describe("DocumentsView navigation", () => {
     // The id in the path is the whole point: routing to the wrong record shows another patient's
     // documents to a reviewer who thinks they opened their own.
     expect(push).toHaveBeenCalledWith("/records/abc123");
+  });
+
+  it("marks a record completed from its bar, and clears a marked one", async () => {
+    const user = userEvent.setup();
+    docsState.data = [
+      doc({ id: "open1" }),
+      doc({ id: "done1", completed_at: "2026-11-05T10:00:00Z" }),
+    ];
+    render(<DocumentsView />);
+
+    await user.click(screen.getByRole("button", { name: "Mark as completed" }));
+    await user.click(screen.getByRole("button", { name: /^Completed .* - click to clear$/ }));
+
+    expect(complete.mutate.mock.calls.map((call) => call[0])).toEqual([
+      { id: "open1", completed: true },
+      { id: "done1", completed: false },
+    ]);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("says so when the mark could not be changed", async () => {
+    const user = userEvent.setup();
+    docsState.data = [doc({ id: "open1" })];
+    complete.mutate.mockImplementationOnce((_vars, options) =>
+      options.onError(new ApiError("network", 0)),
+    );
+    render(<DocumentsView />);
+
+    await user.click(screen.getByRole("button", { name: "Mark as completed" }));
+
+    expect(vi.mocked(toast).error).toHaveBeenCalledWith(
+      expect.stringMatching(/couldn't reach the server/i),
+    );
   });
 
   it("opens the split-upload dialog from its own button", async () => {

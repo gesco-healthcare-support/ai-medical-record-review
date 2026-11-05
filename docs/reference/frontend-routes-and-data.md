@@ -81,6 +81,7 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | `listDocuments(owner?)` | `GET /documents`, or `GET /documents?owner=<id>` | - | `DocumentListItem[]` (the caller's own records, newest first; for an admin with `owner`, that account's) | `useDocuments()` in `DocumentsView`, `BundlePageClient`, `AdminView`; `useDocuments(owner)` in `DocumentsView` for an admin who picked a reviewer |
 | `uploadDocument()` | `POST /documents` | multipart field `pdf`; `owner` and `allow_duplicate` when an admin uploads into another reviewer's account | `{id, page_count, sha256_duplicate}` | `useUploadDocument()` in `DocumentsView`; does not start identification. Into another reviewer's account it runs only after a confirmation, and a 409 with code `duplicate` asks a second time before sending `allow_duplicate` |
 | `aggregateDocuments()` | `POST /documents/aggregate` | multipart `name` (only when non-blank), `owner` when an admin opened the dialog on another reviewer's records, one `pdfs` field per file in order | `{id, page_count, records}` | `useAggregateDocuments()` in `SplitUploadDialog` |
+| `setCompleted()` | `PUT /documents/{id}/completed` | `{completed}` | Document listing | `useSetCompleted()` in `DocumentsView` (the list is patched at once, then read again) |
 | `deleteDocument()` | `DELETE /documents/{id}` | - | `{ok}` | `useDeleteDocument()` in `DocumentsView` |
 | `startIdentification()` | `POST /documents/{id}/segment/start` | none | `{ok}` | `useStartIdentification()` in `DocumentsView` |
 
@@ -296,6 +297,14 @@ count:
 | Uploaded | status `uploaded` |
 | Failed | status `error` |
 | Interrupted | status `interrupted` |
+| Completed | the reviewer marked it Completed (`completed_at` set) |
+| Not completed | not marked |
+
+The Completed mark (a reviewer asked for it on 2026-11-05, like Outlook's "Categorize"): a bar
+before each file name, outlined until the record is marked and filled blue after (`CompletedMark` in
+`documents-table.tsx`). A click on it, or "Mark as completed" / "Clear Completed" in the row menu,
+sets or clears it without opening the record. Under the status pill a record says when its review
+was last downloaded (`downloaded_at`).
 
 Other My documents behaviour: search matches the filename or the patient name; sort columns are
 Document, Patient, Pages, Uploaded (the default, newest first), Documents found and Last activity; 20

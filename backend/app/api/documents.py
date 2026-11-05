@@ -42,6 +42,7 @@ from app.models import AuditLog, Document, Job, ReviewRow, Summary, User
 from app.schemas.documents import (
     BundlePayload,
     CancelPayload,
+    CompletedPayload,
     DedupStartPayload,
     DuplicateResolvePayload,
     ExportPayload,
@@ -772,6 +773,32 @@ def put_header(
     changed = sorted(f for f in _HEADER_FIELDS if (getattr(document, f) or "") != (before[f] or ""))
     audit(session, "header.edit", user.id, document.id, detail="changed=" + ",".join(changed))
     return document.listing()
+
+
+@router.put("/{document_id}/completed")
+def set_completed(
+    payload: CompletedPayload,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Mark the record Completed on the records list, or clear the mark.
+
+    A reviewer asked for it (2026-11-05), like Outlook's "Categorize": to see which records are
+    fully reviewed and downloaded without searching the log for the patient. The mark is the
+    reviewer's own - no job, export or edit sets or clears it - and it changes nothing else about
+    the record. Marking a record already marked keeps its first date."""
+    _mark_completed(session, document, user, payload.completed)
+    return document.listing()
+
+
+def _mark_completed(session: Session, document: Document, user: User, completed: bool) -> None:
+    """Set or clear `document.completed_at` and audit it; `audit` commits the mark with its row."""
+    if not completed:
+        document.completed_at = None
+    elif document.completed_at is None:
+        document.completed_at = datetime.now(UTC)
+    audit(session, "record.completed", user.id, document.id, detail="on" if completed else "off")
 
 
 @router.delete(
@@ -2529,6 +2556,15 @@ def _record_accounting(session: Session, document: Document):
     )
 
 
+def _note_download(document: Document) -> None:
+    """Stamp the review as downloaded now (`Document.downloaded_at`), for the records list.
+
+    Called by the three exports that carry the summaries - the Word letter, the linked PDF and the
+    ZIP - after the file is built, so a failed build stamps nothing; the `audit` call after it
+    commits the stamp. The memo and category bundles are not the review and do not stamp it."""
+    document.downloaded_at = datetime.now(UTC)
+
+
 @router.post(
     "/{document_id}/export",
     responses={
@@ -2544,6 +2580,7 @@ def export_document(
 ):
     payload = payload or ExportPayload()
     content = _mrr_docx_bytes(session, document, payload, user)
+    _note_download(document)
     audit(session, "export", user.id, document.id)
     return _offer_download(content, DOCX_MIMETYPE, _summary_filename(document), document, user)
 
@@ -2565,6 +2602,7 @@ def export_document_pdf(
     full source record, each title linking to that sub-document's first source page."""
     payload = payload or ExportPayload()
     pdf_bytes = _linked_pdf_bytes(session, document, payload, user)
+    _note_download(document)
     audit(session, "export_pdf", user.id, document.id)
     return _offer_download(pdf_bytes, _PDF_MEDIA_TYPE, _linked_filename(document), document, user)
 
@@ -2632,6 +2670,7 @@ def export_document_zip(
         (_memo_filename(document), _memo_docx_bytes(session, document, payload, user)),
     ]
     members.extend(_bundle_members(session, document, payload.bundles))
+    _note_download(document)
     audit(session, "export_zip", user.id, document.id)
     return _offer_download(
         _zip_bytes(members), "application/zip", _zip_filename(document), document, user

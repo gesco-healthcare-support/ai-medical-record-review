@@ -121,6 +121,15 @@ class HeaderPayload(BaseModel):
     pages_received: str = ""
 
 
+class CompletedPayload(BaseModel):
+    """The reviewer's Completed mark on the records list (PUT /documents/{id}/completed).
+
+    `completed` is required: the route sets or clears the mark, and a body without it says
+    neither."""
+
+    completed: bool
+
+
 class ZipBundle(BaseModel):
     """One category bundle to include in the export zip.
 

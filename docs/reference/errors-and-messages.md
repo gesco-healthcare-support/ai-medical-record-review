@@ -235,6 +235,7 @@ reach the reviewer as the call site's fallback.
 | `frontend/components/documents/documents-view.tsx` | Upload | Upload failed. |
 | `frontend/components/documents/documents-view.tsx` | Start identification | Could not start identification. |
 | `frontend/components/documents/documents-view.tsx` | Delete | Could not delete the record. |
+| `frontend/components/documents/documents-view.tsx` | Mark or clear Completed | Could not change the Completed mark. |
 | `frontend/components/documents/split-upload-dialog.tsx` | Combine several PDFs | Could not combine the records. |
 | `frontend/components/admin/admin-view.tsx` | Update a category | Could not update the category. |
 | `frontend/components/admin/admin-view.tsx` | Reprocess | Could not reprocess that record. |

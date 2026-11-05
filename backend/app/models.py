@@ -207,11 +207,20 @@ class Document(Base):
     pages_received: Mapped[int | None] = mapped_column(Integer)
     # The reviewer chose "One entry per date" for this record (a Kaiser or hospital record,
     # services/date_entries.py): its neighbouring same-date rows were merged, and the letter folds
-    # every same-date entry but a diagnostic study's and a lab's into one. A property of the record,
-    # not of one row set, so a re-identify keeps it; the reviewer turns it off on the workbench.
+    # every same-date entry but a diagnostic study's, an operative report's and a lab's into one. A
+    # property of the record, not of one row set, so a re-identify keeps it; the reviewer turns it
+    # off on the workbench.
     one_entry_per_date: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # When the reviewer marked the record Completed on the records list, or NULL for not marked. A
+    # reviewer asked for it (2026-11-05) to see which records are fully reviewed and downloaded
+    # without searching the log for the patient. The reviewer's own mark; nothing sets it for them.
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # When the review was last downloaded - the Word letter, the linked PDF or the ZIP, the three
+    # exports that carry the summaries - or NULL for never. Set by those routes, so the records list
+    # can say it without reading the audit log; the migration filled it from the log's past exports.
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     jobs: Mapped[list["Job"]] = relationship(
         "Job", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Job.id"
@@ -286,6 +295,8 @@ class Document(Base):
             # would read as a real answer of zero pages.
             "pages_received": "" if self.pages_received is None else self.pages_received,
             "one_entry_per_date": bool(self.one_entry_per_date),
+            "completed_at": _utc_iso(self.completed_at),
+            "downloaded_at": _utc_iso(self.downloaded_at),
         }
 
 

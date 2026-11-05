@@ -1,6 +1,6 @@
 # HTTP API reference
 
-Every HTTP route the FastAPI backend serves - 47 routes in six routers - with its auth level,
+Every HTTP route the FastAPI backend serves - 48 routes in six routers - with its auth level,
 request, response, status codes and audit action.
 
 Source of truth: `backend/app/main.py`, `backend/app/api/documents.py`,
@@ -133,6 +133,7 @@ Every path below starts with `/api/documents`. `{document_id}` is the document's
 | D4 | GET | `/api/documents/{document_id}` | Owner | none | 200 Document listing plus `rows`, `categories`, `doctors`, `letter_types`, `owner` | none | `view_record` when an admin opens another account's record |
 | D5 | POST | `/api/documents/{document_id}/extract-header` | Owner | none | 200 `{patient_first_name, patient_last_name, patient_dob, law_firm}`, plus the letter fields `HEADER_PREFILL_FIELDS` names | 422, 503, 500 `{"error"}` | `header.extract` |
 | D6 | PUT | `/api/documents/{document_id}/header` | Owner | JSON `HeaderPayload` | 200 Document listing | none | `header.edit` |
+| D6a | PUT | `/api/documents/{document_id}/completed` | Owner | JSON `CompletedPayload` | 200 Document listing | 422 | `record.completed` |
 | D7 | DELETE | `/api/documents/{document_id}` | Owner (not admin) | none | 200 `{"ok": true}` | 404, 409 | `delete` |
 | D8 | GET | `/api/documents/{document_id}/pdf` | Owner | none | 200 `application/pdf`; 206 for a `Range` request | none | `view_pdf` |
 | D9 | GET | `/api/documents/{document_id}/status` | Owner | none | 200 `{status, job, unreviewed_duplicate_groups}` | none | none |
@@ -166,6 +167,7 @@ The `detail` string behind each 400, 404 and 409 is listed in
 | D4 | `rows` are Editor rows. The Document listing carries `one_entry_per_date` (D13a, D13b). `categories` is `[{id, name}]` for active categories (`catalog.get_category_options`). `doctors` and `letter_types` come from `reporting.DOCTORS` and `reporting.LETTER_TYPES` in `backend/app/services/reporting.py`. `owner` is `{id, name}` of the account that owns the record, so the workbench can say so when an admin has opened another reviewer's record. |
 | D5 | Synchronous model call over pages 1 to min(15, page count) (`extract_header` in `backend/app/services/extraction.py`). A field the extraction found overwrites the stored value; a field it did not find keeps the stored value. A covering-letter field `HEADER_PREFILL_FIELDS` names (`attorney_name`, `doctor`, `letter_date`, `pages_received`) is stored only where still empty, never over a typed value (`extraction.prefill_letter_fields()`), and returned as text. The response is the merged, stored view. Nothing is stored on a `PipelineError`. |
 | D6 | Writes all nine header fields; a field missing from the body is stored as empty. `letter_type` outside `advocacy`, `interrogatory`, `none` is stored as empty. `pages_received` is stored as a positive integer, or null when blank, non-numeric or not positive. |
+| D6a | The reviewer's Completed mark on the records list (a reviewer asked for it on 2026-11-05, like Outlook's "Categorize"). `completed: true` stamps `documents.completed_at` when it is not already set, so marking again keeps the first date; `false` clears it. Nothing else about the record changes, and no job, export or edit sets or clears the mark. |
 | D7 | Only the owner may delete, even an admin (404, as for someone else's record): an admin can open and fix another reviewer's record, but deleting is not fixing. Refused while the document has an active job. Deletes the document with its jobs, review rows, summaries and page texts (ORM cascade), commits, then removes the stored PDF (a failure is logged, not returned). Prepared export files of the document are not touched; they are deleted when their token expires. |
 | D8 | Serves the stored PDF with no `Content-Disposition` header, so the browser shows it inline, and with `Cache-Control: no-store`, so no browser or proxy cache keeps a copy of the patient record. |
 | D9 | `job` is the progress of the newest job of any kind, or null. When that job is not a summarize job, its `attention` is replaced by the newest summarize job's `attention`. `unreviewed_duplicate_groups` counts clusters with two or more included members and no dismissed member (advisory only). |
@@ -181,7 +183,7 @@ The `detail` string behind each 400, 404 and 409 is listed in
 | D17 | Summaries in `idx` order. |
 | D18 | 404 when no summary has this `idx`. When `category` is sent it is written to the review row whose `(start, end)` equals the summary's range, before any other field: 409 while any job is active, 409 when no row has that range, 400 when the category is not active, no change when it already matches. Then 409 while a summarize job is active. `summaryTitle` is stored in `edited_title` (first 512 characters), `summaryDate` in `edited_date` (first 16), `summaryText` in `edited_text`; the model output is kept. `excluded` sets whether the summary ships in exports. Only fields present in the body are applied. |
 | D19 | Synchronous. 409 while any job is active. Re-summarizes one summary from the live review row with the same range, or from the summary's own snapshot when no row matches, using the current prompt of that category and `model` or `Settings.model_for("body")`. Reuses the row's stored `source_text` when it is not blank. Replaces the model output, verification fields, flags and provenance columns, and clears the reviewer's edits. A row of several visits is re-drafted whole: every summary of the row is rewritten, and a re-draft that finds more or fewer visits adds or deletes summaries and renumbers the `idx` of those after them. Returns the row's first visit. |
-| D20 to D23 | Build the file synchronously, write the audit row, then park the file and answer with a Prepared download (`_offer_download`); the browser fetches it with D26. D20, D21 and D23 answer 409 when every summary is excluded or none exists; D22 does not need summaries. D23 holds the Word MRR, linked PDF, memo and one bundle PDF for each `bundles` entry that matches a row; an entry matching nothing is left out. File contents and names: [Export formats reference](export-formats.md). |
+| D20 to D23 | Build the file synchronously, write the audit row, then park the file and answer with a Prepared download (`_offer_download`); the browser fetches it with D26. D20, D21 and D23 answer 409 when every summary is excluded or none exists; D22 does not need summaries. D23 holds the Word MRR, linked PDF, memo and one bundle PDF for each `bundles` entry that matches a row; an entry matching nothing is left out. File contents and names: [Export formats reference](export-formats.md). D20, D21 and D23 - the exports that carry the summaries - also stamp `documents.downloaded_at` (`_note_download`), which the records list shows; the memo (D22) does not. |
 | D24 | Combines the pages of the rows whose category is in `categories` into one PDF, with a cover list when `coverHeading` is set. No model calls. |
 | D25 | Synchronous model calls for each matched row, then a Word report. 409 when more rows match than `BUNDLE_SUMMARIZE_CAP` (default 40). Model is `model` or `Settings.model_for("body")`. |
 
@@ -283,6 +285,7 @@ addition to the gate's 403 for `/api/admin` paths.
 | `BundlePayload` | `model` | string or null | null | Used by D25 only. |
 | `BundlePayload` | `patientName`, `patientdob`, `QMEorAME`, `lawfirm` | string | `""` | |
 | `HeaderPayload` | `patient_first_name`, `patient_last_name`, `patient_dob`, `law_firm`, `attorney_name`, `doctor`, `letter_type`, `letter_date`, `pages_received` | string | `""` | `pages_received` is a string on the wire; see D6. |
+| `CompletedPayload` | `completed` | boolean | required | Set or clear the mark; see D6a. |
 | `DuplicateResolvePayload` | `action` | string | required | `keep_one`, `keep_another`, `unkeep`, `dismiss` or `remove_member`. |
 | `DuplicateResolvePayload` | `primary_idx` | integer or null | null | Used by `keep_one`. |
 | `DuplicateResolvePayload` | `idx` | integer or null | null | Used by `keep_another`, `unkeep` and `remove_member`. |
@@ -317,7 +320,7 @@ Row object (items of `rows` in D13 and D16):
 | Shape | Fields | Built by |
 | --- | --- | --- |
 | `UserRead` | `id`, `email`, `is_active`, `is_superuser`, `is_verified`, `name` | `backend/app/auth/schemas.py` |
-| Document listing | `id`, `original_filename`, `page_count`, `status`, `created_at`, `updated_at`, `active_job` (Job progress or null), `patient_first_name`, `patient_last_name`, `patient_name`, `patient_dob`, `law_firm`, `attorney_name`, `doctor`, `letter_type`, `letter_date`, `pages_received` (integer, or `""` when unset) | `Document.listing()` |
+| Document listing | `id`, `original_filename`, `page_count`, `status`, `created_at`, `updated_at`, `active_job` (Job progress or null), `patient_first_name`, `patient_last_name`, `patient_name`, `patient_dob`, `law_firm`, `attorney_name`, `doctor`, `letter_type`, `letter_date`, `pages_received` (integer, or `""` when unset), `one_entry_per_date`, `completed_at` and `downloaded_at` (UTC ISO timestamps, or null) | `Document.listing()` |
 | Editor row | `start`, `end`, `category`, `title`, `date`, `injury_date`, `flag`, `suggest_merge`, `include`, `dupe_group`, `dupe_primary`, `dupe_dismissed`, `source_text`, `ruled_paperwork`, `method` | `ReviewRow.as_row()` plus `_editor_row` in `backend/app/api/documents.py` |
 | Job progress | `id`, `kind`, `state`, `stage`, `current`, `total`, `error`, `attention` | `Job.progress()` |
 | Duplicate cluster | `group`, `dismissed`, `similarity`, `rows` of `{idx, title, date, pages: {start, end}, include, primary}` | `get_duplicates` |
@@ -348,6 +351,7 @@ the action, the document id where there is one, and `detail`.
 | `rows.edit` | D13, D16 when `rows` is sent | `rows A->B (merges M, splits S, pages P->Q)` |
 | `rows.one_entry_per_date` | D13a | `rows A->B (runs R, labs unticked L)` |
 | `one_entry_per_date.off` | D13b | none |
+| `record.completed` | D6a | `on` or `off` |
 | `job.cancel` | D14, active job only | `job <id> kind <kind> state <state> force <bool>` |
 | `summarize.skip_duplicate_check` | D16 | `never checked` or `stale check` |
 | `summary.category` | D18, category changed | `idx <n> pages <start>-<end>: <old> -> <new>` |

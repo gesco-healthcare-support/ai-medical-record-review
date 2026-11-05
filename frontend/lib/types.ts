@@ -84,6 +84,10 @@ export type DocumentListItem = {
   letter_type?: string;
   letter_date?: string;
   pages_received?: number | string;
+  /** When the reviewer marked the record Completed, or null - their own mark on the list. */
+  completed_at?: string | null;
+  /** When the review (Word letter, linked PDF or ZIP) was last downloaded, or null. */
+  downloaded_at?: string | null;
 };
 
 /** A sub-document row in the review editor (ReviewRow.as_row()). */

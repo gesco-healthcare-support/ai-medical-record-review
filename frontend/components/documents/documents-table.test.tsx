@@ -284,3 +284,63 @@ describe("DocumentsTable row and menu actions", () => {
     expect(props.onOpen).not.toHaveBeenCalled();
   });
 });
+
+describe("the Completed mark (a reviewer asked for it, 2026-11-05)", () => {
+  const marked = {
+    ...doc("m", "Marked record.pdf", 5, "2026-01-04T00:00:00Z"),
+    completed_at: "2026-11-05T10:00:00Z",
+    downloaded_at: "2026-11-04T09:00:00Z",
+  };
+
+  it("marks a record with one click on its bar, without opening it", () => {
+    const onOpen = vi.fn();
+    const onToggleCompleted = vi.fn();
+    const { getAllByRole } = render(
+      <DocumentsTable docs={DOCS} onOpen={onOpen} onToggleCompleted={onToggleCompleted} />,
+    );
+    // Newest first, so the first row is record "a".
+    const mark = getAllByRole("button", { name: "Mark as completed", pressed: false })[0];
+
+    fireEvent.click(mark);
+
+    expect(onToggleCompleted).toHaveBeenCalledTimes(1);
+    expect(onToggleCompleted.mock.calls[0][0].id).toBe("a");
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("shows a marked record as pressed, with its date", () => {
+    const { container } = render(
+      <DocumentsTable docs={[marked]} onOpen={vi.fn()} onToggleCompleted={vi.fn()} />,
+    );
+    const mark = container.querySelector(".hd-mark.on") as HTMLButtonElement;
+    expect(mark).not.toBeNull();
+    expect(mark.getAttribute("aria-pressed")).toBe("true");
+    expect(mark.getAttribute("aria-label")).toMatch(/^Completed .* - click to clear$/);
+  });
+
+  it("filters to the completed records, and to the ones still open", () => {
+    const { container, getByRole } = render(
+      <DocumentsTable docs={[...DOCS, marked]} onOpen={vi.fn()} onToggleCompleted={vi.fn()} />,
+    );
+
+    fireEvent.click(getByRole("button", { name: "Completed · 1" }));
+    expect(names(container)).toEqual(["Marked record.pdf"]);
+
+    fireEvent.click(getByRole("button", { name: "Not completed · 3" }));
+    expect(names(container)).toHaveLength(3);
+    expect(names(container)).not.toContain("Marked record.pdf");
+  });
+
+  it("says when the review was last downloaded, and nothing for one never downloaded", () => {
+    const { container } = render(
+      <DocumentsTable docs={[marked, DOCS[0]]} onOpen={vi.fn()} onToggleCompleted={vi.fn()} />,
+    );
+    const lines = [...container.querySelectorAll(".hd-downloaded")].map((n) => n.textContent);
+    expect(lines).toEqual([`Downloaded ${new Date(marked.downloaded_at).toLocaleDateString()}`]);
+  });
+
+  it("shows no mark when the page gives no way to set it", () => {
+    const { container } = renderTable();
+    expect(container.querySelector(".hd-mark")).toBeNull();
+  });
+});

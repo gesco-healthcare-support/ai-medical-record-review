@@ -6435,3 +6435,152 @@ async def test_extract_header_without_letter_fields_replies_with_the_four(authed
         "patient_first_name",
         "patient_last_name",
     ]
+
+
+# --- the reviewer's Completed mark, and when the review was last downloaded (2026-11-05) ---------
+#
+# A reviewer asked for a mark like Outlook's "Categorize" on the records list, to see which records
+# are fully reviewed and downloaded without searching the log for the patient.
+
+
+def _audit_rows(doc_id, action):
+    with get_sessionmaker()() as session:
+        return session.scalars(
+            select(AuditLog).where(AuditLog.document_id == doc_id, AuditLog.action == action)
+        ).all()
+
+
+async def test_a_reviewer_marks_a_record_completed_and_clears_it(authed):
+    """DEMONSTRATES: the mark is set, shows on the records list, and clears again."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    listed = (await client.get("/api/documents")).json()
+    assert next(d for d in listed if d["id"] == doc_id)["completed_at"] is None
+
+    on = await client.put(f"/api/documents/{doc_id}/completed", json={"completed": True})
+    assert on.status_code == 200, on.text
+    assert on.json()["completed_at"]
+    listed = (await client.get("/api/documents")).json()
+    assert next(d for d in listed if d["id"] == doc_id)["completed_at"] == on.json()["completed_at"]
+
+    off = await client.put(f"/api/documents/{doc_id}/completed", json={"completed": False})
+    assert off.status_code == 200, off.text
+    assert off.json()["completed_at"] is None
+    assert [row.detail for row in _audit_rows(doc_id, "record.completed")] == ["on", "off"]
+
+
+async def test_marking_a_completed_record_again_keeps_its_first_date(authed):
+    """GUARD: a second click on an already marked record does not move the date."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    first = await client.put(f"/api/documents/{doc_id}/completed", json={"completed": True})
+    again = await client.put(f"/api/documents/{doc_id}/completed", json={"completed": True})
+    assert again.json()["completed_at"] == first.json()["completed_at"]
+
+
+async def test_the_mark_needs_a_completed_value(authed):
+    """GUARD: a body that says neither set nor clear is refused, and nothing changes."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    resp = await client.put(f"/api/documents/{doc_id}/completed", json={})
+    assert resp.status_code == 422
+    assert _audit_rows(doc_id, "record.completed") == []
+
+
+async def test_downloading_the_review_stamps_the_record_and_the_memo_does_not(authed):
+    """DEMONSTRATES: the Word letter, the linked PDF and the ZIP stamp `downloaded_at`; the memo,
+    which is not the review, leaves it alone."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=2)
+    await _seed_one_summary(doc_id)
+    fields = {"patientName": "Synthetic Patient", "lawfirm": "Example Law Firm"}
+
+    memo = await _download(client, f"/api/documents/{doc_id}/export/memo", json=fields)
+    assert memo.status_code == 200, memo.text
+    assert (await client.get(f"/api/documents/{doc_id}")).json()["downloaded_at"] is None
+
+    stamps = []
+    for url in ("export", "export/pdf", "export/zip"):
+        resp = await _download(client, f"/api/documents/{doc_id}/{url}", json=fields)
+        assert resp.status_code == 200, resp.text
+        stamps.append((await client.get(f"/api/documents/{doc_id}")).json()["downloaded_at"])
+    assert all(stamps)
+    assert stamps == sorted(stamps)
+
+
+async def test_a_refused_export_does_not_stamp_a_download(authed):
+    """GUARD: with no summaries the export is refused (409), and the record is not downloaded."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=1)
+    resp = await _download(client, f"/api/documents/{doc_id}/export", json={"patientName": "X"})
+    assert resp.status_code == 409
+    assert (await client.get(f"/api/documents/{doc_id}")).json()["downloaded_at"] is None
+
+
+def test_the_migration_fills_the_download_date_from_the_audit_log():
+    """DEMONSTRATES the backfill in `f2c7a4e81b39`: a document's latest Word, PDF or ZIP export
+    in the log, never a memo or a view. Run on synthetic rows, rolled back."""
+    import importlib.util
+    from datetime import datetime
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "f2c7a4e81b39_documents_completed_and_downloaded.py"
+    )
+    spec = importlib.util.spec_from_file_location("completed_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    with get_sessionmaker()() as session:
+        user = User(
+            email=unique_test_email(),
+            name="Backfill",
+            password=MrrPasswordHelper().hash("Str0ng#pw1"),
+            active=True,
+        )
+        session.add(user)
+        session.flush()
+        kept, never = (
+            Document(
+                id=f"bf{n}-{user.id}",
+                user_id=user.id,
+                original_filename="synthetic.pdf",
+                stored_path="/nonexistent/synthetic.pdf",
+                sha256="0" * 64,
+                page_count=1,
+            )
+            for n in (1, 2)
+        )
+        session.add_all([kept, never])
+        session.flush()
+        for action, day in (
+            ("export", 1),
+            ("export_pdf", 3),
+            ("export_zip", 2),
+            ("export_memo", 5),
+            ("view_record", 6),
+        ):
+            session.add(
+                AuditLog(
+                    user_id=user.id, action=action, document_id=kept.id, at=datetime(2026, 10, day)
+                )
+            )
+        session.add(
+            AuditLog(
+                user_id=user.id,
+                action="export_memo",
+                document_id=never.id,
+                at=datetime(2026, 10, 9),
+            )
+        )
+        session.flush()
+
+        migration.fill_downloaded_at(session.connection())
+        session.expire_all()
+
+        assert session.get(Document, kept.id).downloaded_at == datetime(2026, 10, 3)
+        assert session.get(Document, never.id).downloaded_at is None
+        session.rollback()
