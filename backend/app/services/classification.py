@@ -546,8 +546,8 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # names no discipline is left alone: reviewers split those 6 to category 1, 4 to 5.
         (
             r"physical therapy|occupational therapy|chiropractic|chiropractor|acupuncture"
-            r"|\bpt\b initial|pt progress|\bot\b progress"
-            r"|shock[- ]?wave (therapy|treatment)|functional improvement",
+            + r"|\bpt\b initial|pt progress|\bot\b progress"
+            + r"|shock[- ]?wave (therapy|treatment)|functional improvement",
             "5",
         ),
         (
