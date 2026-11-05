@@ -341,7 +341,7 @@ carrying an `x` flag over); production does not use it.
 The engine logs `verify pass: {'suspects': n, 'suggested': k}` for every run.
 
 **Hints that follow the reviewers' joins (`VISIT_MERGE_HINTS`, off by default).** When
-`visit_merge_hints` is true, two things change, and neither ever merges a row:
+`visit_merge_hints` is true, these things change, and none of them ever merges a row:
 
 - the verify pass asks the model only about a boundary between two rows of the SAME known date; a
   boundary across two dates, or with a date missing, is not sent and gets no hint, and the log adds
@@ -353,9 +353,24 @@ The engine logs `verify pass: {'suspects': n, 'suggested': k}` for every run.
   about evenly. The senior reviewer's rule is that diagnostics are always separate, and on two
   records reviewers finished with these hints, 8 of the 11 verify-pass hints they rejected were such
   a boundary, against 1 of the 13 they applied;
-- every boundary between one visit's pieces (`visit_merge.candidate_indices()`, described below)
-  gets `suggest_merge` with no model call (`visit_merge.hint_visit_pieces()`, logged as
-  `visit merge hints: m`). Not when `merge_visit_pieces` is on, which merges those pieces instead.
+- every boundary between one visit's pieces gets `suggest_merge` with no model call
+  (`visit_merge.hint_visit_pieces()`, logged as `visit merge hints: m`). The pieces are the visit
+  merge's candidates (described below) plus a PR-4's (`visit_merge.hint_candidate_indices()`): a
+  category 2 row next to a 1 or another 2 of the same date, or next to an RFA or a work status.
+  Not 1 | 5 or 2 | 5, which reviewers join 9-26% of the time, and not two rows of category 8, 9,
+  10, 13, 14 or 15, where Gemini's drafts and ours disagree or the rate is low. Measured on the
+  reviewers' finished records, the PR-4 pairs added 179 hints on Gemini's drafts (283 records),
+  134 of them joined (75%, against 77% for the visit rule on the same records), and 29 on our
+  model's (21 records), 19 joined (66%, against 93%). Not when `merge_visit_pieces` is on, which
+  merges the visit pieces instead; its own candidates do not include a PR-4;
+- a deposition's closing paperwork cut off as a short row of its own gets `suggest_merge` with no
+  model call (`backend/app/services/deposition_tail.py` `hint_deposition_paperwork()`, logged as
+  `deposition paperwork hints: m`): a row of at most 6 pages directly after a category 9 row whose
+  title names deposition paperwork (certificate, errata, signature, stipulation, procedure,
+  reporter, read and sign, correction sheet, witness, index, exhibit, attestation, jurat, oath).
+  Reviewers joined such rows back 15 of 16 times on Gemini's drafts and 2 of 2 on ours; a short row
+  after a deposition with any other title only 12 of 57 and 1 of 10, so only the titled rows get a
+  hint.
 
 Measured against what reviewers joined (a hint is right when the reviewer joined that boundary away;
 "covers" is the share of all their joins the hints point at), today against with the setting: a
