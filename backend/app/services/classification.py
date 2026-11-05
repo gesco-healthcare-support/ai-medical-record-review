@@ -387,6 +387,13 @@ _FOLLOWUP_YIELDS_TO = frozenset({"3", "8", "9", "14"})  # imaging, operative, de
 _AUTHORIZATION_SOURCE = r"\brfa\b|request for authorization"
 _AUTHORIZATION = re.compile(_AUTHORIZATION_SOURCE)
 
+# A prescription, or an order for a named study (the ORDERS AND PRESCRIPTIONS rule below).
+_ORDERS_SOURCE = (
+    r"\bprescriptions?\b"
+    + r"|\b(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct|ekg|ecg|emg|ncs)\s+orders?\b"
+    + r"|\borders?\s+for\s+(?:an?\s+)?(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct)\b"
+)
+
 # A title that is ONLY the position-in-care token. A category-1 rule that does not match this
 # answers 1 for some other reason, which is what `_answered_for_another_reason` asks.
 _FOLLOWUP_ONLY = "follow-up"
@@ -537,9 +544,17 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # leaves alone the one real row (user 4, 7 pages) that says shockwave with no therapy or
         # treatment word and sits at category 1 - no human has ruled on that one, so nothing here
         # moves it.
+        #
+        # `occupational therapy|\bot\b progress` added 2026-11-05. "Occupational Therapy Progress
+        # Note" and "OT Progress Note" fell to rule 1 on their "progress note", and reviewers
+        # re-filed every such row 5: 22 of 22 on the live box, 2 of 2 on our model's records. Of all
+        # finished rows titled occupational therapy, 59 of 66 (live) and 11 of 12 (ours) ended in 5.
+        # NOT a bare `\bot\b` ("OT" alone is too short to trust), and a "Therapy Progress Note" that
+        # names no discipline is left alone: reviewers split those 6 to category 1, 4 to 5.
         (
-            r"physical therapy|chiropractic|chiropractor|acupuncture|\bpt\b initial|pt progress"
-            r"|shock[- ]?wave (therapy|treatment)|functional improvement",
+            r"physical therapy|occupational therapy|chiropractic|chiropractor|acupuncture"
+            + r"|\bpt\b initial|pt progress|\bot\b progress"
+            + r"|shock[- ]?wave (therapy|treatment)|functional improvement",
             "5",
         ),
         (
@@ -588,10 +603,25 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # follow-up withholding IS this rule minus that one token, by construction. Written out
         # twice, the pair drifted twice - see the note on `_TREATING_VISIT_TOKENS`.
         (rf"{_TREATING_VISIT_TOKENS}|{_FOLLOWUP_TOKEN_SOURCE}", "1"),
-        # ORDERS AND PRESCRIPTIONS -> 10, answered by Adam 2026-08-24: "All orders can probably go
-        # under the RFA category", and for prescriptions "if they are on their own it's probably fine
-        # to put it under the RFA category since it should be the same information being summarized.
-        # Often times the same info is in the PR-2 report, but we can still summarize it in case it is
+        # ORDERS AND PRESCRIPTIONS -> 100 (General, left out), the senior reviewer
+        # 2026-11-05: "Prescriptions and lab orders I think we can leave out since they are
+        # usually included in the progress/visit notes." The question named lab AND imaging
+        # orders, and the reason covers both, so the rule keeps its modalities. Measured on the
+        # live box's 10-19 copy (283 finished records), rows this rule matched: prescriptions
+        # 105 (own row unticked 59, ticked 30, joined into a ticked visit 15), lab orders 10 (all
+        # unticked), imaging and other orders 17 (unticked 8, ticked 3, inside a ticked row 5);
+        # on our model's 21 reviewed records, prescriptions 20 (16 ticked by one reviewer), lab
+        # orders 4 and imaging 1, unticked.
+        #
+        # An RFA-worded title ("RFA for Prescription", "Request for Authorization - MRI Order")
+        # is a request for authorization and stays 10: the first of the two entries below
+        # answers it before the second can, because the `\brfa\b` rule further down sits below
+        # imaging and would let "MRI" answer 3. No title this rule matched on either copy carried
+        # RFA wording.
+        #
+        # SUPERSEDED: until 2026-11-05 this answered 10, per the 2026-08-24 answer "All orders can
+        # probably go under the RFA category", and for prescriptions "if they are on their own it's
+        # probably fine to put it under the RFA category ... we can still summarize it in case it is
         # not included in the report."
         #
         # PLACEMENT ABOVE IMAGING IS THE POINT, and it is why this is a separate rule rather than
@@ -614,18 +644,10 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # NO BARE `order` TOKEN, deliberately. Adam's "all orders" is a statement about treatment
         # orders, and the word is far broader than that on real titles: the box carries "Pre Op
         # Holding Orders" (nursing instructions, answering 100 and 14) and "Outpatient Service Order
-        # Information" (100 and 4). Claiming those for RFA would move ward paperwork into a clinical
-        # category on a hedge. Named modalities only, so the rule fires on what he was describing.
-        #
-        # Prescriptions reach no deliverable today: on the two most recent builds every one answered
-        # 100 through the cascade (17 rows) and 100 is unchecked for summarization by default, so the
-        # reviewer is never offered them. Adam asked for them summarized, which is what 10 gives.
-        (
-            r"\bprescriptions?\b"
-            + r"|\b(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct|ekg|ecg|emg|ncs)\s+orders?\b"
-            + r"|\borders?\s+for\s+(?:an?\s+)?(?:lab|laboratory|imaging|radiolog\w*|x-? ?ray|mri|ct)\b",
-            "10",
-        ),
+        # Information" (100 and 4). Those were never this rule's to claim. Named modalities only, so
+        # the rule fires on what the reviewers were describing.
+        (rf"^(?=.*(?:{_AUTHORIZATION_SOURCE})).*(?:{_ORDERS_SOURCE})", "10"),
+        (_ORDERS_SOURCE, "100"),
         # MODALITY terms only. `laborator` used to be here and it defeated D-01/D-02 entirely: that
         # register item made 3 modality-based and 14 specimen-based, and rewrote both taxonomy
         # descriptions so the embedding and LLM stages agree - but rules run FIRST and short-circuit,

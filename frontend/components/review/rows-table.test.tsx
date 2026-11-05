@@ -256,3 +256,31 @@ describe("RowsTable", () => {
     expect(onSplitConfirm).not.toHaveBeenCalled();
   });
 });
+
+describe("RowsTable Split back", () => {
+  const pieces = [
+    { start: 1, end: 2, category: "1", title: "A", date: "", injury_date: "", flag: "-", include: true },
+    { start: 3, end: 3, category: "1", title: "B", date: "", injury_date: "", flag: "-", include: true },
+  ];
+
+  it("marks a row the automatic merge made and offers to split it back", async () => {
+    const onSplitBack = vi.fn();
+    renderTable([erow({ start: 1, end: 3, merged_pieces: pieces })], undefined, { onSplitBack });
+    expect(screen.getByText("Merged from 2 pieces")).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: /^Split back$/ }));
+    expect(onSplitBack).toHaveBeenCalledWith(0);
+  });
+
+  it("offers nothing once the row's pages no longer match its pieces", () => {
+    renderTable([erow({ start: 1, end: 5, merged_pieces: pieces })], undefined, {
+      onSplitBack: vi.fn(),
+    });
+    expect(screen.queryByText(/Merged from/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Split back$/ })).toBeNull();
+  });
+
+  it("offers nothing on an ordinary row", () => {
+    renderTable([erow({ start: 1, end: 3 })], undefined, { onSplitBack: vi.fn() });
+    expect(screen.queryByRole("button", { name: /^Split back$/ })).toBeNull();
+  });
+});

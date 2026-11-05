@@ -18,6 +18,7 @@ shared `conftest.py`.
 | `test_admin_uploads_and_assigns.py` | An admin uploading (single and split) into another reviewer's account and assigning a record to someone: admins only, the duplicate confirmation checked against the receiving account, audit attribution, and the queue lane a moved record's jobs use. |
 | `test_auth_gate.py` | The deny-by-default authentication gate and its public-path allowlist. |
 | `test_auth_integration.py` | Login, logout, the registration rules and the password-reset routes, against the database. |
+| `test_auto_visit_merge.py` | One visit's pieces merged automatically: the rule and its bridge guard, the setting, the reviewer's copy merged while the machine's keeps the pieces, and the pieces sent for Split back. |
 | `test_backend_provenance.py` | Which model backend answered a call is recorded beside which model did. |
 | `test_backfill_doi.py` | Scope resolution of the injury-date backfill script (`scripts/backfill_doi.py`). |
 | `test_bundle_cover.py` | The list page placed in front of a combined bundle PDF. |
@@ -41,6 +42,7 @@ shared `conftest.py`.
 | `test_dedup.py` | The duplicate-clustering service and its thresholds. |
 | `test_deposition_pages.py` | Deposition page grouping: the transcript-page offset, marker labels and the audit guard. |
 | `test_deposition_pages_request.py` | What the transcript page-number read sends, and how it handles a truncated reply. |
+| `test_deposition_tail.py` | A deposition's short closing-paperwork row suggested as a merge: which titles, the page limit, hints only, the setting. |
 | `test_documents_api.py` | The `/api/documents` routes against the database. |
 | `test_download_delivery.py` | The delivery status a page can ask about for each prepared download. |
 | `test_downloads.py` | Prepared exports: stored on the server, fetched by the browser, deleted on expiry. |

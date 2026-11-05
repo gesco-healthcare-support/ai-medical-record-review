@@ -1153,11 +1153,25 @@ class Settings(BaseSettings):
     # Off by default: it changes what segmentation decides, and a wrong merge hides a document. Turn
     # it on per box once it has been measured there.
     merge_visit_pieces: bool = False
-    # Merge HINTS that follow what reviewers actually join, never a merge. Two parts:
+    # Merge one visit's pieces with NO model call when the reviewer's copy of the draft is made
+    # (`visit_merge.auto_merge_visit_pieces`): the same candidates as `merge_visit_pieces` (same
+    # known date; 1+1, 5+5, or a visit and its RFA / work status; never a diagnostic study), never a
+    # category 1 visit with a category 5 one. The senior reviewer, 2026-11-05: "it is fairly rare
+    # that they are wrong so it would save a lot of time." Measured wrong (the reviewer kept the two
+    # apart): our model's drafts 28 of 420 (6.7%), Gemini's 273 of 1,198 (23%, records finished
+    # before the 2026-10-28 rule). So the machine's copy (`segment_rows`) keeps every piece, and the
+    # editor offers "Split back" on a merged row. Off by default: it changes the draft a reviewer
+    # gets; turned on per box. Refuses to be on with `merge_visit_pieces`.
+    auto_merge_visit_pieces: bool = False
+    # Merge HINTS that follow what reviewers actually join, never a merge. Three parts:
     # - the verify pass asks the model only about two rows of the SAME known date - across two dates
     #   (or with a date missing) it sends nothing and no hint is shown;
-    # - every visit-piece boundary (`visit_merge.candidate_indices`: same date, 1+1 / 5+5 or a visit
-    #   and its RFA / work status, never a diagnostic study) gets a hint with NO model call.
+    # - every visit-piece boundary (`visit_merge.hint_candidate_indices`: same date, 1+1 / 5+5 /
+    #   2+2 / 1+2 or a visit and its RFA / work status, never a diagnostic study) gets a hint with
+    #   NO model call. The 2+2 and 1+2 pairs (a PR-4's pieces) were added 2026-11-05: 134 of 179
+    #   new hints joined on Gemini drafts, 19 of 29 on our model's;
+    # - a deposition's short paperwork row (certificate, errata, signature ...) right after it
+    #   (`deposition_tail`), NO model call: joined back 15 of 16 / 2 of 2.
     # Measured against reviewers' joins (a hint is right when the reviewer joined that boundary
     # away; "covers" = share of all their joins the hints point at), today -> with this: a Kaiser
     # printout 26% right / 58% covered -> 65% / 83%; one reviewer's 1,885-page record 67% / 3% ->
@@ -1167,12 +1181,13 @@ class Settings(BaseSettings):
     # visit pieces get no hint when `merge_visit_pieces` is on (those are merged instead).
     visit_merge_hints: bool = False
     # At the end of segmentation, after the verify pass: mark as a suggested merge every draft row
-    # that continues the QME/AME evaluation before it - both pages carry the evaluator's wording and
-    # the page numbering runs on (`evaluation_pieces.suggest_evaluation_pieces`). The senior
-    # reviewer, 2026-11-02: an evaluation's records review is split into entries that belong to the
-    # report. Suggestions only, on stored page text, no model call. Measured read-only on the live
-    # box: finds 67 of the 80 such cuts reviewers merged by hand; 6 of the 104 rows it marks are
-    # real documents a reviewer kept.
+    # that continues the QME/AME evaluation before it - from an evaluation whose own page numbering
+    # starts with it, every following row while the page label runs on across the cut
+    # (`evaluation_pieces.suggest_evaluation_pieces`). The senior reviewer, 2026-11-02 and again
+    # 2026-11-05: an evaluation's records review is split into entries that belong to the report.
+    # Suggestions only, on stored page text, no model call. Measured read-only on the live box
+    # (2026-11-05, 502 records): finds 267 of the 382 pieces reviewers merged into evaluations by
+    # hand; 12 of the 325 rows it marks are real documents a reviewer kept.
     #
     # Off by default: it changes the draft a reviewer is shown. Turn it on per box.
     suggest_evaluation_pieces: bool = False
@@ -1212,6 +1227,16 @@ class Settings(BaseSettings):
         """
         scaled = int(est_tokens * self.genai_timeout_per_1k_tokens_ms / 1000)
         return max(self.genai_http_timeout_ms, scaled)
+
+    @model_validator(mode="after")
+    def _one_visit_merge(self) -> "Settings":
+        """Refuse both visit merges at once: the model-checked one would ask about pieces the
+        automatic one merges anyway, and which of the two shaped a draft could not be told."""
+        if self.auto_merge_visit_pieces and self.merge_visit_pieces:
+            raise ValueError(
+                "AUTO_MERGE_VISIT_PIECES and MERGE_VISIT_PIECES cannot both be on; turn one off"
+            )
+        return self
 
     @model_validator(mode="after")
     def _derive(self) -> "Settings":

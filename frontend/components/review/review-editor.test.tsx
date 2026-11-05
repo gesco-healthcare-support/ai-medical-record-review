@@ -393,3 +393,24 @@ describe("ReviewEditor one entry per date", () => {
     confirm.mockRestore();
   });
 });
+
+describe("ReviewEditor Split back", () => {
+  it("puts an automatic merge's pieces back in the row's place", () => {
+    const pieces = [
+      { start: 1, end: 2, category: "1", title: "PR-2", date: "02/04/2026", injury_date: "-", flag: "-", include: true, method: "rules" },
+      { start: 3, end: 3, category: "10", title: "RFA", date: "02/04/2026", injury_date: "-", flag: "x", include: true, method: "rules" },
+    ];
+    render(
+      <Harness
+        initial={[
+          row({ _key: "a", start: 1, end: 3, title: "PR-2", merged_pieces: pieces }),
+          row({ _key: "b", start: 4, end: 5, title: "Next" }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Split back$/ }));
+
+    expect(titles().map((t) => t.value)).toEqual(["PR-2", "RFA", "Next"]);
+    expect(screen.queryByRole("button", { name: /^Split back$/ })).toBeNull();
+  });
+});

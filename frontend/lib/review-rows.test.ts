@@ -6,6 +6,7 @@ import {
   clearFlagOnEdit,
   couldNotIdentify,
   mergeRows,
+  mergedPieces,
   moveSharedBoundary,
   newKey,
   rowErrors,
@@ -563,5 +564,35 @@ describe("moveSharedBoundary", () => {
     expect(next[0]).toBe(rows[0]);
     expect(next[1]).not.toBe(rows[1]);
     expect(next[2]).toBe(rows[2]);
+  });
+});
+
+describe("mergedPieces (Split back)", () => {
+  const piece = (start: number, end: number) => ({ ...row(start, end), include: true });
+  const merged = (start: number, end: number, pieces: ReturnType<typeof piece>[]): Row => ({
+    ...row(start, end),
+    merged_pieces: pieces,
+  });
+
+  it("returns the pieces of a row whose pages still match them", () => {
+    const pieces = [piece(1, 2), piece(3, 3)];
+    expect(mergedPieces(merged(1, 3, pieces))).toBe(pieces);
+  });
+
+  it("returns null once a local edit changed the row's pages", () => {
+    // merged with the row below, split, or a boundary moved: the pieces no longer describe it
+    expect(mergedPieces(merged(1, 5, [piece(1, 2), piece(3, 3)]))).toBeNull();
+    expect(mergedPieces(merged(1, 2, [piece(1, 2), piece(3, 3)]))).toBeNull();
+    expect(mergedPieces(merged(2, 3, [piece(1, 2), piece(3, 3)]))).toBeNull();
+  });
+
+  it("returns null for a row with no pieces or a single one", () => {
+    expect(mergedPieces(row(1, 3))).toBeNull();
+    expect(mergedPieces(merged(1, 3, [piece(1, 3)]))).toBeNull();
+  });
+
+  it("is never sent back on a save", () => {
+    const [stripped] = stripKeys(withKeys([merged(1, 3, [piece(1, 2), piece(3, 3)])]));
+    expect("merged_pieces" in stripped).toBe(false);
   });
 });

@@ -9,6 +9,7 @@ import {
   clearFlagOnEdit,
   couldNotIdentify,
   mergeRows,
+  mergedPieces,
   moveSharedBoundary,
   newKey,
   rowErrors,
@@ -216,6 +217,32 @@ export function ReviewEditor({
     pdfRef.current?.jumpTo(k);
   }
 
+  /** Undo an automatic visit merge: the row's draft pieces go back in its place, as the machine
+   *  cut them. The first piece keeps the row's own merge hint; the restored boundaries carry
+   *  none, since the reviewer has just said they are separate. */
+  function splitBack(i: number) {
+    const pieces = mergedPieces(rows[i]);
+    if (!pieces) return;
+    const restored: EditorRow[] = pieces.map((piece, k) => ({
+      start: piece.start,
+      end: piece.end,
+      category: piece.category,
+      title: piece.title,
+      date: piece.date,
+      injury_date: piece.injury_date,
+      flag: piece.flag,
+      include: piece.include,
+      method: piece.method ?? null,
+      suggest_merge: k === 0 ? rows[i].suggest_merge : false,
+      _key: newKey(),
+    }));
+    const next = [...rows];
+    next.splice(i, 1, ...restored);
+    setSplittingKey(null);
+    setSelectedKey(restored[0]._key);
+    onRowsChange(next);
+  }
+
   function remove(i: number) {
     const next = [...rows];
     next.splice(i, 1);
@@ -360,6 +387,7 @@ export function ReviewEditor({
               onSplitStart={(i) => setSplittingKey(rows[i]._key)}
               onSplitConfirm={splitConfirm}
               onSplitCancel={() => setSplittingKey(null)}
+              onSplitBack={splitBack}
               onDelete={remove}
               attentionPages={attentionPages}
               unidentifiedKeys={unidentifiedKeys}

@@ -2363,8 +2363,9 @@ def consistent_titles(
 # joins the same-date, same-author group - wherever it sits in the record, which is why it is done
 # here over the delivered entries: merging rows can only join neighbours. It only JOINS a visit: an
 # RFA with no category 1 entry by that author on that date stays its own entry, and so do orders
-# and prescriptions, which share category 10 but were not in the answer (reviewers keep a PR-2 and
-# its orders page apart 9 times in 10). The report's body leads; the RFA adds only what the report
+# and prescriptions, which were not in the answer (reviewers keep a PR-2 and its orders page apart
+# 9 times in 10; category 10 on drafts made before 2026-11-05, filed 100 by the title rules since).
+# The report's body leads; the RFA adds only what the report
 # does not already say.
 _RFA_TITLE = re.compile(r"\bREQUEST FOR AUTHORI[SZ]ATION\b|\bRFA\b", re.I)
 # ONE ENTRY PER DATE OF LABORATORY RESULTS, from the same answer: "I think we can combine all the

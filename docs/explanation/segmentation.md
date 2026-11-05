@@ -341,7 +341,7 @@ carrying an `x` flag over); production does not use it.
 The engine logs `verify pass: {'suspects': n, 'suggested': k}` for every run.
 
 **Hints that follow the reviewers' joins (`VISIT_MERGE_HINTS`, off by default).** When
-`visit_merge_hints` is true, two things change, and neither ever merges a row:
+`visit_merge_hints` is true, these things change, and none of them ever merges a row:
 
 - the verify pass asks the model only about a boundary between two rows of the SAME known date; a
   boundary across two dates, or with a date missing, is not sent and gets no hint, and the log adds
@@ -353,9 +353,24 @@ The engine logs `verify pass: {'suspects': n, 'suggested': k}` for every run.
   about evenly. The senior reviewer's rule is that diagnostics are always separate, and on two
   records reviewers finished with these hints, 8 of the 11 verify-pass hints they rejected were such
   a boundary, against 1 of the 13 they applied;
-- every boundary between one visit's pieces (`visit_merge.candidate_indices()`, described below)
-  gets `suggest_merge` with no model call (`visit_merge.hint_visit_pieces()`, logged as
-  `visit merge hints: m`). Not when `merge_visit_pieces` is on, which merges those pieces instead.
+- every boundary between one visit's pieces gets `suggest_merge` with no model call
+  (`visit_merge.hint_visit_pieces()`, logged as `visit merge hints: m`). The pieces are the visit
+  merge's candidates (described below) plus a PR-4's (`visit_merge.hint_candidate_indices()`): a
+  category 2 row next to a 1 or another 2 of the same date, or next to an RFA or a work status.
+  Not 1 | 5 or 2 | 5, which reviewers join 9-26% of the time, and not two rows of category 8, 9,
+  10, 13, 14 or 15, where Gemini's drafts and ours disagree or the rate is low. Measured on the
+  reviewers' finished records, the PR-4 pairs added 179 hints on Gemini's drafts (283 records),
+  134 of them joined (75%, against 77% for the visit rule on the same records), and 29 on our
+  model's (21 records), 19 joined (66%, against 93%). Not when `merge_visit_pieces` is on, which
+  merges the visit pieces instead; its own candidates do not include a PR-4;
+- a deposition's closing paperwork cut off as a short row of its own gets `suggest_merge` with no
+  model call (`backend/app/services/deposition_tail.py` `hint_deposition_paperwork()`, logged as
+  `deposition paperwork hints: m`): a row of at most 6 pages directly after a category 9 row whose
+  title names deposition paperwork (certificate, errata, signature, stipulation, procedure,
+  reporter, read and sign, correction sheet, witness, index, exhibit, attestation, jurat, oath).
+  Reviewers joined such rows back 15 of 16 times on Gemini's drafts and 2 of 2 on ours; a short row
+  after a deposition with any other title only 12 of 57 and 1 of 10, so only the titled rows get a
+  hint.
 
 Measured against what reviewers joined (a hint is right when the reviewer joined that boundary away;
 "covers" is the share of all their joins the hints point at), today against with the setting: a
@@ -375,30 +390,46 @@ When `suggest_evaluation_pieces` is true (`SUGGEST_EVALUATION_PIECES`, default f
 after the verify pass (`backend/app/services/evaluation_pieces.py` `suggest_evaluation_pieces()`).
 The senior reviewer, 2026-11-02: "for QME/AME reports (or any report that has a Medical Record
 Review as part of the report), the segmentation is splitting the individual summaries as different
-entries, despite just being a summary as part of the larger report." The prompt already says to keep
-an evaluation whole, but a window that starts inside its records review sees a run of dated
-summaries of other records, each looking like a document.
+entries, despite just being a summary as part of the larger report." It came back on 2026-11-05 with
+a record cut into some thirty pieces across three evaluations. The prompt already says to keep an
+evaluation whole, but a window that starts inside its records review sees a run of dated summaries
+of other records, each looking like a document.
 
 **A piece.** From each category 12 or 13 row the pass walks forward over the following boundaries
-while both pages of the cut carry evaluator wording (the evaluation's running header names the QME
-or AME). A row is a piece when the page numbering runs on across the cut (page k, then page k + 1).
-The walk stops at the first cut whose pages do not both carry the wording, and after a category 12
-or 13 row of its own, which starts its own walk. A supplemental report that restarts its numbering
-is not a piece.
+while the page label runs on across the cut: the label printed in the page's first or last four
+lines ("Page 7", "Page 7 of 40", "7 of 40") is one more than the page before's, under the same total
+when both state one. Each row it crosses is a piece, whatever its category: a summary of an earlier
+evaluation inside the records review is filed 12 or 13 itself, and the walk goes on through it. The
+walk stops at the first cut where the label does not run on - the next document starts its own
+numbering or carries none. A page number quoted in the body is not a label.
+
+**Its own numbering.** A walk starts only when the evaluation's numbering begins with it: the first
+label among its first three pages is no higher than that page's place (its first page 1, its second
+1 or 2, its third 1 to 3). A fax transmission or Bates numbers stamp every document in the bundle
+and would run on through all of them.
+
+The first version (#656) also required evaluator wording (QME, AME, medical-legal) on both pages of
+every cut, and stopped at the next 12 or 13 row. A records review rarely names the evaluator on its
+pages, so it found few of the pieces (below).
 
 **Suggestions only.** A piece gets `suggest_merge`, the flag the verify pass sets, so the reviewer
 merges it into the evaluation with one click. No boundary moves, nothing already suggested is
 cleared, and there is no model call: it reads the stored page text. With no page text it does
 nothing.
 
-**Measured before shipping**, read-only on the live box: every draft cut inside a category 12/13
-row's evaluator-worded pages on 448 finished records, against the reviewer's final rows. Of 376 such
-cuts, reviewers merged 80 away, kept 178 as unticked rows and 118 as ticked documents. The 104 cuts
-whose numbering runs on: merged 67, kept unticked 31, kept ticked 6. So the pass suggests 67 of the
-80 the reviewers merged by hand, and 6 of its suggestions name a real document a reviewer kept. The
-running header alone and a page of dated entries were measured as well and added no merged cut the
-numbering missed. Such cuts rose in October: merged pieces inside evaluations were 1-2 a month July
-to September and 75 in October.
+**Measured**, read-only on the live box (2026-11-05): the newest draft of 502 records holding a
+category 12/13 row, against the reviewer's final rows. A draft start strictly inside a final 12/13
+row is a piece the reviewer merged into the evaluation: 382 of them. The pass marks 325 rows: 267 of
+those pieces (70%; 97 of the 131 on exported records), 43 rows reviewers kept as unticked rows of
+their own, 3 they merged into something else, and 12 they kept as ticked documents (6 in one
+record). The first version marked 108: 69 pieces (18%), 31 unticked, 8 ticked. Its own measurement
+(67 of 80) had counted only cuts whose pages carried the evaluator wording, so it overstated what it
+found. On the 2026-11-05 email's record the pass marks all 33 pieces of the three evaluations and
+nothing else. Without the "its own numbering" check the walk found 294 pieces but marked 73 ticked
+documents, most in records stamped page by page across every document. Most pieces it still misses
+sit at a cut where a page has no label (the footer was not read, or the review is unnumbered);
+bridging one unlabelled page found 10 more and was left out for the rules it adds. Such cuts rose
+in October: merged pieces inside evaluations were 1-2 a month July to September and 75 in October.
 
 The engine logs `evaluation pieces: {'evaluation_pieces': n}` when the pass runs.
 
@@ -433,6 +464,42 @@ either piece had it. A run of confirmed boundaries collapses into one row. The e
 
 > **Note:** Not measured. It changes what segmentation decides, and a wrong merge hides a document,
 > so it ships off and is turned on per box after a measurement there.
+
+## Merging one visit's pieces automatically, with Split back (off by default)
+
+When `auto_merge_visit_pieces` is true (`AUTO_MERGE_VISIT_PIECES`, default false), the same
+candidates are merged with NO model call, when the reviewer's copy of the draft is written
+(`backend/app/worker/tasks.py` `_store_segment_rows()`, `visit_merge.auto_merge_visit_pieces()`).
+The senior reviewer, 2026-11-05, on whether the suggested merges for one visit's pieces may be
+applied automatically: "I would say yes, it is fairly rare that they are wrong so it would save a
+lot of time." It cannot be on together with `merge_visit_pieces`; the app refuses to start.
+
+**What it merges (`auto_merge_runs()`).** The candidates above, chained into runs, never a PR-4
+pair or a deposition's paperwork (those stay hints). A run never holds a category-1 visit and a
+category-5 visit: a work status or an RFA between the two goes with the category-1 side, the export
+fold's order, so `1 | work status | 5` becomes `1+work status`, `5`, and `5 | work status | 1`
+becomes `5`, `work status+1`. On the live copy reviewers kept the therapy note apart in 5 of 10 such
+runs. The merged row is built like the model-checked merge's: the visit document's category, title
+and classification, the first piece's start and merge hint, the last piece's end, flag `x` when any
+piece had it. The worker logs `auto visit merge: {'runs': n, 'merged': k}` and one line per run
+with its pages and number of pieces.
+
+**Only the reviewer's copy.** `review_rows` get the merged rows; `segment_rows` keep every piece,
+so every measurement of the draft stays a measurement of the machine, and nothing has to be stored
+to undo a merge. Hints for a merged-away boundary are not shown, because that boundary is no longer
+a row.
+
+**Split back.** When the record is read, `_auto_merged_pieces()` in
+`backend/app/api/documents.py` recomputes the runs from the newest segment job's `segment_rows` by
+the same rule, and a review row whose pages still match a run is sent with `merged_pieces`. The
+editor marks it "Merged from N pieces" with a Split back button that puts the pieces back in its
+place ([The review workbench](frontend-workbench.md)). Once the reviewer changes that row's pages,
+the pieces no longer match and nothing is offered.
+
+**Measured wrong** (the reviewer had kept the two apart): our model's drafts 28 of 420 merges
+(6.7%), in 10 of 21 records, 13 of them on one Kaiser record where one entry per day now wants them
+merged; Gemini's drafts 273 of 1,198 (23%), on records finished before the 2026-10-28 rule, when
+reviewers merged less. That is why a wrong merge has to be visible and undone in one click.
 
 ## Injury dates, read last
 
