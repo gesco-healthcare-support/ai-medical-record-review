@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   useDeleteDocument,
   useDocuments,
+  useSetCompleted,
   useStartIdentification,
   useUploadDocument,
 } from "@/hooks/use-documents";
@@ -311,6 +312,7 @@ export function DocumentsView() {
   const uploads = useUploads(owner);
   const del = useDeleteDocument();
   const identify = useStartIdentification();
+  const complete = useSetCompleted();
 
   const fileInput = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -345,6 +347,13 @@ export function DocumentsView() {
     } catch (err) {
       toast.error(errMessage(err, "Could not delete the record."));
     }
+  }
+
+  function toggleCompleted(doc: DocumentListItem) {
+    complete.mutate(
+      { id: doc.id, completed: !doc.completed_at },
+      { onError: (err) => toast.error(errMessage(err, "Could not change the Completed mark.")) },
+    );
   }
 
   function onIdentify(doc: DocumentListItem) {
@@ -418,6 +427,7 @@ export function DocumentsView() {
             onIdentify={onIdentify}
             onAssign={owner.isAdmin ? setAssignTarget : undefined}
             onDelete={viewingOther ? undefined : (doc) => setDeleteTarget(doc)}
+            onToggleCompleted={toggleCompleted}
           />
         </section>
       ) : null}

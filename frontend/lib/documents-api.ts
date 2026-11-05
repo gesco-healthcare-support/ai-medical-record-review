@@ -41,6 +41,15 @@ export function aggregateDocuments(name: string, files: File[], owner?: number |
   });
 }
 
+/** PUT /api/documents/{id}/completed - the reviewer's Completed mark on the records list: set it
+ *  or clear it. Answers with the record's list entry. */
+export function setCompleted(id: string, completed: boolean) {
+  return apiFetch<DocumentListItem>(`/documents/${id}/completed`, {
+    method: "PUT",
+    body: JSON.stringify({ completed }),
+  });
+}
+
 /** DELETE /api/documents/{id} - cascades rows/summaries; 409 if a job is running. */
 export function deleteDocument(id: string) {
   return apiFetch<{ ok: boolean }>(`/documents/${id}`, { method: "DELETE" });

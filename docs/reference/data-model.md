@@ -301,6 +301,8 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `letter_date` | String(32) | yes | - | Free text. | `c2f1a7d94e63` |
 | `pages_received` | Integer | yes | - | Pages actually received, which is not `page_count`. NULL = nobody has said; every consumer then uses `page_count`. | `c2f1a7d94e63` |
 | `one_entry_per_date` | Boolean | no | ORM `False`, server `false` | The reviewer chose "One entry per date" for this record (a Kaiser or hospital record): its neighbouring same-date rows were merged, and the export folds every same-date entry but a diagnostic study's, an operative report's and a lab's into one. Kept when the record is identified again; turned off on the workbench. | `d6a2f9c3e481` |
+| `completed_at` | DateTime | yes | none | When the reviewer marked the record Completed on the records list (HTTP API D6a); NULL is not marked. Only the reviewer sets or clears it. | `f2c7a4e81b39` |
+| `downloaded_at` | DateTime | yes | none | When the review was last downloaded - the Word letter, the linked PDF or the ZIP (D20, D21, D23); NULL is never. Filled once from the audit log's past `export`, `export_pdf` and `export_zip` rows by the migration. | `f2c7a4e81b39` |
 
 ORM helpers on `Document`: `active_job` (the job in `queued`, `running` or `paused`, else `None`)
 and `listing()` (the wire shape; see [HTTP API reference](http-api.md)).
@@ -553,6 +555,7 @@ Every `action` value written by the repository:
 | `segment.start`, `dedup.start` | `backend/app/api/documents.py` (job start) |
 | `duplicates.resolve` | `backend/app/api/documents.py` (duplicate group resolution) |
 | `rows.edit` | `backend/app/api/documents.py` (row save; `detail` carries the boundary counts) |
+| `record.completed` | `backend/app/api/documents.py` (the Completed mark on the records list; `detail` is `on` or `off`) |
 | `rows.one_entry_per_date`, `one_entry_per_date.off` | `backend/app/api/documents.py` (the one-entry-per-date action and turning it off; `detail` carries the counts) |
 | `job.cancel` | `backend/app/api/documents.py` (cancel) |
 | `summarize.skip_duplicate_check` | `backend/app/api/documents.py` (summarize start without a current duplicate check) |
