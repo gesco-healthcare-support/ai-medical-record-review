@@ -338,6 +338,57 @@ def test_no_hint_where_the_pieces_are_not_one_visit(prev, row):
     assert not any(r.get("suggest_merge") for r in out)
 
 
+_PR4 = _row(1, 2, "2", "PR-4 PERMANENT AND STATIONARY REPORT")
+_PR4_PAGE = _row(3, 3, "2", "PR-4 PERMANENT AND STATIONARY REPORT")
+
+
+@pytest.mark.parametrize(
+    ("prev", "row"),
+    [
+        (_PR4, _PR4_PAGE),  # one PR-4 cut in two
+        (_PR2, _PR4_PAGE),  # a PR-2 page, then the PR-4
+        (_PR4, _PR2_PAGE),  # the PR-4, then a PR-2 page
+        (_PR4, _RFA),  # the PR-4's RFA
+        (_PR4, _SLIP_100),  # the PR-4's work status
+    ],
+    ids=["2+2", "1+2", "2+1", "pr4+rfa", "pr4+work status"],
+)
+def test_a_pr4s_pieces_get_a_hint(prev, row):
+    """DEMONSTRATES 2026-11-05: reviewers join a same-date PR-4 with a PR-2 or another PR-4 piece
+    (134 of 179 new hints on Gemini's drafts, 19 of 29 on ours)."""
+    out, hinted = visit_merge.hint_visit_pieces([dict(prev), dict(row)])
+    assert hinted == 1
+    assert out[1]["suggest_merge"] is True
+
+
+@pytest.mark.parametrize(
+    ("prev", "row"),
+    [
+        (_PR4, _row(3, 3, "1", date="02/05/2026")),  # a PR-4 and a PR-2 of two dates
+        (_PR4, _row(3, 3, "5", "PHYSICAL THERAPY NOTE")),  # 2 next to 5: joined 9-26% of the time
+        (_THERAPY, _row(2, 2, "2", "PR-4 PERMANENT AND STATIONARY REPORT")),  # 5 next to 2
+        (_PR4, _STUDY),  # a diagnostic study is always its own entry
+        (_row(1, 2, "8", "OPERATIVE REPORT"), _row(3, 3, "8", "OPERATIVE REPORT")),  # 8+8 not added
+        (_row(1, 2, "14", "LAB"), _row(3, 3, "14", "LAB")),  # 14+14 not added
+    ],
+    ids=["two dates", "2+5", "5+2", "2+3", "8+8", "14+14"],
+)
+def test_no_hint_for_the_pairs_left_out(prev, row):
+    """GUARD: only the PR-4 pairs were added; 1|5, 2|5, a study and the other same-category pairs
+    stay without a hint."""
+    out, hinted = visit_merge.hint_visit_pieces([dict(prev), dict(row)])
+    assert hinted == 0
+    assert not any(r.get("suggest_merge") for r in out)
+
+
+@pytest.mark.parametrize(("prev", "row"), [(_PR4, _PR4_PAGE), (_PR2, _PR4_PAGE), (_PR4, _RFA)])
+def test_the_visit_merge_does_not_ask_about_a_pr4(prev, row):
+    """GUARD: MERGE_VISIT_PIECES keeps its candidates - its same-doctor check was never measured on
+    a PR-4, so the PR-4 pairs are hints only."""
+    assert visit_merge.candidate_indices([dict(prev), dict(row)]) == []
+    assert visit_merge.hint_candidate_indices([dict(prev), dict(row)]) == [1]
+
+
 def test_a_boundary_the_verify_pass_already_hinted_is_not_counted_twice():
     rows = [dict(_PR2), {**_RFA, "suggest_merge": True}]
     out, hinted = visit_merge.hint_visit_pieces(rows)

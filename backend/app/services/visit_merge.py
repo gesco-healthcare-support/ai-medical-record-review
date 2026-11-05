@@ -17,6 +17,16 @@ RFA-titled category 10 row, or a row whose title names a work status). Never a d
 (category 3), never two dates. A category 1 row next to a category 5 row is not a candidate, the
 same limit the export fold keeps: nothing has measured how often that pair is one visit.
 
+The HINTS (``VISIT_MERGE_HINTS``, `hint_visit_pieces`) take one more visit category: a PR-4
+(category 2) piece next to a PR-2 (1) or another PR-4 piece of the same date, and a PR-4 next to an
+RFA or a work status. Measured on the reviewers' finished records (2026-11-05), the hints this adds
+on top of the rule above: Gemini's drafts, 283 live records, 179 new hints, 134 joined by the
+reviewer (75%; the rule above 77% on the same records); our model's drafts, 21 records, 29 new, 19
+joined (66%; the rule above 93%). Still out: 1|5 and 2|5 (joined 9-26% of the time), and the same
+category of 8, 9, 10, 13, 14 or 15, where the two sets of drafts disagree or the rate is low. The
+merge below keeps its candidates as they were: it is off everywhere, and its "same doctor?" check
+was never measured on a PR-4.
+
 It merges only on a clear YES. A failed call, an unclear reply or a timeout leaves the boundary
 where segmentation put it, because a wrong merge hides a document and nothing downstream surfaces
 it. The merged row keeps the visit document's category and title and starts where the first piece
@@ -40,7 +50,11 @@ from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
 
-_VISIT_CATEGORIES = ("1", "5")
+_VISIT_CATEGORIES = frozenset({"1", "5"})
+# The hints' visit categories: a PR-4 (2) as well. Two visit rows of different categories are a
+# candidate only as a pair listed here - a PR-2 and a PR-4, never a visit and a therapy note.
+_HINT_VISIT_CATEGORIES = frozenset({"1", "2", "5"})
+_HINT_MIXED_PAIRS = frozenset({frozenset({"1", "2"})})
 _RFA_CATEGORY = "10"
 _DIAGNOSTIC_CATEGORY = "3"
 # The first and last page of each of the two rows: the most images one check sends. Mirrored in
@@ -54,7 +68,7 @@ _SAME_AUTHOR_SYSTEM = (
 )
 
 
-def _role(row):
+def _role(row, visits=_VISIT_CATEGORIES):
     """``"visit"`` for a visit document, ``"join"`` for a row that joins a visit, else ``None``."""
     category = str(row.get("category") or "")
     if category == _DIAGNOSTIC_CATEGORY:
@@ -62,31 +76,42 @@ def _role(row):
     title = str(row.get("title") or "")
     if _WORK_STATUS_TITLE.search(title) or (category == _RFA_CATEGORY and _RFA_TITLE.search(title)):
         return "join"
-    return "visit" if category in _VISIT_CATEGORIES else None
+    return "visit" if category in visits else None
 
 
-def _is_candidate(prev, row):
+def _is_candidate(prev, row, visits=_VISIT_CATEGORIES, mixed_pairs=frozenset()):
     """Whether the boundary between ``prev`` and ``row`` may be one visit's - see the module."""
     date = str(row.get("date") or "").strip()
     if date in ("", "-") or str(prev.get("date") or "").strip() != date:
         return False
-    roles = (_role(prev), _role(row))
+    roles = (_role(prev, visits), _role(row, visits))
     if roles == ("visit", "visit"):
-        return str(prev["category"]) == str(row["category"])
+        pair = frozenset({str(prev["category"]), str(row["category"])})
+        return len(pair) == 1 or pair in mixed_pairs
     return set(roles) == {"visit", "join"}
 
 
 def candidate_indices(rows):
-    """Indices ``i`` whose boundary with row ``i - 1`` is a candidate, ascending."""
+    """Indices ``i`` whose boundary with row ``i - 1`` the visit MERGE asks about, ascending."""
     return [i for i in range(1, len(rows)) if _is_candidate(rows[i - 1], rows[i])]
 
 
+def hint_candidate_indices(rows):
+    """Indices ``i`` whose boundary with row ``i - 1`` gets a visit HINT: the merge's candidates,
+    plus a PR-4 piece's (see the module), ascending."""
+    return [
+        i
+        for i in range(1, len(rows))
+        if _is_candidate(rows[i - 1], rows[i], _HINT_VISIT_CATEGORIES, _HINT_MIXED_PAIRS)
+    ]
+
+
 def hint_visit_pieces(rows):
-    """Every candidate boundary as a merge HINT (``suggest_merge`` on the second row), with no
-    model call and no merge - the reviewer decides (``VISIT_MERGE_HINTS``). Returns
+    """Every hint candidate boundary as a merge HINT (``suggest_merge`` on the second row), with
+    no model call and no merge - the reviewer decides (``VISIT_MERGE_HINTS``). Returns
     ``(rows, hinted)``, ``hinted`` counting only rows that were not already hinted. The caller's
     rows are not changed."""
-    marked = set(candidate_indices(rows))
+    marked = set(hint_candidate_indices(rows))
     out, hinted = [], 0
     for i, row in enumerate(rows):
         if i in marked and not row.get("suggest_merge"):
