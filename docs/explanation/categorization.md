@@ -82,7 +82,7 @@ comment in the code records why it sits where it does. In order:
 | 3 | QME, AME, PQME, qualified or agreed medical evaluator | 13 |
 | 4 | Utilization review, independent medical review, IMR | 15 |
 | 5 | Return-to-work and voucher, both present | 1 |
-| 6 | Physical therapy, chiropractic, acupuncture, PT initial/progress, shockwave therapy or treatment, functional improvement | 5 |
+| 6 | Physical therapy, occupational therapy, chiropractic, acupuncture, PT initial/progress, OT progress, shockwave therapy or treatment, functional improvement | 5 |
 | 7 | PR-4, permanent and stationary, P&S, MMI, doctor's first report, initial consultation | 2 |
 | 8 | PR-2, progress report or note, office visit, work status, activity status, follow-up | 1 |
 | 9 | Prescriptions, and named orders (lab, imaging, radiology, x-ray, MRI, CT, EKG/ECG, EMG, NCS) | 10 |
