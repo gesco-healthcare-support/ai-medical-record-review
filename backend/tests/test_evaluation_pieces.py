@@ -122,7 +122,7 @@ def test_a_page_number_quoted_in_the_body_is_not_a_label():
     the pages of the records it summarizes ("see page 5")."""
     body = ("Summary line.",) * 5
     texts = {
-        1: f"{_HEADER}\nUnnumbered",
+        **_evaluation(1, 3),
         4: "\n".join(body + ("as noted on page 4 of the records",) + body),
         5: "\n".join(body + ("continued on page 5 of the records",) + body),
     }
