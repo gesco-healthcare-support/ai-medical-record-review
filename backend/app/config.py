@@ -1181,12 +1181,13 @@ class Settings(BaseSettings):
     # visit pieces get no hint when `merge_visit_pieces` is on (those are merged instead).
     visit_merge_hints: bool = False
     # At the end of segmentation, after the verify pass: mark as a suggested merge every draft row
-    # that continues the QME/AME evaluation before it - both pages carry the evaluator's wording and
-    # the page numbering runs on (`evaluation_pieces.suggest_evaluation_pieces`). The senior
-    # reviewer, 2026-11-02: an evaluation's records review is split into entries that belong to the
-    # report. Suggestions only, on stored page text, no model call. Measured read-only on the live
-    # box: finds 67 of the 80 such cuts reviewers merged by hand; 6 of the 104 rows it marks are
-    # real documents a reviewer kept.
+    # that continues the QME/AME evaluation before it - from an evaluation whose own page numbering
+    # starts with it, every following row while the page label runs on across the cut
+    # (`evaluation_pieces.suggest_evaluation_pieces`). The senior reviewer, 2026-11-02 and again
+    # 2026-11-05: an evaluation's records review is split into entries that belong to the report.
+    # Suggestions only, on stored page text, no model call. Measured read-only on the live box
+    # (2026-11-05, 502 records): finds 267 of the 382 pieces reviewers merged into evaluations by
+    # hand; 12 of the 325 rows it marks are real documents a reviewer kept.
     #
     # Off by default: it changes the draft a reviewer is shown. Turn it on per box.
     suggest_evaluation_pieces: bool = False

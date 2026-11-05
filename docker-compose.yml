@@ -314,8 +314,8 @@ x-backend-env: &backend-env
   # rows of the same date, and one visit's pieces get a hint with no model call. Off by default: it
   # changes what a reviewer is shown, so it is turned on per box.
   VISIT_MERGE_HINTS: ${VISIT_MERGE_HINTS:-false}
-  # Mark the pieces of a QME/AME evaluation cut at its records review as suggested merges (page
-  # numbering runs on under the evaluator's header). Suggestions only, no model call.
+  # Mark the pieces of a QME/AME evaluation cut at its records review as suggested merges (the
+  # report's own page numbering runs on across the cut). Suggestions only, no model call.
   SUGGEST_EVALUATION_PIECES: ${SUGGEST_EVALUATION_PIECES:-false}
   # Covering-letter fields the header call also reads and pre-fills where still empty: any of
   # attorney_name, doctor, letter_date, pages_received. Empty by default: a field is turned on

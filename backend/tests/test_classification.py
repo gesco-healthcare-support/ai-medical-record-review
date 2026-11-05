@@ -1122,13 +1122,10 @@ def test_the_guard_covers_every_category_1_rule_including_ones_not_written_yet()
 
 
 # ---------------------------------------------------------------------------------------------
-# Orders and prescriptions -> 10, answered by Adam 2026-08-24: "All orders can probably go under the
-# RFA category", and for prescriptions "if they are on their own it's probably fine to put it under
-# the RFA category since it should be the same information being summarized."
-#
-# The cost of not having this: on the two most recent builds every prescription answered 100 through
-# the cascade (17 rows), and 100 is unchecked for summarization by default - so the reviewer was never
-# offered a document type they asked to have summarized.
+# Orders and prescriptions -> 100 (left out), the senior reviewer 2026-11-05: "Prescriptions and
+# lab orders I think we can leave out since they are usually included in the progress/visit
+# notes." Until then they answered 10 (2026-08-24: "All orders can probably go under the RFA
+# category"). An RFA-worded title is a request for authorization and stays 10.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -1145,18 +1142,33 @@ def test_the_guard_covers_every_category_1_rule_including_ones_not_written_yet()
         "Order for MRI Lumbar Spine",
     ],
 )
-def test_an_order_or_prescription_is_a_request_for_authorization(title):
-    """WHEN a title names an order or a prescription, THE SYSTEM SHALL answer 10."""
+def test_an_order_or_prescription_is_left_out(title):
+    """DEMONSTRATES 2026-11-05: WHEN a title names an order or a prescription, THE SYSTEM SHALL
+    answer 100 - General, unticked for summarization."""
+    assert classification.match_rules(title) == "100"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "RFA for Prescription",
+        "Request for Authorization - MRI Order",
+        "Prescription - Request for Authorization",
+        "RFA - Lab Order",
+    ],
+)
+def test_an_rfa_worded_order_stays_a_request_for_authorization(title):
+    """GUARD: a title that also says RFA or request for authorization is the request, and stays 10
+    - it must not fall to the imaging rule on its "MRI" either."""
     assert classification.match_rules(title) == "10"
 
 
 def test_an_order_for_a_study_is_not_the_study():
-    """THE DEFECT THIS FIXES. "Radiology Order" matched `radiolog` in the imaging rule and answered 3
-    - an order FOR a study classified as the study itself, then summarized with the diagnostic prompt
-    against a page carrying no findings. Same request-versus-answer confusion category 15 was created
-    for: 10 is the treating physician ASKING.
+    """GUARD (the 2026-08-24 defect): "Radiology Order" matched `radiolog` in the imaging rule
+    and answered 3 - an order FOR a study classified as the study itself. The order rule still
+    sits above imaging, so it answers before the study rule can.
     """
-    assert classification.match_rules("Radiology Order") == "10"
+    assert classification.match_rules("Radiology Order") == "100"
 
 
 @pytest.mark.parametrize(
@@ -1238,18 +1250,18 @@ def test_the_request_rule_is_directional():
 #
 # The asymmetry is the argument: a progress report or work status report can legitimately mention
 # ordering a study, because the order is a line inside the report. A standalone order carries no
-# progress-report language at all. So category 1 wins a title holding both, and 10 keeps the titles
-# that are only an order.
+# progress-report language at all. So category 1 wins a title holding both, and the order rule keeps
+# the titles that are only an order (100 since 2026-11-05: left out).
 @pytest.mark.parametrize(
     ("title", "expected"),
     [
         ("Work Status Report and MRI Order", "1"),
         ("Progress Report - Lab Order Attached", "1"),
         ("Office Visit with Prescription", "1"),
-        # and the reverse: an order on its own is still an order
-        ("MRI Order", "10"),
-        ("Lab Order", "10"),
-        ("Prescription", "10"),
+        # and the reverse: an order on its own is still an order, left out
+        ("MRI Order", "100"),
+        ("Lab Order", "100"),
+        ("Prescription", "100"),
     ],
 )
 def test_a_report_mentioning_an_order_is_still_the_report(title, expected):
@@ -1385,6 +1397,44 @@ def test_a_more_specific_document_type_beats_history_and_physical(title, expecte
     ],
 )
 def test_a_bare_history_or_physical_token_is_not_an_h_and_p(title, expected):
+    assert classification.match_rules(title) == expected
+
+
+# --- occupational therapy is category 5 --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Occupational Therapy Progress Note",
+        "OT Progress Note",
+        "Occupational Therapy Evaluation",
+        "OCCUPATIONAL THERAPY DAILY NOTE",
+    ],
+)
+def test_an_occupational_therapy_note_is_category_5(title):
+    """DEMONSTRATES 2026-11-05: these fell to rule 1 on "progress note", and reviewers re-filed
+    every such row 5 (22 of 22 on the live box, 2 of 2 on ours)."""
+    assert classification.match_rules(title) == "5"
+    assert classification.bare_progress_note(title) is False
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Physical Therapy Progress Report", "5"),  # the therapy rule as it was
+        ("Progress Note", "1"),
+        ("Office Visit", "1"),
+        # No discipline named: reviewers split these 6 to category 1, 4 to 5 - left to rule 1.
+        ("Therapy Progress Note", "1"),
+        # "OT" alone is too short to trust; only "OT progress" is claimed.
+        ("OT Note", None),
+        # "ot" inside another word is not the abbreviation.
+        ("Foot Progress Note", "1"),
+    ],
+)
+def test_the_occupational_therapy_words_claim_nothing_else(title, expected):
+    """GUARD: the rule-5 addition moves only titles that name occupational therapy."""
     assert classification.match_rules(title) == expected
 
 
