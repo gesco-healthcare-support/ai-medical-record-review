@@ -37,6 +37,10 @@ const FILTERS: ReadonlyArray<{
   // restarts the workers. The remedy is also different from a failure's - run it again, nothing is
   // wrong with the record - which is why it earns its own chip rather than a softer shared label.
   { key: "interrupted", label: "Interrupted", match: (d) => d.status === "interrupted" },
+  // The reviewer's own mark, not the pipeline's state: "Summarized" says the summaries exist, not
+  // that someone finished checking and downloaded the review (a reviewer asked for it, 2026-11-05).
+  { key: "completed", label: "Completed", match: (d) => Boolean(d.completed_at) },
+  { key: "open", label: "Not completed", match: (d) => !d.completed_at },
 ];
 
 const SORT_ACCESSORS = {
@@ -75,16 +79,45 @@ function relTime(iso: string): string {
   return then.toLocaleDateString(undefined, opts);
 }
 
+/** The Completed mark, like Outlook's colour category: an outlined bar before the file name, filled
+ *  once the reviewer marks the record Completed. A button of its own, so a click marks the record
+ *  rather than opening it. */
+function CompletedMark({
+  doc,
+  onToggle,
+}: Readonly<{ doc: DocumentListItem; onToggle: (doc: DocumentListItem) => void }>) {
+  const completed = Boolean(doc.completed_at);
+  const label = completed
+    ? `Completed ${new Date(doc.completed_at as string).toLocaleDateString()} - click to clear`
+    : "Mark as completed";
+  return (
+    <button
+      type="button"
+      className={cn("hd-mark", completed && "on")}
+      aria-pressed={completed}
+      aria-label={label}
+      title={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(doc);
+      }}
+    />
+  );
+}
+
 export function DocumentsTable({
   docs,
   onOpen,
   onIdentify,
   onAssign,
   onDelete,
+  onToggleCompleted,
 }: Readonly<{
   docs: DocumentListItem[];
   onOpen: (id: string) => void;
   onIdentify?: (doc: DocumentListItem) => void;
+  /** Set or clear the reviewer's Completed mark - the bar before the file name, or the menu. */
+  onToggleCompleted?: (doc: DocumentListItem) => void;
   /** Admins only: move the record to another reviewer. Off while a job runs, as on the server. */
   onAssign?: (doc: DocumentListItem) => void;
   onDelete?: (doc: DocumentListItem) => void;
@@ -203,6 +236,9 @@ export function DocumentsTable({
                 <tr key={doc.id} data-id={doc.id} onClick={() => onOpen(doc.id)}>
                   <td>
                     <span className="hd-doc">
+                      {onToggleCompleted ? (
+                        <CompletedMark doc={doc} onToggle={onToggleCompleted} />
+                      ) : null}
                       <FileText width={15} height={15} aria-hidden />
                       <span className="hd-name">{doc.original_filename}</span>
                       <ChevronRight width={15} height={15} aria-hidden className="hd-open-cue" />
@@ -215,6 +251,11 @@ export function DocumentsTable({
                   <td className="hd-muted">{relTime(doc.updated_at)}</td>
                   <td>
                     <StatusPill doc={doc} />
+                    {doc.downloaded_at ? (
+                      <span className="hd-downloaded">
+                        Downloaded {new Date(doc.downloaded_at).toLocaleDateString()}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="hd-menu-cell" onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
@@ -223,6 +264,11 @@ export function DocumentsTable({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-52">
                         <DropdownMenuItem onSelect={() => onOpen(doc.id)}>Open</DropdownMenuItem>
+                        {onToggleCompleted ? (
+                          <DropdownMenuItem onSelect={() => onToggleCompleted(doc)}>
+                            {doc.completed_at ? "Clear Completed" : "Mark as completed"}
+                          </DropdownMenuItem>
+                        ) : null}
                         {onIdentify ? (
                           <DropdownMenuItem
                             disabled={Boolean(doc.active_job)}

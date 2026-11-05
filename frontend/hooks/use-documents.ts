@@ -44,5 +44,25 @@ export const useAssignDocument = () =>
     assignDocument(vars.id, vars.owner, vars.allowDuplicate),
   );
 export const useDeleteDocument = () => useDocsMutation((id: string) => api.deleteDocument(id));
+
+/** The reviewer's Completed mark. It shows at once - the cached list is patched before the server
+ *  answers - and the list is read again afterwards, which also takes a refused change back. */
+export function useSetCompleted() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string; completed: boolean }) =>
+      api.setCompleted(vars.id, vars.completed),
+    onMutate: async ({ id, completed }) => {
+      await queryClient.cancelQueries({ queryKey: DOCS_KEY });
+      const completedAt = completed ? new Date().toISOString() : null;
+      queryClient.setQueriesData<DocumentListItem[]>({ queryKey: DOCS_KEY }, (docs) =>
+        Array.isArray(docs)
+          ? docs.map((d) => (d.id === id ? { ...d, completed_at: completedAt } : d))
+          : docs,
+      );
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: DOCS_KEY }),
+  });
+}
 export const useStartIdentification = () =>
   useDocsMutation((id: string) => api.startIdentification(id));

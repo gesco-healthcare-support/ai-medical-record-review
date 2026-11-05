@@ -18,6 +18,7 @@ vi.mock("@/lib/documents-api", () => ({
   aggregateDocuments: vi.fn().mockResolvedValue({ id: "d2", page_count: 4 }),
   deleteDocument: vi.fn().mockResolvedValue({ ok: true }),
   startIdentification: vi.fn().mockResolvedValue({ ok: true }),
+  setCompleted: vi.fn().mockResolvedValue({}),
 }));
 vi.mock("@/lib/admin-api", () => ({
   assignDocument: vi.fn().mockResolvedValue({ id: "d1", owner: { id: 7, name: "Brian" } }),
@@ -27,6 +28,7 @@ import { assignDocument } from "@/lib/admin-api";
 import {
   aggregateDocuments,
   deleteDocument,
+  setCompleted,
   startIdentification,
   uploadDocument,
 } from "@/lib/documents-api";
@@ -35,6 +37,7 @@ import {
   useAssignDocument,
   useDeleteDocument,
   useDocuments,
+  useSetCompleted,
   useStartIdentification,
   useUploadDocument,
 } from "@/hooks/use-documents";
@@ -126,5 +129,56 @@ describe("useDocuments mutations", () => {
     expect(assignDocument).toHaveBeenCalledWith("d1", 7, false);
     expect(deleteDocument).toHaveBeenCalledWith("d1");
     expect(startIdentification).toHaveBeenCalledWith("d1");
+  });
+});
+
+describe("useSetCompleted", () => {
+  it("shows the mark at once, calls the endpoint, and reads the list again", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidated: unknown[] = [];
+    vi.spyOn(client, "invalidateQueries").mockImplementation(async (filters) => {
+      invalidated.push(filters?.queryKey);
+    });
+    client.setQueryData(["documents"], [doc(), doc({ id: "d2" })]);
+    client.setQueryData(["documents", "owner", 7], [doc()]);
+    let answer: (value: unknown) => void = () => undefined;
+    vi.mocked(setCompleted).mockImplementationOnce(
+      () => new Promise((resolve) => (answer = resolve)) as never,
+    );
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useSetCompleted(), { wrapper });
+
+    result.current.mutate({ id: "d1", completed: true });
+
+    // Before the server answers, every cached list shows the mark on that record only.
+    await waitFor(() => {
+      const mine = client.getQueryData<Array<Record<string, unknown>>>(["documents"]);
+      expect(mine?.[0].completed_at).toBeTruthy();
+      expect(mine?.[1].completed_at).toBeUndefined();
+    });
+    const theirs = client.getQueryData<Array<Record<string, unknown>>>(["documents", "owner", 7]);
+    expect(theirs?.[0].completed_at).toBeTruthy();
+    expect(setCompleted).toHaveBeenCalledWith("d1", true);
+
+    answer({});
+    await waitFor(() => expect(invalidated).toEqual([["documents"]]));
+  });
+
+  it("clears the mark the same way", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.spyOn(client, "invalidateQueries").mockResolvedValue();
+    client.setQueryData(["documents"], [doc({ completed_at: "2026-11-05T10:00:00Z" })]);
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useSetCompleted(), { wrapper });
+
+    await result.current.mutateAsync({ id: "d1", completed: false });
+
+    expect(setCompleted).toHaveBeenCalledWith("d1", false);
+    const mine = client.getQueryData<Array<Record<string, unknown>>>(["documents"]);
+    expect(mine?.[0].completed_at).toBeNull();
   });
 });
