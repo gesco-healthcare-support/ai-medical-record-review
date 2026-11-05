@@ -288,8 +288,10 @@ async def test_a_merged_row_carries_its_pieces_for_split_back(authed, monkeypatc
     rows = (await client.get(f"/api/documents/{doc_id}")).json()["rows"]
     pieces = rows[0]["merged_pieces"]
     assert [(p["start"], p["end"], p["category"]) for p in pieces] == [(1, 1, "1"), (2, 2, "1")]
-    assert all(p["include"] is True and p["method"] == "rules" for p in pieces)
-    assert "merged_pieces" not in rows[1] and "merged_pieces" not in rows[2]
+    assert all(p["include"] is True for p in pieces)
+    assert all(p["method"] == "rules" for p in pieces)
+    assert "merged_pieces" not in rows[1]
+    assert "merged_pieces" not in rows[2]
 
 
 async def test_a_row_the_reviewer_re_spanned_offers_no_split_back(authed, monkeypatch):

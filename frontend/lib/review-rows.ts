@@ -82,8 +82,10 @@ export function mergedPieces(row: Row): RowPiece[] | null {
   const pieces = row.merged_pieces;
   if (!pieces || pieces.length < 2) return null;
   const first = pieces[0];
-  const last = pieces[pieces.length - 1];
-  return Number(first.start) === Number(row.start) && Number(last.end) === Number(row.end)
+  const last = pieces.at(-1);
+  return last &&
+    Number(first.start) === Number(row.start) &&
+    Number(last.end) === Number(row.end)
     ? pieces
     : null;
 }
