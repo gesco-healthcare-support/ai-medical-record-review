@@ -1400,6 +1400,44 @@ def test_a_bare_history_or_physical_token_is_not_an_h_and_p(title, expected):
     assert classification.match_rules(title) == expected
 
 
+# --- occupational therapy is category 5 --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Occupational Therapy Progress Note",
+        "OT Progress Note",
+        "Occupational Therapy Evaluation",
+        "OCCUPATIONAL THERAPY DAILY NOTE",
+    ],
+)
+def test_an_occupational_therapy_note_is_category_5(title):
+    """DEMONSTRATES 2026-11-05: these fell to rule 1 on "progress note", and reviewers re-filed
+    every such row 5 (22 of 22 on the live box, 2 of 2 on ours)."""
+    assert classification.match_rules(title) == "5"
+    assert classification.bare_progress_note(title) is False
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Physical Therapy Progress Report", "5"),  # the therapy rule as it was
+        ("Progress Note", "1"),
+        ("Office Visit", "1"),
+        # No discipline named: reviewers split these 6 to category 1, 4 to 5 - left to rule 1.
+        ("Therapy Progress Note", "1"),
+        # "OT" alone is too short to trust; only "OT progress" is claimed.
+        ("OT Note", None),
+        # "ot" inside another word is not the abbreviation.
+        ("Foot Progress Note", "1"),
+    ],
+)
+def test_the_occupational_therapy_words_claim_nothing_else(title, expected):
+    """GUARD: the rule-5 addition moves only titles that name occupational therapy."""
+    assert classification.match_rules(title) == expected
+
+
 # --- a bare follow-up token does not outrank a document type ---------------------------------
 
 

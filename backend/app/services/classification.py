@@ -544,9 +544,17 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
         # leaves alone the one real row (user 4, 7 pages) that says shockwave with no therapy or
         # treatment word and sits at category 1 - no human has ruled on that one, so nothing here
         # moves it.
+        #
+        # `occupational therapy|\bot\b progress` added 2026-11-05. "Occupational Therapy Progress
+        # Note" and "OT Progress Note" fell to rule 1 on their "progress note", and reviewers
+        # re-filed every such row 5: 22 of 22 on the live box, 2 of 2 on our model's records. Of all
+        # finished rows titled occupational therapy, 59 of 66 (live) and 11 of 12 (ours) ended in 5.
+        # NOT a bare `\bot\b` ("OT" alone is too short to trust), and a "Therapy Progress Note" that
+        # names no discipline is left alone: reviewers split those 6 to category 1, 4 to 5.
         (
-            r"physical therapy|chiropractic|chiropractor|acupuncture|\bpt\b initial|pt progress"
-            r"|shock[- ]?wave (therapy|treatment)|functional improvement",
+            r"physical therapy|occupational therapy|chiropractic|chiropractor|acupuncture"
+            + r"|\bpt\b initial|pt progress|\bot\b progress"
+            + r"|shock[- ]?wave (therapy|treatment)|functional improvement",
             "5",
         ),
         (

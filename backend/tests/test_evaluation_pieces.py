@@ -35,13 +35,48 @@ def _evaluation(first_page, last_page, first_number=1):
     }
 
 
+def _review_page(
+    footer, entries=("01/13/2026 Sample Therapist, PT", "Chief complaint: shoulder pain.")
+):
+    """A page of the evaluation's records review: dated summaries of other records, no evaluator
+    wording, and only the evaluation's page label in its footer."""
+    body = "\n".join(entries + ("Plan: continue therapy.",) * 6)
+    return f"{body}\n{footer}"
+
+
 def test_the_pieces_of_an_evaluations_records_review_are_suggested_merges():
-    """DEMONSTRATES the email's case: an evaluation whose records review was cut into rows, each
-    piece under the same evaluator header with the page numbering running on."""
-    rows = [_row(1, 4, "13"), _row(5, 5, "1"), _row(6, 6, "2"), _row(7, 8, "13")]
+    """DEMONSTRATES the 2026-11-02 email's case: the records review cut into rows, each piece under
+    the evaluation's header with the page numbering running on."""
+    rows = [_row(1, 4, "13"), _row(5, 5, "1"), _row(6, 6, "2"), _row(7, 8, "1")]
     out, stats = ep.suggest_evaluation_pieces(rows, _pages(_evaluation(1, 8)))
     assert [r["suggest_merge"] for r in out] == [False, True, True, True]
     assert stats == {"evaluation_pieces": 3}
+
+
+def test_records_review_pages_need_no_evaluator_wording():
+    """DEMONSTRATES the 2026-11-05 email's case: the review's pages name no QME or AME - only the
+    footer label runs on - and a summary of an earlier evaluation inside the review is filed 13
+    itself. Every piece is suggested and the walk goes on through the 13."""
+    texts = {
+        1: f"{_HEADER}\nPanel Qualified Medical Evaluation",
+        **{page: _review_page(f"Page {page}") for page in range(2, 9)},
+    }
+    rows = [_row(1, 3, "13"), _row(4, 4, "5"), _row(5, 5, "13"), _row(6, 6, "5"), _row(7, 8, "1")]
+    out, stats = ep.suggest_evaluation_pieces(rows, _pages(texts))
+    assert [r["suggest_merge"] for r in out] == [False, True, True, True, True]
+    assert stats == {"evaluation_pieces": 4}
+
+
+def test_a_page_n_of_m_footer_runs_on_like_page_n():
+    """DEMONSTRATES the label forms: "7 of 40" and "Page: 7 of 40" both count."""
+    texts = {
+        1: f"{_HEADER}\n1 of 40",
+        2: _review_page("2 of 40"),
+        3: _review_page("Page: 3 of 40"),
+    }
+    rows = [_row(1, 1, "13"), _row(2, 2, "5"), _row(3, 3, "1")]
+    out, _ = ep.suggest_evaluation_pieces(rows, _pages(texts))
+    assert [r["suggest_merge"] for r in out] == [False, True, True]
 
 
 def test_a_new_evaluation_whose_numbering_starts_again_is_not_suggested():
@@ -53,35 +88,67 @@ def test_a_new_evaluation_whose_numbering_starts_again_is_not_suggested():
     assert [r["suggest_merge"] for r in out] == [False, False]
 
 
-def test_the_walk_stops_where_the_evaluator_wording_stops():
-    """GUARD: the next document after the evaluation, and everything after it, is never marked -
-    even when its own pages happen to number on."""
+def test_the_walk_stops_at_the_first_cut_whose_numbering_does_not_run_on():
+    """GUARD: the next document starts its own numbering; it is not marked, and neither is anything
+    after it - even a row whose pages number on from that document's."""
     texts = {
         **_evaluation(1, 4),
-        5: "Primary Treating Physician's Progress Report\nPage 5",
-        6: _evaluation_page(6),
+        5: "Primary Treating Physician's Progress Report\nPage 1",
+        6: "Work status\nPage 2",
     }
     rows = [_row(1, 4, "13"), _row(5, 5, "1"), _row(6, 6, "1")]
     out, _ = ep.suggest_evaluation_pieces(rows, _pages(texts))
     assert [r["suggest_merge"] for r in out] == [False, False, False]
 
 
-def test_a_cut_whose_numbering_does_not_run_on_is_not_suggested():
-    """GUARD: evaluator wording on both pages is not enough - reviewers kept 118 such boundaries as
-    real ticked documents. Only the numbering running on marks a piece."""
-    texts = {
-        **_evaluation(1, 4),
-        5: f"{_HEADER}\nAttached letter, unnumbered.",
-        6: _evaluation_page(6),
-    }
+def test_a_cut_with_no_label_on_either_side_ends_the_walk():
+    """GUARD: an unnumbered page is not a continuation, and the walk does not jump over it."""
+    texts = {**_evaluation(1, 4), 5: "Attached letter, unnumbered.", 6: _evaluation_page(6)}
     rows = [_row(1, 4, "13"), _row(5, 5, "100"), _row(6, 6, "1")]
     out, _ = ep.suggest_evaluation_pieces(rows, _pages(texts))
-    # Neither cut has numbers on both of its pages, so neither is marked - and the walk goes on
-    # past an unmarked cut while the wording continues, which the next test's stop does not.
     assert [r["suggest_merge"] for r in out] == [False, False, False]
-    texts[5] = _evaluation_page(5, body="Attached letter.")
+
+
+def test_a_different_total_does_not_run_on():
+    """GUARD: "4 of 10" then "5 of 12" are two documents' numbering, not one."""
+    texts = {1: f"{_HEADER}\n1 of 10", 4: _review_page("4 of 10"), 5: _review_page("5 of 12")}
+    rows = [_row(1, 4, "13"), _row(5, 5, "1")]
     out, _ = ep.suggest_evaluation_pieces(rows, _pages(texts))
-    assert [r["suggest_merge"] for r in out] == [False, True, True]
+    assert [r["suggest_merge"] for r in out] == [False, False]
+
+
+def test_a_page_number_quoted_in_the_body_is_not_a_label():
+    """GUARD: only the first and last lines carry the page's own label; a records review quotes
+    the pages of the records it summarizes ("see page 5")."""
+    body = ("Summary line.",) * 5
+    texts = {
+        **_evaluation(1, 3),
+        4: "\n".join(body + ("as noted on page 4 of the records",) + body),
+        5: "\n".join(body + ("continued on page 5 of the records",) + body),
+    }
+    rows = [_row(1, 4, "13"), _row(5, 5, "1")]
+    out, _ = ep.suggest_evaluation_pieces(rows, _pages(texts))
+    assert [r["suggest_merge"] for r in out] == [False, False]
+
+
+def test_numbering_stamped_across_the_whole_bundle_starts_no_walk():
+    """GUARD: a fax transmission or Bates numbers run on into the evaluation from the document
+    before it, and on through every document after it - they say nothing about where it ends."""
+    texts = {page: f"FAX Page {page}\nSome document." for page in range(1, 9)}
+    rows = [_row(1, 2, "1"), _row(3, 5, "13"), _row(6, 6, "1"), _row(7, 8, "5")]
+    out, stats = ep.suggest_evaluation_pieces(rows, _pages(texts))
+    assert [r["suggest_merge"] for r in out] == [False, False, False, False]
+    assert stats == {"evaluation_pieces": 0}
+
+
+def test_a_bundle_stamp_is_seen_past_an_unnumbered_first_page():
+    """GUARD: the evaluation's own first page carries no label, but its second follows the page
+    before the evaluation by two - the same stamp."""
+    texts = {page: f"FAX Page {page}\nSome document." for page in range(1, 9)}
+    texts[3] = "Panel Qualified Medical Evaluation"
+    rows = [_row(1, 2, "1"), _row(3, 5, "13"), _row(6, 6, "1")]
+    out, _ = ep.suggest_evaluation_pieces(rows, _pages(texts))
+    assert [r["suggest_merge"] for r in out] == [False, False, False]
 
 
 def test_rows_after_a_document_that_is_not_an_evaluation_are_never_suggested():
