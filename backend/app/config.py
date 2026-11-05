@@ -1153,6 +1153,16 @@ class Settings(BaseSettings):
     # Off by default: it changes what segmentation decides, and a wrong merge hides a document. Turn
     # it on per box once it has been measured there.
     merge_visit_pieces: bool = False
+    # Merge one visit's pieces with NO model call when the reviewer's copy of the draft is made
+    # (`visit_merge.auto_merge_visit_pieces`): the same candidates as `merge_visit_pieces` (same
+    # known date; 1+1, 5+5, or a visit and its RFA / work status; never a diagnostic study), never a
+    # category 1 visit with a category 5 one. The senior reviewer, 2026-11-05: "it is fairly rare
+    # that they are wrong so it would save a lot of time." Measured wrong (the reviewer kept the two
+    # apart): our model's drafts 28 of 420 (6.7%), Gemini's 273 of 1,198 (23%, records finished
+    # before the 2026-10-28 rule). So the machine's copy (`segment_rows`) keeps every piece, and the
+    # editor offers "Split back" on a merged row. Off by default: it changes the draft a reviewer
+    # gets; turned on per box. Refuses to be on with `merge_visit_pieces`.
+    auto_merge_visit_pieces: bool = False
     # Merge HINTS that follow what reviewers actually join, never a merge. Three parts:
     # - the verify pass asks the model only about two rows of the SAME known date - across two dates
     #   (or with a date missing) it sends nothing and no hint is shown;
@@ -1216,6 +1226,16 @@ class Settings(BaseSettings):
         """
         scaled = int(est_tokens * self.genai_timeout_per_1k_tokens_ms / 1000)
         return max(self.genai_http_timeout_ms, scaled)
+
+    @model_validator(mode="after")
+    def _one_visit_merge(self) -> "Settings":
+        """Refuse both visit merges at once: the model-checked one would ask about pieces the
+        automatic one merges anyway, and which of the two shaped a draft could not be told."""
+        if self.auto_merge_visit_pieces and self.merge_visit_pieces:
+            raise ValueError(
+                "AUTO_MERGE_VISIT_PIECES and MERGE_VISIT_PIECES cannot both be on; turn one off"
+            )
+        return self
 
     @model_validator(mode="after")
     def _derive(self) -> "Settings":

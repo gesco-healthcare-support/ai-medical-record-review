@@ -3,7 +3,7 @@
 import { Fragment, useRef, type MouseEvent } from "react";
 import { cn } from "@/lib/utils";
 import type { CategoryOption, Row } from "@/lib/types";
-import type { EditorRow } from "@/lib/review-rows";
+import { mergedPieces, type EditorRow } from "@/lib/review-rows";
 
 /** Exported so the Summaries tab's per-card select offers the IDENTICAL list, including the
  *  synthesized entry for a `current` value the catalog no longer carries: two divergent option lists
@@ -85,16 +85,42 @@ function RowActions({
   row,
   onMergeUp,
   onSplitStart,
+  onSplitBack,
   onDelete,
 }: Readonly<{
   index: number;
   row: EditorRow;
   onMergeUp: (i: number) => void;
   onSplitStart: (i: number) => void;
+  onSplitBack?: (i: number) => void;
   onDelete: (i: number) => void;
 }>) {
+  // A row the automatic visit merge made, still on the pages it made: a wrong merge hides a
+  // document, so the mark says it was merged and one click puts the pieces back.
+  const pieces = onSplitBack ? mergedPieces(row) : null;
   return (
     <>
+      {pieces ? (
+        <>
+          <span
+            className="rc-unid-chip rc-merged-chip"
+            title="This row was merged automatically from pieces of one visit (same date). Split back if they are separate documents."
+          >
+            Merged from {pieces.length} pieces
+          </span>
+          <button
+            type="button"
+            className="ev-btn ev-btn-sm ev-btn-outline"
+            title="Undo the automatic merge: put the pieces back as separate documents"
+            onClick={(e) => {
+              stop(e);
+              onSplitBack?.(index);
+            }}
+          >
+            Split back
+          </button>
+        </>
+      ) : null}
       {row.suggest_merge && index > 0 ? (
         <button
           type="button"
@@ -162,6 +188,7 @@ export function RowsTable({
   onSplitStart,
   onSplitConfirm,
   onSplitCancel,
+  onSplitBack,
   onDelete,
   attentionPages,
   unidentifiedKeys,
@@ -180,6 +207,8 @@ export function RowsTable({
   onSplitStart: (i: number) => void;
   onSplitConfirm: (i: number, atPage: number) => void;
   onSplitCancel: () => void;
+  /** Puts back the pieces of a row the automatic visit merge made (`mergedPieces`). */
+  onSplitBack?: (i: number) => void;
   onDelete: (i: number) => void;
   attentionPages?: Set<string>;
   /** _keys of the rows nothing identified (issue #144). Chipped, never removed. */
@@ -320,6 +349,7 @@ export function RowsTable({
                           row={row}
                           onMergeUp={onMergeUp}
                           onSplitStart={onSplitStart}
+                          onSplitBack={onSplitBack}
                           onDelete={onDelete}
                         />
                       )}

@@ -306,6 +306,10 @@ x-backend-env: &backend-env
   # draft row before review. Off until measured on the box that turns it on: it changes what
   # segmentation decides, and a wrong merge hides a document.
   MERGE_VISIT_PIECES: ${MERGE_VISIT_PIECES:-false}
+  # Merge one visit's pieces with NO model call when the reviewer's copy of the draft is made; the
+  # machine's copy keeps every piece and the editor offers "Split back". Off by default: it changes
+  # the draft a reviewer gets. Cannot be on with MERGE_VISIT_PIECES.
+  AUTO_MERGE_VISIT_PIECES: ${AUTO_MERGE_VISIT_PIECES:-false}
   # Merge HINTS that follow the reviewers' joins, never a merge: the verify pass asks only about two
   # rows of the same date, and one visit's pieces get a hint with no model call. Off by default: it
   # changes what a reviewer is shown, so it is turned on per box.

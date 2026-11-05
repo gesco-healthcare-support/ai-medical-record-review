@@ -34,6 +34,18 @@ starts.
 
 Off by default (``MERGE_VISIT_PIECES``): it changes what the model decides at segmentation, so it is
 turned on per box once it has been measured there.
+
+THE AUTOMATIC MERGE (``AUTO_MERGE_VISIT_PIECES``, `auto_merge_visit_pieces`) merges the same
+candidates with NO model call. The senior reviewer, 2026-11-05, asked whether the suggested merges
+for one visit's pieces may be applied automatically: "I would say yes, it is fairly rare that they
+are wrong so it would save a lot of time." Measured wrong (the reviewer had kept the two apart): our
+model's drafts 28 of 420 merges (6.7%), in 10 of 21 records, 13 of them on one Kaiser record where
+one entry per day now wants them merged; Gemini's drafts 273 of 1,198 (23%), records finished
+before the 2026-10-28 rule, when reviewers merged less. So a wrong merge must be easy to see and to
+undo: it is applied only to the reviewer's copy (`review_rows`), never to the machine's
+(`segment_rows`), and the editor offers "Split back" on a row whose pages still match a run of
+pieces (`auto_merge_pieces`). A run never holds a category 1 visit and a category 5 visit: a work
+status or an RFA between the two goes with the category 1 side, the export fold's order.
 """
 
 import logging
@@ -239,3 +251,89 @@ def merge_visit_pieces(pdf_path, rows, progress=None, workers=None, pool_timeout
             continue
         out.append(dict(row))
     return out, {"candidates": len(candidates), "merged": len(rows) - len(out)}
+
+
+# --- the automatic merge (AUTO_MERGE_VISIT_PIECES) ------------------------------------------
+
+
+def _visit_category(row):
+    """The row's category when it is a visit document, else ``None`` (a join row, or neither)."""
+    return str(row["category"]) if _role(row) == "visit" else None
+
+
+def _goes_with_the_next_visit(rows, i, candidates, run_visit):
+    """A join row (RFA, work status) after a category 5 run, followed by a category 1 visit it is
+    also a candidate with, goes with that category 1 visit - the export fold's order."""
+    return (
+        run_visit == "5"
+        and i + 1 in candidates
+        and _visit_category(rows[i + 1]) == "1"
+        and _visit_category(rows[i]) is None
+    )
+
+
+def auto_merge_runs(rows):
+    """The runs of row indices the automatic merge joins, each of two or more rows, ascending.
+
+    Consecutive candidate boundaries (`candidate_indices`) chain into one run, except that a run
+    never holds visit documents of two categories: a category 1 visit and a category 5 visit stay
+    apart even when a work status or an RFA between them is a candidate with both."""
+    candidates = set(candidate_indices(rows))
+    runs, current, run_visit = [], [], None
+    for i, row in enumerate(rows):
+        visit = _visit_category(row)
+        joins = (
+            bool(current)
+            and i in candidates
+            and not (visit and run_visit and visit != run_visit)
+            and not _goes_with_the_next_visit(rows, i, candidates, run_visit)
+        )
+        if joins:
+            current.append(i)
+            run_visit = run_visit or visit
+        else:
+            runs.append(current)
+            current, run_visit = [i], visit
+    runs.append(current)
+    return [run for run in runs if len(run) > 1]
+
+
+def _collapsed(rows, run):
+    merged = dict(rows[run[0]])
+    for j in run[1:]:
+        merged = _merged(merged, rows[j])
+    return merged
+
+
+def auto_merge_visit_pieces(rows):
+    """``rows`` with every run of `auto_merge_runs` collapsed into one row - the visit document's
+    category, title and classification, the first piece's start and its merge hint, the last
+    piece's end, flagged if any piece was - and ``{"runs": n, "merged": m}``. No model call.
+    The caller's rows are not changed."""
+    runs = auto_merge_runs(rows)
+    first = {run[0]: run for run in runs}
+    merged_away = {j for run in runs for j in run[1:]}
+    out = []
+    for i, row in enumerate(rows):
+        if i in first:
+            run = first[i]
+            logger.info(
+                "auto visit merge: pages %s-%s from %d pieces",
+                row["start"],
+                rows[run[-1]]["end"],
+                len(run),
+            )
+            out.append(_collapsed(rows, run))
+        elif i not in merged_away:
+            out.append(dict(row))
+    return out, {"runs": len(runs), "merged": len(merged_away)}
+
+
+def auto_merge_pieces(rows):
+    """``{(start, end): [piece, ...]}`` for every row the automatic merge makes from ``rows`` (the
+    machine's pieces, `segment_rows`): what "Split back" restores on a reviewer row whose pages
+    still match. Deterministic, so it is recomputed when the record is read rather than stored."""
+    return {
+        (int(rows[run[0]]["start"]), int(rows[run[-1]]["end"])): [dict(rows[j]) for j in run]
+        for run in auto_merge_runs(rows)
+    }

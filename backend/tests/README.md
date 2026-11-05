@@ -18,6 +18,7 @@ shared `conftest.py`.
 | `test_admin_uploads_and_assigns.py` | An admin uploading (single and split) into another reviewer's account and assigning a record to someone: admins only, the duplicate confirmation checked against the receiving account, audit attribution, and the queue lane a moved record's jobs use. |
 | `test_auth_gate.py` | The deny-by-default authentication gate and its public-path allowlist. |
 | `test_auth_integration.py` | Login, logout, the registration rules and the password-reset routes, against the database. |
+| `test_auto_visit_merge.py` | One visit's pieces merged automatically: the rule and its bridge guard, the setting, the reviewer's copy merged while the machine's keeps the pieces, and the pieces sent for Split back. |
 | `test_backend_provenance.py` | Which model backend answered a call is recorded beside which model did. |
 | `test_backfill_doi.py` | Scope resolution of the injury-date backfill script (`scripts/backfill_doi.py`). |
 | `test_bundle_cover.py` | The list page placed in front of a combined bundle PDF. |
