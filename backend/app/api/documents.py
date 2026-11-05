@@ -788,19 +788,17 @@ def set_completed(
     fully reviewed and downloaded without searching the log for the patient. The mark is the
     reviewer's own - no job, export or edit sets or clears it - and it changes nothing else about
     the record. Marking a record already marked keeps its first date."""
-    if not payload.completed:
+    _mark_completed(session, document, user, payload.completed)
+    return document.listing()
+
+
+def _mark_completed(session: Session, document: Document, user: User, completed: bool) -> None:
+    """Set or clear `document.completed_at` and audit it; `audit` commits the mark with its row."""
+    if not completed:
         document.completed_at = None
     elif document.completed_at is None:
         document.completed_at = datetime.now(UTC)
-    # `audit` commits its own row on this session, and the mark with it.
-    audit(
-        session,
-        "record.completed",
-        user.id,
-        document.id,
-        detail="on" if payload.completed else "off",
-    )
-    return document.listing()
+    audit(session, "record.completed", user.id, document.id, detail="on" if completed else "off")
 
 
 @router.delete(
