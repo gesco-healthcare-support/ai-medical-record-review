@@ -119,6 +119,23 @@ export type Row = {
   dupe_group?: number | null;
   dupe_primary?: boolean;
   dupe_dismissed?: boolean;
+  /** Server-computed, read-only: the draft pieces the automatic visit merge (AUTO_MERGE_VISIT_PIECES)
+   *  joined into this row, sent while the row's pages still match them. "Split back" puts them in
+   *  the row's place; `mergedPieces` decides whether they still apply after a local edit. */
+  merged_pieces?: RowPiece[];
+};
+
+/** One draft piece of a row the automatic visit merge made (`Row.merged_pieces`). */
+export type RowPiece = {
+  start: number;
+  end: number;
+  category: string;
+  title: string;
+  date: string;
+  injury_date: string;
+  flag: string;
+  include: boolean;
+  method?: string | null;
 };
 
 /** A selectable category ({id, name}) from catalog.get_category_options. */

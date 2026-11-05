@@ -682,11 +682,45 @@ def _archive_review_rows(session, document, job) -> int:
     return len(current)
 
 
+def _row_fields(idx, row) -> dict:
+    """The columns `segment_rows` and `review_rows` share, from one draft row."""
+    return {
+        "idx": idx,
+        "start": int(row["start"]),
+        "end": int(row["end"]),
+        "category": str(row["category"]),
+        "title": str(row.get("title") or "-"),
+        "date": str(row.get("date") or "-"),
+        "injury_date": str(row.get("injury_date") or "-"),
+        "flag": str(row.get("flag") or "-"),
+        "suggest_merge": bool(row.get("suggest_merge")),
+        # Which cascade path decided the category (#188). `.get`, not `[...]`: a row the
+        # categorization pool never finished has no key, and NULL is the honest value for it.
+        "method": row.get("method"),
+    }
+
+
+def _reviewer_rows(rows) -> list[dict]:
+    """The draft the reviewer gets: ``rows``, with one visit's pieces merged when
+    AUTO_MERGE_VISIT_PIECES is on (`visit_merge.auto_merge_visit_pieces`)."""
+    if not get_settings().auto_merge_visit_pieces:
+        return rows
+    # Imported here: the merge module pulls in the model seam, which most jobs never need.
+    from app.services.visit_merge import auto_merge_visit_pieces
+
+    merged, stats = auto_merge_visit_pieces(rows)
+    logger.info("auto visit merge: %s", stats)
+    return merged
+
+
 def _store_segment_rows(session, document, job, rows) -> None:
     """Replace this document's ReviewRows with ``rows``, keeping an immutable SegmentRow copy.
 
-    The two copies are written from ONE shared ``fields`` dict deliberately, so the immutable model
-    output and the editable reviewer copy cannot drift apart.
+    Both copies are built by ONE function (`_row_fields`), so the immutable model output and the
+    editable reviewer copy cannot drift apart. They hold the same rows unless
+    AUTO_MERGE_VISIT_PIECES is on: then the reviewer's copy has one visit's pieces merged, and the
+    machine's copy keeps every piece - so every measurement of the draft stays honest, and "Split
+    back" in the editor can restore a wrong merge from it.
 
     The rows being replaced are copied to ``replaced_review_rows`` first, in the same transaction,
     so a re-segment can no longer destroy reviewer corrections - see ``ReplacedReviewRow``.
@@ -694,23 +728,9 @@ def _store_segment_rows(session, document, job, rows) -> None:
     _archive_review_rows(session, document, job)
     session.execute(delete(ReviewRow).where(ReviewRow.document_id == document.id))
     for idx, row in enumerate(rows):
-        fields = {
-            "idx": idx,
-            "start": int(row["start"]),
-            "end": int(row["end"]),
-            "category": str(row["category"]),
-            "title": str(row.get("title") or "-"),
-            "date": str(row.get("date") or "-"),
-            "injury_date": str(row.get("injury_date") or "-"),
-            "flag": str(row.get("flag") or "-"),
-            "suggest_merge": bool(row.get("suggest_merge")),
-            # Which cascade path decided the category (#188). `.get`, not `[...]`: a row the
-            # categorization pool never finished has no key, and NULL is the honest value for
-            # it. Carried on the SHARED dict deliberately, so the immutable SegmentRow copy and
-            # the editable ReviewRow copy cannot drift apart.
-            "method": row.get("method"),
-        }
-        session.add(SegmentRow(job_id=job.id, **fields))
+        session.add(SegmentRow(job_id=job.id, **_row_fields(idx, row)))
+    for idx, row in enumerate(_reviewer_rows(rows)):
+        fields = _row_fields(idx, row)
         # include follows the category's summarize_default, which is a per-category DB flag -
         # see catalog.summarize_default_for for why the set is not what it looks like. It is NOT a
         # SegmentRow column, so it is passed only to the editable ReviewRow copy.

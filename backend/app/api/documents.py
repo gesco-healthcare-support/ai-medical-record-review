@@ -38,7 +38,7 @@ from app.errors import (
     PipelineError,
     TranscriptPagesUnreadableError,
 )
-from app.models import AuditLog, Document, Job, ReviewRow, Summary, User
+from app.models import AuditLog, Document, Job, ReviewRow, SegmentRow, Summary, User
 from app.schemas.documents import (
     BundlePayload,
     CancelPayload,
@@ -98,6 +98,7 @@ from app.services.summarize_engine import (
     visit_outputs,
 )
 from app.services.summary_doi import doi_prefix
+from app.services.visit_merge import auto_merge_pieces
 from app.worker.cancel import request_cancel
 from app.worker.queues import enqueue_upload_ocr, get_redis
 
@@ -622,6 +623,53 @@ def _editor_row(row: ReviewRow) -> dict:
     }
 
 
+def _auto_merged_pieces(session: Session, document: Document) -> dict[tuple[int, int], list[dict]]:
+    """The pieces of every row AUTO_MERGE_VISIT_PIECES makes, keyed by the row's pages.
+
+    Recomputed from the newest segment job's `segment_rows` (the machine's pieces, never merged) by
+    the same deterministic rule that merged them, so nothing has to be stored. A reviewer row whose
+    pages still match one of these spans is offered "Split back"; once the reviewer changes those
+    pages, there is nothing to split back. Each piece carries its category's include default, as
+    `segment_document` gives a row it writes. Empty when the setting is off.
+    """
+    if not get_settings().auto_merge_visit_pieces:
+        return {}
+    job_id = session.scalar(
+        select(Job.id)
+        .where(Job.document_id == document.id, Job.kind == "segment", Job.state == "done")
+        .order_by(Job.id.desc())
+        .limit(1)
+    )
+    if job_id is None:
+        return {}
+    pieces = session.scalars(
+        select(SegmentRow).where(SegmentRow.job_id == job_id).order_by(SegmentRow.idx)
+    ).all()
+    rows = [piece.as_row() | {"method": piece.method} for piece in pieces]
+    return {
+        span: [
+            piece | {"include": catalog.summarize_default_for(session, piece["category"])}
+            for piece in run
+        ]
+        for span, run in auto_merge_pieces(rows).items()
+    }
+
+
+def _editor_rows(session: Session, document: Document) -> list[dict]:
+    """Every review row for the editor (`_editor_row`), with ``merged_pieces`` on a row the
+    automatic visit merge made and the reviewer has not re-spanned (`_auto_merged_pieces`)."""
+    pieces = _auto_merged_pieces(session, document)
+    return [
+        _editor_row(row)
+        | (
+            {"merged_pieces": pieces[(row.start, row.end)]}
+            if (row.start, row.end) in pieces
+            else {}
+        )
+        for row in document.review_rows
+    ]
+
+
 @router.get("/{document_id}")
 def get_document(
     document: Document = Depends(get_owned_document),
@@ -633,7 +681,7 @@ def get_document(
     if document.user_id != user.id:
         audit(session, "view_record", user.id, document.id)
     payload = document.listing()
-    payload["rows"] = [_editor_row(row) for row in document.review_rows]
+    payload["rows"] = _editor_rows(session, document)
     payload["categories"] = catalog.get_category_options(session)
     # Served with the record for the same reason `categories` is: the dropdown needs the
     # names and the Word renderer needs the fonts, and one list in the backend is what stops
@@ -1341,7 +1389,7 @@ def one_entry_per_date(
     reopened = _reopen_if_summaries_stranded(session, document)
     return {
         "ok": True,
-        "rows": [_editor_row(row) for row in document.review_rows],
+        "rows": _editor_rows(session, document),
         "runs": result.runs,
         "rows_folded": result.rows_folded,
         "labs_unticked": result.labs_unticked,

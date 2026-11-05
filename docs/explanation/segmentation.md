@@ -465,6 +465,42 @@ either piece had it. A run of confirmed boundaries collapses into one row. The e
 > **Note:** Not measured. It changes what segmentation decides, and a wrong merge hides a document,
 > so it ships off and is turned on per box after a measurement there.
 
+## Merging one visit's pieces automatically, with Split back (off by default)
+
+When `auto_merge_visit_pieces` is true (`AUTO_MERGE_VISIT_PIECES`, default false), the same
+candidates are merged with NO model call, when the reviewer's copy of the draft is written
+(`backend/app/worker/tasks.py` `_store_segment_rows()`, `visit_merge.auto_merge_visit_pieces()`).
+The senior reviewer, 2026-11-05, on whether the suggested merges for one visit's pieces may be
+applied automatically: "I would say yes, it is fairly rare that they are wrong so it would save a
+lot of time." It cannot be on together with `merge_visit_pieces`; the app refuses to start.
+
+**What it merges (`auto_merge_runs()`).** The candidates above, chained into runs, never a PR-4
+pair or a deposition's paperwork (those stay hints). A run never holds a category-1 visit and a
+category-5 visit: a work status or an RFA between the two goes with the category-1 side, the export
+fold's order, so `1 | work status | 5` becomes `1+work status`, `5`, and `5 | work status | 1`
+becomes `5`, `work status+1`. On the live copy reviewers kept the therapy note apart in 5 of 10 such
+runs. The merged row is built like the model-checked merge's: the visit document's category, title
+and classification, the first piece's start and merge hint, the last piece's end, flag `x` when any
+piece had it. The worker logs `auto visit merge: {'runs': n, 'merged': k}` and one line per run
+with its pages and number of pieces.
+
+**Only the reviewer's copy.** `review_rows` get the merged rows; `segment_rows` keep every piece,
+so every measurement of the draft stays a measurement of the machine, and nothing has to be stored
+to undo a merge. Hints for a merged-away boundary are not shown, because that boundary is no longer
+a row.
+
+**Split back.** When the record is read, `_auto_merged_pieces()` in
+`backend/app/api/documents.py` recomputes the runs from the newest segment job's `segment_rows` by
+the same rule, and a review row whose pages still match a run is sent with `merged_pieces`. The
+editor marks it "Merged from N pieces" with a Split back button that puts the pieces back in its
+place ([The review workbench](frontend-workbench.md)). Once the reviewer changes that row's pages,
+the pieces no longer match and nothing is offered.
+
+**Measured wrong** (the reviewer had kept the two apart): our model's drafts 28 of 420 merges
+(6.7%), in 10 of 21 records, 13 of them on one Kaiser record where one entry per day now wants them
+merged; Gemini's drafts 273 of 1,198 (23%), on records finished before the 2026-10-28 rule, when
+reviewers merged less. That is why a wrong merge has to be visible and undone in one click.
+
 ## Injury dates, read last
 
 After verification, each row's injury date is read once, in isolation, by

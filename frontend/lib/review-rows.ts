@@ -1,4 +1,4 @@
-import type { Row } from "@/lib/types";
+import type { Row, RowPiece } from "@/lib/types";
 
 /** A row plus a stable client key, so React keeps input focus/cursor when rows re-sort. */
 export type EditorRow = Row & { _key: string };
@@ -36,6 +36,8 @@ export function stripKeys(rows: EditorRow[]): Row[] {
   return rows.map((row) => {
     const copy: Partial<EditorRow> = { ...row };
     delete copy._key;
+    // Read-only and server-computed: the save never stores it, so it is not sent.
+    delete copy.merged_pieces;
     return copy as Row;
   });
 }
@@ -67,6 +69,25 @@ export function mergeRows<T extends Row>(upper: T, lower: T): T {
     flag: [upper.flag, lower.flag].includes("x") ? "x" : "-",
     include: upper.include !== false || lower.include !== false,
   };
+}
+
+/**
+ * The pieces "Split back" restores on a row the automatic visit merge made, or null.
+ *
+ * The server sends them while the saved row's pages match; this re-checks against the LIVE row,
+ * because a local edit (a merge, a split, a moved boundary) changes the pages before any save, and
+ * the pieces no longer describe that row. Two or more pieces covering exactly the row's pages.
+ */
+export function mergedPieces(row: Row): RowPiece[] | null {
+  const pieces = row.merged_pieces;
+  if (!pieces || pieces.length < 2) return null;
+  const first = pieces[0];
+  const last = pieces.at(-1);
+  return last &&
+    Number(first.start) === Number(row.start) &&
+    Number(last.end) === Number(row.end)
+    ? pieces
+    : null;
 }
 
 /**
