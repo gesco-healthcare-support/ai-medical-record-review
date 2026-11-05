@@ -618,7 +618,8 @@ provider, a clinic and a PR-2 the way the letter will:
     answer, not measured); a work status by an author who has both that day joins the category-1
     visit;
   - an RFA or a work status with no visit entry by its author that day stays its own entry, and
-    orders and prescriptions, which share category 10, are not folded;
+    orders and prescriptions are not folded (category 10 on records segmented before 2026-11-05;
+    the title rules have filed them 100, left out, since);
   - a diagnostic study (category 3) never folds, and several visits written from one page
     (`split_visits()`) carry different dates, so they stay separate entries;
   - the entry is headed by a PR-2 when the visit has one (a title matching `PR-2` or `PROGRESS
