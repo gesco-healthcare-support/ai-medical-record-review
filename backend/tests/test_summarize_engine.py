@@ -1654,6 +1654,54 @@ def test_an_unknown_category_receives_both_blocks_without_them_contradicting():
     assert preamble.index("that rule wins") < preamble.index("the verdict IS the content")
 
 
+# --- a form's choices: only the marked ones (reviewer report, 2026-11-06) ---------------------
+
+
+@pytest.mark.parametrize("category", sorted(se._KNOWN_CATEGORIES) + ["777"])
+def test_every_category_is_told_to_report_only_a_forms_marked_choices(category):
+    """DEMONSTRATES the senior reviewer's report of 2026-11-06: a therapy SOAP form with two of its
+    procedures ticked was summarized with five, three of them unticked. The OCR text prints every
+    choice on a form whether or not it is marked, and nothing told the model that. Forms are not
+    one category's, so every category - a known one, the catch-all and an unknown id - is told."""
+    preamble = se.build_preamble(category)
+    assert "report ONLY the choices that are MARKED" in preamble
+    assert "A choice whose box is empty was NOT selected" in preamble
+    assert "is not evidence that it was selected" in preamble
+    assert "Tell which are marked from the page images" in preamble
+    # A content rule, so it sits with the content rules, ahead of the formatting section.
+    assert preamble.index("report ONLY the choices") < preamble.index("FORMATTING (STRICT")
+
+
+def test_the_image_instruction_says_the_ocr_text_cannot_show_a_mark(monkeypatch):
+    """DEMONSTRATES: the instruction sent after the images named checkboxes as a place to trust the
+    images, but not that the OCR text lists the unticked choices too - which is what the model
+    reported from. It goes out last, after the images and the text, on every multimodal body
+    call."""
+    captured = {}
+
+    def fake_generate(model, system_msg, contents, temperature, max_output_tokens=None):
+        if system_msg != se.TITLE_PROMPT:
+            captured["contents"] = contents
+        return _fake_generate(model, system_msg, contents, temperature)
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR BODY", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "page_image_parts", lambda path, start, end, cap: ["IMG1"])
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setattr(se.get_settings(), "summary_multimodal", True, raising=False)
+
+    se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    instruction = captured["contents"][-1].text
+    assert "the OCR text lists every printed choice whether or not it was marked" in instruction
+    assert "which boxes are checked shows only on the images" in instruction
+    assert "report a choice only where its mark is visible there" in instruction
+
+
 # --- the generated title must be a header line, not a paragraph -------------------------------
 
 

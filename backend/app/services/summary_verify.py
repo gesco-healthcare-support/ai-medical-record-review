@@ -80,6 +80,14 @@ _HOUSE_RULES = (
 # kept the audit's spelling about as often as the original's (9 to 7, and 5 to 2 for looser
 # re-spellings); for authors 8 to 4. So the audit's re-spellings fix the title as often as they
 # break it, and only the garbled ones are worth forbidding.
+#
+# The form-choices bullet, 2026-11-06, is the counterpart of `summarize_engine._C_MARKED_CHOICES`.
+# The OCR text of a checkbox form lists every printed option and loses the marks, so this call can
+# see neither which were ticked nor that the summary left the unticked ones out on purpose. Read
+# against that text, a summary of the two ticked procedures looks incomplete beside five printed
+# ones - the same trap as a one-visit summary beside a page of seven studies (`visit_date` below).
+# So the audit is told to keep its hands off a form's choices both ways: adding one would report an
+# unticked option, and deleting one as unsupported would drop a ticked one it cannot see.
 VERIFY_PROMPT = (
     "You audit the TITLE and SUMMARY of a medical-record sub-document on two counts: faithfulness "
     "to its SOURCE text, and compliance with the house rules below.\n"
@@ -109,6 +117,11 @@ VERIFY_PROMPT = (
     "Check it against that visit's own entry in the SOURCE. What the SOURCE records under any "
     "other date belongs to another summary: it is not missing from this one and it is not a "
     "previous visit to remove. Never add it here, and never replace this visit's content with it.\n"
+    "- On a FORM, the SOURCE prints every choice beside its box - every treatment, procedure, "
+    "body part, or complaint on the page - whether or not it was marked, and the check marks "
+    "themselves do not survive in the text. The SUMMARY was written from the page images, where "
+    "the marks show. So leave the summary's choices as they are: never add a choice from such a "
+    "list, and never remove one as unsupported only because the SOURCE cannot show its mark.\n"
     "- Then apply the HOUSE RULES. These are the one reason you may edit a sentence that is "
     "perfectly faithful.\n"
     "- Return a corrected summary and a corrected title that fix ONLY those problems: the "

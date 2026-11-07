@@ -85,8 +85,8 @@ one-line laboratory summary, which was being instructed about depositions, range
 scales that cannot apply to it (comment above `_FACTUALITY`).
 
 Every category receives the factuality rules (`_FACTUALITY`), the point-scope rule
-(`_C_POINT_SCOPE`), the no-billing-codes rule (`_C_CODES`), the bold-labels-only rule (`_F_BOLD`) and
-the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category sets defined just above
+(`_C_POINT_SCOPE`), the marked-choices rule (`_C_MARKED_CHOICES`), the no-billing-codes rule
+(`_C_CODES`), the bold-labels-only rule (`_F_BOLD`) and the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category sets defined just above
 `build_preamble()`:
 
 | Category | Normal findings (`_C_NORMAL_FINDINGS`) | Verdict (`_C_VERDICT`) | Embedded review (`_C_EMBEDDED_REVIEW`) | Height/weight, pain, range of motion | Format |
@@ -104,6 +104,14 @@ the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category set
 - **Category 100 is a known id with unknown content.** It takes the content blocks but not the three
   measurement blocks; whether it should get them is an open question the code records against
   issue #216.
+- **A form's choices count only when marked** (`_C_MARKED_CHOICES`). A form prints its choices -
+  treatments, body parts, complaints, restrictions - each beside a box, and its OCR text keeps every
+  printed choice while losing the marks. The senior reviewer reported on 2026-11-06 that summaries
+  of such forms list choices nobody ticked (a therapy SOAP form with two procedures ticked, summarized
+  with five). The rule tells the model to report only the marked choices, to read the marks from the
+  page images, and to leave out a choice whose mark it cannot make out. The instruction sent after
+  the images (`_MULTIMODAL_INSTRUCTION`) says the same, and the audit is told to leave a form's
+  choices alone (see [Audit](#audit)).
 - **3 and 5 are also told to mark separate visits** (`_F_SEPARATE_VISITS`, in the format
   section), because their pages can be a log of several dated visits - see
   [A page of several visits](#a-page-of-several-visits). No other category gets it, an unknown
@@ -327,6 +335,11 @@ Faithfulness issues are `unsupported`, `contradiction`, `date` and `laterality`.
 date (categories 1 and 2 only, for rule 6), the visit's date when the body is one visit of a page
 that records several (see [A page of several visits](#a-page-of-several-visits)), the TITLE and the
 SUMMARY.
+
+The audit reads only the OCR text, which prints every choice on a form whether or not it was
+marked, so it cannot tell a ticked box from an empty one. `VERIFY_PROMPT` therefore tells it to
+leave a form's choices as the summary has them: never add one from the printed list, and never
+remove one as unsupported only because the text cannot show its mark.
 
 On our model (`summarize` on vLLM) the same reply is asked for as `{issues, corrected_title,
 corrected_summary}` (`_reply_shape()`, switch `VLLM_AUDIT_ISSUES_FIRST`, on by default) and mapped

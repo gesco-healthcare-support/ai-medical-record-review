@@ -307,6 +307,29 @@ def test_one_visit_of_a_page_of_several_is_told_which_visit_it_is(monkeypatch):
     assert "never replace this visit's content with it" in sv.VERIFY_PROMPT
 
 
+def test_the_audit_keeps_its_hands_off_a_forms_choices(monkeypatch):
+    """DEMONSTRATES the reviewer's report of 2026-11-06. The audit reads only the OCR text, which
+    prints every choice on a form ticked or not, so a summary of the two ticked procedures looks
+    incomplete beside five printed ones. It may neither add a choice from that list (an unticked
+    option reaches the report) nor delete one as unsupported (a ticked one it cannot see goes)."""
+    prompt = sv.VERIFY_PROMPT
+    assert "whether or not it was marked" in prompt
+    assert "the check marks themselves do not survive in the text" in prompt
+    assert "never add a choice from such a list" in prompt
+    assert "never remove one as unsupported only because the SOURCE cannot show its mark" in prompt
+    # The bullet reaches the call itself, as the system message.
+    seen = {}
+
+    def gen(client, *, model, contents, config, **_kw):
+        seen["system"] = config.system_instruction
+        return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
+
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", gen)
+    sv.verify_summary("m", "the source", "Body.")
+    assert "never add a choice from such a list" in seen["system"]
+
+
 @pytest.mark.parametrize("visit", [None, "", "   "])
 def test_a_body_that_is_not_one_visit_of_several_is_told_nothing(monkeypatch, visit):
     """GUARD: every other summary's audit call is unchanged."""

@@ -139,6 +139,27 @@ _C_POINT_SCOPE = (
     "main reason summaries run long.\n"
 )
 
+# A form prints its choices - treatments, body parts, complaints, restrictions - each beside a box,
+# and only the marked ones were chosen. The OCR text keeps every printed choice and loses the marks,
+# so a summary read off the text reports options nobody ticked. The senior reviewer's report of
+# 2026-11-06, a therapy SOAP form with two procedures ticked: the delivered summary listed five,
+# three of them with empty boxes, "and it comes up somewhat frequently" on checkbox forms. The
+# images the body call is sent are the only place a mark can be seen, which the rule says, and a
+# choice whose mark cannot be made out is left out under the factuality rule's "omit rather than
+# guess". Sent to EVERY category: forms are not one category's (PR-2 work status, therapy notes,
+# RFAs, intake questionnaires and legal forms all print boxes). Its audit counterpart is the
+# form-choices paragraph of `summary_verify.VERIFY_PROMPT`: the audit reads only the OCR text, so it
+# may neither add a choice from the list nor delete one as unsupported.
+_C_MARKED_CHOICES = (
+    "- On a FORM that prints a list of choices with a box, circle, or blank beside each - "
+    "treatments, procedures, body parts, complaints, restrictions, yes/no questions - report ONLY "
+    "the choices that are MARKED: checked, ticked, crossed, filled in, circled, or written in. A "
+    "choice whose box is empty was NOT selected: leave it out, however relevant it looks. The OCR "
+    "text prints every choice on the form whether or not it is marked, so a choice appearing in "
+    "the OCR text is not evidence that it was selected. Tell which are marked from the page "
+    "images, and leave out any choice whose mark you cannot make out.\n"
+)
+
 # Widened 2026-07-31 on tester feedback. The four banned words ("normal, negative, unremarkable,
 # within normal limits") missed three things a reviewer counts as the same noise, both current-build
 # examples being exactly these archetypes: "He denied anterior pressure, chest tightness, fever, or
@@ -805,7 +826,7 @@ def build_preamble(category) -> str:
     verdict = content_unknown or cat in _VERDICT_CATEGORIES
     embedded = content_unknown or cat in _EMBEDDED_REVIEW_CATEGORIES
 
-    parts = [_FACTUALITY, _CONTENT_HEADER, _C_POINT_SCOPE]
+    parts = [_FACTUALITY, _CONTENT_HEADER, _C_POINT_SCOPE, _C_MARKED_CHOICES]
     if findings:
         parts.append(_C_NORMAL_FINDINGS)
     if verdict:
@@ -950,8 +971,10 @@ def _standalone_studies_block(studies) -> str:
 _MULTIMODAL_INSTRUCTION = (
     "\n\nThe images above are the scanned page(s) of this sub-document, and the OCR text above is "
     "those same pages. Use BOTH - treat the images as authoritative wherever the OCR is garbled, "
-    "missing, or from a table, checkbox, or handwriting. Now summarize per the system instructions, "
-    "following every rule they state."
+    "missing, or from a table, checkbox, or handwriting. On a form, the OCR text lists every "
+    "printed choice whether or not it was marked: which boxes are checked shows only on the "
+    "images, so report a choice only where its mark is visible there. Now summarize per the "
+    "system instructions, following every rule they state."
 )
 _OCR_TEXT_HEADER = "OCR TEXT:\n"
 
