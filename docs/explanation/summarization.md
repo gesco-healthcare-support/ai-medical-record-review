@@ -85,8 +85,8 @@ one-line laboratory summary, which was being instructed about depositions, range
 scales that cannot apply to it (comment above `_FACTUALITY`).
 
 Every category receives the factuality rules (`_FACTUALITY`), the point-scope rule
-(`_C_POINT_SCOPE`), the marked-choices rule (`_C_MARKED_CHOICES`), the no-billing-codes rule
-(`_C_CODES`), the bold-labels-only rule (`_F_BOLD`) and the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category sets defined just above
+(`_C_POINT_SCOPE`), the no-billing-codes rule (`_C_CODES`), the bold-labels-only rule (`_F_BOLD`) and
+the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category sets defined just above
 `build_preamble()`:
 
 | Category | Normal findings (`_C_NORMAL_FINDINGS`) | Verdict (`_C_VERDICT`) | Embedded review (`_C_EMBEDDED_REVIEW`) | Height/weight, pain, range of motion | Format |
@@ -104,24 +104,34 @@ Every category receives the factuality rules (`_FACTUALITY`), the point-scope ru
 - **Category 100 is a known id with unknown content.** It takes the content blocks but not the three
   measurement blocks; whether it should get them is an open question the code records against
   issue #216.
-- **A form's choices count only when marked** (`_C_MARKED_CHOICES`). A form prints its choices -
+- **A form's check boxes (`SUMMARY_FORM_MARKS`, off by default).** A form prints its choices -
   treatments, body parts, complaints, restrictions - each beside a box, and its OCR text keeps every
   printed choice while losing the marks. The senior reviewer reported on 2026-11-06 that summaries
-  of such forms list choices nobody ticked (a therapy SOAP form with two procedures ticked, summarized
-  with five). The rule tells the model to report only the marked choices, to read the marks from the
-  page images, and to leave out a choice whose mark it cannot make out. The instruction sent after
-  the images (`_MULTIMODAL_INSTRUCTION`) says the same, and the audit is told to leave a form's
-  choices alone (see [Audit](#audit)).
-- **The rule alone is not enough, because of image size.** Measured on the live box on 2026-11-09
-  with the model that wrote the reported summary: asked only which boxes are marked, at the body's
-  1024px images it named two unticked procedures as ticked (both runs); at 2048px it named exactly
-  the ticked ones (both runs). The body call itself at 2048px was right in 1 of 3 runs. So with
-  `SUMMARY_FORM_MARKS` on (off by default), a row flagged for manual check (`m` = `x`) of at most
-  two pages first has its check boxes read in a call of their own at 2048px
-  (`_form_marks_parts()`), and the body is handed a `FORM CHECK BOXES` list of the marked and the
-  not-marked choices, after the OCR text and before the closing instruction. A read that fails, is
-  cut off or finds no choices adds nothing, and the body call is then what it is with the setting
-  off.
+  of such forms list choices nobody ticked (a therapy SOAP form with two procedures ticked,
+  summarized with five). With the setting off nothing below is sent, and every prompt is
+  byte-for-byte what it is without the feature. With it on:
+    - every category gets `_C_MARKED_CHOICES` (`build_preamble(marked_choices=True)`): report only
+      the marked choices, read the marks from the page images, leave out a choice whose mark cannot
+      be made out; the closing instruction becomes `_MULTIMODAL_INSTRUCTION_FORMS`, which says the
+      same; and the audit is sent `VERIFY_PROMPT_FORM_CHOICES` (see [Audit](#audit));
+    - a row flagged for manual check (`m` = `x`) of at most two pages first has its check boxes
+      read in a call of their own at 2048px (`_form_marks_parts()`), and the body is handed a
+      `FORM CHECK BOXES` list of the marked and the not-marked choices, after the OCR text and
+      before the closing instruction. A read that fails, is cut off or finds no choices adds
+      nothing.
+- **Why it is off: measured on the live box, 2026-11-09, with the model that wrote the reported
+  summary.**
+    - The rule alone took the reported row from three unticked procedures to two, in 3 of 3 runs.
+    - Asked only which boxes are marked, at the body's 1024px images the model named two unticked
+      procedures as ticked (2 of 2 runs); at 2048px it named exactly the ticked ones (2 of 2), but
+      a later wording of the same question named them again.
+    - The whole feature on 20 summaries a reviewer had trimmed of unticked treatments by hand:
+      wrong treatments 33 before, 15 after; treatments the reviewer kept, 26 of 29 still listed;
+      7 of 20 summaries fully right.
+    - In 12 of the 15 left the box read itself called the box ticked, and on 10 of them four
+      reads, two with a stricter question, all agreed. Reading twice does not remove a mistake the
+      model makes every time. Six of those were one form template on which every read and the
+      reviewer disagree.
 - **3 and 5 are also told to mark separate visits** (`_F_SEPARATE_VISITS`, in the format
   section), because their pages can be a log of several dated visits - see
   [A page of several visits](#a-page-of-several-visits). No other category gets it, an unknown
@@ -347,9 +357,10 @@ that records several (see [A page of several visits](#a-page-of-several-visits))
 SUMMARY.
 
 The audit reads only the OCR text, which prints every choice on a form whether or not it was
-marked, so it cannot tell a ticked box from an empty one. `VERIFY_PROMPT` therefore tells it to
-leave a form's choices as the summary has them: never add one from the printed list, and never
-remove one as unsupported only because the text cannot show its mark.
+marked, so it cannot tell a ticked box from an empty one. With `SUMMARY_FORM_MARKS` on it is sent
+`VERIFY_PROMPT_FORM_CHOICES` (`audit_prompt()`), which tells it to leave a form's choices as the
+summary has them: never add one from the printed list, and never remove one as unsupported only
+because the text cannot show its mark. With the setting off it is sent `VERIFY_PROMPT`.
 
 On our model (`summarize` on vLLM) the same reply is asked for as `{issues, corrected_title,
 corrected_summary}` (`_reply_shape()`, switch `VLLM_AUDIT_ISSUES_FIRST`, on by default) and mapped

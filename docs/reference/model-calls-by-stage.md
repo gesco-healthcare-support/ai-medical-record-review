@@ -110,7 +110,7 @@ bundle export pass `verify=False`.
 | Entry point | `get_provider().generate_structured(stage="summarize")` from `summary_verify.verify_summary()` |
 | Model | Job's `audit_model` (older jobs: `model`); config source `Settings.model_for("audit")` = `AUDIT_MODEL`. Gemini default `gemini-2.5-flash`; vLLM default `VLLM_MODEL`; OpenAI: must be set |
 | Thinking | As the body |
-| System | `summary_verify.VERIFY_PROMPT` |
+| System | `summary_verify.audit_prompt()`: `VERIFY_PROMPT`, or `VERIFY_PROMPT_FORM_CHOICES` with `SUMMARY_FORM_MARKS` on |
 | Parts | One text part: `SOURCE`, the document date when known, `TITLE` when present, `SUMMARY` |
 | Temperature | 0.0 |
 | Max output tokens | The `max_output_tokens` argument, else `AUDIT_MAX_OUTPUT_TOKENS`, else `SUMMARY_MAX_OUTPUT_TOKENS` |

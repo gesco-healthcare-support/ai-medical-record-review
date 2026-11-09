@@ -31,7 +31,11 @@ from app.services.prompts import prompts
 from app.services.provenance import fingerprint, summary_prompt_fingerprint
 from app.services.rasterise import page_image_parts
 from app.services.reporting import parsed_date
-from app.services.summary_verify import VERIFY_PROMPT, readable_issues, verify_summary
+from app.services.summary_verify import (
+    audit_prompt,
+    readable_issues,
+    verify_summary,
+)
 from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
@@ -147,10 +151,12 @@ _C_POINT_SCOPE = (
 # three of them with empty boxes, "and it comes up somewhat frequently" on checkbox forms. The
 # images the body call is sent are the only place a mark can be seen, which the rule says, and a
 # choice whose mark cannot be made out is left out under the factuality rule's "omit rather than
-# guess". Sent to EVERY category: forms are not one category's (PR-2 work status, therapy notes,
-# RFAs, intake questionnaires and legal forms all print boxes). Its audit counterpart is the
-# form-choices paragraph of `summary_verify.VERIFY_PROMPT`: the audit reads only the OCR text, so it
-# may neither add a choice from the list nor delete one as unsupported.
+# guess". Forms are not one category's (PR-2 work status, therapy notes, RFAs, intake questionnaires
+# and legal forms all print boxes), so every category gets it - but ONLY with SUMMARY_FORM_MARKS on
+# (`build_preamble(marked_choices=)`). On its own it did not fix the report: on the live box on
+# 2026-11-09 it took the reported row from three unticked procedures to two, in 3 of 3 runs, because
+# at the body's image size the model cannot see which boxes are ticked (`_form_marks_parts`). Its
+# audit counterpart is `summary_verify.VERIFY_PROMPT_FORM_CHOICES`, which is gated the same way.
 _C_MARKED_CHOICES = (
     "- On a FORM that prints a list of choices with a box, circle, or blank beside each - "
     "treatments, procedures, body parts, complaints, restrictions, yes/no questions - report ONLY "
@@ -786,8 +792,11 @@ _KNOWN_CATEGORIES = (
 )
 
 
-def build_preamble(category) -> str:
+def build_preamble(category, marked_choices=False) -> str:
     """The shared rules that can bind on THIS category, assembled in a fixed order.
+
+    ``marked_choices`` adds `_C_MARKED_CHOICES` for every category; the caller passes
+    `SUMMARY_FORM_MARKS`, so with that switch off the preamble is exactly what it was without it.
 
     Default is INCLUDE: an id the catalog does not ship yet (an admin can create one at any time via
     POST /admin/categories) receives every block except the deposition format, so a new category is
@@ -827,7 +836,9 @@ def build_preamble(category) -> str:
     verdict = content_unknown or cat in _VERDICT_CATEGORIES
     embedded = content_unknown or cat in _EMBEDDED_REVIEW_CATEGORIES
 
-    parts = [_FACTUALITY, _CONTENT_HEADER, _C_POINT_SCOPE, _C_MARKED_CHOICES]
+    parts = [_FACTUALITY, _CONTENT_HEADER, _C_POINT_SCOPE]
+    if marked_choices:
+        parts.append(_C_MARKED_CHOICES)
     if findings:
         parts.append(_C_NORMAL_FINDINGS)
     if verdict:
@@ -972,11 +983,27 @@ def _standalone_studies_block(studies) -> str:
 _MULTIMODAL_INSTRUCTION = (
     "\n\nThe images above are the scanned page(s) of this sub-document, and the OCR text above is "
     "those same pages. Use BOTH - treat the images as authoritative wherever the OCR is garbled, "
+    "missing, or from a table, checkbox, or handwriting. Now summarize per the system instructions, "
+    "following every rule they state."
+)
+# The same instruction with SUMMARY_FORM_MARKS on: one more sentence, on a form's choices
+# (`_C_MARKED_CHOICES` says why). Kept apart so the switch off sends today's text unchanged.
+_MULTIMODAL_INSTRUCTION_FORMS = (
+    "\n\nThe images above are the scanned page(s) of this sub-document, and the OCR text above is "
+    "those same pages. Use BOTH - treat the images as authoritative wherever the OCR is garbled, "
     "missing, or from a table, checkbox, or handwriting. On a form, the OCR text lists every "
     "printed choice whether or not it was marked: which boxes are checked shows only on the "
     "images, so report a choice only where its mark is visible there. Now summarize per the "
     "system instructions, following every rule they state."
 )
+
+
+def _multimodal_instruction() -> str:
+    """The closing instruction of a multimodal body call, by SUMMARY_FORM_MARKS."""
+    if get_settings().summary_form_marks:
+        return _MULTIMODAL_INSTRUCTION_FORMS
+    return _MULTIMODAL_INSTRUCTION
+
 
 # THE FORM CHECK-BOX READ (`SUMMARY_FORM_MARKS`, off by default). Measured on the live box on
 # 2026-11-09 against the senior reviewer's report - a therapy SOAP form with two procedures ticked,
@@ -991,6 +1018,14 @@ _MULTIMODAL_INSTRUCTION = (
 # the 63 summaries a reviewer had trimmed of unticked treatments by hand were exactly that, and a
 # short row keeps the larger images affordable. A failed or empty read adds nothing, so the body
 # runs as it does with the setting off.
+#
+# THEN MEASURED AS A WHOLE, and why it stays off. On 20 of those 63 summaries, with the setting on:
+# unticked treatments listed 33 before, 15 after; treatments the reviewer kept, 26 of 29 still
+# listed; 7 of 20 summaries fully right. In 12 of the 15 left, the read itself called the box
+# ticked - and four reads per form (two with a stricter question) agreed on 10 of them, so reading
+# twice does not help: the mistake is made every time, not now and then. Six were one form template
+# on which every read and the reviewer disagree. On the reported form a later wording of the
+# question named the two unticked procedures again. Better than nothing on Gemini, not reliable.
 _FORM_MARKS_MAX_PAGES = 2
 _FORM_MARKS_LONG_EDGE_PX = 2048
 _FORM_MARKS_MAX_DPI = 200
@@ -2936,7 +2971,7 @@ def _build_system_message(row, prompt, standalone_studies):
     """
     # Prepend the shared rules that can bind on THIS category (applies to DB-resolved and fallback
     # prompts alike, and to any future category - build_preamble defaults an unknown id to everything).
-    preamble = build_preamble(row["category"])
+    preamble = build_preamble(row["category"], get_settings().summary_form_marks)
     system_msg = preamble + prompt
     # Fingerprint the PROMPT TEXT only, and do it HERE - before the per-row blocks below are appended.
     # Those carry row and document DATA, so hashing them would give two rows on an identical prompt
@@ -3989,7 +4024,7 @@ def summarize_row(
                 # The form's check boxes, read on their own when SUMMARY_FORM_MARKS is on: context,
                 # so before the instruction, which stays last.
                 *marks,
-                TextPart(_MULTIMODAL_INSTRUCTION),
+                TextPart(_multimodal_instruction()),
             ]
         except Exception as exc:  # noqa: BLE001 - degrade to OCR-only; never fail a summary on this
             logger.warning(
@@ -4028,7 +4063,7 @@ def summarize_row(
     # Computed once, because the two are absent TOGETHER - a different fact from "not recorded",
     # which `verified` is what distinguishes.
     audit_model_used, audit_fingerprint = (
-        (audit_model, fingerprint(VERIFY_PROMPT)) if verify else (None, None)
+        (audit_model, fingerprint(audit_prompt())) if verify else (None, None)
     )
     finishing = _BodyFinish(
         audit_model=audit_model if verify else None,

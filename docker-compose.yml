@@ -282,10 +282,10 @@ x-backend-env: &backend-env
   SUMMARY_TEMPERATURE: ${SUMMARY_TEMPERATURE:-0.0}
   SUMMARY_MAX_OUTPUT_TOKENS: ${SUMMARY_MAX_OUTPUT_TOKENS:-8192}
   SUMMARY_TRUNCATION_RETRY_MULTIPLIER: ${SUMMARY_TRUNCATION_RETRY_MULTIPLIER:-2.0}
-  # Read a short flagged form's check boxes in a call of their own at a higher resolution, and tell
-  # the summary which choices are marked (summarize_engine._form_marks_parts). Off by default: one
-  # more model call per such row, with larger images. Read by the summarize worker and the api
-  # (Re-draft).
+  # A form's check boxes: the marked-choices rule, and a separate 2048px read of a short flagged
+  # form's boxes before its summary (summarize_engine._form_marks_parts). Off by default: measured on
+  # Gemini it halved unticked treatments in summaries without removing them, and it adds a model call
+  # per such row. Off, every prompt is unchanged. Read by the summarize worker and the api (Re-draft).
   SUMMARY_FORM_MARKS: ${SUMMARY_FORM_MARKS:-false}
   # Narrow the boundary verify pass to the rows its trigger heuristic selects, instead of every
   # adjacent boundary. Named here BECAUSE it is meant to be flipped on a live box and measured:

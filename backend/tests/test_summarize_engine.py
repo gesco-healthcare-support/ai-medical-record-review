@@ -1655,28 +1655,45 @@ def test_an_unknown_category_receives_both_blocks_without_them_contradicting():
 
 
 # --- a form's choices: only the marked ones (reviewer report, 2026-11-06) ---------------------
+# Every part of the change is behind SUMMARY_FORM_MARKS: on the live box the rule alone took the
+# reported row from three unticked procedures to two, so it ships only with the box read.
 
 
 @pytest.mark.parametrize("category", sorted(se._KNOWN_CATEGORIES) + ["777"])
-def test_every_category_is_told_to_report_only_a_forms_marked_choices(category):
-    """DEMONSTRATES the senior reviewer's report of 2026-11-06: a therapy SOAP form with two of its
-    procedures ticked was summarized with five, three of them unticked. The OCR text prints every
-    choice on a form whether or not it is marked, and nothing told the model that. Forms are not
-    one category's, so every category - a known one, the catch-all and an unknown id - is told."""
-    preamble = se.build_preamble(category)
+def test_every_category_gets_the_marked_choices_rule_only_with_the_switch(category):
+    """DEMONSTRATES the senior reviewer's report of 2026-11-06: the OCR text prints every choice on
+    a form whether or not it is marked, and nothing told the model that. Forms are not one
+    category's, so with the switch every category - a known one, the catch-all and an unknown id -
+    is told; GUARD: without it, no category is, and the preamble is what it was."""
+    preamble = se.build_preamble(category, marked_choices=True)
     assert "report ONLY the choices that are MARKED" in preamble
     assert "A choice whose box is empty was NOT selected" in preamble
     assert "is not evidence that it was selected" in preamble
     assert "Tell which are marked from the page images" in preamble
     # A content rule, so it sits with the content rules, ahead of the formatting section.
     assert preamble.index("report ONLY the choices") < preamble.index("FORMATTING (STRICT")
+    off = se.build_preamble(category)
+    assert "report ONLY the choices" not in off
+    assert preamble.replace(se._C_MARKED_CHOICES, "", 1) == off
 
 
-def test_the_image_instruction_says_the_ocr_text_cannot_show_a_mark(monkeypatch):
-    """DEMONSTRATES: the instruction sent after the images named checkboxes as a place to trust the
-    images, but not that the OCR text lists the unticked choices too - which is what the model
-    reported from. It goes out last, after the images and the text, on every multimodal body
-    call."""
+@pytest.mark.parametrize("on", [True, False], ids=["switch-on", "switch-off"])
+def test_the_body_system_message_follows_the_switch(monkeypatch, on):
+    """The worker's system message, and so its prompt fingerprint, carry the rule exactly when
+    SUMMARY_FORM_MARKS is on."""
+    monkeypatch.setattr(se.get_settings(), "summary_form_marks", on, raising=False)
+    system_msg, fingerprint = se._build_system_message(_row(category="5"), "P", None)
+
+    assert ("report ONLY the choices that are MARKED" in system_msg) is on
+    monkeypatch.setattr(se.get_settings(), "summary_form_marks", not on, raising=False)
+    assert se._build_system_message(_row(category="5"), "P", None)[1] != fingerprint
+
+
+@pytest.mark.parametrize("on", [True, False], ids=["switch-on", "switch-off"])
+def test_the_image_instruction_names_a_forms_marks_only_with_the_switch(monkeypatch, on):
+    """DEMONSTRATES: the instruction sent last, after the images and the text, named checkboxes as
+    a place to trust the images but not that the OCR text lists the unticked choices too. With the
+    switch it says so; GUARD: without it, the instruction is today's text."""
     captured = {}
 
     def fake_generate(model, system_msg, contents, temperature, max_output_tokens=None):
@@ -1693,13 +1710,18 @@ def test_the_image_instruction_says_the_ocr_text_cannot_show_a_mark(monkeypatch)
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
     monkeypatch.setattr(se.get_settings(), "summary_multimodal", True, raising=False)
+    monkeypatch.setattr(se.get_settings(), "summary_form_marks", on, raising=False)
 
-    se.summarize_row("/x.pdf", _row(), prompt="P")
+    se.summarize_row("/x.pdf", _row(), prompt="P")  # not flagged, so no box read either way
 
     instruction = captured["contents"][-1].text
-    assert "the OCR text lists every printed choice whether or not it was marked" in instruction
-    assert "which boxes are checked shows only on the images" in instruction
-    assert "report a choice only where its mark is visible there" in instruction
+    assert instruction == (se._MULTIMODAL_INSTRUCTION_FORMS if on else se._MULTIMODAL_INSTRUCTION)
+    sentence = "the OCR text lists every printed choice whether or not it was marked"
+    assert (sentence in instruction) is on
+    assert (
+        "report a choice only where its mark is visible there" in se._MULTIMODAL_INSTRUCTION_FORMS
+    )
+    assert sentence not in se._MULTIMODAL_INSTRUCTION
 
 
 # --- the form check-box read (SUMMARY_FORM_MARKS) -----------------------------------------------
@@ -1783,7 +1805,7 @@ def test_a_flagged_form_has_its_boxes_read_sharp_and_the_body_is_told_which_are_
     assert "never report it" in block
     texts = [p.text for p in parts if hasattr(p, "text")]
     assert texts.index(block) == len(texts) - 2  # after the OCR text, before the instruction
-    assert texts[-1] == se._MULTIMODAL_INSTRUCTION
+    assert texts[-1] == se._MULTIMODAL_INSTRUCTION_FORMS
 
 
 @pytest.mark.parametrize(
@@ -1822,7 +1844,7 @@ def test_a_failed_or_empty_box_read_leaves_the_body_as_it_was(monkeypatch, reade
 
     assert len(reader.calls) == 1
     assert _box_block(parts) == []
-    assert parts[-1].text == se._MULTIMODAL_INSTRUCTION
+    assert parts[-1].text == se._MULTIMODAL_INSTRUCTION_FORMS
 
 
 def test_a_reviewers_stop_during_the_box_read_is_not_swallowed(monkeypatch):
