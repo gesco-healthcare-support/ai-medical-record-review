@@ -32,6 +32,7 @@ from app.services.provenance import fingerprint, summary_prompt_fingerprint
 from app.services.rasterise import page_image_parts
 from app.services.reporting import parsed_date
 from app.services.summary_verify import VERIFY_PROMPT, readable_issues, verify_summary
+from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -976,6 +977,141 @@ _MULTIMODAL_INSTRUCTION = (
     "images, so report a choice only where its mark is visible there. Now summarize per the "
     "system instructions, following every rule they state."
 )
+
+# THE FORM CHECK-BOX READ (`SUMMARY_FORM_MARKS`, off by default). Measured on the live box on
+# 2026-11-09 against the senior reviewer's report - a therapy SOAP form with two procedures ticked,
+# summarized with five - with the model that wrote it:
+#   - asked ONLY which boxes are marked, at the body's 1024px images: two unticked procedures named
+#     as ticked, in both runs. The body cannot get right what the model cannot see at that size.
+#   - the same question at 2048px: exactly the two ticked procedures, in both runs.
+#   - the body call itself at 2048px, told to report only marked choices: right in 1 of 3 runs. It
+#     reads the whole page and every rule at once, and a box is one detail among many.
+# So the boxes are read on their own, sharp, and the body is TOLD the answer. Limited to rows the
+# segmentation flagged for manual check (its flag names checkbox forms) of at most two pages: 59 of
+# the 63 summaries a reviewer had trimmed of unticked treatments by hand were exactly that, and a
+# short row keeps the larger images affordable. A failed or empty read adds nothing, so the body
+# runs as it does with the setting off.
+_FORM_MARKS_MAX_PAGES = 2
+_FORM_MARKS_LONG_EDGE_PX = 2048
+_FORM_MARKS_MAX_DPI = 200
+_FORM_MARKS_SYSTEM = (
+    "You read check boxes on scanned medical forms. Look closely at each printed choice that has a "
+    "box, circle, or blank beside it for selecting it, and report whether it is marked."
+)
+_FORM_MARKS_ASK = (
+    "Find every printed choice on these pages that has a check box, circle, or blank beside it - "
+    "treatments, procedures, modalities, therapies, body parts, complaints, restrictions, yes/no "
+    "answers. For each, give its printed label and whether it is MARKED (checked, ticked, crossed, "
+    "filled in, or circled). An empty box is not marked. Report only what you can see on the pages."
+)
+_FORM_MARKS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "choices": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"label": {"type": "string"}, "marked": {"type": "boolean"}},
+                "required": ["label", "marked"],
+            },
+        }
+    },
+    "required": ["choices"],
+}
+
+
+def _reads_form_marks(row) -> bool:
+    """Whether this row's check boxes are read before its body call (`_FORM_MARKS_MAX_PAGES`)."""
+    if not get_settings().summary_form_marks:
+        return False
+    if str(row.get("flag") or "").strip().lower() != "x":
+        return False
+    return int(row["end"]) - int(row["start"]) + 1 <= _FORM_MARKS_MAX_PAGES
+
+
+def form_marks_block(choices) -> str:
+    """The text part that tells the body which choices are marked; "" when the read found none.
+
+    ``choices`` is the read's reply, ``[{label, marked}]``. A label is kept once, in page order, and
+    a label read as marked anywhere counts as marked."""
+    marked: list[str] = []
+    unmarked: list[str] = []
+    for choice in choices or []:
+        if not isinstance(choice, dict):
+            continue
+        label = " ".join(str(choice.get("label") or "").split())
+        if not label:
+            continue
+        if choice.get("marked") is True:
+            if label in unmarked:
+                unmarked.remove(label)
+            if label not in marked:
+                marked.append(label)
+        elif label not in marked and label not in unmarked:
+            unmarked.append(label)
+    if not marked and not unmarked:
+        return ""
+    return (
+        "FORM CHECK BOXES, read separately from these pages at a higher resolution than the "
+        "images above:\n"
+        f"MARKED: {'; '.join(marked) if marked else 'none'}\n"
+        f"NOT MARKED: {'; '.join(unmarked) if unmarked else 'none'}\n"
+        "Report a choice from this form only if it is MARKED in this list. A choice listed as NOT "
+        "MARKED was not selected: never report it, whatever the OCR text or the images above seem "
+        "to show."
+    )
+
+
+def _form_marks_parts(model, pdf_path, row) -> list[Part]:
+    """The check-box list for the body call, as zero or one text part.
+
+    Empty when the setting is off, the row is not a short flagged one, the read fails or is cut off,
+    or it finds no choices - in every one of those cases the body call is exactly what it is with
+    the setting off. Logs counts only: a label is the document's text."""
+    if not _reads_form_marks(row):
+        return []
+    try:
+        images = page_image_parts(
+            pdf_path,
+            row["start"],
+            row["end"],
+            _FORM_MARKS_MAX_PAGES,
+            long_edge_px=_FORM_MARKS_LONG_EDGE_PX,
+            max_dpi=_FORM_MARKS_MAX_DPI,
+        )
+        response = get_provider().generate_structured(
+            model=model,
+            system=_FORM_MARKS_SYSTEM,
+            parts=[*images, TextPart(_FORM_MARKS_ASK)],
+            schema=_FORM_MARKS_SCHEMA,
+            temperature=0.0,
+            stage="summarize",
+            max_output_tokens=get_settings().summary_max_output_tokens,
+        )
+        if response.truncated:
+            raise ValueError("the reply hit the output cap")
+        choices = json.loads((response.text or "").strip() or "{}").get("choices") or []
+    except JobCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a failed read adds nothing; the body runs as before
+        logger.warning(
+            "form check-box read failed for pages %s-%s (%s); summarizing without it",
+            row["start"],
+            row["end"],
+            type(exc).__name__,
+        )
+        return []
+    block = form_marks_block(choices)
+    logger.info(
+        "form check-box read on pages %s-%s: %d choice(s), %d marked",
+        row["start"],
+        row["end"],
+        len(choices),
+        sum(1 for c in choices if isinstance(c, dict) and c.get("marked") is True),
+    )
+    return [TextPart(block)] if block else []
+
+
 _OCR_TEXT_HEADER = "OCR TEXT:\n"
 
 # The title call's counterpart to _MULTIMODAL_INSTRUCTION. It used to be text-only ("cheaper and
@@ -3836,6 +3972,9 @@ def summarize_row(
     # the row. The title gets the first and last page images (see _title_contents).
     body_contents = text
     if settings.summary_multimodal:
+        # Read OUTSIDE the try below: its fallback catches every exception, which would swallow a
+        # reviewer's Stop (JobCancelled) raised during this call. The read handles its own failures.
+        marks = _form_marks_parts(model, pdf_path, row)
         try:
             # Order matters (G-03): page images, then the OCR text, then the instruction LAST. The
             # instruction used to sit between the images and the text, i.e. in the middle of the
@@ -3847,6 +3986,9 @@ def summarize_row(
                 pdf_path, row["start"], row["end"], settings.summary_image_max_pages
             ) + [
                 TextPart(_OCR_TEXT_HEADER + text),
+                # The form's check boxes, read on their own when SUMMARY_FORM_MARKS is on: context,
+                # so before the instruction, which stays last.
+                *marks,
                 TextPart(_MULTIMODAL_INSTRUCTION),
             ]
         except Exception as exc:  # noqa: BLE001 - degrade to OCR-only; never fail a summary on this

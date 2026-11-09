@@ -1702,6 +1702,158 @@ def test_the_image_instruction_says_the_ocr_text_cannot_show_a_mark(monkeypatch)
     assert "report a choice only where its mark is visible there" in instruction
 
 
+# --- the form check-box read (SUMMARY_FORM_MARKS) -----------------------------------------------
+
+
+class _BoxReader:
+    """The check-box read's provider: records each call, answers with ``choices`` (or raises)."""
+
+    name = "gemini"
+
+    def __init__(self, choices=None, error=None, truncated=False):
+        self.choices, self.error, self.truncated, self.calls = choices or [], error, truncated, []
+
+    def generate_structured(self, **kwargs):
+        from types import SimpleNamespace
+
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(text=json.dumps({"choices": self.choices}), truncated=self.truncated)
+
+
+_SOAP_FORM = [  # synthetic: a therapy form with two of five procedures ticked
+    {"label": "Manual Therapy", "marked": False},
+    {"label": "Therapeutic Exercises", "marked": True},
+    {"label": "Therapeutic Activities", "marked": True},
+    {"label": "Massage", "marked": False},
+    {"label": "Neuromuscular Reeducation", "marked": False},
+]
+
+
+def _body_parts_with_box_reader(monkeypatch, reader, *, on=True, row=None):
+    """Summarize one row with the read's provider stubbed; returns (body parts, image renders)."""
+    captured, renders = {}, []
+
+    def fake_generate(model, system_msg, contents, temperature, max_output_tokens=None):
+        if system_msg != se.TITLE_PROMPT:
+            captured["contents"] = contents
+        return _fake_generate(model, system_msg, contents, temperature)
+
+    def fake_images(path, start, end, cap, long_edge_px=None, max_dpi=None, **_kw):
+        renders.append({"cap": cap, "long_edge_px": long_edge_px, "max_dpi": max_dpi})
+        return ["IMG"]
+
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR BODY", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "page_image_parts", fake_images)
+    monkeypatch.setattr(se, "_generate", fake_generate)
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+    monkeypatch.setattr(se, "get_provider", lambda: reader)
+    monkeypatch.setattr(se.get_settings(), "summary_multimodal", True, raising=False)
+    monkeypatch.setattr(se.get_settings(), "summary_form_marks", on, raising=False)
+    se.summarize_row("/x.pdf", row or _row(flag="x", category="5"), prompt="P")
+    return captured["contents"], renders
+
+
+def _box_block(parts):
+    return [p.text for p in parts if hasattr(p, "text") and p.text.startswith("FORM CHECK BOXES")]
+
+
+def test_a_flagged_form_has_its_boxes_read_sharp_and_the_body_is_told_which_are_marked(monkeypatch):
+    """DEMONSTRATES the live-box measurement of 2026-11-09: at the body's 1024px images the model
+    named two unticked procedures as ticked; asked about the boxes alone at 2048px, it named exactly
+    the ticked ones. So the boxes are read on their own, sharp, and the body gets the answer -
+    after the OCR text, before the instruction, which stays last."""
+    reader = _BoxReader(_SOAP_FORM)
+    parts, renders = _body_parts_with_box_reader(monkeypatch, reader)
+
+    assert len(reader.calls) == 1
+    call = reader.calls[0]
+    assert call["stage"] == "summarize"
+    assert call["temperature"] == 0.0
+    assert call["system"] == se._FORM_MARKS_SYSTEM
+    assert renders[0] == {"cap": 2, "long_edge_px": 2048, "max_dpi": 200}
+    (block,) = _box_block(parts)
+    assert "MARKED: Therapeutic Exercises; Therapeutic Activities" in block
+    assert "NOT MARKED: Manual Therapy; Massage; Neuromuscular Reeducation" in block
+    assert "never report it" in block
+    texts = [p.text for p in parts if hasattr(p, "text")]
+    assert texts.index(block) == len(texts) - 2  # after the OCR text, before the instruction
+    assert texts[-1] == se._MULTIMODAL_INSTRUCTION
+
+
+@pytest.mark.parametrize(
+    ("on", "row"),
+    [
+        (False, _row(flag="x", category="5")),
+        (True, _row(flag="", category="5")),
+        (True, _row(flag="x", category="5", start=1, end=3)),
+    ],
+    ids=["setting-off", "row-not-flagged", "row-of-three-pages"],
+)
+def test_no_box_read_and_no_change_outside_short_flagged_rows(monkeypatch, on, row):
+    """GUARD: with the setting off, on an unflagged row, or on a row longer than two pages, no read
+    is made and the body call is exactly what it was."""
+    reader = _BoxReader(_SOAP_FORM)
+    parts, renders = _body_parts_with_box_reader(monkeypatch, reader, on=on, row=row)
+
+    assert reader.calls == []
+    assert _box_block(parts) == []
+    assert all(r["long_edge_px"] is None for r in renders)  # only the body's own images
+
+
+@pytest.mark.parametrize(
+    "reader",
+    [
+        _BoxReader(error=RuntimeError("model unavailable")),
+        _BoxReader(_SOAP_FORM, truncated=True),
+        _BoxReader([]),
+    ],
+    ids=["read-raises", "read-cut-off", "no-choices-found"],
+)
+def test_a_failed_or_empty_box_read_leaves_the_body_as_it_was(monkeypatch, reader):
+    """GUARD: a read that fails, is cut off at its cap, or finds no choices (a flagged row that is
+    handwriting, not a form) adds nothing, and the row is still summarized."""
+    parts, _ = _body_parts_with_box_reader(monkeypatch, reader)
+
+    assert len(reader.calls) == 1
+    assert _box_block(parts) == []
+    assert parts[-1].text == se._MULTIMODAL_INSTRUCTION
+
+
+def test_a_reviewers_stop_during_the_box_read_is_not_swallowed(monkeypatch):
+    """GUARD: the read sits outside the image step's catch-all, so a Stop pressed during it ends
+    the row instead of degrading it to an OCR-only summary."""
+    from app.worker.failures import JobCancelled
+
+    with pytest.raises(JobCancelled):
+        _body_parts_with_box_reader(monkeypatch, _BoxReader(error=JobCancelled(0, 1)))
+
+
+def test_the_box_list_keeps_each_label_once_and_a_mark_anywhere_wins():
+    """A label read twice keeps one entry; read marked anywhere it is marked. Blank labels and
+    malformed entries are skipped, and a read with nothing usable gives no block at all."""
+    block = se.form_marks_block(
+        [
+            {"label": "Lumbar  Pain", "marked": False},
+            {"label": "Lumbar Pain", "marked": True},
+            {"label": "Massage", "marked": False},
+            {"label": "Massage", "marked": False},
+            {"label": "  ", "marked": True},
+            "not a choice",
+        ]
+    )
+    assert "MARKED: Lumbar Pain\n" in block
+    assert "NOT MARKED: Massage\n" in block
+    assert se.form_marks_block([]) == ""
+    assert se.form_marks_block([{"label": "", "marked": True}]) == ""
+    assert "MARKED: none" in se.form_marks_block([{"label": "Massage", "marked": False}])
+
+
 # --- the generated title must be a header line, not a paragraph -------------------------------
 
 

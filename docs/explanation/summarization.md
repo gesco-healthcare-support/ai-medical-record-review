@@ -112,6 +112,16 @@ Every category receives the factuality rules (`_FACTUALITY`), the point-scope ru
   page images, and to leave out a choice whose mark it cannot make out. The instruction sent after
   the images (`_MULTIMODAL_INSTRUCTION`) says the same, and the audit is told to leave a form's
   choices alone (see [Audit](#audit)).
+- **The rule alone is not enough, because of image size.** Measured on the live box on 2026-11-09
+  with the model that wrote the reported summary: asked only which boxes are marked, at the body's
+  1024px images it named two unticked procedures as ticked (both runs); at 2048px it named exactly
+  the ticked ones (both runs). The body call itself at 2048px was right in 1 of 3 runs. So with
+  `SUMMARY_FORM_MARKS` on (off by default), a row flagged for manual check (`m` = `x`) of at most
+  two pages first has its check boxes read in a call of their own at 2048px
+  (`_form_marks_parts()`), and the body is handed a `FORM CHECK BOXES` list of the marked and the
+  not-marked choices, after the OCR text and before the closing instruction. A read that fails, is
+  cut off or finds no choices adds nothing, and the body call is then what it is with the setting
+  off.
 - **3 and 5 are also told to mark separate visits** (`_F_SEPARATE_VISITS`, in the format
   section), because their pages can be a log of several dated visits - see
   [A page of several visits](#a-page-of-several-visits). No other category gets it, an unknown

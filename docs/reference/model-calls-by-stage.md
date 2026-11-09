@@ -46,7 +46,9 @@ On vLLM every non-summarize stage uses `VLLM_MODEL`, and the summarize triple de
 
 ## summarize
 
-Three calls per summary row. The three models are resolved once when the summarize job is created
+Three calls per summary row, and a fourth on some rows when `SUMMARY_FORM_MARKS` is on (see
+[Form check boxes](#form-check-boxes)). The three models are resolved once when the summarize job
+is created
 (`backend/app/services/jobs.py` `create_job()`), stored as `jobs.model`, `jobs.title_model` and
 `jobs.audit_model`, and passed to every row. The backend that answered is stored per row in
 `summaries.backend` (`summarize_engine._backend_name()`, which reads `get_provider().name`).
@@ -65,6 +67,24 @@ Three calls per summary row. The three models are resolved once when the summari
 | Truncated reply | `_retry_if_truncated()` re-asks once at `SUMMARY_MAX_OUTPUT_TOKENS x SUMMARY_TRUNCATION_RETRY_MULTIPLIER` (skipped when the multiplier is 1 or less). A finished retry replaces the body; between two truncated replies the longer is kept; an empty or failed retry keeps the first body |
 | Failure | When the call raises an exception whose `code` is 429 (`backend/app/errors.py` `is_rate_limited()`) and `SUMMARY_BODY_FALLBACK_MODEL` is set and differs from the body model, the call is repeated once on the fallback model, logged at WARNING, and the row records the fallback model as its model. Any other exception propagates to the summarize worker, which decides pause or needs-attention (see [Pipeline and jobs](../explanation/pipeline-and-jobs.md)) |
 | No call | A row with no OCR text makes no model call: it becomes an unreadable-pages notice or raises `EmptyExtractionError` |
+
+### Form check boxes
+
+Only with `SUMMARY_FORM_MARKS` true and `SUMMARY_MULTIMODAL` true, on a row whose flag is `x` and
+which spans at most two pages (`summarize_engine._FORM_MARKS_MAX_PAGES`). Made before the body call.
+
+| Item | Value |
+| --- | --- |
+| Entry point | `get_provider().generate_structured(stage="summarize")` from `summarize_engine._form_marks_parts()` |
+| Model | The body's model (the job's `model`) |
+| Thinking | As the body |
+| System | `summarize_engine._FORM_MARKS_SYSTEM` |
+| Parts | The row's pages as JPEG images at a 2048px long edge with a 200 dpi ceiling (`_FORM_MARKS_LONG_EDGE_PX`, `_FORM_MARKS_MAX_DPI`), then `_FORM_MARKS_ASK` |
+| Temperature | 0.0 |
+| Max output tokens | `SUMMARY_MAX_OUTPUT_TOKENS` |
+| Schema | `_FORM_MARKS_SCHEMA`: object with `choices`, an array of `{label, marked}` |
+| Reply handling | `form_marks_block()` turns the choices into a `FORM CHECK BOXES` text part (marked and not-marked labels), placed in the body call after the OCR text and before the closing instruction; no part when no choice was read |
+| Failure | A raised error, a truncated reply or unparseable JSON is logged at WARNING (`form check-box read failed for pages <s>-<e> (<error type>); summarizing without it`) and adds nothing. `JobCancelled` is re-raised |
 
 ### Title
 

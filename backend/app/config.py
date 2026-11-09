@@ -339,6 +339,14 @@ class Settings(BaseSettings):
     # recover tables, checkboxes, and handwriting the OCR garbles (an eval on real sub-docs showed it
     # adds missing vitals/allergies with no loss). Env-toggle to revert to OCR-only.
     summary_multimodal: bool = True
+    # Before the body call of a short row flagged for manual check, read the form's check boxes in a
+    # call of their own at a higher resolution, and tell the body which choices are marked
+    # (`summarize_engine._form_marks`). At the 1024px the body's images use, a tick in a small box
+    # cannot be told from an empty box: asked only about the boxes, the model named two unticked
+    # procedures as ticked on the reported form; at 2048px it named exactly the ticked ones
+    # (2026-11-09, the senior reviewer's report). Off by default: one more model call per such row,
+    # with larger images, so a box turns it on once it has been measured there.
+    summary_form_marks: bool = False
     # Cap page images per sub-document so a long record cannot blow the request payload/latency; the
     # full OCR text still covers every page beyond the cap.
     summary_image_max_pages: int = 15
