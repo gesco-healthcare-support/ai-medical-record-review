@@ -1064,28 +1064,27 @@ def _reads_form_marks(row) -> bool:
     return int(row["end"]) - int(row["start"]) + 1 <= _FORM_MARKS_MAX_PAGES
 
 
+def _choice_label(choice) -> str:
+    """One choice's printed label with its spacing tidied; "" for an entry that is not a choice."""
+    if not isinstance(choice, dict):
+        return ""
+    return " ".join(str(choice.get("label") or "").split())
+
+
 def form_marks_block(choices) -> str:
     """The text part that tells the body which choices are marked; "" when the read found none.
 
     ``choices`` is the read's reply, ``[{label, marked}]``. A label is kept once, in page order, and
     a label read as marked anywhere counts as marked."""
-    marked: list[str] = []
-    unmarked: list[str] = []
+    read: dict[str, bool] = {}  # label -> marked; a dict keeps the page order of first sight
     for choice in choices or []:
-        if not isinstance(choice, dict):
-            continue
-        label = " ".join(str(choice.get("label") or "").split())
-        if not label:
-            continue
-        if choice.get("marked") is True:
-            if label in unmarked:
-                unmarked.remove(label)
-            if label not in marked:
-                marked.append(label)
-        elif label not in marked and label not in unmarked:
-            unmarked.append(label)
-    if not marked and not unmarked:
+        label = _choice_label(choice)
+        if label:
+            read[label] = read.get(label, False) or choice.get("marked") is True
+    if not read:
         return ""
+    marked = [label for label, is_marked in read.items() if is_marked]
+    unmarked = [label for label, is_marked in read.items() if not is_marked]
     return (
         "FORM CHECK BOXES, read separately from these pages at a higher resolution than the "
         "images above:\n"

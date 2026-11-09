@@ -1852,8 +1852,9 @@ def test_a_reviewers_stop_during_the_box_read_is_not_swallowed(monkeypatch):
     the row instead of degrading it to an OCR-only summary."""
     from app.worker.failures import JobCancelled
 
+    stopped = _BoxReader(error=JobCancelled(0, 1))
     with pytest.raises(JobCancelled):
-        _body_parts_with_box_reader(monkeypatch, _BoxReader(error=JobCancelled(0, 1)))
+        _body_parts_with_box_reader(monkeypatch, stopped)
 
 
 def test_the_box_list_keeps_each_label_once_and_a_mark_anywhere_wins():
