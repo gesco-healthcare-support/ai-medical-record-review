@@ -339,6 +339,16 @@ class Settings(BaseSettings):
     # recover tables, checkboxes, and handwriting the OCR garbles (an eval on real sub-docs showed it
     # adds missing vitals/allergies with no loss). Env-toggle to revert to OCR-only.
     summary_multimodal: bool = True
+    # A form's check boxes (the senior reviewer's report of 2026-11-06: unticked treatments listed).
+    # On: every category is told to report only marked choices, the closing image instruction and
+    # the audit prompt say the same, and a short row flagged for manual check has its boxes read in
+    # a call of their own at 2048px, the body being told which choices are marked
+    # (`summarize_engine._form_marks_parts`). Off: every prompt is byte-for-byte what it was.
+    # OFF BY DEFAULT ON MEASUREMENT: on the live box (Gemini, 2026-11-09) it cut the unticked
+    # treatments on 20 reviewer-trimmed summaries from 33 to 15 and kept 26 of the 29 the reviewer
+    # kept, but the box read calls some unticked boxes ticked on every read. Our model reads the
+    # pages differently, so it is worth measuring there before anything is turned on.
+    summary_form_marks: bool = False
     # Cap page images per sub-document so a long record cannot blow the request payload/latency; the
     # full OCR text still covers every page beyond the cap.
     summary_image_max_pages: int = 15

@@ -80,6 +80,15 @@ _HOUSE_RULES = (
 # kept the audit's spelling about as often as the original's (9 to 7, and 5 to 2 for looser
 # re-spellings); for authors 8 to 4. So the audit's re-spellings fix the title as often as they
 # break it, and only the garbled ones are worth forbidding.
+#
+# The form-choices bullet (`_FORM_CHOICES_BULLET`, below), 2026-11-06, is the counterpart of
+# `summarize_engine._C_MARKED_CHOICES` and is sent only with it, under SUMMARY_FORM_MARKS. The OCR
+# text of a checkbox form lists every printed option and loses the marks, so this call can see
+# neither which were ticked nor that the summary left the unticked ones out on purpose. Read
+# against that text, a summary of the two ticked procedures looks incomplete beside five printed
+# ones - the same trap as a one-visit summary beside a page of seven studies (`visit_date` below).
+# So the audit is told to keep its hands off a form's choices both ways: adding one would report an
+# unticked option, and deleting one as unsupported would drop a ticked one it cannot see.
 VERIFY_PROMPT = (
     "You audit the TITLE and SUMMARY of a medical-record sub-document on two counts: faithfulness "
     "to its SOURCE text, and compliance with the house rules below.\n"
@@ -123,6 +132,29 @@ VERIFY_PROMPT = (
     "`detail` is a short phrase naming the offending claim (no PHI beyond what the claim already "
     "states).\n\n" + _HOUSE_RULES
 )
+
+_FORM_CHOICES_BULLET = (
+    "- On a FORM, the SOURCE prints every choice beside its box - every treatment, procedure, "
+    "body part, or complaint on the page - whether or not it was marked, and the check marks "
+    "themselves do not survive in the text. The SUMMARY was written from the page images, where "
+    "the marks show. So leave the summary's choices as they are: never add a choice from such a "
+    "list, and never remove one as unsupported only because the SOURCE cannot show its mark.\n"
+)
+_HOUSE_RULES_STEP = "- Then apply the HOUSE RULES."
+# VERIFY_PROMPT with the form-choices bullet, sent only with SUMMARY_FORM_MARKS on (`audit_prompt`).
+VERIFY_PROMPT_FORM_CHOICES = VERIFY_PROMPT.replace(
+    _HOUSE_RULES_STEP, _FORM_CHOICES_BULLET + _HOUSE_RULES_STEP, 1
+)
+
+
+def audit_prompt() -> str:
+    """The audit's system prompt: `VERIFY_PROMPT`, or with SUMMARY_FORM_MARKS on the same prompt
+    with the form-choices bullet. One function, so the call and the audit fingerprint
+    (`summarize_engine`) can never name different prompts."""
+    if get_settings().summary_form_marks:
+        return VERIFY_PROMPT_FORM_CHOICES
+    return VERIFY_PROMPT
+
 
 # Ordinary JSON Schema, lowercase types. Each provider translates to its own dialect
 # (services/llm/gemini.py uppercases these for google-genai; OpenAI strict mode takes them as-is),
@@ -404,7 +436,7 @@ def verify_summary(
     try:
         response = get_provider().generate_structured(
             model=model,
-            system=VERIFY_PROMPT,
+            system=audit_prompt(),
             parts=[TextPart(prompt)],
             schema=schema,
             temperature=0.0,

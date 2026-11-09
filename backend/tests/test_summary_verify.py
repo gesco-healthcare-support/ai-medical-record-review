@@ -307,6 +307,34 @@ def test_one_visit_of_a_page_of_several_is_told_which_visit_it_is(monkeypatch):
     assert "never replace this visit's content with it" in sv.VERIFY_PROMPT
 
 
+@pytest.mark.parametrize("on", [True, False], ids=["switch-on", "switch-off"])
+def test_the_audit_keeps_its_hands_off_a_forms_choices_with_the_switch(monkeypatch, on):
+    """DEMONSTRATES the reviewer's report of 2026-11-06. The audit reads only the OCR text, which
+    prints every choice on a form ticked or not, so a summary of the two ticked procedures looks
+    incomplete beside five printed ones. With SUMMARY_FORM_MARKS it may neither add a choice from
+    that list nor delete one as unsupported; GUARD: without it, the audit is sent today's prompt."""
+    prompt = sv.VERIFY_PROMPT_FORM_CHOICES
+    assert "whether or not it was marked" in prompt
+    assert "the check marks themselves do not survive in the text" in prompt
+    assert "never add a choice from such a list" in prompt
+    assert "never remove one as unsupported only because the SOURCE cannot show its mark" in prompt
+    assert prompt.index("never add a choice") < prompt.index("- Then apply the HOUSE RULES.")
+    assert "never add a choice" not in sv.VERIFY_PROMPT
+    assert prompt.replace(sv._FORM_CHOICES_BULLET, "", 1) == sv.VERIFY_PROMPT
+    seen = {}
+
+    def gen(client, *, model, contents, config, **_kw):
+        seen["system"] = config.system_instruction
+        return _Resp(json.dumps({"fixed_text": "Body.", "issues": []}))
+
+    monkeypatch.setattr(gm, "get_genai_client", lambda: None)
+    monkeypatch.setattr(gm, "generate_with_retry", gen)
+    monkeypatch.setattr(get_settings(), "summary_form_marks", on, raising=False)
+    sv.verify_summary("m", "the source", "Body.")
+    assert seen["system"] == (sv.VERIFY_PROMPT_FORM_CHOICES if on else sv.VERIFY_PROMPT)
+    assert sv.audit_prompt() == seen["system"]
+
+
 @pytest.mark.parametrize("visit", [None, "", "   "])
 def test_a_body_that_is_not_one_visit_of_several_is_told_nothing(monkeypatch, visit):
     """GUARD: every other summary's audit call is unchanged."""
