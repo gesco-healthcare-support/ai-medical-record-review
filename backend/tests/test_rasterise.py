@@ -535,3 +535,31 @@ def test_the_cache_holds_a_bounded_number_of_records(monkeypatch, tmp_path):
 
     assert len(rasterise._edges_cache) == rasterise._EDGES_CACHE_SIZE
     assert len(opened) == len(paths) + 1
+
+
+def test_a_caller_may_raise_the_dpi_ceiling_for_its_own_call_only(monkeypatch):
+    """DEMONSTRATES: the form check-box read (`summarize_engine._form_marks_parts`) asks for a
+    2048px page, which the 120 dpi ceiling would cut back to ~1320px on a letter page - the size at
+    which a tick could not be told from an empty box. `max_dpi` lifts the ceiling for that one call;
+    GUARD: a call that does not pass it still renders under `summary_image_dpi`."""
+    rendered = []
+    letter = SimpleNamespace(width=612, height=792)
+    monkeypatch.setattr(
+        rasterise,
+        "PdfReader",
+        lambda _path: SimpleNamespace(pages=[SimpleNamespace(cropbox=letter)]),
+    )
+
+    def _convert(_path, first_page, last_page, dpi):
+        rendered.append(dpi)
+        return [_FakeImage()]
+
+    monkeypatch.setattr(rasterise, "convert_from_path", _convert)
+
+    rasterise.page_image_parts("/synthetic-form.pdf", 1, 1, 1, long_edge_px=2048, max_dpi=200)
+    rasterise.page_image_parts("/synthetic-form.pdf", 1, 1, 1, long_edge_px=2048)
+
+    sharp, ordinary = rendered
+    assert sharp == int(2048 * 72 / 792)  # the target is reached: 186 dpi, 2046px long edge
+    assert ordinary == get_settings().summary_image_dpi  # the usual ceiling still binds
+    assert sharp > ordinary

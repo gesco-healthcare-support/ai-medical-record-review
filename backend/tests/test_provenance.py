@@ -12,7 +12,9 @@ Pure: `_generate` and `verify_summary` are monkeypatched, so nothing hits Vertex
 tests need no database either - `summary_prompt_fingerprint` is called with explicit strings.
 """
 
+from app.config import get_settings
 from app.services import summarize_engine as se
+from app.services import summary_verify as sv
 from app.services.provenance import (
     fingerprint,
     summary_prompt_fingerprint,
@@ -182,7 +184,23 @@ def test_the_audit_fingerprint_tracks_the_verify_prompt_alone(monkeypatch):
     # "the audit is covering for it".
     _capture_models(monkeypatch)
     first = se.summarize_row("/x.pdf", _row(), model="m", prompt="P", verify=True)
-    monkeypatch.setattr(se, "VERIFY_PROMPT", "a different audit prompt")
+    # The audit's prompt is chosen by `summary_verify.audit_prompt()`, which the call and the
+    # fingerprint both read, so the change is made where that function reads it.
+    monkeypatch.setattr(sv, "VERIFY_PROMPT", "a different audit prompt")
     second = se.summarize_row("/x.pdf", _row(), model="m", prompt="P", verify=True)
     assert first["auditFingerprint"] != second["auditFingerprint"]
     assert first["promptFingerprint"] == second["promptFingerprint"]
+
+
+def test_both_fingerprints_name_the_prompts_the_form_switch_sends(monkeypatch):
+    """WHEN SUMMARY_FORM_MARKS is on, THE SYSTEM SHALL fingerprint the prompts that switch sends -
+    the preamble with the marked-choices rule and the audit prompt with its form bullet - and with
+    it off, exactly today's prompts, so a cohort query can tell summaries written either way."""
+    _capture_models(monkeypatch)
+    off = se.summarize_row("/x.pdf", _row(), model="m", prompt="P", verify=True)
+    monkeypatch.setattr(get_settings(), "summary_form_marks", True, raising=False)
+    on = se.summarize_row("/x.pdf", _row(), model="m", prompt="P", verify=True)
+
+    assert off["auditFingerprint"] == fingerprint(sv.VERIFY_PROMPT)
+    assert on["auditFingerprint"] == fingerprint(sv.VERIFY_PROMPT_FORM_CHOICES)
+    assert off["promptFingerprint"] != on["promptFingerprint"]

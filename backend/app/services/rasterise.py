@@ -111,15 +111,20 @@ def page_dpi(reader, page, settings, long_edge_px=None):
     return _dpi_for_long_edge(_long_edge(reader.pages[page - 1].cropbox), settings, long_edge_px)
 
 
-def _dpi_for_long_edge(long_edge_pt, settings, long_edge_px=None):
+def _dpi_for_long_edge(long_edge_pt, settings, long_edge_px=None, max_dpi=None):
     """`page_dpi`'s arithmetic on a long edge already read - so `page_image_parts` can take the edge
-    from `_crop_long_edges` instead of opening the PDF on every call."""
+    from `_crop_long_edges` instead of opening the PDF on every call.
+
+    ``max_dpi`` replaces the `summary_image_dpi` ceiling for one caller that needs a sharper page
+    than every other render: the form check-box read (`summarize_engine._form_marks`), whose 2048px
+    target a 120 dpi ceiling would cut back to ~1320px on a letter page."""
+    ceiling = max_dpi or settings.summary_image_dpi
     target = long_edge_px or settings.summary_image_long_edge_px
     if long_edge_pt <= 0:  # a degenerate box would divide by zero; fall back rather than guess
-        return settings.summary_image_dpi
+        return ceiling
     fitted = int(target * 72.0 / long_edge_pt)
-    # Never raise the DPI above the configured one, and never fall to zero on an absurd box.
-    return max(1, min(settings.summary_image_dpi, fitted))
+    # Never raise the DPI above the ceiling, and never fall to zero on an absurd box.
+    return max(1, min(ceiling, fitted))
 
 
 # Emitted ONCE before the labelled images, never per page.
@@ -143,10 +148,15 @@ _LABEL_PREAMBLE = (
 )
 
 
-def page_image_parts(pdf_path, start, end, max_pages, long_edge_px=None, label_pages=False):
+def page_image_parts(
+    pdf_path, start, end, max_pages, long_edge_px=None, label_pages=False, max_dpi=None
+):
     """Rasterize pages [start, end] to lean JPEG ``ImagePart``s, at most ``max_pages`` of them.
 
     ``max_pages`` is required and has no default - see the module docstring.
+
+    ``max_dpi`` raises the dpi ceiling for this call only (see `_dpi_for_long_edge`); every other
+    caller keeps `summary_image_dpi`.
 
     ``label_pages`` puts a ``Page N`` text part immediately BEFORE each image, numbered from 1
     WITHIN THIS CALL. Default off: it costs a few tokens per page and only earns them where the
@@ -200,7 +210,7 @@ def page_image_parts(pdf_path, start, end, max_pages, long_edge_px=None, label_p
             pdf_path,
             first_page=page,
             last_page=page,
-            dpi=_dpi_for_long_edge(edges[page - 1], settings, long_edge_px),
+            dpi=_dpi_for_long_edge(edges[page - 1], settings, long_edge_px, max_dpi),
         ):
             buffer = io.BytesIO()
             image.convert("RGB").save(buffer, format="JPEG", quality=_JPEG_QUALITY)

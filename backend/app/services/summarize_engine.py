@@ -31,7 +31,12 @@ from app.services.prompts import prompts
 from app.services.provenance import fingerprint, summary_prompt_fingerprint
 from app.services.rasterise import page_image_parts
 from app.services.reporting import parsed_date
-from app.services.summary_verify import VERIFY_PROMPT, readable_issues, verify_summary
+from app.services.summary_verify import (
+    audit_prompt,
+    readable_issues,
+    verify_summary,
+)
+from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +142,29 @@ _C_POINT_SCOPE = (
     "- Include a point ONLY if the category rules below name it for this document type. Do not "
     "add a point the rules do not list, however relevant it looks - unrequested detail is the "
     "main reason summaries run long.\n"
+)
+
+# A form prints its choices - treatments, body parts, complaints, restrictions - each beside a box,
+# and only the marked ones were chosen. The OCR text keeps every printed choice and loses the marks,
+# so a summary read off the text reports options nobody ticked. The senior reviewer's report of
+# 2026-11-06, a therapy SOAP form with two procedures ticked: the delivered summary listed five,
+# three of them with empty boxes, "and it comes up somewhat frequently" on checkbox forms. The
+# images the body call is sent are the only place a mark can be seen, which the rule says, and a
+# choice whose mark cannot be made out is left out under the factuality rule's "omit rather than
+# guess". Forms are not one category's (PR-2 work status, therapy notes, RFAs, intake questionnaires
+# and legal forms all print boxes), so every category gets it - but ONLY with SUMMARY_FORM_MARKS on
+# (`build_preamble(marked_choices=)`). On its own it did not fix the report: on the live box on
+# 2026-11-09 it took the reported row from three unticked procedures to two, in 3 of 3 runs, because
+# at the body's image size the model cannot see which boxes are ticked (`_form_marks_parts`). Its
+# audit counterpart is `summary_verify.VERIFY_PROMPT_FORM_CHOICES`, which is gated the same way.
+_C_MARKED_CHOICES = (
+    "- On a FORM that prints a list of choices with a box, circle, or blank beside each - "
+    "treatments, procedures, body parts, complaints, restrictions, yes/no questions - report ONLY "
+    "the choices that are MARKED: checked, ticked, crossed, filled in, circled, or written in. A "
+    "choice whose box is empty was NOT selected: leave it out, however relevant it looks. The OCR "
+    "text prints every choice on the form whether or not it is marked, so a choice appearing in "
+    "the OCR text is not evidence that it was selected. Tell which are marked from the page "
+    "images, and leave out any choice whose mark you cannot make out.\n"
 )
 
 # Widened 2026-07-31 on tester feedback. The four banned words ("normal, negative, unremarkable,
@@ -764,8 +792,11 @@ _KNOWN_CATEGORIES = (
 )
 
 
-def build_preamble(category) -> str:
+def build_preamble(category, marked_choices=False) -> str:
     """The shared rules that can bind on THIS category, assembled in a fixed order.
+
+    ``marked_choices`` adds `_C_MARKED_CHOICES` for every category; the caller passes
+    `SUMMARY_FORM_MARKS`, so with that switch off the preamble is exactly what it was without it.
 
     Default is INCLUDE: an id the catalog does not ship yet (an admin can create one at any time via
     POST /admin/categories) receives every block except the deposition format, so a new category is
@@ -806,6 +837,8 @@ def build_preamble(category) -> str:
     embedded = content_unknown or cat in _EMBEDDED_REVIEW_CATEGORIES
 
     parts = [_FACTUALITY, _CONTENT_HEADER, _C_POINT_SCOPE]
+    if marked_choices:
+        parts.append(_C_MARKED_CHOICES)
     if findings:
         parts.append(_C_NORMAL_FINDINGS)
     if verdict:
@@ -953,6 +986,166 @@ _MULTIMODAL_INSTRUCTION = (
     "missing, or from a table, checkbox, or handwriting. Now summarize per the system instructions, "
     "following every rule they state."
 )
+# The same instruction with SUMMARY_FORM_MARKS on: one more sentence, on a form's choices
+# (`_C_MARKED_CHOICES` says why). Kept apart so the switch off sends today's text unchanged.
+_MULTIMODAL_INSTRUCTION_FORMS = (
+    "\n\nThe images above are the scanned page(s) of this sub-document, and the OCR text above is "
+    "those same pages. Use BOTH - treat the images as authoritative wherever the OCR is garbled, "
+    "missing, or from a table, checkbox, or handwriting. On a form, the OCR text lists every "
+    "printed choice whether or not it was marked: which boxes are checked shows only on the "
+    "images, so report a choice only where its mark is visible there. Now summarize per the "
+    "system instructions, following every rule they state."
+)
+
+
+def _multimodal_instruction() -> str:
+    """The closing instruction of a multimodal body call, by SUMMARY_FORM_MARKS."""
+    if get_settings().summary_form_marks:
+        return _MULTIMODAL_INSTRUCTION_FORMS
+    return _MULTIMODAL_INSTRUCTION
+
+
+# THE FORM CHECK-BOX READ (`SUMMARY_FORM_MARKS`, off by default). Measured on the live box on
+# 2026-11-09 against the senior reviewer's report - a therapy SOAP form with two procedures ticked,
+# summarized with five - with the model that wrote it:
+#   - asked ONLY which boxes are marked, at the body's 1024px images: two unticked procedures named
+#     as ticked, in both runs. The body cannot get right what the model cannot see at that size.
+#   - the same question at 2048px: exactly the two ticked procedures, in both runs.
+#   - the body call itself at 2048px, told to report only marked choices: right in 1 of 3 runs. It
+#     reads the whole page and every rule at once, and a box is one detail among many.
+# So the boxes are read on their own, sharp, and the body is TOLD the answer. Limited to rows the
+# segmentation flagged for manual check (its flag names checkbox forms) of at most two pages: 59 of
+# the 63 summaries a reviewer had trimmed of unticked treatments by hand were exactly that, and a
+# short row keeps the larger images affordable. A failed or empty read adds nothing, so the body
+# runs as it does with the setting off.
+#
+# THEN MEASURED AS A WHOLE, and why it stays off. On 20 of those 63 summaries, with the setting on:
+# unticked treatments listed 33 before, 15 after; treatments the reviewer kept, 26 of 29 still
+# listed; 7 of 20 summaries fully right. In 12 of the 15 left, the read itself called the box
+# ticked - and four reads per form (two with a stricter question) agreed on 10 of them, so reading
+# twice does not help: the mistake is made every time, not now and then. Six were one form template
+# on which every read and the reviewer disagree. On the reported form a later wording of the
+# question named the two unticked procedures again. Better than nothing on Gemini, not reliable.
+_FORM_MARKS_MAX_PAGES = 2
+_FORM_MARKS_LONG_EDGE_PX = 2048
+_FORM_MARKS_MAX_DPI = 200
+_FORM_MARKS_SYSTEM = (
+    "You read check boxes on scanned medical forms. Look closely at each printed choice that has a "
+    "box, circle, or blank beside it for selecting it, and report whether it is marked."
+)
+_FORM_MARKS_ASK = (
+    "Find every printed choice on these pages that has a check box, circle, or blank beside it - "
+    "treatments, procedures, modalities, therapies, body parts, complaints, restrictions, yes/no "
+    "answers. For each, give its printed label and whether it is MARKED (checked, ticked, crossed, "
+    "filled in, or circled). An empty box is not marked. Report only what you can see on the pages."
+)
+_FORM_MARKS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "choices": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"label": {"type": "string"}, "marked": {"type": "boolean"}},
+                "required": ["label", "marked"],
+            },
+        }
+    },
+    "required": ["choices"],
+}
+
+
+def _reads_form_marks(row) -> bool:
+    """Whether this row's check boxes are read before its body call (`_FORM_MARKS_MAX_PAGES`)."""
+    if not get_settings().summary_form_marks:
+        return False
+    if str(row.get("flag") or "").strip().lower() != "x":
+        return False
+    return int(row["end"]) - int(row["start"]) + 1 <= _FORM_MARKS_MAX_PAGES
+
+
+def _choice_label(choice) -> str:
+    """One choice's printed label with its spacing tidied; "" for an entry that is not a choice."""
+    if not isinstance(choice, dict):
+        return ""
+    return " ".join(str(choice.get("label") or "").split())
+
+
+def form_marks_block(choices) -> str:
+    """The text part that tells the body which choices are marked; "" when the read found none.
+
+    ``choices`` is the read's reply, ``[{label, marked}]``. A label is kept once, in page order, and
+    a label read as marked anywhere counts as marked."""
+    read: dict[str, bool] = {}  # label -> marked; a dict keeps the page order of first sight
+    for choice in choices or []:
+        label = _choice_label(choice)
+        if label:
+            read[label] = read.get(label, False) or choice.get("marked") is True
+    if not read:
+        return ""
+    marked = [label for label, is_marked in read.items() if is_marked]
+    unmarked = [label for label, is_marked in read.items() if not is_marked]
+    return (
+        "FORM CHECK BOXES, read separately from these pages at a higher resolution than the "
+        "images above:\n"
+        f"MARKED: {'; '.join(marked) if marked else 'none'}\n"
+        f"NOT MARKED: {'; '.join(unmarked) if unmarked else 'none'}\n"
+        "Report a choice from this form only if it is MARKED in this list. A choice listed as NOT "
+        "MARKED was not selected: never report it, whatever the OCR text or the images above seem "
+        "to show."
+    )
+
+
+def _form_marks_parts(model, pdf_path, row) -> list[Part]:
+    """The check-box list for the body call, as zero or one text part.
+
+    Empty when the setting is off, the row is not a short flagged one, the read fails or is cut off,
+    or it finds no choices - in every one of those cases the body call is exactly what it is with
+    the setting off. Logs counts only: a label is the document's text."""
+    if not _reads_form_marks(row):
+        return []
+    try:
+        images = page_image_parts(
+            pdf_path,
+            row["start"],
+            row["end"],
+            _FORM_MARKS_MAX_PAGES,
+            long_edge_px=_FORM_MARKS_LONG_EDGE_PX,
+            max_dpi=_FORM_MARKS_MAX_DPI,
+        )
+        response = get_provider().generate_structured(
+            model=model,
+            system=_FORM_MARKS_SYSTEM,
+            parts=[*images, TextPart(_FORM_MARKS_ASK)],
+            schema=_FORM_MARKS_SCHEMA,
+            temperature=0.0,
+            stage="summarize",
+            max_output_tokens=get_settings().summary_max_output_tokens,
+        )
+        if response.truncated:
+            raise ValueError("the reply hit the output cap")
+        choices = json.loads((response.text or "").strip() or "{}").get("choices") or []
+    except JobCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a failed read adds nothing; the body runs as before
+        logger.warning(
+            "form check-box read failed for pages %s-%s (%s); summarizing without it",
+            row["start"],
+            row["end"],
+            type(exc).__name__,
+        )
+        return []
+    block = form_marks_block(choices)
+    logger.info(
+        "form check-box read on pages %s-%s: %d choice(s), %d marked",
+        row["start"],
+        row["end"],
+        len(choices),
+        sum(1 for c in choices if isinstance(c, dict) and c.get("marked") is True),
+    )
+    return [TextPart(block)] if block else []
+
+
 _OCR_TEXT_HEADER = "OCR TEXT:\n"
 
 # The title call's counterpart to _MULTIMODAL_INSTRUCTION. It used to be text-only ("cheaper and
@@ -2777,7 +2970,7 @@ def _build_system_message(row, prompt, standalone_studies):
     """
     # Prepend the shared rules that can bind on THIS category (applies to DB-resolved and fallback
     # prompts alike, and to any future category - build_preamble defaults an unknown id to everything).
-    preamble = build_preamble(row["category"])
+    preamble = build_preamble(row["category"], get_settings().summary_form_marks)
     system_msg = preamble + prompt
     # Fingerprint the PROMPT TEXT only, and do it HERE - before the per-row blocks below are appended.
     # Those carry row and document DATA, so hashing them would give two rows on an identical prompt
@@ -3813,6 +4006,9 @@ def summarize_row(
     # the row. The title gets the first and last page images (see _title_contents).
     body_contents = text
     if settings.summary_multimodal:
+        # Read OUTSIDE the try below: its fallback catches every exception, which would swallow a
+        # reviewer's Stop (JobCancelled) raised during this call. The read handles its own failures.
+        marks = _form_marks_parts(model, pdf_path, row)
         try:
             # Order matters (G-03): page images, then the OCR text, then the instruction LAST. The
             # instruction used to sit between the images and the text, i.e. in the middle of the
@@ -3824,7 +4020,10 @@ def summarize_row(
                 pdf_path, row["start"], row["end"], settings.summary_image_max_pages
             ) + [
                 TextPart(_OCR_TEXT_HEADER + text),
-                TextPart(_MULTIMODAL_INSTRUCTION),
+                # The form's check boxes, read on their own when SUMMARY_FORM_MARKS is on: context,
+                # so before the instruction, which stays last.
+                *marks,
+                TextPart(_multimodal_instruction()),
             ]
         except Exception as exc:  # noqa: BLE001 - degrade to OCR-only; never fail a summary on this
             logger.warning(
@@ -3863,7 +4062,7 @@ def summarize_row(
     # Computed once, because the two are absent TOGETHER - a different fact from "not recorded",
     # which `verified` is what distinguishes.
     audit_model_used, audit_fingerprint = (
-        (audit_model, fingerprint(VERIFY_PROMPT)) if verify else (None, None)
+        (audit_model, fingerprint(audit_prompt())) if verify else (None, None)
     )
     finishing = _BodyFinish(
         audit_model=audit_model if verify else None,
