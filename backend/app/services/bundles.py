@@ -229,7 +229,8 @@ def cover_entries(rows, delivered=None) -> list[tuple[str, str, str]]:
     """(date, provider, report title) per row, OLDEST FIRST.
 
     In date order because the reviewers asked for it (2026-11-10, "can we make it so it is in
-    chronological order?"): in record order a list of eleven studies read 2023, 2025, 2025, 2025,
+    chronological order?"), and oldest first because that is what eData does, they confirmed:
+    in record order a list of eleven studies read 2023, 2025, 2025, 2025,
     2024 ... 2017 ... 2024. The rule is the Word letter's (`reporting.build_mrr_document`): an
     undated entry goes last, and entries of one date keep the order they have in the record. Only
     the list moves; the documents behind it stay in record order.
