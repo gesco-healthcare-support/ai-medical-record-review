@@ -98,7 +98,8 @@ one, else the PDF's own page count (`_letter_pages()`).
   download finds nothing until a reviewer ticks one, and the Depositions page says so. The matched
   rows' pages are concatenated in record order with
   pypdf; out-of-range pages are skipped. When the request carries a cover heading, a list page built
-  by `build_cover_pdf()` goes in front, unless every cell of it would be empty. A request carrying
+  by `build_cover_pdf()`, listing the documents oldest first, goes in front, unless every cell of it
+  would be empty. A request carrying
   `separateAs` (Depositions) instead gets one PDF per matched row, named
   `Deposition of <who> <MM-DD-YY>.pdf`, handed over as that PDF for one match or as a zip for several;
   the reviewers asked for each deposition on its own, dated. See `export-formats.md`, "Separate
