@@ -109,6 +109,44 @@ def test_an_unsummarized_row_still_gets_a_line_from_its_own_title():
     assert cover_entries(rows, {}) == [("02/02/20", "", "OPERATIVE REPORT")]
 
 
+def test_demonstrates_the_list_is_in_date_order_oldest_first():
+    """The reviewers, 2026-11-10: "can we make it so it is in chronological order?" In record
+    order their list of eleven studies read 2023, 2025, 2025, 2025, 2024 ... 2017 ... 2024."""
+    rows = [{"start": s, "end": s, "date": "-", "title": "-"} for s in (1, 2, 3, 4, 5)]
+    delivered = {
+        1: ("01/11/2023", "X-RAY OF THE RIGHT HAND."),
+        2: ("01/21/2025", "EMG/NCS OF THE LOWER EXTREMITIES."),
+        3: ("12/11/2024", "MRI OF THE LUMBAR SPINE."),
+        4: ("10/12/2017", "MRI OF THE LEFT SHOULDER."),
+        5: ("01/14/2025", "EMG/NCS OF THE UPPER EXTREMITIES."),
+    }
+    assert [date for date, _, _ in cover_entries(rows, delivered)] == [
+        "10/12/2017",
+        "01/11/2023",
+        "12/11/2024",
+        "01/14/2025",
+        "01/21/2025",
+    ]
+
+
+def test_guard_undated_reports_go_last_and_one_date_keeps_record_order():
+    """The Word letter's rule (`reporting.build_mrr_document`): undated at the end, and studies of
+    one date in the order they appear in the record - the order the documents follow."""
+    rows = [{"start": s, "end": s, "date": "-", "title": "-"} for s in (1, 2, 3, 4)]
+    delivered = {
+        1: ("", "OPERATIVE REPORT."),
+        2: ("12/11/2024", "MRI OF THE RIGHT KNEE."),
+        3: ("12/11/2024", "MRI OF THE LEFT KNEE."),
+        4: ("03/02/2020", "CT OF THE HEAD."),
+    }
+    assert [report for _, _, report in cover_entries(rows, delivered)] == [
+        "CT OF THE HEAD",
+        "MRI OF THE RIGHT KNEE",
+        "MRI OF THE LEFT KNEE",
+        "OPERATIVE REPORT",
+    ]
+
+
 def test_the_cover_page_is_their_table():
     """DEMONSTRATES the page against the structure of the one they sent: the heading, the three
     column labels, and real cell borders rather than laid-out text."""

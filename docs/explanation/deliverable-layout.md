@@ -107,8 +107,11 @@ front of the combined pages.
 
 - US Letter with 54 pt margins; Times New Roman 11 pt; the heading (for example
   `LIST OF DIAGNOSTIC AND OPERATIVE REPORTS`) 12 pt, bold, centred.
-- A bordered three-column table, `Date | PROVIDER | REPORT TITLE`, one row per matched sub-document in
-  record order, continuing onto further pages as needed.
+- A bordered three-column table, `Date | PROVIDER | REPORT TITLE`, one row per matched sub-document,
+  oldest first (`bundles.cover_entries()`, the reviewers' request of 2026-11-10), continuing onto
+  further pages as needed. The order is the Word letter's: an undated document goes last, and
+  documents of one date keep their record order. Only the list is sorted; the documents behind it
+  stay in record order.
 - **Column widths** are absolute points derived from shares of 15%, 45% and 40% of the usable width,
   declared on both the header cells and the body cells. Story takes column widths from the first row
   and ignores percentages; with widths on the body cells only, the columns collapsed and the header

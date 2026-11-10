@@ -181,7 +181,7 @@ The bundle report is never a member.
 | MRR Word letter | Page header (`RE:`, `DOB:`, `Page n` from page 2); evaluation line; `MEDICAL RECORD REVIEW`; opening paragraph; summary intro; one table row per delivered entry, sorted by date with undated last; page accounting; conclusion. Entries are the included summaries after provider-spelling consolidation and same-visit folding. Typeface from the record's doctor. |
 | Linked PDF | The same letter rendered with PyMuPDF (running header on letter pages, header lines as links), then every page of the uploaded source PDF. Each header line links to its sub-document's first source page. No doctor typeface. |
 | Memo | `TO:`, `FROM:`, `RE:`, `DATE:` lines (each only when known); `Greetings.`; opening sentence; page accounting; `Thank you.`; `Verified by:`; reviewer name; date (UTC, `Month DD, YYYY`). |
-| Bundle PDF | Optional cover list page (`Date`, `PROVIDER`, `REPORT TITLE`), then the pages of every matched row in record order. Out-of-range pages are skipped. |
+| Bundle PDF | Optional cover list page (`Date`, `PROVIDER`, `REPORT TITLE`; oldest first, undated last), then the pages of every matched row in record order. Out-of-range pages are skipped. |
 | Bundle report | The Word letter layout with only the law firm set: no doctor typeface, no covering-letter clause, no Labor Code sentences, no page accounting. One entry per matched row, summarized at request time with the row's category prompt and the audit off. A row whose pages all failed text recognition yields its notice entry. |
 
 Row matching for both bundle routes (`bundles.py` `matched_rows()`): a row matches when its category
