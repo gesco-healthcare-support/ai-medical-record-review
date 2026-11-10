@@ -154,6 +154,12 @@ the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category set
       is on the page. On every one of the 63 trimmed summaries, where the pixels found a
       treatment's box they agreed with the reviewer on 113 of 126, the other 13 being 8 of those
       inked boxes and 5 more.
+    - Those six are RIGHT. Asked, the senior reviewer answered (2026-11-10) that removing
+      therapeutic activities was "mostly a convenience thing" - copying one line instead of
+      retyping it - and "if it is automated then yes, it is fine to include it when it is
+      ticked". So a ticked choice is reported, and against that rule the result is 33 unticked
+      treatments before, 4 after, and 16 of 20 summaries fully right. Do not "fix" the box back
+      out.
     - The model read stays for a row with no box found: on the four trimmed rows that used it,
       running them without it left four more unticked treatments in and kept nothing more.
 - **3 and 5 are also told to mark separate visits** (`_F_SEPARATE_VISITS`, in the format

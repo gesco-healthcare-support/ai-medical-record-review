@@ -1036,7 +1036,9 @@ def _multimodal_instruction() -> str:
 # trimmed rows that used it, and kept nothing more. The pixel list says nothing about a choice it
 # did not find, so its wording (`form_marks_block(source="pixels")`) leaves those to the images.
 # As shipped, on the 20 trimmed summaries: wrong treatments 33 -> 10, kept 26 of 29, 10 fully
-# right; six of the 10 left are a box inked like a tick that the reviewer removed anyway.
+# right; six of the 10 left are a box inked like a tick that the reviewer removed anyway, and the
+# senior reviewer confirmed (2026-11-10) a ticked choice is to be included - so those six are
+# right, and it is 33 -> 4 with 16 of 20 fully right.
 _FORM_MARKS_MAX_PAGES = 2
 _FORM_MARKS_LONG_EDGE_PX = 2048
 _FORM_MARKS_MAX_DPI = 200

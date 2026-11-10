@@ -108,7 +108,8 @@ front of the combined pages.
 - US Letter with 54 pt margins; Times New Roman 11 pt; the heading (for example
   `LIST OF DIAGNOSTIC AND OPERATIVE REPORTS`) 12 pt, bold, centred.
 - A bordered three-column table, `Date | PROVIDER | REPORT TITLE`, one row per matched sub-document,
-  oldest first (`bundles.cover_entries()`, the reviewers' request of 2026-11-10), continuing onto
+  oldest first (`bundles.cover_entries()`, the reviewers' request of 2026-11-10, confirmed as
+  oldest first because that is the order the eData deliverables use), continuing onto
   further pages as needed. The order is the Word letter's: an undated document goes last, and
   documents of one date keep their record order. Only the list is sorted; the documents behind it
   stay in record order.
