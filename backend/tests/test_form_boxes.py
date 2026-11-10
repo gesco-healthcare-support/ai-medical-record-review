@@ -145,6 +145,40 @@ def test_demonstrates_a_label_wrapped_onto_the_next_line_is_kept_whole():
     ]
 
 
+def test_demonstrates_a_wrapped_line_that_starts_under_the_box_is_part_of_the_label():
+    """On the reported form a long label wraps back under its box ("97140 Manual Therapy /" then
+    "Myofascial Release / Joint" then "Mobilization", each starting left of the label's first
+    letter), and must stay one choice."""
+    boxes = [_box(100, 100, ink=0.0)]
+    words = [
+        _word("97140", 140, 102),
+        _word("Manual", 230, 102),
+        _word("Myofascial", 93, 130),
+        _word("Release", 250, 130),
+        _word("Mobilization", 93, 158),
+    ]
+    assert fb.label_boxes(boxes, words) == [
+        {"label": "97140 Manual Myofascial Release Mobilization", "marked": False}
+    ]
+
+
+def test_guard_a_field_line_under_a_label_is_not_part_of_it():
+    """A form prints a field under each choice ("Time spent: minutes") and section headings below
+    the last one ("Objective:"); a line holding a field name is not more of the label."""
+    boxes = [_box(100, 100, ink=0.3)]
+    words = [
+        _word("97110", 140, 102),
+        _word("Therapeutic", 220, 102),
+        _word("Exercises", 140, 128),
+        _word("Time", 93, 154),
+        _word("Spent:", 160, 154),
+        _word("minutes", 260, 154),
+    ]
+    assert fb.label_boxes(boxes, words) == [
+        {"label": "97110 Therapeutic Exercises", "marked": True}
+    ]
+
+
 def test_guard_the_next_line_is_not_taken_when_it_starts_with_its_own_box():
     boxes = [_box(100, 100, ink=0.3), _box(100, 128)]
     words = [_word("Headache", 140, 102), _word("Abdominal", 140, 130), _word("Pain", 290, 130)]
@@ -155,8 +189,9 @@ def test_guard_the_next_line_is_not_taken_when_it_starts_with_its_own_box():
 
 
 def test_guard_a_label_stops_at_the_next_box_on_its_line():
-    boxes = [_box(100, 100), _box(300, 100, ink=0.5)]
-    words = [_word("Hip", 140, 102), _word("Knee", 340, 102)]
+    """Tightly packed choices: the next box comes sooner than a gap wide enough to end a label."""
+    boxes = [_box(100, 100), _box(180, 100, ink=0.5)]
+    words = [_word("Hip", 132, 98, height=30), _word("Knee", 212, 98, height=30)]
     assert fb.label_boxes(boxes, words) == [
         {"label": "Hip", "marked": False},
         {"label": "Knee", "marked": True},
@@ -164,8 +199,14 @@ def test_guard_a_label_stops_at_the_next_box_on_its_line():
 
 
 def test_guard_ocr_junk_read_from_the_box_itself_is_not_part_of_a_label():
+    """OCR reads a box as glyphs ("[J", or "]" for its right edge) where a label may start."""
     boxes = [_box(100, 100, ink=0.3)]
-    words = [_word("[J", 98, 100, width=30), _word("Lumbar", 140, 102), _word("Pain", 240, 102)]
+    words = [
+        _word("[J", 98, 100, width=20),
+        _word("]", 122, 100, width=12),
+        _word("Lumbar", 140, 102),
+        _word("Pain", 240, 102),
+    ]
     assert fb.label_boxes(boxes, words) == [{"label": "Lumbar Pain", "marked": True}]
 
 
