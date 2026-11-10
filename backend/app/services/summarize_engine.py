@@ -1029,11 +1029,14 @@ def _multimodal_instruction() -> str:
 # question named the two unticked procedures again. Better than nothing on Gemini, not reliable.
 #
 # SO THE BOXES ARE NOW READ FROM THE PIXELS FIRST (`form_boxes`): a printed box is a square and a
-# tick is ink inside it, both measured exactly, with no model call. On the reported form (from its
-# screenshot) the three ticked boxes measured 0.36-0.39 ink and all 51 empty ones 0.000, and every
-# label came out whole. The model read above is kept only for a page where no box is found (a form
-# that circles its choices, say). The pixel list says nothing about a choice it did not find, so
-# its wording (`form_marks_block(source="pixels")`) leaves those to the images.
+# tick is ink inside it, both measured exactly, with no model call. On the reported form the ticked
+# boxes measured 0.36-0.39 ink and every empty one 0.000, and every label came out whole. The model
+# read above is kept for a row where no box is found, or none is inked (a form that circles its
+# choices, say): measured 2026-11-10, dropping it left four more unticked treatments in on the four
+# trimmed rows that used it, and kept nothing more. The pixel list says nothing about a choice it
+# did not find, so its wording (`form_marks_block(source="pixels")`) leaves those to the images.
+# As shipped, on the 20 trimmed summaries: wrong treatments 33 -> 10, kept 26 of 29, 10 fully
+# right; six of the 10 left are a box inked like a tick that the reviewer removed anyway.
 _FORM_MARKS_MAX_PAGES = 2
 _FORM_MARKS_LONG_EDGE_PX = 2048
 _FORM_MARKS_MAX_DPI = 200

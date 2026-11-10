@@ -130,8 +130,8 @@ the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category set
       are the boxes read by the model instead, in a call of their own at 2048px, and that list
       says to report only the choices it lists as marked. A read that fails, is cut off or finds
       no choices adds nothing.
-- **Why it is off: measured on the live box, 2026-11-09, with the model that wrote the reported
-  summary.**
+- **Why it is measured before it is on: the live box, 2026-11-09 and -10, with the model that
+  wrote the reported summary.**
     - The rule alone took the reported row from three unticked procedures to two, in 3 of 3 runs.
     - Asked only which boxes are marked, at the body's 1024px images the model named two unticked
       procedures as ticked (2 of 2 runs); at 2048px it named exactly the ticked ones (2 of 2), but
@@ -143,9 +143,19 @@ the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category set
       reads, two with a stricter question, all agreed. Reading twice does not remove a mistake the
       model makes every time. Six of those were one form template on which every read and the
       reviewer disagree.
-    - So the boxes are now measured from the pixels first. On the reported form (from its
-      screenshot) every box was found, the three ticked ones measured 0.36-0.39 ink and every
-      empty one 0.000, and every label came out whole.
+    - So the boxes are now measured from the pixels first. On the reported form every box was
+      found, the ticked ones measured 0.36-0.39 ink and every empty one 0.000, and every label
+      came out whole.
+    - Measured as it ships (2026-11-10), on the same 20 trimmed summaries: wrong treatments 33
+      before, 10 after; treatments the reviewer kept, 26 of 29 still listed; 10 of 20 fully right.
+      On 10 flagged forms a reviewer shipped unedited, 26 of 27 treatments kept, none dropped for
+      a box read as empty. Six of the 10 left are one template's "therapeutic activities" box,
+      inked like the ticked box beside it (0.25-0.32) though the reviewer removed it: the mark
+      is on the page. On every one of the 63 trimmed summaries, where the pixels found a
+      treatment's box they agreed with the reviewer on 113 of 126, the other 13 being 8 of those
+      inked boxes and 5 more.
+    - The model read stays for a row with no box found: on the four trimmed rows that used it,
+      running them without it left four more unticked treatments in and kept nothing more.
 - **3 and 5 are also told to mark separate visits** (`_F_SEPARATE_VISITS`, in the format
   section), because their pages can be a log of several dated visits - see
   [A page of several visits](#a-page-of-several-visits). No other category gets it, an unknown

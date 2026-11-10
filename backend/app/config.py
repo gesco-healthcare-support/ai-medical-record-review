@@ -345,10 +345,10 @@ class Settings(BaseSettings):
     # measured from the page pixels (`form_boxes`, no model call; a 2048px model read only where
     # no box is found), the body being told which choices are marked
     # (`summarize_engine._form_marks_parts`). Off: every prompt is byte-for-byte what it was.
-    # OFF BY DEFAULT ON MEASUREMENT: on the live box (Gemini, 2026-11-09) it cut the unticked
-    # treatments on 20 reviewer-trimmed summaries from 33 to 15 and kept 26 of the 29 the reviewer
-    # kept, but the model's box read calls some unticked boxes ticked on every read - which is
-    # why the boxes are now measured from the pixels first.
+    # Measured on the live box (Gemini, 2026-11-10) as it ships: unticked treatments on 20
+    # reviewer-trimmed summaries 33 -> 10, 26 of the 29 the reviewer kept still listed, 26 of 27
+    # kept on forms shipped unedited. Off by default so each box turns it on deliberately; our
+    # model's fallback read (rows with no box found) has not been measured.
     summary_form_marks: bool = False
     # Cap page images per sub-document so a long record cannot blow the request payload/latency; the
     # full OCR text still covers every page beyond the cap.
