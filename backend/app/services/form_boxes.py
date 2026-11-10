@@ -70,8 +70,9 @@ _CELL_GAP_DOWN = 0.25
 
 # A page whose check boxes are mostly inked is not a form with a few choices ticked - it is cells
 # the guard above did not catch, or boxes written in - so it is not read at all (its choices are
-# left to the images). Real forms on the live box: 4-15% marked. Small lists are exempt: three
-# boxes, two ticked, is an ordinary form.
+# left to the images). Measured on the live box (2026-11-10), per page: the check-box forms 3-30%
+# marked, the pages of cells 58-92%. Short lists are exempt: three boxes, two ticked, is an
+# ordinary form.
 _MOST_MARKED = 0.5
 _MOST_MARKED_MIN_BOXES = 10
 

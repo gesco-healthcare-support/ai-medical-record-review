@@ -94,6 +94,17 @@ def test_guard_a_rectangle_far_from_square_is_not_a_box():
     assert fb.find_boxes(np.asarray(img)) == []
 
 
+def test_guard_a_frame_with_no_bottom_where_a_square_would_close_is_not_a_box():
+    """A top edge and two sides running on down (a table column, a "U" upside down) close no
+    square: no row near one side's length below the top is inked across."""
+    img = Image.new("L", (400, 300), 255)
+    draw = ImageDraw.Draw(img)
+    draw.line([(100, 100), (126, 100)], fill=0, width=3)
+    draw.line([(100, 100), (100, 160)], fill=0, width=3)
+    draw.line([(126, 100), (126, 160)], fill=0, width=3)
+    assert fb.find_boxes(np.asarray(img)) == []
+
+
 def test_demonstrates_a_box_scanned_with_small_breaks_in_its_outline_is_still_found():
     page = _page([(100, 100, None)]).copy()
     page[100:103, 110:112] = 255  # two columns of the top edge lost
@@ -247,14 +258,14 @@ def test_guard_a_column_of_check_boxes_a_line_apart_is_kept():
 
 
 def test_demonstrates_a_page_whose_boxes_are_mostly_inked_is_not_read(monkeypatch):
-    """Real check-box forms on the live box were 4-15% marked; pages 40-100% "marked" were cells
-    or boxes written in. Such a page gives no list, and no OCR call is made for it."""
+    """Real check-box pages on the live box were 3-30% marked; pages 58-92% "marked" were cells or
+    boxes written in. Such a page gives no list, and no OCR call is made for it."""
     called = []
     monkeypatch.setattr(fb, "ocr_words", lambda *a, **k: called.append(1) or [])
-    marks = ["tick"] * 5 + [None] * 4
-    img = Image.fromarray(_page([(100 + i * 150, 100, m) for i, m in enumerate(marks)])).convert(
-        "RGB"
-    )
+    marks = ["tick"] * 6 + [None] * 4
+    img = Image.fromarray(
+        _page([(100 + i * 150, 100, m) for i, m in enumerate(marks)], size=(1700, 400))
+    ).convert("RGB")
     assert fb.read_page(img, timeout=5) == []
     assert called == []
 
