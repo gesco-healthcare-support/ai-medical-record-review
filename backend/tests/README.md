@@ -52,6 +52,7 @@ shared `conftest.py`.
 | `test_failures.py` | The failure taxonomy and control signals behind resumable summarizing. |
 | `test_fairness.py` | The identify cap: when one reviewer's job steps aside for another who is waiting, and that it never livelocks. |
 | `test_files.py` | The upload filename sanitizer. |
+| `test_form_boxes.py` | A form's check boxes from its pixels: finding boxes, their ink, their labels. |
 | `test_genai_client.py` | The Gemini client bounds every request with an HTTP timeout. |
 | `test_genai_metrics.py` | Per-attempt model call accounting, which never breaks the caller. |
 | `test_genai_retry.py` | The retry seam: the default thinking setting applied to every call, and retry behaviour. |

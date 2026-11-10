@@ -31,6 +31,7 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 | | `extraction.py` | Reads the report header fields from a record's first pages. |
 | Duplicates | `dedup.py` | Groups included rows that look like copies, gates them by date and title/category, and asks a model to confirm. |
 | Summaries | `summarize_engine.py` | Summarizes one row: prompt assembly, the body, title and audit calls, notices, provenance. |
+| | `form_boxes.py` | A form's check boxes found and judged from the page pixels, each with its printed label. |
 | | `prompts.py` | The per-category summary prompts in code (an admin-edited database row overrides one). |
 | | `summary_verify.py` | The audit: checks a draft against its source and returns corrections, subject to guards. |
 | | `house_style.py` | Deterministic formatting fixes applied after the model writes. |
