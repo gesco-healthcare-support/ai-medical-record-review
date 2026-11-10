@@ -46,7 +46,7 @@ On vLLM every non-summarize stage uses `VLLM_MODEL`, and the summarize triple de
 
 ## summarize
 
-Three calls per summary row, and a fourth on some rows when `SUMMARY_FORM_MARKS` is on (see
+Three calls per summary row, and a fourth on a few rows when `SUMMARY_FORM_MARKS` is on (see
 [Form check boxes](#form-check-boxes)). The three models are resolved once when the summarize job
 is created
 (`backend/app/services/jobs.py` `create_job()`), stored as `jobs.model`, `jobs.title_model` and
@@ -71,7 +71,10 @@ is created
 ### Form check boxes
 
 Only with `SUMMARY_FORM_MARKS` true and `SUMMARY_MULTIMODAL` true, on a row whose flag is `x` and
-which spans at most two pages (`summarize_engine._FORM_MARKS_MAX_PAGES`). Made before the body call.
+which spans at most two pages (`summarize_engine._FORM_MARKS_MAX_PAGES`), and only when the
+row's boxes could not be measured from its pixels: `form_boxes.read_check_boxes()` runs first,
+with no model call, and when it finds a labelled box its list is sent and this call is not made
+(see [Summarization](../explanation/summarization.md)). Made before the body call.
 
 | Item | Value |
 | --- | --- |
@@ -83,8 +86,8 @@ which spans at most two pages (`summarize_engine._FORM_MARKS_MAX_PAGES`). Made b
 | Temperature | 0.0 |
 | Max output tokens | `SUMMARY_MAX_OUTPUT_TOKENS` |
 | Schema | `_FORM_MARKS_SCHEMA`: object with `choices`, an array of `{label, marked}` |
-| Reply handling | `form_marks_block()` turns the choices into a `FORM CHECK BOXES` text part (marked and not-marked labels), placed in the body call after the OCR text and before the closing instruction; no part when no choice was read |
-| Failure | A raised error, a truncated reply or unparseable JSON is logged at WARNING (`form check-box read failed for pages <s>-<e> (<error type>); summarizing without it`) and adds nothing. `JobCancelled` is re-raised |
+| Reply handling | `form_marks_block()` turns the choices into a `FORM CHECK BOXES` text part (marked and not-marked labels), placed in the body call after the OCR text and before the closing instruction; no part when no choice was read. The worker logs `form check-box read (model) on pages <s>-<e>: <n> choice(s), <m> marked` (`(pixels)` when the pixel list was sent instead) |
+| Failure | A raised error, a truncated reply or unparseable JSON is logged at WARNING (`form check-box read failed for pages <s>-<e> (<error type>); summarizing without it`) and adds nothing. `JobCancelled` is re-raised. A failed pixel read is logged at WARNING (`form check-box pixel read failed for pages <s>-<e> (<error type>); asking the model`) and this call is made |
 
 ### Title
 

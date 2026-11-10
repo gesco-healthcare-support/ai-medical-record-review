@@ -19,6 +19,7 @@ from datetime import date as calendar_date
 
 from app.config import get_settings
 from app.errors import ContextTooLongError, EmptyExtractionError, is_rate_limited
+from app.services import form_boxes
 from app.services.deposition_pages import transcript_page_offset
 from app.services.house_style import one_paragraph, sentence_case_caps_runs
 from app.services.llm import Part, TextPart, get_provider
@@ -1026,6 +1027,13 @@ def _multimodal_instruction() -> str:
 # twice does not help: the mistake is made every time, not now and then. Six were one form template
 # on which every read and the reviewer disagree. On the reported form a later wording of the
 # question named the two unticked procedures again. Better than nothing on Gemini, not reliable.
+#
+# SO THE BOXES ARE NOW READ FROM THE PIXELS FIRST (`form_boxes`): a printed box is a square and a
+# tick is ink inside it, both measured exactly, with no model call. On the reported form (from its
+# screenshot) the three ticked boxes measured 0.36-0.39 ink and all 51 empty ones 0.000, and every
+# label came out whole. The model read above is kept only for a page where no box is found (a form
+# that circles its choices, say). The pixel list says nothing about a choice it did not find, so
+# its wording (`form_marks_block(source="pixels")`) leaves those to the images.
 _FORM_MARKS_MAX_PAGES = 2
 _FORM_MARKS_LONG_EDGE_PX = 2048
 _FORM_MARKS_MAX_DPI = 200
@@ -1071,39 +1079,100 @@ def _choice_label(choice) -> str:
     return " ".join(str(choice.get("label") or "").split())
 
 
-def form_marks_block(choices) -> str:
-    """The text part that tells the body which choices are marked; "" when the read found none.
+def _label_key(label: str) -> str:
+    """A label's letters and digits, lower-cased: the same printed choice read twice is one key."""
+    return " ".join(re.findall(r"[a-z0-9]+", label.lower()))
 
-    ``choices`` is the read's reply, ``[{label, marked}]``. A label is kept once, in page order, and
-    a label read as marked anywhere counts as marked."""
-    read: dict[str, bool] = {}  # label -> marked; a dict keeps the page order of first sight
-    for choice in choices or []:
-        label = _choice_label(choice)
-        if label:
-            read[label] = read.get(label, False) or choice.get("marked") is True
-    if not read:
-        return ""
-    marked = [label for label, is_marked in read.items() if is_marked]
-    unmarked = [label for label, is_marked in read.items() if not is_marked]
-    return (
+
+# How the block introduces the list, and what it says about the choices, by where the list came
+# from. The pixel list (`form_boxes`) holds only choices printed beside a box it found, so it is
+# authoritative on those and silent on the rest; the model's read was asked for every choice.
+_FORM_MARKS_WORDING = {
+    "pixels": (
+        "FORM CHECK BOXES, measured on these pages - the ink inside each printed box:\n",
+        "A choice listed as NOT MARKED has an empty box: it was not selected, so never report it, "
+        "whatever the OCR text or the images above seem to show. A choice listed as MARKED was "
+        "selected. A choice not in this list was not printed with a box: judge it from the images.",
+    ),
+    "model": (
         "FORM CHECK BOXES, read separately from these pages at a higher resolution than the "
-        "images above:\n"
-        f"MARKED: {'; '.join(marked) if marked else 'none'}\n"
-        f"NOT MARKED: {'; '.join(unmarked) if unmarked else 'none'}\n"
+        "images above:\n",
         "Report a choice from this form only if it is MARKED in this list. A choice listed as NOT "
         "MARKED was not selected: never report it, whatever the OCR text or the images above seem "
-        "to show."
+        "to show.",
+    ),
+}
+
+
+def form_marks_block(choices, source: str = "model") -> str:
+    """The text part that tells the body which choices are marked; "" when the read found none.
+
+    ``choices`` is the read's reply, ``[{label, marked}]``; ``source`` is where it came from
+    (`_FORM_MARKS_WORDING`). A choice is kept once, in page order - the same label printed twice
+    (a form that lists one procedure in two places) is one choice - and marked anywhere is
+    marked."""
+    read: dict[str, list] = {}  # key -> [label as first read, marked]; keeps page order
+    for choice in choices or []:
+        label = _choice_label(choice)
+        key = _label_key(label)
+        if key:
+            seen = read.setdefault(key, [label, False])
+            seen[1] = seen[1] or choice.get("marked") is True
+    if not read:
+        return ""
+    marked = [label for label, is_marked in read.values() if is_marked]
+    unmarked = [label for label, is_marked in read.values() if not is_marked]
+    heading, rule = _FORM_MARKS_WORDING[source]
+    return (
+        heading
+        + f"MARKED: {'; '.join(marked) if marked else 'none'}\n"
+        + f"NOT MARKED: {'; '.join(unmarked) if unmarked else 'none'}\n"
+        + rule
     )
+
+
+def _pixel_marks(pdf_path, row) -> list:
+    """The row's check boxes measured from its pixels (`form_boxes`); [] when none is found or the
+    read fails - the caller then asks the model."""
+    try:
+        return form_boxes.read_check_boxes(pdf_path, row["start"], row["end"])
+    except Exception as exc:  # noqa: BLE001 - a failed pixel read falls back to the model read
+        logger.warning(
+            "form check-box pixel read failed for pages %s-%s (%s); asking the model",
+            row["start"],
+            row["end"],
+            type(exc).__name__,
+        )
+        return []
 
 
 def _form_marks_parts(model, pdf_path, row) -> list[Part]:
     """The check-box list for the body call, as zero or one text part.
 
-    Empty when the setting is off, the row is not a short flagged one, the read fails or is cut off,
-    or it finds no choices - in every one of those cases the body call is exactly what it is with
-    the setting off. Logs counts only: a label is the document's text."""
+    The boxes are measured from the pixels first (`_pixel_marks`); only where that finds none is the
+    model asked (`_model_marks`). Empty when the setting is off, the row is not a short flagged one,
+    or neither read finds a choice - in every one of those cases the body call is exactly what it
+    is with the setting off. Logs counts only: a label is the document's text."""
     if not _reads_form_marks(row):
         return []
+    choices, source = _pixel_marks(pdf_path, row), "pixels"
+    if not choices:
+        choices, source = _model_marks(model, pdf_path, row), "model"
+    block = form_marks_block(choices, source)
+    logger.info(
+        "form check-box read (%s) on pages %s-%s: %d choice(s), %d marked",
+        source,
+        row["start"],
+        row["end"],
+        len(choices),
+        sum(1 for c in choices if isinstance(c, dict) and c.get("marked") is True),
+    )
+    return [TextPart(block)] if block else []
+
+
+def _model_marks(model, pdf_path, row) -> list:
+    """The row's check boxes as the model reads them at 2048px; [] when the read fails or is cut
+    off. JobCancelled propagates."""
     try:
         images = page_image_parts(
             pdf_path,
@@ -1124,7 +1193,7 @@ def _form_marks_parts(model, pdf_path, row) -> list[Part]:
         )
         if response.truncated:
             raise ValueError("the reply hit the output cap")
-        choices = json.loads((response.text or "").strip() or "{}").get("choices") or []
+        return json.loads((response.text or "").strip() or "{}").get("choices") or []
     except JobCancelled:
         raise
     except Exception as exc:  # noqa: BLE001 - a failed read adds nothing; the body runs as before
@@ -1135,15 +1204,6 @@ def _form_marks_parts(model, pdf_path, row) -> list[Part]:
             type(exc).__name__,
         )
         return []
-    block = form_marks_block(choices)
-    logger.info(
-        "form check-box read on pages %s-%s: %d choice(s), %d marked",
-        row["start"],
-        row["end"],
-        len(choices),
-        sum(1 for c in choices if isinstance(c, dict) and c.get("marked") is True),
-    )
-    return [TextPart(block)] if block else []
 
 
 _OCR_TEXT_HEADER = "OCR TEXT:\n"
