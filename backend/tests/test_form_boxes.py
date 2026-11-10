@@ -228,30 +228,41 @@ def test_guard_a_wide_gap_ends_a_label():
     assert fb.label_boxes(boxes, words) == [{"label": "Other", "marked": False}]
 
 
-def test_demonstrates_a_form_that_prints_each_label_before_its_box_is_read_from_the_left():
-    """Measured on the live box: a few forms print "Gait [ ]  Massage [x]". Read from the right,
-    every box got its neighbour's label and the marks landed on the wrong treatments."""
-    boxes = [_box(200, 100), _box(500, 100, ink=0.4), _box(200, 140, ink=0.4)]
-    words = [
-        _word("Gait", 120, 102),
-        _word("Massage", 380, 102),
-        _word("Hot", 110, 142),
-        _word("pack", 160, 142, width=30),
-    ]
-    assert fb.labels_on_the_left(boxes, words)
-    assert fb.label_boxes(boxes, words) == [
-        {"label": "Gait", "marked": False},
-        {"label": "Massage", "marked": True},
-        {"label": "Hot pack", "marked": True},
-    ]
+def test_guard_a_row_of_touching_squares_is_cells_not_check_boxes():
+    """Measured on the live box: fields printed as one square per digit or letter read as boxes,
+    nearly all of them "marked" by the characters written in them."""
+    page = _page([(100 + i * SIDE, 100, "cross") for i in range(6)] + [(600, 100, "tick")])
+    assert [b.x0 for b in fb.find_boxes(page)] == [600]
 
 
-def test_guard_the_previous_column_on_the_left_does_not_make_a_form_left_labelled():
-    """On an ordinary form the words left of a box are the previous column's label, a column gap
-    away; its own label is a space away on the right."""
-    boxes = [_box(100, 100), _box(400, 100)]
-    words = [_word("Headache", 140, 102), _word("Shoulder", 440, 102)]
-    assert not fb.labels_on_the_left(boxes, words)
+def test_guard_a_grid_of_stacked_squares_is_cells_not_check_boxes():
+    page = _page([(100, 100 + i * (SIDE + 2), "tick") for i in range(4)] + [(600, 100, None)])
+    assert [b.x0 for b in fb.find_boxes(page)] == [600]
+
+
+def test_guard_a_column_of_check_boxes_a_line_apart_is_kept():
+    """The reported form's boxes are about 0.6 of a side apart down a column: real choices."""
+    page = _page([(100, 100 + i * int(SIDE * 1.6), None) for i in range(5)], size=(800, 400))
+    assert len(fb.find_boxes(page)) == 5
+
+
+def test_demonstrates_a_page_whose_boxes_are_mostly_inked_is_not_read(monkeypatch):
+    """Real check-box forms on the live box were 4-15% marked; pages 40-100% "marked" were cells
+    or boxes written in. Such a page gives no list, and no OCR call is made for it."""
+    called = []
+    monkeypatch.setattr(fb, "ocr_words", lambda *a, **k: called.append(1) or [])
+    marks = ["tick"] * 5 + [None] * 4
+    img = Image.fromarray(_page([(100 + i * 150, 100, m) for i, m in enumerate(marks)])).convert(
+        "RGB"
+    )
+    assert fb.read_page(img, timeout=5) == []
+    assert called == []
+
+
+def test_guard_a_short_list_with_most_choices_ticked_is_still_read(monkeypatch):
+    monkeypatch.setattr(fb, "ocr_words", lambda image, timeout: [_word("Massage", 140, 102)])
+    img = Image.fromarray(_page([(100, 100, "tick"), (400, 100, "tick"), (700, 100, None)]))
+    assert fb.read_page(img.convert("RGB"), timeout=5) == [{"label": "Massage", "marked": True}]
 
 
 # --- the page read -------------------------------------------------------------------------------
