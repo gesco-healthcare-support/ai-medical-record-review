@@ -924,7 +924,15 @@ def parsed_date(entry):
     reachable from today's field spec, which only ever writes "-", but two definitions of one concept
     drift eventually.
     """
-    value = (entry.get("summaryDate") or "").strip()
+    return parse_date_text(entry.get("summaryDate"))
+
+
+def parse_date_text(value):
+    """A date as written in a summary or a row (`_DATE_FORMATS`), or None when it is not one.
+
+    The parse behind `parsed_date`, for callers that hold the date text rather than an entry - the
+    bundle cover list sorts by it, so the list and the letter order one date the same way."""
+    value = (value or "").strip()
     for fmt in _DATE_FORMATS:
         try:
             return datetime.strptime(value, fmt)

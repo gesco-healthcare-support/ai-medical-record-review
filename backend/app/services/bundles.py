@@ -9,13 +9,14 @@ import html
 import io
 import logging
 import re
+from datetime import datetime
 
 import pymupdf
 from pypdf import PdfReader, PdfWriter
 
 from app.errors import EmptyExtractionError, TranscriptPagesUnreadableError
 from app.services import summarize_engine
-from app.services.reporting import is_diagnostic
+from app.services.reporting import is_diagnostic, parse_date_text
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +226,13 @@ def split_deliverable_title(title) -> tuple[str, str]:
 
 
 def cover_entries(rows, delivered=None) -> list[tuple[str, str, str]]:
-    """(date, provider, report title) per row, in the order the rows appear in the record.
+    """(date, provider, report title) per row, OLDEST FIRST.
+
+    In date order because the reviewers asked for it (2026-11-10, "can we make it so it is in
+    chronological order?"): in record order a list of eleven studies read 2023, 2025, 2025, 2025,
+    2024 ... 2017 ... 2024. The rule is the Word letter's (`reporting.build_mrr_document`): an
+    undated entry goes last, and entries of one date keep the order they have in the record. Only
+    the list moves; the documents behind it stay in record order.
 
     ``delivered`` maps a row's start page to the ``(date, title)`` the DELIVERABLE states, which
     is not what the row carries. The row holds what segmentation read off the page - a ~31
@@ -250,7 +257,8 @@ def cover_entries(rows, delivered=None) -> list[tuple[str, str, str]]:
         title = _value(title) or _value(row.get("title"))
         provider, report = split_deliverable_title(title)
         entries.append((_value(date) or _value(row.get("date")), provider, report))
-    return entries
+    # A stable sort, so one date keeps record order; an unreadable date sorts with the undated.
+    return sorted(entries, key=lambda entry: parse_date_text(entry[0]) or datetime.max)
 
 
 # THE COLUMN WIDTHS, and both halves of this are load-bearing.

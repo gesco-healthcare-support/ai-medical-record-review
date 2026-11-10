@@ -1753,9 +1753,20 @@ _SOAP_FORM = [  # synthetic: a therapy form with two of five procedures ticked
 ]
 
 
-def _body_parts_with_box_reader(monkeypatch, reader, *, on=True, row=None):
-    """Summarize one row with the read's provider stubbed; returns (body parts, image renders)."""
+def _body_parts_with_box_reader(monkeypatch, reader, *, on=True, row=None, pixels=None):
+    """Summarize one row with both reads stubbed; returns (body parts, image renders).
+
+    ``pixels`` is what the pixel read (`form_boxes.read_check_boxes`) finds - none by default, so
+    the model read runs - or an exception it raises. Its calls are kept on
+    ``reader.pixel_calls``."""
     captured, renders = {}, []
+    reader.pixel_calls = []
+
+    def fake_pixels(path, start, end):
+        reader.pixel_calls.append((path, start, end))
+        if isinstance(pixels, Exception):
+            raise pixels
+        return list(pixels or [])
 
     def fake_generate(model, system_msg, contents, temperature, max_output_tokens=None):
         if system_msg != se.TITLE_PROMPT:
@@ -1775,6 +1786,7 @@ def _body_parts_with_box_reader(monkeypatch, reader, *, on=True, row=None):
     monkeypatch.setattr(se, "_generate", fake_generate)
     monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
     monkeypatch.setattr(se, "get_provider", lambda: reader)
+    monkeypatch.setattr(se.form_boxes, "read_check_boxes", fake_pixels)
     monkeypatch.setattr(se.get_settings(), "summary_multimodal", True, raising=False)
     monkeypatch.setattr(se.get_settings(), "summary_form_marks", on, raising=False)
     se.summarize_row("/x.pdf", row or _row(flag="x", category="5"), prompt="P")
@@ -1821,9 +1833,12 @@ def test_no_box_read_and_no_change_outside_short_flagged_rows(monkeypatch, on, r
     """GUARD: with the setting off, on an unflagged row, or on a row longer than two pages, no read
     is made and the body call is exactly what it was."""
     reader = _BoxReader(_SOAP_FORM)
-    parts, renders = _body_parts_with_box_reader(monkeypatch, reader, on=on, row=row)
+    parts, renders = _body_parts_with_box_reader(
+        monkeypatch, reader, on=on, row=row, pixels=_SOAP_FORM
+    )
 
     assert reader.calls == []
+    assert reader.pixel_calls == []
     assert _box_block(parts) == []
     assert all(r["long_edge_px"] is None for r in renders)  # only the body's own images
 
@@ -1875,6 +1890,70 @@ def test_the_box_list_keeps_each_label_once_and_a_mark_anywhere_wins():
     assert se.form_marks_block([]) == ""
     assert se.form_marks_block([{"label": "", "marked": True}]) == ""
     assert "MARKED: none" in se.form_marks_block([{"label": "Massage", "marked": False}])
+
+
+def test_boxes_found_in_the_pixels_are_used_and_the_model_is_not_asked(monkeypatch):
+    """DEMONSTRATES the pixel read: the model, even at 2048px, kept calling some empty boxes ticked
+    (12 of the 15 mistakes left on the live box on 2026-11-09, the same way every time). A box is a
+    printed square and a tick is ink inside it, so the boxes are measured from the pixels first and
+    the model read is not made at all."""
+    reader = _BoxReader([{"label": "Massage", "marked": True}])  # the model would get it wrong
+    parts, _ = _body_parts_with_box_reader(monkeypatch, reader, pixels=_SOAP_FORM)
+
+    assert reader.pixel_calls == [("/x.pdf", 1, 2)]
+    assert reader.calls == []
+    (block,) = _box_block(parts)
+    assert block.startswith("FORM CHECK BOXES, measured on these pages")
+    assert "MARKED: Therapeutic Exercises; Therapeutic Activities" in block
+    assert "NOT MARKED: Manual Therapy; Massage; Neuromuscular Reeducation" in block
+
+
+def test_the_pixel_list_rules_out_empty_boxes_and_leaves_unlisted_choices_to_the_images():
+    """GUARD: the pixel list holds only choices printed with a box it found. It must never tell the
+    body to drop a choice that is not in it (one circled, say) - only the empty boxes."""
+    block = se.form_marks_block(_SOAP_FORM, "pixels")
+
+    assert "never report it" in block
+    assert "judge it from the images" in block
+    assert "only if it is MARKED in this list" not in block
+    assert "only if it is MARKED in this list" in se.form_marks_block(_SOAP_FORM)
+
+
+@pytest.mark.parametrize(
+    "pixels",
+    [
+        [],
+        RuntimeError("Poppler unavailable"),
+        [{"label": "Massage", "marked": False}, {"label": "Gait Training", "marked": False}],
+    ],
+    ids=["none", "raises", "none-marked"],
+)
+def test_the_model_is_asked_only_where_the_pixels_find_no_box(monkeypatch, pixels):
+    """GUARD: a page with no box found (a form that circles its choices), a pixel read that fails,
+    or boxes found with not one of them inked (marked some other way: measured on the live box,
+    such a list called choices a reviewer kept NOT marked) fall back to the model read, whose block
+    keeps its own wording."""
+    reader = _BoxReader(_SOAP_FORM)
+    parts, _ = _body_parts_with_box_reader(monkeypatch, reader, pixels=pixels)
+
+    assert len(reader.pixel_calls) == 1
+    assert len(reader.calls) == 1
+    (block,) = _box_block(parts)
+    assert "read separately from these pages at a higher resolution" in block
+
+
+def test_one_choice_printed_twice_is_one_entry_whatever_its_case_or_punctuation():
+    """A form can print a procedure in two places, ticking one: one entry, marked."""
+    block = se.form_marks_block(
+        [
+            {"label": "97110 Therapeutic Exercises", "marked": True},
+            {"label": "97110 therapeutic exercises:", "marked": False},
+            {"label": "97124 Massage", "marked": False},
+        ],
+        "pixels",
+    )
+    assert "MARKED: 97110 Therapeutic Exercises\n" in block
+    assert "NOT MARKED: 97124 Massage\n" in block
 
 
 # --- the generated title must be a header line, not a paragraph -------------------------------
