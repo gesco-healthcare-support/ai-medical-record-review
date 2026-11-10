@@ -1132,10 +1132,15 @@ def form_marks_block(choices, source: str = "model") -> str:
 
 
 def _pixel_marks(pdf_path, row) -> list:
-    """The row's check boxes measured from its pixels (`form_boxes`); [] when none is found or the
-    read fails - the caller then asks the model."""
+    """The row's check boxes measured from its pixels (`form_boxes`); [] when none is found, the
+    read fails, or not one of the boxes it found is marked - the caller then asks the model.
+
+    Why the last: on the live box (2026-11-10) the forms whose boxes were found with not one of
+    them inked were forms marked some other way - a circle, a tick beside the box, a faint pen -
+    and on those the list would have told the body that every choice was NOT marked, including
+    the ones a reviewer kept."""
     try:
-        return form_boxes.read_check_boxes(pdf_path, row["start"], row["end"])
+        choices = form_boxes.read_check_boxes(pdf_path, row["start"], row["end"])
     except Exception as exc:  # noqa: BLE001 - a failed pixel read falls back to the model read
         logger.warning(
             "form check-box pixel read failed for pages %s-%s (%s); asking the model",
@@ -1144,6 +1149,15 @@ def _pixel_marks(pdf_path, row) -> list:
             type(exc).__name__,
         )
         return []
+    if choices and not any(c.get("marked") is True for c in choices):
+        logger.info(
+            "form check-box pixel read on pages %s-%s: %d box(es), none marked; asking the model",
+            row["start"],
+            row["end"],
+            len(choices),
+        )
+        return []
+    return choices
 
 
 def _form_marks_parts(model, pdf_path, row) -> list[Part]:

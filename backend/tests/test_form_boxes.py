@@ -228,6 +228,32 @@ def test_guard_a_wide_gap_ends_a_label():
     assert fb.label_boxes(boxes, words) == [{"label": "Other", "marked": False}]
 
 
+def test_demonstrates_a_form_that_prints_each_label_before_its_box_is_read_from_the_left():
+    """Measured on the live box: a few forms print "Gait [ ]  Massage [x]". Read from the right,
+    every box got its neighbour's label and the marks landed on the wrong treatments."""
+    boxes = [_box(200, 100), _box(500, 100, ink=0.4), _box(200, 140, ink=0.4)]
+    words = [
+        _word("Gait", 120, 102),
+        _word("Massage", 380, 102),
+        _word("Hot", 110, 142),
+        _word("pack", 160, 142, width=30),
+    ]
+    assert fb.labels_on_the_left(boxes, words)
+    assert fb.label_boxes(boxes, words) == [
+        {"label": "Gait", "marked": False},
+        {"label": "Massage", "marked": True},
+        {"label": "Hot pack", "marked": True},
+    ]
+
+
+def test_guard_the_previous_column_on_the_left_does_not_make_a_form_left_labelled():
+    """On an ordinary form the words left of a box are the previous column's label, a column gap
+    away; its own label is a space away on the right."""
+    boxes = [_box(100, 100), _box(400, 100)]
+    words = [_word("Headache", 140, 102), _word("Shoulder", 440, 102)]
+    assert not fb.labels_on_the_left(boxes, words)
+
+
 # --- the page read -------------------------------------------------------------------------------
 
 

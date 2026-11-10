@@ -1920,11 +1920,19 @@ def test_the_pixel_list_rules_out_empty_boxes_and_leaves_unlisted_choices_to_the
 
 
 @pytest.mark.parametrize(
-    "pixels", [[], RuntimeError("Poppler unavailable")], ids=["none", "raises"]
+    "pixels",
+    [
+        [],
+        RuntimeError("Poppler unavailable"),
+        [{"label": "Massage", "marked": False}, {"label": "Gait Training", "marked": False}],
+    ],
+    ids=["none", "raises", "none-marked"],
 )
 def test_the_model_is_asked_only_where_the_pixels_find_no_box(monkeypatch, pixels):
-    """GUARD: a page with no box found (a form that circles its choices) or a pixel read that fails
-    falls back to the model read, and its block keeps the model read's wording."""
+    """GUARD: a page with no box found (a form that circles its choices), a pixel read that fails,
+    or boxes found with not one of them inked (marked some other way: measured on the live box,
+    such a list called choices a reviewer kept NOT marked) fall back to the model read, whose block
+    keeps its own wording."""
     reader = _BoxReader(_SOAP_FORM)
     parts, _ = _body_parts_with_box_reader(monkeypatch, reader, pixels=pixels)
 

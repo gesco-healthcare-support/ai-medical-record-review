@@ -73,7 +73,8 @@ is created
 Only with `SUMMARY_FORM_MARKS` true and `SUMMARY_MULTIMODAL` true, on a row whose flag is `x` and
 which spans at most two pages (`summarize_engine._FORM_MARKS_MAX_PAGES`), and only when the
 row's boxes could not be measured from its pixels: `form_boxes.read_check_boxes()` runs first,
-with no model call, and when it finds a labelled box its list is sent and this call is not made
+with no model call, and when it finds labelled boxes, at least one of them marked, its list is
+sent and this call is not made
 (see [Summarization](../explanation/summarization.md)). Made before the body call.
 
 | Item | Value |

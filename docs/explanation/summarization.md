@@ -117,16 +117,18 @@ the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category set
     - a row flagged for manual check (`m` = `x`) of at most two pages first has its check boxes
       MEASURED, with no model call (`backend/app/services/form_boxes.py`): each page is rendered
       at 200 dpi, every small thin-lined square on it is found, the ink inside it is measured
-      (`MARKED_INK`), and the words printed to its right, wrapped lines included, are its label
-      (a Tesseract word-position pass). The body is handed a `FORM CHECK BOXES` list of the
-      marked and the not-marked choices, after the OCR text and before the closing instruction
-      (`_form_marks_parts()`). The list says a choice listed as not marked has an empty box and
-      must never be reported, and that a choice not in the list is judged from the images: a
-      choice marked by circling it, or printed with a solid square, is not in it;
-    - only where the pixels find no box on the row (a form that circles its choices, say) are
-      the boxes read by the model instead, in a call of their own at 2048px, and that list says
-      to report only the choices it lists as marked. A read that fails, is cut off or finds no
-      choices adds nothing.
+      (`MARKED_INK`), and the words printed beside it are its label (a Tesseract word-position
+      pass): to its right, wrapped lines included, or to its left on a page that prints its
+      labels before its boxes (`labels_on_the_left()`). The body is handed a `FORM CHECK BOXES`
+      list of the marked and the not-marked choices, after the OCR text and before the closing
+      instruction (`_form_marks_parts()`). The list says a choice listed as not marked has an
+      empty box and must never be reported, and that a choice not in the list is judged from the
+      images: a choice marked by circling it, or printed with a solid square, is not in it;
+    - only where the pixels find no box on the row (a form that circles its choices, say), or
+      find boxes but not one of them inked (a form marked beside its boxes, or in a faint pen),
+      are the boxes read by the model instead, in a call of their own at 2048px, and that list
+      says to report only the choices it lists as marked. A read that fails, is cut off or finds
+      no choices adds nothing.
 - **Why it is off: measured on the live box, 2026-11-09, with the model that wrote the reported
   summary.**
     - The rule alone took the reported row from three unticked procedures to two, in 3 of 3 runs.

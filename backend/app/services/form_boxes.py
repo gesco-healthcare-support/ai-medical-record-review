@@ -324,12 +324,67 @@ def _label_for(box: Box, words: list[Word], boxes: list[Box]) -> str:
     return " ".join(text[:_MAX_LABEL_WORDS])
 
 
+def _on_box_line(word: Word, box: Box) -> bool:
+    """Whether a word sits level with a box."""
+    return box.y0 - 0.6 * box.side <= word.middle <= box.y1 + 0.6 * box.side
+
+
+def _nearest_gaps(box: Box, words: list[Word]) -> tuple[float | None, float | None]:
+    """The gap from a box to the nearest word level with it on its left, and on its right."""
+    level = [w for w in words if _on_box_line(w, box)]
+    left = [box.x0 - w.right for w in level if w.right <= box.x0 + 0.2 * box.side]
+    right = [w.left - box.x1 for w in level if w.left >= box.x1 - 0.2 * box.side]
+    return (min(left) if left else None), (min(right) if right else None)
+
+
+def labels_on_the_left(boxes: list[Box], words: list[Word]) -> bool:
+    """Whether this page prints each label BEFORE its box ("Gait [ ]") rather than after it.
+
+    Measured on the live box: a few forms do, and reading them from the right gave every box its
+    neighbour's label. Decided per page by which side the nearest word is on for most boxes: on a
+    form labelled after its boxes, the words to a box's left are the previous column's, a column
+    gap away, while its own label is a space away."""
+    left_votes = right_votes = 0
+    for box in boxes:
+        left, right = _nearest_gaps(box, words)
+        if left is not None and (right is None or left < right):
+            left_votes += 1
+        elif right is not None:
+            right_votes += 1
+    return left_votes > right_votes
+
+
+def _label_left_of(box: Box, words: list[Word], boxes: list[Box]) -> str:
+    """The printed words that end just left of a box on its line, back to a wide gap or a box."""
+    level = sorted(
+        (w for w in words if _on_box_line(w, box) and w.right <= box.x0 + 0.2 * box.side),
+        key=lambda w: w.right,
+        reverse=True,
+    )
+    if not level or box.x0 - level[0].right > _LABEL_REACH * box.side:
+        return ""
+    line = [level[0]]
+    for word in level[1:]:
+        if line[0].left - word.right > _WORD_GAP * _line_height(line):
+            break
+        if any(
+            b.y0 < word.bottom and b.y1 > word.top and word.right <= b.x0 < line[0].left
+            for b in boxes
+        ):
+            break
+        line.insert(0, word)
+    text = " ".join(w.text for w in line).split()
+    return " ".join(text[-_MAX_LABEL_WORDS:])
+
+
 def label_boxes(boxes: list[Box], words: list[Word]) -> list[dict]:
-    """``[{label, marked}]`` for every box that has printed words beside it, in page order."""
+    """``[{label, marked}]`` for every box that has printed words beside it, in page order. The
+    label is read from the side the page prints it on (`labels_on_the_left`)."""
     readable = [w for w in words if w.text.strip() and not _overlaps_a_box(w, boxes)]
+    left = labels_on_the_left(boxes, readable)
     choices = []
     for box in sorted(boxes, key=lambda b: (b.y0, b.x0)):
-        label = _label_for(box, readable, boxes)
+        label = _label_left_of(box, readable, boxes) if left else _label_for(box, readable, boxes)
         if label:
             choices.append({"label": label, "marked": box.marked})
     return choices
