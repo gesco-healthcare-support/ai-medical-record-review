@@ -132,7 +132,7 @@ bundle export pass `verify=False`.
 | Model | `Settings.model_for_stage("segment")`: `GENAI_MODEL` on Gemini, `VLLM_MODEL` on vLLM |
 | Thinking | Gemini `SEGMENT_THINKING_BUDGET` (-1); vLLM on only if `segment` is in `VLLM_THINKING_STAGES` |
 | System | `backend/app/services/gemini.py` `SEGMENTATION_SYSTEM` |
-| Parts | Gemini: the window's pages as one inline PDF (`DocumentPart`). vLLM: the window's pages as JPEG images, each preceded by a `Page N` text part, capped at `VLLM_SEGMENT_MAX_PAGES`. Then `SEGMENTATION_PROMPT` last |
+| Parts | Gemini: the window's pages as one inline PDF (`DocumentPart`), or as vLLM's labelled images when that PDF is over 14 MiB (`rasterise.pdf_or_page_images`). vLLM: the window's pages as JPEG images, each preceded by a `Page N` text part, capped at `VLLM_SEGMENT_MAX_PAGES`. Then `SEGMENTATION_PROMPT` last |
 | Window size | Gemini: packed to `WINDOW_BUDGET_MB` of raw PDF bytes and at most `WINDOW_MAX_PAGES` pages. vLLM: at most `min(WINDOW_MAX_PAGES, VLLM_SEGMENT_MAX_PAGES)` pages, no byte budget. Overlap `WINDOW_OVERLAP` |
 | Sampling | Temperature 0.0, `top_p` 0.95, `top_k` 40 (`segment_engine._TOP_P`, `_TOP_K`) |
 | Max output tokens | Gemini: not set. vLLM: `VLLM_SEGMENT_MAX_OUTPUT_TOKENS` (8,192) |
@@ -223,7 +223,7 @@ The same stage, model and thinking as the verify pass; only the question differs
 | Model | Caller's `model`, else `Settings.model_for_stage("doi")`: `GENAI_MODEL` on Gemini, `VLLM_MODEL` on vLLM |
 | Thinking | Gemini `SUMMARY_THINKING_BUDGET` (-1); vLLM on only if `doi` is in `VLLM_THINKING_STAGES` |
 | System | None |
-| Parts | Gemini: the sub-document's first pages, at most 10 (`summary_doi._MAX_PAGES`), as one inline PDF. vLLM: the same pages as images at `DOI_IMAGE_LONG_EDGE_PX`. Then `summary_doi._ISOLATION_PROMPT` |
+| Parts | Gemini: the sub-document's first pages, at most 10 (`summary_doi._MAX_PAGES`), as one inline PDF, or as vLLM's images when that PDF is over 14 MiB. vLLM: the same pages as images at `DOI_IMAGE_LONG_EDGE_PX`. Then `summary_doi._ISOLATION_PROMPT` |
 | Max output tokens | `DOI_MAX_OUTPUT_TOKENS` |
 | Reply handling | `summary_doi._clean()`: dates normalised to `MM/DD/YY`, a cumulative-trauma range kept as one `CT` item, several items joined with ` & `, `-` when none |
 | Truncated reply | Raises `RuntimeError` inside the call's own handler |
@@ -238,7 +238,7 @@ The same stage, model and thinking as the verify pass; only the question differs
 | Model | Caller's `model`, else `Settings.model_for_stage("deposition")`: `GENAI_MODEL` on Gemini, `VLLM_MODEL` on vLLM |
 | Thinking | Gemini `SUMMARY_THINKING_BUDGET` (-1); vLLM on only if `deposition` is in `VLLM_THINKING_STAGES` |
 | System | None |
-| Parts | Gemini: the transcript's first pages, at most 6 (`deposition_pages._MAX_PAGES`), as one inline PDF. vLLM: the same pages as images at `DEPOSITION_IMAGE_LONG_EDGE_PX`. Then `deposition_pages._PROMPT` |
+| Parts | Gemini: the transcript's first pages, at most 6 (`deposition_pages._MAX_PAGES`), as one inline PDF, or as vLLM's images when that PDF is over 14 MiB. vLLM: the same pages as images at `DEPOSITION_IMAGE_LONG_EDGE_PX`. Then `deposition_pages._PROMPT` |
 | Max output tokens | `DEPOSITION_MAX_OUTPUT_TOKENS` |
 | Schema | `deposition_pages._SCHEMA`: object with `pages`, an array of `{i, printed}` integers |
 | Skipped | For a transcript printed condensed, four pages to a scanned sheet (`ocr.has_condensed_sheets()` finds the grid on one of the row's first six pages). Its page numbers are read from each quarter's OCR instead, with no model call |

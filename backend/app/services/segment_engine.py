@@ -20,11 +20,10 @@ from app.services.gemini import (
     SEGMENTATION_SYSTEM,
     parse_segment_item,
 )
-from app.services.llm import DocumentPart, Part, TextPart, provider_for_stage
+from app.services.llm import Part, TextPart, provider_for_stage
 from app.services.ocr import extract_pages_with_report
-from app.services.pdf import slice_pdf
 from app.services.pools import PoolTimeout, drain_pool
-from app.services.rasterise import page_image_parts
+from app.services.rasterise import page_image_parts, pdf_or_page_images
 from app.services.summary_doi import extract_injury_date
 from app.services.taxonomy import DEFAULT_ID
 from app.services.verify_pass import verify_and_merge
@@ -50,12 +49,6 @@ _TOP_K = 40
 # there would make every comparison true in a way that reads as a bug to the next person.
 _NO_BYTE_BUDGET = 1 << 40  # 1 TiB
 
-# What ONE page may be before Gemini cannot carry it inline. Vertex caps the request near 20 MB
-# AFTER base64, which inflates by 4/3, so the raw ceiling is ~15 MB. Held below that.
-# Distinct from `window_budget_mb`, which packs several pages together and is tuned for
-# duration as much as size; this is the point past which one page alone cannot be sent.
-_GEMINI_INLINE_PAGE_LIMIT = 14 * 1024 * 1024
-
 
 def _window_page_cap(settings):
     """Pages per window, which is a DIFFERENT number per backend once rasterisation is involved.
@@ -72,13 +65,16 @@ def _window_page_cap(settings):
     return settings.window_max_pages
 
 
-def _window_byte_bounds(settings) -> tuple[int, int | None]:
-    """The packing budget and the hard per-page ceiling for one window, per backend.
-
-    Returns ``(budget_bytes, hard_limit_bytes)``; a None ceiling means there is none.
+def _window_byte_budget(settings) -> int:
+    """The packing budget for one window, per backend.
 
     THE BUDGET MEASURES RAW PDF BYTES, and that is a GEMINI fact. Vertex receives the pages
     inline and caps the request, which is the whole reason `window_budget_mb` exists.
+
+    There is NO per-page ceiling any more, on either backend. Gemini's used to raise on a page over
+    14 MB, which refused the whole record: on 2026-11-11 a 223-page record failed Identify three
+    times over one 14.2 MB page. Such a page now gets a window of its own (it is over the budget)
+    and `_window_parts` sends it as an image, because no PDF that heavy fits one request.
 
     vLLM cannot carry a PDF at all - `_window_parts` rasterises every page to a lean JPEG - so
     the raw size of the source page is never sent anywhere, and a budget measured in those bytes
@@ -91,9 +87,8 @@ def _window_byte_bounds(settings) -> tuple[int, int | None]:
     number that describes a different transport, and the next heavy scan moves it again.
     """
     if settings.backend_for("segment") == "vllm":
-        return _NO_BYTE_BUDGET, None
-    budget = int(settings.window_budget_mb * 1024 * 1024)
-    return budget, _GEMINI_INLINE_PAGE_LIMIT
+        return _NO_BYTE_BUDGET
+    return int(settings.window_budget_mb * 1024 * 1024)
 
 
 def _window_parts(pdf_path, window_start, window_end, settings) -> list[Part]:
@@ -102,7 +97,9 @@ def _window_parts(pdf_path, window_start, window_end, settings) -> list[Part]:
     vLLM cannot carry an inline PDF at all: `llm/vllm.py` converts parts through
     `llm/openai.py::_to_messages`, which raises TypeError on a DocumentPart because chat completions
     has no such part. So the window is rasterised to one image per page there. Gemini keeps the exact
-    PDF bytes it has always been sent, and rasterises nothing.
+    PDF bytes it has always been sent - unless the window is too heavy for one request (in practice
+    one scanned page over 14 MB, sent alone): then it gets the vLLM payload, labelled images, rather
+    than the whole record failing. See `rasterise.pdf_or_page_images`.
 
     THE IMAGES ARE LABELLED AND THE PDF IS NOT, because only one of the two carries a page
     position. A PDF part has discrete pages, so Gemini's answer to "which page is this" comes
@@ -155,11 +152,7 @@ def _window_parts(pdf_path, window_start, window_end, settings) -> list[Part]:
             label_pages=True,
         )
     # The same bytes as a fresh PdfWriter cut, from a reader opened once per record (pdf._readers).
-    return [
-        DocumentPart(
-            data=slice_pdf(pdf_path, window_start, window_end), mime_type="application/pdf"
-        )
-    ]
+    return pdf_or_page_images(pdf_path, window_start, window_end, label_pages=True)
 
 
 class _UnusableWindowReply(ValueError):
@@ -676,16 +669,14 @@ def run_segmentation(pdf_path, total_pages, progress=None, page_text_fn=None):
         if progress is not None:
             progress(stage, current, total)
 
-    # The byte budget and the hard ceiling are both properties of the TRANSPORT, so both are
-    # resolved per backend. See `_window_byte_bounds`.
-    budget_bytes, hard_limit_bytes = _window_byte_bounds(settings)
+    # The byte budget is a property of the TRANSPORT, so it is resolved per backend. See
+    # `_window_byte_budget`.
     windows = byte_budgeted_windows(
         pdf_path,
         total_pages,
         settings.window_overlap,
-        budget_bytes,
+        _window_byte_budget(settings),
         _window_page_cap(settings),
-        hard_limit_bytes=hard_limit_bytes,
     )
     # Windows are independent (each builds its own sub-PDF and calls the model), so run them on a
     # small pool - the seam's rate limiter caps the aggregate request rate. Results are placed by
