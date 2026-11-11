@@ -182,6 +182,52 @@ def test_an_ordinary_gemini_window_is_unchanged(tmp_path, monkeypatch, renders):
     assert renders == []
 
 
+def test_a_record_with_one_page_over_the_limit_is_segmented(tmp_path, monkeypatch, renders):
+    """WHEN one page of a record weighs more than one Gemini request carries, THE SYSTEM SHALL
+    segment the whole record, that page included, instead of failing it.
+
+    The reported record: page 132 of 223 was 14.2 MB on its own and Identify failed three times
+    with "page 132 is 14.2 MB raw, over the 14.0 MB this backend can carry in one request"."""
+    from app.services import windows
+
+    path = _record(tmp_path, pages=3)
+    mb = 1024 * 1024
+    monkeypatch.setattr(windows, "page_raw_sizes", lambda _p, _n: [mb, int(14.2 * mb), mb])
+    real_slice = pdf.slice_pdf
+    monkeypatch.setattr(
+        rasterise,
+        "slice_pdf",
+        lambda p, a, b: b"x" * int(14.2 * mb) if (a, b) == (2, 2) else real_slice(p, a, b),
+    )
+    sent = []
+
+    class _Provider:
+        def generate_structured(self, **kwargs):
+            sent.append([type(part).__name__ for part in kwargs["parts"]])
+            # A title of its own per window, so no two rows read as one document continuing.
+            title = f"Doc {len(sent)}"
+            return SimpleNamespace(
+                text=f'[{{"s": 1, "e": 1, "t": "{title}", "d": "-", "m": "-"}}]',
+                truncated=False,
+                output_tokens=None,
+            )
+
+    monkeypatch.setattr(se, "provider_for_stage", lambda *_a, **_k: _Provider())
+    monkeypatch.setattr(se, "_categorize", lambda pdf_path, row, *_a, **_kw: row)
+    monkeypatch.setattr(se, "extract_injury_date", lambda *a, **k: "-")
+    monkeypatch.setattr(get_settings(), "verify_merge", False)
+
+    rows = se.run_segmentation(path, total_pages=3)
+
+    assert [(row["start"], row["end"]) for row in rows] == [(1, 1), (2, 2), (3, 3)]
+    assert sorted(sent) == [
+        ["DocumentPart", "TextPart"],
+        ["DocumentPart", "TextPart"],
+        ["TextPart", "TextPart", "ImagePart", "TextPart"],
+    ]
+    assert [page for page, _dpi in renders] == [2]
+
+
 def test_the_gemini_window_budget_is_the_setting_and_vllm_has_none(monkeypatch):
     settings = get_settings()
     assert se._window_byte_budget(settings) == int(settings.window_budget_mb * 1024 * 1024)
@@ -189,7 +235,7 @@ def test_the_gemini_window_budget_is_the_setting_and_vllm_has_none(monkeypatch):
     assert se._window_byte_budget(settings) == se._NO_BYTE_BUDGET
 
 
-# --- the injury date and the deposition read --------------------------------------------------------
+# --- the injury date and the deposition read ------------------------------------------------------
 
 
 @pytest.fixture

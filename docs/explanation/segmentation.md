@@ -243,6 +243,13 @@ The effect is that a document start on page `p` is always decided by a window th
 as well as page `p`. A boundary is a judgement about two adjacent pages, so the window that can see
 both is the one that decides it; no document is cut at a window edge.
 
+The one exception is a seam with no overlap. A page too heavy to share a window travels alone, so
+its window overlaps neither neighbour. A window never owns a start on a page it did not see
+(`_ownership_caps()` caps each window at its own last page): the heavy page's start is decided by
+its own window, and the next page's by the window after it. Before 2026-11-11 the edge rule handed
+both to a window that never saw the page, so both starts were dropped and the heavy page silently
+joined the previous document. Each seam now costs at most a split the reviewer joins.
+
 A worked example with two windows, pages 1-90 and 61-150:
 
 | Row start on page | Decided by | Reason |

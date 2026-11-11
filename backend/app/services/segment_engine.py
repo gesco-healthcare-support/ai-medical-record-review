@@ -281,7 +281,15 @@ def _ownership_caps(windows, total_pages, ownership):
     """The last start each window owns. ``edge``: window k owns starts in (ws_k, ws_{k+1}], so the
     NEXT window decides every start from its own second page on. ``middle``: the line sits in the
     middle of the overlap instead, so each start in it is decided by the window that sees pages on
-    both sides of it."""
+    both sides of it.
+
+    A WINDOW NEVER OWNS A START ON A PAGE IT DID NOT SEE. Windows overlap, so that binds only at a
+    seam with no overlap: beside a page too heavy to share a window (`windows.byte_budgeted_windows`
+    sends it alone), whose window neither overlaps the one before it nor the one after. There the
+    edge rule handed the heavy page's own start to the window before it, which never saw that page,
+    and the start after it likewise - so both were dropped and the heavy page silently joined the
+    previous document, which could hide a whole document. The later window, which did see the
+    page, decides it instead: at worst a split the reviewer joins, never a missed document."""
     caps = []
     for k, (_ws, we) in enumerate(windows):
         if k == len(windows) - 1:
@@ -289,9 +297,10 @@ def _ownership_caps(windows, total_pages, ownership):
             continue
         nxt = windows[k + 1][0]
         if ownership in ("middle", "realign"):
-            caps.append(nxt + max(0, (we - nxt + 1) // 2 - 1))
+            cap = nxt + max(0, (we - nxt + 1) // 2 - 1)
         else:
-            caps.append(nxt)
+            cap = nxt
+        caps.append(min(cap, we))
     return caps
 
 
