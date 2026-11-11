@@ -1362,6 +1362,15 @@ def test_export_restores_a_house_grammar_prefix():
     )
 
 
+def test_export_puts_a_stored_summarys_labels_in_title_case_but_never_a_reviewers_own():
+    # DEMONSTRATES: a summary stored before the labels rule reads right in the deliverable without a
+    # re-run. GUARD: a reviewer's own edit is theirs.
+    stored = "**Subjective complaints**: neck pain. **Range of motion**: full."
+    expected = "**Subjective Complaints**: neck pain. **Range of Motion**: full."
+    assert _exported(text=stored) == expected
+    assert _exported(text="Body.", edited_text=stored).endswith(stored)
+
+
 def test_export_title_carries_no_internal_tags():
     # WHEN a category-3 summary is exported, THE SYSTEM SHALL emit a title with neither internal
     # tag: [Diagnostic Study] used to be re-applied here, and the human-written deliverables this

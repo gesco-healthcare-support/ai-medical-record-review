@@ -256,3 +256,75 @@ def test_the_reported_shape_still_loses_its_empty_headings_when_studies_are_pres
     assert "**Objective Findings**" not in flat
     assert "**MRI of the lumbar spine (05/15/2025):**" in flat
     assert "**MRI of the cervical spine (05/15/2025):**" in flat
+
+
+# --- point labels in title case ---------------------------------------------------------------
+# The senior reviewer, 2026-11-10: "the sections (Subjective Complaints, Physical Exam, Diagnoses,
+# etc), were not being capitalized". All text here is invented.
+from app.services.house_style import title_case_labels  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        # the reported sections, and the common sentence-case labels measured on the live box
+        ("**Subjective complaints**: pain.", "**Subjective Complaints**: pain."),
+        ("**Physical exam**: tender.", "**Physical Exam**: tender."),
+        ("**diagnoses**: strain.", "**Diagnoses**: strain."),
+        ("**History of present illness**: fall.", "**History of Present Illness**: fall."),
+        ("**Body part being treated**: knee.", "**Body Part Being Treated**: knee."),
+        # the colon inside the bold works the same
+        ("**Treatment provided:** massage.", "**Treatment Provided:** massage."),
+        # joining words stay small inside, but not at the start of the label or of a phrase in it
+        ("**Range of motion**: full.", "**Range of Motion**: full."),
+        ("**Condition at discharge**: stable.", "**Condition at Discharge**: stable."),
+        ("**of the knee**: x.", "**Of the Knee**: x."),
+        ("**Plan (to be continued)**: x.", "**Plan (To Be Continued)**: x."),
+        # a slash starts a new word; the second half of a hyphenated word keeps its case
+        ("**Assessment/plan**: rest.", "**Assessment/Plan**: rest."),
+        ("**Follow-up plan**: in 2 weeks.", "**Follow-up Plan**: in 2 weeks."),
+        ("**X-ray findings**: none.", "**X-ray Findings**: none."),
+        # a unit after a number keeps its case
+        ("**Lesion (5 mm)**: benign.", "**Lesion (5 mm)**: benign."),
+        # a possessive is one word
+        ("**Patient's goals**: return to work.", "**Patient's Goals**: return to work."),
+    ],
+)
+def test_a_point_label_is_written_in_title_case(given, expected):
+    assert title_case_labels(given) == expected
+
+
+def test_a_word_that_already_carries_a_capital_is_never_touched():
+    # an acronym, a name with an inner capital, a study heading, a capitalised joining word
+    text = (
+        "**MRI of the lumbar spine (05/15/2025):** **Findings**: disc bulge. **HPI**: fall. "
+        "**McMurray test**: negative. **Range Of Motion**: full."
+    )
+    assert title_case_labels(text) == (
+        "**MRI of the Lumbar Spine (05/15/2025):** **Findings**: disc bulge. **HPI**: fall. "
+        "**McMurray Test**: negative. **Range Of Motion**: full."
+    )
+
+
+def test_only_the_labels_change_and_the_text_after_them_does_not():
+    text = "**Work status**: off work until 05/04/2021 per the treating physician."
+    assert title_case_labels(text) == (
+        "**Work Status**: off work until 05/04/2021 per the treating physician."
+    )
+
+
+def test_a_bold_span_without_a_colon_is_content_and_left_alone():
+    text = "**Work Status**: **modified duty.** **no lifting**"
+    assert title_case_labels(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "No labels at all here.",
+        "**Subjective Complaints**: pain. **Physical Exam**: tender. **HPI**: fall.",
+    ],
+)
+def test_a_body_already_in_house_style_comes_back_byte_for_byte(text):
+    assert title_case_labels(text) == text

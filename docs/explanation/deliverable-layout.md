@@ -141,6 +141,12 @@ front of the combined pages.
   none of the entry headers in the reviewers' reference deliverables carries one.
 - The author first-name-first: a `SURNAME, GIVEN NAMES, CREDENTIAL` opening, copied from a letterhead
   printed that way, becomes `GIVEN NAMES SURNAME, CREDENTIAL` (`tidy_author_and_facility()`).
+  Any other surname-first opening - `SMITH, JOHN MD.` with no comma before the credential, or
+  `SMITH, JOHN.` with none - is turned round only when another title in the same record names that
+  person first name first (`first_name_first_in_record()`, the first of the `consistent_titles()`
+  passes): on a title alone it cannot be told from `SMITH, D.C.`. Measured on the live box on
+  2026-11-11, reviewers who retyped such a title turned the name round every time the record held
+  that proof, and mostly left it as it was when it did not.
 - A health system named without its site: `KAISER PERMANENTE FONTANA` becomes `KAISER PERMANENTE`,
   and `CONCENTRA OCCUPATIONAL MEDICAL CENTER` or `CONCENTRA MEDICAL CENTER-<TOWN>` becomes
   `CONCENTRA` (`_HEALTH_SYSTEMS` in `summarize_engine.py`). A place after a dash goes with the site;
@@ -189,7 +195,9 @@ front of the combined pages.
 - Ordinary sentence case, with acronyms kept in capitals (an allowlist, plus any token with a digit
   or no vowel); organisation names and towns in title case (`house_style.py`).
 - One paragraph, except depositions, which are grouped by transcript pages.
-- Only point labels are bold in the model's output, written `**Label**:`.
+- Only point labels are bold in the model's output, written `**Label**:`, and every label is in
+  title case (`**History of Present Illness**:`, `house_style.title_case_labels()`), stored
+  summaries included at export.
 
 ### Emphasis tiers
 

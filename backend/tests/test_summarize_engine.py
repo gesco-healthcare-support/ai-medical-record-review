@@ -1001,6 +1001,73 @@ def test_the_caps_transform_also_cleans_the_audits_rewrite(monkeypatch):
     assert "CEDAR RIDGE LOGISTICS" not in out["verifiedText"]
 
 
+# --- point labels in title case ------------------------------------------------------------------
+# The senior reviewer, 2026-11-10: "the sections (Subjective Complaints, Physical Exam, Diagnoses,
+# etc), were not being capitalized". All text here is invented.
+
+
+def test_a_label_the_model_copied_in_capitals_or_wrote_small_is_delivered_in_title_case(
+    monkeypatch,
+):
+    # DEMONSTRATES: the capitals pass alone turned the first label into "Subjective complaints".
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR", _clean(pages)),
+    )
+    monkeypatch.setattr(
+        se,
+        "_generate",
+        lambda model, system_msg, contents, temperature, max_output_tokens=None: (
+            ("JANE SMITH, M.D. CITY CLINIC. PROGRESS REPORT.", False)
+            if system_msg == se.TITLE_PROMPT
+            else (
+                "**SUBJECTIVE COMPLAINTS**: neck pain. **physical exam**: tender. "
+                "**History of present illness**: lifting injury.",
+                False,
+            )
+        ),
+    )
+    monkeypatch.setattr(se, "verify_summary", lambda *a, **k: _NO_ISSUES)
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P")
+
+    assert out["summaryText"] == (
+        "**Subjective Complaints**: neck pain. **Physical Exam**: tender. "
+        "**History of Present Illness**: lifting injury."
+    )
+
+
+def test_the_audits_rewrite_gets_its_labels_in_title_case_too(monkeypatch):
+    # DEMONSTRATES: effective_text() delivers verified_text, so a label the audit re-cased would
+    # ship.
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: ("OCR", _clean(pages)),
+    )
+    monkeypatch.setattr(se, "_generate", _fake_generate)
+    monkeypatch.setattr(
+        se,
+        "verify_summary",
+        lambda model, source, summary, title=None, document_date=None: {
+            "fixed_text": "**Work status**: off work until 05/04/2021.",
+            "fixed_title": None,
+            "issues": [{"type": "capitalization", "detail": "heading re-cased"}],
+        },
+    )
+
+    out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
+    assert out["verifiedText"].startswith("**Work Status**: off work until 05/04/2021.")
+
+
+def test_the_generation_rule_asks_for_point_headings_in_title_case():
+    # DEMONSTRATES: the rule used to ask for a carried-over heading "in sentence case".
+    preamble = se.build_preamble("1")
+    assert 'a bold point heading in title case ("**Physical Exam**"' in preamble
+    assert "heading you carry over in sentence case" not in preamble
+
+
 def test_standalone_studies_from_rows_takes_only_diagnostic_studies():
     rows = [
         {"start": 1, "end": 2, "category": "1", "title": "PROGRESS NOTE", "date": "01/01/24"},
@@ -1091,7 +1158,7 @@ def test_a_cosmetic_rewrite_that_drops_headings_is_rejected(monkeypatch, caplog)
 
     # verifiedText None means effective_text() falls back to the raw body - the labels survive.
     assert out["verifiedText"] is None
-    assert "**Body part being treated**" in out["summaryText"]
+    assert "**Body Part Being Treated**" in out["summaryText"]
     # The reviewer still sees what was flagged; the guard is not a silent swallow.
     assert out["verifyIssues"] == [{"type": "capitalization", "detail": "capitalized headers"}]
     assert "1-2" in caplog.text
@@ -1284,7 +1351,7 @@ def test_a_renamed_heading_passes_the_guard_untouched(monkeypatch):
     out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
 
     assert out["verifiedText"] is not None
-    assert "**Body part treated**" in out["verifiedText"]
+    assert "**Body Part Treated**" in out["verifiedText"]
 
 
 def test_a_vitals_fix_that_empties_a_point_may_drop_its_heading(monkeypatch):
@@ -1299,7 +1366,7 @@ def test_a_vitals_fix_that_empties_a_point_may_drop_its_heading(monkeypatch):
     out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
 
     assert out["verifiedText"] is not None
-    assert "Treatment provided" not in out["verifiedText"]
+    assert "treatment provided" not in out["verifiedText"].lower()
 
 
 def test_a_rewrite_that_keeps_every_heading_is_accepted(monkeypatch):
@@ -1351,7 +1418,7 @@ def test_an_audit_rewrite_that_is_only_the_title_is_refused(monkeypatch, caplog)
 
     # None means effective_text() falls back to the raw body, so the real summary still ships.
     assert out["verifiedText"] is None
-    assert "**Body part being treated**" in out["summaryText"]
+    assert "**Body Part Being Treated**" in out["summaryText"]
     # The reviewer still sees what was flagged; refusing the rewrite is not swallowing the finding.
     assert out["verifyIssues"] == _SUBSTANTIVE
     assert "only the title" in caplog.text
@@ -1514,7 +1581,7 @@ def test_on_our_model_a_style_rewrite_is_still_applied(monkeypatch):
     out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
 
     assert out["verifiedText"] is not None
-    assert out["verifiedText"].endswith("**Treatment provided**: Shockwave.")
+    assert out["verifiedText"].endswith("**Treatment Provided**: Shockwave.")
 
 
 def test_a_kept_draft_still_lets_the_title_be_corrected(monkeypatch):
@@ -1542,7 +1609,7 @@ def test_a_content_rewrite_ships_when_the_switch_does_not_apply(
     out = se.summarize_row("/x.pdf", _row(), prompt="P", verify=True)
 
     assert out["verifiedText"] is not None
-    assert out["verifiedText"].endswith("**Treatment provided**: Shockwave.")
+    assert out["verifiedText"].endswith("**Treatment Provided**: Shockwave.")
 
 
 def test_our_models_stored_issues_are_readable_and_the_full_list_still_decides(monkeypatch):
@@ -4096,6 +4163,79 @@ def test_a_surname_first_author_is_written_first_name_first(title, expected):
 )
 def test_an_author_already_in_order_or_ambiguous_is_left_alone(title):
     assert se.tidy_title(title) == title
+
+
+# --- a surname-first author the RECORD proves is written first name first ------------------------
+# The senior reviewer, 2026-11-10: "occasionally the names would be Last Name, First Name instead of
+# First Name, Last Name". All names here are invented.
+_PROOF = "JOHN A. SMITH, M.D. CITY CLINIC. PROGRESS REPORT."
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        # a credential printed without the comma before it, which `_first_name_first` cannot read;
+        # turned round, it is one of the provider's spellings and takes the record's fuller one
+        (
+            "SMITH, JOHN MD. CITY CLINIC. OFFICE VISIT.",
+            "JOHN A. SMITH, MD. CITY CLINIC. OFFICE VISIT.",
+        ),
+        # no credential at all
+        ("SMITH, JOHN. CITY CLINIC. PROGRESS NOTE.", "JOHN SMITH. CITY CLINIC. PROGRESS NOTE."),
+        # a middle initial keeps its place, with its period
+        ("SMITH, JOHN A. CITY CLINIC.", "JOHN A. SMITH. CITY CLINIC."),
+        ("SMITH, JOHN A MD. CITY CLINIC.", "JOHN A. SMITH, MD. CITY CLINIC."),
+        # the name alone
+        ("SMITH, JOHN", "JOHN SMITH"),
+    ],
+)
+def test_a_surname_first_author_the_record_names_first_name_first_is_turned_round(title, expected):
+    # DEMONSTRATES: each of these reached the reviewer as printed.
+    assert se.consistent_titles([title, _PROOF], ["1", "1"])[0] == expected
+
+
+def test_the_turned_name_then_takes_the_records_one_spelling():
+    # consistent_authors runs after it, so the turned name joins its provider's group
+    titles = ["SMITH, JOHN, MD. CITY CLINIC.", _PROOF, "JOHN A. SMITH, MD. CITY CLINIC."]
+    turned = se.consistent_titles(titles, ["1", "1", "1"])[0]
+    assert turned.startswith("JOHN A. SMITH, M")
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # no proof: another person's name in the record
+        "DOE, JANE. CITY CLINIC. PROGRESS NOTE.",
+        # the same surname, a different first name is a different person
+        "SMITH, JANE. CITY CLINIC. PROGRESS NOTE.",
+        # a credential where the given name would be
+        "SMITH, D.C. CITY CHIROPRACTIC.",
+        # a suffix: left as printed
+        "SMITH JR, JOHN. CITY CLINIC.",
+        # not a name at all
+        "CITY IMAGING. MRI OF THE LUMBAR SPINE WITHOUT CONTRAST.",
+    ],
+)
+def test_without_the_records_proof_a_surname_first_title_is_left_alone(title):
+    # GUARD: reviewers kept "X, Y" as it was 354 times where the record held no proof.
+    assert se.first_name_first_in_record([title, _PROOF]) == [title, _PROOF]
+
+
+def test_a_title_with_no_first_name_first_proof_anywhere_is_left_alone():
+    # GUARD: one title alone proves nothing
+    assert se.first_name_first_in_record(["SMITH, JOHN. CITY CLINIC."]) == [
+        "SMITH, JOHN. CITY CLINIC."
+    ]
+
+
+def test_a_reviewer_edited_title_is_never_turned_but_its_name_counts_as_proof():
+    # GUARD and DEMONSTRATES: "a reviewer's own edit is theirs", and it still proves the order
+    titles = ["SMITH, JOHN MD. CITY CLINIC.", "JOHN SMITH, MD. CITY CLINIC."]
+    assert se.first_name_first_in_record(titles, [True, False]) == titles
+    assert se.first_name_first_in_record(titles, [False, True]) == [
+        "JOHN SMITH, MD. CITY CLINIC.",
+        "JOHN SMITH, MD. CITY CLINIC.",
+    ]
 
 
 @pytest.mark.parametrize(
