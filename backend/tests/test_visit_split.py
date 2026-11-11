@@ -212,8 +212,8 @@ def test_a_page_of_two_visits_summarizes_as_two_dated_summaries(monkeypatch):
     assert [visit["summaryDate"] for visit in visits] == ["06/12/2026", "06/19/2026"]
     # Each visit is a whole summary: its own body, the DOI the row states, one paragraph.
     assert visits[0]["summaryText"] == (
-        "**DOI**: 08/20/2025. **Body part being treated**: Low back. "
-        "**Treatment provided**: Cupping."
+        "**DOI**: 08/20/2025. **Body Part Being Treated**: Low back. "
+        "**Treatment Provided**: Cupping."
     )
     assert visits[1]["summaryText"].startswith("**DOI**: 08/20/2025. ")
     assert all("VISIT" not in visit["summaryText"] for visit in visits)
@@ -385,7 +385,7 @@ def test_a_single_marked_visit_keeps_the_rows_date_and_loses_the_mark(monkeypatc
     assert "visits" not in output
     assert se.visit_outputs(output) == [output]
     assert output["summaryDate"] == "06/19/2026"
-    assert output["summaryText"] == "**Treatment provided**: Acupuncture."
+    assert output["summaryText"] == "**Treatment Provided**: Acupuncture."
 
 
 def test_a_category_not_told_to_mark_visits_is_never_split(monkeypatch):

@@ -43,8 +43,9 @@ entry list (`documents.py`):
    [Deliverable layout](deliverable-layout.md#header-lines), including the category-7 rule keyed on
    the summary's `row_category`. If the dialog asked
    for page numbers, `(Pages X-Y)` is re-applied from the summary's stored page range. The body is
-   the effective text; unedited machine text of a non-deposition row is run through `one_paragraph()`
-   again, and a missing DOI prefix is restored from the raw body.
+   the effective text; unedited machine text gets its point labels in title case
+   (`title_case_labels()`) and, outside a deposition, is run through `one_paragraph()` again, and a
+   missing DOI prefix is restored from the raw body.
 3. **Record passes.** `_record_pass()` makes provider spellings consistent across the record
    (reviewer-edited titles are locked and win) and then folds each visit's entries into one - a
    provider's category-1 entries, or category-5 entries, of one date, with that visit's RFA and
