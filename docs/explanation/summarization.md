@@ -509,8 +509,8 @@ not complete).
 
 ## House style on the body
 
-`_house_body()` runs two deterministic passes from `backend/app/services/house_style.py`, on the raw
-body before the audit (so the audit reads what a reader will see) and on any accepted rewrite:
+`_house_body()` runs three deterministic passes from `backend/app/services/house_style.py`, on the
+raw body before the audit (so the audit reads what a reader will see) and on any accepted rewrite:
 
 - `sentence_case_caps_runs()`: runs of two or more capitalised words become sentence case, or title
   case when the run contains an organisation word (`_PROPER_NOUN_MARKERS`) or ends in a comma and a
@@ -519,6 +519,17 @@ body before the audit (so the audit reads what a reader will see) and on any acc
   (`_STATE_CODES`), or any token carrying a digit ("L4-L5", "COVID-19") or no vowel ("PTSD", "LLC"),
   except titles and units such as "Dr." and "mg" (`_SHORT_WORDS`). It is never applied to a title,
   which is ALL CAPS by design.
+- `title_case_labels()`: every point label - a bold span marked as one by its colon, `**X**:` or
+  `**X:**` - in title case: each word written in lower case gets a capital, except the joining
+  words ("of", "and", "the" ...) inside it, so `**History of present illness**:` becomes
+  `**History of Present Illness**:`. A word that already carries a capital (MRI, HPI, McMurray), the
+  second half of a hyphenated word (`Follow-up`) and a unit after a number (`5 mm`) are left as
+  they are; a bold span without a colon is content and is not touched. It runs after
+  `sentence_case_caps_runs()`, which would otherwise leave a label the model copied in capitals as
+  `Subjective complaints`. The senior reviewer asked for it on 2026-11-10 ("the sections (Subjective
+  Complaints, Physical Exam, Diagnoses, etc), were not being capitalized"); measured on the live box
+  the next day, 42% of labelled summaries carried a label in sentence case. The generation rule
+  (`_F_SENTENCE_CASE`) asks for a point heading in title case too; it used to ask for sentence case.
 - `one_paragraph()`: joins lines into one paragraph, drops list markers, and removes a label that
   introduces nothing: one followed only by another label or the end, carrying no digit, and not
   in front of a result heading (Findings, Impression, Conclusion, Interpretation, Results). So
@@ -528,8 +539,8 @@ body before the audit (so the audit reads what a reader will see) and on any acc
 
 Both exist because the prompt rule alone missed: 22% of stored summaries still carried a run of
 capitals after the prompt and the audit had both had a go, and 83 delivered summaries in 30 days
-carried line breaks. The export applies `one_paragraph()` again to unedited machine text so older
-stored summaries need no re-run.
+carried line breaks. The export applies `title_case_labels()` and `one_paragraph()` again to
+unedited machine text so older stored summaries need no re-run.
 
 ## Date of injury prefix
 

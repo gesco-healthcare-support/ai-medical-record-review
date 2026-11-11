@@ -462,3 +462,52 @@ def one_paragraph(text: str) -> str:
             flat = f"{flat}; {line}"
     flat = _without_empty_labels(flat)
     return re.sub(r"[ \t]{2,}", " ", flat).strip()
+
+
+# POINT LABELS IN TITLE CASE. The senior reviewer, 2026-11-10: "the sections (Subjective
+# Complaints, Physical Exam, Diagnoses, etc), were not being capitalized". The category prompts name
+# their points in title case, but two things undid it: a heading the model copies from a form in capitals goes
+# through `sentence_case_caps_runs` above and comes out "Subjective complaints", and the generation
+# rule itself used to ask for a carried-over heading "in sentence case". Measured on the live box on
+# 2026-11-11 over 14,183 summaries carrying labels: 6,009 (42%) had at least one label in sentence
+# case ("History of present illness", "Body part being treated", "Treatment provided"), and a
+# handful were all lower case.
+#
+# So every LABEL - a bold span marked as one by its colon, the same `_LABEL` shape `one_paragraph`
+# reads - has each word written in lower case given a capital, except the short joining words
+# ("of", "and", "the" ...) inside it. A word that already carries a capital is never touched, so an
+# acronym (MRI, HPI), a name (McMurray) or a word the model already capitalised stays exactly as it
+# came. The second half of a hyphenated word ("Follow-up", "X-ray") and a unit after a number
+# ("5 mm") keep their case. A bold span WITHOUT a colon is content, not a heading, and is left
+# alone.
+_LABEL_TEXT = re.compile(r"\*\*([^*\n]{1,60})(\*\*:|:\*\*)")
+_MINOR_WORDS = frozenset(
+    "a an and as at but by for from in into nor of on or per than the to via vs with".split()
+)
+# A word written wholly in lower case, matched whole: not straight after a letter, digit,
+# apostrophe, hyphen or period (so "up" in "Follow-up" and the "g" of "e.g." are not words of their own).
+_LOWER_WORD = re.compile(r"(?<![A-Za-z0-9'\-.])[a-z][a-z']*(?![A-Za-z0-9])")
+# What may stand before a word that starts a phrase of its own inside a label, so a joining word
+# there is capitalised: the label's start, an opening bracket, a slash, a colon or a dash.
+_PHRASE_START = re.compile(r"(?:^|[(/:\-–—])\s*$")
+_AFTER_NUMBER = re.compile(r"\d\s*$")
+
+
+def _title_cased_label(label: str) -> str:
+    def capital(match: re.Match) -> str:
+        word, before = match.group(0), label[: match.start()]
+        if _AFTER_NUMBER.search(before):
+            return word
+        if word in _MINOR_WORDS and not _PHRASE_START.search(before):
+            return word
+        return word[:1].upper() + word[1:]
+
+    return _LOWER_WORD.sub(capital, label)
+
+
+def title_case_labels(text: str) -> str:
+    """``text`` with every point label in title case - see the note above. A body whose labels are
+    already in title case comes back byte for byte."""
+    if not text or "**" not in text:
+        return text
+    return _LABEL_TEXT.sub(lambda m: f"**{_title_cased_label(m.group(1))}{m.group(2)}", text)

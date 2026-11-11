@@ -62,7 +62,7 @@ from app.services.date_entries import merge_by_date
 from app.services.extraction import extract_header, prefill_letter_fields
 from app.services.files import safe_name
 from app.services.gemini import PROMPT_VERSION
-from app.services.house_style import one_paragraph
+from app.services.house_style import one_paragraph, title_case_labels
 from app.services.jobs import (
     ACTIVE_STATES,
     SUMMARIZED_DOCUMENT_STATUSES,
@@ -2081,11 +2081,14 @@ def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tup
     if with_pages:
         title = f"{title} (Pages {summary.row_start}-{summary.row_end})"
     text = summary.effective_text()
-    # A summary written before generation enforced one paragraph is flattened on the way out, so
-    # stored records need no re-run. The MACHINE text only: a reviewer's own edit is theirs, and a
+    # A summary written before generation enforced one paragraph is flattened on the way out, and
+    # one written before its point labels were put in title case (2026-11-11) gets them, so stored
+    # records need no re-run. The MACHINE text only: a reviewer's own edit is theirs, and a
     # deposition is grouped by page on purpose.
-    if summary.edited_text is None and str(summary.row_category) != "9":
-        text = one_paragraph(text)
+    if summary.edited_text is None:
+        text = title_case_labels(text)
+        if str(summary.row_category) != "9":
+            text = one_paragraph(text)
     # The Summaries UI strips the DOI prefix into its edit box, so a reviewer-saved body carries
     # none; restore it from the raw model output. doi_prefix owns the grammar, so a document that
     # states two injury dates keeps both.

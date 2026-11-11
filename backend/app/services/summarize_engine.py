@@ -21,7 +21,7 @@ from app.config import get_settings
 from app.errors import ContextTooLongError, EmptyExtractionError, is_rate_limited
 from app.services import form_boxes
 from app.services.deposition_pages import transcript_page_offset
-from app.services.house_style import one_paragraph, sentence_case_caps_runs
+from app.services.house_style import one_paragraph, sentence_case_caps_runs, title_case_labels
 from app.services.llm import Part, TextPart, get_provider
 from app.services.ocr import (
     extract_condensed_transcript,
@@ -718,12 +718,19 @@ def _drops_deposition_structure(raw: str, fixed: str) -> bool:
 # the body is a separate artefact and IS all caps by convention (812 of 813 entries), which is why
 # this rule names the summary body. house_style.sentence_case_caps_runs enforces the same thing
 # deterministically afterwards; this block still earns its place by stopping the model producing it.
+#
+# A POINT HEADING is the exception the other way: title case, as the category prompts name the
+# points ("**Physical Exam**"). This rule used to ask for a carried-over heading "in sentence case", which
+# is half of why 42% of the live box's labelled summaries carried one like "History of present
+# illness" until the senior reviewer asked for the sections to be capitalised (2026-11-10).
+# house_style.title_case_labels enforces it afterwards; see the note there.
 _F_SENTENCE_CASE = (
     "- Write the summary body in ordinary sentence case. Do NOT write any word, sentence, line, or "
     "point in capital letters, even where the document does. Put a company or facility name in "
     'title case ("Cedar Ridge Logistics, Inc.", not "CEDAR RIDGE LOGISTICS, INC"), an occupation in '
-    'sentence case ("General laborer", not "GENERAL LABORER"), and a heading you carry over in '
-    "sentence case. Genuine acronyms and initialisms are the exception and stay as written: MRI, CT, "
+    'sentence case ("General laborer", not "GENERAL LABORER"), and a bold point heading in title '
+    'case ("**Physical Exam**", not "**PHYSICAL EXAM**" or "**Physical exam**"). Genuine '
+    "acronyms and initialisms are the exception and stay as written: MRI, CT, "
     "EMG, NCS, ECG, QME, AME, PR-2, PR-4, RFA, ADL, TTD, WPI, MMI, HPI, PE, ROM, ICD, CPT.\n"
 )
 
@@ -2594,6 +2601,121 @@ def consistent_report_types(
     return out
 
 
+# FIRST NAME FIRST, PROVEN BY THE RECORD. `_first_name_first` turns an author round only in the one
+# shape that cannot be anything else - SURNAME, GIVEN, CREDENTIAL - so a title opening "SMITH, JOHN
+# MD." (no comma before the credential) or "SMITH, JOHN." (no credential) was left as printed: on a
+# title alone it cannot be told from "SMITH, D.C." or a facility followed by its site. The senior
+# reviewer, 2026-11-10: "occasionally the names would be Last Name, First Name instead of First
+# Name, Last Name". Health-record printouts list their providers surname first, and the title model
+# copies what is printed.
+#
+# The RECORD settles it: when another title of the same record names the same person first name
+# first ("JOHN SMITH, M.D."), "SMITH, JOHN" is that person written the other way round. Measured on
+# the live box on 2026-11-11 over the titles shown to reviewers that open "X, Y": where the record
+# held that proof, the reviewers who retyped such a title turned the name round 26 times out of 26;
+# where it did not, they left "X, Y" as it was 354 times and turned it round 40. So without the
+# proof nothing is changed - "SMITH, JANE" and "KAISER PERMANENTE, FONTANA" look alike to a rule.
+#
+# The match is on the whole name, initials aside: the given names and surname of the "X, Y" title
+# must read, word for word, as the name of a first-name-first title in the same record. A name with
+# a suffix (JR, III ...) is left alone. A reviewer-edited title is never rewritten, but its name
+# counts as proof. Only the name moves; a credential the page printed without a comma gets one, so
+# "SMITH, JOHN MD." becomes "JOHN SMITH, MD.", the TITLE_PROMPT form.
+_NAME_TOKEN = re.compile(r"[A-Z][A-Z'\-]{1,24}")
+_INITIAL_TOKEN = re.compile(r"[A-Z]\.?")
+_SURNAME_OPENING = re.compile(r"((?:[A-Z][A-Z'\-]{1,24} ){0,2}[A-Z][A-Z'\-]{1,24}), (\S.*)", re.S)
+_HONORIFICS = frozenset({"DR", "MR", "MRS", "MS"})
+
+
+def _name_key(words: list[str]) -> tuple[str, ...]:
+    """A name's words without initials or an honorific, for matching one person's two spellings."""
+    return tuple(
+        w for w in words if not _INITIAL_TOKEN.fullmatch(w) and w.rstrip(".") not in _HONORIFICS
+    )
+
+
+def _named_first_name_first(title: str) -> tuple[str, ...] | None:
+    """The name a title opens with in FIRST LAST order - "JOHN A. SMITH, M.D. ..." - as a key."""
+    name, sep, _ = title.upper().partition(", ")
+    words = [w.rstrip(".") for w in name.split()]
+    if not sep or not 2 <= len(words) <= 5 or not _NAME_TOKEN.fullmatch(words[0]):
+        return None
+    if any(w in _NAME_SUFFIXES for w in words):
+        return None
+    if not all(_NAME_TOKEN.fullmatch(w) or _INITIAL_TOKEN.fullmatch(w) for w in words):
+        return None
+    key = _name_key(words)
+    return key if len(key) >= 2 else None
+
+
+def _given_names(tail: str) -> list[tuple[str, int]]:
+    """The words after "SURNAME, " that can be given names, each with where it ends in ``tail``:
+    name words and initials, up to four, stopping at a credential, a degree or a suffix, and after
+    the first one that ends in a comma or a period."""
+    taken = []
+    for token in re.finditer(r"\S+", tail):
+        raw = token.group(0)
+        bare = raw.rstrip(",.")
+        if len(taken) == 4 or bare in _NAME_SUFFIXES or bare in _DEGREES:
+            break
+        if _CREDENTIAL.fullmatch(bare) or not (
+            _NAME_TOKEN.fullmatch(bare) or _INITIAL_TOKEN.fullmatch(bare)
+        ):
+            break
+        taken.append((raw, token.end()))
+        if raw != bare:
+            break
+    return taken
+
+
+def _proven_given_names(taken: list[tuple[str, int]], surname: list[str], known) -> int:
+    """How many of ``taken`` are given names the record proves, 0 for none: the longest run it
+    knows, never one that leaves an initial behind."""
+    for k in range(len(taken), 0, -1):
+        given = [raw.rstrip(",.") for raw, _ in taken[:k]]
+        after = taken[k][0].rstrip(",.") if k < len(taken) else ""
+        if _INITIAL_TOKEN.fullmatch(given[0]) or (after and _INITIAL_TOKEN.fullmatch(after)):
+            continue
+        if _name_key(given + surname) in known:
+            return k
+    return 0
+
+
+def _turned_round(title: str, known: set[tuple[str, ...]]) -> str | None:
+    """``title`` with a surname-first author the record proves written first name first, or None."""
+    match = _SURNAME_OPENING.fullmatch(title)
+    if not match:
+        return None
+    surname, tail = match.group(1).split(), match.group(2)
+    if any(w in _NAME_SUFFIXES for w in surname):
+        return None
+    taken = _given_names(tail)
+    k = _proven_given_names(taken, surname, known)
+    if not k:
+        return None
+    given = [raw.rstrip(",.") for raw, _ in taken[:k]]
+    last, end = taken[k - 1]
+    punctuation, rest = last[len(last.rstrip(",.")) :], tail[end:]
+    next_word = rest.split(maxsplit=1)[0].rstrip(",.") if rest.strip() else ""
+    if not punctuation and next_word and _CREDENTIAL.fullmatch(next_word):
+        punctuation = ","
+    name = [f"{w}." if len(w) == 1 else w for w in given] + surname
+    return " ".join(name) + punctuation + rest
+
+
+def first_name_first_in_record(titles: list[str], locked: list[bool] | None = None) -> list[str]:
+    """The record's titles with every surname-first author that another title proves written first
+    name first - see the note above. ``locked`` titles are never rewritten but count as proof."""
+    locked = locked or [False] * len(titles)
+    known = {key for title in titles if (key := _named_first_name_first(title or "")) is not None}
+    if not known:
+        return list(titles)
+    return [
+        title if lock else (_turned_round(title or "", known) or title)
+        for title, lock in zip(titles, locked, strict=True)
+    ]
+
+
 def consistent_titles(
     titles: list[str], categories: list, locked: list[bool] | None = None
 ) -> list[str]:
@@ -2605,6 +2727,7 @@ def consistent_titles(
     The passes read bare header lines, so a caller holding stored titles strips their decoration
     first (`split_decoration`). ``locked`` marks reviewer-edited titles: never rewritten, and they
     win where a pass chooses between spellings."""
+    titles = first_name_first_in_record(titles, locked)
     titles = consistent_facilities(consistent_authors(titles, locked), locked)
     return consistent_report_types(consistent_systems(titles, locked), categories, locked)
 
@@ -3559,10 +3682,11 @@ def _title_or_head(title_model, pdf_path, row, text) -> str:
 
 
 def _house_body(text: str, deposition: bool) -> str:
-    """The deterministic house-style passes over a body, generated or audited alike: capitals, then
-    one paragraph - see `house_style.one_paragraph` - for everything but a deposition, which is
-    grouped by page on purpose."""
-    text = sentence_case_caps_runs(text)
+    """The deterministic house-style passes over a body, generated or audited alike: capitals, point
+    labels in title case (after the capitals pass, which would otherwise sentence-case a label the
+    model copied in capitals), then one paragraph - see `house_style.one_paragraph` - for
+    everything but a deposition, which is grouped by page on purpose."""
+    text = title_case_labels(sentence_case_caps_runs(text))
     return text if deposition else one_paragraph(text)
 
 
