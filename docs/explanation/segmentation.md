@@ -135,10 +135,11 @@ How packing works:
    the budget stays conservative.
 2. Starting at page `s`, the window extends one page at a time while the next page still fits the
    byte budget and the window is under the page cap.
-3. A page that is larger than the byte budget on its own simply gets a window of its own. Only a
-   page larger than the backend's hard per-page limit fails the job, with a message naming the page
-   and its size. This used to fail on the budget instead, and a 141-page record with one 12.7 MB
-   page was refused outright.
+3. A page that is larger than the byte budget on its own simply gets a window of its own, and no
+   page is ever refused for its size. This used to fail on the budget, and a 141-page record with
+   one 12.7 MB page was refused outright; later a per-page ceiling for Gemini refused a 223-page
+   record over one 14.2 MB page (2026-11-11). Such a page now travels as an image (see the payload
+   below).
 4. The next window starts `overlap` pages before the previous window's end, so the model always has
    context on both sides of a seam. The effective overlap is capped at a third of the window
    (minimum 1) by `next_window_start()`, and the start always advances by at least one page. With
@@ -146,13 +147,13 @@ How packing works:
    crawl, so the same pages were judged by many windows and false splits accumulated (measured on
    a test case, per the docstring).
 
-The bounds depend on the backend answering the `segment` stage (`_window_byte_bounds()` and
+The bounds depend on the backend answering the `segment` stage (`_window_byte_budget()` and
 `_window_page_cap()` in `segment_engine.py`):
 
-| Backend | Byte budget | Hard per-page limit | Page cap |
-| --- | --- | --- | --- |
-| Gemini | `window_budget_mb` | 14 MiB raw (`_GEMINI_INLINE_PAGE_LIMIT`) | `window_max_pages` |
-| vLLM | none in practice (1 TiB) | none | `min(window_max_pages, vllm_segment_max_pages)` |
+| Backend | Byte budget | Page cap |
+| --- | --- | --- |
+| Gemini | `window_budget_mb` | `window_max_pages` |
+| vLLM | none in practice (1 TiB) | `min(window_max_pages, vllm_segment_max_pages)` |
 
 On vLLM the raw PDF bytes are never sent (every page is rasterised to an image), so a budget in raw
 bytes bounds nothing there. What does bound that request is the image count the pod accepts, which
@@ -175,6 +176,10 @@ transport and the model resolved for the `segment` stage (`provider_for_stage("s
   the non-BAA Developer endpoint and was removed with the Vertex port. The window is cut by
   `backend/app/services/pdf.py` `slice_pdf()` from a reader opened once per record, not once per
   window: on a 5,077-page record a fresh pypdf reader cost 2.2-2.4 s per cut, with identical bytes.
+  A window heavier than one request can carry (`GEMINI_INLINE_PDF_LIMIT`, 14 MiB; Vertex caps a
+  request near 20 MB after base64) is sent as the labelled images vLLM gets instead
+  (`rasterise.pdf_or_page_images()`). Because the byte budget sits below that limit, only a single
+  page too heavy on its own ever reaches it, and it travels alone.
 - **vLLM** cannot take a PDF, so each page becomes a JPEG, preceded by a `Page N` text label
   (1-based within the window) and one preamble that says a label is a position only.
   `backend/app/services/rasterise.py` `page_image_parts()` builds these parts. Loose images carry no
@@ -237,6 +242,13 @@ page 1.
 The effect is that a document start on page `p` is always decided by a window that saw page `p - 1`
 as well as page `p`. A boundary is a judgement about two adjacent pages, so the window that can see
 both is the one that decides it; no document is cut at a window edge.
+
+The one exception is a seam with no overlap. A page too heavy to share a window travels alone, so
+its window overlaps neither neighbour. A window never owns a start on a page it did not see
+(`_ownership_caps()` caps each window at its own last page): the heavy page's start is decided by
+its own window, and the next page's by the window after it. Before 2026-11-11 the edge rule handed
+both to a window that never saw the page, so both starts were dropped and the heavy page silently
+joined the previous document. Each seam now costs at most a split the reviewer joins.
 
 A worked example with two windows, pages 1-90 and 61-150:
 

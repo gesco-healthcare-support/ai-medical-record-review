@@ -152,3 +152,27 @@ def test_gemini_always_uses_the_edge(monkeypatch):
 
     monkeypatch.setattr(settings, "llm_backend", "vllm")
     assert se._window_ownership(settings) == "realign"
+
+
+# A page too heavy to share a window travels alone, so the windows beside it do not overlap it.
+# The layout `byte_budgeted_windows` gives page 6 of 10 when it alone is over the byte budget.
+HEAVY_WINDOWS = [(1, 5), (6, 6), (7, 10)]
+
+
+@pytest.mark.parametrize("ownership", ["edge", "middle", "realign"])
+def test_a_window_never_owns_a_start_on_a_page_it_did_not_see(ownership):
+    """WHEN a seam has no overlap, THE SYSTEM SHALL let the window that saw the page decide it.
+
+    The edge rule gave the heavy page's own start to the window before it (pages 1-5), which never
+    saw page 6, and page 7's to the heavy page's window, which never saw page 7. Both starts were
+    dropped and the heavy page silently joined the document before it."""
+    assert se._ownership_caps(HEAVY_WINDOWS, 10, ownership) == [5, 6, 10]
+
+
+def test_the_starts_beside_a_lone_heavy_page_survive_the_merge():
+    reports = [_rows([1, 3]), _rows([6]), _rows([7, 9])]
+
+    rows = se.merge_window_rows(reports, HEAVY_WINDOWS, 10)
+
+    assert _starts(rows) == [1, 3, 6, 7, 9]
+    assert [(r["start"], r["end"]) for r in rows][-3:] == [(6, 6), (7, 8), (9, 10)]

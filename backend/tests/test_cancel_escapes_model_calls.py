@@ -23,7 +23,14 @@ function returns its fallback instead of raising.
 
 import pytest
 
-from app.services import dedup, deposition_pages, summary_doi, summary_verify, verify_pass
+from app.services import (
+    dedup,
+    deposition_pages,
+    rasterise,
+    summary_doi,
+    summary_verify,
+    verify_pass,
+)
 from app.worker.failures import JobCancelled
 
 
@@ -63,7 +70,7 @@ def test_a_stop_escapes_the_transcript_page_read(monkeypatch):
             raise JobCancelled(3, 170)
 
     monkeypatch.setattr(deposition_pages, "provider_for_stage", lambda *_a, **_k: _Provider())
-    monkeypatch.setattr(deposition_pages, "slice_pdf", _fake_slice)
+    monkeypatch.setattr(rasterise, "slice_pdf", _fake_slice)
     with pytest.raises(JobCancelled):
         deposition_pages.transcript_page_offset("x.pdf", 1, 3)
 
@@ -79,7 +86,7 @@ def test_a_stop_escapes_the_injury_date_read(monkeypatch):
             raise JobCancelled(3, 170)
 
     monkeypatch.setattr(summary_doi, "provider_for_stage", lambda *_a, **_k: _Provider())
-    monkeypatch.setattr(summary_doi, "slice_pdf", _fake_slice)
+    monkeypatch.setattr(rasterise, "slice_pdf", _fake_slice)
     with pytest.raises(JobCancelled):
         summary_doi.extract_injury_date("x.pdf", 1, 3)
 

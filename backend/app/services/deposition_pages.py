@@ -22,9 +22,8 @@ import logging
 
 from app.config import get_settings
 from app.errors import TranscriptPagesUnreadableError
-from app.services.llm import DocumentPart, Part, TextPart, provider_for_stage
-from app.services.pdf import slice_pdf
-from app.services.rasterise import page_image_parts
+from app.services.llm import Part, TextPart, provider_for_stage
+from app.services.rasterise import page_image_parts, pdf_or_page_images
 from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
@@ -91,7 +90,9 @@ def _isolated_parts(pdf_path, start, last, settings) -> list[Part]:
     completions has no such part. So the pages are rasterised there - and at
     `deposition_image_long_edge_px`, NOT the summarize target, because a printed page number sits in
     a corner in small type and 1024 was measured on SEGMENTATION, which judges page layout. Gemini
-    keeps the exact PDF bytes it has always been sent and rasterises nothing.
+    keeps the exact PDF bytes it has always been sent - unless they are too heavy for one request:
+    then it gets the vLLM images, rather than the call failing and the transcript losing its page
+    citations (`rasterise.pdf_or_page_images`).
 
     Takes `last` already bounded by the caller, so both paths send exactly the same pages.
     """
@@ -100,7 +101,7 @@ def _isolated_parts(pdf_path, start, last, settings) -> list[Part]:
             pdf_path, start, last, _MAX_PAGES, settings.deposition_image_long_edge_px
         )
     # The record is opened once, not once per deposition row (pdf._readers).
-    return [DocumentPart(data=slice_pdf(pdf_path, start, last), mime_type="application/pdf")]
+    return pdf_or_page_images(pdf_path, start, last, settings.deposition_image_long_edge_px)
 
 
 def transcript_page_offset(pdf_path, start, end, model=None) -> int | None:

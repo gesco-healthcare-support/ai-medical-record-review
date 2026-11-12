@@ -3,8 +3,9 @@
 WHY THIS EXISTS. vLLM cannot carry a PDF at all. `llm/vllm.py` builds its request through
 `llm/openai.py::_to_messages`, which raises TypeError on a `DocumentPart` because chat completions
 has no inline-PDF part at all. So every service that sends a whole document has to have an image
-path before it can cross the seam onto that backend. Gemini keeps taking the PDF; nothing routed
-there reaches this module.
+path before it can cross the seam onto that backend. Gemini keeps taking the PDF, except where the
+PDF is too heavy to carry in one request: `pdf_or_page_images` then sends the same pages as images,
+exactly as vLLM receives them.
 
 THE PAGE CAP IS A PARAMETER, and that is why this is a module rather than a copied loop.
 Summarization caps a row at `summary_image_max_pages` (15); a segmentation window runs to
@@ -16,6 +17,7 @@ caller that silently skips the cap is the failure mode the parameter exists to p
 """
 
 import io
+import logging
 import os
 import threading
 from collections import OrderedDict
@@ -24,7 +26,16 @@ from pdf2image import convert_from_path
 from pypdf import PdfReader
 
 from app.config import get_settings
-from app.services.llm import ImagePart, TextPart
+from app.services.llm import DocumentPart, ImagePart, Part, TextPart
+from app.services.pdf import slice_pdf
+
+logger = logging.getLogger(__name__)
+
+# What one inline PDF may weigh before Gemini cannot carry it. Vertex caps a request near 20 MB
+# AFTER base64, which inflates by 4/3, so the raw ceiling is ~15 MB; held below that. The window
+# packing budget (`window_budget_mb`, 12.5) sits under it, so in segmentation only a page that is
+# too heavy on its own ever reaches it - and it is sent alone (`windows.byte_budgeted_windows`).
+GEMINI_INLINE_PDF_LIMIT = 14 * 1024 * 1024
 
 # JPEG at quality 70, unchanged from the summarize rasteriser this was extracted from. These are
 # page scans: JPEG's loss is invisible against an OCR-grade source, and the byte saving is what
@@ -216,3 +227,35 @@ def page_image_parts(
             image.convert("RGB").save(buffer, format="JPEG", quality=_JPEG_QUALITY)
             parts.append(ImagePart(data=buffer.getvalue(), mime_type="image/jpeg"))
     return parts
+
+
+def pdf_or_page_images(pdf_path, start, end, long_edge_px=None, label_pages=False) -> list[Part]:
+    """Pages [start, end] for a Gemini call that is sent the record's own PDF bytes: those bytes,
+    or, when they are too heavy for one request, the same pages as images.
+
+    Gemini's segmentation windows, injury-date read and deposition read are sent a cut of the PDF.
+    A cut over `GEMINI_INLINE_PDF_LIMIT` cannot be carried at all, and segmentation used to REFUSE
+    the whole record over it: on 2026-11-11 a 223-page record failed Identify three times because
+    one scanned page weighed 14.2 MB on its own, and the reviewer saw only the generic error. The
+    injury-date read failed the same way and quietly left the row without a date.
+
+    The images are what vLLM is sent for the same call - same pages, same render, same labels - so
+    a heavy cut reads like a page on our model rather than not at all. Every page of the cut is
+    rendered (no page cap), because a short image list would read as a short document. Pages are
+    never mixed: a PDF part and loose images in one request would number the pages two ways.
+
+    ``long_edge_px`` and ``label_pages`` are the caller's vLLM render settings, passed straight to
+    `page_image_parts`.
+    """
+    data = slice_pdf(pdf_path, start, end)
+    if len(data) <= GEMINI_INLINE_PDF_LIMIT:
+        return [DocumentPart(data=data, mime_type="application/pdf")]
+    logger.info(
+        "pages %s-%s are %.1f MB as a PDF, over the %.1f MB one request carries; sent as images",
+        start,
+        end,
+        len(data) / 1048576,
+        GEMINI_INLINE_PDF_LIMIT / 1048576,
+    )
+    pages = int(end) - int(start) + 1
+    return page_image_parts(pdf_path, start, end, pages, long_edge_px, label_pages=label_pages)

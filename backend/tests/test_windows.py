@@ -68,26 +68,20 @@ def test_a_page_over_the_budget_gets_its_own_window(monkeypatch):
     assert covered == {1, 2, 3}  # and nothing is dropped
 
 
-def test_only_a_hard_limit_raises(monkeypatch):
-    """The ceiling that remains is the transport's, not the packing budget's.
+def test_no_page_is_refused_for_its_size(monkeypatch):
+    """WHEN one page is heavier than any request can carry, THE SYSTEM SHALL still place it alone.
 
-    `hard_limit_bytes` is what one page genuinely cannot exceed on this backend - Gemini carries
-    the raw bytes inline and Vertex caps the request. None means no ceiling, which is the honest
-    value for vLLM, where every page is rasterised and no raw-byte size is ever sent.
+    A per-page ceiling used to raise here for Gemini, and on 2026-11-11 it refused a 223-page record
+    three times over one 14.2 MB page. How a heavy window travels is the caller's business now
+    (`segment_engine._window_parts` sends it as images), so the packer never refuses.
     """
-    _fake_sizes(monkeypatch, [20 * MB, 1024])
-    with pytest.raises(RuntimeError, match="one request"):
-        byte_budgeted_windows("x.pdf", 2, 30, int(12.5 * MB), 160, hard_limit_bytes=14 * MB)
+    for heavy in (13 * MB, int(14.2 * MB), 500 * MB):
+        _fake_sizes(monkeypatch, [1024, heavy, 1024])
+        windows = byte_budgeted_windows("x.pdf", 3, 30, int(12.5 * MB), 160)
 
-    # Under the ceiling, the same page is placed rather than refused.
-    _fake_sizes(monkeypatch, [13 * MB, 1024])
-    assert byte_budgeted_windows("x.pdf", 2, 30, int(12.5 * MB), 160, hard_limit_bytes=14 * MB)[
-        0
-    ] == (1, 1)
-
-    # And with no ceiling at all, nothing raises however heavy the page.
-    _fake_sizes(monkeypatch, [500 * MB, 1024])
-    assert byte_budgeted_windows("x.pdf", 2, 30, int(12.5 * MB), 160)[0] == (1, 1)
+        assert (2, 2) in windows, "the heavy page travels alone"
+        covered = {page for start, end in windows for page in range(start, end + 1)}
+        assert covered == {1, 2, 3}
 
 
 def test_a_run_of_heavy_pages_still_terminates(monkeypatch):
