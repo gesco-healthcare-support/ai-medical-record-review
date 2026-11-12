@@ -26,11 +26,10 @@ from app.models import Document
 # paste of something else.
 MAX_LENGTH = 32
 
-# A date written with separators (``11-03-2026``, ``1.3.26``) is taken out of the name first, so its
-# parts are never read as an ID.
-_SEP_DATE = re.compile(r"(?<!\d)\d{1,2}[-._/ ]\d{1,2}[-._/ ](?:\d{4}|\d{2})(?!\d)")
+# The name is read as runs of letters and digits; any other character separates them.
 _TOKEN = re.compile(r"[A-Za-z0-9]+")
-# The four shapes the IDs take. A year, a page count or the eight-digit file date never matches.
+# The four shapes the IDs take. A year, a page count, the eight-digit file date and every piece of a
+# date written with separators (``11-03-2026``) are too short or too long to match.
 _ID_SHAPE = re.compile(r"^(?:[A-Za-z]{1,2}\d{4,5}|\d{6,7})$")
 _MMDDYY = re.compile(r"^(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d\d$")
 
@@ -38,7 +37,7 @@ _MMDDYY = re.compile(r"^(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d\d$")
 def _candidates(name: str) -> list[str]:
     stem = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", name.strip())
     found: list[str] = []
-    for token in _TOKEN.findall(_SEP_DATE.sub(" ", stem)):
+    for token in _TOKEN.findall(stem):
         if not _ID_SHAPE.match(token):
             continue
         # Six digits that read as a date (``110326``) are the file date, not an ID. An ID starting

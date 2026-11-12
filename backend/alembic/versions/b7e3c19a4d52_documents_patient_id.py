@@ -32,7 +32,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 # Frozen here, not imported from the app: app/services/patient_ids.py `from_filename` as of this
 # revision. `tests/test_patient_ids.py` checks the two give the same answer.
-_SEP_DATE = re.compile(r"(?<!\d)\d{1,2}[-._/ ]\d{1,2}[-._/ ](?:\d{4}|\d{2})(?!\d)")
 _TOKEN = re.compile(r"[A-Za-z0-9]+")
 _ID_SHAPE = re.compile(r"^(?:[A-Za-z]{1,2}\d{4,5}|\d{6,7})$")
 _MMDDYY = re.compile(r"^(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d\d$")
@@ -42,7 +41,7 @@ def patient_id_from_filename(name: str | None) -> str | None:
     """The one patient ID in a file name, or None when it has none or more than one."""
     stem = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", (name or "").strip())
     found: list[str] = []
-    for token in _TOKEN.findall(_SEP_DATE.sub(" ", stem)):
+    for token in _TOKEN.findall(stem):
         if not _ID_SHAPE.match(token):
             continue
         if token.isdigit() and len(token) == 6 and _MMDDYY.match(token):

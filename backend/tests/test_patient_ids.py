@@ -14,7 +14,6 @@ import pytest
 from pypdf import PdfWriter
 from sqlalchemy import func, select
 
-from app.api.documents import _PATIENT_ID_TOO_LONG_DETAIL
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.models import AuditLog, Document, User
@@ -193,7 +192,8 @@ async def test_a_typed_id_too_long_is_refused_before_anything_is_stored(authed):
     client, user_id = authed
     resp = await _upload(client, "scan.pdf", patient_id="9" * (patient_ids.MAX_LENGTH + 1))
     assert resp.status_code == 400
-    assert resp.json()["detail"] == _PATIENT_ID_TOO_LONG_DETAIL
+    # The literal sentence, not the route's constant: the reviewer reads it (errors-and-messages.md).
+    assert resp.json()["detail"] == "A patient ID is at most 32 letters and digits."
     with get_sessionmaker()() as session:
         count = session.scalar(
             select(func.count()).select_from(Document).where(Document.user_id == user_id)

@@ -9,18 +9,18 @@
 /** Longest ID the server stores. */
 export const PATIENT_ID_MAX_LENGTH = 32;
 
-// A date written with separators is taken out of the name first, so its parts are never read as an ID.
-const SEP_DATE = /(?<!\d)\d{1,2}[-._/ ]\d{1,2}[-._/ ](?:\d{4}|\d{2})(?!\d)/g;
+// The name is read as runs of letters and digits; any other character separates them.
 const TOKEN = /[A-Za-z0-9]+/g;
 // The four shapes the IDs take: six digits starting 80, seven digits, one letter and five digits,
-// two letters and four digits.
+// two letters and four digits. A year, the eight-digit file date and every piece of a date written
+// with separators are too short or too long to match.
 const ID_SHAPE = /^(?:[A-Za-z]{1,2}\d{4,5}|\d{6,7})$/;
 const MMDDYY = /^(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d\d$/;
 
 function candidates(name: string): string[] {
   const stem = name.trim().replace(/\.[A-Za-z0-9]{2,4}$/, "");
   const found: string[] = [];
-  for (const token of stem.replace(SEP_DATE, " ").match(TOKEN) ?? []) {
+  for (const token of stem.match(TOKEN) ?? []) {
     if (!ID_SHAPE.test(token)) continue;
     // Six digits that read as a date are the file date. An ID starting 80 never does.
     if (/^\d{6}$/.test(token) && MMDDYY.test(token)) continue;
