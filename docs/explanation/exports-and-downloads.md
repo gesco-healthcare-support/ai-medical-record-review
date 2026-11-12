@@ -53,13 +53,34 @@ entry list (`documents.py`):
    "One entry per date" (`documents.one_entry_per_date`), every entry of one date but a diagnostic
    study's, an operative report's and a lab's folds into one instead of the visit fold.
    See [Summarization](summarization.md#record-level-passes-at-export).
-4. **Record facts.** `ReportDetails` carries the doctor (Word typeface only), the attorney, law firm,
+4. **Reviewed before.** An entry whose summary has `reviewed_before` (the patient's earlier
+   record already covered its pages - see [Entries reviewed before](#entries-reviewed-before))
+   carries `reviewedBefore`; a folded entry keeps it only when every entry folded into it has it.
+5. **Record facts.** `ReportDetails` carries the doctor (Word typeface only), the attorney, law firm,
    covering-letter type and date, the reviewer's display name from the signed-in account (which
    switches on the Labor Code sentences), and the page accounting computed from the review rows
    (`_record_accounting()`).
 
 The page count the letter states is the cover-sheet figure typed on the review page when there is
 one, else the PDF's own page count (`_letter_pages()`).
+
+## Entries reviewed before
+
+Records of one patient do not arrive in order, and the office asked (2026-11-12) for the record
+finished LAST to show which of its entries an earlier review already covered, so an editor can
+skip them. `backend/app/services/previous_reviews.py` sets `summaries.reviewed_before` when a
+summarize run ends (and when the record's patient ID changes): an entry is reviewed before when
+every readable page of its row was, in a record of the same patient ID whose last summarize run
+finished earlier, inside an entry summarized there (left in the export). Pages are compared by
+their stored text - five-word runs, 60% found on one earlier page - so an entry with a page the
+earlier record did not have, or with no readable page, is never marked. Measured on the live box
+(2026-11-12): 183 of 1,420 entries of the patients' later records; matching on date and category
+alone would have marked 105 more that held new pages.
+
+The entry stays in the review. The Word letter highlights its date, title and body in yellow
+(`_highlight` in `reporting.py`, Word's own text highlight), the linked PDF draws the same yellow
+behind them (`.seen` in `linked_pdf.py`), and the Summaries tab shows a "Reviewed before" chip.
+Records summarized before the feature carry no marks until they are summarized again.
 
 ## How each deliverable is built
 

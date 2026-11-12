@@ -433,6 +433,7 @@ reviewer sees is chosen by `effective_title()`, `effective_date()` and `effectiv
 | `embedded_review` | Boolean | no | ORM `False`, server `false` | The body carries the embedded-records-review sentence. Only set on a row that was really summarized. | `d5b8c31a740e` |
 | `part` | Integer | no | ORM `0`, server `0` | Which visit of its row this summary is, in date order. 0 for the first and for every row that records one visit. Part of the summary's identity with `row_start`, `row_end` and `row_category`. | `c8e2f5a9d14b` |
 | `updated_at` | DateTime | yes | ORM `_utcnow`, ORM `onupdate` `_utcnow` | When the row was last written (by a reviewer edit or the verify pass). Provenance NULL: rows not written since 2026-08-26. | `a1e6f4d20c93` |
+| `reviewed_before` | DateTime | yes | - | Every readable page of this summary's row was, in an earlier-finished record of the same patient (`documents.patient_id`), inside an entry summarized there; the value is that record's upload time (`backend/app/services/previous_reviews.py`). Set when a summarize run ends and when the patient ID changes; the Word letter and the linked PDF highlight the entry in yellow. NULL = not reviewed before, or not checked (summarized before 2026-11-12). | `c4f8a2d61e97` |
 
 Display precedence (ORM helpers):
 

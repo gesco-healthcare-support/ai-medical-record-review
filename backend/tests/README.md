@@ -72,6 +72,7 @@ shared `conftest.py`.
 | `test_openai_config_guards.py` | Startup guards for the OpenAI provider settings. |
 | `test_pacing.py` | Adaptive pacing of model calls: request and token meters and the controller. |
 | `test_page_text.py` | The per-page OCR text store: extract once, reuse, keep errored and blank pages distinct; two passes over one record share the pages. |
+| `test_previous_reviews.py` | Entries reviewed before: the page-content rule (a new page, an excluded earlier entry, no readable page, a partial match, another patient), the record finished last, the summarize run's hook and its best-effort failure, the patient-ID change and the listing, the fold, and the yellow in the Word letter and the linked PDF. |
 | `test_patient_ids.py` | The patient ID: read from the file name in any order, never guessed from two, typed and cleaned, the combined upload's order, set and cleared by hand, counted across accounts, and the migration's frozen rule and backfill. |
 | `test_upload_ocr.py` | The reading of a record's pages at upload: the untracked `ocr` queue, its job, and segment workers reading it (also while they wait for the model server). |
 | `test_password.py` | The Flask-Security-compatible password hashing, including its production cost. |

@@ -11,7 +11,7 @@ from datetime import datetime
 
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.enum.text import WD_COLOR_INDEX, WD_PARAGRAPH_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
@@ -786,6 +786,15 @@ def _run(paragraph, s, *, bold=False, italic=False, size=None, underline=False, 
     return run
 
 
+def _highlight(*paragraphs) -> None:
+    """Every run of ``paragraphs`` highlighted in yellow - an entry the patient's earlier record
+    already covered (`reviewedBefore`), which an editor may skip. Word's own text highlight, so an
+    editor removes it with the highlighter like any other, and it survives a paste."""
+    for paragraph in paragraphs:
+        for run in paragraph.runs:
+            run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+
+
 def _add_inline_runs(paragraph, text, *, bold=False, italic=False, font=None, size=None):
     """Append runs to ``paragraph``, turning **bold** / *italic* / _italic_ markers into real
     formatting; ``bold``/``italic`` set the baseline for the plain segments."""
@@ -1200,6 +1209,8 @@ def build_mrr_document(
                 font=font,
                 size=_ENTRY_SIZE,
             )
+        if entry.get("reviewedBefore"):
+            _highlight(cells[0].paragraphs[0], body)
         # A blank line after every entry, as its own paragraph. The only gap before was the
         # document default's 10pt space-after, which is PARAGRAPH formatting: a reviewer pasting the
         # entries into their report under the destination's style loses it, and the entries then

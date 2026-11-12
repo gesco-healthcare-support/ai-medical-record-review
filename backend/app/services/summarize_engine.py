@@ -2957,7 +2957,11 @@ def fold_record_entries(
 
     ``by_date`` is the record's one-entry-per-date choice: every entry of a date, but a diagnostic
     study, an operative report and a lab result, folds into one (`_date_heads`) in place of the
-    visit fold. Labs still fold by date among themselves."""
+    visit fold. Labs still fold by date among themselves.
+
+    A folded entry keeps ``reviewedBefore`` (the patient's earlier record already covered it,
+    `services/previous_reviews.py`) only when EVERY entry folded into it has it: an editor may skip
+    a highlighted entry, and one new piece makes the whole entry new."""
     labs = _lab_heads(entries, categories)
     visits = (
         _date_heads(entries, categories)
@@ -2980,6 +2984,8 @@ def fold_record_entries(
                 entry[title_key] = _combined_lab_title(
                     [entries[j].get(title_key) or "" for j in members]
                 )
+            if not all(entries[j].get("reviewedBefore") for j in members):
+                entry.pop("reviewedBefore", None)
         out.append(entry)
     return out
 
