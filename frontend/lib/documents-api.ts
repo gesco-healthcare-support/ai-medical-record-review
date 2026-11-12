@@ -10,8 +10,17 @@ export function listDocuments(owner?: number | null) {
 }
 
 /** Where an upload goes. `owner` (admins only) is another reviewer's account; `allowDuplicate`
- *  confirms it after the server said that reviewer already holds the same file. */
-export type UploadTarget = { owner?: number | null; allowDuplicate?: boolean };
+ *  confirms it after the server said that reviewer already holds the same file. `patientId` is the
+ *  patient's ID - read from the file name, or typed when the name has none. */
+export type UploadTarget = {
+  owner?: number | null;
+  allowDuplicate?: boolean;
+  patientId?: string | null;
+};
+
+/** What an upload answers with about the patient: the stored ID ("" for none) and how many OTHER
+ *  records, in any reviewer's account, carry it. */
+export type PatientFields = { patient_id: string; patient_records: number };
 
 /** POST /api/documents - single-PDF upload (multipart field "pdf"). Does NOT start identification.
  *  Into another reviewer's account a file they already hold is a 409 with code "duplicate" until
@@ -21,23 +30,39 @@ export function uploadDocument(file: File, target: UploadTarget = {}) {
   form.append("pdf", file);
   if (target.owner != null) form.append("owner", String(target.owner));
   if (target.allowDuplicate) form.append("allow_duplicate", "true");
-  return apiFetch<{ id: string; page_count: number; sha256_duplicate: boolean }>("/documents", {
-    method: "POST",
-    body: form,
-  });
+  if (target.patientId) form.append("patient_id", target.patientId);
+  return apiFetch<{ id: string; page_count: number; sha256_duplicate: boolean } & PatientFields>(
+    "/documents",
+    { method: "POST", body: form },
+  );
 }
 
 /** POST /api/documents/aggregate - combine several pre-split PDFs into one record (field "pdfs"),
  *  with an optional display name for the record. `owner` (admins only) puts the record in another
  *  reviewer's account. */
-export function aggregateDocuments(name: string, files: File[], owner?: number | null) {
+export function aggregateDocuments(
+  name: string,
+  files: File[],
+  owner?: number | null,
+  patientId?: string | null,
+) {
   const form = new FormData();
   if (name.trim()) form.append("name", name.trim());
   if (owner != null) form.append("owner", String(owner));
+  if (patientId) form.append("patient_id", patientId);
   for (const file of files) form.append("pdfs", file);
-  return apiFetch<{ id: string; page_count: number; records: unknown[] }>("/documents/aggregate", {
-    method: "POST",
-    body: form,
+  return apiFetch<{ id: string; page_count: number; records: unknown[] } & PatientFields>(
+    "/documents/aggregate",
+    { method: "POST", body: form },
+  );
+}
+
+/** PUT /api/documents/{id}/patient-id - set the record's patient ID by hand ("" clears it).
+ *  Answers with the record's list entry plus how many other records carry the ID. */
+export function setPatientId(id: string, patientId: string) {
+  return apiFetch<DocumentListItem & PatientFields>(`/documents/${id}/patient-id`, {
+    method: "PUT",
+    body: JSON.stringify({ patient_id: patientId }),
   });
 }
 

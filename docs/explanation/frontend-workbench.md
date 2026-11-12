@@ -20,7 +20,8 @@ complexity comes from.
 | Piece | Code | Role |
 | --- | --- | --- |
 | Route | `frontend/app/records/[id]/page.tsx` `RecordPage()` | Awaits the route params (a Promise in Next 15) and renders `AppBar` and `ReviewPageClient` |
-| Page | `frontend/components/review/review-page-client.tsx` `ReviewPageClient()` | Header bar (back link, record name, document and page count, tabs, step actions, progress and Stop), banners, tab body |
+| Page | `frontend/components/review/review-page-client.tsx` `ReviewPageClient()` | Header bar (back link, record name, document and page count, tabs, step actions, progress and Stop), the patient ID line, banners, tab body |
+| Patient ID line | `frontend/components/review/patient-id-line.tsx` `PatientIdLine()` | The record's patient ID, editable, and how many other records carry it, on every tab |
 | Lifecycle hook | `frontend/hooks/use-review-workflow.ts` `useReviewWorkflow()` | Boot, job polling, the row buffer, autosave, stop and restart, reloads after other tabs write |
 | Server-state hooks | `frontend/hooks/use-summaries.ts` `useSummaries()`, `frontend/hooks/use-duplicates.ts` `useDuplicates()`, `useStartDedup()` | Summaries list, duplicate clusters and the duplicate-check start |
 | Review & correct tab | `frontend/components/review/header-bar.tsx` `HeaderBar()`, `frontend/components/review/review-editor.tsx` `ReviewEditor()`, `frontend/components/review/rows-table.tsx` `RowsTable()` | Report header, row toolbar, the editable rows table beside the PDF |
@@ -474,6 +475,17 @@ changed since they were written; those will be regenerated, so it asks for confi
   chip noise; the rare "Flagged, not applied" case does get a chip.
 - Optional fields (`verifyKeptRaw`, `verifyFailed`, `rowMissing`, `rowMethodLive`) read "absent means
   nothing to say", so an older backend during a rolling deploy flags nothing.
+
+## The patient ID
+
+`PatientIdLine` sits under the header bar on every tab. It shows the record's patient ID - read from
+the upload's file name, or typed by the uploader when the name had none (`frontend/lib/patient-id.ts`,
+the backend's `backend/app/services/patient_ids.py`) - and how many OTHER records, in any reviewer's
+account, carry the same ID: "This patient has N other records in the system.", "No other records for
+this patient.", or, with no ID, a prompt to enter it. A reviewer can fill a missing ID in or correct a
+wrong one; it saves on Enter or when the box loses focus (`PUT /api/documents/{id}/patient-id`), and
+the count is read again from the answer. It has its own route rather than a header field because the
+header saves itself and an older open tab clears a header field it does not know.
 
 ## The report header
 

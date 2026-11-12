@@ -172,6 +172,7 @@ Logical references (no foreign key, no ORM relationship):
 | `access_token` | `ix_access_token_created_at` | index | `created_at` | `a0725d467a48` |
 | `documents` | `ix_documents_user_id` | index | `user_id` | `73abdcd5ef01` |
 | `documents` | `ix_documents_sha256` | index, NOT unique | `sha256` | `73abdcd5ef01` |
+| `documents` | `ix_documents_patient_id` | index, NOT unique | `patient_id` | `b7e3c19a4d52` |
 | `jobs` | `ix_jobs_document_id` | index | `document_id` | `73abdcd5ef01` |
 | `jobs` | `uq_one_active_job_per_document` | partial UNIQUE index | `document_id` WHERE `state IN ('queued', 'running', 'paused')` | `009991f2eda1`, rebuilt by `c2d5e8f1a3b7` |
 | `segment_rows` | `ix_segment_rows_job_id` | index | `job_id` | `73abdcd5ef01` |
@@ -294,6 +295,7 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `patient_first_name` | String(255) | yes | - | Report header, PHI. NULL = never set. | `b1f4a7c9d2e3` |
 | `patient_last_name` | String(255) | yes | - | Report header, PHI. NULL = never set. | `b1f4a7c9d2e3` |
 | `patient_dob` | String(32) | yes | - | Report header, PHI. Free text, not a date type. | `b1f4a7c9d2e3` |
+| `patient_id` | String(32) | yes | - | The patient's ID (the office's account number for the patient), PHI: from the upload's file name or typed by the uploader (HTTP API D1, D2, D6b; `backend/app/services/patient_ids.py`). Finds the patient's other records in any account. Letters and digits, upper-case. NULL = not given. | `b7e3c19a4d52` |
 | `law_firm` | String(512) | yes | - | Report header: the firm the records came from. | `b1f4a7c9d2e3` |
 | `attorney_name` | String(255) | yes | - | Report header: the person the records came from (`law_firm` is the company). | `c2f1a7d94e63` |
 | `doctor` | String(255) | yes | - | Report header: the evaluator the report is for. Selects the Word font through `backend/app/services/reporting.py` `DOCTOR_FONTS`. | `c2f1a7d94e63` |
@@ -556,6 +558,7 @@ Every `action` value written by the repository:
 | `duplicates.resolve` | `backend/app/api/documents.py` (duplicate group resolution) |
 | `rows.edit` | `backend/app/api/documents.py` (row save; `detail` carries the boundary counts) |
 | `record.completed` | `backend/app/api/documents.py` (the Completed mark on the records list; `detail` is `on` or `off`) |
+| `patient_id.edit` | `backend/app/api/documents.py` (the patient ID set by hand; `detail` is `set` or `cleared`, never the ID) |
 | `rows.one_entry_per_date`, `one_entry_per_date.off` | `backend/app/api/documents.py` (the one-entry-per-date action and turning it off; `detail` carries the counts) |
 | `job.cancel` | `backend/app/api/documents.py` (cancel) |
 | `summarize.skip_duplicate_check` | `backend/app/api/documents.py` (summarize start without a current duplicate check) |

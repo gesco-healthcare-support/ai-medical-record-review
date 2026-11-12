@@ -13,6 +13,13 @@ import {
 } from "@/components/ui/dialog";
 import { useAggregateDocuments } from "@/hooks/use-documents";
 import { humanizeError } from "@/lib/errors";
+import {
+  agreedPatientId,
+  cleanPatientId,
+  otherRecordsLine,
+  PATIENT_ID_MAX_LENGTH,
+  patientIdFromFilename,
+} from "@/lib/patient-id";
 
 function isPdf(file: File) {
   return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
@@ -36,11 +43,19 @@ export function SplitUploadDialog({
   const aggregate = useAggregateDocuments();
   const [name, setName] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  // What the uploader typed in the Patient ID box, or null while they have not touched it - the box
+  // then shows the ID read from the record name or the files' names.
+  const [typedId, setTypedId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  const foundId = patientIdFromFilename(name) ?? agreedPatientId(files.map((f) => f.name)) ?? "";
+  const patientId = cleanPatientId(typedId ?? foundId);
+  const idTooLong = patientId.length > PATIENT_ID_MAX_LENGTH;
 
   function reset() {
     setName("");
     setFiles([]);
+    setTypedId(null);
   }
   /** Dismissing clears the staged files, whichever control did it. Escape and the overlay went
    *  through the Dialog's own `onOpenChange` (which resets) while the Cancel BUTTON called the
@@ -81,12 +96,19 @@ export function SplitUploadDialog({
       toast.error("Add at least two PDFs to combine.");
       return;
     }
+    if (!patientId || idTooLong) {
+      toast.error("Enter the patient ID to upload the record.");
+      return;
+    }
     try {
-      await aggregate.mutateAsync(owner ? { name, files, owner: owner.id } : { name, files });
+      const created = await aggregate.mutateAsync(
+        owner ? { name, files, owner: owner.id, patientId } : { name, files, patientId },
+      );
+      const others = otherRecordsLine(created.patient_records);
       toast.success(
-        owner
+        (owner
           ? `Records combined and uploaded to ${owner.name}'s records.`
-          : "Records combined and uploaded.",
+          : "Records combined and uploaded.") + (others ? ` ${others}` : ""),
       );
       close();
     } catch (err) {
@@ -128,6 +150,25 @@ export function SplitUploadDialog({
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
+          </div>
+
+          <div className="grid gap-1.5">
+            <label className="ev-lbl" htmlFor="splitPatientId">
+              Patient ID
+            </label>
+            <input
+              id="splitPatientId"
+              className="ev-inp"
+              autoComplete="off"
+              placeholder="Read from the names, or type it"
+              value={typedId ?? foundId}
+              onChange={(e) => setTypedId(e.target.value)}
+            />
+            {idTooLong ? (
+              <output className="rc-hb-warn">
+                A patient ID is at most {PATIENT_ID_MAX_LENGTH} letters and digits.
+              </output>
+            ) : null}
           </div>
 
           <div className="grid gap-1.5">
@@ -189,7 +230,7 @@ export function SplitUploadDialog({
             type="button"
             className="ev-btn ev-btn-primary"
             onClick={submit}
-            disabled={aggregate.isPending || files.length < 2}
+            disabled={aggregate.isPending || files.length < 2 || !patientId || idTooLong}
           >
             {submitLabel}
           </button>
