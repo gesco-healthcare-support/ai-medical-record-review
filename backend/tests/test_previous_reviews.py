@@ -214,7 +214,8 @@ def test_pages_the_earlier_reviewer_left_out_of_the_export_do_not_count():
 
 
 def test_an_entry_with_no_readable_page_is_never_marked():
-    """GUARD: a page with too little text (a hand-filled form) cannot be compared."""
+    """GUARD: a page with too little text (a hand-filled form) cannot be compared - even when its
+    few words are the same in both records."""
     pid = _new_id()
     with get_sessionmaker()() as session:
         user = _user(session)
@@ -222,7 +223,7 @@ def test_an_entry_with_no_readable_page_is_never_marked():
             session,
             user,
             pid,
-            {1: "illegible scrawl"},
+            {1: _page(5, 12)},
             [(1, 1, False)],
             uploaded=_T0,
             finished=_T0 + timedelta(days=1),
@@ -231,7 +232,7 @@ def test_an_entry_with_no_readable_page_is_never_marked():
             session,
             user,
             pid,
-            {1: "illegible scrawl"},
+            {1: _page(5, 12)},
             [(1, 1, False)],
             uploaded=_T0 + timedelta(days=5),
             finished=None,
