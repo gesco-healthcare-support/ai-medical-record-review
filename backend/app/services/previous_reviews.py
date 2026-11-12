@@ -75,8 +75,8 @@ def _earlier_records(session: Session, document: Document, before: datetime) -> 
             Document.id != document.id,
             finished.c.at < before,
         )
-    ).all()
-    return {doc_id: created for doc_id, created in rows}
+    ).tuples()
+    return dict(rows)
 
 
 def _reviewed_pages(session: Session, earlier: dict[str, datetime]):
