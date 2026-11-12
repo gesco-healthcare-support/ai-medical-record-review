@@ -76,7 +76,8 @@ def _earlier_records(session: Session, document: Document, before: datetime) -> 
             finished.c.at < before,
         )
     ).tuples()
-    return dict(rows)
+    # `.all()`: a Result has `.keys()`, so dict() would read it as a mapping of columns.
+    return dict(rows.all())
 
 
 def _reviewed_pages(session: Session, earlier: dict[str, datetime]):
