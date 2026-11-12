@@ -2970,24 +2970,27 @@ def fold_record_entries(
     )
     heads = {**{head: members for head, (members, _) in visits.items()}, **labs}
     folded = {i for members in heads.values() for i in members} - set(heads)
-    out = []
-    for i, entry in enumerate(entries):
-        if i in folded:
-            continue
-        if i in heads:
-            members = heads[i]
-            bodies = [entries[j].get("summaryText") or "" for j in members]
-            documents = visits[i][1] if i in visits else members
-            leaders = [n for n, j in enumerate(members) if j in documents]
-            entry = {**entry, "summaryText": _merged_body(bodies, leaders)}
-            if i in labs:
-                entry[title_key] = _combined_lab_title(
-                    [entries[j].get(title_key) or "" for j in members]
-                )
-            if not all(entries[j].get("reviewedBefore") for j in members):
-                entry.pop("reviewedBefore", None)
-        out.append(entry)
-    return out
+    return [
+        _folded_entry(entries, i, heads[i], visits, i in labs, title_key) if i in heads else entry
+        for i, entry in enumerate(entries)
+        if i not in folded
+    ]
+
+
+def _folded_entry(
+    entries: list[dict], head: int, members: list[int], visits: dict, lab: bool, title_key: str
+) -> dict:
+    """The entry ``members`` fold into, at ``head``: their bodies merged with the visit's documents
+    leading, a lab's combined title, and `reviewedBefore` only when every member has it."""
+    bodies = [entries[j].get("summaryText") or "" for j in members]
+    documents = visits[head][1] if head in visits else members
+    leaders = [n for n, j in enumerate(members) if j in documents]
+    entry = {**entries[head], "summaryText": _merged_body(bodies, leaders)}
+    if lab:
+        entry[title_key] = _combined_lab_title([entries[j].get(title_key) or "" for j in members])
+    if not all(entries[j].get("reviewedBefore") for j in members):
+        entry.pop("reviewedBefore", None)
+    return entry
 
 
 def presentable_title(title: str, *, reviewer_edited: bool = False, category=None) -> str:
