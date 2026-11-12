@@ -89,10 +89,37 @@ def test_a_typed_id_is_stored_letters_and_digits_upper_case():
         patient_ids.clean("9" * (patient_ids.MAX_LENGTH + 1))
 
 
-@pytest.mark.parametrize(("name", "expected"), _NAMES)
-def test_the_migration_reads_file_names_exactly_as_the_app_does(name, expected):
-    """GUARD: the rule frozen in `b7e3c19a4d52` gives the same answer as the service."""
-    assert _migration().patient_id_from_filename(name) == patient_ids.from_filename(name)
+def test_the_migration_reads_file_names_exactly_as_the_app_does():
+    """GUARD: the statement frozen in `b7e3c19a4d52`, run on Postgres, gives the service's answer
+    for every case above (and for the same cases with a lower-case extension and padding).
+    Synthetic rows, rolled back."""
+    names = [name for name, _ in _NAMES] + [f"  {name[:-4]}.pdf " for name, _ in _NAMES if name]
+    with get_sessionmaker()() as session:
+        user = User(email=unique_test_email(), name="Parity", password="x", active=True)
+        session.add(user)
+        session.flush()
+        ids = []
+        for n, name in enumerate(names):
+            doc_id = f"pidrule{n}-{user.id}"
+            ids.append(doc_id)
+            session.add(
+                Document(
+                    id=doc_id,
+                    user_id=user.id,
+                    original_filename=name,
+                    stored_path="/nonexistent/synthetic.pdf",
+                    sha256="0" * 64,
+                    page_count=1,
+                )
+            )
+        session.flush()
+
+        _migration().fill_patient_ids(session.connection())
+        session.expire_all()
+
+        got = [session.get(Document, doc_id).patient_id for doc_id in ids]
+        assert got == [patient_ids.from_filename(name) for name in names]
+        session.rollback()
 
 
 # --- the routes ---------------------------------------------------------------------------------
