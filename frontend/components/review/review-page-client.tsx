@@ -17,6 +17,7 @@ import { ReviewEditor } from "./review-editor";
 import { SummariesView } from "./summaries-view";
 import { DuplicatesView } from "./duplicates-view";
 import { HeaderBar } from "./header-bar";
+import { PatientIdLine } from "./patient-id-line";
 import { StartPanel } from "./start-panel";
 import { ProgressPanel } from "./progress-panel";
 
@@ -824,6 +825,13 @@ export function ReviewPageClient({
           />
         </div>
       </header>
+
+      <PatientIdLine
+        documentId={documentId}
+        patientId={wf.patient.id}
+        others={wf.patient.others}
+        onSaved={wf.setPatient}
+      />
 
       <ReviewBanners
         note={ownerNote(wf.owner, me?.id)}

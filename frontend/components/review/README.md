@@ -11,6 +11,7 @@ row rules live in `frontend/lib/review-rows.ts`.
 | `review-editor.tsx` | `ReviewEditor`: the Review & correct toolbar (Insert document, Apply suggested merges, Could not identify filter, first validation error) over a `SplitPane` of `RowsTable` and `PdfViewer`; merge, split, insert and delete |
 | `rows-table.tsx` | `RowsTable` and `categoryOptions()`: two table rows per document (title line with chips and actions, fields line with start, end, category, date, injury date, review flag and summarize), gap strips for skipped pages |
 | `header-bar.tsx` | `HeaderBar`: the nine report-header fields, Auto-fill or Re-detect, and Save |
+| `patient-id-line.tsx` | `PatientIdLine`: the record's patient ID, editable (saved on Enter or blur, `PUT /patient-id`), and how many other records carry it, under the header bar on every tab |
 | `duplicates-view.tsx` | `DuplicatesView`: duplicate clusters beside the PDF with keep, remove-one and dismiss actions, and the stale, never-checked, failed and unreadable banners |
 | `summaries-view.tsx` | `SummariesView` and `displayTitle()`: summary cards (edit, re-draft, in export, category), chips, the collapsed check findings, the search box and order choice (`SummaryFinder`), paging, and the Export button |
 | `export-dialog.tsx` | `ExportDialog`: Word, memo, linked PDF and zip exports, handed to the browser and watched |
@@ -24,6 +25,7 @@ row rules live in `frontend/lib/review-rows.ts`.
 | `review-editor.test.tsx` | Merge, split, insert, delete, the boundary and flag rules through `field()` |
 | `rows-table.test.tsx`, `rows-table.unidentified.test.tsx`, `rows-table.attention.test.tsx` | Row actions, the Could not identify and Category guessed chips, filtering, attention rows |
 | `header-bar.test.tsx` | Save, Auto-fill and Re-detect, the doctor select, the pages-received value |
+| `patient-id-line.test.tsx` | The other-records line, the missing-ID prompt, saving on blur and Enter, no save when unchanged, a refused save |
 | `duplicates-view.test.tsx` | Cluster states, resolve actions, banners |
 | `summaries-view.test.tsx`, `summaries-view.header.test.tsx` | Cards, chips, edits, re-classify, the header on the Summaries tab |
 | `summaries-view.redraft.test.tsx` | Re-drafts with the real hooks: several running at once, still shown after leaving the view and coming back, the cap |

@@ -189,6 +189,10 @@ class Document(Base):
     patient_first_name: Mapped[str | None] = mapped_column(String(255))
     patient_last_name: Mapped[str | None] = mapped_column(String(255))
     patient_dob: Mapped[str | None] = mapped_column(String(32))
+    # The patient's ID (the office's account number for the patient), from the upload's file name or
+    # typed by the uploader (services/patient_ids.py). It finds the patient's other records, in any
+    # reviewer's account. NULL means nobody has given it yet. Patient data: never log it.
+    patient_id: Mapped[str | None] = mapped_column(String(32), index=True)
     law_firm: Mapped[str | None] = mapped_column(String(512))
     # The PERSON the records came from. `law_firm` is the company, and the delivered sentence
     # wants both - "from <person>, of <firm>". One free-text box held both until now, so an
@@ -286,6 +290,7 @@ class Document(Base):
             "patient_last_name": last,
             "patient_name": (first + " " + last).strip(),
             "patient_dob": self.patient_dob or "",
+            "patient_id": self.patient_id or "",
             "law_firm": self.law_firm or "",
             "attorney_name": self.attorney_name or "",
             "doctor": self.doctor or "",

@@ -106,7 +106,10 @@ describe("useDocuments mutations", () => {
       { hook: useUploadDocument, args: { file } as unknown },
       { hook: useUploadDocument, args: { file, owner: 7, allowDuplicate: true } },
       { hook: useAggregateDocuments, args: { name: "Combined record", files: [file] } },
-      { hook: useAggregateDocuments, args: { name: "For Brian", files: [file], owner: 7 } },
+      {
+        hook: useAggregateDocuments,
+        args: { name: "For Brian", files: [file], owner: 7, patientId: "801234" },
+      },
       { hook: useAssignDocument, args: { id: "d1", owner: 7, allowDuplicate: false } },
       { hook: useDeleteDocument, args: "d1" },
       { hook: useStartIdentification, args: "d1" },
@@ -123,8 +126,13 @@ describe("useDocuments mutations", () => {
     // and the confirmation for someone else's.
     expect(uploadDocument).toHaveBeenCalledWith(file, {});
     expect(uploadDocument).toHaveBeenCalledWith(file, { owner: 7, allowDuplicate: true });
-    expect(aggregateDocuments).toHaveBeenCalledWith("Combined record", [file], undefined);
-    expect(aggregateDocuments).toHaveBeenCalledWith("For Brian", [file], 7);
+    expect(aggregateDocuments).toHaveBeenCalledWith(
+      "Combined record",
+      [file],
+      undefined,
+      undefined,
+    );
+    expect(aggregateDocuments).toHaveBeenCalledWith("For Brian", [file], 7, "801234");
     // Assigning moves a record OUT of the list on screen, so it must refetch like the rest.
     expect(assignDocument).toHaveBeenCalledWith("d1", 7, false);
     expect(deleteDocument).toHaveBeenCalledWith("d1");

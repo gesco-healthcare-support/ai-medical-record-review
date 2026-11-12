@@ -112,11 +112,76 @@ describe("DocumentsView error handling", () => {
   it("toasts a humanized message when an upload fails", async () => {
     upload.mutateAsync.mockRejectedValueOnce(new ApiError("network", 0));
     const { container } = render(<DocumentsView />);
-    const file = new File([new Uint8Array([1, 2, 3])], "rec.pdf", { type: "application/pdf" });
+    const file = new File([new Uint8Array([1, 2, 3])], "rec 801234.pdf", {
+      type: "application/pdf",
+    });
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
     await waitFor(() =>
       expect(vi.mocked(toast).error).toHaveBeenCalledWith(
         expect.stringMatching(/couldn't reach the server/i),
+      ),
+    );
+  });
+});
+
+describe("DocumentsView patient ID", () => {
+  // The office names record files after the patient, with the patient's ID in the name. Synthetic.
+  const choose = (container: HTMLElement, name: string) => {
+    const file = new File([new Uint8Array([1])], name, { type: "application/pdf" });
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+    return file;
+  };
+
+  it("sends the ID the file name carries, without asking", async () => {
+    upload.mutateAsync.mockResolvedValueOnce({ id: "n1", sha256_duplicate: false });
+    const { container } = render(<DocumentsView />);
+    const file = choose(container, "Jane Example-AB1234-11032026.pdf");
+    await waitFor(() =>
+      expect(upload.mutateAsync).toHaveBeenCalledWith({ file, patientId: "AB1234" }),
+    );
+    expect(screen.queryByRole("dialog", { name: "Patient ID needed" })).toBeNull();
+  });
+
+  it("asks for the ID when the file name has none, and sends nothing until it is typed", async () => {
+    const user = userEvent.setup();
+    upload.mutateAsync.mockResolvedValueOnce({ id: "n1", sha256_duplicate: false });
+    const { container } = render(<DocumentsView />);
+    const file = choose(container, "scan.pdf");
+
+    const dialog = await screen.findByRole("dialog", { name: "Patient ID needed" });
+    expect(dialog).toHaveTextContent('"scan.pdf"');
+    const send = screen.getByRole("button", { name: "Upload" });
+    expect(send).toBeDisabled();
+    expect(upload.mutateAsync).not.toHaveBeenCalled();
+
+    await user.type(screen.getByLabelText("Patient ID"), " ab-1234");
+    await user.click(send);
+    await waitFor(() =>
+      expect(upload.mutateAsync).toHaveBeenCalledWith({ file, patientId: "AB1234" }),
+    );
+  });
+
+  it("uploads nothing when the uploader cancels the question", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<DocumentsView />);
+    choose(container, "scan.pdf");
+    await screen.findByRole("dialog", { name: "Patient ID needed" });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(upload.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("says when the patient already has other records in the system", async () => {
+    upload.mutateAsync.mockResolvedValueOnce({
+      id: "n1",
+      sha256_duplicate: false,
+      patient_id: "801234",
+      patient_records: 2,
+    });
+    const { container } = render(<DocumentsView />);
+    choose(container, "Jane Example 801234.pdf");
+    await waitFor(() =>
+      expect(vi.mocked(toast).success).toHaveBeenCalledWith(
+        "Record uploaded. This patient has 2 other records in the system.",
       ),
     );
   });
@@ -234,14 +299,16 @@ describe("DocumentsView drop target", () => {
     // cancelled, which is the only direct evidence preventDefault ran.
     const { container } = render(<DocumentsView />);
     const main = container.querySelector("main") as HTMLElement;
-    const file = new File([new Uint8Array([1])], "dropped.pdf", { type: "application/pdf" });
+    const file = new File([new Uint8Array([1])], "dropped 801234.pdf", {
+      type: "application/pdf",
+    });
 
     expect(fireEvent.dragOver(main)).toBe(false);
     fireEvent.dragLeave(main);
     expect(fireEvent.drop(main, { dataTransfer: { files: [file] } })).toBe(false);
 
     // Into one's own account: straight in, no confirmation, and no owner sent.
-    expect(upload.mutateAsync).toHaveBeenCalledWith({ file });
+    expect(upload.mutateAsync).toHaveBeenCalledWith({ file, patientId: "801234" });
   });
 });
 
@@ -365,7 +432,7 @@ describe("DocumentsView for an admin", () => {
     return view;
   }
 
-  const pick = (container: HTMLElement, name = "rec.pdf") => {
+  const pick = (container: HTMLElement, name = "rec 801234.pdf") => {
     const file = new File([new Uint8Array([1])], name, { type: "application/pdf" });
     fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
     return file;
@@ -391,17 +458,22 @@ describe("DocumentsView for an admin", () => {
     const user = userEvent.setup();
     upload.mutateAsync.mockResolvedValueOnce({ id: "n1", sha256_duplicate: false });
     const { container } = await viewBrian(user);
-    const file = pick(container, "brian.pdf");
+    const file = pick(container, "brian 801234.pdf");
 
     // Nothing is sent until the admin confirms the reviewer the confirmation names.
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Upload to Brian's records?");
-    expect(dialog).toHaveTextContent('"brian.pdf" will be added');
+    expect(dialog).toHaveTextContent('"brian 801234.pdf" will be added');
     expect(upload.mutateAsync).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Upload" }));
     await waitFor(() =>
-      expect(upload.mutateAsync).toHaveBeenCalledWith({ file, owner: 7, allowDuplicate: false }),
+      expect(upload.mutateAsync).toHaveBeenCalledWith({
+        file,
+        owner: 7,
+        allowDuplicate: false,
+        patientId: "801234",
+      }),
     );
     expect(vi.mocked(toast).success).toHaveBeenCalledWith("Record uploaded to Brian's records.");
   });
@@ -437,7 +509,12 @@ describe("DocumentsView for an admin", () => {
 
     await user.click(screen.getByRole("button", { name: "Upload anyway" }));
     await waitFor(() =>
-      expect(upload.mutateAsync).toHaveBeenLastCalledWith({ file, owner: 7, allowDuplicate: true }),
+      expect(upload.mutateAsync).toHaveBeenLastCalledWith({
+        file,
+        owner: 7,
+        allowDuplicate: true,
+        patientId: "801234",
+      }),
     );
   });
 

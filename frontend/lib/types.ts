@@ -84,6 +84,8 @@ export type DocumentListItem = {
   letter_type?: string;
   letter_date?: string;
   pages_received?: number | string;
+  /** The patient's ID, "" for none yet. Optional: a server from before the field sends none. */
+  patient_id?: string;
   /** When the reviewer marked the record Completed, or null - their own mark on the list. */
   completed_at?: string | null;
   /** When the review (Word letter, linked PDF or ZIP) was last downloaded, or null. */
@@ -258,6 +260,10 @@ export type DocumentDetail = {
   letter_type?: string;
   letter_date?: string;
   pages_received?: number | string;
+  /** The patient's ID ("" for none yet), and how many OTHER records, in any reviewer's account,
+   *  carry it. Optional: a server from before the fields sends neither. */
+  patient_id?: string;
+  patient_records?: number;
   /** The reviewer chose "One entry per date" for this record (a Kaiser or hospital record): the
    *  letter folds every same-date entry but a study's and a lab's into one. Optional: a server from
    *  before the field sends none, which reads as off. */

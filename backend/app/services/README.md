@@ -11,6 +11,7 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 | Upload | `pdf.py` | Page count, file size, and a page range cut out as its own PDF from a reader opened once per record (pypdf). |
 | | `files.py` | Filesystem-safe filename helper. |
 | | `aggregate.py` | Merges several already-split PDFs into one record and computes each source's page range. |
+| | `patient_ids.py` | The patient's ID read from the upload's file name (or typed and cleaned), and how many other records carry it. |
 | Page text | `page_text.py` | Extracts each page's text once (text layer or OCR), stores it in `page_texts`, and reuses it in every stage. Filled at upload (the `ocr` queue) and again at Identify for anything missing; two passes at once share the pages. |
 | | `ocr.py` | Tesseract OCR over pages rasterized by Poppler; reads a condensed deposition sheet a quarter at a time. |
 | | `rasterise.py` | Renders pages to images for backends that cannot take an inline PDF, and for a Gemini PDF cut too heavy for one request. |

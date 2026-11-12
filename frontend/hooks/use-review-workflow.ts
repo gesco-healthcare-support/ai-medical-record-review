@@ -148,6 +148,8 @@ export function useReviewWorkflow(
     applyRows(sortRows(withKeys(next)));
   };
   const [header, setHeader] = useState<HeaderFields | null>(null);
+  // The patient's ID ("" for none) and how many other records, in any account, carry it.
+  const [patient, setPatient] = useState<{ id: string; others: number }>({ id: "", others: 0 });
   // The record's "One entry per date" choice (a Kaiser or hospital record): the letter folds its
   // same-date entries. Read with the record and set by the two handlers below.
   const [oneEntryPerDate, setOneEntryPerDate] = useState(false);
@@ -457,6 +459,7 @@ export function useReviewWorkflow(
       // that are gone; carrying it into this one is the leak.
       replaceRows(detail.rows || []);
       setOneEntryPerDate(detail.one_entry_per_date === true);
+      setPatient({ id: detail.patient_id ?? "", others: detail.patient_records ?? 0 });
       setFilename(detail.original_filename || "");
       setHeader({
         patient_first_name: detail.patient_first_name || "",
@@ -662,6 +665,8 @@ export function useReviewWorkflow(
     saveState,
     header,
     setHeader,
+    patient,
+    setPatient,
     attention,
     // The stop/restart trio. `cancelledJob` is non-null ONLY after a run settles as cancelled, which
     // is what puts the Continue / Start over pair on screen; the progress bar has unmounted by then.

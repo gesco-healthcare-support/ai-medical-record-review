@@ -121,6 +121,16 @@ class HeaderPayload(BaseModel):
     pages_received: str = ""
 
 
+class PatientIdPayload(BaseModel):
+    """The patient's ID, typed on the record (PUT /documents/{id}/patient-id).
+
+    Its own body, not a HeaderPayload field: the header saves itself on every keystroke and an
+    older client that predates a header field clears it, which would blank the ID from any tab
+    left open across a deploy. An empty string clears the ID."""
+
+    patient_id: str = ""
+
+
 class CompletedPayload(BaseModel):
     """The reviewer's Completed mark on the records list (PUT /documents/{id}/completed).
 
