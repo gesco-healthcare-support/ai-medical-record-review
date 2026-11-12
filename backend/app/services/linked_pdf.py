@@ -99,12 +99,17 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
         separator = html.escape(title_separator(e["linkTitle"]))
         if diagnostic:
             date_html, separator = f"<b>{date_html}</b>", f"<b>{separator}</b>"
-        rows.append(
-            f"<p class='e'><span class='d'>{date_html}</span>"
+        content = (
             f"<a class='ln' id='t{i}'>{html.escape(e['linkTitle'])}</a>"
             f"{separator}"
-            f"{_inline_html(e['summaryText'], whole_bold=diagnostic)}</p>"
+            f"{_inline_html(e['summaryText'], whole_bold=diagnostic)}"
         )
+        # The patient's earlier record already covered this entry: the same yellow behind its
+        # text as Word's highlight, so an editor reading either format sees it may be skipped.
+        if e.get("reviewedBefore"):
+            date_html = f"<span class='seen'>{date_html}</span>"
+            content = f"<span class='seen'>{content}</span>"
+        rows.append(f"<p class='e'><span class='d'>{date_html}</span>{content}</p>")
     # The same two sentences the Word renderer emits, from the same builder, bold to match
     # it - and the excluded-type list left PLAIN beneath them, which is the contrast the
     # reference documents carry. Built here rather than inline because an f-string cannot
@@ -142,6 +147,8 @@ def _summary_html(entries, num_pages, qme_or_ame, details) -> str:
          call site in reporting.build_mrr_document. */
       .intro {{ text-align: justify; }}
       a.ln {{ color: {_TITLE_COLOR}; text-decoration: underline; font-weight: bold; }}
+      /* An entry the patient's earlier record already covered: Word's yellow highlight. */
+      .seen {{ background-color: #ffff00; }}
     </style></head><body>
       <p class='ttl'>{html.escape(qme_or_ame or " ")}</p>
       <p class='h2'>{html.escape(REVIEW_HEADING)}</p>

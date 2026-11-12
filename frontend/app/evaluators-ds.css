@@ -44,6 +44,11 @@
        takes a hue no other flag, state or brand colour uses. #6D28D9 on #EDE9FE is 5.98:1. */
     --violet-600: #6D28D9;
     --violet-100: #EDE9FE;
+    /* Reviewed before: an entry the patient's earlier record already covered, highlighted in yellow
+       in the Word and PDF downloads - so the chip is a highlighter's yellow too. #713F12 on #FEF08A
+       is 8.0:1. */
+    --highlight-800: #713F12;
+    --highlight-200: #FEF08A;
     /* Roles */
     --color-border: var(--gray-200);
     --color-border-strong: var(--gray-300);
@@ -233,6 +238,8 @@ textarea:focus-visible, a:focus-visible {
 .ev-chip-off { background: var(--danger-100); color: var(--danger-500); }
 /* Manual check: violet, never amber - every other flag on a summary card is amber. */
 .ev-chip-manual { background: var(--violet-100); color: var(--violet-600); }
+/* Reviewed before: the downloads' yellow highlight, on the card. */
+.ev-chip-seen { background: var(--highlight-200); color: var(--highlight-800); }
 
 /* ---------- summaries step (settled Summaries.dc.html) ---------- */
 

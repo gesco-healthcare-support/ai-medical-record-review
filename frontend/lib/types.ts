@@ -174,6 +174,10 @@ export type SummaryItem = {
   // absent must read as "nothing to say" rather than as a flag.
   verifyFailed?: boolean;
   verifyIssues: VerifyIssue[];
+  // The upload time (UTC ISO) of the patient's earlier record that already covered this entry's
+  // pages, or null: the entry is highlighted in yellow in the Word and PDF downloads. Optional for
+  // the same rolling-deploy reason as `rowMissing`.
+  reviewedBefore?: string | null;
   // `row.category` is the category that GENERATED this text. `rowCategoryLive` is what the row says
   // NOW: they differ when the reviewer re-classified the sub-document but has not re-drafted yet, and
   // that difference is what the "Category changed" badge reads. Null when no row covers this summary's

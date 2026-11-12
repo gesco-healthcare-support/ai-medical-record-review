@@ -657,6 +657,34 @@ async def test_a_redraft_that_finds_fewer_visits_removes_the_extra_and_moves_the
     assert _stored(doc_id) == [(0, 1, 0, "01/03/2026"), (1, 2, 0, "02/01/2026")]
 
 
+async def test_a_visit_a_redraft_adds_keeps_its_rows_reviewed_before_mark(authed, monkeypatch):
+    """GUARD: the patient's earlier review covered the row's pages, so every visit the re-draft
+    finds on them is reviewed before too - the mark is the row's, not the text's."""
+    from datetime import datetime
+
+    doc_id = await _upload(authed)
+    _seed_summaries(doc_id, [(0, 1, 0, "01/01/2026"), (1, 2, 0, "02/01/2026")])
+    seen = datetime(2026, 10, 1, 9, 0)
+    with get_sessionmaker()() as session:
+        session.scalar(
+            select(Summary).where(Summary.document_id == doc_id, Summary.idx == 0)
+        ).reviewed_before = seen
+        session.commit()
+    _redraft_as(monkeypatch, ["01/01/2026", "01/08/2026"])
+
+    resp = await authed.post(f"/api/documents/{doc_id}/summaries/0/resummarize")
+
+    assert resp.status_code == 200, resp.text
+    with get_sessionmaker()() as session:
+        marks = [
+            (s.row_start, s.part, s.reviewed_before)
+            for s in session.scalars(
+                select(Summary).where(Summary.document_id == doc_id).order_by(Summary.idx)
+            ).all()
+        ]
+    assert marks == [(1, 0, seen), (1, 1, seen), (2, 0, None)]
+
+
 async def test_each_visit_is_its_own_entry_in_the_word_export_in_date_order(authed):
     doc_id = await _upload(authed)
     _seed_summaries(

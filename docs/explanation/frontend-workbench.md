@@ -484,7 +484,9 @@ the backend's `backend/app/services/patient_ids.py`) - and how many OTHER record
 account, carry the same ID: "This patient has N other records in the system.", "No other records for
 this patient.", or, with no ID, a prompt to enter it. A reviewer can fill a missing ID in or correct a
 wrong one; it saves on Enter or when the box loses focus (`PUT /api/documents/{id}/patient-id`), and
-the count is read again from the answer. It has its own route rather than a header field because the
+the count is read again from the answer, and the server re-reads which summaries the patient's
+earlier records already covered (a summary card then shows a yellow "Reviewed before" chip, whose
+tooltip names the earlier record's upload date). It has its own route rather than a header field because the
 header saves itself and an older open tab clears a header field it does not know.
 
 ## The report header

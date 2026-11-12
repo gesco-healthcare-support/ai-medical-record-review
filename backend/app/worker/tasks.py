@@ -1606,6 +1606,26 @@ class _SummarizeRun:
         return "continue"
 
 
+def _mark_reviewed_before(session, document_id) -> None:
+    """Highlight the entries the patient's earlier-finished records already summarized
+    (`services/previous_reviews.py`), counting this run as finished now. Best effort: the summaries
+    are already stored, so a failure here is logged and never fails the run."""
+    from app.services.previous_reviews import mark_reviewed_before
+
+    try:
+        document = session.get(Document, document_id)
+        marked = mark_reviewed_before(
+            session, document, done_at=datetime.now(UTC).replace(tzinfo=None)
+        )
+        session.commit()
+        logger.info("document %s: %d summaries reviewed in an earlier record", document_id, marked)
+    except Exception as exc:  # noqa: BLE001 - the highlight never costs a finished run
+        session.rollback()
+        logger.warning(
+            "could not mark earlier reviews on document %s: %s", document_id, type(exc).__name__
+        )
+
+
 def _summarize_work(session, job, report) -> None:
     from app.services.summarize_engine import (
         page_phrase,
@@ -1640,6 +1660,7 @@ def _summarize_work(session, job, report) -> None:
     run = _SummarizeRun(total=total, done_count=total - len(pending), document_id=job.document_id)
     report("summarizing", run.done_count, run.total)
     if not pending:
+        _mark_reviewed_before(session, job.document_id)
         return  # everything already summarized -> _run marks done
 
     prompt_by_cat = _prompts_for_rows(session, pending)
@@ -1732,6 +1753,9 @@ def _summarize_work(session, job, report) -> None:
                 len(pt.unfinished),
             )
 
+    # Before `finish`, which raises for a paused or needs-attention run: every summary stored so far
+    # is marked, and a resumed run marks again at its own end.
+    _mark_reviewed_before(session, job.document_id)
     run.finish(settings)
 
 

@@ -6,7 +6,7 @@ carry catalog data.
 Source of truth: `backend/alembic/versions/` (one file per revision, named
 `<revision>_<slug>.py`), `backend/alembic/env.py` and `backend/alembic.ini`.
 
-**Current head: `b7e3c19a4d52`.** The chain has 36 revisions, one head and no branches. How to add
+**Current head: `c4f8a2d61e97`.** The chain has 37 revisions, one head and no branches. How to add
 a revision is in [How to create a database migration](../how-to/create-a-database-migration.md).
 
 ## Chain
@@ -52,9 +52,10 @@ columns or indexes; **data** changes rows only; **schema + data** does both.
 | 33 | `c8e2f5a9d14b` | `b7e4c1a9d203` | 2026-10-16 | schema | Adds `summaries.part` (server default `0`): which visit of its row a summary is, when a page records several dated visits. Downgrade drops it, after which the old worker deletes a row's extra visits as duplicates. |
 | 34 | `d6a2f9c3e481` | `c8e2f5a9d14b` | 2026-10-30 | schema | Adds `documents.one_entry_per_date` (server default `false`): the reviewer chose one entry per date for the record. Downgrade drops it; merged rows stay merged and the export stops folding by date. |
 | 35 | `f2c7a4e81b39` | `d6a2f9c3e481` | 2026-11-05 | schema + data | Adds `documents.completed_at` (the reviewer's Completed mark) and `documents.downloaded_at` (when the review was last downloaded), both nullable, and fills `downloaded_at` once from the audit log's latest `export`, `export_pdf` or `export_zip` per document (`fill_downloaded_at`). Downgrade drops both; the marks are lost, the download dates can be rebuilt by upgrading again. |
-| 36 | `b7e3c19a4d52` | `f2c7a4e81b39` | 2026-11-12 | schema + data | Adds `documents.patient_id` (nullable, indexed `ix_documents_patient_id`): the patient's ID, which finds the patient's other records. Fills it once from each stored record's `original_filename` with the rule of `backend/app/services/patient_ids.py`, frozen in the file (`fill_patient_ids`; a name with no ID or two stays NULL). Downgrade drops it; upgrading again refills it from the file names, but an ID typed by hand is lost. **Current head.** |
+| 36 | `b7e3c19a4d52` | `f2c7a4e81b39` | 2026-11-12 | schema + data | Adds `documents.patient_id` (nullable, indexed `ix_documents_patient_id`): the patient's ID, which finds the patient's other records. Fills it once from each stored record's `original_filename` with the rule of `backend/app/services/patient_ids.py`, frozen in the file (`fill_patient_ids`; a name with no ID or two stays NULL). Downgrade drops it; upgrading again refills it from the file names, but an ID typed by hand is lost. |
+| 37 | `c4f8a2d61e97` | `b7e3c19a4d52` | 2026-11-12 | schema | Adds `summaries.reviewed_before` (nullable, no backfill): when an entry was already reviewed in the patient's earlier-finished record. Downgrade drops it; the marks come back the next time each record is summarized. **Current head.** |
 
-Totals: 24 schema, 9 data, 3 schema + data.
+Totals: 25 schema, 9 data, 3 schema + data.
 
 ## Revisions out of date order
 
