@@ -894,15 +894,18 @@ def set_patient_id(
     For a record whose file name did not carry one, or carried the wrong one. Stored cleaned
     (`patient_ids.clean`: letters and digits, upper-case). Allowed while a job runs - it touches
     no row. Answers with the record's list entry plus how many other records carry the ID."""
-    value = _typed_patient_id(payload.patient_id)
-    if value != document.patient_id:
-        document.patient_id = value
-        session.commit()
-        # Set or cleared, never the value: the ID is the patient's.
-        audit(
-            session, "patient_id.edit", user.id, document.id, detail="set" if value else "cleared"
-        )
+    _store_patient_id(session, document, user, _typed_patient_id(payload.patient_id))
     return document.listing() | _patient_fields(session, document)
+
+
+def _store_patient_id(session: Session, document: Document, user: User, value: str | None) -> None:
+    """Store ``value`` as the record's patient ID and audit it; an unchanged value writes nothing.
+    `audit` commits the ID with its row."""
+    if value == document.patient_id:
+        return
+    document.patient_id = value
+    # Set or cleared, never the value: the ID is the patient's.
+    audit(session, "patient_id.edit", user.id, document.id, detail="set" if value else "cleared")
 
 
 @router.put("/{document_id}/completed")
