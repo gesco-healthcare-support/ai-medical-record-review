@@ -585,6 +585,12 @@ class Summary(Base):
     # timestamp would later be indistinguishable from a recorded one, which is the same reason
     # `model`, `title_model` and `build_sha` were left alone above.
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+    # This entry was already reviewed: every readable page of its row was, in an earlier-finished
+    # record of the same patient, inside an entry summarized there (services/previous_reviews.py).
+    # The value is that earlier record's upload time; NULL means not reviewed before, or not checked
+    # (a record summarized before 2026-11-12). Set when a summarize run ends and when the patient ID
+    # changes; the Word letter and the linked PDF highlight the entry so an editor may skip it.
+    reviewed_before: Mapped[datetime | None] = mapped_column(DateTime)
 
     def effective_title(self):
         # Same precedence as effective_text: reviewer edit, then the AI-verified correction, then
@@ -671,6 +677,9 @@ class Summary(Base):
             # the whole summary while its budget stays flat. So it fails hardest on the longest
             # documents: depositions (23.1%) and 14 of the 16 category-1 rows over 4,000 characters.
             "verifyFailed": bool(self.audit_model and not self.verified),
+            # The upload time of the patient's earlier record that already covered this entry's
+            # pages (UTC ISO), or null - see `reviewed_before`.
+            "reviewedBefore": _utc_iso(self.reviewed_before),
             "row": {"start": self.row_start, "end": self.row_end, "category": self.row_category},
         }
 

@@ -98,6 +98,45 @@ describe("SummariesView verify flag", () => {
     expect(manual).not.toHaveClass("ev-chip-review");
     expect(screen.getByText("AI-fixed")).toHaveClass("ev-chip-review");
   });
+
+  // 2026-11-12: an entry the patient's earlier record already covered is highlighted in yellow in
+  // the Word and PDF downloads; the card says so, in the same yellow, naming the earlier upload.
+  const seenCard = (reviewedBefore?: string | null) => ({
+    idx: 0,
+    summaryTitle: "Progress Note (Pages 1-1)",
+    summaryDate: "01/02/2026",
+    summaryText: "Body.",
+    manualCheck: false,
+    excluded: false,
+    edited: false,
+    verified: true,
+    verifyChanged: false,
+    verifyIssues: [],
+    row: { start: 1, end: 1, category: "1" },
+    ...(reviewedBefore === undefined ? {} : { reviewedBefore }),
+  });
+
+  it("marks an entry an earlier review of the patient already covered", () => {
+    summariesState.error = null;
+    summariesState.isLoading = false;
+    summariesState.data = [seenCard("2026-10-01T16:00:00+00:00")];
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+    const chip = screen.getByText("Reviewed before");
+    expect(chip).toHaveClass("ev-chip", "ev-chip-seen");
+    expect(chip).toHaveAttribute("title", expect.stringMatching(/uploaded 10\/01\/2026/));
+  });
+
+  it.each([null, undefined])("says nothing when the entry is new (%s)", (value) => {
+    summariesState.error = null;
+    summariesState.isLoading = false;
+    summariesState.data = [seenCard(value)];
+    render(
+      <SummariesView documentId="d1" categories={[]} header={null} onGotoSummarizeStep={vi.fn()} />,
+    );
+    expect(screen.queryByText("Reviewed before")).toBeNull();
+  });
 });
 
 describe("SummariesView category", () => {

@@ -36,6 +36,7 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 | | `prompts.py` | The per-category summary prompts in code (an admin-edited database row overrides one). |
 | | `summary_verify.py` | The audit: checks a draft against its source and returns corrections, subject to guards. |
 | | `house_style.py` | Deterministic formatting fixes applied after the model writes. |
+| | `previous_reviews.py` | Marks the entries an earlier-finished record of the same patient already summarized (by page text), for the yellow highlight in the downloads. |
 | Exports | `reporting.py` | The Word review letter and memo (python-docx). |
 | | `linked_pdf.py` | The letter followed by the source record, with links to each entry's pages. |
 | | `bundles.py` | Category-filtered bundle PDF with a cover page, and the bundle summary. |

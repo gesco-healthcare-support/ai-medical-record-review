@@ -471,7 +471,10 @@ paused or re-clicked run pays only for the rows still missing.
 7. Drains the pool with `drain_pool` under `Settings.pool_timeout(page_count)` (the job timeout
    minus `FUTURE_TIMEOUT_MARGIN_SECONDS`, so the pool gives up just before RQ would kill the horse).
    Each success is committed at once and reported; each failure is classified.
-8. Decides the outcome (`_SummarizeRun.finish`).
+8. Marks the entries the patient's earlier-finished records already covered
+   (`_mark_reviewed_before` -> `previous_reviews.mark_reviewed_before`; also on step 4's early
+   return). Best effort: a failure there is logged by type and never fails the run.
+9. Decides the outcome (`_SummarizeRun.finish`).
 
 ### Transient and permanent failures
 

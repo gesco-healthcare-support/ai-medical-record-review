@@ -55,7 +55,7 @@ from app.schemas.documents import (
     SummarizeStartPayload,
     SummaryEditPayload,
 )
-from app.services import bundles, catalog, downloads, patient_ids
+from app.services import bundles, catalog, downloads, patient_ids, previous_reviews
 from app.services.aggregate import merge_pdfs
 from app.services.audit import audit
 from app.services.classification import DEFAULT_ID, match_rules
@@ -906,6 +906,25 @@ def _store_patient_id(session: Session, document: Document, user: User, value: s
     document.patient_id = value
     # Set or cleared, never the value: the ID is the patient's.
     audit(session, "patient_id.edit", user.id, document.id, detail="set" if value else "cleared")
+    _remark_reviewed_before(session, document)
+
+
+def _remark_reviewed_before(session: Session, document: Document) -> None:
+    """Re-read which of the record's entries the patient's earlier-finished records already
+    covered, after its patient ID changed (`previous_reviews.mark_reviewed_before`, against the
+    record's own last summarize run). Best effort: the ID is already stored, so a failure is logged
+    and the highlights wait for the next summarize run."""
+    try:
+        if previous_reviews.mark_reviewed_before(session, document):
+            logger.info("document %s: entries reviewed before re-read", document.id)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - the ID change must not fail on the highlight
+        session.rollback()
+        logger.warning(
+            "could not re-read earlier reviews on document %s: %s",
+            document.id,
+            type(exc).__name__,
+        )
 
 
 @router.put("/{document_id}/completed")
@@ -2017,7 +2036,12 @@ def _redraft_row(session, document: Document, summary: Summary, row: dict, outpu
         session.delete(leftover)
     targets = siblings[: len(outputs)]
     while len(targets) < len(outputs):
-        added = Summary(document_id=document.id, job_id=summary.job_id)
+        # Same row, same pages: reviewed before exactly when its siblings were.
+        added = Summary(
+            document_id=document.id,
+            job_id=summary.job_id,
+            reviewed_before=summary.reviewed_before,
+        )
         session.add(added)
         targets.append(added)
     for part, (target, output) in enumerate(zip(targets, outputs, strict=True)):
@@ -2183,6 +2207,13 @@ def _export_title_and_text(summary: Summary, *, with_pages: bool = False) -> tup
     return title, text
 
 
+def _reviewed_before_key(summary: Summary) -> dict:
+    """``{"reviewedBefore": True}`` for an entry the patient's earlier record already covered
+    (`Summary.reviewed_before`), which both renderers highlight; nothing otherwise, so an entry
+    without it is exactly the dict it always was."""
+    return {"reviewedBefore": True} if summary.reviewed_before is not None else {}
+
+
 def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
     """One docx entry; the [ManualCheck] review flag is dropped from exports (see
     _export_title_and_text)."""
@@ -2192,6 +2223,7 @@ def _export_entry(summary: Summary, *, with_pages: bool = False) -> dict:
         "summaryTitle": title,
         "summaryText": text,
         "diagnostic": is_diagnostic(summary.row_category),
+        **_reviewed_before_key(summary),
     }
 
 
@@ -2226,6 +2258,7 @@ def _pdf_entry(summary: Summary, *, with_pages: bool = False) -> dict:
         "summaryText": text,
         "startPage": summary.row_start,
         "diagnostic": is_diagnostic(summary.row_category),
+        **_reviewed_before_key(summary),
     }
 
 

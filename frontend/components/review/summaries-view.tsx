@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { FileText, Flag, Pencil, ShieldAlert, ShieldCheck } from "lucide-react";
+import { FileText, Flag, History, Pencil, ShieldAlert, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { humanizeError } from "@/lib/errors";
 import {
@@ -144,6 +144,15 @@ function VerifyIssues({ item }: Readonly<{ item: SummaryItem }>) {
 }
 
 
+/** The "Reviewed before" chip's tooltip: which earlier record, by its upload date. */
+function reviewedBeforeTitle(uploaded: string): string {
+  const day = new Date(uploaded);
+  const date = Number.isNaN(day.getTime())
+    ? "earlier"
+    : `${String(day.getMonth() + 1).padStart(2, "0")}/${String(day.getDate()).padStart(2, "0")}/${day.getFullYear()}`;
+  return `This patient's record uploaded ${date} already had these pages in a summarized entry. It is highlighted in yellow in the Word and PDF downloads, so an editor may skip it.`;
+}
+
 function SummaryChips({
   item,
   categoryLabel,
@@ -160,6 +169,12 @@ function SummaryChips({
         <span className="ev-chip ev-chip-manual">
           <Flag width={12} height={12} aria-hidden />
           Manual check
+        </span>
+      ) : null}
+      {item.reviewedBefore ? (
+        <span className="ev-chip ev-chip-seen" title={reviewedBeforeTitle(item.reviewedBefore)}>
+          <History width={12} height={12} aria-hidden />
+          Reviewed before
         </span>
       ) : null}
       {item.verifyChanged ? (
