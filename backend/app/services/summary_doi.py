@@ -22,9 +22,8 @@ import logging
 import re
 
 from app.config import get_settings
-from app.services.llm import DocumentPart, Part, TextPart, provider_for_stage
-from app.services.pdf import slice_pdf
-from app.services.rasterise import page_image_parts
+from app.services.llm import Part, TextPart, provider_for_stage
+from app.services.rasterise import page_image_parts, pdf_or_page_images
 from app.worker.failures import JobCancelled
 
 logger = logging.getLogger(__name__)
@@ -153,7 +152,8 @@ def _isolated_parts(pdf_path, start, end, settings) -> list[Part]:
     completions has no such part. So the pages are rasterised there - and at
     `doi_image_long_edge_px`, NOT the summarize target, because reading a small labelled date field
     needs more pixels than judging page layout. Gemini keeps the exact PDF bytes it has always been
-    sent and rasterises nothing.
+    sent - unless they are too heavy for one request: then it gets the vLLM images, rather than the
+    call failing and the row quietly losing its date (`rasterise.pdf_or_page_images`).
 
     `_MAX_PAGES` bounds both paths identically, so the same pages are sent either way.
     """
@@ -161,7 +161,7 @@ def _isolated_parts(pdf_path, start, end, settings) -> list[Part]:
         return page_image_parts(pdf_path, start, end, _MAX_PAGES, settings.doi_image_long_edge_px)
     # Read once per row on Gemini; the record is opened once, not once per row (pdf._readers).
     last = min(int(end), int(start) + _MAX_PAGES - 1)
-    return [DocumentPart(data=slice_pdf(pdf_path, start, last), mime_type="application/pdf")]
+    return pdf_or_page_images(pdf_path, start, last, settings.doi_image_long_edge_px)
 
 
 def extract_injury_date(pdf_path, start, end, model=None, strict=False) -> str:

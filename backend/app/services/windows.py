@@ -47,7 +47,7 @@ def next_window_start(s, e, overlap):
     return max(s + 1, e - effective + 1)
 
 
-def byte_budgeted_windows(pdf_path, n, overlap, budget_bytes, max_pages, hard_limit_bytes=None):
+def byte_budgeted_windows(pdf_path, n, overlap, budget_bytes, max_pages):
     """Overlapping windows packed to `budget_bytes` raw AND at most `max_pages` pages long.
     Returns [(start, end)] 1-based.
 
@@ -73,12 +73,10 @@ def byte_budgeted_windows(pdf_path, n, overlap, budget_bytes, max_pages, hard_li
     against a 12.5 MB budget: OCR had completed, every other page was ordinary, and the
     reviewer got nothing.
 
-    `hard_limit_bytes` is the size a single page genuinely cannot exceed, and only THAT raises.
-    It is per-backend and the caller supplies it, because it is a property of the transport
-    rather than of the PDF: Gemini receives the raw bytes inline and Vertex caps the request, so
-    there is a real ceiling. vLLM cannot take a PDF at all - every page is rasterised to a lean
-    JPEG first - so no raw-byte size is ever sent and there is no ceiling to hit. None means no
-    limit, which is the honest value for that path.
+    NOTHING HERE REFUSES A PAGE FOR ITS SIZE. A per-page ceiling used to raise for Gemini, whose
+    request carries the raw bytes inline, and on 2026-11-11 it refused a 223-page record three
+    times over one 14.2 MB page. How a heavy window travels is the caller's business:
+    `segment_engine._window_parts` sends a window too heavy for one request as page images.
     """
     if overlap < 1:
         raise ValueError(f"overlap must be >= 1 (got {overlap})")
@@ -87,15 +85,9 @@ def byte_budgeted_windows(pdf_path, n, overlap, budget_bytes, max_pages, hard_li
     sizes = page_raw_sizes(pdf_path, n)
     windows, s = [], 1
     while True:
-        if hard_limit_bytes is not None and sizes[s - 1] > hard_limit_bytes:
-            # Genuinely unsendable on this transport, which is a different fact from heavy.
-            raise RuntimeError(
-                f"page {s} is {sizes[s - 1] / 1048576:.1f} MB raw, over the "
-                f"{hard_limit_bytes / 1048576:.1f} MB this backend can carry in one request"
-            )
-        # No `else`: a page over the packing budget simply does not fit a neighbour beside it,
-        # so the inner loop below places it alone. That falls out of the arithmetic rather than
-        # needing a branch - `acc` already exceeds the budget, so the first test fails.
+        # A page over the packing budget simply does not fit a neighbour beside it, so the inner
+        # loop below places it alone. That falls out of the arithmetic rather than needing a
+        # branch - `acc` already exceeds the budget, so the first test fails.
         e, acc = s, sizes[s - 1]
         while e < n and acc + sizes[e] <= budget_bytes and (e - s + 1) < max_pages:
             acc += sizes[e]

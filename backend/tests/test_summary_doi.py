@@ -9,6 +9,7 @@ import types as pytypes
 import pytest
 
 from app.config import get_settings
+from app.services import rasterise
 from app.services import summary_doi as sd
 
 
@@ -57,7 +58,7 @@ def _patch_pdf(monkeypatch, cuts=None):
             cuts.append((int(first), int(last)))
         return b"%PDF-1.4 fake"
 
-    monkeypatch.setattr(sd, "slice_pdf", _slice)
+    monkeypatch.setattr(rasterise, "slice_pdf", _slice)
 
 
 def _answers(text, truncated=False):

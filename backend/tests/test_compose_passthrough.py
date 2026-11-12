@@ -131,10 +131,14 @@ def test_every_stage_that_rasterises_is_covered_by_the_image_guard():
     # matched `rasterise.py`'s own `def page_image_parts(` at column 0 - the module that DEFINES the
     # helper counted as a caller. Caught by this test failing on its first run, which is the only
     # reason it is not still wrong.
+    # `rasterise.py` itself is not a caller: it defines the helper, and its own call (in
+    # `pdf_or_page_images`, a Gemini cut too heavy for one request) is made only for the segment,
+    # doi and deposition stages, which are listed here through their own modules.
     callers = {
         path.stem
         for path in services.glob("*.py")
-        if re.search(r"^[ \t]+.*page_image_parts\(", path.read_text(encoding="utf-8"), re.M)
+        if path.stem != "rasterise"
+        and re.search(r"^[ \t]+.*page_image_parts\(", path.read_text(encoding="utf-8"), re.M)
     }
     # Module name -> the stage string the guard keys on. Named rather than derived, because the two
     # do not match ("summarize_engine" is the "summarize" stage) and guessing would be fragile.
