@@ -52,6 +52,7 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 400 | `file is not a readable PDF` | D1 |
 | 400 | `no PDFs uploaded` | D2 |
 | 400 | `no readable PDFs uploaded` | D2 |
+| 400 | `A patient ID is at most 32 letters and digits.` | D1, D2, D6b |
 | 400 | `primary_idx is not in this cluster` | D12 (`keep_one`) |
 | 400 | `idx is not in this cluster` | D12 (`keep_another`, `remove_member`) |
 | 400 | `keep one copy first, then keep another` | D12 (`keep_another`) |

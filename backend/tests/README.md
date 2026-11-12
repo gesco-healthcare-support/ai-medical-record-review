@@ -72,6 +72,7 @@ shared `conftest.py`.
 | `test_openai_config_guards.py` | Startup guards for the OpenAI provider settings. |
 | `test_pacing.py` | Adaptive pacing of model calls: request and token meters and the controller. |
 | `test_page_text.py` | The per-page OCR text store: extract once, reuse, keep errored and blank pages distinct; two passes over one record share the pages. |
+| `test_patient_ids.py` | The patient ID: read from the file name in any order, never guessed from two, typed and cleaned, the combined upload's order, set and cleared by hand, counted across accounts, and the migration's frozen rule and backfill. |
 | `test_upload_ocr.py` | The reading of a record's pages at upload: the untracked `ocr` queue, its job, and segment workers reading it (also while they wait for the model server). |
 | `test_password.py` | The Flask-Security-compatible password hashing, including its production cost. |
 | `test_pdf_slice.py` | Gemini's PDF slices: byte-identical to a fresh cut, and the record opened once, not once per slice. |

@@ -9,7 +9,8 @@ Nothing here renders; hooks and components import these functions.
 | `api.ts` | `apiFetch()` (prefixes `/api`, sends the session cookie, JSON by default), `ApiError`, `signedOut()` (redirect to `/login` and return the error to throw), `errorFromResponse()` (reads a string `detail` or `error`, else `"<path> failed (<status>)"`) |
 | `errors.ts` | `humanizeError()` (the one mapping from an error to a sentence), `isOffline()`, `lacksServerMessage()`, `isDuplicateRecord()` (the 409 an admin may confirm past) |
 | `auth-api.ts` | `login()` (form-encoded), `logout()`, `register()`, `forgotPassword()`, `resetPassword()` |
-| `documents-api.ts` | `listDocuments(owner?)` (an admin's `owner` asks for that account's records), `uploadDocument(file, target?)` and `aggregateDocuments(name, files, owner?)` (an admin's `owner` puts the record in that account), `deleteDocument()`, `startIdentification()` |
+| `documents-api.ts` | `listDocuments(owner?)` (an admin's `owner` asks for that account's records), `uploadDocument(file, target?)` and `aggregateDocuments(name, files, owner?, patientId?)` (an admin's `owner` puts the record in that account; the patient ID goes with it), `setPatientId()`, `deleteDocument()`, `startIdentification()` |
+| `patient-id.ts` | The patient ID in an upload's file name - the backend's `patient_ids.py` rule: `patientIdFromFilename()`, `agreedPatientId()`, `cleanPatientId()`, `otherRecordsLine()`, `PATIENT_ID_MAX_LENGTH` |
 | `review-api.ts` | The workbench calls: record detail, status, duplicates, dedup start, cancel, resolve, rows, segment and summarize start, header extract and save, summaries; the `HeaderFields` and `DuplicateAction` types |
 | `admin-api.ts` | The accounts list (`listAccounts()`); categories list, create and update; prompt get, put and delete; reprocess; `assignDocument()` (move a record to another reviewer); the `AdminCategory`, `PromptInfo` and `CategoryInput` types |
 | `bundle-api.ts` | `BundleConfig`, `DIAGNOSTIC_OPERATIVE`, `DEPOSITIONS`, `BUNDLES` (the only copy of the bundle taxonomy), `downloadBundlePdf()`, `downloadBundleSummary()` |
@@ -20,6 +21,7 @@ Nothing here renders; hooks and components import these functions.
 | `utils.ts` | `cn()`: `clsx` plus `tailwind-merge` |
 | `api.test.ts`, `errors.test.ts`, `auth-api.test.ts`, `documents-api.test.ts`, `review-api.test.ts`, `admin-api.test.ts`, `bundle-api.test.ts`, `download.test.ts` | URL, method and body of each call; error mapping; the download hand-over and its failures |
 | `review-rows.test.ts` | Every row rule, case by case |
+| `patient-id.test.ts` | The file-name rule on the backend test's own cases, the agreed ID, the cleaning |
 | `summary-order.test.ts` | The search, date order and date reading of the Summaries tab |
 | `review-rows.property.test.ts` | Invariants of the row rules over generated rows (`@fast-check/vitest`) |
 

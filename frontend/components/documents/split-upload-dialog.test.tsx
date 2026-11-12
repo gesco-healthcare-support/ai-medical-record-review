@@ -20,9 +20,10 @@ describe("SplitUploadDialog error handling", () => {
     const user = userEvent.setup();
     aggregate.mutateAsync.mockRejectedValue(new ApiError("network", 0));
     render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
-    // Two PDFs are required to enable Combine; the Radix dialog portals to document.body.
+    // Two PDFs and a patient ID (here read from the names) enable Combine; the Radix dialog
+    // portals to document.body.
     fireEvent.change(document.querySelector('input[type="file"]')!, {
-      target: { files: [pdf("a.pdf"), pdf("b.pdf")] },
+      target: { files: [pdf("a 801234.pdf"), pdf("b 801234.pdf")] },
     });
     await user.click(await screen.findByRole("button", { name: "Combine & upload" }));
     await waitFor(() =>
@@ -109,7 +110,7 @@ describe("SplitUploadDialog queue editing", () => {
     aggregate.mutateAsync.mockResolvedValue({ id: "d9" });
     render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
     fireEvent.change(document.querySelector('input[type="file"]')!, {
-      target: { files: [pdf("a.pdf"), pdf("b.pdf")] },
+      target: { files: [pdf("a 801234.pdf"), pdf("b 801234.pdf")] },
     });
 
     await user.type(screen.getByLabelText("Record name"), "Combined record");
@@ -157,7 +158,7 @@ describe("SplitUploadDialog for another reviewer", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/goes into Brian's records, not yours/)).toBeInTheDocument();
     fireEvent.change(document.querySelector('input[type="file"]')!, {
-      target: { files: [pdf("a.pdf"), pdf("b.pdf")] },
+      target: { files: [pdf("a 801234.pdf"), pdf("b 801234.pdf")] },
     });
 
     await user.click(await screen.findByRole("button", { name: "Combine & upload for Brian" }));
@@ -176,10 +177,62 @@ describe("SplitUploadDialog for another reviewer", () => {
     aggregate.mutateAsync.mockResolvedValueOnce({ id: "d9" });
     render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
     fireEvent.change(document.querySelector('input[type="file"]')!, {
-      target: { files: [pdf("a.pdf"), pdf("b.pdf")] },
+      target: { files: [pdf("a 801234.pdf"), pdf("b 801234.pdf")] },
     });
     await user.click(await screen.findByRole("button", { name: "Combine & upload" }));
     await waitFor(() => expect(aggregate.mutateAsync).toHaveBeenCalledTimes(1));
     expect(aggregate.mutateAsync.mock.calls[0][0]).not.toHaveProperty("owner");
+  });
+});
+
+describe("SplitUploadDialog patient ID", () => {
+  // The office names record files after the patient, with the patient's ID in the name. Synthetic.
+  const stage = (...names: string[]) =>
+    fireEvent.change(document.querySelector('input[type="file"]')!, {
+      target: { files: names.map(pdf) },
+    });
+
+  it("fills in the ID the files' names agree on, and sends it", async () => {
+    const user = userEvent.setup();
+    aggregate.mutateAsync.mockResolvedValueOnce({ id: "d9", patient_records: 1 });
+    render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
+    stage("a-AB1234.pdf", "cover.pdf");
+    expect(screen.getByLabelText("Patient ID")).toHaveValue("AB1234");
+
+    await user.click(await screen.findByRole("button", { name: "Combine & upload" }));
+    await waitFor(() =>
+      expect(aggregate.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ patientId: "AB1234" }),
+      ),
+    );
+    expect(vi.mocked(toast).success).toHaveBeenCalledWith(
+      "Records combined and uploaded. This patient has 1 other record in the system.",
+    );
+  });
+
+  it("will not combine without an ID, and takes the one typed", async () => {
+    const user = userEvent.setup();
+    aggregate.mutateAsync.mockResolvedValueOnce({ id: "d9" });
+    render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
+    stage("a.pdf", "b.pdf");
+    const combine = await screen.findByRole("button", { name: "Combine & upload" });
+    expect(combine).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Patient ID"), "80 12 34");
+    expect(combine).toBeEnabled();
+    await user.click(combine);
+    await waitFor(() =>
+      expect(aggregate.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ patientId: "801234" }),
+      ),
+    );
+  });
+
+  it("takes the ID in the record name over the files' names", async () => {
+    const user = userEvent.setup();
+    render(<SplitUploadDialog open onOpenChange={vi.fn()} />);
+    stage("a 801234.pdf", "b 801234.pdf");
+    await user.type(screen.getByLabelText("Record name"), "Jane Example K12345");
+    expect(screen.getByLabelText("Patient ID")).toHaveValue("K12345");
   });
 });

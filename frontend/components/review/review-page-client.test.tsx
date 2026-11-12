@@ -89,6 +89,8 @@ function mockWf(over: Record<string, unknown>) {
     saveState: { kind: "" },
     header: null,
     setHeader: vi.fn(),
+    patient: { id: "", others: 0 },
+    setPatient: vi.fn(),
     attention: null,
     onStart: vi.fn(),
     onSummarize: vi.fn(),

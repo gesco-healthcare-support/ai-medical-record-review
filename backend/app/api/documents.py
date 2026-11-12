@@ -48,13 +48,14 @@ from app.schemas.documents import (
     ExportPayload,
     ExportZipPayload,
     HeaderPayload,
+    PatientIdPayload,
     ResummarizePayload,
     RowsPayload,
     SegmentStartPayload,
     SummarizeStartPayload,
     SummaryEditPayload,
 )
-from app.services import bundles, catalog, downloads
+from app.services import bundles, catalog, downloads, patient_ids
 from app.services.aggregate import merge_pdfs
 from app.services.audit import audit
 from app.services.classification import DEFAULT_ID, match_rules
@@ -389,11 +390,36 @@ def _apply_row_category(
     )
 
 
+_PATIENT_ID_TOO_LONG_DETAIL = (
+    f"A patient ID is at most {patient_ids.MAX_LENGTH} letters and digits."
+)
+
+
+def _typed_patient_id(value: str | None) -> str | None:
+    """A patient ID the uploader or reviewer typed, cleaned (patient_ids.clean); None for an empty
+    box; a 400 for one too long to be an ID."""
+    try:
+        return patient_ids.clean(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=_PATIENT_ID_TOO_LONG_DETAIL) from None
+
+
+def _patient_fields(session: Session, document: Document) -> dict:
+    """The record's patient ID and how many OTHER records carry it, in any reviewer's account."""
+    return {
+        "patient_id": document.patient_id or "",
+        "patient_records": patient_ids.other_records(session, document),
+    }
+
+
 @router.post(
     "",
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"description": "No PDF was uploaded, or the file is not a readable PDF."},
+        400: {
+            "description": "No PDF was uploaded, the file is not a readable PDF, or the patient ID "
+            "typed is too long."
+        },
         403: {"description": "A non-admin named another reviewer's account."},
         404: {"description": "The reviewer named is not an active account."},
         409: {"description": "That reviewer already holds this file; send allow_duplicate."},
@@ -403,6 +429,7 @@ def create_document(
     pdf: UploadFile | None = File(default=None),
     owner: int | None = Form(default=None),
     allow_duplicate: bool = Form(default=False),
+    patient_id: str = Form(default=""),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
@@ -412,9 +439,15 @@ def create_document(
     someone else's it is a 409 the admin confirms with `allow_duplicate` (see `api/ownership.py`):
     the file is checked against THAT reviewer's records, not the admin's, because the question is
     whether the person who will work on it already has it.
+
+    `patient_id` is the ID the uploader typed; without it the ID is read from the file name
+    (`services/patient_ids.py`). Neither: the record is stored without one - the web app asks
+    before sending such a file, and a script's upload must not fail on it. The answer says how many
+    other records carry the same ID.
     """
     if pdf is None or not pdf.filename:
         raise HTTPException(status_code=400, detail="no PDF uploaded")
+    typed_id = _typed_patient_id(patient_id)
     reviewer = upload_owner(session, user, owner)
     for_someone_else = reviewer.id != user.id
 
@@ -441,13 +474,15 @@ def create_document(
         os.remove(stored_path)
         return duplicate_conflict(reviewer, copies)
 
+    filename = safe_name(pdf.filename)
     document = Document(
         id=document_id,
         user_id=reviewer.id,
-        original_filename=safe_name(pdf.filename),
+        original_filename=filename,
         stored_path=stored_path,
         sha256=sha256,
         page_count=page_count,
+        patient_id=typed_id or patient_ids.from_filename(filename),
     )
     session.add(document)
     session.commit()
@@ -457,14 +492,22 @@ def create_document(
     # Read the pages now, with no model, rather than at the start of Identify. Best effort: a refused
     # queue leaves them for Identify, as before.
     enqueue_upload_ocr(document_id, page_count)
-    return {"id": document_id, "page_count": page_count, "sha256_duplicate": bool(copies)}
+    return {
+        "id": document_id,
+        "page_count": page_count,
+        "sha256_duplicate": bool(copies),
+        **_patient_fields(session, document),
+    }
 
 
 @router.post(
     "/aggregate",
     status_code=status.HTTP_201_CREATED,
     responses={
-        400: {"description": "No PDFs were uploaded, or none of them is readable."},
+        400: {
+            "description": "No PDFs were uploaded, none of them is readable, or the patient ID "
+            "typed is too long."
+        },
         403: {"description": "A non-admin named another reviewer's account."},
         404: {"description": "The reviewer named is not an active account."},
     },
@@ -473,6 +516,7 @@ def aggregate_documents(
     pdfs: list[UploadFile] = File(default=[]),
     name: str = Form(default=""),
     owner: int | None = Form(default=None),
+    patient_id: str = Form(default=""),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
@@ -481,8 +525,12 @@ def aggregate_documents(
     optional `name` becomes the record's display name (shown to its owner only). `owner` (admins
     only) puts the record in another reviewer's account, as on the single upload.
 
+    `patient_id` is the ID the uploader typed; without it, the one in `name`, else the one every
+    source file name that carries an ID agrees on (`services/patient_ids.py`), else none.
+
     No duplicate check (there never was one here): the record is a file the server builds from the
     pieces, so its hash says nothing reliable about whether the same pieces were uploaded before."""
+    typed_id = _typed_patient_id(patient_id)
     reviewer = upload_owner(session, user, owner)
     sources = [(safe_name(f.filename), f.file.read()) for f in pdfs if f.filename]
     if not sources:
@@ -506,6 +554,9 @@ def aggregate_documents(
         stored_path=stored_path,
         sha256=_sha256(stored_path),
         page_count=page_count,
+        patient_id=typed_id
+        or patient_ids.from_filename(name)
+        or patient_ids.agreed(source_name for source_name, _ in sources),
     )
     session.add(document)
     # One row per source record (its page range); category defaults to general until the classify
@@ -545,7 +596,12 @@ def aggregate_documents(
         )
     except JobConflict:
         pass  # a brand-new document cannot already have an active job; never fail the upload on it
-    return {"id": document_id, "page_count": page_count, "records": records}
+    return {
+        "id": document_id,
+        "page_count": page_count,
+        "records": records,
+        **_patient_fields(session, document),
+    }
 
 
 @router.get("")
@@ -680,7 +736,7 @@ def get_document(
     # which record is on file. An owner reading their own record is not audited, as before.
     if document.user_id != user.id:
         audit(session, "view_record", user.id, document.id)
-    payload = document.listing()
+    payload = document.listing() | _patient_fields(session, document)
     payload["rows"] = _editor_rows(session, document)
     payload["categories"] = catalog.get_category_options(session)
     # Served with the record for the same reason `categories` is: the dropdown needs the
@@ -821,6 +877,32 @@ def put_header(
     changed = sorted(f for f in _HEADER_FIELDS if (getattr(document, f) or "") != (before[f] or ""))
     audit(session, "header.edit", user.id, document.id, detail="changed=" + ",".join(changed))
     return document.listing()
+
+
+@router.put(
+    "/{document_id}/patient-id",
+    responses={400: {"description": "The patient ID is too long to be one."}},
+)
+def set_patient_id(
+    payload: PatientIdPayload,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Set the record's patient ID by hand, or clear it with an empty string.
+
+    For a record whose file name did not carry one, or carried the wrong one. Stored cleaned
+    (`patient_ids.clean`: letters and digits, upper-case). Allowed while a job runs - it touches
+    no row. Answers with the record's list entry plus how many other records carry the ID."""
+    value = _typed_patient_id(payload.patient_id)
+    if value != document.patient_id:
+        document.patient_id = value
+        session.commit()
+        # Set or cleared, never the value: the ID is the patient's.
+        audit(
+            session, "patient_id.edit", user.id, document.id, detail="set" if value else "cleared"
+        )
+    return document.listing() | _patient_fields(session, document)
 
 
 @router.put("/{document_id}/completed")

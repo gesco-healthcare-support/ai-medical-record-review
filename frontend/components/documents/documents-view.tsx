@@ -13,10 +13,12 @@ import {
 import { useAccounts } from "@/hooks/use-admin";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { humanizeError, isDuplicateRecord } from "@/lib/errors";
+import { otherRecordsLine, patientIdFromFilename } from "@/lib/patient-id";
 import type { AdminAccount, DocumentListItem } from "@/lib/types";
 import { AssignDialog } from "./assign-dialog";
 import { DocumentsTable } from "./documents-table";
 import { EmptyState, UPLOAD_INPUT_ID } from "./empty-state";
+import { PatientIdDialog } from "./patient-id-dialog";
 import { SplitUploadDialog } from "./split-upload-dialog";
 import { ConfirmDialog } from "./confirm-dialog";
 
@@ -211,22 +213,31 @@ function ListHeader({
 
 /** A file waiting on the admin's go-ahead to land in another reviewer's account. The reviewer is
  *  captured WITH the file, so what the confirmation names is what the upload targets. */
-type CrossUpload = { file: File; ownerId: number; ownerName: string };
+type CrossUpload = { file: File; ownerId: number; ownerName: string; patientId: string };
+
+/** The sentence an upload's message adds when the patient already has other records, or "". */
+function otherRecordsNote(count: number | undefined): string {
+  const line = otherRecordsLine(count);
+  return line ? ` ${line}` : "";
+}
 
 /** Uploading: straight in on one's own records; into another reviewer's after a confirmation, and
- *  a second one if the server says that reviewer already holds the file. */
+ *  a second one if the server says that reviewer already holds the file. A file whose name carries
+ *  no patient ID waits for the uploader to type one first (`asking`). */
 function useUploads(owner: RecordsOwner) {
   const upload = useUploadDocument();
+  const [asking, setAsking] = useState<File | null>(null);
   const [pending, setPending] = useState<CrossUpload | null>(null);
   const [duplicate, setDuplicate] = useState<(CrossUpload & { message: string }) | null>(null);
 
-  async function uploadOwn(file: File) {
+  async function uploadOwn(file: File, patientId: string) {
     try {
-      const created = await upload.mutateAsync({ file });
+      const created = await upload.mutateAsync({ file, patientId });
+      const others = otherRecordsNote(created.patient_records);
       if (created.sha256_duplicate) {
-        toast("You already uploaded an identical file. Continuing anyway.");
+        toast(`You already uploaded an identical file. Continuing anyway.${others}`);
       } else {
-        toast.success("Record uploaded.");
+        toast.success(`Record uploaded.${others}`);
       }
     } catch (err) {
       toast.error(errMessage(err, "Upload failed."));
@@ -235,8 +246,15 @@ function useUploads(owner: RecordsOwner) {
 
   async function uploadFor(to: CrossUpload, allowDuplicate: boolean) {
     try {
-      await upload.mutateAsync({ file: to.file, owner: to.ownerId, allowDuplicate });
-      toast.success(`Record uploaded to ${to.ownerName}'s records.`);
+      const created = await upload.mutateAsync({
+        file: to.file,
+        owner: to.ownerId,
+        allowDuplicate,
+        patientId: to.patientId,
+      });
+      toast.success(
+        `Record uploaded to ${to.ownerName}'s records.${otherRecordsNote(created.patient_records)}`,
+      );
     } catch (err) {
       if (isDuplicateRecord(err)) {
         setDuplicate({ ...to, message: err.message });
@@ -251,29 +269,67 @@ function useUploads(owner: RecordsOwner) {
     }
   }
 
-  /** A picked or dropped file. */
+  /** A file with its patient ID: into one's own records, or to the admin's confirmation. */
+  function send(file: File, patientId: string) {
+    if (owner.viewingOther && owner.ownerId !== null) {
+      setPending({
+        file,
+        ownerId: owner.ownerId,
+        ownerName: owner.ownerName ?? "this reviewer",
+        patientId,
+      });
+      return;
+    }
+    void uploadOwn(file, patientId);
+  }
+
+  /** A picked or dropped file. Its patient ID comes from the file name; when the name has none (or
+   *  two), the uploader is asked for it before anything is sent. */
   function take(file: File) {
     if (!isPdf(file)) {
       toast.error("Only PDF files can be uploaded.");
       return;
     }
-    if (owner.viewingOther && owner.ownerId !== null) {
-      setPending({ file, ownerId: owner.ownerId, ownerName: owner.ownerName ?? "this reviewer" });
-      return;
-    }
-    void uploadOwn(file);
+    const patientId = patientIdFromFilename(file.name);
+    if (patientId) send(file, patientId);
+    else setAsking(file);
   }
 
-  return { upload, pending, setPending, duplicate, setDuplicate, take, uploadFor };
+  /** The uploader typed the ID the file name lacked. */
+  function answer(patientId: string) {
+    const file = asking;
+    setAsking(null);
+    if (file) send(file, patientId);
+  }
+
+  return {
+    upload,
+    asking,
+    setAsking,
+    answer,
+    pending,
+    setPending,
+    duplicate,
+    setDuplicate,
+    take,
+    uploadFor,
+  };
 }
 
 type Uploads = ReturnType<typeof useUploads>;
 
-/** The confirmations an upload into another reviewer's account goes through. */
-function CrossUploadDialogs({ uploads }: Readonly<{ uploads: Uploads }>) {
-  const { pending, setPending, duplicate, setDuplicate, uploadFor } = uploads;
+/** The questions an upload can ask: the patient ID a file name lacks, and the confirmations an
+ *  upload into another reviewer's account goes through. */
+function UploadDialogs({ uploads }: Readonly<{ uploads: Uploads }>) {
+  const { asking, setAsking, answer, pending, setPending, duplicate, setDuplicate, uploadFor } =
+    uploads;
   return (
     <>
+      <PatientIdDialog
+        fileName={asking?.name ?? null}
+        onCancel={() => setAsking(null)}
+        onSubmit={answer}
+      />
       <ConfirmDialog
         open={Boolean(pending)}
         onOpenChange={(open) => !open && setPending(null)}
@@ -434,7 +490,7 @@ export function DocumentsView() {
 
       <SplitUploadDialog open={splitOpen} onOpenChange={setSplitOpen} owner={splitOwner} />
 
-      <CrossUploadDialogs uploads={uploads} />
+      <UploadDialogs uploads={uploads} />
 
       <AssignDialog
         doc={assignTarget}
