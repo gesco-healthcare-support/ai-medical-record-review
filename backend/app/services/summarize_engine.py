@@ -2227,7 +2227,9 @@ def _deponent(rest: str) -> str:
         if found is None:
             break
         piece, follows = found
-        name = f"{name}{', ' if after_comma else ' ' if name else ''}{piece}"
+        if name:
+            name += ", " if after_comma else " "
+        name += piece
         if follows == "end":
             break
         after_comma = follows == "comma"
@@ -2287,7 +2289,18 @@ def _row_title(title: str, row, text) -> str:
     return deposition_title(title, volume=None if volume == "I" else volume)
 
 
-_NUMBERED_DEPOSITION = re.compile(r"(DEPOSITION OF .+?)(?:,? VOLUME ([IVX]+))?", re.I)
+_TRAILING_VOLUME = re.compile(r",? VOLUME ([IVX]+)$", re.I)
+
+
+def _numbered_deposition(title: str) -> tuple[str, str | None] | None:
+    """``(deponent part, volume)`` of a "DEPOSITION OF <NAME>[, VOLUME <N>]" title, else None."""
+    core = (title or "").strip()
+    if not core.upper().startswith("DEPOSITION OF "):
+        return None
+    volume = _TRAILING_VOLUME.search(core)
+    if volume is None:
+        return core.upper(), None
+    return core[: volume.start()].upper(), volume.group(1).upper()
 
 
 def first_volumes(titles: list[str], locked: list[bool] | None = None) -> list[str]:
@@ -2300,9 +2313,9 @@ def first_volumes(titles: list[str], locked: list[bool] | None = None) -> list[s
     locked = locked or [False] * len(titles)
     seen: dict[str, list[tuple[int, str | None]]] = defaultdict(list)
     for i, title in enumerate(titles):
-        match = _NUMBERED_DEPOSITION.fullmatch((title or "").strip())
-        if match:
-            seen[match.group(1).upper()].append((i, (match.group(2) or "").upper() or None))
+        parts = _numbered_deposition(title)
+        if parts:
+            seen[parts[0]].append((i, parts[1]))
     result = list(titles)
     for found in seen.values():
         volumes = {volume for _, volume in found}

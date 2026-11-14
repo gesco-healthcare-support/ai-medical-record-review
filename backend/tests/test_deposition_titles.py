@@ -326,4 +326,4 @@ def test_the_other_titles_still_go_through_the_passes():
     assert out[1] == "DEPOSITION OF JANE ROE, M.D."
     rest = se.consistent_titles([titles[0], titles[2], titles[3]], ["1"] * 3, [False, False, True])
     assert [out[0], out[2], out[3]] == rest
-    assert rest[0] == "JANE A. ROE, M.D. SAMPLE ORTHOPEDICS. PROGRESS NOTE", "the passes ran"
+    assert "JANE A. ROE, M.D. SAMPLE ORTHOPEDICS. PROGRESS NOTE" == rest[0], "the passes ran"
