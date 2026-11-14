@@ -2152,6 +2152,8 @@ _DEPONENT_ENDS = frozenset(
         "ON",
         "AT",
         "CSR",
+        "CASE",
+        "WCAB",
         "PAGE",
         "PAGES",
         "DEPOSITION",
