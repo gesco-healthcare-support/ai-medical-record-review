@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date as calendar_date
 
@@ -2102,15 +2103,225 @@ def without_wc_agency(title: str) -> str:
     return result if re.search(r"[A-Za-z0-9]", result) else title
 
 
+# A DEPOSITION IS TITLED FOR ITS DEPONENT, AND ITS VOLUME, AND NOTHING ELSE. Reviewer feedback,
+# 2026-11-13: "remove the other text for the titles of Depositions and just have it say
+# 'Deposition of ___' and then Volume I, II, III, etc. (if applicable)". TITLE_PROMPT already
+# asked for that line, and the model still put the court reporter, her licence number and the
+# reporting agency in front of it, or a date after it. Measured on the live box the same day over
+# its 174 category 9 titles: about a quarter carried a reporter, a CSR number, an agency or a
+# date; the 64 a reviewer retyped read "DEPOSITION OF <NAME>", nine of them with the volume added
+# - written ", VOLUME II" most often - where the model had named a volume in two titles.
+#
+# So the deponent is the name after the LAST "<kind> OF" pair, the pair
+# `api/documents._words_after_of` names a separate deposition's file by (DEPOSITION, DEPO or
+# TRANSCRIPT, which "TRANSCRIPT OF THE DEPOSITION OF <NAME>" and "DEPOSITION OF CUSTODIAN OF
+# RECORDS" both need), up to where its element ends: a comma not followed by a credential or a
+# suffix, a period after a whole word, a number, a bracket, or a word that starts what the
+# transcript says about itself (VOLUME, TAKEN, a month ...). A credential (", M.D.") and a suffix
+# (JR.) stay, as reviewers kept them. The volume is read from anywhere in the title, in any
+# spelling ("VOL. 2", "VOLUME TWO"), and written ", VOLUME II".
+#
+# A title with no such pair is left as it came, and so is one that does not name a deposition at
+# all ("TRANSCRIPT OF HEARING"): it does not say who was deposed, and this rule does not guess.
+_DEPONENT_PAIR = re.compile(r"\b(?:DEPOSITION|DEPO|TRANSCRIPT)\s+OF\s+", re.I)
+# "DEPOSITION BY ZOOM VIDEOCONFERENCE OF <NAME>": how it was taken, between the kind and its OF - up
+# to three words, one of them a way of taking it.
+_DEPONENT_PAIR_HOW = re.compile(
+    r"\bDEPOSITION(?=(?:\s+[A-Z]+){0,2}?\s+(?:ZOOM|VIDEO|VIDEOTAPED|VIDEOCONFERENCE|REMOTE"
+    r"|REMOTELY|TELEPHONIC|VIRTUAL|WEBEX)\b)(?:\s+[A-Z]+){1,3}?\s+OF\s+",
+    re.I,
+)
+_NAMES_A_DEPOSITION = re.compile(r"\bDEPO(?:SITION)?\b", re.I)
+_VOLUME = re.compile(
+    r"\bVOL(?:UME)?\b\.?\s*(?:NO\.?\s*|NUMBER\s+|#\s*)?"
+    r"(X|IX|VIII|VII|VI|V|IV|III|II|I|\d{1,2}|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)\b",
+    re.I,
+)
+_ROMAN_VOLUMES = ("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
+_VOLUME_WORDS = ("ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN")
+_DEPONENT_ENDS = frozenset(
+    {
+        "VOLUME",
+        "VOL",
+        "TAKEN",
+        "DATED",
+        "HELD",
+        "REPORTED",
+        "BEFORE",
+        "VIA",
+        "ON",
+        "AT",
+        "CSR",
+        "PAGE",
+        "PAGES",
+        "DEPOSITION",
+        "DEPO",
+        "TRANSCRIPT",
+        "JANUARY",
+        "FEBRUARY",
+        "MARCH",
+        "APRIL",
+        "MAY",
+        "JUNE",
+        "JULY",
+        "AUGUST",
+        "SEPTEMBER",
+        "OCTOBER",
+        "NOVEMBER",
+        "DECEMBER",
+    }
+)
+# Words that keep their period inside a name: an honorific, a title, a suffix.
+_NAME_ABBREVIATIONS = frozenset({"DR", "MR", "MRS", "MS", "ST", "ESQ"})
+
+
+def _volume(title: str) -> str | None:
+    """The volume a deposition title names, as a roman numeral, or None."""
+    match = _VOLUME.search(title)
+    if not match:
+        return None
+    number = match.group(1).upper()
+    if number.isdigit():
+        n = int(number)
+    elif number in _VOLUME_WORDS:
+        n = _VOLUME_WORDS.index(number) + 1
+    else:
+        return number
+    return _ROMAN_VOLUMES[n - 1] if 1 <= n <= len(_ROMAN_VOLUMES) else None
+
+
+def _deponent_credential(word: str) -> bool:
+    plain = word.replace(".", "").upper()
+    return bool(_CREDENTIAL.fullmatch(word)) or plain in _DEGREES or plain in {"ESQ", "JR", "SR"}
+
+
+def _name_piece(raw: str, after_comma: bool, started: bool) -> tuple[str, str] | None:
+    """One word of a deponent's name as it is kept, and what may follow it: "comma" (a credential
+    or a suffix), "end" (nothing - the name ends with it) or "more"; None when the name ended
+    before it."""
+    word = raw.rstrip(",.;:")
+    if not word or not word[0].isalpha() or any(c.isdigit() for c in word):
+        return None
+    plain = word.replace(".", "").upper()
+    credential = started and _deponent_credential(word)
+    if (after_comma and not credential) or (not after_comma and plain in _DEPONENT_ENDS):
+        return None
+    dotted = raw.rstrip(",;:").endswith(".")
+    kept_period = credential or len(plain) == 1 or plain in _NAME_ABBREVIATIONS | _NAME_SUFFIXES
+    piece = word + "." if dotted and kept_period and not word.endswith(".") else word
+    if raw.endswith(","):
+        return piece, "comma"
+    if after_comma or raw[-1] in ";:" or (dotted and not kept_period):
+        return piece, "end"
+    return piece, "more"
+
+
+def _deponent(rest: str) -> str:
+    """The deponent's name at the start of ``rest`` - see the note above."""
+    name = ""
+    after_comma = False
+    for raw in rest.split():
+        found = _name_piece(raw, after_comma, bool(name))
+        if found is None:
+            break
+        piece, follows = found
+        name = f"{name}{', ' if after_comma else ' ' if name else ''}{piece}"
+        if follows == "end":
+            break
+        after_comma = follows == "comma"
+    return name
+
+
+def deposition_title(title: str, *, volume: str | None = None) -> str:
+    """``title`` as "DEPOSITION OF <NAME>", with ", VOLUME <N>" when it names one - see the note
+    above - or, when it names none, the ``volume`` the transcript's cover states (`cover_volume`).
+    Decoration is kept where it was, so this is safe on a stored title. Returns ``title`` itself
+    when it does not say whom a deposition is of, or already reads that way."""
+    head, core, tail = split_decoration(title)
+    if not _NAMES_A_DEPOSITION.search(core):
+        return title
+    pairs = list(_DEPONENT_PAIR.finditer(core)) or list(_DEPONENT_PAIR_HOW.finditer(core))
+    name = _deponent(core[pairs[-1].end() :]) if pairs else ""
+    if not name:
+        return title
+    upper = not any(c.islower() for c in core)
+    result = f"{'DEPOSITION OF' if upper else 'Deposition of'} {name}"
+    volume = _volume(core) or volume
+    if volume:
+        result = f"{result}, {'VOLUME' if upper else 'Volume'} {volume}"
+    return title if result == core else head + result + tail
+
+
+# THE VOLUME COMES FROM THE TRANSCRIPT'S COVER, not from the model. The title model named a volume
+# in 2 of the live box's 174 deposition titles; the first two pages of 43 of those transcripts
+# state one ("VOLUME I" 26, "II" 16, "III" 1), and on every title a reviewer added a volume to,
+# the first two pages stated it - the same numeral 7 times in 8 (2026-11-13). Read where the
+# summary is written, from the source text it was written from, whose pages are marked "Page
+# <n>:"; text with no marks is read for its first `_COVER_CHARS` characters, about two pages.
+#
+# "IF APPLICABLE": a II or later always is - it says the testimony continues another transcript. A
+# cover's "VOLUME I" is not added here: 21 of those 26 transcripts were the only volume in their
+# record, where it tells the reader nothing, and reviewers had left it off 14 times in 17. Where
+# the record does hold a later volume of the same deponent, the record-level pass gives the first
+# one its "VOLUME I" (`first_volumes`).
+_COVER_CHARS = 6000
+
+
+def cover_volume(text: str | None) -> str | None:
+    """The volume a deposition's first two pages state, as a roman numeral, or None."""
+    source = text or ""
+    marks = list(_PAGE_MARKER.finditer(source))
+    end = marks[2].start() if len(marks) > 2 else _COVER_CHARS
+    return _volume(source[:end])
+
+
+def _row_title(title: str, row, text) -> str:
+    """`category_title` for the row's category, and a deposition's volume from its cover when it is
+    II or later (see the note above)."""
+    title = category_title(title, row.get("category"))
+    if str(row.get("category")) not in _DEPOSITION_CATEGORIES:
+        return title
+    volume = cover_volume(text)
+    return deposition_title(title, volume=None if volume == "I" else volume)
+
+
+_NUMBERED_DEPOSITION = re.compile(r"(DEPOSITION OF .+?)(?:,? VOLUME ([IVX]+))?", re.I)
+
+
+def first_volumes(titles: list[str], locked: list[bool] | None = None) -> list[str]:
+    """The record's deposition titles, with ", VOLUME I" on the one deposition of a deponent that
+    names no volume where the record holds a later volume of theirs - see the note above.
+
+    Only when exactly one of that deponent's titles names no volume and none already says I, and
+    never on a ``locked`` (reviewer-typed) title, which still counts as a volume the record
+    holds."""
+    locked = locked or [False] * len(titles)
+    seen: dict[str, list[tuple[int, str | None]]] = defaultdict(list)
+    for i, title in enumerate(titles):
+        match = _NUMBERED_DEPOSITION.fullmatch((title or "").strip())
+        if match:
+            seen[match.group(1).upper()].append((i, (match.group(2) or "").upper() or None))
+    result = list(titles)
+    for found in seen.values():
+        volumes = {volume for _, volume in found}
+        bare = [i for i, volume in found if volume is None]
+        if len(bare) == 1 and "I" not in volumes and volumes - {None} and not locked[bare[0]]:
+            upper = not any(c.islower() for c in result[bare[0]])
+            result[bare[0]] = f"{result[bare[0]].strip()}, {'VOLUME' if upper else 'Volume'} I"
+    return result
+
+
 def category_title(title: str, category) -> str:
-    """``title`` with the rules that hold for its ``category`` alone - today category 7's agency
-    header (`without_wc_agency`).
+    """``title`` with the rules that hold for its ``category`` alone - category 7's agency header
+    (`without_wc_agency`) and a deposition's deponent and volume (`deposition_title`).
 
     Applied at generation, to the audit's corrected title, and - since 2026-10-09 - at export and on
     the Summaries tab too, so a title stored before a rule existed is delivered under it without a
     re-run, as `tidy_title` already was. Until then the agency rule reached only titles generated
     after it shipped. A leading ``[ManualCheck]`` tag stays where it was, so this is safe on a
     stored, decorated title. Returns ``title`` itself, byte for byte, when nothing applies."""
+    if str(category) in _DEPOSITION_CATEGORIES:
+        return deposition_title(title)
     if str(category) != WORKERS_COMP_LEGAL_CATEGORY:
         return title
     raw = title or ""
@@ -2726,7 +2937,30 @@ def consistent_titles(
     tab - so the screen and the deliverable cannot name a provider, a place or a document two ways.
     The passes read bare header lines, so a caller holding stored titles strips their decoration
     first (`split_decoration`). ``locked`` marks reviewer-edited titles: never rewritten, and they
-    win where a pass chooses between spellings."""
+    win where a pass chooses between spellings.
+
+    A deposition's title (category 9) takes no part in those: it names the person DEPOSED, not an
+    author. The provider passes read "DEPOSITION OF JOHN DOE, VOLUME II" or "..., M.D." as an
+    author whose first name is "DEPOSITION", so two deponents sharing a surname were one person to
+    them, and one name was written over the other (`deposition_title`). Depositions get their own
+    pass instead: the first volume of a deponent whose later volume is in the record
+    (`first_volumes`)."""
+    deposition = [str(c) in _DEPOSITION_CATEGORIES for c in categories]
+    if any(deposition):
+        lock = locked or [False] * len(titles)
+        result = list(titles)
+        for wanted in (False, True):
+            picked = [i for i, is_deposition in enumerate(deposition) if is_deposition == wanted]
+            mine = [titles[i] for i in picked]
+            if wanted:
+                done = first_volumes(mine, [lock[i] for i in picked])
+            else:
+                done = consistent_titles(
+                    mine, [categories[i] for i in picked], [lock[i] for i in picked]
+                )
+            for i, title in zip(picked, done, strict=True):
+                result[i] = title
+        return result
     titles = first_name_first_in_record(titles, locked)
     titles = consistent_facilities(consistent_authors(titles, locked), locked)
     return consistent_report_types(consistent_systems(titles, locked), categories, locked)
@@ -3880,8 +4114,8 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead, pdf_path
         # out of _usable_title returning `title`: an unusable rewrite then equals the current
         # title and no verified_title is stored, exactly as a rejected BODY rewrite keeps the raw
         # body.
-        fixed_title = category_title(
-            _usable_title(result.get("fixed_title"), title, source="audited"), row.get("category")
+        fixed_title = _row_title(
+            _usable_title(result.get("fixed_title"), title, source="audited"), row, text
         )
         if fixed_title and fixed_title != title:
             verified_title = (
@@ -4259,7 +4493,7 @@ def summarize_row(
     # The title call has no response_schema, and Gemini does not enforce maxLength on strings even
     # when one is declared, so NOTHING upstream bounds this. Guard here, before it is decorated and
     # written to a varchar(512).
-    title = category_title(_usable_title(title, row.get("title")), row.get("category"))
+    title = _row_title(_usable_title(title, row.get("title")), row, text)
     bodies = _row_bodies(summary, row, deposition)
 
     # The row IS the source of truth for the injury date. It was read once, per sub-document and in
