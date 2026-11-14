@@ -36,8 +36,9 @@ export function stripKeys(rows: EditorRow[]): Row[] {
   return rows.map((row) => {
     const copy: Partial<EditorRow> = { ...row };
     delete copy._key;
-    // Read-only and server-computed: the save never stores it, so it is not sent.
+    // Read-only and server-computed: the save never stores them, so they are not sent.
     delete copy.merged_pieces;
+    delete copy.left_out_of_export;
     return copy as Row;
   });
 }

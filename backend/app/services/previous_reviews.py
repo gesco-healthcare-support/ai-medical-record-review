@@ -19,9 +19,19 @@ and category alone would have marked new content, and a wrong mark can make an e
 a missed mark only costs a read. Entries with no readable page (a hand-filled form) cannot be
 compared, so they stay unmarked for the same reason.
 
-"Earlier-finished" is by the last summarize run of each record (`jobs.finished_at`): a record
-uploaded first but summarized second is the one marked. Only the page text already stored is read;
-no model is called. Nothing here logs page text, a file name or the ID.
+"Earlier" is by the FIRST finished summarize run of each record (`jobs.finished_at`): a record
+uploaded first but summarized second is the one marked. The first run and not the last, so the
+order holds once a record is done: summarizing an earlier record again (after a correction) must
+not make it the later one and mark it against the record that was delivered after it.
+
+The same order NUMBERS a patient's records (`record_number`), which the export puts in its file
+names. Reviewer feedback, 2026-11-13: "if there are previous summaries for the same patient, if we
+could number them (The first one doesn't have to be numbered, but ... 2, 3, 4, etc. for all the
+subsequent records)" - two records of one patient otherwise download under the same names. On the
+live box that day 86 of 689 summarized records with a patient ID were a patient's second or later.
+
+Only the page text already stored is read; no model is called. Nothing here logs page text, a file
+name or the ID.
 """
 
 import re
@@ -35,6 +45,9 @@ from app.models import Document, Job, PageText, Summary
 
 MIN_SHINGLES = 25
 MATCH_SHARE = 0.6
+# A summarize run that came to its end. A cancelled or failed run does not place a record: a run
+# stopped before it wrote anything would otherwise put the record before ones summarized since.
+_FINISHED_RUN = ("done", "needs_attention")
 
 _WORD = re.compile(r"[a-z]{2,}")
 
@@ -49,24 +62,35 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def summarized_at(session: Session, document_id: str) -> datetime | None:
-    """When the record's last summarize run finished, or None if none has."""
+def first_summarized(session: Session, document_id: str) -> datetime | None:
+    """When the record's first summarize run came to its end, or None if none has."""
     return session.scalar(
-        select(func.max(Job.finished_at)).where(
-            Job.document_id == document_id, Job.kind == "summarize"
+        select(func.min(Job.finished_at)).where(
+            Job.document_id == document_id,
+            Job.kind == "summarize",
+            Job.state.in_(_FINISHED_RUN),
         )
     )
 
 
-def _earlier_records(session: Session, document: Document, before: datetime) -> dict[str, datetime]:
-    """The patient's OTHER records whose last summarize run finished before ``before``, in any
-    reviewer's account, with their upload times."""
-    finished = (
-        select(Job.document_id, func.max(Job.finished_at).label("at"))
-        .where(Job.kind == "summarize", Job.finished_at.is_not(None))
+def _first_finished():
+    """Each record's first finished summarize run, as a subquery of (document_id, at)."""
+    return (
+        select(Job.document_id, func.min(Job.finished_at).label("at"))
+        .where(
+            Job.kind == "summarize",
+            Job.state.in_(_FINISHED_RUN),
+            Job.finished_at.is_not(None),
+        )
         .group_by(Job.document_id)
         .subquery()
     )
+
+
+def _earlier_records(session: Session, document: Document, before: datetime) -> dict[str, datetime]:
+    """The patient's OTHER records first summarized before ``before``, in any reviewer's account,
+    with their upload times."""
+    finished = _first_finished()
     rows = session.execute(
         select(Document.id, Document.created_at)
         .join(finished, finished.c.document_id == Document.id)
@@ -133,13 +157,14 @@ def mark_reviewed_before(
     session: Session, document: Document, *, done_at: datetime | None = None
 ) -> int:
     """Set `Summary.reviewed_before` on every summary of ``document``: the upload time of the
-    earliest earlier record its pages were found in, or None. ``done_at`` is when this record's
-    summaries count as finished (default: its last summarize run, else now); only records finished
-    before it are read. Returns how many summaries are marked. The caller commits."""
+    earliest earlier record its pages were found in, or None. The record's place is its first
+    finished summarize run; a record never summarized before takes ``done_at`` (the run ending now,
+    default now). Only records first summarized before that are read. Returns how many summaries
+    are marked. The caller commits."""
     summaries = session.scalars(select(Summary).where(Summary.document_id == document.id)).all()
     if not summaries:
         return 0
-    before = done_at or summarized_at(session, document.id) or _now()
+    before = first_summarized(session, document.id) or done_at or _now()
     earlier = _earlier_records(session, document, before) if document.patient_id else {}
     index = _reviewed_pages(session, earlier) if earlier else {}
     wanted = {p for s in summaries for p in range(s.row_start, s.row_end + 1)}
@@ -166,3 +191,24 @@ def mark_reviewed_before(
         summary.reviewed_before = min(earlier[d] for d in found) if found else None
         marked += found is not None
     return marked
+
+
+def record_number(session: Session, document: Document) -> int:
+    """The record's number among its patient's records: 1 for the first summarized, then 2, 3 ...
+    in the order they were first summarized - the order the entries reviewed before are marked
+    in. A record not summarized yet comes after every one that has been, and a record with no
+    patient ID is 1."""
+    if not document.patient_id:
+        return 1
+    place = first_summarized(session, document.id) or _now()
+    finished = _first_finished()
+    before = session.scalar(
+        select(func.count(Document.id))
+        .join(finished, finished.c.document_id == Document.id)
+        .where(
+            Document.patient_id == document.patient_id,
+            Document.id != document.id,
+            finished.c.at < place,
+        )
+    )
+    return 1 + (before or 0)

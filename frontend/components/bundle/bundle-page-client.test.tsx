@@ -262,6 +262,54 @@ describe("BundlePageClient error handling", () => {
     expect(await screen.findByText("2 matching documents")).toBeInTheDocument();
   });
 
+  it("leaves out a document whose summary is out of the export on the Summaries tab", async () => {
+    // DEMONSTRATES the 2026-11-13 request: a study unticked on the Summaries tab is still ticked in
+    // Review & correct, and the list said the download held it. The server marks the row
+    // `left_out_of_export`; a bundle that lists only the documents being summarized drops it, as
+    // the download does. Without `summarizedOnly` it stays.
+    const user = userEvent.setup();
+    const row = (start: number, over: Partial<Row> = {}) => ({
+      start,
+      end: start,
+      category: "3",
+      title: "MRI",
+      date: "",
+      injury_date: "",
+      flag: "-",
+      suggest_merge: false,
+      include: true,
+      ...over,
+    });
+    const detail = {
+      id: "d1",
+      original_filename: "rec.pdf",
+      page_count: 3,
+      status: "done" as const,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_job: null,
+      patient_first_name: "",
+      patient_last_name: "",
+      patient_name: "",
+      patient_dob: "",
+      law_firm: "",
+      rows: [row(1), row(2, { left_out_of_export: true }), row(3)],
+      categories: [{ id: "3", name: "Imaging" }],
+    };
+    vi.mocked(getDocument).mockResolvedValueOnce(detail);
+    const { unmount } = withClient(
+      <BundlePageClient config={{ ...CONFIG, summarizedOnly: true }} />,
+    );
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+    expect(await screen.findByText("2 matching documents")).toBeInTheDocument();
+    unmount();
+
+    vi.mocked(getDocument).mockResolvedValueOnce(detail);
+    withClient(<BundlePageClient config={CONFIG} />);
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+    expect(await screen.findByText("3 matching documents")).toBeInTheDocument();
+  });
+
   it("says the documents are unticked, not missing, when none is ticked", async () => {
     // DEMONSTRATES: with the depositions now listing only ticked documents, an older record whose
     // depositions were all unticked by a data migration matched nothing, and the page said "No
