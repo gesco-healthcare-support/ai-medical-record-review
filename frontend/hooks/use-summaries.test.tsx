@@ -129,6 +129,18 @@ describe("re-reading the list", () => {
     await result.current.mutateAsync({ idx: 1, body: { category: "5" } });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: summariesKey("d1") });
   });
+
+  it("taking a summary out of the export re-reads the record the bundle page lists", async () => {
+    vi.mocked(putSummary).mockResolvedValue(summary(1, "second as written") as never);
+    const { wrapper, invalidate } = harness();
+    const { result } = renderHook(() => useSaveSummary("d1"), { wrapper });
+
+    await result.current.mutateAsync({ idx: 1, body: { summaryText: "second, edited" } });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["document", "d1"] });
+
+    await result.current.mutateAsync({ idx: 1, body: { excluded: true } });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["document", "d1"] });
+  });
 });
 
 describe("usePendingRedrafts", () => {

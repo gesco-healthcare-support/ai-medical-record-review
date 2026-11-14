@@ -37,8 +37,11 @@ function useSummariesRefresh(documentId: string) {
 
 /** Edit a summary (title/date/text), toggle its export inclusion, or re-classify it (`category`,
  *  which the server writes to the owning ReviewRow). A category change re-reads the list: it lands
- *  on the ROW, so every other visit of that row changed too. */
+ *  on the ROW, so every other visit of that row changed too. Toggling the export re-reads the
+ *  record (`["document", id]`, the bundle page's query): a bundle of the documents being summarized
+ *  leaves out a document whose summaries are all left out of the export. */
 export function useSaveSummary(documentId: string) {
+  const queryClient = useQueryClient();
   const patch = useSummaryPatch(documentId);
   const refresh = useSummariesRefresh(documentId);
   return useMutation({
@@ -55,6 +58,8 @@ export function useSaveSummary(documentId: string) {
     onSuccess: (updated, vars) => {
       patch(updated);
       if ("category" in vars.body) void refresh();
+      if ("excluded" in vars.body)
+        void queryClient.invalidateQueries({ queryKey: ["document", documentId] });
     },
   });
 }

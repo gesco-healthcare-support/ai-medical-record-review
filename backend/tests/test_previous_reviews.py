@@ -81,7 +81,7 @@ def _record(
         document_id=doc_id,
         kind="summarize",
         # Never an ACTIVE state: one would block a real job on the record. A run that has not
-        # finished is a done job with no finish time, which is what `summarized_at` reads as none.
+        # finished is a done job with no finish time, which `first_summarized` reads as none.
         state="done",
         model="m",
         prompt_version="1",
@@ -332,9 +332,179 @@ def test_the_record_finished_last_is_the_one_marked_whatever_was_uploaded_first(
         assert _mark(session, b, _T0 + timedelta(days=3)) == 0
         assert _mark(session, a, _T0 + timedelta(days=9)) == 1
         assert _marks(session, a) == [_T0 + timedelta(days=2)]
-        # Without done_at, the record's own last summarize run is the cut-off.
+        # Without done_at, the record's own first summarize run is its place.
         assert previous_reviews.mark_reviewed_before(session, session.get(Document, b)) == 0
         session.rollback()
+
+
+def _run(session, doc_id: str, finished: datetime, state: str = "done") -> None:
+    """Another summarize run on the record, ending at ``finished`` in ``state``."""
+    session.add(
+        Job(
+            document_id=doc_id,
+            kind="summarize",
+            state=state,
+            model="m",
+            prompt_version="1",
+            finished_at=finished,
+        )
+    )
+    session.flush()
+
+
+def test_summarizing_an_earlier_record_again_keeps_its_place():
+    """DEMONSTRATES: a record's place is its FIRST summarize run. A was done first; summarized
+    again after B (a correction), it must not become the later record and be marked against B,
+    which was delivered after it with A's entries already marked."""
+    pid = _new_id()
+    with get_sessionmaker()() as session:
+        user = _user(session)
+        a = _record(session, user, pid, {1: _page(1)}, [(1, 1, False)], uploaded=_T0, finished=_T0)
+        b = _record(
+            session,
+            user,
+            pid,
+            {1: _page(1)},
+            [(1, 1, False)],
+            uploaded=_T0 + timedelta(days=4),
+            finished=_T0 + timedelta(days=5),
+        )
+        _run(session, a, _T0 + timedelta(days=10))
+        assert _mark(session, a, _T0 + timedelta(days=10)) == 0
+        assert _mark(session, b, _T0 + timedelta(days=5)) == 1
+        session.rollback()
+
+
+def _number(session, doc_id: str) -> int:
+    return previous_reviews.record_number(session, session.get(Document, doc_id))
+
+
+def test_a_patient_s_records_are_numbered_in_the_order_they_were_first_summarized():
+    """DEMONSTRATES the 2026-11-13 request: "if there are previous summaries for the same patient
+    ... number them (The first one doesn't have to be numbered, but ... 2, 3, 4, etc. for all the
+    subsequent records)". In the order they were first summarized - the order the highlights
+    follow - whatever order they were uploaded in."""
+    pid = _new_id()
+    with get_sessionmaker()() as session:
+        user = _user(session)
+        first, third, second = (
+            _record(
+                session,
+                user,
+                pid,
+                {1: _page(1)},
+                [(1, 1, False)],
+                uploaded=_T0 + timedelta(days=i),
+                finished=_T0 + timedelta(days=done),
+            )
+            for i, done in ((0, 3), (1, 9), (2, 6))
+        )
+        waiting = _record(
+            session, user, pid, {1: _page(1)}, [], uploaded=_T0 + timedelta(days=4), finished=None
+        )
+        other = _record(
+            session,
+            user,
+            _new_id(),
+            {1: _page(1)},
+            [(1, 1, False)],
+            uploaded=_T0,
+            finished=_T0 + timedelta(days=12),
+        )
+        no_id = _record(
+            session,
+            user,
+            None,
+            {1: _page(1)},
+            [(1, 1, False)],
+            uploaded=_T0,
+            finished=_T0 + timedelta(days=12),
+        )
+        numbers = [_number(session, d) for d in (first, second, third, waiting, other, no_id)]
+        assert numbers == [1, 2, 3, 4, 1, 1]
+        session.rollback()
+
+
+def test_a_run_that_did_not_finish_does_not_place_a_record():
+    """GUARD: a cancelled or failed run did not summarize the record; its place is its first run
+    that came to an end."""
+    pid = _new_id()
+    with get_sessionmaker()() as session:
+        user = _user(session)
+        a = _record(
+            session,
+            user,
+            pid,
+            {1: _page(1)},
+            [(1, 1, False)],
+            uploaded=_T0,
+            finished=_T0 + timedelta(days=8),
+        )
+        _run(session, a, _T0 + timedelta(days=1), state="cancelled")
+        _run(session, a, _T0 + timedelta(days=2), state="failed")
+        b = _record(
+            session,
+            user,
+            pid,
+            {1: _page(1)},
+            [(1, 1, False)],
+            uploaded=_T0 + timedelta(days=3),
+            finished=_T0 + timedelta(days=5),
+        )
+        assert [_number(session, a), _number(session, b)] == [2, 1]
+        session.rollback()
+
+
+async def test_a_later_record_s_files_carry_its_number(authed):
+    """DEMONSTRATES the file names, the way the reviewers renamed them by hand: the first record's
+    `..._MRR.docx`, the second's `..._MRR 2.docx` - and every other deliverable of it the same."""
+    from app.api import documents as routes
+
+    client, user_id = authed
+    pid = _new_id()
+    with get_sessionmaker()() as session:
+        ids = [
+            _record(
+                session,
+                user_id,
+                pid,
+                {1: _page(1)},
+                [(1, 1, False)],
+                uploaded=_T0 + timedelta(days=i),
+                finished=_T0 + timedelta(days=i + 1),
+            )
+            for i in (0, 5)
+        ]
+        for doc_id in ids:
+            doc = session.get(Document, doc_id)
+            doc.patient_first_name, doc.patient_last_name = "Ada", "Lovelace"
+        session.commit()
+
+    names = []
+    for doc_id in ids:
+        resp = await client.post(f"/api/documents/{doc_id}/export", json={})
+        assert resp.status_code == 200, resp.text
+        names.append(resp.json()["filename"])
+    assert names == [
+        "Lovelace_Ada_Medical_Records_MRR.docx",
+        "Lovelace_Ada_Medical_Records_MRR 2.docx",
+    ]
+
+    with get_sessionmaker()() as session:
+        later = session.get(Document, ids[1])
+        spec = type("Spec", (), {"downloadName": "Depositions"})()
+        later_names = [
+            routes._linked_filename(later),
+            routes._memo_filename(later),
+            routes._zip_filename(later),
+            routes._download_name(later, spec, "pdf"),
+        ]
+    assert later_names == [
+        "Lovelace_Ada_Medical_Records_linked 2.pdf",
+        "Lovelace_Ada_Medical_Records_memo 2.docx",
+        "Lovelace_Ada_Medical_Records 2.zip",
+        "Lovelace_Ada_Medical_Records_Depositions 2.pdf",
+    ]
 
 
 # --- the summarize run, the patient ID, the re-draft ------------------------------------------

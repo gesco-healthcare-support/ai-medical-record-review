@@ -596,3 +596,12 @@ describe("mergedPieces (Split back)", () => {
     expect("merged_pieces" in stripped).toBe(false);
   });
 });
+
+describe("left_out_of_export", () => {
+  it("is never sent back on a save", () => {
+    // Server-computed from the Summaries tab's "In export" boxes; the row save does not store it.
+    const [stripped] = stripKeys(withKeys([{ ...row(1, 3), left_out_of_export: true }]));
+    expect("left_out_of_export" in stripped).toBe(false);
+    expect(stripped.start).toBe(1);
+  });
+});

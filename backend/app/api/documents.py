@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.responses import FileResponse, JSONResponse
 from rq.command import send_stop_job_command
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.api.deps import get_owned_document
 from app.api.downloads import DOWNLOADS_UNAVAILABLE
@@ -116,6 +116,9 @@ _REDRAFT_STALE_DETAIL = (
 )
 _PDF_MEDIA_TYPE = "application/pdf"
 _NOT_FOUND_DETAIL = "not found"
+# A bundle that lists only the documents being summarized, when every one it matches is unticked
+# in Review & correct or left out of the export on the Summaries tab (`_matched_rows`).
+_NONE_TICKED_DETAIL = "none of the matching documents is ticked for summary and in the export"
 
 
 def _sha256(path: str) -> str:
@@ -711,10 +714,28 @@ def _auto_merged_pieces(session: Session, document: Document) -> dict[tuple[int,
     }
 
 
+def _left_out(session: Session, document: Document) -> set[tuple[int, int]]:
+    """The pages of every document in this record whose summaries are all left out of the export
+    on the Summaries tab (`bundles.left_out_spans`)."""
+    return bundles.left_out_spans(
+        session.execute(
+            select(Summary.row_start, Summary.row_end, Summary.excluded).where(
+                Summary.document_id == document.id
+            )
+        )
+        .tuples()
+        .all()
+    )
+
+
 def _editor_rows(session: Session, document: Document) -> list[dict]:
     """Every review row for the editor (`_editor_row`), with ``merged_pieces`` on a row the
-    automatic visit merge made and the reviewer has not re-spanned (`_auto_merged_pieces`)."""
+    automatic visit merge made and the reviewer has not re-spanned (`_auto_merged_pieces`), and
+    ``left_out_of_export`` on a row whose summaries are all left out of the export (`_left_out`),
+    which the bundle page needs to list what a bundle download holds. Both are read-only: the
+    client never sends them back."""
     pieces = _auto_merged_pieces(session, document)
+    left_out = _left_out(session, document)
     return [
         _editor_row(row)
         | (
@@ -722,6 +743,7 @@ def _editor_rows(session: Session, document: Document) -> list[dict]:
             if (row.start, row.end) in pieces
             else {}
         )
+        | ({"left_out_of_export": True} if (row.start, row.end) in left_out else {})
         for row in document.review_rows
     ]
 
@@ -2389,7 +2411,13 @@ def _deliverable_filename(document: Document, suffix: str, ext: str, *, fallback
     back to `<original-filename>_<suffix>.<ext>` when no patient name was extracted.
 
     One rule for all three deliverables. It was two copies of the same nine lines differing
-    only in the suffix and the extension, and the zip would have made a third."""
+    only in the suffix and the extension, and the zip would have made a third.
+
+    A patient's second and later record carries its number after the name - `..._MRR 2.docx`,
+    `..._linked 3.pdf` - the way the reviewers renamed them by hand (2026-11-13): two records of
+    one patient otherwise download under the same names. The first is not numbered. The number is
+    the record's place among the patient's records (`previous_reviews.record_number`)."""
+    number = _record_number(document)
     parts = [
         p.strip()
         for p in (document.patient_last_name, document.patient_first_name)
@@ -2402,7 +2430,14 @@ def _deliverable_filename(document: Document, suffix: str, ext: str, *, fallback
         stem = os.path.splitext(os.path.basename(document.original_filename or fallback))[0]
         base = "_".join([stem, *tail])
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("_") or fallback
-    return f"{safe}.{ext}"
+    return f"{safe} {number}.{ext}" if number > 1 else f"{safe}.{ext}"
+
+
+def _record_number(document: Document) -> int:
+    """The record's number among its patient's records, read through the session it was loaded
+    in; 1 when it is not in one (nothing to compare it with)."""
+    session = object_session(document)
+    return previous_reviews.record_number(session, document) if session is not None else 1
 
 
 def _summary_filename(document: Document) -> str:
@@ -2634,11 +2669,15 @@ def _bundle_members(session: Session, document: Document, specs) -> list[tuple[s
             select(ReviewRow).where(ReviewRow.document_id == document.id).order_by(ReviewRow.idx)
         ).all()
     ]
+    left_out = _left_out(session, document)
     members: list[tuple[str, bytes]] = []
     for spec in specs:
         matched = (
             bundles.matched_rows(
-                rows, spec.categories, summarized_only=getattr(spec, "summarizedOnly", False)
+                rows,
+                spec.categories,
+                summarized_only=getattr(spec, "summarizedOnly", False),
+                left_out=left_out,
             )
             if spec.categories
             else []
@@ -2668,9 +2707,9 @@ def _matched_rows(session: Session, document: Document, categories, summarized_o
     """The current review rows whose category is in the requested set, or raise: empty/invalid
     categories -> 400; a set that matches nothing in this record -> 409.
 
-    With ``summarized_only`` a match whose every document is unticked for summary is its own 409,
-    saying so: "no matching documents" would send the reviewer looking for documents that are on
-    screen, unticked.
+    With ``summarized_only`` a match whose every document is unticked for summary, or left out of the
+    export on the Summaries tab, is its own 409, saying so: "no matching documents" would send the
+    reviewer looking for documents that are on screen, unticked.
 
     The duplicate rule lives in `bundles.matched_rows`, not here - see that function. This one only
     loads the rows and maps the error codes.
@@ -2688,11 +2727,11 @@ def _matched_rows(session: Session, document: Document, categories, summarized_o
         raise HTTPException(status_code=409, detail="no matching documents in this record")
     if not summarized_only:
         return matched
-    ticked = bundles.matched_rows(rows, categories, summarized_only=True)
+    ticked = bundles.matched_rows(
+        rows, categories, summarized_only=True, left_out=_left_out(session, document)
+    )
     if not ticked:
-        raise HTTPException(
-            status_code=409, detail="none of the matching documents is ticked for summary"
-        )
+        raise HTTPException(status_code=409, detail=_NONE_TICKED_DETAIL)
     return ticked
 
 
@@ -2853,7 +2892,7 @@ def export_document_zip(
         400: {"description": "The category list is empty."},
         409: {
             "description": "No sub-document in this record matches those categories, or none "
-            "that matches is ticked for summary (summarizedOnly)."
+            "that matches is ticked for summary and in the export (summarizedOnly)."
         },
         503: _DOWNLOAD_STORE_UNAVAILABLE,
     },
@@ -2900,8 +2939,8 @@ def bundle_pdf(
         400: {"description": "The category list is empty."},
         409: {
             "description": "No sub-document in this record matches those categories, none that "
-            "matches is ticked for summary (summarizedOnly), or the match is larger than the "
-            "on-demand summarize limit."
+            "matches is ticked for summary and in the export (summarizedOnly), or the match is "
+            "larger than the on-demand summarize limit."
         },
         # 422 is FastAPI's own validation-error code, and declaring it here REPLACES that
         # description - so it has to name both meanings or the generated spec loses one.

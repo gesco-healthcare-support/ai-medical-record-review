@@ -125,6 +125,10 @@ export type Row = {
    *  joined into this row, sent while the row's pages still match them. "Split back" puts them in
    *  the row's place; `mergedPieces` decides whether they still apply after a local edit. */
   merged_pieces?: RowPiece[];
+  /** Server-computed, read-only: every summary of this row is left out of the export (the "In
+   *  export" box on the Summaries tab). A bundle that lists only the documents being summarized
+   *  leaves it out too. Absent means it is in the export, or not summarized yet. */
+  left_out_of_export?: boolean;
 };
 
 /** One draft piece of a row the automatic visit merge made (`Row.merged_pieces`). */

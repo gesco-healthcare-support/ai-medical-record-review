@@ -6047,6 +6047,148 @@ def test_matched_rows_drops_an_unticked_row_only_when_asked():
     assert [r["start"] for r in bundles.matched_rows(rows, ["9"])] == [4]
 
 
+# --- a document left out of the export on the Summaries tab (2026-11-13) ---------------------------
+
+
+def _summaries_on(doc_id, spans):
+    """One stored summary per ``(start, end, excluded)``, as a summarize run leaves them; a page
+    given twice is one page written as two visits."""
+    with get_sessionmaker()() as session:
+        job = Job(document_id=doc_id, kind="summarize", state="done", model="m", prompt_version="1")
+        session.add(job)
+        session.flush()
+        for idx, (start, end, excluded) in enumerate(spans):
+            session.add(
+                Summary(
+                    document_id=doc_id,
+                    job_id=job.id,
+                    idx=idx,
+                    part=sum(1 for s, e, _ in spans[:idx] if (s, e) == (start, end)),
+                    title="A REPORT",
+                    text="text",
+                    date="03/14/2026",
+                    row_start=start,
+                    row_end=end,
+                    row_category=_VALID_CATEGORY,
+                    excluded=excluded,
+                )
+            )
+        session.commit()
+
+
+async def _three_ticked_rows(client, spans):
+    """Pages 1-3 as three ticked documents, summarized as ``spans`` say."""
+    doc_id = await _upload(client, pages=3)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2, 3)]},
+    )
+    _set_include(doc_id, True)
+    _summaries_on(doc_id, spans)
+    return doc_id
+
+
+async def _bundle_pages(client, doc_id, **spec) -> int:
+    got = await _download(
+        client,
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], **spec},
+    )
+    assert got.status_code == 200, got.text
+    return len(PdfReader(io.BytesIO(got.content)).pages)
+
+
+async def test_a_summarized_only_bundle_leaves_out_a_document_left_out_of_the_export(authed):
+    """DEMONSTRATES the reviewers' 2026-11-13 request: "make it so Depos or Diagnostics that are
+    unticked are not being exported in the Depo and Diagnostics PDFs". Unticked on the Summaries
+    tab, the document's row stays ticked, and the bundle took it."""
+    client, _ = authed
+    doc_id = await _three_ticked_rows(client, [(1, 1, False), (2, 2, False), (3, 3, True)])
+    assert await _bundle_pages(client, doc_id, summarizedOnly=True) == 2
+
+
+async def test_the_zip_s_bundle_leaves_it_out_too(authed):
+    """DEMONSTRATES the same for the bundle the export zip carries (`_bundle_members`)."""
+    client, _ = authed
+    doc_id = await _three_ticked_rows(client, [(1, 1, False), (2, 2, True), (3, 3, False)])
+    resp = await _download(
+        client,
+        f"/api/documents/{doc_id}/export/zip",
+        json={
+            "patientName": "Synthetic Patient",
+            "bundles": [
+                {
+                    "label": "Diagnostic & Operative",
+                    "categories": [_VALID_CATEGORY],
+                    "summarizedOnly": True,
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        bundle = archive.read("diagnostic-operative.pdf")
+    assert len(PdfReader(io.BytesIO(bundle)).pages) == 2
+
+
+async def test_a_page_with_one_visit_still_in_the_export_stays_in_the_bundle(authed):
+    """GUARD: a page written as several visits is left out only when every visit is."""
+    client, _ = authed
+    doc_id = await _three_ticked_rows(
+        client, [(1, 1, False), (2, 2, False), (3, 3, True), (3, 3, False)]
+    )
+    assert await _bundle_pages(client, doc_id, summarizedOnly=True) == 3
+
+
+async def test_a_bundle_that_does_not_ask_keeps_a_document_left_out_of_the_export(authed):
+    """GUARD: without `summarizedOnly` the bundle is every document of its categories, as before."""
+    client, _ = authed
+    doc_id = await _three_ticked_rows(client, [(1, 1, False), (2, 2, False), (3, 3, True)])
+    assert await _bundle_pages(client, doc_id) == 3
+
+
+async def test_a_bundle_whose_every_document_is_left_out_says_so(authed):
+    client, _ = authed
+    doc_id = await _three_ticked_rows(client, [(1, 1, True), (2, 2, True), (3, 3, True)])
+    got = await client.post(
+        f"/api/documents/{doc_id}/bundle/pdf",
+        json={"categories": [_VALID_CATEGORY], "summarizedOnly": True},
+    )
+    assert got.status_code == 409
+    assert got.json()["detail"] == (
+        "none of the matching documents is ticked for summary and in the export"
+    )
+
+
+async def test_the_record_marks_a_row_whose_summaries_are_all_left_out(authed):
+    """DEMONSTRATES the flag the bundle page lists by: on the row whose every summary is out of the
+    export, and on no other - a row with a kept visit, a kept summary, or none at all."""
+    client, _ = authed
+    doc_id = await _upload(client, pages=4)
+    await client.put(
+        f"/api/documents/{doc_id}/rows",
+        json={"rows": [{"start": p, "end": p, "category": _VALID_CATEGORY} for p in (1, 2, 3, 4)]},
+    )
+    _summaries_on(doc_id, [(1, 1, False), (2, 2, True), (3, 3, True), (3, 3, False)])
+    rows = (await client.get(f"/api/documents/{doc_id}")).json()["rows"]
+    assert [row.get("left_out_of_export", False) for row in rows] == [False, True, False, False]
+
+
+def test_left_out_spans_and_matched_rows():
+    from app.services import bundles
+
+    spans = bundles.left_out_spans([(1, 1, False), (2, 3, True), (4, 4, True), (4, 4, False)])
+    assert spans == {(2, 3)}
+    rows = [
+        {"start": 1, "end": 1, "category": "3", "include": True},
+        {"start": 2, "end": 3, "category": "3", "include": True},
+        {"start": 4, "end": 4, "category": "3", "include": True},
+    ]
+    picked = bundles.matched_rows(rows, ["3"], summarized_only=True, left_out=spans)
+    assert [r["start"] for r in picked] == [1, 4]
+    assert len(bundles.matched_rows(rows, ["3"], left_out=spans)) == 3
+
+
 _SURNAME_FIRST_TITLE = (
     "[ManualCheck] DOE, JANE, M.D. KAISER PERMANENTE FONTANA. OFFICE VISIT. (Pages 3-5)"
 )
