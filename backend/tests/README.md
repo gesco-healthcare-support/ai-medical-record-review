@@ -43,6 +43,7 @@ shared `conftest.py`.
 | `test_deposition_pages.py` | Deposition page grouping: the transcript-page offset, marker labels and the audit guard. |
 | `test_deposition_pages_request.py` | What the transcript page-number read sends, and how it handles a truncated reply. |
 | `test_deposition_tail.py` | A deposition's short closing-paperwork row suggested as a merge: which titles, the page limit, hints only, the setting. |
+| `test_deposition_titles.py` | A deposition's title: the deponent and the volume only, the volume from the transcript's cover, the export of a stored title, and the record-level name passes leaving it alone. |
 | `test_documents_api.py` | The `/api/documents` routes against the database. |
 | `test_download_delivery.py` | The delivery status a page can ask about for each prepared download. |
 | `test_downloads.py` | Prepared exports: stored on the server, fetched by the browser, deleted on expiry. |

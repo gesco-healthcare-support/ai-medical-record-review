@@ -311,7 +311,10 @@ Gemini's window is far larger, so in practice only the vLLM path reaches it.
 was measured against 812 of 813 human-written entries. Diagnostic studies are named by modality,
 side, body part and contrast rather than by document class; a deposition is titled
 `DEPOSITION OF <NAME>` with no author or facility; absent elements are left out with their
-separator; no dates, page numbers or patient name.
+separator; no dates, page numbers or patient name. The model still put the court reporter and the
+reporting agency in front of a deponent on about a quarter of the live box's deposition titles, so
+the code enforces it too (below), and adds the transcript's volume from its cover - the model named
+one in 2 of 174 titles, where reviewers had added it to 9 of the 64 they retyped (2026-11-13).
 
 The author is the name PRINTED on the page - the typed name under or beside the signature, a
 physician field on a form, or the letterhead - never a transcription of a handwritten signature;
@@ -361,6 +364,19 @@ does not enforce `maxLength`. `_usable_title()` is the enforcement:
   names it - except in an Application for Adjudication of Claim, where the Board goes too. Applied
   to the generated and the audited title of category 7 only, and again on the Summaries tab and in
   the export for a title stored before the rule; other categories keep the agency.
+- A category-9 title (a deposition) becomes `DEPOSITION OF <NAME>` (`deposition_title()`, through
+  `category_title()`): the name after the last `DEPOSITION OF`, `DEPO OF` or `TRANSCRIPT OF` pair,
+  up to where it ends - a comma not followed by a credential or suffix, a period after a whole word,
+  a number, a bracket, or a word such as `VOLUME`, `TAKEN` or a month - so the reporter, the agency
+  and a date go and `, M.D.` or `JR.` stay. A volume named anywhere in the title is written
+  `, VOLUME <roman numeral>`; when the title names none, a II or later stated on the transcript's
+  first two pages is added where the summary is written (`cover_volume()`, `_row_title()`), for the
+  generated and the audited title alike. A cover's `VOLUME I` is added only by the record-level
+  pass, where the record holds a later volume of the same deponent (`first_volumes()`, part of
+  `consistent_titles()`): 21 of the 26 transcripts stamped `VOLUME I` on the live box were the only
+  volume in their record. A title naming no deponent is left as it is. Measured on the live box
+  (2026-11-13): the title this gives equals the reviewer's own on 49 of the 64 deposition titles a
+  reviewer retyped (the model's own title, 3).
 
 The stored title is decorated: `[ManualCheck] ` in front when the row flag is `x`,
 ` [Diagnostic Study]` after it for category 3, and ` (Pages S-E)` at the end. Exports strip all
