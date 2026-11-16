@@ -2735,9 +2735,9 @@ def _matched_rows(session: Session, document: Document, categories, summarized_o
     """The current review rows whose category is in the requested set, or raise: empty/invalid
     categories -> 400; a set that matches nothing in this record -> 409.
 
-    With ``summarized_only`` a match whose every document is unticked for summary, or left out of the
-    export on the Summaries tab, is its own 409, saying so: "no matching documents" would send the
-    reviewer looking for documents that are on screen, unticked.
+    With ``summarized_only`` a match whose every document is unticked for summary, or left out of
+    the export on the Summaries tab, is its own 409, saying so: "no matching documents" would send
+    the reviewer looking for documents that are on screen, unticked.
 
     The duplicate rule lives in `bundles.matched_rows`, not here - see that function. This one only
     loads the rows and maps the error codes.

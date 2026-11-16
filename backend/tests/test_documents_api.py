@@ -6119,7 +6119,7 @@ def test_matched_rows_drops_an_unticked_row_only_when_asked():
     assert [r["start"] for r in bundles.matched_rows(rows, ["9"])] == [4]
 
 
-# --- a document left out of the export on the Summaries tab (2026-11-13) ---------------------------
+# --- a document left out of the export on the Summaries tab (2026-11-13) -------------------------
 
 
 def _summaries_on(doc_id, spans):
@@ -6251,6 +6251,9 @@ def test_left_out_spans_and_matched_rows():
 
     spans = bundles.left_out_spans([(1, 1, False), (2, 3, True), (4, 4, True), (4, 4, False)])
     assert spans == {(2, 3)}
+    # A split page's visits in either order: one still in the export keeps the page.
+    assert bundles.left_out_spans([(4, 4, False), (4, 4, True)]) == set()
+    assert bundles.left_out_spans([(4, 4, True), (4, 4, True)]) == {(4, 4)}
     rows = [
         {"start": 1, "end": 1, "category": "3", "include": True},
         {"start": 2, "end": 3, "category": "3", "include": True},

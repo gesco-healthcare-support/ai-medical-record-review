@@ -72,7 +72,7 @@ Body of `/export/zip`: every `ExportPayload` field plus:
 | `coverHeading` | string or null | `null` | Heading of a cover list page; absent or blank means no cover |
 | `downloadName` | string or null | `null` | Filename suffix after the patient name |
 | `separateAs` | string or null | `null` | When set, one member PDF per matched sub-document instead of one combined PDF (see [Separate documents](#separate-documents)) |
-| `summarizedOnly` | bool | `false` | When true, a row a reviewer unticked for summary is left out of the bundle |
+| `summarizedOnly` | bool | `false` | When true, a row a reviewer unticked for summary, or whose summaries were all left out of the export, is left out of the bundle |
 
 ### `BundlePayload`
 
@@ -85,7 +85,7 @@ Body of `/bundle/pdf` and `/bundle/summarize`.
 | `coverHeading` | string or null | `null` | `/bundle/pdf` | Heading of a cover list page |
 | `downloadName` | string or null | `null` | both | Filename suffix after the patient name |
 | `separateAs` | string or null | `null` | `/bundle/pdf` | When set, one PDF per matched sub-document: the PDF itself for one match, a zip named like the combined file for several (see [Separate documents](#separate-documents)) |
-| `summarizedOnly` | bool | `false` | both | When true, a row a reviewer unticked for summary is left out |
+| `summarizedOnly` | bool | `false` | both | When true, a row a reviewer unticked for summary, or whose summaries were all left out of the export, is left out |
 | `model` | string or null | `null` | `/bundle/summarize` | Body model; default `Settings.model_for("body")` |
 | `patientName` | string | `""` | `/bundle/summarize` | `RE:` header line |
 | `patientdob` | string | `""` | `/bundle/summarize` | `DOB:` header line |
@@ -121,6 +121,16 @@ stored patient last and first name (a blank one is skipped). With neither name s
 `<original filename without extension>[_<suffix>].<ext>`. Every run of characters outside
 `[A-Za-z0-9_.-]` becomes `_`, and leading or trailing `_` is removed; an empty result becomes the
 fallback name.
+
+A patient's second and later record carries its number before the extension, after a space:
+`<Last>_<First>_Medical_Records_MRR 2.docx`, `..._linked 3.pdf`, `... 2.zip`. The first record
+is not numbered. The number is the record's place among the records with the same patient ID, in
+the order they were first summarized (`previous_reviews.record_number`, the order entries reviewed
+before are marked in); a record not summarized yet comes after them all, and a record with no
+patient ID is never numbered. It applies to every name `_deliverable_filename()` builds in the table
+below, the fallbacks included; the old slug-only bundle name (no `downloadName`) is not numbered.
+Reviewers had been renaming the second record's files by hand (2026-11-13); two records of one
+patient otherwise download under the same names.
 
 | Deliverable | With a patient name | Without a patient name | Fallback |
 | --- | --- | --- | --- |
@@ -186,10 +196,12 @@ The bundle report is never a member.
 
 Row matching for both bundle routes (`bundles.py` `matched_rows()`): a row matches when its category
 is in `categories`, unless it is a non-primary, non-dismissed member of a duplicate group that has a
-primary. The row's `include` flag is consulted only when the request sets `summarizedOnly`, which
-both presets do: the reviewers want the Diagnostic & Operative list and the Depositions download to
-carry only the documents being summarized. A record whose every match is unticked gets a 409 from
-the bundle routes and no member for that bundle in the archive. The cover page is omitted when every
+primary. The row's `include` flag, and whether its summaries were all left out of the export on
+the Summaries tab (`bundles.left_out_spans`), are consulted only when the request sets
+`summarizedOnly`, which both presets do: the reviewers want the Diagnostic & Operative list and the
+Depositions download to carry only the documents being summarized. A record whose every match is
+unticked or left out gets a 409 from the bundle routes and no member for that bundle in the
+archive. The cover page is omitted when every
 cell would be empty.
 
 Layout detail: [Deliverable layout](../explanation/deliverable-layout.md).
@@ -206,7 +218,7 @@ HTTP errors raised by the routes carry `{"detail": "<message>"}`. Failures conve
 | 404 | `{"detail": "not found"}` | all | The record does not exist or belongs to another user |
 | 409 | `{"detail": "no summaries to export yet"}` | `/export`, `/export/pdf`, `/export/zip` | No included summaries |
 | 409 | `{"detail": "no matching documents in this record"}` | `/bundle/pdf`, `/bundle/summarize` | No row matches after duplicate filtering |
-| 409 | `{"detail": "none of the matching documents is ticked for summary"}` | `/bundle/pdf`, `/bundle/summarize` | `summarizedOnly` is set and every matching row is unticked |
+| 409 | `{"detail": "none of the matching documents is ticked for summary and in the export"}` | `/bundle/pdf`, `/bundle/summarize` | `summarizedOnly` is set and every matching row is unticked, or left out of the export on the Summaries tab |
 | 409 | `{"detail": "<n> matching documents exceeds the on-demand limit of <cap>; use the main Summaries flow for a record this large"}` | `/bundle/summarize` | More matched rows than `BUNDLE_SUMMARIZE_CAP` |
 | 422 | FastAPI validation error | all | The body does not match the payload schema |
 | 422 | `{"error": "<EmptyExtractionError message>"}` | `/bundle/summarize` | Every matched row was skipped for having no readable text, or the causes were mixed |

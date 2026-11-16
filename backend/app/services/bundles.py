@@ -9,6 +9,7 @@ import html
 import io
 import logging
 import re
+from collections.abc import Set
 from datetime import datetime
 
 import pymupdf
@@ -82,7 +83,9 @@ def left_out_spans(summaries) -> set[tuple[int, int]]:
     return {span for span, any_kept in kept.items() if not any_kept}
 
 
-def matched_rows(rows, categories, *, summarized_only=False, left_out=frozenset()):
+def matched_rows(
+    rows, categories, *, summarized_only=False, left_out: Set[tuple[int, int]] = frozenset()
+):
     """Rows whose category is in ``categories`` (int/str mix ok), original order kept - minus any
     copy the reviewer already resolved away as a duplicate, and, with ``summarized_only``, minus
     any row the reviewer UNTICKED for summary and any whose summary they left out of the export
@@ -153,7 +156,7 @@ def matched_rows(rows, categories, *, summarized_only=False, left_out=frozenset(
     ]
 
 
-def _left_out(row, left_out) -> bool:
+def _left_out(row, left_out: Set[tuple[int, int]]) -> bool:
     return bool(left_out) and (int(row["start"]), int(row["end"])) in left_out
 
 
