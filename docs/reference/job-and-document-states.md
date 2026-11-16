@@ -70,6 +70,8 @@ Any state not in `job_outcome`'s table is bucketed `failed_unknown` (`backend/ap
 | `running` | `cancelled` | `JobCancelled`: the cancel flag was seen. | `_finalize_cancelled` | yes |
 | `running` | `cancelled` | Force stop killed the work-horse. | `on_job_stopped` (RQ `on_stopped` callback) | yes |
 | `running` | `interrupted` | The work-horse failed or was found abandoned by RQ. | `on_job_failed` (RQ `on_failure` callback) | yes |
+| `running` | `interrupted` | The system killed the work-horse (out of memory, any signal the app did not send). | `on_work_horse_killed` (the worker's `work_horse_killed_handler`) | yes |
+| `queued`, `running` or `paused` | `cancelled` | Stop or Force stop on a job RQ has lost or holds as terminal. | `_stop_if_nobody_runs_it` (cancel route) | yes |
 | `queued`, `running` or `paused` | `interrupted` | API start-up: the RQ job is missing, or its RQ status is not `queued`, `started`, `deferred` or `scheduled`. | `recover_orphans` | yes |
 
 `mark_terminal` updates only a row whose state is still active; a later caller for the same job gets

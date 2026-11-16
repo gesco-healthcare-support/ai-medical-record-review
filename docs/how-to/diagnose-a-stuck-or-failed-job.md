@@ -92,6 +92,7 @@ matter here (`backend/app/worker/tasks.py`, `backend/app/worker/finalizers.py`,
 | `resume enqueue failed for job N; marked interrupted` | A pause could not schedule its resume. |
 | `job N finalized as cancelled by the stopped callback` | Force stop landed. |
 | `job N finalized as interrupted by the failure callback` | RQ reported the work-horse failed or abandoned. |
+| `work-horse for job N was killed (waitpid W)`, then `job N finalized as interrupted by the killed-work-horse handler` | The system killed the work-horse - most often out of memory (`docker inspect <worker> --format '{{.State.OOMKilled}}'`). RQ's own line before it reads `Work-horse terminated unexpectedly`. |
 | `page text population failed for D` | The OCR pass failed; later stages read pages on demand. |
 | `upload page reading stored N page(s) of document D` | The reading queued at upload finished (segment worker, `ocr` queue). |
 | `upload page reading failed for document D` | The reading queued at upload failed; Identify reads the missing pages itself and reports an OCR problem through its own job. |
@@ -161,6 +162,10 @@ watches an identify or summarize run. For any other job, the document owner can 
 Force stop cannot reach a job with no running work-horse (`queued`, or `paused` between attempts).
 The API logs `force stop could not be delivered`, and the job is cancelled the first time it runs:
 for a paused summarize, when its scheduled resume starts.
+
+A job no worker runs any more at all - RQ has lost it, or holds it as `failed`, `stopped` or
+`canceled` - is cancelled by the first Stop: the API logs `job N stopped at once: no worker was
+running it`, and the document can be run again or deleted.
 
 **b. Wait.** A `paused` job resumes on its own. A `running` job that is still writing progress or
 log lines is working; the OCR pass alone can take on the order of ten minutes for a few hundred

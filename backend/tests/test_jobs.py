@@ -2157,6 +2157,97 @@ def test_failure_callback_does_not_overwrite_an_already_finalized_job():
         assert job.error == "Something specific went wrong"
 
 
+class _FakeKilledRQJob(_FakeRQJob):
+    """What the killed-horse handler reads: the task name too, to tell a tracked job from the
+    untracked reading of an upload."""
+
+    def __init__(self, first_arg, func_name="app.worker.tasks.segment_document"):
+        super().__init__(first_arg)
+        self.func_name = func_name
+
+
+def test_a_work_horse_the_system_killed_finalizes_its_job():
+    """DEMONSTRATES the reported freeze (2026-11-13): the kernel killed an Identify's work-horse
+    (out of memory). RQ ran no job callback for that death, so the row stayed `running` for days and
+    Stop and Delete both refused. The handler RQ calls in the parent finalizes it at once."""
+    from app.worker.finalizers import on_work_horse_killed
+
+    doc_id, job_id = _running_job("segment")
+    _set_document_status(doc_id, "segmenting")
+    on_work_horse_killed(_FakeKilledRQJob(job_id), 448, 9, None)
+
+    with get_sessionmaker()() as session:
+        job = session.get(Job, job_id)
+        assert job.state == "interrupted"
+        assert job.finished_at is not None
+        assert session.get(Document, doc_id).status == "interrupted"
+
+
+def test_rq_calls_the_handler_when_it_reaps_a_killed_horse():
+    """DEMONSTRATES the wiring through RQ's own worker: `handle_work_horse_killed` is what
+    `monitor_work_horse` calls when the fork dies unexpectedly, and it hands the job to the handler
+    the worker was built with."""
+    from rq import Queue
+    from rq.worker import RoundRobinWorker
+
+    from app.worker.finalizers import on_work_horse_killed
+    from app.worker.queues import get_redis
+
+    _doc_id, job_id = _running_job("segment")
+    redis = get_redis()
+    queue = Queue("killed-horse-test", connection=redis)
+    rq_job = queue.enqueue("app.worker.tasks.segment_document", job_id, job_id=f"killed-{job_id}")
+    try:
+        worker = RoundRobinWorker(
+            [queue], connection=redis, work_horse_killed_handler=on_work_horse_killed
+        )
+        worker.handle_work_horse_killed(rq_job, 448, 9, None)
+        with get_sessionmaker()() as session:
+            assert session.get(Job, job_id).state == "interrupted"
+    finally:
+        queue.empty()
+
+
+def test_the_entrypoint_registers_the_killed_horse_handler(monkeypatch):
+    """DEMONSTRATES: the worker every container runs is built with the handler."""
+    from app.worker import __main__ as worker_main
+    from app.worker.finalizers import on_work_horse_killed
+
+    monkeypatch.setattr(worker_main, "RoundRobinWorker", _FakeWorker)
+    monkeypatch.setattr(worker_main, "_user_ids", lambda: [2])
+    worker_main.main(["summarize"])
+    assert _FakeWorker.last["kwargs"]["work_horse_killed_handler"] is on_work_horse_killed
+
+
+def test_a_killed_reading_of_an_upload_has_no_job_to_finalize():
+    """GUARD: reading an uploaded record (the `ocr` queue) has no jobs row; its first argument is a
+    document id, which must not be mistaken for one - nor touch a job of that document."""
+    from app.worker.finalizers import on_work_horse_killed
+
+    doc_id, job_id = _running_job("segment")
+    upload = _FakeKilledRQJob(doc_id, func_name="app.worker.tasks.ocr_uploaded_document")
+    on_work_horse_killed(upload, 1, 9, None)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "running"
+
+
+def test_a_killed_horse_never_overwrites_an_outcome_already_written():
+    """GUARD: the same single writer as every other path - a job that already ended keeps its
+    outcome."""
+    from app.worker.finalizers import on_work_horse_killed
+
+    _doc_id, job_id = _running_job("summarize")
+    with get_sessionmaker()() as session:
+        session.get(Job, job_id).state = "done"
+        session.commit()
+
+    on_work_horse_killed(_FakeKilledRQJob(job_id), 1, 9, None)
+
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+
+
 def test_mark_terminal_transitions_once_under_a_race():
     """RQ runs the stopped callback AND handle_job_failure for a single stop, and at the worker
     counts this is heading for, parent workers finalize concurrently. First writer wins."""

@@ -66,10 +66,12 @@ from app.services.gemini import PROMPT_VERSION
 from app.services.house_style import one_paragraph, title_case_labels
 from app.services.jobs import (
     ACTIVE_STATES,
+    STATUS_ON_CANCEL,
     SUMMARIZED_DOCUMENT_STATUSES,
     JobConflict,
     active_job,
     enqueue,
+    mark_terminal,
 )
 from app.services.linked_pdf import build_linked_pdf
 from app.services.pdf import get_pdf_page_count
@@ -102,6 +104,7 @@ from app.services.summary_doi import doi_prefix
 from app.services.visit_merge import auto_merge_pieces
 from app.worker.cancel import request_cancel
 from app.worker.queues import enqueue_upload_ocr, get_redis
+from app.worker.recovery import worker_is_gone
 
 logger = logging.getLogger(__name__)
 
@@ -1531,6 +1534,27 @@ def _choose_one_entry_per_date(
     )
 
 
+def _stop_if_nobody_runs_it(session: Session, job: Job) -> None:
+    """Finalize a stop request at once when RQ holds no live worker for the job.
+
+    A reviewer's report (2026-11-13): a record frozen at "195/399" since Friday, and neither Stop
+    nor Delete worked. The system had killed its work-horse (out of memory), so no process was left
+    to read the cooperative flag or receive a Force stop, and the row stayed active - which is also
+    what made Delete answer 409. Same terminal state as every other stop (`on_job_stopped`), so the
+    record is ready to run again."""
+    if not worker_is_gone(job.rq_job_id or str(job.id)):
+        return
+    if mark_terminal(
+        session,
+        job.id,
+        "cancelled",
+        stage="cancelled",
+        document_status=STATUS_ON_CANCEL.get(job.kind),
+    ):
+        logger.info("job %s stopped at once: no worker was running it", job.id)
+    session.refresh(job)
+
+
 @router.post(
     "/{document_id}/jobs/{job_id}/cancel",
     responses={404: {"description": "No job with this id belongs to this document."}},
@@ -1547,6 +1571,9 @@ def cancel_job(
     Terminal jobs are a 200 NO-OP, not a 409. A job can finish between the reviewer's click and this
     request arriving - that race is normal, and answering it with an error would surface a scary
     message for a stop that simply arrived a moment late.
+
+    A job NOBODY IS RUNNING any more stops at once (`_stop_if_nobody_runs_it`): its work-horse was
+    killed by the system and nothing else will ever read the flag.
     """
     job = session.get(Job, job_id)
     if job is None or job.document_id != document.id:
@@ -1574,6 +1601,7 @@ def cancel_job(
             # failure worth returning to a reviewer who just asked for a stop.
             logger.info("force stop could not be delivered for job %s", job_id, exc_info=True)
 
+    _stop_if_nobody_runs_it(session, job)
     audit(
         session,
         "job.cancel",

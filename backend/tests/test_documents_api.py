@@ -2264,6 +2264,78 @@ async def test_cancel_of_a_finished_job_is_a_no_op_not_an_error(authed):
     assert cancel_mod.is_cancel_requested(job_id) is False  # no signal published either
 
 
+async def _running_segment(client) -> tuple[str, int]:
+    """A record mid-Identify: its job `running`, the record `segmenting`."""
+    doc_id = await _upload(client, pages=2)
+    with get_sessionmaker()() as session:
+        job = Job(
+            document_id=doc_id,
+            kind="segment",
+            state="running",
+            stage="reading",
+            model="m",
+            prompt_version="1",
+        )
+        session.add(job)
+        session.get(Document, doc_id).status = "segmenting"
+        session.commit()
+        return doc_id, job.id
+
+
+@pytest.mark.parametrize("rq_left", ["nothing", "a failed job"])
+async def test_stop_ends_a_job_no_worker_runs_any_more(authed, rq_left):
+    """DEMONSTRATES the reported freeze (2026-11-13): "stuck at identifying documents 195/399 ...
+    I cannot stop nor delete it". The system had killed the work-horse, so nothing was left to read
+    the stop flag, and the active job also made Delete answer 409. RQ then holds the job as failed
+    (or, later, nothing at all); Stop now finalizes such a job at once, and the record can be
+    deleted or run again."""
+    from rq.job import JobStatus
+
+    from app.services.jobs import STATUS_ON_CANCEL
+    from app.worker import cancel as cancel_mod
+    from app.worker.queues import queue_for
+
+    client, _ = authed
+    doc_id, job_id = await _running_segment(client)
+    queue = queue_for("segment")
+    if rq_left == "a failed job":
+        rq_job = queue.enqueue("app.worker.tasks.segment_document", job_id, job_id=str(job_id))
+        rq_job.set_status(JobStatus.FAILED)
+    try:
+        resp = await client.post(f"/api/documents/{doc_id}/jobs/{job_id}/cancel")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["state"] == "cancelled"
+        with get_sessionmaker()() as session:
+            assert session.get(Job, job_id).state == "cancelled"
+            assert session.get(Document, doc_id).status == STATUS_ON_CANCEL["segment"]
+        assert (await client.delete(f"/api/documents/{doc_id}")).status_code == 200
+    finally:
+        queue.empty()
+        cancel_mod.clear_cancel(job_id)
+
+
+async def test_stop_leaves_a_job_its_worker_still_runs(authed):
+    """GUARD: a job RQ still holds as waiting or running is only flagged - its worker reads the
+    flag and stops cleanly. Finalizing it here would run the job on after it was reported over."""
+    from app.worker import cancel as cancel_mod
+    from app.worker.queues import queue_for
+
+    client, _ = authed
+    doc_id, job_id = await _running_segment(client)
+    queue = queue_for("segment")
+    queue.enqueue("app.worker.tasks.segment_document", job_id, job_id=str(job_id))
+    try:
+        resp = await client.post(f"/api/documents/{doc_id}/jobs/{job_id}/cancel")
+        assert resp.status_code == 200
+        with get_sessionmaker()() as session:
+            job = session.get(Job, job_id)
+            assert job.state == "running"
+            assert job.cancel_requested is True
+    finally:
+        queue.empty()
+        cancel_mod.clear_cancel(job_id)
+
+
 async def test_force_cancel_still_succeeds_when_the_work_horse_is_gone(authed, monkeypatch):
     """WHEN force is posted and the stop command cannot be delivered, THE SYSTEM SHALL still return
     200 - the DB row and the cooperative flag are already set, and orphan recovery reaps the rest."""

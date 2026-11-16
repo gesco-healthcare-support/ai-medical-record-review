@@ -20,6 +20,15 @@ The abandoned path is eventual, not immediate: it only fires once the job's entr
 ``job_timeout``, which here is size-aware and can be long. The deliberate stop is immediate, which
 is the case a reviewer is watching.
 
+A HORSE THE SYSTEM KILLS reaches neither. When the kernel kills the fork - out of memory, as a
+record with pages declared 154 x 200 inches did to a reviewer's Identify on the live box
+(2026-11-13) - ``Worker.monitor_work_horse`` logs "Work-horse terminated unexpectedly", calls
+``handle_work_horse_killed`` and moves the RQ job straight to the FailedJobRegistry. That is not the
+StartedJobRegistry, so abandoned-job cleanup never sees it and ``on_failure`` never runs: the row
+stayed `running` for days, and Stop and Delete both refused it, until the API restarted and orphan
+recovery ran. ``on_work_horse_killed`` is RQ's hook for that moment (``work_horse_killed_handler``,
+rq/worker/base.py), registered on the worker in `app.worker.__main__`. It too runs in the parent.
+
 Registered at enqueue in `app.services.jobs.enqueue` and on the resume dispatch in
 `app.worker.tasks`. RQ serializes callbacks by reference, so these must stay importable by dotted
 path - do not make them closures or move them without updating both call sites.
@@ -80,6 +89,23 @@ def on_job_stopped(rq_job, _connection) -> None:
         logger.exception("stopped callback could not finalize job %s", job_id)
 
 
+def _interrupt(job_id: int, by: str) -> None:
+    """Finalize an active job as "interrupted" - and its document only when it is mid-pipeline,
+    as `recover_orphans` does. Never raises (see `on_job_stopped`)."""
+    try:
+        with get_sessionmaker()() as session:
+            if mark_terminal(
+                session,
+                job_id,
+                "interrupted",
+                document_status="interrupted",
+                document_status_only_when=INTERRUPTIBLE_DOCUMENT_STATUSES,
+            ):
+                logger.info("job %s finalized as interrupted by the %s", job_id, by)
+    except Exception:
+        logger.exception("%s could not finalize job %s", by, job_id)
+
+
 def on_job_failed(rq_job, _connection, *_exc_info) -> None:
     """The work-horse failed or was abandoned.
 
@@ -92,17 +118,27 @@ def on_job_failed(rq_job, _connection, *_exc_info) -> None:
     no-op there - which is precisely what mark_terminal's idempotency is for.
     """
     job_id = _db_job_id(rq_job)
-    if job_id is None:
+    if job_id is not None:
+        _interrupt(job_id, "failure callback")
+
+
+# Reading an uploaded record's pages (the `ocr` queue) has no jobs row on purpose; a horse killed
+# there leaves nothing to finalize.
+_UNTRACKED_TASKS = ("ocr_uploaded_document",)
+
+
+def on_work_horse_killed(rq_job, _retpid, ret_val, _rusage) -> None:
+    """The system killed the work-horse - out of memory, or any signal nobody here sent. See the
+    note atop this module: RQ calls this in the parent, and nothing else ever finalizes the row.
+
+    Finalized exactly as an abandoned job is, "interrupted", so the reviewer sees a run that can be
+    started again instead of one that never ends. A Force stop is not this path: RQ sends it to the
+    stopped callback.
+    """
+    if (getattr(rq_job, "func_name", None) or "").endswith(_UNTRACKED_TASKS):
+        logger.warning("reading of an uploaded record was killed (waitpid %s)", ret_val)
         return
-    try:
-        with get_sessionmaker()() as session:
-            if mark_terminal(
-                session,
-                job_id,
-                "interrupted",
-                document_status="interrupted",
-                document_status_only_when=INTERRUPTIBLE_DOCUMENT_STATUSES,
-            ):
-                logger.info("job %s finalized as interrupted by the failure callback", job_id)
-    except Exception:
-        logger.exception("failure callback could not finalize job %s", job_id)
+    job_id = _db_job_id(rq_job)
+    if job_id is not None:
+        logger.warning("work-horse for job %s was killed (waitpid %s)", job_id, ret_val)
+        _interrupt(job_id, "killed-work-horse handler")
