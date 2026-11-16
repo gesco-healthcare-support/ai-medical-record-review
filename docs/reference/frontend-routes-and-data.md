@@ -343,9 +343,11 @@ endpoints are handed these values.
 
 A bundle page lists the rows whose category is in the set, leaving out a non-primary, non-dismissed
 member of a duplicate cluster that has a primary, and, for a preset with `summarizedOnly` (both
-presets), any row unticked for summary. This mirrors `backend/app/services/bundles.py`
-`matched_rows()`. When every matching row is unticked, the page says the documents are unticked
-rather than missing.
+presets), any row unticked for summary or marked `left_out_of_export` (its summaries all left out
+on the Summaries tab). This mirrors `backend/app/services/bundles.py` `matched_rows()`. When every
+matching row is unticked or left out, the page says so rather than that the documents are missing.
+Changing a summary's "In export" box re-reads the record (`useSaveSummary` invalidates
+`["document", id]`), so the list follows it.
 
 ## Constants
 

@@ -77,7 +77,8 @@ function EmptyMatches({ label, unticked }: Readonly<{ label: string; unticked: n
         <p className="bnd-empty-title">No {label} documents ticked for summary</p>
         <p>
           This record has {unticked} {label} document{unticked === 1 ? "" : "s"}, all unticked
-          for summary. Tick one in Review &amp; correct to include it here.
+          for summary or left out of the export. Tick one in Review &amp; correct, or put it back
+          in the export on the Summaries tab, to include it here.
         </p>
       </div>
     );
@@ -385,9 +386,10 @@ export function BundlePageClient({
   // then appears nowhere. Computed over ALL rows, before the category filter, because a cluster can
   // span categories and its primary may sit outside this preset.
   //
-  // Keyed on the duplicate fields, and on `include` only for a bundle that opts in with
-  // `summarizedOnly` (both presets do) - see `bundles.matched_rows` for why the duplicate rule does
-  // not use `include` and what the opt-in costs on old records.
+  // Keyed on the duplicate fields, and on `include` and `left_out_of_export` (every summary of the
+  // row left out on the Summaries tab) only for a bundle that opts in with `summarizedOnly` (both
+  // presets do) - see `bundles.matched_rows` for why the duplicate rule does not use `include` and
+  // what the opt-in costs on old records.
   const resolvedGroups = new Set(
     rows
       .filter((row) => row.dupe_group != null && row.dupe_primary)
@@ -403,7 +405,9 @@ export function BundlePageClient({
       ),
   );
   const matches = inBundle.filter(
-    (row) => !config.summarizedOnly || row.include !== false,
+    (row) =>
+      !config.summarizedOnly ||
+      (row.include !== false && !row.left_out_of_export),
   );
   const unticked = inBundle.length - matches.length;
   const identified = rows.length > 0;

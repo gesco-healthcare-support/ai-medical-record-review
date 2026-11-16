@@ -9,6 +9,7 @@ import html
 import io
 import logging
 import re
+from collections.abc import Set
 from datetime import datetime
 
 import pymupdf
@@ -71,10 +72,32 @@ def is_resolved_duplicate(row, resolved_groups) -> bool:
     )
 
 
-def matched_rows(rows, categories, *, summarized_only=False):
+def left_out_spans(summaries) -> set[tuple[int, int]]:
+    """The ``(start, end)`` of every document whose summaries were ALL left out of the export (the
+    "In export" box on the Summaries tab), from ``(start, end, excluded)`` triples. A document split
+    into several visits is left out only when every visit is."""
+    kept: dict[tuple[int, int], bool] = {}
+    for start, end, excluded in summaries:
+        span = (int(start), int(end))
+        kept[span] = kept.get(span, False) or not excluded
+    return {span for span, any_kept in kept.items() if not any_kept}
+
+
+def matched_rows(
+    rows, categories, *, summarized_only=False, left_out: Set[tuple[int, int]] = frozenset()
+):
     """Rows whose category is in ``categories`` (int/str mix ok), original order kept - minus any
     copy the reviewer already resolved away as a duplicate, and, with ``summarized_only``, minus
-    any row the reviewer UNTICKED for summary.
+    any row the reviewer UNTICKED for summary and any whose summary they left out of the export
+    (``left_out``, from `left_out_spans`).
+
+    The export half is the reviewers' 2026-11-13 request: "make it so Depos or Diagnostics that are
+    unticked are not being exported in the Depo and Diagnostics PDFs" - unticked on the Summaries
+    tab, which writes `summaries.excluded` and leaves the row's tick alone, so the bundle still took
+    them. Measured on the live box that day: 195 diagnostic or operative rows in 76 records and 8
+    depositions in 6 records were in their bundle with every summary left out. Unticking the ROW
+    instead was the other way offered, and was not taken: a summarize run removes the summary of an
+    unticked row, a split page's other visits with it, and the reviewer's edits to them.
 
     ``summarized_only`` was first the Diagnostic & Operative bundle's rule. Reviewer feedback,
     2026-10-01: its list "is still including files that we unchecked (due to being duplicates) ...
@@ -129,8 +152,12 @@ def matched_rows(rows, categories, *, summarized_only=False):
         for row in rows
         if str(row["category"]) in wanted
         and not is_resolved_duplicate(row, resolved_groups)
-        and (row.get("include", True) or not summarized_only)
+        and (not summarized_only or (row.get("include", True) and not _left_out(row, left_out)))
     ]
+
+
+def _left_out(row, left_out: Set[tuple[int, int]]) -> bool:
+    return bool(left_out) and (int(row["start"]), int(row["end"])) in left_out
 
 
 def pages_for_rows(rows):
