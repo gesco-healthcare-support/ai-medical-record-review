@@ -351,6 +351,14 @@ class Settings(BaseSettings):
     # unedited. Off by default so each box turns it on deliberately; our model's fallback read
     # (rows with no box found) has not been measured.
     summary_form_marks: bool = False
+    # A second look for an audit that cuts most of a summary (the senior reviewer's report of
+    # 2026-11-16: a Request for Authorization cut to one diagnosis because the OCR text had lost
+    # the form's table cells, which the draft had read from the page images). On: when the audit
+    # names an unsupported or contradicted statement and its rewrite keeps less than half of the
+    # draft, the same audit is asked once more with the row's page images and that answer is used
+    # (`summarize_engine._audit_against_the_pages`). Off: one text-only audit, as before. Off by
+    # default so each box turns it on deliberately.
+    summary_audit_page_recheck: bool = False
     # Cap page images per sub-document so a long record cannot blow the request payload/latency; the
     # full OCR text still covers every page beyond the cap.
     summary_image_max_pages: int = 15

@@ -178,6 +178,10 @@ export type SummaryItem = {
   // absent must read as "nothing to say" rather than as a flag.
   verifyFailed?: boolean;
   verifyIssues: VerifyIssue[];
+  // The model's own body from before the AI check rewrote it, or null: sent only with
+  // `verifyChanged`, for "Use original". Optional for the same rolling-deploy reason as
+  // `rowMissing`.
+  originalText?: string | null;
   // The upload time (UTC ISO) of the patient's earlier record that already covered this entry's
   // pages, or null: the entry is highlighted in yellow in the Word and PDF downloads. Optional for
   // the same rolling-deploy reason as `rowMissing`.

@@ -985,3 +985,67 @@ describe("SummariesView finding a summary", () => {
     expect(screen.getByText("No summaries match that search.")).toBeInTheDocument();
   });
 });
+
+// 2026-11-16: the AI check cut a Request for Authorization the model had summarized whole (the OCR
+// text had lost the form's table cells), and the reviewer retyped it from the pages. A card the
+// check rewrote offers the model's own text back in the editor.
+describe("SummariesView use original", () => {
+  const rewritten = {
+    verified: true,
+    verifyChanged: true,
+    summaryText: "**DOI**: 01/02/2025. **Diagnoses**: Wrist sprain.",
+    originalText:
+      "**DOI**: 01/02/2025. **Diagnoses**: Wrist sprain, elbow strain. Requested physical therapy.",
+    verifyIssues: [{ type: "unsupported", detail: "x" }],
+  };
+
+  it("opens the editor with the text from before the AI check, without its DOI prefix", () => {
+    saveMock.mockClear();
+    renderOne(rewritten);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Use original$/ }));
+
+    expect(screen.getByLabelText("Summary text")).toHaveValue(
+      "**Diagnoses**: Wrist sprain, elbow strain. Requested physical therapy.",
+    );
+    expect(screen.getByLabelText("Summary title")).toHaveValue("Progress Note");
+    // Nothing is written until the reviewer saves.
+    expect(saveMock).not.toHaveBeenCalled();
+  });
+
+  it("saves the original text when the reviewer saves it", async () => {
+    saveMock.mockClear();
+    renderOne(rewritten);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Use original$/ }));
+    fireEvent.click(editActions().getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() =>
+      expect(saveMock).toHaveBeenCalledWith({
+        idx: 0,
+        body: {
+          summaryTitle: "Progress Note",
+          summaryDate: "01/02/2026",
+          summaryText: "**Diagnoses**: Wrist sprain, elbow strain. Requested physical therapy.",
+        },
+      }),
+    );
+  });
+
+  it("Edit still opens the text the card shows", () => {
+    renderOne(rewritten);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Edit$/ }));
+
+    expect(screen.getByLabelText("Summary text")).toHaveValue("**Diagnoses**: Wrist sprain.");
+  });
+
+  it.each([
+    ["the check did not rewrite the body", { verifyChanged: false, originalText: null }],
+    ["an older backend sends no original", { ...rewritten, originalText: undefined }],
+  ])("offers nothing when %s", (_why, over) => {
+    renderOne(over);
+
+    expect(screen.queryByRole("button", { name: /^Use original$/ })).not.toBeInTheDocument();
+  });
+});

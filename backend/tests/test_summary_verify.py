@@ -663,3 +663,47 @@ def test_a_long_list_keeps_its_first_thirty_and_says_so(caplog):
 def test_an_issue_that_is_not_an_object_passes_through():
     """Guard: the helper tidies, it does not validate - a malformed issue is kept as it came."""
     assert sv.readable_issues(["odd", {"type": "date"}]) == ["odd", {"type": "date"}]
+
+
+# --- 2026-11-16: the audit can be shown the page images (`images=`) ---------------------------
+
+
+def test_with_page_images_the_images_lead_and_the_message_says_what_they_show(monkeypatch):
+    """WHEN the audit is given the row's page images THE SYSTEM SHALL send them before the text and
+    open the message with the note that what the pages show is supported even where the OCR text
+    lacks it."""
+    from app.services.llm import ImagePart
+
+    sent = _capturing_provider(monkeypatch, {"fixed_text": "Body.", "issues": []})
+    page = ImagePart(data=b"jpeg", mime_type="image/jpeg")
+
+    sv.verify_summary("m", "the source", "Body.", images=[page])
+
+    parts = sent["parts"]
+    assert parts[0] is page
+    assert parts[-1].text.startswith(sv.PAGE_IMAGES_NOTE)
+    assert "SOURCE:\nthe source" in parts[-1].text
+
+
+def test_without_page_images_the_message_is_unchanged(monkeypatch):
+    """Guard: no images, no note - one text part, as every audit sent before."""
+    sent = _capturing_provider(monkeypatch, {"fixed_text": "Body.", "issues": []})
+
+    sv.verify_summary("m", "the source", "Body.")
+
+    assert len(sent["parts"]) == 1
+    assert sent["parts"][0].text.startswith("SOURCE:\nthe source")
+    assert sv.PAGE_IMAGES_NOTE not in sent["parts"][0].text
+
+
+def test_the_system_prompt_is_the_same_with_and_without_page_images(monkeypatch):
+    """Guard: the note rides in the user message, so the audit fingerprint (the system prompt) does
+    not change with a second look."""
+    from app.services.llm import ImagePart
+
+    with_images = _capturing_provider(monkeypatch, {"fixed_text": "Body.", "issues": []})
+    sv.verify_summary("m", "src", "Body.", images=[ImagePart(data=b"j", mime_type="image/jpeg")])
+    without = _capturing_provider(monkeypatch, {"fixed_text": "Body.", "issues": []})
+    sv.verify_summary("m", "src", "Body.")
+
+    assert with_images["system"] == without["system"] == sv.audit_prompt()

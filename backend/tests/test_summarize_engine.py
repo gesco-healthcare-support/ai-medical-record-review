@@ -5541,3 +5541,178 @@ def test_on_a_marked_record_an_undated_entry_never_folds():
     """GUARD: only a known date joins entries."""
     entries = [_entry(_KAISER_NOTE, "a", date="-"), _entry(_NURSE_CALL, "b", date="-")]
     assert se.fold_record_entries(entries, ["1", "1"], "summaryTitle", by_date=True) == entries
+
+
+# SUMMARY_AUDIT_PAGE_RECHECK (2026-11-16): an audit that cuts most of a summary is asked again with
+# the page images. The reported case: a Request for Authorization whose OCR text had lost the form's
+# table cells, so the text-only audit deleted the diagnoses and services the draft had read from the
+# page images. Synthetic text below.
+_RFA_DRAFT = (
+    "**Diagnoses**: Wrist sprain, elbow strain, shoulder strain, neck strain. Requested physical "
+    "therapy, six visits, and a functional capacity evaluation."
+)
+_RFA_CUT = "**Diagnoses**: Wrist sprain."
+_PAGES = ["page image"]
+
+
+def _rfa_audit(monkeypatch, second, *, switch=True, first=_RFA_CUT, first_issues=None):
+    """A category 10 row whose draft is `_RFA_DRAFT`; the text-only audit answers `first` and the
+    second look (with images) answers `second` (a dict, or an exception to raise). Returns the
+    list of `images=` each audit call received."""
+    monkeypatch.setattr(get_settings(), "summary_audit_page_recheck", switch)
+    monkeypatch.setattr(
+        se,
+        "extract_pages_with_report",
+        lambda path, pages, mark_pages=False, **_kw: (
+            "Diagnosis. Service. Wrist sprain.",
+            _clean(pages),
+        ),
+    )
+
+    def generate(model, system_msg, user_text, temperature, max_output_tokens=None):
+        return (
+            "Request For Authorization - Dr Smith" if system_msg == se.TITLE_PROMPT else _RFA_DRAFT
+        ), False
+
+    monkeypatch.setattr(se, "_generate", generate)
+    monkeypatch.setattr(se, "page_image_parts", lambda *a, **k: _PAGES)
+    seen = []
+    issues = (
+        first_issues
+        if first_issues is not None
+        else [{"type": "unsupported", "detail": "a diagnosis not in the source"}]
+    )
+
+    def audit(model, source, summary, title=None, document_date=None, images=None):
+        seen.append(images)
+        if images is None:
+            return {"fixed_text": first, "fixed_title": title, "issues": issues, "ok": True}
+        if isinstance(second, Exception):
+            raise second
+        return {"fixed_title": title, **second}
+
+    monkeypatch.setattr(se, "verify_summary", audit)
+    return seen
+
+
+def test_an_audit_that_cuts_most_of_a_summary_is_asked_again_with_the_pages(monkeypatch, caplog):
+    """WHEN the switch is on and the text-only audit calls statements unsupported and cuts the
+    summary to less than half, THE SYSTEM SHALL ask the same audit again with the row's page images
+    and use that answer - here the pages show everything, so the draft ships whole."""
+    seen = _rfa_audit(monkeypatch, {"fixed_text": _RFA_DRAFT, "issues": [], "ok": True})
+
+    with caplog.at_level("INFO"):
+        out = se.summarize_row("/x.pdf", _row(category="10"), prompt="P", verify=True)
+
+    assert seen == [None, _PAGES]
+    assert out["verifiedText"] is None
+    assert "functional capacity evaluation" in out["summaryText"]
+    assert "asked again with the page images" in caplog.text
+    assert "Wrist sprain" not in caplog.text  # counts only, never the text
+
+
+def test_a_cut_the_pages_confirm_still_ships(monkeypatch):
+    """WHEN the second look with the pages cuts as well, THE SYSTEM SHALL ship that cut - the pages
+    are the evidence, and a statement neither they nor the text show is still removed."""
+    second = {
+        "fixed_text": _RFA_CUT,
+        "issues": [{"type": "unsupported", "detail": "services not on the page"}],
+        "ok": True,
+    }
+    seen = _rfa_audit(monkeypatch, second)
+
+    out = se.summarize_row("/x.pdf", _row(category="10"), prompt="P", verify=True)
+
+    assert seen == [None, _PAGES]
+    assert out["verifiedText"].endswith("Wrist sprain.")
+    assert out["verifyIssues"] == second["issues"]
+
+
+def test_with_the_switch_off_the_cut_ships_after_one_look(monkeypatch):
+    """Guard on today's behaviour: off by default, one text-only audit and its cut ships."""
+    seen = _rfa_audit(
+        monkeypatch, {"fixed_text": _RFA_DRAFT, "issues": [], "ok": True}, switch=False
+    )
+
+    out = se.summarize_row("/x.pdf", _row(category="10"), prompt="P", verify=True)
+
+    assert seen == [None]
+    assert out["verifiedText"].endswith("Wrist sprain.")
+
+
+def test_a_small_cut_is_not_asked_again(monkeypatch):
+    """Guard: a rewrite that keeps more than half the summary costs no second call."""
+    kept = _RFA_DRAFT.replace(", and a functional capacity evaluation", "")
+    seen = _rfa_audit(monkeypatch, {"fixed_text": _RFA_DRAFT, "issues": [], "ok": True}, first=kept)
+
+    out = se.summarize_row("/x.pdf", _row(category="10"), prompt="P", verify=True)
+
+    assert seen == [None]
+    assert "functional capacity" not in out["verifiedText"]
+
+
+def test_a_cut_for_a_house_rule_is_not_asked_again(monkeypatch):
+    """Guard: only an unsupported or contradicted statement is about the pages; a house-rule fix
+    (here capitalisation) is not asked again whatever its size."""
+    seen = _rfa_audit(
+        monkeypatch,
+        {"fixed_text": _RFA_DRAFT, "issues": [], "ok": True},
+        first_issues=[{"type": "capitalization", "detail": "capital letters"}],
+    )
+
+    se.summarize_row("/x.pdf", _row(category="10"), prompt="P", verify=True)
+
+    assert seen == [None]
+
+
+@pytest.mark.parametrize("failure", ["render", "audit"])
+def test_a_second_look_that_fails_leaves_the_first_answer(monkeypatch, caplog, failure):
+    """WHEN the pages cannot be rendered, or the second audit does not complete, THE SYSTEM SHALL
+    ship the first answer - what ships today - and warn naming the pages."""
+    seen = _rfa_audit(monkeypatch, {"fixed_text": "", "issues": [], "ok": False})
+    if failure == "render":
+
+        def broken(*_a, **_k):
+            raise RuntimeError("render failed")
+
+        monkeypatch.setattr(se, "page_image_parts", broken)
+
+    with caplog.at_level("WARNING"):
+        out = se.summarize_row("/x.pdf", _row(category="10"), prompt="P", verify=True)
+
+    assert seen == ([None] if failure == "render" else [None, _PAGES])
+    assert out["verifiedText"].endswith("Wrist sprain.")
+    assert "the first answer stands" in caplog.text
+    assert "1-2" in caplog.text
+
+
+def test_a_stop_during_the_second_look_is_not_swallowed(monkeypatch):
+    """A reviewer's Stop raised while the pages render propagates; it is not a failed render."""
+    from app.worker.failures import JobCancelled
+
+    _rfa_audit(monkeypatch, {"fixed_text": _RFA_DRAFT, "issues": [], "ok": True})
+
+    def stopped(*_a, **_k):
+        raise JobCancelled(0, 1)
+
+    monkeypatch.setattr(se, "page_image_parts", stopped)
+
+    with pytest.raises(JobCancelled):
+        se.summarize_row("/x.pdf", _row(category="10"), prompt="P", verify=True)
+
+
+def test_without_a_pdf_there_is_no_second_look(monkeypatch):
+    """Guard: no file to render, no second call - the first answer ships."""
+    seen = _rfa_audit(monkeypatch, {"fixed_text": _RFA_DRAFT, "issues": [], "ok": True})
+
+    assert (
+        se._audit_against_the_pages(
+            {"fixed_text": _RFA_CUT, "issues": [{"type": "unsupported"}], "ok": True},
+            lambda **_k: seen.append("called"),
+            None,
+            _row(),
+            _RFA_DRAFT,
+        )["fixed_text"]
+        == _RFA_CUT
+    )
+    assert seen == []
