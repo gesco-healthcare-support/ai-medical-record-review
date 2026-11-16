@@ -29,6 +29,7 @@ import time
 from rq import Queue
 from rq.worker import RoundRobinWorker, Worker
 
+from app.worker.finalizers import on_work_horse_killed
 from app.worker.queues import OCR_QUEUE, QUEUE_NAMES, get_redis, lanes_for
 
 logger = logging.getLogger(__name__)
@@ -143,9 +144,14 @@ def main(argv: list[str] | None = None) -> None:
     # RQ coordinates multiple schedulers with a Redis lock, so running it here is safe.
     # RoundRobinWorker inherits work() from Worker unchanged - it only overrides reorder_queues - so
     # with_scheduler behaves exactly as before the class swap.
-    RoundRobinWorker([Queue(name, connection=redis) for name in names], connection=redis).work(
-        with_scheduler=True
-    )
+    #
+    # work_horse_killed_handler: a job whose fork the SYSTEM kills (out of memory) is finalized by
+    # this parent at once; RQ runs no job callback for that death (see app.worker.finalizers).
+    RoundRobinWorker(
+        [Queue(name, connection=redis) for name in names],
+        connection=redis,
+        work_horse_killed_handler=on_work_horse_killed,
+    ).work(with_scheduler=True)
 
 
 if __name__ == "__main__":

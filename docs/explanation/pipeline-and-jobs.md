@@ -306,7 +306,8 @@ own success, and it makes that race safe:
   `INTERRUPTIBLE_DOCUMENT_STATUSES` (`segmenting`, `summarizing`), because a job may only move the
   document out of the stage it put it into.
 
-Callers: `_finalize_cancelled`, `on_job_stopped`, `on_job_failed` and `recover_orphans`. The
+Callers: `_finalize_cancelled`, `on_job_stopped`, `on_job_failed`, `on_work_horse_killed`, the
+cancel route's `_stop_if_nobody_runs_it` and `recover_orphans`. The
 in-horse finalizers for done, error, paused and needs_attention write the row directly, without the
 conditional update. `backend/app/worker/recovery.py` records why the last
 hand-written caller was moved onto `mark_terminal`: a Force stop landing during recovery used to be
@@ -384,6 +385,15 @@ The cooperative flag is already set, so that job is cancelled the first time it 
 `report()`. A paused summarize resumes after `SUMMARIZE_RESUME_DELAY` seconds, well inside the
 key's TTL at default settings.
 
+A job that NO WORKER RUNS any more stops at once, on Stop or Force stop alike
+(`_stop_if_nobody_runs_it` in `backend/app/api/documents.py`): when RQ has no record of it, or
+holds it in a terminal state (`backend/app/worker/recovery.py` `worker_is_gone`), the route writes
+`cancelled` and `STATUS_ON_CANCEL` through `mark_terminal` before it answers, and logs
+`job N stopped at once: no worker was running it`. Nothing else would ever read the flag. A reviewer
+reported exactly that on 2026-11-13: a record frozen at "195/399" for three days that neither Stop
+nor Delete could clear (Delete answers 409 while a job is active). Redis being unreachable counts
+as "a worker may still have it", so a blip never ends a job that is still working.
+
 ### After a stop: Continue or Start over
 
 A cancelled job is terminal, so it no longer blocks a new job. The start routes accept `fresh`:
@@ -400,13 +410,20 @@ rows and `reviewing` would open an empty editor. It does not delete the rows of 
 ## Finalizer callbacks
 
 When a work-horse dies without finishing (Force stop, out of memory, a crash), the code that would
-have finalized its row dies with it. `backend/app/worker/finalizers.py` registers two RQ callbacks
-that run in the worker parent, which outlives the horse:
+have finalized its row dies with it. `backend/app/worker/finalizers.py` holds three handlers that
+run in the worker parent, which outlives the horse:
 
-| Callback | RQ fires it when | Writes |
+| Handler | RQ calls it when | Writes |
 | --- | --- | --- |
 | `on_job_stopped` | A stop-job command killed the horse. Immediate. | `cancelled`, stage `cancelled`, document `STATUS_ON_CANCEL[kind]` |
 | `on_job_failed` | An exception escaped the horse, or RQ's registry maintenance finds the job abandoned. The abandoned case is eventual, not immediate. | `interrupted`, document `interrupted` only if it was `segmenting` or `summarizing` |
+| `on_work_horse_killed` | The system killed the horse: RQ logs `Work-horse terminated unexpectedly` and moves the job to its failed registry. Immediate. | the same as `on_job_failed`; nothing for the untracked reading of an upload |
+
+The third is not a job callback but the worker's `work_horse_killed_handler`, set where the worker
+is built (`backend/app/worker/__main__.py`). RQ runs no job callback for that death, and a job moved
+straight to the failed registry is never found abandoned either, so before it the row stayed
+`running` until the API restarted: on 2026-11-13 the kernel killed an Identify out of memory (a
+record whose pages were declared 154 x 200 inches) and the record stayed frozen for three days.
 
 Rules they follow:
 
@@ -564,7 +581,8 @@ need submission in waves (comment in `record_transient`).
   [states reference](../reference/job-and-document-states.md).
 - Correlate an RQ job with its DB job by `rq_job_id` or by the job's first argument, never by
   assuming the RQ id equals the DB id.
-- Do not rename or move `on_job_stopped` or `on_job_failed` without updating both enqueue sites;
+- Do not rename or move `on_job_stopped` or `on_job_failed` without updating both enqueue sites,
+  nor drop `work_horse_killed_handler` from the worker `main()` builds;
   queued RQ jobs hold their dotted paths.
 - Do not read the database or the catalog from inside a thread pool; resolve values before
   submitting, or open a fresh session per call as the segment job's page reader does.
