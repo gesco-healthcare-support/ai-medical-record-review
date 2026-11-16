@@ -116,7 +116,9 @@ the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category set
       same; and the audit is sent `VERIFY_PROMPT_FORM_CHOICES` (see [Audit](#audit));
     - a row flagged for manual check (`m` = `x`) of at most two pages first has its check boxes
       MEASURED, with no model call (`backend/app/services/form_boxes.py`): each page is rendered
-      at 200 dpi, every small thin-lined square on it is found, the ink inside it is measured
+      at 200 dpi (lower only for a page declared absurdly large; see
+      [OCR and page text](ocr-and-page-text.md#a-page-declared-too-large)), every small thin-lined
+      square on it is found, the ink inside it is measured
       (`MARKED_INK`), and the words printed to its right, wrapped lines included, are its label
       (a Tesseract word-position pass). Squares that touch along a line or down a column are cells
       (a field of one square per digit, a grid), not check boxes, and a page whose boxes are

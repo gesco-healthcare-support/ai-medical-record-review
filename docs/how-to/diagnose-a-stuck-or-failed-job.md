@@ -93,6 +93,7 @@ matter here (`backend/app/worker/tasks.py`, `backend/app/worker/finalizers.py`,
 | `job N finalized as cancelled by the stopped callback` | Force stop landed. |
 | `job N finalized as interrupted by the failure callback` | RQ reported the work-horse failed or abandoned. |
 | `work-horse for job N was killed (waitpid W)`, then `job N finalized as interrupted by the killed-work-horse handler` | The system killed the work-horse - most often out of memory (`docker inspect <worker> --format '{{.State.OOMKilled}}'`). RQ's own line before it reads `Work-horse terminated unexpectedly`. |
+| `page P renders at N Mpx: read one such page at a time` | A page above `LARGE_RENDER_MEGAPIXELS` is being read; other such pages in that process wait for it. Pages over 150 Mpx were rendered at a lower DPI (see [OCR and page text](../explanation/ocr-and-page-text.md#a-page-declared-too-large)). |
 | `page text population failed for D` | The OCR pass failed; later stages read pages on demand. |
 | `upload page reading stored N page(s) of document D` | The reading queued at upload finished (segment worker, `ocr` queue). |
 | `upload page reading failed for document D` | The reading queued at upload failed; Identify reads the missing pages itself and reports an OCR problem through its own job. |

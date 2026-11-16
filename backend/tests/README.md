@@ -83,6 +83,7 @@ shared `conftest.py`.
 | `test_prompt_content.py` | Required wording in the prompts. |
 | `test_provenance.py` | Per-call model tiering and prompt provenance recorded on jobs and summaries. |
 | `test_rasterise.py` | The shared PDF rasteriser: render resolution and the page cap. |
+| `test_render_ceiling.py` | The largest page a render may make (a page declared 154 x 200 inches, a strip too long for Tesseract, the check-box and verify renders), real pages kept as asked, and huge pages read one at a time. |
 | `test_repair_dedup_status.py` | Which documents the status-repair script touches. |
 | `test_reporting.py` | Assembly of the Word export. |
 | `test_rows_property.py` | Property-based tests (Hypothesis) of row validation. |
