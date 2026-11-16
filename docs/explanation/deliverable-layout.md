@@ -172,6 +172,17 @@ front of the combined pages.
   just `APPLICATION FOR ADJUDICATION OF CLAIM`; an Answer to one keeps it. Applied by
   `category_title()` when the summary is written, to the audited title, and on the Summaries tab and
   in the export, keyed on the category the summary was written under (`summaries.row_category`).
+- A deposition (category 9) titled for its deponent and its volume only:
+  `JANE ROE, CSR NO. 1234, SAMPLE DEPOSITION SOLUTIONS, DEPOSITION OF JOHN DOE` becomes
+  `DEPOSITION OF JOHN DOE` (`deposition_title()`, through `category_title()`). The court reporter,
+  her licence number, the reporting agency and a date go; a credential or suffix of the deponent
+  stays. A title that names no deponent is left as it is. A volume is written `, VOLUME II`: the
+  one the title names, else a II or later stated on the transcript's first two pages
+  (`cover_volume()`, read when the summary is written, so a deposition summarized earlier gets it on
+  a re-draft). `VOLUME I` is added only where the record holds a later volume of the same deponent
+  (`first_volumes()`): most transcripts stamped `VOLUME I` are the only one. The rest applies at
+  once, on the Summaries tab and in the export. The record-level name passes below leave deposition
+  titles alone.
 - No internal markers: `presentable_title()` strips `[ManualCheck]`, `[Diagnostic Study]` and
   `(Pages X-Y)`. The page range comes back only when the export dialog's page-number box is ticked.
 - Record-level names, all through `consistent_titles()` in the export, a bundle and on the

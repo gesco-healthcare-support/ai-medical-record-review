@@ -33,7 +33,7 @@ flowchart TD
     C["Caller asks for page P"] --> X["page_text._extract(pdf, P)"]
     X --> R["ocr.extract_pages_with_report(pdf, [P])"]
     R --> T["_ocr_page_with_retries: up to 2 attempts"]
-    T --> RA["_rasterize(first_page=P, last_page=P)<br/>DPI from _dpi_for_page"]
+    T --> RA["_rasterize(first_page=P, last_page=P)<br/>DPI from _dpi_for_page, held to the render ceiling"]
     RA --> O["_ocr_image: pytesseract.image_to_string<br/>timeout OCR_TIMEOUT_SECONDS"]
     O -->|"text"| OK["(text, ok=True)<br/>blank if the text is empty"]
     O -->|"timeout or Tesseract error twice"| ER["(empty, ok=False)<br/>page reported errored"]
@@ -47,6 +47,8 @@ The rules, all in `backend/app/services/ocr.py`:
 | Every page is rasterised and OCR'd | Even when the PDF carries a text layer. See [Rejected optimisations](#rejected-optimisations). |
 | DPI | `OCR_BASE_DPI` (default 200). That value was pdf2image's own default before it was made explicit. |
 | Optional DPI cap | `OCR_MAX_LONG_EDGE_PX` (default 0, which disables it) lowers the DPI of an oversized page so its long edge fits; it never raises the DPI. Page sizes are read once per file and cached. |
+| Render ceiling | Every render, whatever DPI was asked for, stays within `MAX_RENDER_MEGAPIXELS` (150) and a side Tesseract can read (`MAX_RENDER_SIDE_PX`, 32,000; it cannot read an image over 32,767 px on a side). `_rasterize` lowers the DPI of a page that would render past either, through `render_dpi`, and never raises it. See [A page declared too large](#a-page-declared-too-large). |
+| One huge page at a time | A page that renders above `LARGE_RENDER_MEGAPIXELS` (75) is rendered and read while holding a lock (`one_large_page_at_a_time`), so a process reads one such page at a time; every other page reads in parallel as before. |
 | `--dpi` flag | Passed to Tesseract only when a page was rendered below the base DPI. At the base DPI it is omitted. |
 | Empty-page second pass | A page the default layout pass reads as empty is read again as one block of text (`--psm 6`), and that reading is kept only when it holds at least five words of three or more letters (`_FALLBACK_MIN_WORDS`). The default pass finds nothing on some grey, speckled form scans that `--psm 6` reads. A page that produced text is never read twice, and a truly blank page stays blank. |
 | Timeout | `OCR_TIMEOUT_SECONDS` (default 120) per image. pytesseract kills the Tesseract subprocess on timeout, so a hung page cannot hold a thread forever. |
@@ -58,6 +60,33 @@ The rules, all in `backend/app/services/ocr.py`:
 
 The job error messages for the two fail-fast errors are listed in
 [Errors and messages reference](../reference/errors-and-messages.md).
+
+### A page declared too large
+
+A PDF declares the size of each page, and a render multiplies that size by its DPI. On 2026-11-13 a
+reviewer's record on the live box declared pages of 154 x 200 inches: 1,232 megapixels each at
+200 dpi, about 3.7 GB of pixels held again by Poppler, pdf2image and Tesseract. The box (15 GB) ran
+out of memory twice, reading the upload and then on Identify, and the kernel killed the worker
+both times; the record stayed frozen until a later fix let a killed job end (see
+[Pipeline and jobs](pipeline-and-jobs.md)). Tesseract would not have read those pages anyway: it
+cannot read an image over 32,767 px on a side.
+
+So every render is held to the ceiling above. It sits far above any real page. Measured read-only
+on the live box on 2026-11-16, the declared size of every page of every record (787 records,
+137,235 pages) at 200 dpi:
+
+| Rendered size | Pages | What changes |
+| --- | --- | --- |
+| Up to 75 Mpx | 137,145 | Nothing. Every page up to 48 x 36 inches is here. |
+| 75 to 150 Mpx | 57 | Same render; read one at a time in a process. |
+| Over 150 Mpx | 33 | Rendered at a lower DPI: one page of 152 Mpx (198 dpi instead of 200), and 32 pages in the two records whose pages reach 1,232 Mpx. |
+
+Every page up to 48 inches on its long side keeps its render (48 x 48 inches is 92 Mpx), which is
+the size the rejected render cap below was measured on. The check-box read
+(`backend/app/services/form_boxes.py`) asks for 200 dpi outright; that goes through `_rasterize`
+too, and the boxes are measured at the DPI the page was really rendered at. The verify pass renders
+its own page images (`backend/app/services/verify_pass.py` `_page_image`, 120 dpi) and holds them
+to the same page size (`_MAX_IMAGE_MEGAPIXELS`, 54 Mpx at 120 dpi).
 
 ### Errored versus blank
 
@@ -252,6 +281,8 @@ cached (`_crop_long_edges`), not once per call: on a 5,077-page record a fresh p
   `docker-compose.yml`, so the containers use the code defaults until compose passes them. See
   [Configuration model](configuration-model.md).
 - Measure any speed-up by word recall on real records before enabling it.
+- Render a page through `_rasterize`, or pass the DPI through `render_dpi`. A render that skips
+  both has no ceiling, and one page declared absurdly large can take the box's memory.
 
 ## Related pages
 

@@ -17,8 +17,8 @@ killed or abandoned job, and the orphan recovery the API runs at start-up.
 | `tasks.py` | The runner `_run`, the `_finalize_*` functions, the four task functions `segment_document`, `classify_document`, `dedup_document`, `summarize_document`, and the untracked `ocr_uploaded_document` (no `jobs` row, no model). |
 | `cancel.py` | The Redis cancel flag `mrr:cancel:<job_id>` and this process's current job id. |
 | `failures.py` | `classify_failure` (transient or permanent), `job_outcome` / `is_failure` for stored jobs, and the control signals `JobPaused`, `JobCancelled`, `JobNeedsAttention`. |
-| `finalizers.py` | RQ `on_stopped` / `on_failure` callbacks, run in the worker parent. |
-| `recovery.py` | `recover_orphans`, called once from the API's start-up. |
+| `finalizers.py` | RQ `on_stopped` / `on_failure` callbacks and the worker's `work_horse_killed_handler`, run in the worker parent. |
+| `recovery.py` | `recover_orphans`, called once from the API's start-up; `worker_is_gone`, read by the cancel route. |
 | `fairness.py` | `should_step_aside`: an identify job whose reviewer is at `IDENTIFY_PER_REVIEWER_CAP` steps back to the front of its lane while another reviewer waits. `serve` records the lanes this worker reads. |
 
 The job service that creates and dispatches jobs (`create_job`, `enqueue`, `mark_terminal`, the

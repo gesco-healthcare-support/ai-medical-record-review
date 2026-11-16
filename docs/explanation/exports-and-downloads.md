@@ -70,12 +70,14 @@ Records of one patient do not arrive in order, and the office asked (2026-11-12)
 finished LAST to show which of its entries an earlier review already covered, so an editor can
 skip them. `backend/app/services/previous_reviews.py` sets `summaries.reviewed_before` when a
 summarize run ends (and when the record's patient ID changes): an entry is reviewed before when
-every readable page of its row was, in a record of the same patient ID whose last summarize run
-finished earlier, inside an entry summarized there (left in the export). Pages are compared by
-their stored text - five-word runs, 60% found on one earlier page - so an entry with a page the
-earlier record did not have, or with no readable page, is never marked. Measured on the live box
-(2026-11-12): 183 of 1,420 entries of the patients' later records; matching on date and category
-alone would have marked 105 more that held new pages.
+every readable page of its row was, in a record of the same patient ID first summarized earlier,
+inside an entry summarized there (left in the export). A record's place is its FIRST summarize run
+that came to an end (done or needs attention), not its last: summarizing an earlier record again
+after a correction must not make it the later one. A cancelled or failed run places nothing.
+Pages are compared by their stored text - five-word runs, 60% found on one earlier page - so an
+entry with a page the earlier record did not have, or with no readable page, is never marked.
+Measured on the live box (2026-11-12): 183 of 1,420 entries of the patients' later records; matching
+on date and category alone would have marked 105 more that held new pages.
 
 The entry stays in the review. The Word letter highlights its date, title and body in yellow
 (`_highlight` in `reporting.py`, Word's own text highlight), the linked PDF draws the same yellow
@@ -113,8 +115,13 @@ Records summarized before the feature carry no marks until they are summarized a
 - **Bundle PDF.** `bundles.py` `matched_rows()` selects the rows in the requested categories minus
   any copy a reviewer resolved away as a duplicate (a non-primary, non-dismissed member of a cluster
   that has a primary). On its own it does not filter on the row's `include` flag. A bundle that
-  sends `summarizedOnly` also leaves out a row unticked for summary, so it carries only the
-  documents being summarized. Both presets send it: the reviewers asked for it on the diagnostic
+  sends `summarizedOnly` also leaves out a row unticked for summary, and a row whose summaries
+  were all left out of the export on the Summaries tab (`bundles.left_out_spans`; a page split into
+  visits only when every visit is), so it carries only the documents being summarized. The second
+  half is the reviewers' 2026-11-13 request: a study unticked on the Summaries tab was still in the
+  Diagnostic download. Unticking the row itself was the other way offered and was not taken: the
+  next summarize run removes an unticked row's summary, and a split page's other visits and the
+  reviewer's edits with it. Both presets send it: the reviewers asked for it on the diagnostic
   list and then on the depositions. An older data migration unticked every deposition row in bulk,
   so on the few records segmented before 2026-08-08 with no deposition ticked since, the Depositions
   download finds nothing until a reviewer ticks one, and the Depositions page says so. The matched

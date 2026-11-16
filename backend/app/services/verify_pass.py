@@ -14,7 +14,7 @@ from pdf2image import convert_from_path
 
 from app.config import get_settings
 from app.services.llm import ImagePart, Part, TextPart, provider_for_stage
-from app.services.ocr import extract_text_from_image
+from app.services.ocr import extract_text_from_image, render_dpi
 from app.services.pools import PoolTimeout, drain_pool
 from app.worker.failures import JobCancelled
 
@@ -35,8 +35,15 @@ FRAGMENT_PAGE_CAP = 2
 BOUNDARY_TEXT_CHARS = 1200
 
 
+# The largest image a verify page is rendered to: the page size of the OCR's render ceiling
+# (`ocr.MAX_RENDER_MEGAPIXELS` at 200 dpi) at this pass's 120 dpi. So the same pages are held here
+# as there - only a page declared absurdly large; every real page renders exactly as before.
+_MAX_IMAGE_MEGAPIXELS = 54
+
+
 def _page_image(pdf_path, page, dpi=120):
     """Rasterize one page ONCE; the caller reuses it for both PNG evidence and OCR."""
+    dpi = render_dpi(pdf_path, dpi, page, page, max_megapixels=_MAX_IMAGE_MEGAPIXELS)
     return convert_from_path(pdf_path, first_page=page, last_page=page, dpi=dpi)[0]
 
 

@@ -326,7 +326,9 @@ separate switch.
 
 **Checking one boundary (`_same_document()`).** For each suspect row B and the row A before it:
 
-1. Render A's last page and up to two of B's pages (`FRAGMENT_PAGE_CAP`) as PNG at 120 dpi.
+1. Render A's last page and up to two of B's pages (`FRAGMENT_PAGE_CAP`) as PNG at 120 dpi
+   (lower only for a page declared absurdly large: `_MAX_IMAGE_MEGAPIXELS`; see
+   [OCR and page text](ocr-and-page-text.md#a-page-declared-too-large)).
 2. Send the images first and the prompt last. The prompt refers to the images by position ("The
    first image is the LAST page of document A"), so the model should see them before reading those
    references.

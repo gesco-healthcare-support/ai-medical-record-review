@@ -369,12 +369,19 @@ def label_boxes(boxes: list[Box], words: list[Word]) -> list[dict]:
     return choices
 
 
+def _dpi_of(image) -> int:
+    """The dpi a page image was rendered at: `FORM_BOX_DPI`, or lower for a page declared so large
+    that `ocr._rasterize` had to render it smaller. Box sizes are physical, so they are measured at
+    the dpi the page really has."""
+    return int(round(ocr.rendered_dpi(image) or FORM_BOX_DPI))
+
+
 def ocr_words(image, timeout: int) -> list[Word]:
     """Every word Tesseract reads on a page image, with its box. Sparse-text mode: a form is
     scattered labels, not paragraphs."""
     data = pytesseract.image_to_data(
         image,
-        config=f"--psm 11 --dpi {FORM_BOX_DPI}",
+        config=f"--psm 11 --dpi {_dpi_of(image)}",
         output_type=pytesseract.Output.DICT,
         timeout=timeout,
     )
@@ -406,7 +413,7 @@ def read_page(image, timeout: int) -> list[dict]:
     """The labelled check boxes of one rendered page; [] when it has none, or when they are mostly
     inked (`_mostly_marked`) - no OCR call then."""
     gray = np.asarray(image.convert("L"))
-    boxes = find_boxes(gray, FORM_BOX_DPI)
+    boxes = find_boxes(gray, _dpi_of(image))
     if not boxes or _mostly_marked(boxes):
         return []
     return label_boxes(boxes, ocr_words(image, timeout))
@@ -420,6 +427,9 @@ def read_check_boxes(pdf_path, start: int, end: int) -> list[dict]:
     timeout = get_settings().ocr_timeout_seconds
     choices: list[dict] = []
     for page in range(int(start), int(end) + 1):
-        for image in ocr._rasterize(pdf_path, dpi=FORM_BOX_DPI, first_page=page, last_page=page):
-            choices.extend(read_page(image, timeout))
+        with ocr.one_large_page_at_a_time(pdf_path, page, FORM_BOX_DPI):
+            for image in ocr._rasterize(
+                pdf_path, dpi=FORM_BOX_DPI, first_page=page, last_page=page
+            ):
+                choices.extend(read_page(image, timeout))
     return choices

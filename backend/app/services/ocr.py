@@ -41,8 +41,12 @@ the other rejected OCR speed lever - capping the DPI was 4.2x faster and lost 6.
 """
 
 import logging
+import math
 import re
+import threading
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import NamedTuple, NotRequired, TypedDict
 
@@ -77,6 +81,14 @@ def _ensure_tesseract() -> None:
         _configured = True
 
 
+def rendered_dpi(image) -> float | None:
+    """The dpi `_rasterize` recorded on an image it rendered, or None when there is none."""
+    recorded = (getattr(image, "info", None) or {}).get("dpi")
+    if isinstance(recorded, (tuple, list)):  # PIL stores (x_dpi, y_dpi)
+        recorded = recorded[0] if recorded else None
+    return recorded if isinstance(recorded, (int, float)) else None
+
+
 def _ocr_image(image, dpi=None) -> str:
     """OCR one page image within a wall-clock timeout (ocr_timeout_seconds).
 
@@ -97,11 +109,7 @@ def _ocr_image(image, dpi=None) -> str:
     _ensure_tesseract()
     settings = get_settings()
     if dpi is None:
-        recorded = (getattr(image, "info", None) or {}).get("dpi")
-        if isinstance(recorded, (tuple, list)):  # PIL stores (x_dpi, y_dpi)
-            recorded = recorded[0] if recorded else None
-        if isinstance(recorded, (int, float)):
-            dpi = recorded
+        dpi = rendered_dpi(image)
     kwargs: _TesseractArgs = {"timeout": settings.ocr_timeout_seconds}
     if dpi and int(round(float(dpi))) != int(settings.ocr_base_dpi):
         kwargs["config"] = f"--dpi {int(round(float(dpi)))}"
@@ -147,19 +155,123 @@ def _single_block_fallback(image, kwargs: _TesseractArgs) -> str:
 
 
 @lru_cache(maxsize=64)
-def _page_long_edges_pt(pdf_path) -> tuple[float, ...]:
-    """Long edge of every page in points, cached per file.
+def _page_sizes_pt(pdf_path) -> tuple[tuple[float, float], ...]:
+    """Width and height of every page's media box (what Poppler renders) in points, cached per file.
 
     One parse per document rather than per page: an upload is immutable, and a fresh PdfReader on a
     335-page file costs enough that doing it per page would add tens of seconds to a full population.
-    An unreadable box is not fatal - callers fall back to the base DPI.
+    An unreadable box is not fatal - callers keep the DPI they would have used.
     """
     try:
         reader = PdfReader(pdf_path)
-        return tuple(max(float(p.mediabox.width), float(p.mediabox.height)) for p in reader.pages)
+        return tuple((float(p.mediabox.width), float(p.mediabox.height)) for p in reader.pages)
     except Exception as exc:
-        logger.warning("could not read page sizes, falling back to the base DPI: %s", exc)
+        logger.warning("could not read page sizes, keeping the requested DPI: %s", exc)
         return ()
+
+
+@lru_cache(maxsize=64)
+def _page_long_edges_pt(pdf_path) -> tuple[float, ...]:
+    """Long edge of every page in points, cached per file (see `_page_sizes_pt`)."""
+    return tuple(max(width, height) for width, height in _page_sizes_pt(pdf_path))
+
+
+# --- the largest page a render may make -----------------------------------------------------------
+#
+# A PDF declares the size of each page, and every render here multiplies that size by a dpi. A page
+# declared absurdly large renders absurdly large: a scan whose file says its sheet is 154 x 200
+# inches comes out of the 200 dpi OCR render at 30,800 x 40,000 px, 1,232 megapixels - 3.7 GB at
+# three bytes a pixel, held again by every program the page passes through (Poppler's bitmap, the
+# image pdf2image decodes, the file Tesseract is handed and Tesseract's own copy). On 2026-11-13
+# such a record ran the live box's 15 GB out of memory twice, reading the upload and then on
+# Identify; the kernel killed both, and the reviewer's record froze. And it read nothing for it:
+# Tesseract's page coordinates are 16-bit, so it cannot read an image over 32,767 px on a side.
+#
+# So one page's render is held to MAX_RENDER_MEGAPIXELS, and to a side Tesseract can read. The dpi
+# is lowered only as far as that needs - never raised - and a lowered dpi is declared to Tesseract
+# like any render below the base (`_ocr_image`).
+#
+# The ceiling sits far above any real page. Measured read-only on the live box 2026-11-16, the
+# declared size of every page of every record (787 records, 137,235 pages), rendered at 200 dpi:
+#
+#   up to 25 Mpx    135,032 pages   letter, legal, ledger, ordinary scans
+#   25 - 75 Mpx       2,113 pages
+#   75 - 150 Mpx         57 pages
+#   over 150 Mpx         33 pages   one of 152 Mpx (now rendered at 198 dpi instead of 200); the
+#                                   other 32 in the two records whose pages reach 1,232 Mpx
+#
+# The measurement on `ocr_max_long_edge_px` in config showed that capping real large pages costs
+# words. This does not cap them: every page up to 48 inches on its long side - the size that
+# measurement was about - renders exactly as before (48 x 48 inches is 92 Mpx), and the pages it
+# does lower are pages that read nothing and took the box down.
+MAX_RENDER_MEGAPIXELS = 150
+# Tesseract refuses an image over 32,767 px on a side; a little margin below it.
+MAX_RENDER_SIDE_PX = 32_000
+
+# Pages above this many megapixels are rendered and read ONE AT A TIME in a process. The OCR pass
+# reads PAGE_TEXT_WORKERS pages at once (six on the live box), and six pages at the ceiling would
+# hold about 10 GB between them. Below the line, nothing waits: on the live box only 90 pages in 8
+# records (the two lowest rows of the table above) lie above it.
+LARGE_RENDER_MEGAPIXELS = 75
+# Re-entrant, so a reader that holds it may call another that takes it.
+_LARGE_RENDER_LOCK = threading.RLock()
+
+
+def _ceiling_dpi(size_pt: tuple[float, float], dpi: int, max_megapixels: float) -> int:
+    """``dpi``, lowered as far as a page of ``size_pt`` needs to render within ``max_megapixels``
+    and `MAX_RENDER_SIDE_PX`. Never raised."""
+    width, height = size_pt
+    if width <= 0 or height <= 0:
+        return dpi
+    by_area = 72 * math.sqrt(max_megapixels * 1_000_000 / (width * height))
+    by_side = 72 * MAX_RENDER_SIDE_PX / max(width, height)
+    return max(1, min(int(dpi), int(by_area), int(by_side)))
+
+
+def _sizes_in(pdf_path, first_page=None, last_page=None) -> tuple[tuple[float, float], ...]:
+    """The declared sizes of pages first_page..last_page; every page when no page is given; ()
+    when they cannot be read or the pages are out of range."""
+    sizes = _page_sizes_pt(pdf_path)
+    if first_page is None:
+        return sizes
+    last = first_page if last_page is None else last_page
+    if first_page < 1 or last > len(sizes):
+        return ()
+    return sizes[first_page - 1 : last]
+
+
+def render_dpi(
+    pdf_path, dpi, first_page=None, last_page=None, max_megapixels=MAX_RENDER_MEGAPIXELS
+) -> int:
+    """The dpi to render pages first_page..last_page at (every page when none is given): ``dpi``,
+    lowered only for a page whose declared size would render past the ceilings above. An ordinary
+    page renders exactly as asked, and a page whose size cannot be read keeps ``dpi``."""
+    sizes = _sizes_in(pdf_path, first_page, last_page)
+    return min((_ceiling_dpi(size, int(dpi), max_megapixels) for size in sizes), default=int(dpi))
+
+
+def _render_megapixels(pdf_path, page, dpi) -> float:
+    """How large page ``page`` renders at ``dpi``; 0 when its size cannot be read."""
+    sizes = _sizes_in(pdf_path, page, page)
+    if not sizes:
+        return 0.0
+    width, height = sizes[0]
+    return width * height * (dpi / 72) ** 2 / 1_000_000
+
+
+@contextmanager
+def one_large_page_at_a_time(pdf_path, page, dpi=None) -> Iterator[None]:
+    """Hold `_LARGE_RENDER_LOCK` while page ``page`` is rendered and read, when it renders above
+    `LARGE_RENDER_MEGAPIXELS`; otherwise take nothing. ``dpi`` is what the caller asks
+    `_rasterize` for (None = the OCR default), so the size is the one the render will make."""
+    asked = _dpi_for_page(pdf_path, page) if dpi is None else dpi
+    megapixels = _render_megapixels(pdf_path, page, render_dpi(pdf_path, asked, page, page))
+    if megapixels <= LARGE_RENDER_MEGAPIXELS:
+        yield
+        return
+    with _LARGE_RENDER_LOCK:
+        logger.info("page %s renders at %.0f Mpx: read one such page at a time", page, megapixels)
+        yield
 
 
 def _dpi_for_page(pdf_path, page) -> int:
@@ -187,9 +299,13 @@ def _rasterize(pdf_path, **kwargs):
 
     Picks the DPI when the caller did not (see ``_dpi_for_page``) and records it on every image, so
     ``_ocr_image`` can declare the same value to Tesseract without any call site threading it through.
+
+    A caller's DPI, chosen or passed, is then held to the render ceiling (`render_dpi`): a page
+    declared absurdly large renders smaller, every other page exactly as asked.
     """
-    kwargs.setdefault("dpi", _dpi_for_page(pdf_path, kwargs.get("first_page")))
-    dpi = kwargs["dpi"]
+    first, last = kwargs.get("first_page"), kwargs.get("last_page")
+    kwargs.setdefault("dpi", _dpi_for_page(pdf_path, first))
+    kwargs["dpi"] = dpi = render_dpi(pdf_path, kwargs["dpi"], first, last)
     try:
         images = convert_from_path(pdf_path, **kwargs)
     except PDFInfoNotInstalledError as exc:
@@ -276,23 +392,23 @@ def extract_text_from_selected_pages(
     """
     extracted_text = ""
     for page_number in sorted(set(selected_pages)):
-        try:
-            images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
-        except OcrUnavailableError:
-            raise  # config failure: fail fast rather than silently return partial/empty text
-        except Exception as exc:
-            logger.warning(
-                "could not rasterize page %s: %s", page_number, exc
-            )  # skip, do not abort
-            continue
-        extracted_text += _ocr_page_images(images, page_number, page_label_offset, mark_pages)
+        with one_large_page_at_a_time(pdf_path, page_number):
+            try:
+                images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
+            except OcrUnavailableError:
+                raise  # config failure: fail fast rather than silently return partial/empty text
+            except Exception as exc:
+                logger.warning("could not rasterize page %s: %s", page_number, exc)  # skip it
+                continue
+            extracted_text += _ocr_page_images(images, page_number, page_label_offset, mark_pages)
     return extracted_text
 
 
 def _read_page(pdf_path, page_number: int) -> str:
     """Rasterize and OCR one record page, as one page."""
-    images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
-    return "".join(_ocr_image(image) for image in images)
+    with one_large_page_at_a_time(pdf_path, page_number):
+        images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
+        return "".join(_ocr_image(image) for image in images)
 
 
 def _ocr_page_with_retries(pdf_path, page_number: int, retries: int, read=_read_page):
@@ -558,12 +674,13 @@ def _condensed_quarters(image, retries: int = 1) -> list[tuple[int, str | None]]
 
 def _read_sheet(pdf_path, page_number: int):
     """One deposition sheet: its transcript pages when it is condensed, else its text as one page."""
-    images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
-    if len(images) == 1:
-        quarters = _condensed_quarters(images[0])
-        if quarters is not None:
-            return quarters
-    return "".join(_ocr_image(image) for image in images)
+    with one_large_page_at_a_time(pdf_path, page_number):
+        images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
+        if len(images) == 1:
+            quarters = _condensed_quarters(images[0])
+            if quarters is not None:
+                return quarters
+        return "".join(_ocr_image(image) for image in images)
 
 
 def has_condensed_sheets(pdf_path, start, end, max_sheets: int = 6) -> bool:
@@ -579,9 +696,10 @@ def has_condensed_sheets(pdf_path, start, end, max_sheets: int = 6) -> bool:
     try:
         first, last = int(start), min(int(end), int(start) + max_sheets - 1)
         for page_number in range(first, last + 1):
-            images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
-            if any(_grid_cuts(image) is not None for image in images):
-                return True
+            with one_large_page_at_a_time(pdf_path, page_number):
+                images = _rasterize(pdf_path, first_page=page_number, last_page=page_number)
+                if any(_grid_cuts(image) is not None for image in images):
+                    return True
     except Exception as exc:
         logger.info("condensed-transcript check skipped: %s", exc)
     return False

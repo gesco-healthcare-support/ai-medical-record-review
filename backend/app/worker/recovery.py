@@ -92,3 +92,24 @@ def recover_orphans(session: Session) -> int:
         ):
             reaped += 1
     return reaped
+
+
+def worker_is_gone(rq_id: str) -> bool:
+    """True when RQ says no worker is on this job any more: it has no record of it, or holds it in a
+    terminal state - which is where RQ leaves a job whose work-horse the system killed. False while
+    RQ reports it waiting or running, and False when Redis cannot be asked, so a blip never ends a
+    job that may still be working. The same reading `recover_orphans` makes, for one job.
+    """
+    from redis.exceptions import RedisError
+    from rq.exceptions import NoSuchJobError
+    from rq.job import Job as RQJob
+
+    from app.worker.queues import get_redis
+
+    try:
+        status = RQJob.fetch(rq_id, connection=get_redis()).get_status(refresh=True)
+    except NoSuchJobError:
+        return True
+    except RedisError:
+        return False
+    return status not in _HEALTHY_RQ_STATUSES
