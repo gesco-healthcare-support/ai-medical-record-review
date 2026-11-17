@@ -581,7 +581,7 @@ def _audit_against_the_pages(result: dict, audit, pdf_path, row, summary: str) -
         )
     except JobCancelled:
         raise
-    except Exception:  # noqa: BLE001 - no pages to show: the first answer stands, as today
+    except Exception:  # noqa: BLE001 - no pages to show, so the first answer stands as today
         logger.warning(
             "summary audit cut most of pages %s-%s and the pages could not be rendered; "
             "the first answer stands",

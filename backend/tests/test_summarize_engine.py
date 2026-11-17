@@ -5696,9 +5696,10 @@ def test_a_stop_during_the_second_look_is_not_swallowed(monkeypatch):
         raise JobCancelled(0, 1)
 
     monkeypatch.setattr(se, "page_image_parts", stopped)
+    row = _row(category="10")
 
     with pytest.raises(JobCancelled):
-        se.summarize_row("/x.pdf", _row(category="10"), prompt="P", verify=True)
+        se.summarize_row("/x.pdf", row, prompt="P", verify=True)
 
 
 def test_without_a_pdf_there_is_no_second_look(monkeypatch):
