@@ -441,7 +441,7 @@ The audit is fail-safe. `ok` is true only when the reply parsed; an empty body, 
 (checked before parsing) or any exception returns the originals with no issues and `ok` false. A
 reviewer's Stop (`JobCancelled`) is re-raised, not swallowed.
 
-With `SUMMARY_AUDIT_PAGE_RECHECK` on (off by default, both models), an audit that names an
+With `SUMMARY_AUDIT_PAGE_RECHECK` on (on by default, both models), an audit that names an
 `unsupported` or `contradiction` issue and whose rewrite keeps less than half of the draft is
 asked once more, the same question with the row's page images attached (the body's own,
 `page_image_parts`), and that second answer goes through the guards below in place of the first
