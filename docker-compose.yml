@@ -288,9 +288,9 @@ x-backend-env: &backend-env
   # (Re-draft).
   SUMMARY_FORM_MARKS: ${SUMMARY_FORM_MARKS:-false}
   # An audit that cuts most of a summary is asked again with the page images, so text the OCR
-  # lost (a form's table cells, handwriting) is not deleted as unsupported. Off by default.
-  # Read by the summarize worker and the api (Re-draft).
-  SUMMARY_AUDIT_PAGE_RECHECK: ${SUMMARY_AUDIT_PAGE_RECHECK:-false}
+  # lost (a form's table cells, handwriting) is not deleted as unsupported. On by default; false
+  # goes back to one text-only audit. Read by the summarize worker and the api (Re-draft).
+  SUMMARY_AUDIT_PAGE_RECHECK: ${SUMMARY_AUDIT_PAGE_RECHECK:-true}
   # Narrow the boundary verify pass to the rows its trigger heuristic selects, instead of every
   # adjacent boundary. Named here BECAUSE it is meant to be flipped on a live box and measured:
   # a setting absent from this block reaches the container only through a rebuild, which is the
