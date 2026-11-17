@@ -473,8 +473,13 @@ changed since they were written; those will be regenerated, so it asks for confi
 - The faithfulness check's issues are listed in a collapsed "N things the AI check flagged" section
   with no chip. The code comment records that 61% of audited summaries carry issues, which would make a
   chip noise; the rare "Flagged, not applied" case does get a chip.
-- Optional fields (`verifyKeptRaw`, `verifyFailed`, `rowMissing`, `rowMethodLive`) read "absent means
-  nothing to say", so an older backend during a rolling deploy flags nothing.
+- "Use original" appears beside Edit on an AI-fixed card (`UseOriginal` in `summaries-view.tsx`): it
+  opens the editor with the model's own text from before the AI check (`originalText`), DOI prefix
+  stripped like Edit's, and nothing is saved until the reviewer saves. The senior reviewer retyped a
+  Request for Authorization the check had cut to one diagnosis (2026-11-16, see
+  [Summarization](summarization.md)).
+- Optional fields (`verifyKeptRaw`, `verifyFailed`, `originalText`, `rowMissing`, `rowMethodLive`)
+  read "absent means nothing to say", so an older backend during a rolling deploy flags nothing.
 
 ## The patient ID
 

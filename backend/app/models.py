@@ -677,6 +677,13 @@ class Summary(Base):
             # the whole summary while its budget stays flat. So it fails hardest on the longest
             # documents: depositions (23.1%) and 14 of the 16 category-1 rows over 4,000 characters.
             "verifyFailed": bool(self.audit_model and not self.verified),
+            # The model's own body, sent only when the audit REWROTE it (`verifyChanged`), so the
+            # Summaries tab can open the editor with it ("Use original"). The senior reviewer
+            # retyped a Request for Authorization the audit had cut from 200 characters to 32
+            # (2026-11-16): the OCR text had lost the form's table cells, so the text-only audit
+            # took what the draft read from the page for an invention. The raw `text` was stored
+            # all along; nothing showed it.
+            "originalText": self.text if self.verified and self.verified_text is not None else None,
             # The upload time of the patient's earlier record that already covered this entry's
             # pages (UTC ISO), or null - see `reviewed_before`.
             "reviewedBefore": _utc_iso(self.reviewed_before),

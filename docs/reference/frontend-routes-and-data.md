@@ -235,7 +235,7 @@ Defined in `frontend/lib/types.ts` unless noted.
 | `Row` | `start`, `end`, `category`, `title`, `date`, `injury_date`, `flag`, `suggest_merge`, `include`, `ruled_paperwork?`, `method?`, `dupe_group?`, `dupe_primary?`, `dupe_dismissed?` |
 | `EditorRow` (`frontend/lib/review-rows.ts`) | `Row` plus the client-only `_key`, stripped before sending |
 | `CategoryOption` | `id`, `name` |
-| `SummaryItem` | `idx`, `summaryTitle`, `summaryDate`, `summaryText`, `manualCheck`, `excluded`, `edited`, `verified`, `verifyChanged`, `verifyKeptRaw?`, `verifyFailed?`, `verifyIssues: VerifyIssue[]`, `row: {start, end, category}`, `rowCategoryLive` (nullable), `rowMissing?`, `rowMethodLive?` |
+| `SummaryItem` | `idx`, `summaryTitle`, `summaryDate`, `summaryText`, `manualCheck`, `excluded`, `edited`, `verified`, `verifyChanged`, `verifyKeptRaw?`, `verifyFailed?`, `verifyIssues: VerifyIssue[]`, `originalText?` (nullable), `row: {start, end, category}`, `rowCategoryLive` (nullable), `rowMissing?`, `rowMethodLive?` |
 | `VerifyIssue` | `type`, `detail` |
 | `DuplicatesResponse` | `clusters: DuplicateCluster[]`, `job` (nullable), `stale`, `unreadable`, `checked` |
 | `DuplicateCluster` | `group`, `dismissed`, `similarity` (0-1, nullable), `rows: DuplicateRow[]` |
@@ -248,8 +248,9 @@ Defined in `frontend/lib/types.ts` unless noted.
 | `PreparedDownload` (`frontend/lib/download.ts`) | `token`, `url`, `filename?`, `size?` |
 | `DownloadStatus` (`frontend/lib/download.ts`) | `state`, `size` |
 
-Optional fields marked "absent means nothing to say" (`verifyKeptRaw`, `verifyFailed`, `rowMissing`,
-`rowMethodLive`) stay optional so an older backend during a rolling deploy does not flag every card.
+Optional fields marked "absent means nothing to say" (`verifyKeptRaw`, `verifyFailed`,
+`originalText`, `rowMissing`, `rowMethodLive`) stay optional so an older backend during a rolling
+deploy does not flag every card.
 
 ## Enumerations
 

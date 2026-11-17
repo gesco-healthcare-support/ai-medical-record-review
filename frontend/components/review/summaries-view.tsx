@@ -144,6 +144,27 @@ function VerifyIssues({ item }: Readonly<{ item: SummaryItem }>) {
 }
 
 
+/** "Use original" on a card the AI check rewrote: opens the editor with the model's own text from
+ *  before the check (`originalText`), so a reviewer whose summary the check cut back gets it back
+ *  in one click and a save, instead of retyping it from the pages. Nothing is saved until they
+ *  save. Absent on every other card. */
+function UseOriginal({
+  item,
+  onUse,
+}: Readonly<{ item: SummaryItem; onUse: (item: SummaryItem) => void }>) {
+  if (!item.verifyChanged || !item.originalText) return null;
+  return (
+    <button
+      type="button"
+      className="ev-btn ev-btn-ghost ev-btn-sm"
+      title="Open the editor with the text from before the AI check changed it"
+      onClick={() => onUse(item)}
+    >
+      Use original
+    </button>
+  );
+}
+
 /** The "Reviewed before" chip's tooltip: which earlier record, by its upload date. */
 function reviewedBeforeTitle(uploaded: string): string {
   const day = new Date(uploaded);
@@ -353,8 +374,12 @@ export function SummariesView({
     pdfRef.current?.jumpTo(Number(item.row.start) || 1);
   }
 
-  function startEdit(item: SummaryItem) {
-    const { title, text } = parseDisplay(item);
+  /** Open the editor on this card. ``original`` fills the text box with the model's own body from
+   *  before the AI check rewrote it (`originalText`), for the reviewer to read and save. */
+  function startEdit(item: SummaryItem, original = false) {
+    const { title } = parseDisplay(item);
+    const source = original ? { ...item, summaryText: item.originalText ?? "" } : item;
+    const { text } = parseDisplay(source);
     setEditTitle(title);
     setEditDate(item.summaryDate || "");
     setEditText(text);
@@ -585,6 +610,7 @@ export function SummariesView({
                       >
                         Edit
                       </button>
+                      <UseOriginal item={item} onUse={(it) => startEdit(it, true)} />
                       <label className="exclude-toggle">
                         <input
                           type="checkbox"

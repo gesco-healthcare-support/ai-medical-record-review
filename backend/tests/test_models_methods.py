@@ -259,6 +259,25 @@ def test_an_unaudited_summary_reports_neither_outcome():
     assert listing["verifyIssues"] == []
 
 
+def test_listing_sends_the_model_s_own_text_only_when_the_audit_rewrote_it():
+    """WHEN the audit rewrote the body THE SYSTEM SHALL send the model's own text as
+    ``originalText`` (the Summaries tab's "Use original"), and null on every other summary: a
+    discarded rewrite already shows that text, and an unaudited summary has no other."""
+
+    def listing(verified, fixed):
+        summary = Summary(
+            idx=0, title="T", date="-", text="RAW", row_start=1, row_end=2, row_category="10"
+        )
+        summary.verified = verified
+        summary.verify_issues = [{"type": "unsupported", "detail": "d"}]
+        summary.verified_text = fixed
+        return summary.listing()
+
+    assert listing(True, "CORRECTED")["originalText"] == "RAW"
+    assert listing(True, None)["originalText"] is None
+    assert listing(False, None)["originalText"] is None
+
+
 def test_every_table_that_references_a_document_is_cascaded_by_it():
     """GUARD on the CLASS of defect, not the instance.
 
