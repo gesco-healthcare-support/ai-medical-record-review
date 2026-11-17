@@ -10,6 +10,7 @@ import. This module no longer names an SDK.
 """
 
 import difflib
+import functools
 import hashlib
 import json
 import logging
@@ -524,6 +525,90 @@ def _written(reply) -> set[str]:
         for a in answers
         if isinstance(a, dict) and a.get("written") is True
     }
+
+
+# A SECOND LOOK FOR A BIG CUT (SUMMARY_AUDIT_PAGE_RECHECK, both models). The audit reads only the
+# row's OCR text, while the summary was written from the page images too; where the OCR lost text
+# - the cells of a form's table, handwriting - the audit takes what the draft read from the page
+# for an invention and deletes it. The senior reviewer reported it on a Request for Authorization
+# (2026-11-16): the draft named four diagnoses, physical therapy and an FCE; the OCR held the
+# table's printed headings and almost none of its typed cells; the audit cut 200 characters to 32
+# and the reviewer retyped them. Read-only on the live box (Gemini, summaries since 2026-10-01), an
+# audit cut more than half of 194 of 14,808 summaries, 21 of 673 Requests for Authorization; in
+# nearly all the words it removed were not in the OCR text either - an OCR loss or a real
+# invention, which the text alone cannot tell apart and the pages can. So only such a cut is asked
+# again, with the pages.
+#
+# The share of the draft a rewrite must fall under to be asked again.
+_BIG_CUT = 0.5
+_SPACE_RUN = re.compile(r"\s+")
+
+
+def _plain_length(text: str | None) -> int:
+    """Length of a body without its bold markers and with runs of white space as one space."""
+    return len(_SPACE_RUN.sub(" ", (text or "").replace("**", "")).strip())
+
+
+def _cuts_most_of_it(result: dict, summary: str) -> bool:
+    """True when a completed audit names an unsupported or contradicted statement and its rewrite
+    keeps less than `_BIG_CUT` of the draft."""
+    if not (result.get("ok") and result.get("issues")):
+        return False
+    types = {str(i.get("type") or "") for i in result["issues"] if isinstance(i, dict)}
+    if not types & _CONTENT_ISSUES:
+        return False
+    return _plain_length(result.get("fixed_text")) < _BIG_CUT * _plain_length(summary)
+
+
+def _audit_against_the_pages(result: dict, audit, pdf_path, row, summary: str) -> dict:
+    """The audit's answer, or - with SUMMARY_AUDIT_PAGE_RECHECK on and an answer that cuts most of
+    the summary (`_cuts_most_of_it`) - its answer to the same question asked again with the row's
+    page images (`summary_verify.PAGE_IMAGES_NOTE`).
+
+    ``audit`` is the first call with its arguments bound; it is called again with ``images=``. The
+    images are the body's own (`page_image_parts`, the first `summary_image_max_pages` pages). The
+    second answer replaces the first and goes through every guard the first would have. Any failure
+    - no PDF, a render error, a second audit that does not complete - leaves the first answer, which
+    is what ships today. A reviewer's Stop (`JobCancelled`) propagates.
+    """
+    if not (get_settings().summary_audit_page_recheck and pdf_path):
+        return result
+    if not _cuts_most_of_it(result, summary):
+        return result
+    try:
+        images = page_image_parts(
+            pdf_path, row["start"], row["end"], get_settings().summary_image_max_pages
+        )
+    except JobCancelled:
+        raise
+    except Exception:  # noqa: BLE001 - without the pages the first answer stands
+        logger.warning(
+            "summary audit cut most of pages %s-%s and the pages could not be rendered; "
+            "the first answer stands",
+            row["start"],
+            row["end"],
+            exc_info=True,
+        )
+        return result
+    second = audit(images=images)
+    if not second.get("ok"):
+        logger.warning(
+            "summary audit cut most of pages %s-%s and the second look with the pages did not "
+            "complete; the first answer stands",
+            row["start"],
+            row["end"],
+        )
+        return result
+    logger.info(
+        "summary audit cut pages %s-%s from %s to %s characters; asked again with the page "
+        "images: %s",
+        row["start"],
+        row["end"],
+        _plain_length(summary),
+        _plain_length(result.get("fixed_text")),
+        _plain_length(second.get("fixed_text")),
+    )
+    return second
 
 
 def _issues_to_store(issues: list) -> list:
@@ -4002,7 +4087,11 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead, pdf_path
     #
     # One visit of a page that records several is told so (`_visit_context`).
     other_visits = row.get("other_visits")
-    result = verify_summary(
+    #
+    # A rewrite that cuts most of the summary is asked again with the page images
+    # (`_audit_against_the_pages`, SUMMARY_AUDIT_PAGE_RECHECK).
+    audit = functools.partial(
+        verify_summary,
         audit_model,
         text,
         summary,
@@ -4012,6 +4101,7 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead, pdf_path
         ),
         **_visit_context(row),
     )
+    result = _audit_against_the_pages(audit(), audit, pdf_path, row, summary)
     verify_ran = bool(result.get("ok"))
     if not verify_ran:
         # `ok` False folds three events into one value - nothing to audit, the reply hit the

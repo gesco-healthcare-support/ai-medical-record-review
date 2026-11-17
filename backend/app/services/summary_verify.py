@@ -147,6 +147,32 @@ VERIFY_PROMPT_FORM_CHOICES = VERIFY_PROMPT.replace(
 )
 
 
+# The page-images note, 2026-11-16. Sent only with `images` (`verify_summary`), at the head of the
+# USER message, so the system prompt - and with it the audit fingerprint - is the same on every
+# call. The senior reviewer reported a Request for Authorization whose summary kept one diagnosis
+# of four and none of the requested services. Read-only on the live box: the draft had all of it;
+# the OCR text of the form had the table's printed headings but almost nothing typed inside its
+# cells; the audit, reading only that text, called four statements unsupported and cut 200
+# characters to 32. The summary was written from the page IMAGES, which show all of it.
+# `summarize_engine` asks again with the pages attached only when an audit cuts most of a summary
+# (`_audit_against_the_pages`).
+PAGE_IMAGES_NOTE = (
+    "PAGE IMAGES: the pages the SOURCE text was read from are attached above. The SOURCE text is "
+    "OCR, and OCR loses text - the contents of table cells, handwriting, stamps and faint print. "
+    "A statement you can read on the page images IS supported, even where the SOURCE text lacks "
+    "it: never remove it as unsupported. A statement that neither the SOURCE text nor the page "
+    "images show is still unsupported.\n\n"
+)
+
+
+def _audit_parts(prompt: str, images) -> list:
+    """The audit's message: the text alone, or the page images followed by the text opened with
+    `PAGE_IMAGES_NOTE`."""
+    if not images:
+        return [TextPart(prompt)]
+    return [*images, TextPart(PAGE_IMAGES_NOTE + prompt)]
+
+
 def audit_prompt() -> str:
     """The audit's system prompt: `VERIFY_PROMPT`, or with SUMMARY_FORM_MARKS on the same prompt
     with the form-choices bullet. One function, so the call and the audit fingerprint
@@ -379,6 +405,7 @@ def verify_summary(
     document_date=None,
     max_output_tokens=None,
     visit_date=None,
+    images=None,
 ):
     """Audit ``summary_text`` and (when given) ``title`` against ``source_text`` and the house rules.
 
@@ -402,6 +429,10 @@ def verify_summary(
     incomplete and rewrote it into the page's longest study - on the live box six visits of one page
     shipped the same MRI under six dates (a reviewer's report, 2026-10-30). ``"-"`` is an undated
     visit of such a page.
+
+    ``images`` are the row's page images (`ImagePart`s). Given, they go before the text and the
+    message opens with `PAGE_IMAGES_NOTE`: what the pages show counts as supported even where the
+    OCR text lost it. The system prompt is the same either way.
     """
     if not (summary_text or "").strip():
         return _unverified(summary_text, title)
@@ -437,7 +468,7 @@ def verify_summary(
         response = get_provider().generate_structured(
             model=model,
             system=audit_prompt(),
-            parts=[TextPart(prompt)],
+            parts=_audit_parts(prompt, images),
             schema=schema,
             temperature=0.0,
             # The audit runs inside the summarize stage and has always shared its thinking budget;

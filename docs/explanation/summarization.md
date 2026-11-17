@@ -441,6 +441,22 @@ The audit is fail-safe. `ok` is true only when the reply parsed; an empty body, 
 (checked before parsing) or any exception returns the originals with no issues and `ok` false. A
 reviewer's Stop (`JobCancelled`) is re-raised, not swallowed.
 
+With `SUMMARY_AUDIT_PAGE_RECHECK` on (off by default, both models), an audit that names an
+`unsupported` or `contradiction` issue and whose rewrite keeps less than half of the draft is
+asked once more, the same question with the row's page images attached (the body's own,
+`page_image_parts`), and that second answer goes through the guards below in place of the first
+(`summarize_engine._audit_against_the_pages()`). The message then opens with `PAGE_IMAGES_NOTE`:
+what the pages show is supported even where the OCR text lacks it; the system prompt, and with it
+the audit fingerprint, is unchanged. The senior reviewer reported the case it is for (2026-11-16):
+a Request for Authorization whose draft named four diagnoses, physical therapy and a functional
+capacity evaluation shipped with one diagnosis. Read-only on the live box, the OCR text of that
+form held the table's printed headings and almost none of its typed cells, and the audit had cut
+200 characters to 32. Over summaries since 2026-10-01 an audit cut more than half of 194 of
+14,808 (21 of 673 Requests for Authorization), nearly always removing words the OCR text does not
+carry, which the text alone cannot tell from an invention. A second look that fails (no PDF, a
+render error, an audit that does not complete) leaves the first answer; a reviewer's Stop
+propagates.
+
 The document date is passed only for categories 1 and 2, the same gate generation uses. Rule 6
 switches itself on whenever a date is present, so passing it for every category armed the rule on
 documents whose substance is earlier events (an evaluation's injury history, a deposition's
@@ -523,7 +539,9 @@ What is displayed and exported is `edited` over `verified` over raw, for body an
 (`backend/app/models.py` `Summary.effective_text()`, `Summary.effective_title()`). The listing
 derives three review flags from the stored columns: `verifyChanged` (a rewrite was applied),
 `verifyKeptRaw` (issues found, rewrite rejected) and `verifyFailed` (an audit was requested and did
-not complete).
+not complete). With `verifyChanged` it also sends `originalText`, the model's own body, so the
+Summaries tab can open the editor with it ("Use original"); nothing is saved until the reviewer
+saves.
 
 ## House style on the body
 
