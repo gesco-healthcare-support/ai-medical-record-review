@@ -62,3 +62,16 @@ class TestCategory01InterimHistory:
         there would tell a medico-legal evaluation to drop the history it exists to record."""
         assert "Interim History" not in prompts["category_12"]
         assert "Interim History" not in prompts["category_13"]
+
+
+class TestCategory10Response:
+    """The senior reviewer, 2026-11-18: when the state form's response section is filled in, the
+    summary should say whether the request was approved or denied. The shared rule that carries it
+    is `summarize_engine._C_RFA_RESPONSE`; the category's own points name it too."""
+
+    def test_the_category_10_points_name_the_response(self):
+        """WHEN the category 10 prompt is rendered, THE SYSTEM SHALL list the response as a point,
+        only when a box in the form's response section is marked."""
+        prompt = prompts["category_10"]
+        assert "d.\tUtilization Review (only when a box in the form's response section is" in prompt
+        assert "the marked choice and its date)" in prompt

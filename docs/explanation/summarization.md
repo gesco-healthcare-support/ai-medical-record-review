@@ -168,6 +168,18 @@ the sentence-case rule (`_F_SENTENCE_CASE`). The rest depend on the category set
   section), because their pages can be a log of several dated visits - see
   [A page of several visits](#a-page-of-several-visits). No other category gets it, an unknown
   id included.
+- **10 is told to report the form's answer** (`_C_RFA_RESPONSE`). The state Request for
+  Authorization form ends with a response section for the claims administrator or utilization
+  review: boxes for Approved, Denied or modified and Delay (and for a request previously denied or
+  liability disputed), a date, an authorization number and a signature. The senior reviewer asked
+  on 2026-11-18 that the summary say whether the request was approved or denied when it is filled
+  in, rather than filing such a form as a utilization review (15). When a box there is marked, the
+  summary ends with a `**Utilization Review**` point naming the marked choice in the form's words
+  and the section's date; when none is marked, or the mark cannot be made out, it says nothing.
+  The marks are check boxes the OCR text cannot show, so the point is read from the page images,
+  and a category 10 audit reads them too (see [Audit](#audit)). Category 10's own points name it as
+  point d as well; the block carries it where a deployment's own prompt row shadows `prompts.py`.
+  No other category gets it, an unknown id included.
 - **15, 16 and 17 get the minimal preamble on purpose.** A discharge summary (16) would be told by
   `_C_NORMAL_FINDINGS` to omit what is normal, which is most of its content; a job description (17)
   describes a job, not a patient. Their requirements are stated in their own prompts instead.
@@ -456,6 +468,14 @@ form held the table's printed headings and almost none of its typed cells, and t
 carry, which the text alone cannot tell from an invention. A second look that fails (no PDF, a
 render error, an audit that does not complete) leaves the first answer; a reviewer's Stop
 propagates.
+
+Under the same setting a Request for Authorization (category 10) is audited WITH its page images
+from the first look (`summarize_engine._audit_from_the_pages()`), not only after a big cut. It is
+a form: its diagnoses and requested services sit in table cells the OCR text loses, and the answer
+at its foot is a marked check box (`_C_RFA_RESPONSE`) that the text cannot show at all, so a
+text-only audit could neither confirm the box the summary names nor catch a misread one. The forms
+are short, so the images cost little. Pages that cannot be rendered, or an audit with them that
+does not complete, leave the text-only audit, as before.
 
 The document date is passed only for categories 1 and 2, the same gate generation uses. Rule 6
 switches itself on whenever a date is present, so passing it for every category armed the rule on
