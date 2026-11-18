@@ -139,7 +139,9 @@ The pass runs twice for most records, and the second run finds little or nothing
   a silent model server (see
   [Pipeline and jobs](pipeline-and-jobs.md#the-ocr-queue-reading-pages-at-upload)). A refused queue
   never fails the upload. Measured on the test box: a 5,525-page record spent 46 minutes in this
-  pass; done at upload, that time no longer holds a rented model server.
+  pass; done at upload, that time no longer holds a rented model server. The pass steps aside every
+  20 pages when a reviewer's job waits on its worker's lanes, and queues the rest of itself first
+  in line; the rest reads only what is still missing (step 2 below).
 - **At the start of every segment job,** `_populate_page_text` reads whatever is still missing.
 
 Both call `populate_document`:

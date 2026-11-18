@@ -5,13 +5,21 @@ only at the start of Identify, which needs the model: a 5,000-page record spent 
 pages while the rented server waited. These pin the three pieces: the upload queues the reading,
 the job fills the page-text store, and a segment worker does the reading while it waits for the
 model server - without ever taking a model job before the server has passed its check.
+
+And a fourth, from 2026-11-18: a reading steps aside for a job waiting on its worker's lanes. A
+reviewer uploaded 20 records and each Identify waited 10-40 minutes while all five segment workers
+read whole records.
 """
 
 import logging
 import signal
+import threading
 import uuid
 
+import pytest
 from rq import Queue
+from rq.timeouts import TimerDeathPenalty
+from rq.worker import RoundRobinWorker, SimpleWorker
 from sqlalchemy import select
 
 from app.auth.password import MrrPasswordHelper
@@ -19,9 +27,39 @@ from app.config import get_settings
 from app.db import get_sessionmaker
 from app.models import Document, PageText, User
 from app.services import page_text as pt
-from app.worker import queues
+from app.worker import fairness, queues
 from app.worker import tasks
 from tests.conftest import unique_test_email
+
+# A lane of an owner id no real test user will have, so it belongs to this file alone.
+_LANE = "segment:90201"
+# Where the lane job below writes down what it saw.
+_SEEN_KEY = "test-upload-ocr:stored-when-the-lane-job-ran"
+
+
+@pytest.fixture(autouse=True)
+def _lanes_put_back():
+    """The lanes a worker serves live in a module (a forked work-horse inherits them): put back
+    whatever a test set, so no other test meets a reading that steps aside."""
+    before = fairness.served()
+    yield
+    fairness.serve(before)
+
+
+@pytest.fixture
+def lane_and_ocr():
+    """This worker serves ``_LANE``; that lane and the ocr queue start and end empty."""
+    connection = queues.get_redis()
+    lane = Queue(_LANE, connection=connection)
+    ocr = Queue(queues.OCR_QUEUE, connection=connection)
+    lane.empty()
+    ocr.empty()
+    connection.delete(_SEEN_KEY)
+    fairness.serve([_LANE])
+    yield lane, ocr
+    lane.empty()
+    ocr.empty()
+    connection.delete(_SEEN_KEY)
 
 
 def _doc(pages: int = 3) -> str:
@@ -50,6 +88,47 @@ def _doc(pages: int = 3) -> str:
 def _pages(doc_id: str) -> list[int]:
     with get_sessionmaker()() as session:
         return sorted(session.scalars(select(PageText.page).where(PageText.document_id == doc_id)))
+
+
+def _reading(monkeypatch) -> list[int]:
+    """Stub the page reader; the list fills with every page read, in any order (pool threads)."""
+    read: list[int] = []
+
+    def extract(_path, page):
+        read.append(page)
+        return f"page {page}", True
+
+    monkeypatch.setattr(pt, "_extract", extract)
+    return read
+
+
+class _InProcessWorker(SimpleWorker):
+    """An RQ worker that runs each job in this process: RQ's own forks a work-horse per job, which
+    Windows cannot, and its timeout uses SIGALRM, which Windows lacks."""
+
+    death_penalty_class = TimerDeathPenalty
+
+
+class _InProcessRoundRobin(_InProcessWorker):
+    """The segment workers' turn order (``RoundRobinWorker``), in this process."""
+
+    reorder_queues = RoundRobinWorker.reorder_queues
+
+
+def _work_in_a_burst(worker) -> None:
+    """Run ``worker`` until its queues are empty, putting back the signal handlers RQ installs."""
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        worker.work(burst=True, with_scheduler=False)
+    finally:
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
+
+
+def note_what_was_stored(document_id) -> None:
+    """A job on a reviewer's lane, run by the worker in the round-robin test: writes down how many
+    of the record's pages were stored when it ran."""
+    queues.get_redis().rpush(_SEEN_KEY, len(_pages(document_id)))
 
 
 # --- queueing --------------------------------------------------------------------------------------
@@ -110,6 +189,115 @@ def test_a_failed_reading_is_logged_and_left_for_identify(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger=tasks.__name__):
         tasks.ocr_uploaded_document(doc_id)
     assert any("upload page reading failed" in r.getMessage() for r in caplog.records)
+
+
+# --- stepping aside for a reviewer's job ----------------------------------------------------------
+
+
+def test_a_reading_steps_aside_for_a_waiting_job_and_queues_the_rest_first(
+    monkeypatch, lane_and_ocr, caplog
+):
+    lane, ocr = lane_and_ocr
+    _reading(monkeypatch)
+    doc_id = _doc(pages=50)
+    ocr.enqueue("app.worker.tasks.ocr_uploaded_document", "uploaded-later")
+    lane.enqueue("builtins.len", "x")  # the reviewer pressed Identify
+    with caplog.at_level(logging.INFO, logger=tasks.__name__):
+        tasks.ocr_uploaded_document(doc_id)
+    assert len(_pages(doc_id)) == tasks._LANE_CHECK_PAGES
+    # The rest keeps the record's place: ahead of the readings uploaded after it.
+    assert [job.args for job in ocr.jobs] == [(doc_id,), ("uploaded-later",)]
+    assert ocr.jobs[0].timeout == get_settings().effective_job_timeout(50)
+    assert any(
+        f"stepped aside after {tasks._LANE_CHECK_PAGES} page(s)" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_the_rest_reads_only_the_pages_still_missing(monkeypatch, lane_and_ocr):
+    lane, ocr = lane_and_ocr
+    read = _reading(monkeypatch)
+    doc_id = _doc(pages=50)
+    lane.enqueue("builtins.len", "x")
+    tasks.ocr_uploaded_document(doc_id)
+    stored_first = _pages(doc_id)
+    (rest,) = ocr.jobs
+    ocr.empty()
+    lane.empty()  # the worker took the waiting job
+    read.clear()
+    tasks.ocr_uploaded_document(*rest.args)
+    assert sorted(read) == sorted(set(range(1, 51)) - set(stored_first))
+    assert _pages(doc_id) == list(range(1, 51))
+    assert ocr.count == 0
+
+
+def test_with_no_job_waiting_a_reading_reads_the_whole_record_in_one_go(monkeypatch, lane_and_ocr):
+    _, ocr = lane_and_ocr
+    read = _reading(monkeypatch)
+    doc_id = _doc(pages=50)
+    tasks.ocr_uploaded_document(doc_id)
+    assert sorted(read) == list(range(1, 51))
+    assert _pages(doc_id) == list(range(1, 51))
+    assert ocr.count == 0
+
+
+def test_a_reading_never_steps_aside_after_its_last_page(monkeypatch, lane_and_ocr):
+    """Nothing is left to queue: stepping aside there would only cost the next worker a turn."""
+    lane, ocr = lane_and_ocr
+    _reading(monkeypatch)
+    doc_id = _doc(pages=tasks._LANE_CHECK_PAGES)
+    lane.enqueue("builtins.len", "x")
+    tasks.ocr_uploaded_document(doc_id)
+    assert _pages(doc_id) == list(range(1, tasks._LANE_CHECK_PAGES + 1))
+    assert ocr.count == 0
+
+
+def test_a_round_robin_worker_takes_the_waiting_job_before_the_rest_of_the_reading(
+    monkeypatch, lane_and_ocr
+):
+    """End to end on real RQ queues: the reviewer presses Identify while a record is being read, and
+    the worker reading it runs that job next, then reads on."""
+    lane, ocr = lane_and_ocr
+    doc_id = _doc(pages=50)
+    pressed: list[int] = []
+    lock = threading.Lock()
+
+    def extract(_path, page):
+        with lock:
+            if not pressed:
+                pressed.append(page)
+                lane.enqueue(f"{__name__}.note_what_was_stored", doc_id)
+        return f"page {page}", True
+
+    monkeypatch.setattr(pt, "_extract", extract)
+    queues.enqueue_upload_ocr(doc_id, 50)
+    connection = queues.get_redis()
+    _work_in_a_burst(_InProcessRoundRobin([lane, ocr], connection=connection))
+    seen = [int(n) for n in connection.lrange(_SEEN_KEY, 0, -1)]
+    assert seen == [tasks._LANE_CHECK_PAGES]  # it ran after the first piece, before the rest
+    assert _pages(doc_id) == list(range(1, 51))
+    assert ocr.count == 0
+
+
+def test_a_record_deleted_while_its_reading_stood_aside_ends_quietly(
+    monkeypatch, lane_and_ocr, caplog
+):
+    lane, ocr = lane_and_ocr
+    read = _reading(monkeypatch)
+    doc_id = _doc(pages=50)
+    lane.enqueue("builtins.len", "x")
+    tasks.ocr_uploaded_document(doc_id)
+    (rest,) = ocr.jobs
+    ocr.empty()
+    with get_sessionmaker()() as session:
+        session.delete(session.get(Document, doc_id))
+        session.commit()
+    read.clear()
+    with caplog.at_level(logging.INFO):
+        tasks.ocr_uploaded_document(*rest.args)
+    assert read == []
+    assert ocr.count == 0
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 # --- segment workers -------------------------------------------------------------------------------
@@ -227,3 +415,26 @@ def test_the_drain_reads_only_the_ocr_queue_in_a_burst_and_restores_signal_handl
     assert _FakeWorker.built == [["ocr"]]
     assert _FakeWorker.work_kwargs == {"burst": True, "with_scheduler": False}
     assert signal.getsignal(signal.SIGTERM) == before
+
+
+def test_the_burst_that_reads_while_the_model_server_is_silent_never_steps_aside(
+    monkeypatch, lane_and_ocr
+):
+    """That burst can take readings only, and a job waiting on a lane is exactly what sits queued
+    while the model server is off (an Identify pressed then). A reading that stepped aside there
+    would be handed straight back, again and again, its pages in flight thrown away each time."""
+    from app.worker import __main__ as worker_main
+
+    lane, ocr = lane_and_ocr
+    read = _reading(monkeypatch)
+    doc_id = _doc(pages=50)
+    lane.enqueue("builtins.len", "x")
+    queues.enqueue_upload_ocr(doc_id, 50)
+    monkeypatch.setattr(worker_main, "Worker", _InProcessWorker)
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    worker_main._drain_ocr_queue()
+    assert {sig: signal.getsignal(sig) for sig in saved} == saved
+    assert sorted(read) == list(range(1, 51))  # every page read once, in one go
+    assert ocr.count == 0
+    assert lane.count == 1  # left for the model server
+    assert fairness.served() == (_LANE,)  # the worker's lanes are put back after the burst

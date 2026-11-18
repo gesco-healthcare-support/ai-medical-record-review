@@ -129,13 +129,29 @@ page-text store and needs no model:
 - **Segment workers only.** `ocr` is not a base queue a worker is started with. Every segment worker
   adds it after its lanes (no user lanes: nobody waits on it), and it is not handed to the
   fairness rule below, which counts reviewer lanes only.
+- **It steps aside for a reviewer's job.** Every 20 pages (`tasks._LANE_CHECK_PAGES`) the reading
+  asks whether a job waits on a lane its worker serves (`fairness.lane_job_waiting`, one queue
+  length per lane). When one does, it stops, queues the rest of itself at the FRONT of the `ocr`
+  queue (`enqueue_upload_ocr(..., at_front=True)`, so the record keeps its place ahead of later
+  uploads) and returns. After an `ocr` job the round-robin order puts every lane before the `ocr`
+  queue, so that worker's next turn takes the waiting job; the next worker to free reads on, only
+  the pages still missing. Any job on a served lane counts, the same reviewer's too: nobody waits on
+  a reading. Without this a worker held its turn for a whole record: on 2026-11-18 a reviewer
+  uploaded 20 records (39,256 pages) on the test box and each Identify waited 10 to 40 minutes
+  while all five segment workers read, although those records' pages were already read. An Identify
+  now waits for one piece of reading at most (20 pages; estimated at about a minute there, not
+  yet measured). The pages a pass that steps aside has in flight (at most `PAGE_TEXT_WORKERS`)
+  are read again by the next pass.
 - **Also while the model server is off.** A segment worker waiting in `wait_for_backends()` (see
   [What a worker does before its first job](#what-a-worker-does-before-its-first-job)) spends each
   pause draining the `ocr` queue in an RQ burst (`_read_uploads_then_sleep`, `_drain_ocr_queue` in
   `backend/app/worker/__main__.py`), then sleeps what is left of the pause. Only the `ocr` queue is
   read there, so no model job is taken before the server has passed its check. A long record keeps
   that worker reading for as long as it takes, which delays only its own next check; an empty queue
-  starts no RQ worker at all.
+  starts no RQ worker at all. The burst serves no lanes (`_drain_ocr_queue` empties the worker's
+  served lanes while it runs), so a reading there never steps aside: the job waiting on a lane then
+  is an Identify pressed with the server off, which the burst cannot take, and a reading that
+  stepped aside would be handed straight back again and again.
 
 On the test box this moves a 5,000-page record's ~45-minute reading out of Identify, where it held a
 rented model server with nothing to do yet. An Identify pressed before the reading finishes reads

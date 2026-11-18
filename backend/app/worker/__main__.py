@@ -4,7 +4,9 @@ Segment workers (need torch + Tesseract/Poppler):   python -m app.worker segment
 Summarize workers (need Tesseract/Poppler, no torch): python -m app.worker summarize
 No args runs a worker on both queues (dev convenience). Segment workers reset the classifier's
 per-process catalog cache at startup so the first job reads a fresh catalog, and also read the `ocr`
-queue (uploaded records' pages, no model) - including while they wait for a silent model server.
+queue (uploaded records' pages, no model) - including while they wait for a silent model server. A
+reading steps aside for a job waiting on the worker's lanes (``tasks.ocr_uploaded_document``),
+except in that wait, which serves no lanes.
 
 The argument is a BASE queue name. At startup it expands to the base plus one lane per existing user
 (`segment`, `segment:2`, `segment:3`, ...) and the worker dequeues them ROUND-ROBIN.
@@ -29,6 +31,7 @@ import time
 from rq import Queue
 from rq.worker import RoundRobinWorker, Worker
 
+from app.worker import fairness
 from app.worker.finalizers import on_work_horse_killed
 from app.worker.queues import OCR_QUEUE, QUEUE_NAMES, get_redis, lanes_for
 
@@ -48,9 +51,17 @@ def _drain_ocr_queue() -> None:
     if queue.count == 0:
         return
     saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    # No lanes for the burst. A reading steps aside for a job waiting on its worker's lanes
+    # (tasks.ocr_uploaded_document), and jobs DO wait on them here - an Identify pressed with the
+    # model server off. This burst cannot take that job: the reading would be handed straight back,
+    # again and again, throwing its pages in flight away each time. Empty anyway today (the burst
+    # runs before main() records the lanes); emptied on purpose so that it stays so.
+    lanes = fairness.served()
+    fairness.serve(())
     try:
         Worker([queue], connection=redis).work(burst=True, with_scheduler=False)
     finally:
+        fairness.serve(lanes)
         for sig, handler in saved.items():
             signal.signal(sig, handler)
 
@@ -133,9 +144,8 @@ def main(argv: list[str] | None = None) -> None:
     names = lanes + ([OCR_QUEUE] if "segment" in bases else [])
     logger.info("worker listening round-robin on %d queue(s): %s", len(names), names)
     # The identify cap may only hand a turn to a lane this worker actually reads (worker/fairness.py),
-    # and a forked work-horse inherits this.
-    from app.worker import fairness
-
+    # an upload's reading steps aside only for a job on one of them, and a forked work-horse
+    # inherits this.
     fairness.serve(lanes)
 
     redis = get_redis()
