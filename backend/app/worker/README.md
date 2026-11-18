@@ -19,7 +19,7 @@ killed or abandoned job, and the orphan recovery the API runs at start-up.
 | `failures.py` | `classify_failure` (transient or permanent), `job_outcome` / `is_failure` for stored jobs, and the control signals `JobPaused`, `JobCancelled`, `JobNeedsAttention`. |
 | `finalizers.py` | RQ `on_stopped` / `on_failure` callbacks and the worker's `work_horse_killed_handler`, run in the worker parent. |
 | `recovery.py` | `recover_orphans`, called once from the API's start-up; `worker_is_gone`, read by the cancel route. |
-| `fairness.py` | `should_step_aside`: an identify job whose reviewer is at `IDENTIFY_PER_REVIEWER_CAP` steps back to the front of its lane while another reviewer waits. `serve` records the lanes this worker reads. |
+| `fairness.py` | `should_step_aside`: an identify job whose reviewer is at `IDENTIFY_PER_REVIEWER_CAP` steps back to the front of its lane while another reviewer waits. `serve` records the lanes this worker reads; `lane_job_waiting` tells an upload's reading a job waits on one of them. |
 
 The job service that creates and dispatches jobs (`create_job`, `enqueue`, `mark_terminal`, the
 status maps and `ACTIVE_STATES`) is `backend/app/services/jobs.py`, one folder over.
@@ -33,7 +33,7 @@ In the compose stack, two services run this package (`docker-compose.yml`):
 | `segment-worker` (5 replicas) | `mrr-backend-classifier`, built with `--extra docs --extra classifier` | `python -m app.worker segment` |
 | `summarize-worker` (3 replicas) | `mrr-backend-web`, built with `--extra docs` | `python -m app.worker summarize` |
 
-With no arguments the entry point serves both queues. A segment worker also reads the `ocr` queue, the reading of uploaded records' pages, and keeps reading it while it waits for a silent model server. RQ's `RoundRobinWorker` forks a work-horse
+With no arguments the entry point serves both queues. A segment worker also reads the `ocr` queue, the reading of uploaded records' pages, and keeps reading it while it waits for a silent model server. A reading steps aside every 20 pages for a job waiting on the worker's lanes (never in that wait). RQ's `RoundRobinWorker` forks a work-horse
 per job with `os.fork()`, which Windows does not have, so run workers in the containers (or on a
 Linux or macOS host with Redis and Postgres reachable and the backend settings in the environment).
 

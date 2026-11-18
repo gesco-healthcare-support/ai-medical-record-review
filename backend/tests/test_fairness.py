@@ -161,6 +161,40 @@ def test_a_redis_failure_runs_the_job(redis):
     assert not fairness.should_step_aside("segment", A, 3, _Broken())
 
 
+# --- an upload's reading ------------------------------------------------------------------------
+
+
+def test_a_reading_sees_any_job_waiting_on_a_lane_this_worker_serves(redis):
+    """Any job counts, the reading's own reviewer's too and one working alone: nobody waits on a
+    reading, so there is no cap to respect."""
+    _serve(A)
+    assert not fairness.lane_job_waiting(redis)
+    _waiting(redis, A)
+    assert fairness.lane_job_waiting(redis)
+
+
+def test_a_reading_ignores_a_lane_this_worker_does_not_serve(redis):
+    # Stepping aside for it would hand the turn to nobody.
+    _serve(A)
+    _waiting(redis, B)
+    assert not fairness.lane_job_waiting(redis)
+
+
+def test_without_served_lanes_a_reading_never_steps_aside(redis):
+    # Tests, scripts, and the burst that reads uploads while the model server is silent.
+    _waiting(redis, A)
+    assert not fairness.lane_job_waiting(redis)
+
+
+def test_a_redis_failure_lets_the_reading_go_on(redis):
+    class _Broken:
+        def __getattr__(self, name):
+            raise ConnectionError("redis down")
+
+    _serve(A)
+    assert not fairness.lane_job_waiting(_Broken())
+
+
 # --- the runner ---------------------------------------------------------------------------------
 
 
