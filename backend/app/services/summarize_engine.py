@@ -212,6 +212,32 @@ _C_EMBEDDED_REVIEW = (
 
 _C_CODES = "- Do NOT write ICD, CPT, or other billing codes, even when the document lists them.\n"
 
+# The answer printed on a Request for Authorization, category 10 only. The state form (DWC Form
+# RFA) ends with a "Claims Administrator/Utilization Review Organization (URO) Response" section:
+# boxes for Approved, Denied or modified and Delay, two more for a request previously denied and
+# disputed liability, then an authorization number, a date and a signature. The senior reviewer
+# asked on 2026-11-18 that the summary say whether the request was approved or denied when that
+# section is filled in - "it can be hard to tell at first glance" - and preferred that to filing
+# such a form as a utilization review (15), which reviewers would only swap back to 10. The marks
+# are check boxes, so the OCR text prints every choice whether or not it is marked: the point is
+# read from the page images, and left out when no box is marked or the mark cannot be made out.
+# Its audit counterpart is that a category-10 audit reads the page images too
+# (`_audit_from_the_pages`): the text alone can neither confirm the mark nor tell a misread one.
+# Also named as point d in the category-10 prompt (`prompts.py`); this block carries it even where
+# a deployment's own prompt row shadows that file.
+RFA_RESPONSE_LABEL = "Utilization Review"
+_C_RFA_RESPONSE = (
+    "- A Request for Authorization form ends with a RESPONSE section for the claims "
+    "administrator or utilization review: boxes for Approved, Denied or modified, and Delay (and "
+    "for a request previously denied or liability disputed), with a date, an authorization number "
+    "and a signature. When a box in that section is MARKED, end the summary with a "
+    f"**{RFA_RESPONSE_LABEL}** point giving the marked choice in the form's own words and the date "
+    f"written in that section, for example **{RFA_RESPONSE_LABEL}**: Denied or modified on "
+    "03/14/2025. The OCR text prints every box whether or not it is marked, so tell which one is "
+    "marked from the page images. When no box in that section is marked, or you cannot make out "
+    "which one is, write nothing about the response.\n"
+)
+
 # Height and weight ONLY, deliberately. Measured on the 55-deliverable human corpus (2115 entries): a
 # stated height appears once and a weight 8 times, so omitting them is safe. Adrian scoped this to
 # those two on 2026-07-30 and reserved the other vitals for a later call, so the rule must not creep:
@@ -560,6 +586,56 @@ def _cuts_most_of_it(result: dict, summary: str) -> bool:
     return _plain_length(result.get("fixed_text")) < _BIG_CUT * _plain_length(summary)
 
 
+def _audit_images(pdf_path, row) -> list | None:
+    """The row's page images for the audit - the body's own (`page_image_parts`, the first
+    `summary_image_max_pages` pages) - or None when they cannot be rendered, which is logged. A
+    reviewer's Stop (`JobCancelled`) propagates."""
+    try:
+        return page_image_parts(
+            pdf_path, row["start"], row["end"], get_settings().summary_image_max_pages
+        )
+    except JobCancelled:
+        raise
+    except Exception:  # noqa: BLE001 - without the pages the text-only audit stands
+        logger.warning(
+            "the pages %s-%s could not be rendered for the summary audit; it reads the text alone",
+            row["start"],
+            row["end"],
+            exc_info=True,
+        )
+        return None
+
+
+# A REQUEST FOR AUTHORIZATION IS AUDITED WITH ITS PAGES from the first look (category 10, under the
+# same SUMMARY_AUDIT_PAGE_RECHECK). It is a form: its diagnoses and requested services sit in table
+# cells the OCR text loses (the report behind the second look above), and the answer printed at its
+# foot is a marked check box (`_C_RFA_RESPONSE`) that the text cannot show at all - read against
+# the text alone, the audit could neither confirm the box the summary names nor catch a misread
+# one. The forms are short, so the images cost little. If that audit does not complete, the text-
+# only audit runs as before.
+def _audit_from_the_pages(audit, pdf_path, row) -> dict | None:
+    """The audit asked with the row's page images, for a `_RFA_CATEGORIES` row with
+    SUMMARY_AUDIT_PAGE_RECHECK on; None otherwise, or when the pages cannot be rendered or that
+    audit does not complete - the caller then asks with the text alone."""
+    if not (get_settings().summary_audit_page_recheck and pdf_path):
+        return None
+    if str(row["category"]) not in _RFA_CATEGORIES:
+        return None
+    images = _audit_images(pdf_path, row)
+    if not images:
+        return None
+    result = audit(images=images)
+    if result.get("ok"):
+        return result
+    logger.warning(
+        "summary audit of pages %s-%s with the page images did not complete; asking with the "
+        "text alone",
+        row["start"],
+        row["end"],
+    )
+    return None
+
+
 def _audit_against_the_pages(result: dict, audit, pdf_path, row, summary: str) -> dict:
     """The audit's answer, or - with SUMMARY_AUDIT_PAGE_RECHECK on and an answer that cuts most of
     the summary (`_cuts_most_of_it`) - its answer to the same question asked again with the row's
@@ -575,20 +651,8 @@ def _audit_against_the_pages(result: dict, audit, pdf_path, row, summary: str) -
         return result
     if not _cuts_most_of_it(result, summary):
         return result
-    try:
-        images = page_image_parts(
-            pdf_path, row["start"], row["end"], get_settings().summary_image_max_pages
-        )
-    except JobCancelled:
-        raise
-    except Exception:  # noqa: BLE001 - without the pages the first answer stands
-        logger.warning(
-            "summary audit cut most of pages %s-%s and the pages could not be rendered; "
-            "the first answer stands",
-            row["start"],
-            row["end"],
-            exc_info=True,
-        )
+    images = _audit_images(pdf_path, row)
+    if not images:
         return result
     second = audit(images=images)
     if not second.get("ok"):
@@ -609,6 +673,17 @@ def _audit_against_the_pages(result: dict, audit, pdf_path, row, summary: str) -
         _plain_length(second.get("fixed_text")),
     )
     return second
+
+
+def _audit_once(audit, pdf_path, row, summary: str) -> dict:
+    """The audit's answer for one summary (SUMMARY_AUDIT_PAGE_RECHECK): a Request for
+    Authorization's asked with its page images (`_audit_from_the_pages`); otherwise the text-only
+    answer, asked again with the pages when it cuts most of the summary
+    (`_audit_against_the_pages`)."""
+    answer = _audit_from_the_pages(audit, pdf_path, row)
+    if answer is not None:
+        return answer
+    return _audit_against_the_pages(audit(), audit, pdf_path, row, summary)
 
 
 def _issues_to_store(issues: list) -> list:
@@ -838,6 +913,10 @@ _VISIT_LOG_CATEGORIES = frozenset({"3", "5"})
 # review - verified by scanning all 14 category prompts - so only they carry that rule and only they
 # can act on a list of the record's other studies.
 _EMBEDDED_REVIEW_CATEGORIES = frozenset({"12", "13"})
+# Requests for Authorization: told to report the form's response section (`_C_RFA_RESPONSE`), and
+# audited with the page images (`_audit_from_the_pages`). An unknown id gets neither - the rule is
+# about one state form, not a content rule a new category could need.
+_RFA_CATEGORIES = frozenset({"10"})
 # The catch-all. Its ID is known; its CONTENT is not, and that is the distinction this exists to
 # draw (#216). Every other known id earns a reduced preamble because its documents structurally
 # cannot contain the withheld thing - a Request For Authorization has no range of motion. 100 holds
@@ -920,6 +999,9 @@ def build_preamble(category, marked_choices=False) -> str:
     format. It is not a rule about content but a format that `summarize_row` has to act on - it
     splits the body at the marks - and it does that only for `_VISIT_LOG_CATEGORIES`. Sending the
     instruction anywhere else would put the marks into a delivered summary.
+
+    `_C_RFA_RESPONSE` goes to `_RFA_CATEGORIES` alone - an unknown id does not get it either: it
+    describes one state form's response section, which no other document type prints.
     """
     cat = str(category)
     unknown = cat not in _KNOWN_CATEGORIES
@@ -940,6 +1022,8 @@ def build_preamble(category, marked_choices=False) -> str:
     if embedded:
         parts.append(_C_EMBEDDED_REVIEW)
     parts.append(_C_CODES)
+    if cat in _RFA_CATEGORIES:
+        parts.append(_C_RFA_RESPONSE)
     if measurements:
         parts += [_C_VITALS, _C_PAIN, _C_RANGE_OF_MOTION]
     parts += ["\n", _FORMAT_HEADER]
@@ -4088,8 +4172,8 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead, pdf_path
     # One visit of a page that records several is told so (`_visit_context`).
     other_visits = row.get("other_visits")
     #
-    # A rewrite that cuts most of the summary is asked again with the page images
-    # (`_audit_against_the_pages`, SUMMARY_AUDIT_PAGE_RECHECK).
+    # A rewrite that cuts most of the summary is asked again with the page images, and a Request
+    # for Authorization is asked with them from the start (`_audit_once`).
     audit = functools.partial(
         verify_summary,
         audit_model,
@@ -4101,7 +4185,7 @@ def _verified_outputs(audit_model, row, text, summary, title, doi_lead, pdf_path
         ),
         **_visit_context(row),
     )
-    result = _audit_against_the_pages(audit(), audit, pdf_path, row, summary)
+    result = _audit_once(audit, pdf_path, row, summary)
     verify_ran = bool(result.get("ok"))
     if not verify_ran:
         # `ok` False folds three events into one value - nothing to audit, the reply hit the
