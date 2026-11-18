@@ -356,8 +356,10 @@ class Settings(BaseSettings):
     # the form's table cells, which the draft had read from the page images). On: when the audit
     # names an unsupported or contradicted statement and its rewrite keeps less than half of the
     # draft, the same audit is asked once more with the row's page images and that answer is used
-    # (`summarize_engine._audit_against_the_pages`). Off: one text-only audit, as before. On by
-    # default (Levon, 2026-11-16: every box takes it with its next deploy).
+    # (`summarize_engine._audit_against_the_pages`). A Request for Authorization (category 10) is
+    # audited with its page images from the first look (`_audit_from_the_pages`, 2026-11-18: its
+    # response section is a marked check box the text cannot show). Off: one text-only audit,
+    # as before. On by default (Levon, 2026-11-16: every box takes it with its next deploy).
     summary_audit_page_recheck: bool = True
     # Cap page images per sub-document so a long record cannot blow the request payload/latency; the
     # full OCR text still covers every page beyond the cap.
