@@ -100,7 +100,7 @@ def worker_fn(kind: str) -> str:
     return _WORKER_FN[kind]
 
 
-def enqueue_upload_ocr(document_id: str, page_count: int) -> bool:
+def enqueue_upload_ocr(document_id: str, page_count: int, at_front: bool = False) -> bool:
     """Queue the reading of a just-uploaded record's pages. Best effort: False when it could not be
     queued, and the upload goes on regardless - Identify reads any page still missing itself.
 
@@ -108,12 +108,17 @@ def enqueue_upload_ocr(document_id: str, page_count: int) -> bool:
     index, so a tracked reading job would make the reviewer's Identify answer 409 while it ran. A
     5,000-page record takes ~45 min to read on the test box's CPU; done here, that time is no longer
     spent inside Identify, where it holds a rented model server that has nothing to do yet.
+
+    ``at_front``: a reading that stepped aside for a job on its worker's lanes queues the rest of
+    itself AHEAD of the readings uploaded after it, so the record keeps its place
+    (``tasks.ocr_uploaded_document``).
     """
     try:
         Queue(OCR_QUEUE, connection=get_redis()).enqueue(
             _OCR_FN,
             document_id,
             job_timeout=get_settings().effective_job_timeout(page_count or 0),
+            at_front=at_front,
         )
     except Exception:
         # Redis down at upload time must not fail the upload: the pages are read by Identify instead.

@@ -51,7 +51,7 @@ from app.worker.failures import (
     reason_for,
 )
 from app.worker.finalizers import on_job_failed, on_job_stopped
-from app.worker.queues import get_redis, queue_for, worker_fn
+from app.worker.queues import enqueue_upload_ocr, get_redis, queue_for, worker_fn
 
 logger = logging.getLogger(__name__)
 
@@ -584,6 +584,32 @@ def _build_summary(job, idx, row, output, part=0) -> Summary:
     )
 
 
+# How many pages an upload's reading reads between two looks at its worker's lanes (one queue length
+# per lane). On the test box five workers reading at once read about 20 pages each a minute, so an
+# Identify waits about a minute for a worker, not a whole record's reading (2026-11-18: 10-40 min).
+_LANE_CHECK_PAGES = 20
+
+
+class _StepAside(Exception):
+    """Raised out of an upload's reading when a job waits on its worker's lanes; carries how many
+    pages the pass got through."""
+
+    def __init__(self, read: int):
+        super().__init__(read)
+        self.read = read
+
+
+def _step_aside_when_a_lane_waits(_stage, done, total) -> None:
+    """The reading's progress hook: every ``_LANE_CHECK_PAGES`` pages, and never after the last,
+    raise ``_StepAside`` when a job waits on a lane this worker serves."""
+    from app.worker import fairness
+
+    if done % _LANE_CHECK_PAGES or done >= total:
+        return
+    if fairness.lane_job_waiting(get_redis()):
+        raise _StepAside(done)
+
+
 def ocr_uploaded_document(document_id) -> None:
     """RQ entry, UNTRACKED (no ``jobs`` row): read every page of a just-uploaded record into the
     page-text store, with no model. Queued by the upload routes (``queues.enqueue_upload_ocr``).
@@ -592,6 +618,17 @@ def ocr_uploaded_document(document_id) -> None:
     the test box a 5,000-page record spent ~45 of its first minutes in Identify reading pages while
     the rented model server waited. Segment workers run it even while they wait for a silent model
     server, so a record uploaded with the server switched off is read before it is switched on.
+
+    It steps aside for the reviewers. Every ``_LANE_CHECK_PAGES`` pages it asks whether a job waits
+    on a lane this worker serves (``fairness.lane_job_waiting``); when one does, it stops, queues
+    the rest of itself at the FRONT of the ``ocr`` queue and returns, and the worker's next turn
+    takes that job (after an ``ocr`` job the round-robin order puts every lane before the ``ocr``
+    queue). The next worker to free reads on, only the pages still missing (``populate_document``
+    skips stored ones). Without this a worker held its turn for a whole record: on 2026-11-18 a
+    reviewer uploaded 20 records and each Identify waited 10-40 minutes while all five segment
+    workers read. The burst that reads uploads while the model server is silent serves no lanes,
+    so a reading there never steps aside (it would be handed straight back, its pages in flight
+    thrown away each time).
 
     Best effort, entirely: a record deleted before or during the pass, a missing binary or an
     unreadable file is logged and left for Identify, which reads whatever is still missing itself
@@ -603,10 +640,26 @@ def ocr_uploaded_document(document_id) -> None:
         document = session.get(Document, document_id)
         if document is None or not document.page_count:
             return
+        page_count = document.page_count
         try:
             stored = populate_document(
-                session, document.id, document.stored_path, document.page_count
+                session,
+                document.id,
+                document.stored_path,
+                page_count,
+                progress=_step_aside_when_a_lane_waits,
             )
+        except _StepAside as step:
+            # A failed queue leaves the rest to Identify, which reads whatever is missing itself.
+            queued = enqueue_upload_ocr(document_id, page_count, at_front=True)
+            logger.info(
+                "upload page reading of document %s stepped aside after %d page(s) for a job on "
+                "this worker's lanes; the rest %s",
+                document_id,
+                step.read,
+                "is queued first" if queued else "is left for Identify",
+            )
+            return
         except Exception:
             logger.warning("upload page reading failed for document %s", document_id, exc_info=True)
             return

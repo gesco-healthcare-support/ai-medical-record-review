@@ -26,6 +26,12 @@ what each file does. Full docs: `docs/explanation/pipeline-and-jobs.md`,
   answer 409 while it runs. Keep it best effort and model-free. A segment worker drains it while it
   waits for the model server (`__main__._read_uploads_then_sleep`), listening to the `ocr` queue
   ONLY there - never a model lane before the server has passed.
+- The reading steps aside every `_LANE_CHECK_PAGES` pages when a job waits on a lane its worker
+  serves (`fairness.lane_job_waiting`): it queues the rest at the front of `ocr` and returns. The
+  burst in `_drain_ocr_queue` empties the served lanes on purpose: it cannot take a lane job, so a
+  reading that stepped aside there would be handed straight back again and again, losing its pages
+  in flight each time. Keep both, and keep the step-aside out of a tracked job (Identify reads its
+  own missing pages and must never stop for another lane).
 - Terminal outcomes other than the job's own success go through `services/jobs.mark_terminal`
   (conditional UPDATE on active states; first writer wins). Never hand-write a terminal UPDATE in
   recovery, callbacks or scripts.

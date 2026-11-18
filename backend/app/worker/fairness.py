@@ -26,6 +26,13 @@ Live state comes from Redis (the lane's queue length and RQ's StartedJobRegistry
 ``jobs`` table: a row can say ``queued`` for a job RQ has lost, and stepping aside for that would
 also hand the turn to nobody. Every failure here answers "do not step aside" - the cost of a wrong
 "no" is today's behaviour, the cost of a wrong "yes" is a job that never runs.
+
+The reading of an uploaded record's pages (the ``ocr`` queue, ``tasks.ocr_uploaded_document``) steps
+aside too, by ``lane_job_waiting``: a segment worker reading a whole record held its turn until the
+last page, so a reviewer who uploaded 20 records (39,256 pages, the test box, 2026-11-18) waited 10
+to 40 minutes for each Identify while all five workers read - with the pages of those very records
+already read. Every job on a lane this worker serves counts there, not only another reviewer's:
+nobody waits on a reading.
 """
 
 import logging
@@ -42,13 +49,34 @@ _served_lanes: list[str] = []
 
 def serve(lanes) -> None:
     """Record the lanes this worker listens on: once, at worker start-up. An empty list turns the
-    rule off."""
+    rule off, and ``lane_job_waiting`` with it (the burst that reads uploads while the model server
+    is silent empties it for that reason)."""
     _served_lanes[:] = list(lanes)
 
 
 def served() -> tuple[str, ...]:
     """The lanes ``serve`` recorded."""
     return tuple(_served_lanes)
+
+
+def lane_job_waiting(redis) -> bool:
+    """Whether a job waits on any lane this worker serves: the question an upload's page reading
+    asks between pieces, so that it can give its turn to that job (``tasks.ocr_uploaded_document``).
+
+    Only lanes THIS worker serves count, for the reason above: stepping aside for a lane no worker
+    here reads would hand the turn to nobody. No lanes (tests, a script calling the task, the burst
+    that reads uploads while the model server is silent and can take nothing else) answers False,
+    and so does any failure - the cost of a wrong "no" is the reading going on, as before.
+    """
+    if not _served_lanes:
+        return False
+    try:
+        from rq import Queue
+
+        return any(Queue(name, connection=redis).count for name in _served_lanes)
+    except Exception:
+        logger.warning("lane check failed; the page reading goes on", exc_info=True)
+        return False
 
 
 def _running(registry, exclude: str | None) -> int:
