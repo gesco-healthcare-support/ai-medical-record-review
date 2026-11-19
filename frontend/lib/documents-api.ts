@@ -38,9 +38,31 @@ export function uploadDocument(file: File, target: UploadTarget = {}) {
   );
 }
 
+/** One of the files a record arrived in, kept on the server until the record is put together:
+ *  its token, its page count, and the kind its first page says it is. */
+export type StagedFile = { token: string; pages: number; kind: ReceivedKind };
+
+/** POST /api/documents/combine/files - send one received file as soon as it is added. The server
+ *  keeps it, counts its pages and reads its first page to say what it is. One file per request, so
+ *  each file is held to the proxy's upload limit on its own. */
+export function stageReceivedFile(file: File) {
+  const form = new FormData();
+  form.append("pdf", file);
+  return apiFetch<StagedFile>("/documents/combine/files", { method: "POST", body: form });
+}
+
+/** DELETE /api/documents/combine/files/{token} - drop a staged file (removed from the list, or the
+ *  dialog closed). Harmless when it is already gone. */
+export function unstageReceivedFile(token: string) {
+  return apiFetch<{ ok: boolean }>(`/documents/combine/files/${encodeURIComponent(token)}`, {
+    method: "DELETE",
+  });
+}
+
 /** What a record is put together from: the patient's name and ID, the day the records were
- *  received, the appointment date, who sent the records, and the files in the order to join them,
- *  each with its kind. `owner` (admins only) puts the record in another reviewer's account. */
+ *  received, the appointment date, who sent the records, and the staged files in the order to
+ *  join them, each with its kind. `owner` (admins only) puts the record in another reviewer's
+ *  account. */
 export type ReceivedFilesUpload = {
   lastName: string;
   firstName: string;
@@ -49,12 +71,12 @@ export type ReceivedFilesUpload = {
   dateReceived: string;
   appointmentDate: string;
   recordsFrom: RecordsFrom;
-  files: { file: File; kind: ReceivedKind }[];
+  files: { token: string; kind: ReceivedKind }[];
   owner?: number | null;
 };
 
-/** POST /api/documents/combine - one record from the files it arrived in, joined in the order sent
- *  (repeated fields "pdfs" and "kinds", one kind per file). Does NOT start identification. */
+/** POST /api/documents/combine - one record from the staged files, joined in the order sent
+ *  (repeated fields "tokens" and "kinds", one kind per file). Does NOT start identification. */
 export function combineReceivedFiles(upload: ReceivedFilesUpload) {
   const form = new FormData();
   form.append("last_name", upload.lastName.trim());
@@ -64,8 +86,8 @@ export function combineReceivedFiles(upload: ReceivedFilesUpload) {
   form.append("appointment_date", upload.appointmentDate);
   form.append("records_from", upload.recordsFrom);
   if (upload.owner != null) form.append("owner", String(upload.owner));
-  for (const { file, kind } of upload.files) {
-    form.append("pdfs", file);
+  for (const { token, kind } of upload.files) {
+    form.append("tokens", token);
     form.append("kinds", kind);
   }
   return apiFetch<

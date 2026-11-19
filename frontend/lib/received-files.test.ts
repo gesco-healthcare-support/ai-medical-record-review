@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   guessKind,
   inReceivedOrder,
+  pickKind,
   RECEIVED_KIND_LABELS,
   RECEIVED_KINDS,
   RECORDS_FROM,
@@ -36,6 +37,15 @@ describe("guessKind", () => {
   it("does not read a kind out of the middle of a word", () => {
     // "pos" inside "position", "dec" inside "december", "ltr" inside nothing.
     expect(guessKind("position statement december.pdf")).toBe("records");
+  });
+});
+
+describe("pickKind", () => {
+  it("takes what the first page says, or the name when the page says only records", () => {
+    expect(pickKind("proof_of_service", "records")).toBe("proof_of_service");
+    expect(pickKind("email", "advocacy_letter")).toBe("email");
+    expect(pickKind("records", "proof_of_service")).toBe("proof_of_service");
+    expect(pickKind("records", "records")).toBe("records");
   });
 });
 
