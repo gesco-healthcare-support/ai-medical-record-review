@@ -90,6 +90,10 @@ export type DocumentListItem = {
   completed_at?: string | null;
   /** When the review (Word letter, linked PDF or ZIP) was last downloaded, or null. */
   downloaded_at?: string | null;
+  /** A record put together from the files it arrived in: the day they were received
+   *  (`YYYY-MM-DD`, "" otherwise) and each file's kind and pages in the joined PDF. */
+  received_on?: string;
+  received_parts?: { kind: string; start: number; end: number }[];
 };
 
 /** A sub-document row in the review editor (ReviewRow.as_row()). */

@@ -16,7 +16,7 @@ import os
 import re
 import uuid
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
@@ -55,7 +55,14 @@ from app.schemas.documents import (
     SummarizeStartPayload,
     SummaryEditPayload,
 )
-from app.services import bundles, catalog, downloads, patient_ids, previous_reviews
+from app.services import (
+    bundles,
+    catalog,
+    downloads,
+    patient_ids,
+    previous_reviews,
+    received_files,
+)
 from app.services.aggregate import merge_pdfs
 from app.services.audit import audit
 from app.services.classification import DEFAULT_ID, match_rules
@@ -610,6 +617,151 @@ def aggregate_documents(
     }
 
 
+_COMBINE_NO_FILES_DETAIL = "no PDFs uploaded"
+_COMBINE_KINDS_DETAIL = "Choose what each file is."
+_COMBINE_NAME_DETAIL = "Enter the patient's last and first name."
+_COMBINE_ID_DETAIL = "Enter the patient ID."
+_COMBINE_DATE_DETAIL = "Enter the date the records were received."
+
+
+def _received_kinds(pdfs: list[UploadFile], kinds: list[str]) -> list[str]:
+    """Each file's kind, one per file and each one of ``received_files.KINDS``; a 400 otherwise."""
+    if not pdfs or any(not upload.filename for upload in pdfs):
+        raise HTTPException(status_code=400, detail=_COMBINE_NO_FILES_DETAIL)
+    if len(kinds) != len(pdfs) or any(kind not in received_files.KINDS for kind in kinds):
+        raise HTTPException(status_code=400, detail=_COMBINE_KINDS_DETAIL)
+    return kinds
+
+
+def _received_date(value: str) -> date:
+    """The date the records were received, sent as ``YYYY-MM-DD`` (the browser's date box)."""
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=_COMBINE_DATE_DETAIL) from None
+
+
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _combine_into(
+    stored_path: str, pdfs: list[UploadFile], kinds: list[str]
+) -> list[received_files.Part]:
+    """Join the uploaded files into ``stored_path``, in the order sent.
+
+    Each file is copied to a temporary file beside the record first, a megabyte at a time, so no
+    upload is read whole into memory here; the temporary files are removed whatever happens. A file
+    that is not a readable PDF refuses the whole upload with its place in the list, and nothing is
+    stored."""
+    temps: list[str] = []
+    try:
+        for upload in pdfs:
+            temp = f"{stored_path}.{len(temps)}.part"
+            temps.append(temp)
+            with open(temp, "wb") as out:
+                while chunk := upload.file.read(1 << 20):
+                    out.write(chunk)
+        return received_files.combine(list(zip(temps, kinds, strict=True)), stored_path)
+    except received_files.UnreadableFile as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File {exc.position} is not a readable PDF. Nothing was uploaded.",
+        ) from None
+    except Exception:
+        _remove_quietly(stored_path)
+        raise
+    finally:
+        for temp in temps:
+            _remove_quietly(temp)
+
+
+@router.post(
+    "/combine",
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        400: {
+            "description": "No PDFs, a file without its kind, a file that is not a readable PDF, "
+            "or the patient's name, ID or the date received missing."
+        },
+        403: {"description": "A non-admin named another reviewer's account."},
+        404: {"description": "The reviewer named is not an active account."},
+    },
+)
+def combine_received_files(
+    pdfs: list[UploadFile] = File(default=[]),
+    kinds: list[str] = Form(default=[]),
+    last_name: str = Form(default=""),
+    first_name: str = Form(default=""),
+    patient_id: str = Form(default=""),
+    date_received: str = Form(default=""),
+    owner: int | None = Form(default=None),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Put a record together from the files it arrived in (``services/received_files.py``).
+
+    ``pdfs`` are joined in the order sent - the order the uploader confirmed - and ``kinds`` says
+    what each one is, one per file. The patient's last and first name, the patient ID and the date
+    the records were received are required: they name the record the way the office names its files
+    (``Last_First-ID-MMDDYYYY``) and fill the record's header. ``owner`` (admins only) puts the
+    record in another reviewer's account, as on the single upload.
+
+    The joined file is the record as received: it is read like any other upload, identified when
+    the reviewer starts Identify, and ``GET .../raw`` downloads it as it is. No duplicate check: the
+    joined file is new, so its hash says nothing about whether the same files came before."""
+    kinds = _received_kinds(pdfs, kinds)
+    last, first = last_name.strip(), first_name.strip()
+    if not last or not first:
+        raise HTTPException(status_code=400, detail=_COMBINE_NAME_DETAIL)
+    typed_id = _typed_patient_id(patient_id)
+    if not typed_id:
+        raise HTTPException(status_code=400, detail=_COMBINE_ID_DETAIL)
+    received = _received_date(date_received)
+    reviewer = upload_owner(session, user, owner)
+
+    document_id = str(uuid.uuid4())
+    user_dir = os.path.join(get_settings().upload_folder, str(reviewer.id))
+    os.makedirs(user_dir, exist_ok=True)
+    stored_path = os.path.join(user_dir, document_id + ".pdf")
+    parts = _combine_into(stored_path, pdfs, kinds)
+    page_count = parts[-1].end
+
+    document = Document(
+        id=document_id,
+        user_id=reviewer.id,
+        original_filename=safe_name(
+            received_files.record_filename(last, first, typed_id, received), "record.pdf"
+        ),
+        stored_path=stored_path,
+        sha256=_sha256(stored_path),
+        page_count=page_count,
+        patient_id=typed_id,
+        patient_first_name=first,
+        patient_last_name=last,
+        received_on=received,
+        received_parts=[part.as_dict() for part in parts],
+    )
+    session.add(document)
+    session.commit()
+    # Counts and ids only: the files' names carry the patient's name.
+    detail = f"{len(parts)} files"
+    if reviewer.id != user.id:
+        detail += f", for user {reviewer.id}"
+    audit(session, "combine_upload", user.id, document_id, detail=detail)
+    # Read the pages now, with no model, as on the single upload.
+    enqueue_upload_ocr(document_id, page_count)
+    return {
+        "id": document_id,
+        "page_count": page_count,
+        "parts": [part.as_dict() for part in parts],
+        **_patient_fields(session, document),
+    }
+
+
 @router.get("")
 def list_documents(
     owner: int | None = None,
@@ -1023,6 +1175,31 @@ def get_pdf(
     return FileResponse(
         document.stored_path,
         media_type=_PDF_MEDIA_TYPE,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _raw_filename(document: Document) -> str:
+    name = safe_name(document.original_filename, "record.pdf")
+    return name if name.lower().endswith(".pdf") else name + ".pdf"
+
+
+@router.get("/{document_id}/raw")
+def download_raw_pdf(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """The record's PDF exactly as it was uploaded - for a record put together from several files,
+    the joined file - as a download under the record's file name, for the office's backup of the
+    records as received. Nothing of the review is in it, so it leaves ``downloaded_at`` (the date
+    the review was last downloaded) alone. Not cached, like the viewer's copy."""
+    audit(session, "download_raw", user.id, document.id)
+    return FileResponse(
+        document.stored_path,
+        media_type=_PDF_MEDIA_TYPE,
+        filename=_raw_filename(document),
+        content_disposition_type="attachment",
         headers={"Cache-Control": "no-store"},
     )
 

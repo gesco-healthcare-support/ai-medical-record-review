@@ -8,7 +8,7 @@ control, `SegmentedTabs`. Their colours come from the shadcn semantic slots that
 | File | What it is |
 | --- | --- |
 | `button.tsx` | `Button`, `buttonVariants`: the shadcn button with `cva` variants. Used inside `dialog.tsx` and `alert-dialog.tsx` only; app buttons use the `ev-btn` classes |
-| `dialog.tsx` | `Dialog` and its parts (`DialogContent`, `DialogHeader`, `DialogFooter`, `DialogTitle`, `DialogDescription`, `DialogOverlay`, `DialogPortal`). Used by the export, category, prompt and split-upload dialogs |
+| `dialog.tsx` | `Dialog` and its parts (`DialogContent`, `DialogHeader`, `DialogFooter`, `DialogTitle`, `DialogDescription`, `DialogOverlay`, `DialogPortal`). Used by the export, category, prompt and received-files dialogs |
 | `alert-dialog.tsx` | `AlertDialog` and its parts, including `AlertDialogAction` and `AlertDialogCancel`. Used by `ConfirmDialog` on My documents |
 | `dropdown-menu.tsx` | `DropdownMenu`, `DropdownMenuTrigger`, `DropdownMenuContent`, `DropdownMenuLabel`, `DropdownMenuItem`, `DropdownMenuSeparator`. Used by the user menu and the My documents row menu |
 | `segmented-tabs.tsx` | `SegmentedTabs`: a controlled pill switch (`role="tablist"`, buttons with `role="tab"` and `aria-selected`). Workbench tabs and bundle tabs |

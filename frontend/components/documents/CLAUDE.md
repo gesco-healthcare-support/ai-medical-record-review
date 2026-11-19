@@ -13,10 +13,10 @@
   `DocumentStatus` in `frontend/lib/types.ts`.
 - Paging: show `curPage` (clamped to the current list), and step Prev/Next from it, not from the stored
   `page`. The list can shrink under the reader (a delete, a poll).
-- Reject non-PDF files with a message; never drop them silently. The split dialog joins files into ONE
-  record, so a silent drop is missing content.
-- Dismissing the split dialog, by any control, clears the staged files. Route every close through
-  `close()`.
+- Reject non-PDF files with a message; never drop them silently. The received-files dialog joins
+  files into ONE record, so a silent drop is missing content.
+- Dismissing the received-files dialog, by any control, clears the staged files. Route every close
+  through `close()`.
 - `UPLOAD_INPUT_ID` is declared in `empty-state.tsx` and imported by `documents-view.tsx`; the reverse
   import would be a cycle.
 - Errors go through `humanizeError()` with a record-specific `notFound` sentence.
@@ -27,7 +27,9 @@
 
 ## Traps
 
-- `isPdf()` is duplicated in `documents-view.tsx` and `split-upload-dialog.tsx`; change both.
+- `isPdf()` is duplicated in `documents-view.tsx` and `received-files-dialog.tsx`; change both.
+- `RECEIVED_KINDS` in `frontend/lib/received-files.ts` mirrors `KINDS` in
+  `backend/app/services/received_files.py`; the server refuses any other kind. Change both.
 - Drag and drop uploads only the first dropped file.
 - The search placeholder says "filename"; the filter also matches the patient name.
 
