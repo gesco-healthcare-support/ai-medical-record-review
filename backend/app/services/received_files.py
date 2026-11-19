@@ -1,17 +1,24 @@
 """A record put together from the files it arrived in.
 
-Records reach the office as several files - the internal email they came with, the advocacy letter,
-the declaration, the proof of service and the medical records themselves - and the office used to
-join them in Adobe Acrobat before uploading one PDF. ``POST /api/documents/combine`` takes the
+Records reach the office as several files - the advocacy letter, the declaration, the medical index,
+the medical records and depositions, the proof of service, the internal email they came with - and
+the office used to join them in Adobe Acrobat before uploading one PDF. How they are split is not
+consistent: sometimes everything is one PDF, sometimes one file per source, sometimes only the
+letter or the depositions are apart. ``POST /api/documents/combine`` takes the
 files instead and joins them here, in the order the uploader confirmed. The joined file is the raw
 record: it is stored as the record's PDF, read and identified like any other upload, and can be
 downloaded as it is for the office's backup.
 
-The order the files are offered in (``KINDS``) is the one the office's finished records show,
-measured read-only on the live box (2026-11-18, 703 records): the office's own cover sheet on page 1
-(90%), then the internal email (pages 2-3), the advocacy letter, the declaration, the proof of
-service, then the medical records with their depositions. The uploader can still move any file;
-the server joins the files in the order it is sent.
+The order the files are offered in (``KINDS``) is the office's own guideline (2026-11-18, confirmed
+2026-11-19): advocacy letter, declaration, medical index (the sender's list of the records in the
+file), medical records with their depositions, proof of service, internal email; an envelope last.
+The finished records already on the live box were put together differently (the office's cover
+sheet first, then the email; measured 2026-11-18): the cover sheet is no longer used and the
+guideline replaces that order. The uploader can still move any file; the server joins the files in
+the order it is sent.
+
+The uploader also says who sent the records (``PARTIES``, one party per record) and the date of the
+appointment: neither is reliably on the letter, and sometimes there is no letter.
 
 The record's file name is built the way the office names its files - ``Last_First-ID-MMDDYYYY`` (the
 date the records were received), 647 of 703 live file names - so ``patient_ids.from_filename`` reads
@@ -28,20 +35,31 @@ from pypdf import PdfReader, PdfWriter
 
 # The kinds of file, in the order a record is put together. The labels are the web app's.
 KINDS: tuple[str, ...] = (
-    "cover",
-    "email",
     "advocacy_letter",
     "declaration",
-    "proof_of_service",
+    "medical_index",
     "records",
+    "proof_of_service",
+    "email",
+    "envelope",
 )
 KIND_LABELS: dict[str, str] = {
-    "cover": "Cover sheet",
-    "email": "Internal email",
     "advocacy_letter": "Advocacy letter",
     "declaration": "Declaration",
-    "proof_of_service": "Proof of service",
+    "medical_index": "Medical index",
     "records": "Medical records",
+    "proof_of_service": "Proof of service",
+    "email": "Internal email",
+    "envelope": "Envelope",
+}
+
+# Who sent the records: the four rows of the office's billing sheet, one per record.
+PARTIES: tuple[str, ...] = ("defense", "applicant", "insurance", "copy_service")
+PARTY_LABELS: dict[str, str] = {
+    "defense": "Defense",
+    "applicant": "Applicant",
+    "insurance": "Insurance",
+    "copy_service": "Copy service",
 }
 
 # A name part keeps letters, digits, apostrophes and hyphens; anything else separates words, which

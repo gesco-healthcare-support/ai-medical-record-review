@@ -38,41 +38,49 @@ async function fillPatient(
   await user.type(screen.getByLabelText("Patient first name"), "Patient");
   if (id) await user.type(screen.getByLabelText("Patient ID"), "801234");
   fireEvent.change(screen.getByLabelText("Date received"), { target: { value: "2026-11-03" } });
+  const appointment = screen.getByLabelText("Appointment date");
+  fireEvent.change(appointment, { target: { value: "2026-12-01" } });
+  await user.selectOptions(screen.getByLabelText("Records from"), "applicant");
 }
 
 describe("ReceivedFilesDialog ordering", () => {
   it("lists the files in the office's order, by the kind their names suggest", async () => {
-    // DEMONSTRATES the office's order: cover sheet, internal email, advocacy letter, declaration,
-    // proof of service, then the records, whatever order the files were picked in.
+    // DEMONSTRATES the office's guideline: advocacy letter, declaration, medical index, medical
+    // records, proof of service, internal email, envelope - whatever order they were picked in.
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
     addFiles([
       pdf("hospital records.pdf"),
+      pdf("envelope.pdf"),
       pdf("POS.pdf"),
       pdf("advocacy letter.pdf"),
       pdf("email.pdf"),
       pdf("DEC.pdf"),
+      pdf("medical index.pdf"),
       pdf("clinic records.pdf"),
     ]);
 
     expect(listed()).toEqual([
-      "email.pdf",
       "advocacy letter.pdf",
       "DEC.pdf",
-      "POS.pdf",
+      "medical index.pdf",
       "hospital records.pdf",
       "clinic records.pdf",
+      "POS.pdf",
+      "email.pdf",
+      "envelope.pdf",
     ]);
     expect(screen.getByLabelText("What DEC.pdf is")).toHaveValue("declaration");
+    expect(screen.getByLabelText("What medical index.pdf is")).toHaveValue("medical_index");
   });
 
   it("moves a file into its place when its kind is changed", async () => {
     const user = userEvent.setup();
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
-    addFiles([pdf("advocacy letter.pdf"), pdf("scan2.pdf")]);
+    addFiles([pdf("records.pdf"), pdf("scan2.pdf")]);
 
-    await user.selectOptions(screen.getByLabelText("What scan2.pdf is"), "email");
+    await user.selectOptions(screen.getByLabelText("What scan2.pdf is"), "advocacy_letter");
 
-    expect(listed()).toEqual(["scan2.pdf", "advocacy letter.pdf"]);
+    expect(listed()).toEqual(["scan2.pdf", "records.pdf"]);
   });
 
   it("moves a file up or down by hand, and removes one", async () => {
@@ -112,6 +120,8 @@ describe("ReceivedFilesDialog sending", () => {
       firstName: "Patient",
       patientId: "801234",
       dateReceived: "2026-11-03",
+      appointmentDate: "2026-12-01",
+      recordsFrom: "applicant",
       files: [
         { file: letter, kind: "advocacy_letter" },
         { file: records, kind: "records" },
@@ -154,6 +164,11 @@ describe("ReceivedFilesDialog sending", () => {
     await user.type(screen.getByLabelText("Patient ID"), "801234");
     expect(send()).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Date received"), { target: { value: "2026-11-03" } });
+    expect(send()).toBeDisabled();
+    const appointment = screen.getByLabelText("Appointment date");
+    fireEvent.change(appointment, { target: { value: "2026-12-01" } });
+    expect(send()).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Records from"), "copy_service");
     expect(send()).toBeEnabled();
 
     await user.clear(screen.getByLabelText("Patient ID"));

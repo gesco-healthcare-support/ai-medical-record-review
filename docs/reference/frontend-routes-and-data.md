@@ -80,7 +80,7 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | --- | --- | --- | --- | --- |
 | `listDocuments(owner?)` | `GET /documents`, or `GET /documents?owner=<id>` | - | `DocumentListItem[]` (the caller's own records, newest first; for an admin with `owner`, that account's) | `useDocuments()` in `DocumentsView`, `BundlePageClient`, `AdminView`; `useDocuments(owner)` in `DocumentsView` for an admin who picked a reviewer |
 | `uploadDocument()` | `POST /documents` | multipart field `pdf`; `patient_id`; `owner` and `allow_duplicate` when an admin uploads into another reviewer's account | `{id, page_count, sha256_duplicate, patient_id, patient_records}` | `useUploadDocument()` in `DocumentsView`; does not start identification. The patient ID is read from the file name (`patientIdFromFilename` in `frontend/lib/patient-id.ts`, the backend's rule); a name with none, or two, opens `PatientIdDialog`, and nothing is sent until the uploader types one. The success message says how many other records the patient has. Into another reviewer's account it runs only after a confirmation, and a 409 with code `duplicate` asks a second time before sending `allow_duplicate` |
-| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `owner` when an admin opened the dialog on another reviewer's records, then one `pdfs` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. Every field is required; the Patient ID box is filled from the ID the files' names agree on |
+| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `appointment_date`, `records_from`, `owner` when an admin opened the dialog on another reviewer's records, then one `pdfs` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. Every field is required; the Patient ID box is filled from the ID the files' names agree on |
 | `downloadRawPdf()` | `GET /documents/{id}/raw` (`rawPdfUrl()`) | - | the record's PDF as an attachment, saved by the browser's download manager from a plain link | "Download raw PDF" in each record's row menu (`DocumentsTable`) |
 | `setCompleted()` | `PUT /documents/{id}/completed` | `{completed}` | Document listing | `useSetCompleted()` in `DocumentsView` (the list is patched at once, then read again) |
 | `setPatientId()` | `PUT /documents/{id}/patient-id` | `{patient_id}` | Document listing plus `patient_records` | `PatientIdLine` on the workbench (saves on Enter or when the box loses focus) |
@@ -311,14 +311,15 @@ was last downloaded (`downloaded_at`).
 
 "Upload received files" (`ReceivedFilesDialog` in `received-files-dialog.tsx`) puts one record
 together from the files it arrived in, the step the office did in Adobe Acrobat. The uploader types
-the patient's last and first name, the patient ID (filled when the files' names agree on one) and
-the date received, and adds the PDFs. Each file gets a kind guessed from its name (`guessKind` in
+the patient's last and first name, the patient ID (filled when the files' names agree on one), the
+date received and the appointment date, picks who sent the records (Defense, Applicant, Insurance or
+Copy service), and adds the PDFs. Each file gets a kind guessed from its name (`guessKind` in
 `frontend/lib/received-files.ts`; anything unnamed is a medical record), and the list keeps them in
-the order a record is put together - cover sheet, internal email, advocacy letter, declaration,
-proof of service, medical records - by kind, then in the order added. A kind can be changed (the
-file moves to its place) and a file moved up or down by hand; the server joins them exactly as
-listed. "Download raw PDF" in a record's row menu saves the record's PDF as it was uploaded - for
-such a record, the joined file - for the office's backup.
+the office's order - advocacy letter, declaration, medical index, medical records (depositions
+included), proof of service, internal email, envelope - by kind, then in the order added. A kind can
+be changed (the file moves to its place) and a file moved up or down by hand; the server joins them
+exactly as listed. "Download raw PDF" in a record's row menu saves the record's PDF as it was
+uploaded - for such a record, the joined file - for the office's backup.
 
 Other My documents behaviour: search matches the filename or the patient name; sort columns are
 Document, Patient, Pages, Uploaded (the default, newest first), Documents found and Last activity; 20
