@@ -39,8 +39,15 @@ export function uploadDocument(file: File, target: UploadTarget = {}) {
 }
 
 /** One of the files a record arrived in, kept on the server until the record is put together:
- *  its token, its page count, and the kind its first page says it is. */
-export type StagedFile = { token: string; pages: number; kind: ReceivedKind };
+ *  its token, its page count, the kind its first page says it is, whether the uploader should look
+ *  (`check`: the model was unsure, or off), and its fingerprint as received. */
+export type StagedFile = {
+  token: string;
+  pages: number;
+  kind: ReceivedKind;
+  check: boolean;
+  sha256: string;
+};
 
 /** POST /api/documents/combine/files - send one received file as soon as it is added. The server
  *  keeps it, counts its pages and reads its first page to say what it is. One file per request, so
@@ -49,6 +56,12 @@ export function stageReceivedFile(file: File) {
   const form = new FormData();
   form.append("pdf", file);
   return apiFetch<StagedFile>("/documents/combine/files", { method: "POST", body: form });
+}
+
+/** GET /api/documents/combine/files/{token}/preview - a small PNG of a staged file's first page,
+ *  shown by a plain image tag (same origin, so the session cookie goes with it). */
+export function receivedFilePreviewUrl(token: string) {
+  return `/api/documents/combine/files/${encodeURIComponent(token)}/preview`;
 }
 
 /** DELETE /api/documents/combine/files/{token} - drop a staged file (removed from the list, or the

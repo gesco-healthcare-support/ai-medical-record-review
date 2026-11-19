@@ -18,6 +18,7 @@ call sites named in each section. The routing and retry machinery is explained i
 | `summarize` audit | `backend/app/services/summary_verify.py` `verify_summary()` | `get_provider().generate_structured` | `AUDIT_MODEL` (`gemini-2.5-flash`) | `SUMMARY_THINKING_BUDGET` (-1) | Argument, else `AUDIT_MAX_OUTPUT_TOKENS`, else `SUMMARY_MAX_OUTPUT_TOKENS` | JSON |
 | `segment` | `backend/app/services/segment_engine.py` `_window_rows()` | `provider_for_stage("segment").generate_structured` | `GENAI_MODEL` (`gemini-2.5-flash` on Vertex) | `SEGMENT_THINKING_BUDGET` (-1) | not set | JSON array |
 | `extract` | `backend/app/services/extraction.py` `extract_header()` | `provider_for_stage("extract").generate_structured` | `GENAI_MODEL` | `GEMINI_THINKING_BUDGET` (0) | not set | JSON |
+| `extract` (received file) | `backend/app/services/received_files.py` `read_kind()` | `provider_for_stage("extract").generate_structured` | `GENAI_MODEL` | `GEMINI_THINKING_BUDGET` (0) | not set | JSON |
 | `dedup` | `backend/app/services/dedup.py` `confirm_cluster()` | `provider_for_stage("dedup").generate_structured` | `CLASSIFY_MODEL` (`gemini-2.5-flash-lite`) | `GEMINI_THINKING_BUDGET` (0) | 256 (hardcoded) | JSON |
 | `classify` | `backend/app/services/classification.py` `llm_classify()` | `provider_for_stage("classify").generate_choice` | `CLASSIFY_MODEL` (`gemini-2.5-flash-lite`) | `GEMINI_THINKING_BUDGET` (0) | not set | One category id |
 | `verify` | `backend/app/services/verify_pass.py` `_same_document()` | `provider_for_stage("verify").generate_choice` | `VERIFY_MODEL` (<- `GENAI_MODEL`) | `GEMINI_THINKING_BUDGET` (0) | not set | `YES` or `NO` |
@@ -154,6 +155,22 @@ bundle export pass `verify=False`.
 | Schema | `extraction._HEADER_SCHEMA`: object with `first_name`, `last_name`, `dob`, `lawfirm`, all strings, all required. Each field `HEADER_PREFILL_FIELDS` names (`attorney_name`, `doctor`, `letter_date`, `pages_received`) is added as a required string from `_LETTER_PROPERTIES`; with the setting empty (the default) the schema is exactly the four |
 | Reply handling | `json.loads`; a decode error returns all four fields empty. Missing keys become empty strings. Empty OCR text returns all four empty without a call. A letter field is kept only as stored: `doctor` when it names exactly one `reporting.DOCTORS` entry, `letter_date` as mm/dd/yyyy, `pages_received` as a whole number above 0; otherwise empty. `prefill_letter_fields()` then writes each onto the record only where still empty (`pages_received` only when at most the page count) |
 | Failure | Provider exceptions are not caught in `extract_header()`. The segment worker's call (`backend/app/worker/tasks.py`) logs a WARNING and continues; the API route (`backend/app/api/documents.py` `extract_header_route()`) handles `PipelineError` |
+
+### extract: what a received file is
+
+| Item | Value |
+| --- | --- |
+| Entry point | `provider_for_stage("extract").generate_structured(stage="extract")` from `received_files.read_kind()`, called by `POST /api/documents/combine/files` (D2b) for each file a record arrives in |
+| Model | `Settings.model_for_stage("extract")`, as the header read: `GENAI_MODEL` on Gemini, `VLLM_MODEL` on vLLM |
+| Thinking | Gemini `GEMINI_THINKING_BUDGET` (0); vLLM on only if `extract` is in `VLLM_THINKING_STAGES` |
+| System | `received_files._KIND_SYSTEM`: the kinds of file a case arrives in, and what is NOT each (a subpoena's proof of service, a clinic's custodian declaration, an earlier QME report are records) |
+| Parts | One text part: the file's page count and the text of its first page (the PDF's own text, else one OCR pass), cut at `_KIND_TEXT_CHARS` (6,000) |
+| Temperature | 0.0 |
+| Max output tokens | Not set |
+| Schema | `received_files._KIND_SCHEMA`: object with `kind` (one of `received_files.KINDS`) and `certain` (boolean), both required |
+| Reply handling | `json.loads`; a `kind` outside the kinds is not used. `check` (the uploader should look) is set unless `certain` is true |
+| Failure | Never raises: any exception (the model server off, a refusal) or an unusable reply falls back to the keyword rules (`guess_kind`) with `check` set, logging only the exception's type. A page with no text asks no model and answers `records`, flagged |
+| Measured | Live box, 2026-11-19, the same 1,330 stored first pages of finished records with these instructions: medical records left as records 96%, subpoena paperwork 95%; the case's own advocacy letter 80%, proof of service 81%, declaration and email 74%, medical index 89% (the commonest slip: a letter or an email that lists the records read as the medical index). Keyword rules alone on 16,429 pages: 63-93% on the case's papers, 5% of medical documents and up to 28% of subpoena paperwork misplaced. The upload dialog therefore has every file confirmed by the uploader against its first page |
 
 ## dedup
 

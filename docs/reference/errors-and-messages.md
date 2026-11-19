@@ -60,7 +60,9 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 400 | `Choose who sent the records.` | D2a |
 | 400 | `File <n> is not a readable PDF. Nothing was uploaded.` | D2a |
 | 400 | `File <n> is no longer on the server. Add it again.` | D2a |
-| 400 | `This file is not a readable PDF.` | D2b |
+| 400 | `This file is not a readable PDF or image.` | D2b |
+| 400 | `This PDF needs a password to open. Save it without the password and add it again.` | D2b |
+| 400 | `File <n> is the same file as file <m>. Remove one of them.` | D2a |
 | 400 | `A patient ID is at most 32 letters and digits.` | D1, D2, D2a, D6b |
 | 400 | `primary_idx is not in this cluster` | D12 (`keep_one`) |
 | 400 | `idx is not in this cluster` | D12 (`keep_another`, `remove_member`) |
@@ -82,7 +84,7 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 403 | `Admin only` | `enforce_auth`, every `/api/admin` route |
 | 403 | `Forbidden` | `/api/users/{id}` routes |
 | 403 | `only an admin can upload into another reviewer's records` | D1, D2 (`owner` sent by a non-admin) |
-| 404 | `not found` | Every Owner route (`get_owned_document`); D14 (job not on this document); D18, D19 (no summary at `idx`); D26, D27 (download token); A4 (category); A8 (document) |
+| 404 | `not found` | Every Owner route (`get_owned_document`); D14 (job not on this document); D18, D19 (no summary at `idx`); D26, D27 (download token); D2d (staged file); A4 (category); A8 (document) |
 | 404 | `no such duplicate group` | D12 |
 | 404 | `reviewer not found` | D1, D2 (`owner`), A10: the account is unknown or switched off |
 | 404 | `unknown category` | A6 |
