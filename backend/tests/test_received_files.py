@@ -1,14 +1,19 @@
-"""A record put together from the files it arrived in: POST /api/documents/combine, the raw download
-(GET /api/documents/{id}/raw) and services/received_files.py.
+"""A record put together from the files it arrived in: each file staged and read
+(POST/DELETE /api/documents/combine/files), the record joined (POST /api/documents/combine), the raw
+download (GET /api/documents/{id}/raw) and services/received_files.py.
 
-Synthetic blank PDFs only; each file's pages get their own width so the joined order can be read
-back from the stored PDF. Uploads go to a per-test tmp dir.
+Synthetic PDFs only - blank pages, or a line of made-up text; each file's pages get their own width
+so the joined order can be read back from the stored PDF. Uploads go to a per-test tmp dir, and OCR
+is stubbed (no Tesseract in a test).
 """
 
 import io
 import os
+import time
 from datetime import date
+from pathlib import Path
 
+import pymupdf
 import pytest
 from pypdf import PdfReader, PdfWriter
 from rq import Queue
@@ -32,6 +37,12 @@ def _tmp_uploads(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_ocr(monkeypatch):
+    """A scanned first page reads as nothing here: tests never run Tesseract."""
+    monkeypatch.setattr(received_files, "extract_text_from_selected_pages", lambda *a, **k: "")
+
+
+@pytest.fixture(autouse=True)
 def _empty_queues():
     queue = Queue(OCR_QUEUE, connection=get_redis())
     queue.empty()
@@ -47,6 +58,18 @@ def _pdf(pages: int = 1, width: int = 72) -> bytes:
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
+
+
+def _text_pdf(text: str, pages: int = 1) -> bytes:
+    """A PDF whose first page carries ``text`` as real text (as an emailed letter does)."""
+    doc = pymupdf.open()
+    for number in range(pages):
+        page = doc.new_page(width=612, height=792)
+        if number == 0:
+            page.insert_textbox(pymupdf.Rect(36, 36, 576, 756), text)
+    data = doc.tobytes()
+    doc.close()
+    return data
 
 
 def _widths(path: str) -> list[int]:
@@ -91,17 +114,29 @@ _FILES = [
 ]
 
 
+async def _stage(client, body: bytes, name: str = "part.pdf"):
+    return await client.post(
+        "/api/documents/combine/files", files={"pdf": (name, body, "application/pdf")}
+    )
+
+
 async def _combine(client, files=_FILES, **overrides):
+    """Stage each file as the dialog does, then put the record together from the tokens."""
+    tokens = []
+    for i, (_, body) in enumerate(files):
+        staged = await _stage(client, body, f"part{i}.pdf")
+        assert staged.status_code == 201, staged.text
+        tokens.append(staged.json()["token"])
     fields = {**_FIELDS, **overrides}
     data = {key: value for key, value in fields.items() if value is not None}
     data["kinds"] = [kind for kind, _ in files]
-    return await client.post(
-        "/api/documents/combine",
-        files=[
-            ("pdfs", (f"part{i}.pdf", body, "application/pdf")) for i, (_, body) in enumerate(files)
-        ],
-        data=data,
-    )
+    data["tokens"] = tokens
+    return await client.post("/api/documents/combine", data=data)
+
+
+def _staged_files(tmp_path, user_id: int) -> list[str]:
+    folder = Path(tmp_path) / str(user_id) / "staged"
+    return sorted(p.name for p in folder.glob("*")) if folder.exists() else []
 
 
 def _document(doc_id: str) -> Document:
@@ -146,6 +181,115 @@ def test_a_name_of_several_words_keeps_every_word():
 def test_characters_a_file_name_cannot_carry_separate_words():
     name = received_files.record_filename("O'Test-Sample/", "  Pat. ", "A12345", date(2026, 2, 1))
     assert name == "O'Test-Sample_Pat-A12345-02012026.pdf"
+
+
+@pytest.mark.parametrize(
+    ("text", "pages", "kind"),
+    [
+        ("PROOF OF SERVICE\nI served the documents listed below", 1, "proof_of_service"),
+        ("Declaration of Service by mail", 1, "proof_of_service"),
+        ("From: Sample Office\nSent: Monday\nTo: Intake\nSubject: Records received", 2, "email"),
+        ("ATTENTION: MEDICAL PROVIDERS\nPreviously Sent - not billable", 1, "medical_index"),
+        ("Index of Medical Records enclosed", 3, "medical_index"),
+        (
+            "DECLARATION OF CUSTODIAN OF RECORDS\nunder penalty of perjury, true copies",
+            2,
+            "declaration",
+        ),
+        ("Declaration pursuant to Labor Code 4062.3 regarding records", 1, "declaration"),
+        (
+            "Dear Dr. Sample,\nPlease find enclosed the records for the evaluation.",
+            3,
+            "advocacy_letter",
+        ),
+        (
+            "Re: Panel QME evaluation of the applicant\nWe represent the defendant.",
+            4,
+            "advocacy_letter",
+        ),
+        ("ADVOCACY LETTER", 2, "advocacy_letter"),
+        ("FIRST-CLASS MAIL  U.S. POSTAGE PAID", 1, "envelope"),
+        ("Progress report, follow-up visit. Assessment and plan.", 12, "records"),
+        ("", 1, "records"),
+    ],
+)
+def test_the_first_page_says_what_kind_of_file_it_is(text, pages, kind):
+    """DEMONSTRATES: the kind is read from the first page, so the order does not depend on the
+    files' names or the order they were added in."""
+    assert received_files.guess_kind(text, pages) == kind
+
+
+def test_a_long_file_that_opens_with_a_custodians_declaration_is_records():
+    """GUARD: the office's main declaration is a few pages; a copy service's records open with a
+    custodian's declaration of their own, which the office ignores (2026-11-19)."""
+    text = "DECLARATION OF CUSTODIAN OF RECORDS\nunder penalty of perjury"
+    assert received_files.guess_kind(text, 5) == "declaration"
+    assert received_files.guess_kind(text, 40) == "records"
+
+
+def test_a_long_file_with_postal_words_is_not_an_envelope():
+    assert received_files.guess_kind("USPS tracking enclosed", 2) == "envelope"
+    assert received_files.guess_kind("USPS tracking enclosed", 30) == "records"
+
+
+def test_the_pdfs_own_text_is_read_without_ocr(tmp_path, monkeypatch):
+    def no_ocr(*_args, **_kwargs):
+        raise AssertionError("a page with text needs no OCR")
+
+    monkeypatch.setattr(received_files, "extract_text_from_selected_pages", no_ocr)
+    path = tmp_path / "letter.pdf"
+    path.write_bytes(_text_pdf("Dear Dr. Sample, enclosed are the records for the evaluation."))
+
+    assert "Dear Dr. Sample" in received_files.first_page_text(path)
+
+
+def test_a_scanned_first_page_is_read_by_ocr(tmp_path, monkeypatch):
+    calls = []
+
+    def ocr(path, pages):
+        calls.append(pages)
+        return "PROOF OF SERVICE"
+
+    monkeypatch.setattr(received_files, "extract_text_from_selected_pages", ocr)
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(_pdf())
+
+    assert received_files.first_page_text(path) == "PROOF OF SERVICE"
+    assert calls == [[1]]
+
+
+def test_an_ocr_failure_gives_no_text_not_an_error(tmp_path, monkeypatch):
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("tesseract went away")
+
+    monkeypatch.setattr(received_files, "extract_text_from_selected_pages", broken)
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(_pdf())
+
+    assert received_files.first_page_text(path) == ""
+
+
+def test_old_staged_files_are_swept_from_every_account(tmp_path):
+    old = tmp_path / "1" / "staged" / "old.pdf"
+    new = tmp_path / "2" / "staged" / "new.pdf"
+    for path in (old, new):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"%PDF-")
+    hours_ago = time.time() - (received_files.STAGED_HOURS + 1) * 3600
+    os.utime(old, (hours_ago, hours_ago))
+
+    assert received_files.sweep(str(tmp_path)) == 1
+    assert not old.exists()
+    assert new.exists()
+
+
+def test_a_token_of_another_shape_names_no_file(tmp_path):
+    assert received_files.staged_path(str(tmp_path), 1, "../../etc/passwd") is None
+    assert received_files.staged_path(str(tmp_path), 1, "") is None
+    token = received_files.new_token()
+    assert received_files.staged_path(str(tmp_path), 1, token) == (
+        tmp_path / "1" / "staged" / f"{token}.pdf"
+    )
 
 
 def test_combine_joins_the_files_in_the_order_given(tmp_path):
@@ -315,14 +459,10 @@ async def test_every_detail_the_uploader_gives_is_required(client, overrides, de
 async def test_each_file_needs_its_kind(client):
     user_id, email = _user()
     await _login(client, email)
-    files = [("email", _pdf()), ("records", _pdf())]
+    tokens = [(await _stage(client, _pdf())).json()["token"] for _ in range(2)]
 
     short = await client.post(
-        "/api/documents/combine",
-        files=[
-            ("pdfs", (f"p{i}.pdf", body, "application/pdf")) for i, (_, body) in enumerate(files)
-        ],
-        data={**_FIELDS, "kinds": ["email"]},
+        "/api/documents/combine", data={**_FIELDS, "kinds": ["email"], "tokens": tokens}
     )
     unknown = await _combine(client, files=[("letter", _pdf())])
     # The office's cover sheet is no longer used (2026-11-19), so it is no longer a kind.
@@ -342,19 +482,103 @@ async def test_no_files_is_a_400(client):
     assert resp.json()["detail"] == "no PDFs uploaded"
 
 
-async def test_an_unreadable_file_uploads_nothing_and_says_which_one(client, tmp_path):
-    """GUARD: no record, and no file of it - joined or temporary - is left behind."""
+# --- POST/DELETE /api/documents/combine/files ----------------------------------------------------
+
+
+async def test_a_file_is_staged_counted_and_read_as_it_is_added(client, tmp_path):
+    """DEMONSTRATES: each file reaches the server on its own, its pages are counted and its first
+    page tells its kind - a file named "part.pdf" that is a proof of service is one."""
     user_id, email = _user()
     await _login(client, email)
-    files = [("email", _pdf()), ("records", b"not a pdf"), ("records", _pdf())]
 
-    resp = await _combine(client, files=files)
+    resp = await _stage(client, _text_pdf("PROOF OF SERVICE\nI served the documents", pages=3))
+
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert (body["pages"], body["kind"]) == (3, "proof_of_service")
+    assert _staged_files(tmp_path, user_id) == [f"{body['token']}.pdf"]
+    assert _documents_of(user_id) == []
+
+
+@pytest.mark.parametrize("bad", [b"not a pdf", b""])
+async def test_an_unreadable_file_is_refused_when_added_and_not_kept(client, tmp_path, bad):
+    user_id, email = _user()
+    await _login(client, email)
+
+    resp = await _stage(client, bad)
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "This file is not a readable PDF."
+    assert _staged_files(tmp_path, user_id) == []
+
+
+async def test_staging_needs_a_file(client):
+    _, email = _user()
+    await _login(client, email)
+    resp = await client.post("/api/documents/combine/files")
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "no PDFs uploaded"
+
+
+async def test_a_removed_file_is_deleted_and_removing_it_again_is_harmless(client, tmp_path):
+    user_id, email = _user()
+    await _login(client, email)
+    token = (await _stage(client, _pdf())).json()["token"]
+
+    first = await client.delete(f"/api/documents/combine/files/{token}")
+    again = await client.delete(f"/api/documents/combine/files/{token}")
+    odd = await client.delete("/api/documents/combine/files/not-a-token")
+
+    assert [r.status_code for r in (first, again, odd)] == [200, 200, 200]
+    assert _staged_files(tmp_path, user_id) == []
+
+
+async def test_the_staged_files_are_deleted_once_the_record_is_stored(client, tmp_path):
+    user_id, email = _user()
+    await _login(client, email)
+
+    resp = await _combine(client)
+
+    assert resp.status_code == 201, resp.text
+    assert _staged_files(tmp_path, user_id) == []
+
+
+async def test_another_accounts_staged_file_cannot_be_used(client, tmp_path):
+    """GUARD: a token is looked up in the caller's own staging folder only."""
+    owner_id, owner_email = _user()
+    await _login(client, owner_email)
+    token = (await _stage(client, _pdf())).json()["token"]
+    stranger_id, stranger_email = _user()
+    await _login(client, stranger_email)
+
+    resp = await client.post(
+        "/api/documents/combine", data={**_FIELDS, "kinds": ["records"], "tokens": [token]}
+    )
+    removed = await client.delete(f"/api/documents/combine/files/{token}")
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "File 1 is no longer on the server. Add it again."
+    assert _documents_of(stranger_id) == []
+    assert removed.status_code == 200
+    assert _staged_files(tmp_path, owner_id) == [f"{token}.pdf"]
+
+
+async def test_a_staged_file_that_went_bad_uploads_nothing_and_says_which_one(client, tmp_path):
+    """GUARD: no record and no joined file is left behind; the staged files stay for a retry."""
+    user_id, email = _user()
+    await _login(client, email)
+    tokens = [(await _stage(client, _pdf())).json()["token"] for _ in range(3)]
+    (Path(tmp_path) / str(user_id) / "staged" / f"{tokens[1]}.pdf").write_bytes(b"not a pdf")
+
+    resp = await client.post(
+        "/api/documents/combine",
+        data={**_FIELDS, "kinds": ["email", "records", "records"], "tokens": tokens},
+    )
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == "File 2 is not a readable PDF. Nothing was uploaded."
     assert _documents_of(user_id) == []
-    left = [name for _, _, names in os.walk(tmp_path) for name in names]
-    assert left == []
+    assert [p.name for p in (Path(tmp_path) / str(user_id)).glob("*.pdf")] == []
 
 
 async def test_an_admin_combines_into_a_reviewers_account(client):

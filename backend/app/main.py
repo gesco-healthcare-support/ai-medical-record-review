@@ -66,6 +66,18 @@ async def _lifespan(app: FastAPI):
             logger.info("startup download sweep removed %d stale file(s)", swept)
     except Exception:
         logger.warning("startup download sweep failed", exc_info=True)
+    # Files staged for "Upload received files" are patient data at rest too. A dialog closed with
+    # its browser tab never deletes its own, and the other sweep runs only when someone stages the
+    # next file - so old ones are swept here as well. Guarded the same way.
+    try:
+        from app.config import get_settings
+        from app.services.received_files import sweep as sweep_staged
+
+        staged = sweep_staged(get_settings().upload_folder)
+        if staged:
+            logger.info("startup staged-file sweep removed %d stale file(s)", staged)
+    except Exception:
+        logger.warning("startup staged-file sweep failed", exc_info=True)
     yield
 
 

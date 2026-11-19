@@ -36,7 +36,7 @@ There is no response envelope: errors, like successes, are bare bodies.
 | 404 | The document is missing or belongs to someone else; or the job, summary, duplicate group, category, custom prompt, user, reviewer account or download token is not found; or the path does not exist. |
 | 405 | The path exists but not for this method. |
 | 409 | A state conflict: a job is running, the duplicate check is missing or stale, nothing to export, no bundle match, bundle over the cap, category in use, summary boundaries changed, or the reviewer an admin is uploading or assigning to already holds the same file (`{"detail", "code": "duplicate", "duplicates"}`). |
-| 413 | Request body over 500 MB. Answered by nginx (`client_max_body_size 500m` in `deploy/nginx.conf`) before the API sees it. |
+| 413 | Request body over 500 MB. Answered by nginx (`client_max_body_size 500m` in `deploy/nginx.conf`) before the API sees it. "Upload received files" sends each file on its own (D2b), so the limit applies to each file, and its dialog shows `This file is larger than the server accepts in one upload.` beside the file. |
 | 422 | Request validation failed (`{"detail": [...]}`), or a pipeline error that is a property of the document (`{"error": ...}`). |
 | 500 | A pipeline error with no specific mapping (`{"error": ...}`), or an unhandled exception (plain text). |
 | 502, 504 | Answered by nginx when the API cannot be reached (for example while it restarts) or does not answer within `proxy_read_timeout 300s` (`deploy/nginx.conf`). |
@@ -50,7 +50,7 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | --- | --- | --- |
 | 400 | `no PDF uploaded` | D1 |
 | 400 | `file is not a readable PDF` | D1 |
-| 400 | `no PDFs uploaded` | D2, D2a |
+| 400 | `no PDFs uploaded` | D2, D2a, D2b |
 | 400 | `no readable PDFs uploaded` | D2 |
 | 400 | `Choose what each file is.` | D2a |
 | 400 | `Enter the patient's last and first name.` | D2a |
@@ -59,6 +59,8 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 400 | `Enter the appointment date.` | D2a |
 | 400 | `Choose who sent the records.` | D2a |
 | 400 | `File <n> is not a readable PDF. Nothing was uploaded.` | D2a |
+| 400 | `File <n> is no longer on the server. Add it again.` | D2a |
+| 400 | `This file is not a readable PDF.` | D2b |
 | 400 | `A patient ID is at most 32 letters and digits.` | D1, D2, D2a, D6b |
 | 400 | `primary_idx is not in this cluster` | D12 (`keep_one`) |
 | 400 | `idx is not in this cluster` | D12 (`keep_another`, `remove_member`) |
@@ -245,6 +247,7 @@ reach the reviewer as the call site's fallback.
 | `frontend/components/documents/documents-view.tsx` | Delete | Could not delete the record. |
 | `frontend/components/documents/documents-view.tsx` | Mark or clear Completed | Could not change the Completed mark. |
 | `frontend/components/documents/received-files-dialog.tsx` | Put a record together from the files it arrived in | Could not combine the files. |
+| `frontend/components/documents/received-files-dialog.tsx` | Send one received file as it is added (shown beside the file) | Could not read this file. |
 | `frontend/components/admin/admin-view.tsx` | Update a category | Could not update the category. |
 | `frontend/components/admin/admin-view.tsx` | Reprocess | Could not reprocess that record. |
 | `frontend/components/admin/category-dialog.tsx` | Save a category | Could not save the category. |

@@ -17,6 +17,7 @@ import re
 import uuid
 import zipfile
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
@@ -618,6 +619,7 @@ def aggregate_documents(
 
 
 _COMBINE_NO_FILES_DETAIL = "no PDFs uploaded"
+_STAGED_UNREADABLE_DETAIL = "This file is not a readable PDF."
 _COMBINE_KINDS_DETAIL = "Choose what each file is."
 _COMBINE_NAME_DETAIL = "Enter the patient's last and first name."
 _COMBINE_ID_DETAIL = "Enter the patient ID."
@@ -626,11 +628,11 @@ _COMBINE_APPOINTMENT_DETAIL = "Enter the appointment date."
 _COMBINE_PARTY_DETAIL = "Choose who sent the records."
 
 
-def _received_kinds(pdfs: list[UploadFile], kinds: list[str]) -> list[str]:
+def _received_kinds(tokens: list[str], kinds: list[str]) -> list[str]:
     """Each file's kind, one per file and each one of ``received_files.KINDS``; a 400 otherwise."""
-    if not pdfs or any(not upload.filename for upload in pdfs):
+    if not tokens:
         raise HTTPException(status_code=400, detail=_COMBINE_NO_FILES_DETAIL)
-    if len(kinds) != len(pdfs) or any(kind not in received_files.KINDS for kind in kinds):
+    if len(kinds) != len(tokens) or any(kind not in received_files.KINDS for kind in kinds):
         raise HTTPException(status_code=400, detail=_COMBINE_KINDS_DETAIL)
     return kinds
 
@@ -651,42 +653,88 @@ def _records_from(value: str) -> str:
     return party
 
 
-def _remove_quietly(path: str) -> None:
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+def _staged_files(user: User, tokens: list[str]) -> list[Path]:
+    """The caller's staged file for each token, in order; a 400 naming the first one missing (never
+    staged, staged by someone else, removed, or swept after ``received_files.STAGED_HOURS``)."""
+    paths: list[Path] = []
+    for position, token in enumerate(tokens, start=1):
+        path = received_files.staged_path(get_settings().upload_folder, user.id, token)
+        if path is None or not path.is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=f"File {position} is no longer on the server. Add it again.",
+            )
+        paths.append(path)
+    return paths
 
 
 def _combine_into(
-    stored_path: str, pdfs: list[UploadFile], kinds: list[str]
+    stored_path: str, staged: list[Path], kinds: list[str]
 ) -> list[received_files.Part]:
-    """Join the uploaded files into ``stored_path``, in the order sent.
-
-    Each file is copied to a temporary file beside the record first, a megabyte at a time, so no
-    upload is read whole into memory here; the temporary files are removed whatever happens. A file
-    that is not a readable PDF refuses the whole upload with its place in the list, and nothing is
-    stored."""
-    temps: list[str] = []
+    """Join the staged files into ``stored_path``, in the order sent. A file that is not a readable
+    PDF refuses the whole upload with its place in the list, and nothing is stored."""
     try:
-        for upload in pdfs:
-            temp = f"{stored_path}.{len(temps)}.part"
-            temps.append(temp)
-            with open(temp, "wb") as out:
-                while chunk := upload.file.read(1 << 20):
-                    out.write(chunk)
-        return received_files.combine(list(zip(temps, kinds, strict=True)), stored_path)
+        return received_files.combine(list(zip(staged, kinds, strict=True)), stored_path)
     except received_files.UnreadableFile as exc:
+        received_files.remove_staged(Path(stored_path))
         raise HTTPException(
             status_code=400,
             detail=f"File {exc.position} is not a readable PDF. Nothing was uploaded.",
         ) from None
     except Exception:
-        _remove_quietly(stored_path)
+        received_files.remove_staged(Path(stored_path))
         raise
+
+
+@router.post(
+    "/combine/files",
+    status_code=status.HTTP_201_CREATED,
+    responses={400: {"description": "No file was sent, or it is not a readable PDF."}},
+)
+def stage_received_file(
+    pdf: UploadFile | None = File(default=None),
+    user: User = Depends(current_active_user),
+):
+    """Keep one of the files a record arrived in until it is put together, and say what it is.
+
+    The upload dialog sends each file on its own as it is added, so a file reaches the server - and
+    is held to the proxy's upload size - one at a time. It is streamed a megabyte at a time into the
+    caller's staging folder under a random token (``services/received_files.py``), its pages are
+    counted, and its first page is read (the PDF's own text, else one OCR pass) to guess its kind.
+    Answers ``{token, pages, kind}``. Staged files older than ``received_files.STAGED_HOURS`` are
+    swept first. Nothing is logged about the file but counts."""
+    if pdf is None or not pdf.filename:
+        raise HTTPException(status_code=400, detail=_COMBINE_NO_FILES_DETAIL)
+    upload_folder = get_settings().upload_folder
+    received_files.sweep(upload_folder)
+    token = received_files.new_token()
+    path = received_files.staged_path(upload_folder, user.id, token)
+    assert path is not None  # a token made here always has the right shape
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(path.name + ".part")
+    try:
+        with open(part, "wb") as out:
+            while chunk := pdf.file.read(1 << 20):
+                out.write(chunk)
+        os.replace(part, path)
+        pages = received_files.page_count(path)
+    except received_files.UnreadableFile:
+        received_files.remove_staged(path)
+        raise HTTPException(status_code=400, detail=_STAGED_UNREADABLE_DETAIL) from None
     finally:
-        for temp in temps:
-            _remove_quietly(temp)
+        received_files.remove_staged(part)
+    kind = received_files.guess_kind(received_files.first_page_text(path), pages)
+    return {"token": token, "pages": pages, "kind": kind}
+
+
+@router.delete("/combine/files/{token}")
+def unstage_received_file(token: str, user: User = Depends(current_active_user)):
+    """Delete one of the caller's staged files (the uploader removed it, or closed the dialog). A
+    token that is unknown, already used or swept answers the same: there is nothing to delete."""
+    path = received_files.staged_path(get_settings().upload_folder, user.id, token)
+    if path is not None:
+        received_files.remove_staged(path)
+    return {"ok": True}
 
 
 @router.post(
@@ -694,16 +742,16 @@ def _combine_into(
     status_code=status.HTTP_201_CREATED,
     responses={
         400: {
-            "description": "No PDFs, a file without its kind, a file that is not a readable PDF, "
-            "or the patient's name, ID, the date received, the appointment date or who sent the "
-            "records missing."
+            "description": "No files, a file without its kind or no longer staged, a file that "
+            "is not a readable PDF, or the patient's name, ID, the date received, the appointment "
+            "date or who sent the records missing."
         },
         403: {"description": "A non-admin named another reviewer's account."},
         404: {"description": "The reviewer named is not an active account."},
     },
 )
 def combine_received_files(
-    pdfs: list[UploadFile] = File(default=[]),
+    tokens: list[str] = Form(default=[]),
     kinds: list[str] = Form(default=[]),
     last_name: str = Form(default=""),
     first_name: str = Form(default=""),
@@ -717,17 +765,19 @@ def combine_received_files(
 ):
     """Put a record together from the files it arrived in (``services/received_files.py``).
 
-    ``pdfs`` are joined in the order sent - the order the uploader confirmed - and ``kinds`` says
-    what each one is, one per file. The patient's last and first name, the patient ID, the date the
-    records were received, the appointment date and who sent the records are required: the first
-    four name the record the way the office names its files (``Last_First-ID-MMDDYYYY``) and fill
-    its header, and all of them feed the office's billing sheet. ``owner`` (admins only) puts the
-    record in another reviewer's account, as on the single upload.
+    ``tokens`` name files the caller staged with ``POST .../combine/files``; they are joined in
+    the order sent - the order the uploader confirmed - and ``kinds`` says what each one is, one per
+    file. The staged files are deleted once the record is stored. The patient's last and first
+    name, the patient ID, the date the records were received, the appointment date and who sent
+    the records are required: the first four name the record the way the office names its files
+    (``Last_First-ID-MMDDYYYY``) and fill its header, and all of them feed the office's billing
+    sheet. ``owner`` (admins only) puts the record in another reviewer's account, as on the single
+    upload.
 
     The joined file is the record as received: it is read like any other upload, identified when
     the reviewer starts Identify, and ``GET .../raw`` downloads it as it is. No duplicate check: the
     joined file is new, so its hash says nothing about whether the same files came before."""
-    kinds = _received_kinds(pdfs, kinds)
+    kinds = _received_kinds(tokens, kinds)
     last, first = last_name.strip(), first_name.strip()
     if not last or not first:
         raise HTTPException(status_code=400, detail=_COMBINE_NAME_DETAIL)
@@ -738,12 +788,13 @@ def combine_received_files(
     appointment = _form_date(appointment_date, _COMBINE_APPOINTMENT_DETAIL)
     party = _records_from(records_from)
     reviewer = upload_owner(session, user, owner)
+    staged = _staged_files(user, tokens)
 
     document_id = str(uuid.uuid4())
     user_dir = os.path.join(get_settings().upload_folder, str(reviewer.id))
     os.makedirs(user_dir, exist_ok=True)
     stored_path = os.path.join(user_dir, document_id + ".pdf")
-    parts = _combine_into(stored_path, pdfs, kinds)
+    parts = _combine_into(stored_path, staged, kinds)
     page_count = parts[-1].end
 
     document = Document(
@@ -770,6 +821,8 @@ def combine_received_files(
     if reviewer.id != user.id:
         detail += f", for user {reviewer.id}"
     audit(session, "combine_upload", user.id, document_id, detail=detail)
+    for path in staged:
+        received_files.remove_staged(path)
     # Read the pages now, with no model, as on the single upload.
     enqueue_upload_ocr(document_id, page_count)
     return {

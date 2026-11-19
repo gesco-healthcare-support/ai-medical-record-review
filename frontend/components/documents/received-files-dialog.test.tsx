@@ -1,11 +1,18 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }) }));
 
 const combine = { mutateAsync: vi.fn(), isPending: false };
 vi.mock("@/hooks/use-documents", () => ({ useCombineReceivedFiles: () => combine }));
+
+const stage = vi.fn();
+const unstage = vi.fn();
+vi.mock("@/lib/documents-api", () => ({
+  stageReceivedFile: (file: File) => stage(file),
+  unstageReceivedFile: (token: string) => unstage(token),
+}));
 
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api";
@@ -14,6 +21,20 @@ import { ReceivedFilesDialog } from "@/components/documents/received-files-dialo
 const pdf = (name: string) => new File([new Uint8Array([1])], name, { type: "application/pdf" });
 const other = (name: string) =>
   new File([new Uint8Array([1])], name, { type: "application/msword" });
+
+/** What the server says about each file, by name; by default its first page says nothing more than
+ *  "records" and it has 2 pages, so the name decides. */
+let readings: Record<string, { kind?: string; pages?: number }> = {};
+
+beforeEach(() => {
+  readings = {};
+  stage.mockImplementation(async (file: File) => ({
+    token: `tok-${file.name}`,
+    pages: readings[file.name]?.pages ?? 2,
+    kind: readings[file.name]?.kind ?? "records",
+  }));
+  unstage.mockResolvedValue({ ok: true });
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -27,7 +48,23 @@ function addFiles(files: File[]) {
 function listed(): string[] {
   return within(screen.getByRole("list"))
     .getAllByRole("listitem")
-    .map((li) => li.querySelector(".truncate")!.textContent ?? "");
+    .map((li) => li.querySelector("[data-file-name]")!.textContent ?? "");
+}
+
+async function allRead(count: number) {
+  await waitFor(() => expect(stage).toHaveBeenCalledTimes(count));
+  await waitFor(() => expect(screen.queryByText("Reading...")).toBeNull());
+}
+
+function deferredStage() {
+  const handle: { answer: (value: unknown) => void } = { answer: () => undefined };
+  stage.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        handle.answer = resolve;
+      }),
+  );
+  return handle;
 }
 
 async function fillPatient(
@@ -44,39 +81,52 @@ async function fillPatient(
 }
 
 describe("ReceivedFilesDialog ordering", () => {
-  it("lists the files in the office's order, by the kind their names suggest", async () => {
-    // DEMONSTRATES the office's guideline: advocacy letter, declaration, medical index, medical
-    // records, proof of service, internal email, envelope - whatever order they were picked in.
+  it("puts each file in its place by what its first page says, whatever its name", async () => {
+    // DEMONSTRATES the office's request: the order does not depend on the uploader - files named
+    // anything, added in any order, come out in the guideline's order once the server read them.
+    readings = {
+      "scan1.pdf": { kind: "proof_of_service" },
+      "scan2.pdf": { kind: "records" },
+      "scan3.pdf": { kind: "advocacy_letter" },
+      "scan4.pdf": { kind: "email" },
+      "scan5.pdf": { kind: "declaration" },
+    };
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
-    addFiles([
-      pdf("hospital records.pdf"),
-      pdf("envelope.pdf"),
-      pdf("POS.pdf"),
-      pdf("advocacy letter.pdf"),
-      pdf("email.pdf"),
-      pdf("DEC.pdf"),
-      pdf("medical index.pdf"),
-      pdf("clinic records.pdf"),
-    ]);
+    addFiles(["scan1.pdf", "scan2.pdf", "scan3.pdf", "scan4.pdf", "scan5.pdf"].map(pdf));
 
-    expect(listed()).toEqual([
-      "advocacy letter.pdf",
-      "DEC.pdf",
-      "medical index.pdf",
-      "hospital records.pdf",
-      "clinic records.pdf",
-      "POS.pdf",
-      "email.pdf",
-      "envelope.pdf",
-    ]);
-    expect(screen.getByLabelText("What DEC.pdf is")).toHaveValue("declaration");
-    expect(screen.getByLabelText("What medical index.pdf is")).toHaveValue("medical_index");
+    await allRead(5);
+
+    expect(listed()).toEqual(["scan3.pdf", "scan5.pdf", "scan2.pdf", "scan1.pdf", "scan4.pdf"]);
+    expect(screen.getByLabelText("What scan5.pdf is")).toHaveValue("declaration");
+  });
+
+  it("uses the file's name when the first page says no more than records", async () => {
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("hospital records.pdf"), pdf("POS.pdf"), pdf("medical index.pdf")]);
+
+    await allRead(3);
+
+    expect(listed()).toEqual(["medical index.pdf", "hospital records.pdf", "POS.pdf"]);
+  });
+
+  it("keeps a kind the uploader chose over what the page says", async () => {
+    const user = userEvent.setup();
+    const slow = deferredStage();
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("scan.pdf")]);
+
+    await user.selectOptions(screen.getByLabelText("What scan.pdf is"), "declaration");
+    await act(async () => slow.answer({ token: "t1", pages: 3, kind: "email" }));
+
+    expect(screen.getByLabelText("What scan.pdf is")).toHaveValue("declaration");
+    expect(screen.getByText("3 pages")).toBeInTheDocument();
   });
 
   it("moves a file into its place when its kind is changed", async () => {
     const user = userEvent.setup();
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
     addFiles([pdf("records.pdf"), pdf("scan2.pdf")]);
+    await allRead(2);
 
     await user.selectOptions(screen.getByLabelText("What scan2.pdf is"), "advocacy_letter");
 
@@ -87,6 +137,7 @@ describe("ReceivedFilesDialog ordering", () => {
     const user = userEvent.setup();
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
     addFiles([pdf("a records.pdf"), pdf("b records.pdf"), pdf("c records.pdf")]);
+    await allRead(3);
     expect(screen.getByRole("button", { name: "Move a records.pdf up" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Move c records.pdf down" })).toBeDisabled();
 
@@ -98,6 +149,68 @@ describe("ReceivedFilesDialog ordering", () => {
 
     await user.click(screen.getByRole("button", { name: "Remove a records.pdf" }));
     expect(listed()).toEqual(["c records.pdf", "b records.pdf"]);
+    // The removed file is dropped on the server too.
+    expect(unstage).toHaveBeenCalledWith("tok-a records.pdf");
+  });
+});
+
+describe("ReceivedFilesDialog reading the files", () => {
+  it("sends each file on its own as it is added, and shows its pages and the total", async () => {
+    readings = { "a.pdf": { pages: 1 }, "b.pdf": { pages: 12 } };
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("a.pdf"), pdf("b.pdf")]);
+
+    expect(screen.getAllByText("Reading...")).toHaveLength(2);
+    await allRead(2);
+
+    expect(stage.mock.calls.map(([file]) => (file as File).name)).toEqual(["a.pdf", "b.pdf"]);
+    expect(screen.getByText("1 page")).toBeInTheDocument();
+    expect(screen.getByText("12 pages")).toBeInTheDocument();
+    expect(screen.getByText("13 pages in all")).toBeInTheDocument();
+  });
+
+  it("shows why a file was refused, and cannot send until it is removed", async () => {
+    const user = userEvent.setup();
+    stage.mockImplementationOnce(async () => {
+      throw new ApiError("This file is not a readable PDF.", 400);
+    });
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("broken.pdf"), pdf("records.pdf")]);
+    await fillPatient(user);
+    await waitFor(() => expect(stage).toHaveBeenCalledTimes(2));
+
+    expect(await screen.findByText("This file is not a readable PDF.")).toBeInTheDocument();
+    const send = screen.getByRole("button", { name: "Combine & upload" });
+    expect(send).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Remove broken.pdf" }));
+    await waitFor(() => expect(send).toBeEnabled());
+    expect(unstage).not.toHaveBeenCalled();
+  });
+
+  it("says plainly when a file is too large for the server", async () => {
+    stage.mockImplementationOnce(async () => {
+      throw new ApiError("Request Entity Too Large", 413);
+    });
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("huge.pdf")]);
+
+    expect(
+      await screen.findByText("This file is larger than the server accepts in one upload."),
+    ).toBeInTheDocument();
+  });
+
+  it("drops on the server a file removed while it was still being read", async () => {
+    const user = userEvent.setup();
+    const slow = deferredStage();
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("slow.pdf")]);
+
+    await user.click(screen.getByRole("button", { name: "Remove slow.pdf" }));
+    await act(async () => slow.answer({ token: "late", pages: 2, kind: "records" }));
+
+    expect(unstage).toHaveBeenCalledWith("late");
+    expect(screen.getByText("No files yet.")).toBeInTheDocument();
   });
 });
 
@@ -106,10 +219,10 @@ describe("ReceivedFilesDialog sending", () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
     combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 6, patient_records: 0 });
+    readings = { "scan.pdf": { kind: "advocacy_letter" } };
     render(<ReceivedFilesDialog open onOpenChange={onOpenChange} />);
-    const records = pdf("records.pdf");
-    const letter = pdf("letter.pdf");
-    addFiles([records, letter]);
+    addFiles([pdf("records.pdf"), pdf("scan.pdf")]);
+    await allRead(2);
     await fillPatient(user);
 
     await user.click(screen.getByRole("button", { name: "Combine & upload" }));
@@ -123,8 +236,8 @@ describe("ReceivedFilesDialog sending", () => {
       appointmentDate: "2026-12-01",
       recordsFrom: "applicant",
       files: [
-        { file: letter, kind: "advocacy_letter" },
-        { file: records, kind: "records" },
+        { token: "tok-scan.pdf", kind: "advocacy_letter" },
+        { token: "tok-records.pdf", kind: "records" },
       ],
       owner: null,
     });
@@ -132,6 +245,8 @@ describe("ReceivedFilesDialog sending", () => {
       "One record made from 2 files, 6 pages.",
     );
     expect(onOpenChange).toHaveBeenCalledWith(false);
+    // The server used the files and deleted them itself.
+    expect(unstage).not.toHaveBeenCalled();
   });
 
   it("reads the patient ID from the files' names when they agree", async () => {
@@ -139,6 +254,7 @@ describe("ReceivedFilesDialog sending", () => {
     combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 2, patient_records: 0 });
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
     addFiles([pdf("Synthetic 801234 email.pdf"), pdf("Synthetic-801234-records.pdf")]);
+    await allRead(2);
     await fillPatient(user, { id: false });
 
     expect(screen.getByLabelText("Patient ID")).toHaveValue("801234");
@@ -151,24 +267,26 @@ describe("ReceivedFilesDialog sending", () => {
     );
   });
 
-  it("asks for every detail before it can send", async () => {
+  it("asks for every detail, and every file read, before it can send", async () => {
     const user = userEvent.setup();
+    const slow = deferredStage();
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
     const send = () => screen.getByRole("button", { name: "Combine & upload" });
     expect(send()).toBeDisabled();
 
     addFiles([pdf("records.pdf")]);
-    expect(send()).toBeDisabled();
     await user.type(screen.getByLabelText("Patient last name"), "Synthetic");
     await user.type(screen.getByLabelText("Patient first name"), "Patient");
     await user.type(screen.getByLabelText("Patient ID"), "801234");
-    expect(send()).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Date received"), { target: { value: "2026-11-03" } });
     expect(send()).toBeDisabled();
     const appointment = screen.getByLabelText("Appointment date");
     fireEvent.change(appointment, { target: { value: "2026-12-01" } });
     expect(send()).toBeDisabled();
     await user.selectOptions(screen.getByLabelText("Records from"), "copy_service");
+    // Still reading the file.
+    expect(send()).toBeDisabled();
+    await act(async () => slow.answer({ token: "t1", pages: 2, kind: "records" }));
     expect(send()).toBeEnabled();
 
     await user.clear(screen.getByLabelText("Patient ID"));
@@ -185,6 +303,7 @@ describe("ReceivedFilesDialog sending", () => {
       screen.getByRole("heading", { name: "Upload received files for Brian" }),
     ).toBeInTheDocument();
     addFiles([pdf("records.pdf")]);
+    await allRead(1);
     await fillPatient(user);
 
     await user.click(screen.getByRole("button", { name: "Combine & upload for Brian" }));
@@ -197,11 +316,12 @@ describe("ReceivedFilesDialog sending", () => {
     );
   });
 
-  it("toasts a humanized message when combining fails, and keeps what was staged", async () => {
+  it("toasts a humanized message when combining fails, and keeps what was added", async () => {
     const user = userEvent.setup();
     combine.mutateAsync.mockRejectedValue(new ApiError("network", 0));
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
     addFiles([pdf("records.pdf")]);
+    await allRead(1);
     await fillPatient(user);
 
     await user.click(screen.getByRole("button", { name: "Combine & upload" }));
@@ -212,6 +332,7 @@ describe("ReceivedFilesDialog sending", () => {
       ),
     );
     expect(listed()).toEqual(["records.pdf"]);
+    expect(unstage).not.toHaveBeenCalled();
   });
 
   it("shows that it is combining while the upload runs", () => {
@@ -231,6 +352,7 @@ describe("ReceivedFilesDialog file handling", () => {
       "Only PDF files can be combined. 2 files were not added.",
     );
     expect(listed()).toEqual(["a.pdf", "d.pdf"]);
+    await allRead(2);
   });
 
   it("says one file when one is not a PDF", () => {
@@ -239,32 +361,37 @@ describe("ReceivedFilesDialog file handling", () => {
     expect(vi.mocked(toast).error).toHaveBeenCalledWith(
       "Only PDF files can be combined. One file was not added.",
     );
+    expect(stage).not.toHaveBeenCalled();
   });
 
-  it("clears everything staged on Cancel", async () => {
+  it("clears everything on Cancel and drops the files on the server", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
     const { rerender } = render(<ReceivedFilesDialog open onOpenChange={onOpenChange} />);
-    addFiles([pdf("a.pdf")]);
+    addFiles([pdf("a.pdf"), pdf("b.pdf")]);
+    await allRead(2);
     await user.type(screen.getByLabelText("Patient last name"), "Synthetic");
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(unstage.mock.calls.map(([token]) => token).sort()).toEqual(["tok-a.pdf", "tok-b.pdf"]);
     rerender(<ReceivedFilesDialog open onOpenChange={onOpenChange} />);
     expect(screen.getByText("No files yet.")).toBeInTheDocument();
     expect(screen.getByLabelText("Patient last name")).toHaveValue("");
   });
 
-  it("clears everything staged when dismissed with Escape too", async () => {
+  it("clears everything when dismissed with Escape too", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
     const { rerender } = render(<ReceivedFilesDialog open onOpenChange={onOpenChange} />);
     addFiles([pdf("a.pdf")]);
+    await allRead(1);
 
     await user.keyboard("{Escape}");
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(unstage).toHaveBeenCalledWith("tok-a.pdf");
     rerender(<ReceivedFilesDialog open onOpenChange={onOpenChange} />);
     expect(screen.getByText("No files yet.")).toBeInTheDocument();
   });
