@@ -64,6 +64,13 @@ export function guessKind(fileName: string): ReceivedKind {
   return "records";
 }
 
+/** The kind to show for a file once the server has read it: what its first page says, unless the
+ *  page said nothing more than "records" and the file's name is more specific (a scanned page the
+ *  server could not read named "POS.pdf" is still a proof of service). */
+export function pickKind(fromPage: ReceivedKind, fromName: ReceivedKind): ReceivedKind {
+  return fromPage === "records" ? fromName : fromPage;
+}
+
 /** `items` in the order a record is put together: by kind, and within a kind in the order given. */
 export function inReceivedOrder<T extends { kind: ReceivedKind }>(items: readonly T[]): T[] {
   const rank = (kind: ReceivedKind) => RECEIVED_KINDS.indexOf(kind);

@@ -66,7 +66,7 @@ shared `conftest.py`.
 | `test_llm_preflight.py` | The startup check of the vLLM server version, and when it refuses to boot. |
 | `test_llm_provider.py` | The provider abstraction changes nothing on the Gemini path. |
 | `test_llm_vllm.py` | The vLLM provider: where it deliberately differs from OpenAI, and its retries. |
-| `test_main.py` | The application can start. |
+| `test_main.py` | The application can start; its startup sweeps (prepared downloads, staged received files) run and never stop it serving. |
 | `test_models_methods.py` | Model helper methods (progress, active job, listing, row conversion), in memory. |
 | `test_ocr.py` | OCR bounds and per-page resilience. |
 | `test_ocr_cap_word_recall.py` | The eval instrument for word recall under a capped OCR render. |
@@ -85,7 +85,7 @@ shared `conftest.py`.
 | `test_rasterise.py` | The shared PDF rasteriser: render resolution and the page cap. |
 | `test_render_ceiling.py` | The largest page a render may make (a page declared 154 x 200 inches, a strip too long for Tesseract, the check-box and verify renders), real pages kept as asked, and huge pages read one at a time. |
 | `test_repair_dedup_status.py` | Which documents the status-repair script touches. |
-| `test_received_files.py` | A record put together from the files it arrived in (`POST /api/documents/combine`): the file name, the office's order of kinds, the order kept as sent, every file's kind and pages, the required patient details, appointment date and sender, an unreadable file refusing everything, no job started, an admin uploading for a reviewer; and the raw download (`GET .../raw`). |
+| `test_received_files.py` | Each received file staged on its own (`POST /api/documents/combine/files`): its token, pages and the kind its first page says (from the PDF's text, else OCR), an unreadable file refused and not kept, removed by `DELETE`, swept after six hours, used only by its own account and deleted once the record is made. A record put together from the staged files (`POST /api/documents/combine`): the file name, the office's order of kinds, the order kept as sent, every file's kind and pages, the required patient details, appointment date and sender, an unreadable file refusing everything, no job started, an admin uploading for a reviewer; and the raw download (`GET .../raw`). |
 | `test_reporting.py` | Assembly of the Word export. |
 | `test_rows_property.py` | Property-based tests (Hypothesis) of row validation. |
 | `test_segment_engine.py` | Segmentation's injury-date stage. |

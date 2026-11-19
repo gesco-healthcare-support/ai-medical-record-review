@@ -25,6 +25,7 @@ from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 
 import app.main as main
+from app.config import get_settings
 from app.auth.deps import AuthRedirect
 
 
@@ -169,6 +170,47 @@ async def test_a_failing_download_sweep_does_not_stop_the_app_serving(monkeypatc
         raise OSError("the upload volume is unreadable")
 
     monkeypatch.setattr("app.services.downloads.sweep", sweep_fails)
+
+    async with LifespanManager(main.app):
+        transport = ASGITransport(app=main.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.get("/health")).status_code == 200
+
+
+async def test_old_staged_received_files_are_swept_at_startup_and_reported(monkeypatch, caplog):
+    """WHEN the API starts, THE SYSTEM SHALL sweep old staged received files and report how many.
+
+    A file staged for "Upload received files" is patient data at rest. A dialog closed with its
+    browser tab never deletes its own files, and the sweep before each new staged file runs only
+    when someone stages again - which may be days later."""
+    monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", lambda: None)
+    monkeypatch.setattr("app.worker.recovery.recover_orphans", lambda _session: 0)
+    monkeypatch.setattr("app.services.downloads.sweep", lambda: 0)
+    folders = []
+    monkeypatch.setattr(
+        "app.services.received_files.sweep", lambda folder: folders.append(folder) or 3
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        async with LifespanManager(main.app):
+            pass
+
+    assert folders == [get_settings().upload_folder], "the startup staged-file sweep did not run"
+    reported = [record.getMessage() for record in caplog.records]
+    assert any("staged-file sweep removed 3 stale file(s)" in message for message in reported), (
+        f"the swept count was not reported: {reported}"
+    )
+
+
+async def test_a_failing_staged_file_sweep_does_not_stop_the_app_serving(monkeypatch):
+    """IF the startup staged-file sweep fails, THEN THE SYSTEM SHALL still start and serve."""
+    monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", lambda: None)
+    monkeypatch.setattr("app.worker.recovery.recover_orphans", lambda _session: 0)
+
+    def sweep_fails(_folder):
+        raise OSError("the upload volume is unreadable")
+
+    monkeypatch.setattr("app.services.received_files.sweep", sweep_fails)
 
     async with LifespanManager(main.app):
         transport = ASGITransport(app=main.app)

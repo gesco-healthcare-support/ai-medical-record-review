@@ -13,6 +13,8 @@ import {
   downloadRawPdf,
   listDocuments,
   rawPdfUrl,
+  stageReceivedFile,
+  unstageReceivedFile,
   startIdentification,
   uploadDocument,
 } from "@/lib/documents-api";
@@ -57,8 +59,24 @@ describe("uploading", () => {
     expect(new Headers(init.headers).has("Content-Type")).toBe(false);
   });
 
-  it("sends the received files in order, each with its kind, and the patient's details", async () => {
-    const files = [pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")];
+  it("sends one received file on its own, to be kept and read", async () => {
+    const file = pdf("a.pdf");
+    await stageReceivedFile(file);
+
+    const { url, init } = lastCall();
+    expect(url).toBe("/api/documents/combine/files");
+    expect(init.method).toBe("POST");
+    expect((init.body as FormData).get("pdf")).toBe(file);
+    expect(new Headers(init.headers).has("Content-Type")).toBe(false);
+  });
+
+  it("drops a staged file by its token", async () => {
+    await unstageReceivedFile("abc_DEF-1");
+    expect(lastCall().url).toBe("/api/documents/combine/files/abc_DEF-1");
+    expect(lastCall().init.method).toBe("DELETE");
+  });
+
+  it("sends the staged files in order, each with its kind, and the patient's details", async () => {
     await combineReceivedFiles({
       lastName: "  Synthetic ",
       firstName: " Patient",
@@ -67,9 +85,9 @@ describe("uploading", () => {
       appointmentDate: "2026-12-01",
       recordsFrom: "insurance",
       files: [
-        { file: files[0], kind: "email" },
-        { file: files[1], kind: "advocacy_letter" },
-        { file: files[2], kind: "records" },
+        { token: "t1", kind: "email" },
+        { token: "t2", kind: "advocacy_letter" },
+        { token: "t3", kind: "records" },
       ],
     });
 
@@ -77,9 +95,10 @@ describe("uploading", () => {
     expect(url).toBe("/api/documents/combine");
     expect(init.method).toBe("POST");
     const body = init.body as FormData;
-    // getAll, not get: a loop that overwrote instead of appending would upload only the last file
-    // and lose the rest without any error. Files and kinds pair up by position.
-    expect(body.getAll("pdfs")).toEqual(files);
+    // getAll, not get: a loop that overwrote instead of appending would send only the last file
+    // and lose the rest without any error. Tokens and kinds pair up by position.
+    expect(body.getAll("tokens")).toEqual(["t1", "t2", "t3"]);
+    expect(body.has("pdfs")).toBe(false);
     expect(body.getAll("kinds")).toEqual(["email", "advocacy_letter", "records"]);
     expect(body.get("last_name")).toBe("Synthetic");
     expect(body.get("first_name")).toBe("Patient");
@@ -162,7 +181,7 @@ describe("uploading into another reviewer's account", () => {
       dateReceived: "2026-11-03",
       appointmentDate: "2026-12-01",
       recordsFrom: "defense" as const,
-      files: [{ file: pdf("a.pdf"), kind: "records" as const }],
+      files: [{ token: "t1", kind: "records" as const }],
     };
     await combineReceivedFiles({ ...upload, owner: 7 });
     expect((lastCall().init.body as FormData).get("owner")).toBe("7");
