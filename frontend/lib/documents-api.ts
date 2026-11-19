@@ -1,5 +1,5 @@
 import { apiFetch } from "@/lib/api";
-import type { ReceivedKind } from "@/lib/received-files";
+import type { ReceivedKind, RecordsFrom } from "@/lib/received-files";
 import type { DocumentListItem } from "@/lib/types";
 
 /** GET /api/documents - the landing list (owner-scoped, newest first, with active_job + rows_count).
@@ -39,14 +39,16 @@ export function uploadDocument(file: File, target: UploadTarget = {}) {
 }
 
 /** What a record is put together from: the patient's name and ID, the day the records were
- *  received, and the files in the order to join them, each with its kind. `owner` (admins only)
- *  puts the record in another reviewer's account. */
+ *  received, the appointment date, who sent the records, and the files in the order to join them,
+ *  each with its kind. `owner` (admins only) puts the record in another reviewer's account. */
 export type ReceivedFilesUpload = {
   lastName: string;
   firstName: string;
   patientId: string;
-  /** `YYYY-MM-DD`, as the browser's date box gives it. */
+  /** `YYYY-MM-DD`, as the browser's date box gives it - this one and the appointment date. */
   dateReceived: string;
+  appointmentDate: string;
+  recordsFrom: RecordsFrom;
   files: { file: File; kind: ReceivedKind }[];
   owner?: number | null;
 };
@@ -59,6 +61,8 @@ export function combineReceivedFiles(upload: ReceivedFilesUpload) {
   form.append("first_name", upload.firstName.trim());
   form.append("patient_id", upload.patientId);
   form.append("date_received", upload.dateReceived);
+  form.append("appointment_date", upload.appointmentDate);
+  form.append("records_from", upload.recordsFrom);
   if (upload.owner != null) form.append("owner", String(upload.owner));
   for (const { file, kind } of upload.files) {
     form.append("pdfs", file);

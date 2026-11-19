@@ -622,6 +622,8 @@ _COMBINE_KINDS_DETAIL = "Choose what each file is."
 _COMBINE_NAME_DETAIL = "Enter the patient's last and first name."
 _COMBINE_ID_DETAIL = "Enter the patient ID."
 _COMBINE_DATE_DETAIL = "Enter the date the records were received."
+_COMBINE_APPOINTMENT_DETAIL = "Enter the appointment date."
+_COMBINE_PARTY_DETAIL = "Choose who sent the records."
 
 
 def _received_kinds(pdfs: list[UploadFile], kinds: list[str]) -> list[str]:
@@ -633,12 +635,20 @@ def _received_kinds(pdfs: list[UploadFile], kinds: list[str]) -> list[str]:
     return kinds
 
 
-def _received_date(value: str) -> date:
-    """The date the records were received, sent as ``YYYY-MM-DD`` (the browser's date box)."""
+def _form_date(value: str, detail: str) -> date:
+    """A date sent as ``YYYY-MM-DD`` (the browser's date box); a 400 with ``detail`` otherwise."""
     try:
         return date.fromisoformat(value.strip())
     except ValueError:
-        raise HTTPException(status_code=400, detail=_COMBINE_DATE_DETAIL) from None
+        raise HTTPException(status_code=400, detail=detail) from None
+
+
+def _records_from(value: str) -> str:
+    """Who sent the records: one of ``received_files.PARTIES``; a 400 otherwise."""
+    party = value.strip()
+    if party not in received_files.PARTIES:
+        raise HTTPException(status_code=400, detail=_COMBINE_PARTY_DETAIL)
+    return party
 
 
 def _remove_quietly(path: str) -> None:
@@ -685,7 +695,8 @@ def _combine_into(
     responses={
         400: {
             "description": "No PDFs, a file without its kind, a file that is not a readable PDF, "
-            "or the patient's name, ID or the date received missing."
+            "or the patient's name, ID, the date received, the appointment date or who sent the "
+            "records missing."
         },
         403: {"description": "A non-admin named another reviewer's account."},
         404: {"description": "The reviewer named is not an active account."},
@@ -698,6 +709,8 @@ def combine_received_files(
     first_name: str = Form(default=""),
     patient_id: str = Form(default=""),
     date_received: str = Form(default=""),
+    appointment_date: str = Form(default=""),
+    records_from: str = Form(default=""),
     owner: int | None = Form(default=None),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
@@ -705,9 +718,10 @@ def combine_received_files(
     """Put a record together from the files it arrived in (``services/received_files.py``).
 
     ``pdfs`` are joined in the order sent - the order the uploader confirmed - and ``kinds`` says
-    what each one is, one per file. The patient's last and first name, the patient ID and the date
-    the records were received are required: they name the record the way the office names its files
-    (``Last_First-ID-MMDDYYYY``) and fill the record's header. ``owner`` (admins only) puts the
+    what each one is, one per file. The patient's last and first name, the patient ID, the date the
+    records were received, the appointment date and who sent the records are required: the first
+    four name the record the way the office names its files (``Last_First-ID-MMDDYYYY``) and fill
+    its header, and all of them feed the office's billing sheet. ``owner`` (admins only) puts the
     record in another reviewer's account, as on the single upload.
 
     The joined file is the record as received: it is read like any other upload, identified when
@@ -720,7 +734,9 @@ def combine_received_files(
     typed_id = _typed_patient_id(patient_id)
     if not typed_id:
         raise HTTPException(status_code=400, detail=_COMBINE_ID_DETAIL)
-    received = _received_date(date_received)
+    received = _form_date(date_received, _COMBINE_DATE_DETAIL)
+    appointment = _form_date(appointment_date, _COMBINE_APPOINTMENT_DETAIL)
+    party = _records_from(records_from)
     reviewer = upload_owner(session, user, owner)
 
     document_id = str(uuid.uuid4())
@@ -744,6 +760,8 @@ def combine_received_files(
         patient_last_name=last,
         received_on=received,
         received_parts=[part.as_dict() for part in parts],
+        appointment_date=appointment,
+        records_from=party,
     )
     session.add(document)
     session.commit()

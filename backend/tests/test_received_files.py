@@ -79,6 +79,8 @@ _FIELDS = {
     "first_name": "Patient",
     "patient_id": "801234",
     "date_received": "2026-11-03",
+    "appointment_date": "2026-12-01",
+    "records_from": "applicant",
 }
 
 # Three files, as they arrived: the email (1 page), the letter (2 pages), the records (3 pages).
@@ -182,10 +184,23 @@ def test_an_unreadable_file_refuses_the_whole_record_and_names_its_place(tmp_pat
     assert not out.exists()
 
 
-def test_every_kind_has_a_label_and_the_order_starts_with_the_cover_sheet():
+def test_the_kinds_follow_the_offices_guideline():
+    """GUARD: the order the office set (2026-11-18/19). The cover sheet is no longer used."""
+    assert received_files.KINDS == (
+        "advocacy_letter",
+        "declaration",
+        "medical_index",
+        "records",
+        "proof_of_service",
+        "email",
+        "envelope",
+    )
     assert set(received_files.KIND_LABELS) == set(received_files.KINDS)
-    assert received_files.KINDS[0] == "cover"
-    assert received_files.KINDS[-1] == "records"
+
+
+def test_every_party_has_a_label():
+    assert received_files.PARTIES == ("defense", "applicant", "insurance", "copy_service")
+    assert set(received_files.PARTY_LABELS) == set(received_files.PARTIES)
 
 
 # --- POST /api/documents/combine -----------------------------------------------------------------
@@ -211,6 +226,8 @@ async def test_the_files_become_one_record_named_and_headed_as_typed(client):
     assert (document.patient_last_name, document.patient_first_name) == ("Synthetic", "Patient")
     assert document.patient_id == "801234"
     assert document.received_on == date(2026, 11, 3)
+    assert document.appointment_date == date(2026, 12, 1)
+    assert document.records_from == "applicant"
     assert document.received_parts == [
         {"kind": "email", "start": 1, "end": 1},
         {"kind": "advocacy_letter", "start": 2, "end": 3},
@@ -258,6 +275,8 @@ async def test_the_listing_says_when_the_records_came_and_from_which_files(clien
     got = (await client.get(f"/api/documents/{doc_id}")).json()
 
     assert got["received_on"] == "2026-11-03"
+    assert got["appointment_date"] == "2026-12-01"
+    assert got["records_from"] == "applicant"
     assert [part["kind"] for part in got["received_parts"]] == [
         "email",
         "advocacy_letter",
@@ -274,9 +293,15 @@ async def test_the_listing_says_when_the_records_came_and_from_which_files(clien
         ({"patient_id": "-"}, "Enter the patient ID."),
         ({"date_received": ""}, "Enter the date the records were received."),
         ({"date_received": "11/03/2026"}, "Enter the date the records were received."),
+        ({"appointment_date": ""}, "Enter the appointment date."),
+        ({"appointment_date": None}, "Enter the appointment date."),
+        ({"appointment_date": "12/01/2026"}, "Enter the appointment date."),
+        ({"records_from": ""}, "Choose who sent the records."),
+        ({"records_from": None}, "Choose who sent the records."),
+        ({"records_from": "attorney"}, "Choose who sent the records."),
     ],
 )
-async def test_the_name_the_id_and_the_date_received_are_required(client, overrides, detail):
+async def test_every_detail_the_uploader_gives_is_required(client, overrides, detail):
     user_id, email = _user()
     await _login(client, email)
 
@@ -300,8 +325,10 @@ async def test_each_file_needs_its_kind(client):
         data={**_FIELDS, "kinds": ["email"]},
     )
     unknown = await _combine(client, files=[("letter", _pdf())])
+    # The office's cover sheet is no longer used (2026-11-19), so it is no longer a kind.
+    cover = await _combine(client, files=[("cover", _pdf())])
 
-    for resp in (short, unknown):
+    for resp in (short, unknown, cover):
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Choose what each file is."
     assert _documents_of(user_id) == []
