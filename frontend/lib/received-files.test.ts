@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ACCEPTED_FILES,
   guessKind,
   inReceivedOrder,
-  pickKind,
+  isAcceptedFile,
   RECEIVED_KIND_LABELS,
   RECEIVED_KINDS,
   RECORDS_FROM,
   RECORDS_FROM_LABELS,
+  shownKind,
 } from "@/lib/received-files";
 
 describe("guessKind", () => {
@@ -40,12 +42,65 @@ describe("guessKind", () => {
   });
 });
 
-describe("pickKind", () => {
-  it("takes what the first page says, or the name when the page says only records", () => {
-    expect(pickKind("proof_of_service", "records")).toBe("proof_of_service");
-    expect(pickKind("email", "advocacy_letter")).toBe("email");
-    expect(pickKind("records", "proof_of_service")).toBe("proof_of_service");
-    expect(pickKind("records", "records")).toBe("records");
+describe("shownKind", () => {
+  it("takes the server's sure reading over the file's name", () => {
+    expect(shownKind({ kind: "records", check: false }, "records")).toEqual({
+      kind: "records",
+      check: false,
+    });
+    expect(shownKind({ kind: "proof_of_service", check: false }, "records")).toEqual({
+      kind: "proof_of_service",
+      check: false,
+    });
+  });
+
+  it("asks for a look when a sure reading and the name disagree", () => {
+    // A copy service's packet named "POS.pdf" that the model read as records: the name is a hint,
+    // not an answer, so the reading stays and the uploader looks.
+    expect(shownKind({ kind: "records", check: false }, "proof_of_service")).toEqual({
+      kind: "records",
+      check: true,
+    });
+  });
+
+  it("uses the name only when an unsure reading says no more than records", () => {
+    expect(shownKind({ kind: "records", check: true }, "declaration")).toEqual({
+      kind: "declaration",
+      check: true,
+    });
+    expect(shownKind({ kind: "email", check: true }, "declaration")).toEqual({
+      kind: "email",
+      check: true,
+    });
+  });
+});
+
+describe("isAcceptedFile", () => {
+  const file = (name: string, type: string) => new File([new Uint8Array([1])], name, { type });
+
+  it.each([
+    ["letter.pdf", "application/pdf"],
+    ["scan.jpg", "image/jpeg"],
+    ["scan.TIFF", ""],
+    ["fax.tif", "image/tiff"],
+    ["page.png", "image/png"],
+    ["records.PDF", ""],
+  ])("takes %s", (name, type) => {
+    expect(isAcceptedFile(file(name, type))).toBe(true);
+  });
+
+  it.each([
+    ["notes.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ["mail.msg", "application/vnd.ms-outlook"],
+    ["archive.zip", "application/zip"],
+  ])("refuses %s", (name, type) => {
+    expect(isAcceptedFile(file(name, type))).toBe(false);
+  });
+
+  it("offers the same types to the file picker", () => {
+    for (const accepted of ["application/pdf", "image/tiff", ".tif", ".jpg", ".pdf"]) {
+      expect(ACCEPTED_FILES.split(",")).toContain(accepted);
+    }
   });
 });
 

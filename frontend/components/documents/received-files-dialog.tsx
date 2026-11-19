@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowDown, ArrowUp, X } from "lucide-react";
 import {
@@ -13,7 +13,11 @@ import {
 } from "@/components/ui/dialog";
 import { useCombineReceivedFiles } from "@/hooks/use-documents";
 import { ApiError } from "@/lib/api";
-import { stageReceivedFile, unstageReceivedFile } from "@/lib/documents-api";
+import {
+  receivedFilePreviewUrl,
+  stageReceivedFile,
+  unstageReceivedFile,
+} from "@/lib/documents-api";
 import { humanizeError } from "@/lib/errors";
 import {
   agreedPatientId,
@@ -22,35 +26,58 @@ import {
   PATIENT_ID_MAX_LENGTH,
 } from "@/lib/patient-id";
 import {
+  ACCEPTED_FILES,
   guessKind,
   inReceivedOrder,
-  pickKind,
+  isAcceptedFile,
   RECEIVED_KIND_LABELS,
   RECEIVED_KINDS,
   RECORDS_FROM,
   RECORDS_FROM_LABELS,
   type ReceivedKind,
   type RecordsFrom,
+  shownKind,
 } from "@/lib/received-files";
-
-function isPdf(file: File) {
-  return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-}
 
 /** One file in the list. It is sent to the server as soon as it is added ("reading"), which keeps
  *  it, counts its pages and reads its first page to say what it is ("ready"), or refuses it
- *  ("failed"). `kindChosen` is set once the uploader picks a kind, so the server's reading never
- *  overrides that choice. */
+ *  ("failed"). Every file must be CONFIRMED by the uploader - "Looks right", or a kind picked -
+ *  before the record is made: the reading pre-fills the kind, a person checks it against the
+ *  file's first page (measured 2026-11-19: the model alone recognised the case's own papers about
+ *  3 times in 4). Once confirmed, the server's reading never overrides the kind. `check` marks a
+ *  reading the system is not sure of (the model unsure or off, or the name saying otherwise).
+ *  `sha256` is the file's fingerprint, which names a file added twice. */
 type Item = {
   key: number;
   file: File;
   kind: ReceivedKind;
-  kindChosen: boolean;
+  confirmed: boolean;
+  check: boolean;
   state: "reading" | "ready" | "failed";
   token?: string;
   pages?: number;
+  sha256?: string;
   error?: string;
 };
+
+function toConfirmLine(count: number): string {
+  const files = count === 1 ? "1 file" : `${count} files`;
+  return `${files} to confirm before the record can be made.`;
+}
+
+/** For each file that is the same file as one listed above it, that earlier file's name. Joined
+ *  twice, its pages would be reviewed twice. */
+function sameFileAs(items: readonly Item[]): Map<number, string> {
+  const first = new Map<string, string>();
+  const repeats = new Map<number, string>();
+  for (const item of items) {
+    if (!item.sha256) continue;
+    const earlier = first.get(item.sha256);
+    if (earlier === undefined) first.set(item.sha256, item.file.name);
+    else repeats.set(item.key, earlier);
+  }
+  return repeats;
+}
 
 function stagingError(err: unknown): string {
   if (err instanceof ApiError && err.status === 413) {
@@ -91,15 +118,20 @@ function useReceivedFiles() {
         return;
       }
       tokens.current.set(item.key, staged.token);
-      update(item.key, (current) => ({
-        ...current,
-        state: "ready",
-        token: staged.token,
-        pages: staged.pages,
-        kind: current.kindChosen
-          ? current.kind
-          : pickKind(staged.kind, guessKind(current.file.name)),
-      }));
+      update(item.key, (current) => {
+        const shown = current.confirmed
+          ? { kind: current.kind, check: false }
+          : shownKind(staged, guessKind(current.file.name));
+        return {
+          ...current,
+          state: "ready",
+          token: staged.token,
+          pages: staged.pages,
+          sha256: staged.sha256,
+          kind: shown.kind,
+          check: shown.check,
+        };
+      });
     } catch (err) {
       if (live.current.has(item.key)) {
         update(item.key, (current) => ({ ...current, state: "failed", error: stagingError(err) }));
@@ -112,7 +144,8 @@ function useReceivedFiles() {
       key: nextKey.current++,
       file,
       kind: guessKind(file.name),
-      kindChosen: false,
+      confirmed: false,
+      check: false,
       state: "reading",
     }));
     for (const item of added) {
@@ -123,7 +156,20 @@ function useReceivedFiles() {
   }
 
   function setKind(key: number, kind: ReceivedKind) {
-    update(key, (item) => ({ ...item, kind, kindChosen: true }));
+    update(key, (item) => ({ ...item, kind, confirmed: true, check: false }));
+  }
+
+  /** The uploader looked and the kind shown is right. */
+  function confirm(key: number) {
+    update(key, (item) => ({ ...item, confirmed: true, check: false }));
+  }
+
+  /** Send a refused file again (a dropped connection, a session that had expired). */
+  function retry(key: number) {
+    const item = items.find((candidate) => candidate.key === key);
+    if (item?.state !== "failed") return;
+    update(key, (current) => ({ ...current, state: "reading", error: undefined }));
+    queue.current = queue.current.then(() => stage(item));
   }
 
   function move(index: number, step: -1 | 1) {
@@ -150,78 +196,148 @@ function useReceivedFiles() {
     setItems([]);
   }
 
-  return { items, add, setKind, move, remove, clear };
+  return { items, add, setKind, confirm, retry, move, remove, clear };
+}
+
+type Files = ReturnType<typeof useReceivedFiles>;
+
+/** Under a file's name: reading, its pages, why it was refused (with Try again), that it is the
+ *  same file as another, or - until the uploader confirms its kind with Looks right - a call to
+ *  confirm it, marked when the system is not sure. */
+function FileStatus({
+  item,
+  sameAs,
+  files,
+}: Readonly<{ item: Item; sameAs: string | undefined; files: Files }>) {
+  const name = item.file.name;
+  if (item.state === "reading") {
+    return <span className="text-muted-foreground">Reading...</span>;
+  }
+  if (item.state === "failed") {
+    return (
+      <span className="flex flex-wrap items-center gap-2">
+        <span className="text-danger">{item.error}</span>
+        <button
+          type="button"
+          className="ev-btn ev-btn-ghost ev-btn-sm"
+          aria-label={`Try ${name} again`}
+          onClick={() => files.retry(item.key)}
+        >
+          Try again
+        </button>
+      </span>
+    );
+  }
+  if (sameAs !== undefined) {
+    return <span className="text-danger">Same file as {sameAs}. Remove one of them.</span>;
+  }
+  const pages = item.pages === 1 ? "1 page" : `${item.pages} pages`;
+  if (item.confirmed) {
+    return <span className="text-muted-foreground">{pages} - confirmed</span>;
+  }
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <span className="text-muted-foreground">{pages}</span>
+      {item.check ? (
+        <span className="ev-chip ev-chip-review">Not sure - check the page</span>
+      ) : null}
+      <button
+        type="button"
+        className="ev-btn ev-btn-ghost ev-btn-sm"
+        aria-label={`Confirm ${name} as ${RECEIVED_KIND_LABELS[item.kind]}`}
+        onClick={() => files.confirm(item.key)}
+      >
+        Looks right
+      </button>
+    </span>
+  );
 }
 
 function FileRow({
   item,
   index,
   count,
+  sameAs,
   files,
 }: Readonly<{
   item: Item;
   index: number;
   count: number;
-  files: ReturnType<typeof useReceivedFiles>;
+  sameAs: string | undefined;
+  files: Files;
 }>) {
   const name = item.file.name;
-  let status: ReactNode = <span className="text-muted-foreground">Reading...</span>;
-  if (item.state === "ready") {
-    status = (
-      <span className="text-muted-foreground">
-        {item.pages === 1 ? "1 page" : `${item.pages} pages`}
-      </span>
-    );
-  } else if (item.state === "failed") {
-    status = <span className="text-danger">{item.error}</span>;
-  }
+  const [showPage, setShowPage] = useState(false);
   return (
-    <li className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2 text-sm">
-      <span className="w-5 shrink-0 text-right text-muted-foreground">{index + 1}.</span>
-      <span className="grid min-w-0 flex-1">
-        <span className="truncate" data-file-name>
-          {name}
+    <li className="grid gap-2 rounded-md border border-gray-200 px-3 py-2 text-sm">
+      <div className="flex items-center gap-2">
+        <span className="w-5 shrink-0 text-right text-muted-foreground">{index + 1}.</span>
+        <span className="grid min-w-0 flex-1">
+          <span className="truncate" data-file-name>
+            {name}
+          </span>
+          <span className="text-xs">
+            <FileStatus item={item} sameAs={sameAs} files={files} />
+          </span>
         </span>
-        <span className="text-xs">{status}</span>
-      </span>
-      <select
-        className="ev-inp w-auto"
-        aria-label={`What ${name} is`}
-        value={item.kind}
-        onChange={(e) => files.setKind(item.key, e.target.value as ReceivedKind)}
-      >
-        {RECEIVED_KINDS.map((kind) => (
-          <option key={kind} value={kind}>
-            {RECEIVED_KIND_LABELS[kind]}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        aria-label={`Move ${name} up`}
-        className="text-gray-500 hover:text-gray-900 disabled:opacity-30"
-        disabled={index === 0}
-        onClick={() => files.move(index, -1)}
-      >
-        <ArrowUp className="size-4" aria-hidden />
-      </button>
-      <button
-        type="button"
-        aria-label={`Move ${name} down`}
-        className="text-gray-500 hover:text-gray-900 disabled:opacity-30"
-        disabled={index === count - 1}
-        onClick={() => files.move(index, 1)}
-      >
-        <ArrowDown className="size-4" aria-hidden />
-      </button>
-      <button
-        type="button"
-        aria-label={`Remove ${name}`}
-        className="text-gray-400 hover:text-danger"
-        onClick={() => files.remove(item.key)}
-      >
-        <X className="size-4" aria-hidden />
-      </button>
+        {item.token ? (
+          <button
+            type="button"
+            className="ev-btn ev-btn-ghost ev-btn-sm shrink-0"
+            aria-expanded={showPage}
+            aria-label={`${showPage ? "Hide" : "Show"} the first page of ${name}`}
+            onClick={() => setShowPage((shown) => !shown)}
+          >
+            Page 1
+          </button>
+        ) : null}
+        <select
+          className="ev-inp w-auto"
+          aria-label={`What ${name} is`}
+          value={item.kind}
+          onChange={(e) => files.setKind(item.key, e.target.value as ReceivedKind)}
+        >
+          {RECEIVED_KINDS.map((kind) => (
+            <option key={kind} value={kind}>
+              {RECEIVED_KIND_LABELS[kind]}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          aria-label={`Move ${name} up`}
+          className="text-gray-500 hover:text-gray-900 disabled:opacity-30"
+          disabled={index === 0}
+          onClick={() => files.move(index, -1)}
+        >
+          <ArrowUp className="size-4" aria-hidden />
+        </button>
+        <button
+          type="button"
+          aria-label={`Move ${name} down`}
+          className="text-gray-500 hover:text-gray-900 disabled:opacity-30"
+          disabled={index === count - 1}
+          onClick={() => files.move(index, 1)}
+        >
+          <ArrowDown className="size-4" aria-hidden />
+        </button>
+        <button
+          type="button"
+          aria-label={`Remove ${name}`}
+          className="text-gray-400 hover:text-danger"
+          onClick={() => files.remove(item.key)}
+        >
+          <X className="size-4" aria-hidden />
+        </button>
+      </div>
+      {showPage && item.token ? (
+        // eslint-disable-next-line @next/next/no-img-element -- a same-origin PNG, by cookie
+        <img
+          src={receivedFilePreviewUrl(item.token)}
+          alt={`First page of ${name}`}
+          className="max-h-[32rem] w-full rounded border border-gray-200 object-contain"
+        />
+      ) : null}
     </li>
   );
 }
@@ -263,8 +379,14 @@ export function ReceivedFilesDialog({
   const idTooLong = patientId.length > PATIENT_ID_MAX_LENGTH;
   const allRead = items.length > 0 && items.every((item) => item.state === "ready");
   const totalPages = items.reduce((sum, item) => sum + (item.pages ?? 0), 0);
+  const sameAs = sameFileAs(items);
+  // Files the uploader must still look at before the record can be made: every file's kind is
+  // confirmed by a person, and a repeated file is removed.
+  const toCheck =
+    items.filter((item) => item.state === "ready" && !item.confirmed).length + sameAs.size;
   const ready =
     allRead &&
+    toCheck === 0 &&
     lastName.trim() !== "" &&
     firstName.trim() !== "" &&
     patientId !== "" &&
@@ -291,16 +413,19 @@ export function ReceivedFilesDialog({
     if (!list) return;
     // Say what was dropped: these files become ONE record, so an unnoticed drop is content missing.
     const picked = Array.from(list);
-    const pdfs = picked.filter(isPdf);
-    const rejected = picked.length - pdfs.length;
+    const accepted = picked.filter(isAcceptedFile);
+    const rejected = picked.length - accepted.length;
     if (rejected > 0) {
+      const what =
+        "Only PDFs and scanned images (JPG, PNG, TIFF) can be added; save Word or Outlook files " +
+        "as PDF first.";
       toast.error(
         rejected === 1
-          ? "Only PDF files can be combined. One file was not added."
-          : `Only PDF files can be combined. ${rejected} files were not added.`,
+          ? `${what} One file was not added.`
+          : `${what} ${rejected} files were not added.`,
       );
     }
-    files.add(pdfs);
+    files.add(accepted);
     if (fileInput.current) fileInput.current.value = "";
   }
 
@@ -350,8 +475,8 @@ export function ReceivedFilesDialog({
           <DialogDescription>
             Add the files the records came in, in any order. Each file is read as it is added and
             put in its place: advocacy letter, declaration, medical index, medical records, proof
-            of service, internal email. Change a file&apos;s kind or move it if it belongs
-            elsewhere.
+            of service, internal email. Look at each file&apos;s first page and confirm its kind,
+            or change it.
             {owner ? ` The record goes into ${owner.name}'s records, not yours.` : null}
           </DialogDescription>
         </DialogHeader>
@@ -458,6 +583,7 @@ export function ReceivedFilesDialog({
                     item={item}
                     index={index}
                     count={items.length}
+                    sameAs={sameAs.get(item.key)}
                     files={files}
                   />
                 ))}
@@ -466,6 +592,7 @@ export function ReceivedFilesDialog({
             {allRead ? (
               <span className="text-sm text-muted-foreground">
                 {totalPages === 1 ? "1 page in all" : `${totalPages} pages in all`}
+                {toCheck > 0 ? `. ${toConfirmLine(toCheck)}` : null}
               </span>
             ) : null}
             <div>
@@ -474,13 +601,13 @@ export function ReceivedFilesDialog({
                 className="ev-btn ev-btn-outline"
                 onClick={() => fileInput.current?.click()}
               >
-                Add PDFs
+                Add files
               </button>
             </div>
             <input
               ref={fileInput}
               type="file"
-              accept="application/pdf"
+              accept={ACCEPTED_FILES}
               multiple
               className="hidden"
               onChange={(e) => addFiles(e.target.files)}

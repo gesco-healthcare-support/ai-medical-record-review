@@ -37,6 +37,9 @@ uploader removes it or closes the dialog, and otherwise by ``sweep`` after ``STA
 Nothing here logs a file name, a patient field or page text: they are patient data.
 """
 
+import hashlib
+import json
+import logging
 import os
 import re
 import secrets
@@ -47,7 +50,11 @@ from pathlib import Path
 
 import pymupdf
 
+from app.config import get_settings
+from app.services.llm import TextPart, provider_for_stage
 from app.services.ocr import extract_text_from_selected_pages
+
+logger = logging.getLogger(__name__)
 
 # The kinds of file, in the order a record is put together. The labels are the web app's.
 KINDS: tuple[str, ...] = (
@@ -119,6 +126,22 @@ _ENVELOPE = re.compile(
 _DECLARATION_MAX_PAGES = 5
 _ENVELOPE_MAX_PAGES = 2
 
+# Scanned images a record may arrive as, by their first bytes: JPEG, PNG, TIFF (both byte
+# orders), GIF, BMP. Word and Outlook files are not among them: they need printing to PDF.
+_IMAGE_SIGNATURES = (
+    b"\xff\xd8\xff",
+    b"\x89PNG\r\n\x1a\n",
+    b"II*\x00",
+    b"MM\x00*",
+    b"GIF87a",
+    b"GIF89a",
+    b"BM",
+)
+
+# The first-page preview's size in pixels: wide enough to read a heading, small to send.
+_PREVIEW_WIDTH = 600
+_PREVIEW_MAX_HEIGHT = 1000
+
 
 class UnreadableFile(Exception):
     """One of the files is not a PDF with pages. ``position`` is its place in the upload, from 1."""
@@ -126,6 +149,10 @@ class UnreadableFile(Exception):
     def __init__(self, position: int = 1):
         super().__init__(position)
         self.position = position
+
+
+class ProtectedFile(UnreadableFile):
+    """A PDF that cannot be opened without its password."""
 
 
 @dataclass(frozen=True)
@@ -210,26 +237,87 @@ def remove_staged(path: Path) -> None:
 
 
 def page_count(path: str | Path) -> int:
-    """How many pages the PDF at ``path`` has. Raises ``UnreadableFile`` for anything that is not a
-    PDF with at least one page."""
+    """How many pages the PDF at ``path`` has. Raises ``ProtectedFile`` for a PDF that needs a
+    password to open, and ``UnreadableFile`` for anything else that is not a PDF with pages."""
     # A PDF says so in its first kilobyte. Checked first so that a file of another kind is refused
     # without being handed to PyMuPDF at all.
-    try:
-        with open(path, "rb") as handle:
-            looks_like_a_pdf = b"%PDF-" in handle.read(1024)
-    except OSError:
-        raise UnreadableFile() from None
-    if not looks_like_a_pdf:
+    if b"%PDF-" not in _head(path):
         raise UnreadableFile()
     try:
         with pymupdf.open(path, filetype="pdf") as doc:
+            if doc.needs_pass:
+                raise ProtectedFile()
             count = doc.page_count
+    except UnreadableFile:
+        raise
     except Exception:
         # PyMuPDF raises several types for an empty or damaged file.
         raise UnreadableFile() from None
     if count <= 0:
         raise UnreadableFile()
     return count
+
+
+def _head(path: str | Path) -> bytes:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(1024)
+    except OSError:
+        raise UnreadableFile() from None
+
+
+def _is_image(head: bytes) -> bool:
+    return head.startswith(_IMAGE_SIGNATURES)
+
+
+def make_pdf(source: Path, target: Path) -> int:
+    """Put the received file ``source`` at ``target`` as a PDF and return its page count.
+
+    A PDF is moved as it is. A scanned image - JPEG, PNG, TIFF (every page of a multi-page one),
+    GIF or BMP - becomes a PDF of its pages, as Acrobat's Combine would have taken it. Anything
+    else raises ``UnreadableFile`` (``ProtectedFile`` for a PDF that needs a password), and
+    leaves nothing at ``target``."""
+    head = _head(source)
+    if _is_image(head):
+        try:
+            with pymupdf.open(stream=source.read_bytes()) as image:
+                target.write_bytes(image.convert_to_pdf())
+        except Exception:
+            remove_staged(target)
+            raise UnreadableFile() from None
+    elif b"%PDF-" in head:
+        os.replace(source, target)
+    else:
+        raise UnreadableFile()
+    try:
+        return page_count(target)
+    except UnreadableFile:
+        remove_staged(target)
+        raise
+
+
+def sha256_of(path: str | Path) -> str:
+    """The file's SHA-256, read a megabyte at a time."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def first_page_png(path: str | Path) -> bytes:
+    """A small picture of the first page, for the uploader to check what the file is. Its width
+    is ``_PREVIEW_WIDTH`` pixels and its height at most ``_PREVIEW_MAX_HEIGHT``, whatever size the
+    page declares (some scans declare pages of 150 inches)."""
+    try:
+        with pymupdf.open(path, filetype="pdf") as doc:
+            page = doc[0]
+            width = max(page.rect.width, 1.0)
+            height = max(page.rect.height, 1.0)
+            zoom = min(_PREVIEW_WIDTH / width, _PREVIEW_MAX_HEIGHT / height)
+            return page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False).tobytes("png")
+    except Exception:
+        raise UnreadableFile() from None
 
 
 def first_page_text(path: str | Path) -> str:
@@ -278,6 +366,104 @@ def guess_kind(text: str, pages: int) -> str:
     if pages <= _ENVELOPE_MAX_PAGES and _ENVELOPE.search(low):
         return "envelope"
     return "records"
+
+
+# --- what a file is: the model reads its first page -----------------------------------------
+
+# Keyword rules alone were measured on the live box (2026-11-19, 16,429 first pages of 721
+# finished records): they recognised the case's own declaration, letter and email only 63-84% of
+# the time, and called 28% of the paperwork INSIDE copy-service records (subpoenas, their proofs
+# of service, clinics' custodian declarations) one of the case's own papers. What tells those apart
+# is what a page is FOR, which a model reads and a keyword does not. So the model decides, and the
+# rules (`guess_kind`) stand in only when the model gives no answer - flagged for the uploader.
+_KIND_SYSTEM = (
+    "You sort the files a California workers' compensation case arrives in before a medical-legal "
+    "evaluation (QME, AME or PQME). You are given how many pages one file has and the text of its "
+    "FIRST page. A file can hold several documents: answer for the document its first page begins. "
+    "The case's own papers are short - usually 1 to 5 pages each. A file of many pages that opens "
+    "with a subpoena, a proof of service or a custodian's declaration is a copy service's packet "
+    "of medical records: records. The kinds:\n"
+    "advocacy_letter - a letter from an attorney, a claims office or a copy service TO the "
+    "evaluating physician about this evaluation: it introduces the case, may ask the evaluator "
+    "questions, and often lists or encloses the records - a letter that lists records is still "
+    "advocacy_letter. Not a medical report (an earlier QME or AME report is records) and not a "
+    "letter that is part of the medical records, such as a request to a clinic for its records.\n"
+    "declaration - the declaration by the party sending this package (an attorney, a claims office "
+    "or a copy service) that the records were served on the evaluator, often citing Labor Code "
+    "4062.3 and often listing what was sent. Not a hospital's or clinic's custodian-of-records "
+    "declaration about that facility's own records, and nothing that belongs to a subpoena: those "
+    "are records.\n"
+    "medical_index - a page that is mainly a list or index of the records in this package "
+    "(facilities, dates, page counts) and is not itself a letter, an email or a declaration.\n"
+    "proof_of_service - the proof that THIS package (the letter, the declaration or the records) "
+    "was served on the evaluator or the parties of the case. Not the proof of service of a "
+    "subpoena or of a deposition notice: that is records.\n"
+    "email - a printout of an email (From, Sent, To, Subject) about this case - scheduling it or "
+    "receiving its records - even when it lists the records. An email printed inside a clinic's "
+    "chart is records.\n"
+    "envelope - a mailing envelope, label or shipping slip.\n"
+    "records - everything else: medical records and reports, depositions and transcripts, "
+    "subpoenas and their papers, custodian declarations, bills, claim forms. "
+    "When in doubt, records."
+)
+_KIND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": list(KINDS)},
+        "certain": {
+            "type": "boolean",
+            "description": "false when the page could also be another of the kinds",
+        },
+    },
+    "required": ["kind", "certain"],
+}
+# A first page rarely holds more; a page of OCR noise is cut here rather than sent whole.
+_KIND_TEXT_CHARS = 6000
+
+
+@dataclass(frozen=True)
+class KindReading:
+    """What a file is, and whether the uploader should look: ``check`` is set when the model was
+    not certain or gave no answer (then ``source`` is ``rules`` - or ``none`` for a page with no
+    text - and the keyword rules guessed)."""
+
+    kind: str
+    check: bool
+    source: str
+
+
+def read_kind(page_text: str, pages: int) -> KindReading:
+    """What kind of file a first page of ``page_text`` opens, read by the ``extract`` stage's model.
+
+    The same seam, routing and model as the header read (``services/extraction.py``), which reads
+    these same front pages. Never raises: with no text, or no usable answer (the model server off,
+    a refusal, a reply outside the kinds), the keyword rules guess and the file is flagged."""
+    if not page_text.strip():
+        return KindReading("records", True, "none")
+    try:
+        # BOTH halves resolve through `extract`, as in extraction.py: a bare get_provider() would
+        # take the transport from the summarize stage while the model came from this one.
+        response = provider_for_stage("extract").generate_structured(
+            model=get_settings().model_for_stage("extract"),
+            system=_KIND_SYSTEM,
+            parts=[
+                TextPart(
+                    f"This file has {pages} page(s). Its first page reads:\n\n"
+                    + page_text[:_KIND_TEXT_CHARS]
+                )
+            ],
+            schema=_KIND_SCHEMA,
+            temperature=0.0,
+            stage="extract",
+        )
+        answer = json.loads(response.text or "{}")
+    except Exception as exc:  # noqa: BLE001 - any failure leaves the rules and a flag
+        logger.warning("received file: the model gave no kind (%s)", type(exc).__name__)
+        answer = {}
+    kind = answer.get("kind") if isinstance(answer, dict) else None
+    if kind in KINDS:
+        return KindReading(kind, answer.get("certain") is not True, "model")
+    return KindReading(guess_kind(page_text, pages), True, "rules")
 
 
 # --- joining --------------------------------------------------------------------------------------

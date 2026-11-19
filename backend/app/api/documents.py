@@ -20,7 +20,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from rq.command import send_stop_job_command
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, object_session, selectinload
@@ -619,7 +619,10 @@ def aggregate_documents(
 
 
 _COMBINE_NO_FILES_DETAIL = "no PDFs uploaded"
-_STAGED_UNREADABLE_DETAIL = "This file is not a readable PDF."
+_STAGED_UNREADABLE_DETAIL = "This file is not a readable PDF or image."
+_STAGED_PROTECTED_DETAIL = (
+    "This PDF needs a password to open. Save it without the password and add it again."
+)
 _COMBINE_KINDS_DETAIL = "Choose what each file is."
 _COMBINE_NAME_DETAIL = "Enter the patient's last and first name."
 _COMBINE_ID_DETAIL = "Enter the patient ID."
@@ -668,6 +671,22 @@ def _staged_files(user: User, tokens: list[str]) -> list[Path]:
     return paths
 
 
+def _refuse_repeated_files(staged: list[Path]) -> None:
+    """400 when two of the staged files are the same file: joined twice, its pages would be
+    reviewed twice. The dialog already names such a file; this holds whatever a client sends."""
+    seen: dict[str, int] = {}
+    for position, path in enumerate(staged, start=1):
+        digest = received_files.sha256_of(path)
+        if digest in seen:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"File {position} is the same file as file {seen[digest]}. Remove one of them."
+                ),
+            )
+        seen[digest] = position
+
+
 def _combine_into(
     stored_path: str, staged: list[Path], kinds: list[str]
 ) -> list[received_files.Part]:
@@ -699,29 +718,59 @@ def stage_received_file(
 
     The upload dialog sends each file on its own as it is added, so a file reaches the server - and
     is held to the proxy's upload size - one at a time. It is streamed a megabyte at a time into the
-    caller's staging folder under a random token (``services/received_files.py``), its pages are
-    counted, and its first page is read (the PDF's own text, else one OCR pass) to guess its kind.
-    Answers ``{token, pages, kind}``. Staged files older than ``received_files.STAGED_HOURS`` are
-    swept first. Nothing is logged about the file but counts."""
+    caller's staging folder under a random token (``services/received_files.py``); a scanned
+    image becomes a PDF of its pages. Its pages are counted, and its first page is read (the PDF's
+    own text, else one OCR pass) and the model says what kind of file it is
+    (``received_files.read_kind``). Answers ``{token, pages, kind, check, sha256}``: ``check``
+    asks the uploader to look (the model unsure, or off and the keyword rules guessing), and the
+    file's fingerprint as received lets the dialog name a file added twice. Staged files
+    older than ``received_files.STAGED_HOURS`` are swept first. Nothing is logged about the file
+    but counts."""
     if pdf is None or not pdf.filename:
         raise HTTPException(status_code=400, detail=_COMBINE_NO_FILES_DETAIL)
     upload_folder = get_settings().upload_folder
     received_files.sweep(upload_folder)
     token, path = received_files.new_staged_path(upload_folder, user.id)
     part = path.with_name(path.name + ".part")
+    digest = hashlib.sha256()
     try:
         with open(part, "wb") as out:
             while chunk := pdf.file.read(1 << 20):
+                digest.update(chunk)
                 out.write(chunk)
-        os.replace(part, path)
-        pages = received_files.page_count(path)
-    except received_files.UnreadableFile:
+        pages = received_files.make_pdf(part, path)
+    except received_files.UnreadableFile as exc:
         received_files.remove_staged(path)
-        raise HTTPException(status_code=400, detail=_STAGED_UNREADABLE_DETAIL) from None
+        protected = isinstance(exc, received_files.ProtectedFile)
+        detail = _STAGED_PROTECTED_DETAIL if protected else _STAGED_UNREADABLE_DETAIL
+        raise HTTPException(status_code=400, detail=detail) from None
     finally:
         received_files.remove_staged(part)
-    kind = received_files.guess_kind(received_files.first_page_text(path), pages)
-    return {"token": token, "pages": pages, "kind": kind}
+    reading = received_files.read_kind(received_files.first_page_text(path), pages)
+    return {
+        "token": token,
+        "pages": pages,
+        "kind": reading.kind,
+        "check": reading.check,
+        "sha256": digest.hexdigest(),
+    }
+
+
+@router.get(
+    "/combine/files/{token}/preview",
+    responses={404: {"description": "No such staged file of the caller's."}},
+)
+def preview_received_file(token: str, user: User = Depends(current_active_user)):
+    """A small PNG of the first page of one of the caller's staged files, so the uploader can see
+    what each file is before the record is put together. Not cached by the browser."""
+    path = received_files.staged_path(get_settings().upload_folder, user.id, token)
+    if path is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
+    try:
+        png = received_files.first_page_png(path)
+    except received_files.UnreadableFile:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL) from None
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @router.delete("/combine/files/{token}")
@@ -786,6 +835,7 @@ def combine_received_files(
     party = _records_from(records_from)
     reviewer = upload_owner(session, user, owner)
     staged = _staged_files(user, tokens)
+    _refuse_repeated_files(staged)
 
     document_id = str(uuid.uuid4())
     user_dir = os.path.join(get_settings().upload_folder, str(reviewer.id))
@@ -1214,7 +1264,7 @@ def delete_document(
     # reviewer's record; deleting it is not fixing it, and a delete cannot be undone. Same 404 the
     # guard answers, so this reveals nothing the guard would not.
     if document.user_id != user.id:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
     if document.active_job is not None:
         raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     stored_path = document.stored_path

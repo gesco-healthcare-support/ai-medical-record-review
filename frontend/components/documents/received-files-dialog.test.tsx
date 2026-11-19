@@ -9,7 +9,8 @@ vi.mock("@/hooks/use-documents", () => ({ useCombineReceivedFiles: () => combine
 
 const stage = vi.fn();
 const unstage = vi.fn();
-vi.mock("@/lib/documents-api", () => ({
+vi.mock("@/lib/documents-api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/documents-api")>()),
   stageReceivedFile: (file: File) => stage(file),
   unstageReceivedFile: (token: string) => unstage(token),
 }));
@@ -24,7 +25,10 @@ const other = (name: string) =>
 
 /** What the server says about each file, by name; by default its first page says nothing more than
  *  "records" and it has 2 pages, so the name decides. */
-let readings: Record<string, { kind?: string; pages?: number }> = {};
+let readings: Record<
+  string,
+  { kind?: string; pages?: number; check?: boolean; sha256?: string }
+> = {};
 
 beforeEach(() => {
   readings = {};
@@ -32,6 +36,8 @@ beforeEach(() => {
     token: `tok-${file.name}`,
     pages: readings[file.name]?.pages ?? 2,
     kind: readings[file.name]?.kind ?? "records",
+    check: readings[file.name]?.check ?? false,
+    sha256: readings[file.name]?.sha256 ?? `sha-${file.name}`,
   }));
   unstage.mockResolvedValue({ ok: true });
 });
@@ -67,13 +73,21 @@ function deferredStage() {
   return handle;
 }
 
+/** Confirm every file's kind, as the uploader must before the record can be made. */
+async function confirmAll(user: ReturnType<typeof userEvent.setup>) {
+  for (const button of screen.queryAllByRole("button", { name: /^Confirm .+ as / })) {
+    await user.click(button);
+  }
+}
+
 async function fillPatient(
   user: ReturnType<typeof userEvent.setup>,
   { id = true }: { id?: boolean } = {},
 ) {
-  await user.type(screen.getByLabelText("Patient last name"), "Synthetic");
-  await user.type(screen.getByLabelText("Patient first name"), "Patient");
-  if (id) await user.type(screen.getByLabelText("Patient ID"), "801234");
+  // Values set directly: typing them key by key is the slow part of every test here.
+  fireEvent.change(screen.getByLabelText("Patient last name"), { target: { value: "Synthetic" } });
+  fireEvent.change(screen.getByLabelText("Patient first name"), { target: { value: "Patient" } });
+  if (id) fireEvent.change(screen.getByLabelText("Patient ID"), { target: { value: "801234" } });
   fireEvent.change(screen.getByLabelText("Date received"), { target: { value: "2026-11-03" } });
   const appointment = screen.getByLabelText("Appointment date");
   fireEvent.change(appointment, { target: { value: "2026-12-01" } });
@@ -100,7 +114,13 @@ describe("ReceivedFilesDialog ordering", () => {
     expect(screen.getByLabelText("What scan5.pdf is")).toHaveValue("declaration");
   });
 
-  it("uses the file's name when the first page says no more than records", async () => {
+  it("uses the file's name only when the reading was unsure and said records", async () => {
+    // A scan the server could not read: the name is the better guess, and the file is flagged.
+    readings = {
+      "hospital records.pdf": { check: true },
+      "POS.pdf": { check: true },
+      "medical index.pdf": { check: true },
+    };
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
     addFiles([pdf("hospital records.pdf"), pdf("POS.pdf"), pdf("medical index.pdf")]);
 
@@ -119,7 +139,7 @@ describe("ReceivedFilesDialog ordering", () => {
     await act(async () => slow.answer({ token: "t1", pages: 3, kind: "email" }));
 
     expect(screen.getByLabelText("What scan.pdf is")).toHaveValue("declaration");
-    expect(screen.getByText("3 pages")).toBeInTheDocument();
+    expect(screen.getByText("3 pages - confirmed")).toBeInTheDocument();
   });
 
   it("moves a file into its place when its kind is changed", async () => {
@@ -166,7 +186,7 @@ describe("ReceivedFilesDialog reading the files", () => {
     expect(stage.mock.calls.map(([file]) => (file as File).name)).toEqual(["a.pdf", "b.pdf"]);
     expect(screen.getByText("1 page")).toBeInTheDocument();
     expect(screen.getByText("12 pages")).toBeInTheDocument();
-    expect(screen.getByText("13 pages in all")).toBeInTheDocument();
+    expect(screen.getByText(/^13 pages in all/)).toBeInTheDocument();
   });
 
   it("shows why a file was refused, and cannot send until it is removed", async () => {
@@ -184,6 +204,7 @@ describe("ReceivedFilesDialog reading the files", () => {
     expect(send).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Remove broken.pdf" }));
+    await confirmAll(user);
     await waitFor(() => expect(send).toBeEnabled());
     expect(unstage).not.toHaveBeenCalled();
   });
@@ -224,6 +245,7 @@ describe("ReceivedFilesDialog sending", () => {
     addFiles([pdf("records.pdf"), pdf("scan.pdf")]);
     await allRead(2);
     await fillPatient(user);
+    await confirmAll(user);
 
     await user.click(screen.getByRole("button", { name: "Combine & upload" }));
 
@@ -252,12 +274,14 @@ describe("ReceivedFilesDialog sending", () => {
   it("reads the patient ID from the files' names when they agree", async () => {
     const user = userEvent.setup();
     combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 2, patient_records: 0 });
+    readings = { "Synthetic 801234 email.pdf": { kind: "email" } };
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
     addFiles([pdf("Synthetic 801234 email.pdf"), pdf("Synthetic-801234-records.pdf")]);
     await allRead(2);
     await fillPatient(user, { id: false });
 
     expect(screen.getByLabelText("Patient ID")).toHaveValue("801234");
+    await confirmAll(user);
     await user.click(screen.getByRole("button", { name: "Combine & upload" }));
 
     await waitFor(() =>
@@ -275,10 +299,12 @@ describe("ReceivedFilesDialog sending", () => {
     expect(send()).toBeDisabled();
 
     addFiles([pdf("records.pdf")]);
-    await user.type(screen.getByLabelText("Patient last name"), "Synthetic");
-    await user.type(screen.getByLabelText("Patient first name"), "Patient");
-    await user.type(screen.getByLabelText("Patient ID"), "801234");
-    fireEvent.change(screen.getByLabelText("Date received"), { target: { value: "2026-11-03" } });
+    const set = (label: string, value: string) =>
+      fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    set("Patient last name", "Synthetic");
+    set("Patient first name", "Patient");
+    set("Patient ID", "801234");
+    set("Date received", "2026-11-03");
     expect(send()).toBeDisabled();
     const appointment = screen.getByLabelText("Appointment date");
     fireEvent.change(appointment, { target: { value: "2026-12-01" } });
@@ -286,11 +312,15 @@ describe("ReceivedFilesDialog sending", () => {
     await user.selectOptions(screen.getByLabelText("Records from"), "copy_service");
     // Still reading the file.
     expect(send()).toBeDisabled();
-    await act(async () => slow.answer({ token: "t1", pages: 2, kind: "records" }));
+    await act(async () =>
+      slow.answer({ token: "t1", pages: 2, kind: "records", check: false, sha256: "s1" }),
+    );
+    // Read, but its kind not confirmed yet.
+    expect(send()).toBeDisabled();
+    await confirmAll(user);
     expect(send()).toBeEnabled();
 
-    await user.clear(screen.getByLabelText("Patient ID"));
-    await user.type(screen.getByLabelText("Patient ID"), "x".repeat(40));
+    set("Patient ID", "x".repeat(40));
     expect(send()).toBeDisabled();
     expect(screen.getByText(/at most 32 letters and digits/)).toBeInTheDocument();
   });
@@ -306,6 +336,7 @@ describe("ReceivedFilesDialog sending", () => {
     await allRead(1);
     await fillPatient(user);
 
+    await confirmAll(user);
     await user.click(screen.getByRole("button", { name: "Combine & upload for Brian" }));
 
     await waitFor(() =>
@@ -323,6 +354,7 @@ describe("ReceivedFilesDialog sending", () => {
     addFiles([pdf("records.pdf")]);
     await allRead(1);
     await fillPatient(user);
+    await confirmAll(user);
 
     await user.click(screen.getByRole("button", { name: "Combine & upload" }));
 
@@ -349,7 +381,8 @@ describe("ReceivedFilesDialog file handling", () => {
     addFiles([pdf("a.pdf"), other("b.doc"), other("c.doc"), pdf("d.pdf")]);
 
     expect(vi.mocked(toast).error).toHaveBeenCalledWith(
-      "Only PDF files can be combined. 2 files were not added.",
+      "Only PDFs and scanned images (JPG, PNG, TIFF) can be added; save Word or Outlook files " +
+        "as PDF first. 2 files were not added.",
     );
     expect(listed()).toEqual(["a.pdf", "d.pdf"]);
     await allRead(2);
@@ -359,7 +392,8 @@ describe("ReceivedFilesDialog file handling", () => {
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
     addFiles([other("b.doc")]);
     expect(vi.mocked(toast).error).toHaveBeenCalledWith(
-      "Only PDF files can be combined. One file was not added.",
+      "Only PDFs and scanned images (JPG, PNG, TIFF) can be added; save Word or Outlook files " +
+        "as PDF first. One file was not added.",
     );
     expect(stage).not.toHaveBeenCalled();
   });
@@ -394,5 +428,134 @@ describe("ReceivedFilesDialog file handling", () => {
     expect(unstage).toHaveBeenCalledWith("tok-a.pdf");
     rerender(<ReceivedFilesDialog open onOpenChange={onOpenChange} />);
     expect(screen.getByText("No files yet.")).toBeInTheDocument();
+  });
+});
+
+
+describe("ReceivedFilesDialog checking", () => {
+  it("needs every file confirmed by the uploader, even a sure reading", async () => {
+    // DEMONSTRATES: the model pre-fills the kind; a person confirms each one against its page.
+    const user = userEvent.setup();
+    readings = { "letter.pdf": { kind: "advocacy_letter" } };
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("letter.pdf"), pdf("records.pdf")]);
+    await allRead(2);
+    await fillPatient(user);
+    const send = screen.getByRole("button", { name: "Combine & upload" });
+
+    expect(screen.queryByText("Not sure - check the page")).toBeNull();
+    expect(
+      screen.getByText(/2 files to confirm before the record can be made/),
+    ).toBeInTheDocument();
+    expect(send).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Confirm letter.pdf as Advocacy letter" }));
+    expect(send).toBeDisabled();
+    await user.click(
+      screen.getByRole("button", { name: "Confirm records.pdf as Medical records" }),
+    );
+
+    expect(send).toBeEnabled();
+    expect(screen.queryByText(/to confirm/)).toBeNull();
+  });
+
+  it("asks the uploader to check an unsure reading before the record can be made", async () => {
+    const user = userEvent.setup();
+    readings = { "scan.pdf": { kind: "declaration", check: true } };
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("scan.pdf")]);
+    await allRead(1);
+    await fillPatient(user);
+
+    expect(screen.getByText("Not sure - check the page")).toBeInTheDocument();
+    expect(screen.getByText(/1 file to confirm before the record can be made/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Combine & upload" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Confirm scan.pdf as Declaration" }));
+
+    expect(screen.queryByText("Not sure - check the page")).toBeNull();
+    expect(screen.getByText("2 pages - confirmed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Combine & upload" })).toBeEnabled();
+  });
+
+  it("asks for a look when the name says one kind and a sure reading another", async () => {
+    // A copy service's packet named "POS.pdf" whose first page is a subpoena's proof of service:
+    // the model reads records; the name is not trusted over it, but it is worth a look.
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("POS.pdf")]);
+    await allRead(1);
+
+    expect(screen.getByLabelText("What POS.pdf is")).toHaveValue("records");
+    expect(screen.getByText("Not sure - check the page")).toBeInTheDocument();
+  });
+
+  it("choosing a kind for a flagged file answers the check too", async () => {
+    const user = userEvent.setup();
+    readings = { "scan.pdf": { check: true } };
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("scan.pdf")]);
+    await allRead(1);
+
+    await user.selectOptions(screen.getByLabelText("What scan.pdf is"), "medical_index");
+
+    expect(screen.queryByText("Not sure - check the page")).toBeNull();
+    expect(screen.getByText("2 pages - confirmed")).toBeInTheDocument();
+  });
+
+  it("names a file added twice and cannot send until one is removed", async () => {
+    const user = userEvent.setup();
+    readings = { "copy.pdf": { sha256: "same" }, "original.pdf": { sha256: "same" } };
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("original.pdf"), pdf("copy.pdf")]);
+    await allRead(2);
+    await fillPatient(user);
+
+    expect(screen.getByText("Same file as original.pdf. Remove one of them.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Combine & upload" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Remove copy.pdf" }));
+    await confirmAll(user);
+
+    expect(screen.queryByText(/Same file as/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Combine & upload" })).toBeEnabled();
+  });
+
+  it("sends a refused file again on Try again", async () => {
+    const user = userEvent.setup();
+    stage.mockImplementationOnce(async () => {
+      throw new ApiError("network", 0);
+    });
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("records.pdf")]);
+    await waitFor(() => expect(stage).toHaveBeenCalledTimes(1));
+    await screen.findByRole("button", { name: "Try records.pdf again" });
+
+    await user.click(screen.getByRole("button", { name: "Try records.pdf again" }));
+
+    await allRead(2);
+    expect(screen.getByText("2 pages")).toBeInTheDocument();
+  });
+
+  it("shows a file's first page on request", async () => {
+    const user = userEvent.setup();
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("records.pdf")]);
+    await allRead(1);
+    expect(screen.queryByRole("img", { name: "First page of records.pdf" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Show the first page of records.pdf" }));
+
+    expect(screen.getByRole("img", { name: "First page of records.pdf" })).toHaveAttribute(
+      "src",
+      "/api/documents/combine/files/tok-records.pdf/preview",
+    );
+  });
+
+  it("takes a scanned image as one of the files", async () => {
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([new File([new Uint8Array([1])], "fax page.tif", { type: "image/tiff" })]);
+    await allRead(1);
+    expect(listed()).toEqual(["fax page.tif"]);
+    expect(vi.mocked(toast).error).not.toHaveBeenCalled();
   });
 });
