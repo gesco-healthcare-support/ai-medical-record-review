@@ -19,7 +19,7 @@ import { AssignDialog } from "./assign-dialog";
 import { DocumentsTable } from "./documents-table";
 import { EmptyState, UPLOAD_INPUT_ID } from "./empty-state";
 import { PatientIdDialog } from "./patient-id-dialog";
-import { SplitUploadDialog } from "./split-upload-dialog";
+import { ReceivedFilesDialog } from "./received-files-dialog";
 import { ConfirmDialog } from "./confirm-dialog";
 
 function isPdf(file: File) {
@@ -148,13 +148,13 @@ function OwnerBar({ owner }: Readonly<{ owner: RecordsOwner }>) {
 /** The two upload buttons, on one's own records and - for an admin - on another reviewer's. */
 function UploadButtons({
   uploading,
-  onSplit,
+  onCombine,
   onPick,
-}: Readonly<{ uploading: boolean; onSplit: () => void; onPick: () => void }>) {
+}: Readonly<{ uploading: boolean; onCombine: () => void; onPick: () => void }>) {
   return (
     <div className="flex flex-wrap gap-2.5">
-      <button type="button" className="ev-btn ev-btn-outline ev-btn-lg" onClick={onSplit}>
-        Upload split records
+      <button type="button" className="ev-btn ev-btn-outline ev-btn-lg" onClick={onCombine}>
+        Upload received files
       </button>
       <button
         type="button"
@@ -175,20 +175,20 @@ function NoRecords({
   dragging,
   uploading,
   onBrowse,
-  onSplit,
+  onCombine,
 }: Readonly<{
   owner: RecordsOwner;
   dragging: boolean;
   uploading: boolean;
   onBrowse: () => void;
-  onSplit: () => void;
+  onCombine: () => void;
 }>) {
   if (owner.viewingOther) {
     return (
       <section className="hd-column">
         <div className="hd-header">
           <p>{owner.ownerName} has no records.</p>
-          <UploadButtons uploading={uploading} onSplit={onSplit} onPick={onBrowse} />
+          <UploadButtons uploading={uploading} onCombine={onCombine} onPick={onBrowse} />
         </div>
       </section>
     );
@@ -200,13 +200,18 @@ function NoRecords({
 function ListHeader({
   owner,
   uploading,
-  onSplit,
+  onCombine,
   onPick,
-}: Readonly<{ owner: RecordsOwner; uploading: boolean; onSplit: () => void; onPick: () => void }>) {
+}: Readonly<{
+  owner: RecordsOwner;
+  uploading: boolean;
+  onCombine: () => void;
+  onPick: () => void;
+}>) {
   return (
     <div className="hd-header">
       <h1>{owner.viewingOther ? `${owner.ownerName}'s documents` : "My documents"}</h1>
-      <UploadButtons uploading={uploading} onSplit={onSplit} onPick={onPick} />
+      <UploadButtons uploading={uploading} onCombine={onCombine} onPick={onPick} />
     </div>
   );
 }
@@ -372,7 +377,7 @@ export function DocumentsView() {
 
   const fileInput = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  const [splitOpen, setSplitOpen] = useState(false);
+  const [combineOpen, setCombineOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DocumentListItem | null>(null);
   const [reidentifyTarget, setReidentifyTarget] = useState<DocumentListItem | null>(null);
   const [assignTarget, setAssignTarget] = useState<DocumentListItem | null>(null);
@@ -420,7 +425,7 @@ export function DocumentsView() {
     }
   }
 
-  const splitOwner =
+  const combineOwner =
     viewingOther && owner.ownerId !== null
       ? { id: owner.ownerId, name: owner.ownerName ?? "this reviewer" }
       : null;
@@ -466,7 +471,7 @@ export function DocumentsView() {
           dragging={dragging}
           uploading={uploads.upload.isPending}
           onBrowse={pickFile}
-          onSplit={() => setSplitOpen(true)}
+          onCombine={() => setCombineOpen(true)}
         />
       ) : null}
       {!isLoading && docs.length > 0 ? (
@@ -474,7 +479,7 @@ export function DocumentsView() {
           <ListHeader
             owner={owner}
             uploading={uploads.upload.isPending}
-            onSplit={() => setSplitOpen(true)}
+            onCombine={() => setCombineOpen(true)}
             onPick={pickFile}
           />
           <DocumentsTable
@@ -488,7 +493,7 @@ export function DocumentsView() {
         </section>
       ) : null}
 
-      <SplitUploadDialog open={splitOpen} onOpenChange={setSplitOpen} owner={splitOwner} />
+      <ReceivedFilesDialog open={combineOpen} onOpenChange={setCombineOpen} owner={combineOwner} />
 
       <UploadDialogs uploads={uploads} />
 

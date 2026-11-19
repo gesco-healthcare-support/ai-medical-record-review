@@ -34,11 +34,8 @@ export const useUploadDocument = () =>
   useDocsMutation(({ file, ...target }: { file: File } & api.UploadTarget) =>
     api.uploadDocument(file, target),
   );
-export const useAggregateDocuments = () =>
-  useDocsMutation(
-    (vars: { name: string; files: File[]; owner?: number | null; patientId?: string | null }) =>
-      api.aggregateDocuments(vars.name, vars.files, vars.owner, vars.patientId),
-  );
+export const useCombineReceivedFiles = () =>
+  useDocsMutation((upload: api.ReceivedFilesUpload) => api.combineReceivedFiles(upload));
 /** Admins: move a record to another reviewer. It leaves the list on screen, so the list refreshes. */
 export const useAssignDocument = () =>
   useDocsMutation((vars: { id: string; owner: number; allowDuplicate?: boolean }) =>

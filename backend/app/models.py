@@ -11,7 +11,7 @@ reserved-ish words; SQLAlchemy quotes them automatically, and the names are kept
 match the source schema.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyBaseAccessTokenTable
@@ -19,6 +19,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -225,6 +226,12 @@ class Document(Base):
     # exports that carry the summaries - or NULL for never. Set by those routes, so the records list
     # can say it without reading the audit log; the migration filled it from the log's past exports.
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # A record put together from the files it arrived in (POST /api/documents/combine,
+    # services/received_files.py): the day the records were received, as the uploader typed it, and
+    # each file's kind and pages in the joined PDF ({"kind", "start", "end"}, in order - never the
+    # files' names, which carry the patient's name). Both NULL for a record uploaded as one PDF.
+    received_on: Mapped[date | None] = mapped_column(Date)
+    received_parts: Mapped[Any | None] = mapped_column(JSON)
 
     jobs: Mapped[list["Job"]] = relationship(
         "Job", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Job.id"
@@ -302,6 +309,8 @@ class Document(Base):
             "one_entry_per_date": bool(self.one_entry_per_date),
             "completed_at": _utc_iso(self.completed_at),
             "downloaded_at": _utc_iso(self.downloaded_at),
+            "received_on": self.received_on.isoformat() if self.received_on else "",
+            "received_parts": self.received_parts or [],
         }
 
 

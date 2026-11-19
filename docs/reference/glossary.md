@@ -10,7 +10,8 @@ Source of truth: the code named in each entry.
 | term | meaning |
 | --- | --- |
 | **Record** | One uploaded medical-record PDF. The UI says "record"; the code and database say **document** (`documents` table, `Document` model). The two words mean the same thing. |
-| **Aggregate record** | Several already-split PDFs uploaded together and merged into one record (`POST /api/documents/aggregate`, the "split upload" in the UI). Each source file becomes one row, categorized by a `classify` job instead of being segmented. |
+| **Aggregate record** | Several already-split PDFs uploaded together and merged into one record (`POST /api/documents/aggregate`, the former "split upload"). Each source file becomes one row, categorized by a `classify` job instead of being segmented. No longer offered in the web app (never used on the live box). |
+| **Received files** | The files a record arrives in - the office's cover sheet, the internal email, the advocacy letter, the declaration, the proof of service and the medical records - which "Upload received files" joins into one record in that order (`POST /api/documents/combine`, `backend/app/services/received_files.py`). The joined file is the record as received, downloadable from "Download raw PDF". |
 | **Sub-document** | One report, note, study or letter inside a record, as a page range. The unit that is categorized, checked for duplicates and summarized. |
 | **Row** | A sub-document as stored: `review_rows` (the reviewer's working set) or `segment_rows` (the machine's original output). Carries start and end page, category, title, date, author, `include`, `flag` and `method`. |
 | **Include** | Whether a row goes into duplicate checking, summarizing and export. Chosen by the reviewer. A new row starts with its category's summarize default (`catalog.summarize_default_for`); General (100) is the category seeded off. |

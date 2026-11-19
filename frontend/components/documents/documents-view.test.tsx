@@ -20,7 +20,7 @@ const docsState: {
 const upload = { mutateAsync: vi.fn(), isPending: false };
 const del = { mutateAsync: vi.fn(), isPending: false };
 const identify = { mutateAsync: vi.fn(), isPending: false };
-const aggregate = { mutateAsync: vi.fn(), isPending: false };
+const combine = { mutateAsync: vi.fn(), isPending: false };
 const assign = { mutateAsync: vi.fn(), isPending: false };
 const complete = { mutate: vi.fn(), isPending: false };
 // Who the list was asked for: `useDocuments(owner)` receives the reviewer an admin picked.
@@ -33,7 +33,7 @@ vi.mock("@/hooks/use-documents", () => ({
   useUploadDocument: () => upload,
   useDeleteDocument: () => del,
   useStartIdentification: () => identify,
-  useAggregateDocuments: () => aggregate,
+  useCombineReceivedFiles: () => combine,
   useAssignDocument: () => assign,
   useSetCompleted: () => complete,
 }));
@@ -358,14 +358,14 @@ describe("DocumentsView navigation", () => {
     );
   });
 
-  it("opens the split-upload dialog from its own button", async () => {
+  it("opens the received-files dialog from its own button", async () => {
     const user = userEvent.setup();
     docsState.data = [doc({})];
     render(<DocumentsView />);
 
-    await user.click(screen.getByRole("button", { name: /Upload split records/ }));
+    await user.click(screen.getByRole("button", { name: /Upload received files/ }));
 
-    expect(screen.getByRole("heading", { name: /Upload split records/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Upload received files/ })).toBeInTheDocument();
   });
 });
 
@@ -444,7 +444,7 @@ describe("DocumentsView for an admin", () => {
     const user = userEvent.setup();
     await viewBrian(user);
     expect(screen.getByRole("button", { name: /upload a record/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /upload split records/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /upload received files/i })).toBeInTheDocument();
   });
 
   it("offers them on an empty list of another reviewer's too", async () => {
@@ -530,12 +530,12 @@ describe("DocumentsView for an admin", () => {
     expect(screen.queryByRole("alertdialog", { name: /already has/ })).toBeNull();
   });
 
-  it("names the reviewer on the split upload too", async () => {
+  it("names the reviewer on the received-files upload too", async () => {
     const user = userEvent.setup();
     await viewBrian(user);
-    await user.click(screen.getByRole("button", { name: /upload split records/i }));
+    await user.click(screen.getByRole("button", { name: /upload received files/i }));
     expect(
-      screen.getByRole("heading", { name: "Upload split records for Brian" }),
+      screen.getByRole("heading", { name: "Upload received files for Brian" }),
     ).toBeInTheDocument();
   });
 

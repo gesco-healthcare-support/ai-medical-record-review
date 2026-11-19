@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { StatusPill } from "./status-pill";
+import { downloadRawPdf } from "@/lib/documents-api";
 import { cn } from "@/lib/utils";
 import type { DocumentListItem } from "@/lib/types";
 
@@ -264,6 +265,9 @@ export function DocumentsTable({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-52">
                         <DropdownMenuItem onSelect={() => onOpen(doc.id)}>Open</DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => downloadRawPdf(doc.id)}>
+                          Download raw PDF
+                        </DropdownMenuItem>
                         {onToggleCompleted ? (
                           <DropdownMenuItem onSelect={() => onToggleCompleted(doc)}>
                             {doc.completed_at ? "Clear Completed" : "Mark as completed"}

@@ -1,6 +1,11 @@
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/documents-api", () => ({ downloadRawPdf: vi.fn() }));
+
 import { DocumentsTable } from "@/components/documents/documents-table";
+import { downloadRawPdf } from "@/lib/documents-api";
 import type { DocumentListItem } from "@/lib/types";
 
 /** Column sorting had no tests, despite being the only way a reviewer finds a record in a long
@@ -342,5 +347,21 @@ describe("the Completed mark (a reviewer asked for it, 2026-11-05)", () => {
   it("shows no mark when the page gives no way to set it", () => {
     const { container } = renderTable();
     expect(container.querySelector(".hd-mark")).toBeNull();
+  });
+});
+
+describe("the raw PDF", () => {
+  it("downloads the record as it was uploaded from its row menu, without opening it", async () => {
+    // The office keeps a backup of every record as received; the joined file is that record.
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    render(<DocumentsTable docs={DOCS} onOpen={onOpen} />);
+
+    await user.click(screen.getAllByRole("button", { name: "Actions" })[0]);
+    await user.click(screen.getByRole("menuitem", { name: "Download raw PDF" }));
+
+    // Newest first, so the first row is record "a".
+    expect(downloadRawPdf).toHaveBeenCalledWith("a");
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });

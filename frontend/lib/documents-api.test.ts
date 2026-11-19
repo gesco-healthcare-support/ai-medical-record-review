@@ -8,9 +8,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  aggregateDocuments,
+  combineReceivedFiles,
   deleteDocument,
+  downloadRawPdf,
   listDocuments,
+  rawPdfUrl,
   startIdentification,
   uploadDocument,
 } from "@/lib/documents-api";
@@ -55,25 +57,51 @@ describe("uploading", () => {
     expect(new Headers(init.headers).has("Content-Type")).toBe(false);
   });
 
-  it("omits the record name entirely when it is blank, and trims it when it is not", async () => {
-    // "" and "absent" are different requests: the server names the record from the files when no
-    // name is sent, and an empty string would override that with nothing.
-    await aggregateDocuments("   ", [pdf("a.pdf"), pdf("b.pdf")]);
-    expect((lastCall().init.body as FormData).has("name")).toBe(false);
-
-    await aggregateDocuments("  Combined record  ", [pdf("a.pdf")]);
-    expect((lastCall().init.body as FormData).get("name")).toBe("Combined record");
-  });
-
-  it("sends every file of an aggregate under the same field", async () => {
+  it("sends the received files in order, each with its kind, and the patient's details", async () => {
     const files = [pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf")];
-    await aggregateDocuments("Combined record", files);
+    await combineReceivedFiles({
+      lastName: "  Synthetic ",
+      firstName: " Patient",
+      patientId: "801234",
+      dateReceived: "2026-11-03",
+      files: [
+        { file: files[0], kind: "email" },
+        { file: files[1], kind: "advocacy_letter" },
+        { file: files[2], kind: "records" },
+      ],
+    });
 
     const { url, init } = lastCall();
-    expect(url).toBe("/api/documents/aggregate");
+    expect(url).toBe("/api/documents/combine");
+    expect(init.method).toBe("POST");
+    const body = init.body as FormData;
     // getAll, not get: a loop that overwrote instead of appending would upload only the last file
-    // and lose the rest without any error.
-    expect((init.body as FormData).getAll("pdfs")).toEqual(files);
+    // and lose the rest without any error. Files and kinds pair up by position.
+    expect(body.getAll("pdfs")).toEqual(files);
+    expect(body.getAll("kinds")).toEqual(["email", "advocacy_letter", "records"]);
+    expect(body.get("last_name")).toBe("Synthetic");
+    expect(body.get("first_name")).toBe("Patient");
+    expect(body.get("patient_id")).toBe("801234");
+    expect(body.get("date_received")).toBe("2026-11-03");
+    expect(new Headers(init.headers).has("Content-Type")).toBe(false);
+  });
+});
+
+describe("the raw PDF", () => {
+  it("is fetched by an ordinary link the browser downloads", () => {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      downloadRawPdf("d 1");
+      expect(click).toHaveBeenCalledTimes(1);
+      const link = click.mock.contexts[0] as HTMLAnchorElement;
+      expect(link.getAttribute("href")).toBe(rawPdfUrl("d 1"));
+      expect(rawPdfUrl("d 1")).toBe("/api/documents/d%201/raw");
+      expect(link.hasAttribute("download")).toBe(true);
+      // Nothing is read into the page: no fetch, no Blob (#389).
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      click.mockRestore();
+    }
   });
 });
 
@@ -122,10 +150,17 @@ describe("uploading into another reviewer's account", () => {
     expect(body.has("allow_duplicate")).toBe(false);
   });
 
-  it("sends the reviewer on a split upload too, and nothing when there is none", async () => {
-    await aggregateDocuments("Combined", [pdf("a.pdf")], 7);
+  it("sends the reviewer on a received-files upload too, and nothing when there is none", async () => {
+    const upload = {
+      lastName: "Synthetic",
+      firstName: "Patient",
+      patientId: "801234",
+      dateReceived: "2026-11-03",
+      files: [{ file: pdf("a.pdf"), kind: "records" as const }],
+    };
+    await combineReceivedFiles({ ...upload, owner: 7 });
     expect((lastCall().init.body as FormData).get("owner")).toBe("7");
-    await aggregateDocuments("Combined", [pdf("a.pdf")]);
+    await combineReceivedFiles(upload);
     expect((lastCall().init.body as FormData).has("owner")).toBe(false);
   });
 });

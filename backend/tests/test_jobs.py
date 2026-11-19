@@ -6,6 +6,7 @@ or Vertex call is needed. Test users use the pytest-auth- prefix so conftest cle
 jobs/rows.
 """
 
+import datetime
 import time
 import uuid
 
@@ -4037,3 +4038,72 @@ def test_segment_document_prefills_only_the_empty_letter_fields(monkeypatch):
         assert document.letter_date == "08/05/2026"
         assert document.pages_received == 2
         assert document.patient_first_name == "A"
+
+
+def _identify_reading_the_name(monkeypatch, doc_id: str) -> Document:
+    """Identify the record with the header read as first "Read", last "Name"; return the record."""
+    import app.services.extraction as extraction_mod
+    import app.services.page_text as page_text_mod
+    import app.services.segment_engine as se
+
+    monkeypatch.setattr(page_text_mod, "populate_document", lambda *a, **k: 0)
+    row = {
+        "start": 1,
+        "end": 2,
+        "category": "1",
+        "title": "A",
+        "date": "-",
+        "injury_date": "-",
+        "flag": "-",
+        "suggest_merge": False,
+    }
+    monkeypatch.setattr(se, "run_segmentation", lambda *a, **k: [dict(row)])
+    monkeypatch.setattr(
+        extraction_mod,
+        "extract_header",
+        lambda pdf_path, pages: {
+            "first_name": "Read",
+            "last_name": "Name",
+            "dob": "",
+            "lawfirm": "Read Firm",
+        },
+    )
+    with get_sessionmaker()() as session:
+        job_id = jobs.create_job(session, doc_id, "segment", model="m", prompt_version="1").id
+    segment_document(job_id)
+    with get_sessionmaker()() as session:
+        assert session.get(Job, job_id).state == "done"
+        document = session.get(Document, doc_id)
+        session.expunge(document)
+        return document
+
+
+def test_identify_keeps_the_name_typed_when_the_files_were_combined(monkeypatch):
+    """DEMONSTRATES: a record put together from the files it arrived in keeps the patient's name
+    its uploader typed (POST /api/documents/combine); the rest of the header is still read."""
+    doc_id = _make_user_and_doc(page_count=2)
+    with get_sessionmaker()() as session:
+        document = session.get(Document, doc_id)
+        document.patient_first_name = "Typed"
+        document.patient_last_name = "Uploader"
+        document.received_on = datetime.date(2026, 11, 3)
+        session.commit()
+
+    document = _identify_reading_the_name(monkeypatch, doc_id)
+
+    assert (document.patient_first_name, document.patient_last_name) == ("Typed", "Uploader")
+    assert document.law_firm == "Read Firm"
+
+
+def test_identify_still_reads_the_name_of_a_record_uploaded_as_one_pdf(monkeypatch):
+    """GUARD: a record uploaded as one PDF takes the name the header read, as before."""
+    doc_id = _make_user_and_doc(page_count=2)
+    with get_sessionmaker()() as session:
+        document = session.get(Document, doc_id)
+        document.patient_first_name = "Earlier"
+        document.patient_last_name = "Value"
+        session.commit()
+
+    document = _identify_reading_the_name(monkeypatch, doc_id)
+
+    assert (document.patient_first_name, document.patient_last_name) == ("Read", "Name")

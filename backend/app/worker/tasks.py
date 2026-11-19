@@ -867,8 +867,11 @@ def segment_document(job_id) -> None:
         pages = list(range(1, min(15, document.page_count) + 1))
         try:
             header = extract_header(document.stored_path, pages)
-            document.patient_first_name = header["first_name"]
-            document.patient_last_name = header["last_name"]
+            # A record put together from the files it arrived in has the name its uploader typed
+            # (POST /api/documents/combine); only a record uploaded as one PDF takes the name read.
+            if document.received_on is None:
+                document.patient_first_name = header["first_name"]
+                document.patient_last_name = header["last_name"]
             document.patient_dob = header["dob"]
             document.law_firm = header["lawfirm"]
             filled = prefill_letter_fields(document, header)
