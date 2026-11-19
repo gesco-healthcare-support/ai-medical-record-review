@@ -64,11 +64,39 @@ export function guessKind(fileName: string): ReceivedKind {
   return "records";
 }
 
-/** The kind to show for a file once the server has read it: what its first page says, unless the
- *  page said nothing more than "records" and the file's name is more specific (a scanned page the
- *  server could not read named "POS.pdf" is still a proof of service). */
-export function pickKind(fromPage: ReceivedKind, fromName: ReceivedKind): ReceivedKind {
-  return fromPage === "records" ? fromName : fromPage;
+/** What the server said a file is, from its first page: the model's reading, and whether the
+ *  uploader should look (the model unsure, or off and the keyword rules guessing). */
+export type FileReading = { kind: ReceivedKind; check: boolean };
+
+/** The kind to show once the server has read a file, and whether the uploader must look first.
+ *  The server's reading wins - the name is often wrong. The name is used only when the reading was
+ *  unsure and said no more than "records" (a scan the server could not read, named "POS.pdf", is
+ *  still a proof of service). A name that names another kind than the reading also asks for a
+ *  look. */
+export function shownKind(reading: FileReading, fromName: ReceivedKind): FileReading {
+  const kind =
+    reading.check && reading.kind === "records" && fromName !== "records" ? fromName : reading.kind;
+  return { kind, check: reading.check || (fromName !== "records" && fromName !== kind) };
+}
+
+/** The files a record can be put together from: PDFs, and scans sent as images, which the server
+ *  turns into PDF pages. Judged by type or by name, as browsers leave the type empty for some. */
+const ACCEPTED_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/tiff",
+  "image/gif",
+  "image/bmp",
+];
+const ACCEPTED_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".gif", ".bmp"];
+const ACCEPTED_NAME = /\.(pdf|jpe?g|png|tiff?|gif|bmp)$/i;
+
+/** The file input's `accept`: every type and extension above. */
+export const ACCEPTED_FILES = [...ACCEPTED_TYPES, ...ACCEPTED_EXTENSIONS].join(",");
+
+export function isAcceptedFile(file: File): boolean {
+  return ACCEPTED_TYPES.includes(file.type) || ACCEPTED_NAME.test(file.name);
 }
 
 /** `items` in the order a record is put together: by kind, and within a kind in the order given. */

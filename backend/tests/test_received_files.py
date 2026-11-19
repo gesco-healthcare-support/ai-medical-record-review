@@ -7,11 +7,14 @@ so the joined order can be read back from the stored PDF. Uploads go to a per-te
 is stubbed (no Tesseract in a test).
 """
 
+import hashlib
 import io
+import logging
 import os
 import time
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pymupdf
 import pytest
@@ -40,6 +43,17 @@ def _tmp_uploads(tmp_path, monkeypatch):
 def _no_ocr(monkeypatch):
     """A scanned first page reads as nothing here: tests never run Tesseract."""
     monkeypatch.setattr(received_files, "extract_text_from_selected_pages", lambda *a, **k: "")
+
+
+@pytest.fixture(autouse=True)
+def _model_off(monkeypatch):
+    """No model call leaves a test: by default the model server does not answer, so the keyword
+    rules guess (as on our model's box with the pod off). Tests of the model path stub it."""
+
+    def off(stage):
+        raise ConnectionError("no model in tests")
+
+    monkeypatch.setattr(received_files, "provider_for_stage", off)
 
 
 @pytest.fixture(autouse=True)
@@ -516,7 +530,7 @@ async def test_an_unreadable_file_is_refused_when_added_and_not_kept(client, tmp
     resp = await _stage(client, bad)
 
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "This file is not a readable PDF."
+    assert resp.json()["detail"] == "This file is not a readable PDF or image."
     assert _staged_files(tmp_path, user_id) == []
 
 
@@ -575,7 +589,7 @@ async def test_a_staged_file_that_went_bad_uploads_nothing_and_says_which_one(cl
     """GUARD: no record and no joined file is left behind; the staged files stay for a retry."""
     user_id, email = _user()
     await _login(client, email)
-    tokens = [(await _stage(client, _pdf())).json()["token"] for _ in range(3)]
+    tokens = [(await _stage(client, _pdf(n))).json()["token"] for n in (1, 2, 3)]
     (Path(tmp_path) / str(user_id) / "staged" / f"{tokens[1]}.pdf").write_bytes(b"not a pdf")
 
     resp = await client.post(
@@ -667,3 +681,258 @@ async def test_someone_elses_raw_record_is_not_found(client):
     resp = await client.get(f"/api/documents/{doc_id}/raw")
 
     assert resp.status_code == 404
+
+
+# --- what a file is: the model, and the rules when it gives no answer -----------------------------
+
+
+class _Model:
+    """A fake model behind the seam: answers ``reply`` and remembers what it was asked."""
+
+    def __init__(self, reply: str):
+        self.reply = reply
+        self.calls: list[dict] = []
+
+    def generate_structured(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(text=self.reply)
+
+
+def _answering(monkeypatch, reply: str) -> _Model:
+    model = _Model(reply)
+    stages = []
+    monkeypatch.setattr(
+        received_files, "provider_for_stage", lambda stage: stages.append(stage) or model
+    )
+    model.stages = stages  # type: ignore[attr-defined]
+    return model
+
+
+def test_the_model_decides_what_a_file_is(monkeypatch):
+    """DEMONSTRATES: the kind is the model's. A subpoena's proof of service - which the keyword
+    rules took for the case's own - is records when the model says so, and a sure answer is not
+    flagged."""
+    model = _answering(monkeypatch, '{"kind": "records", "certain": true}')
+
+    reading = received_files.read_kind("PROOF OF SERVICE\nof deposition subpoena", 3)
+
+    assert reading == received_files.KindReading("records", False, "model")
+    assert received_files.guess_kind("PROOF OF SERVICE\nof deposition subpoena", 3) == (
+        "proof_of_service"
+    )
+    assert model.stages == ["extract"]
+    call = model.calls[0]
+    assert call["stage"] == "extract"
+    assert call["model"] == get_settings().model_for_stage("extract")
+    assert call["schema"]["properties"]["kind"]["enum"] == list(received_files.KINDS)
+    assert call["temperature"] == 0.0
+    assert "This file has 3 page(s)" in call["parts"][0].text
+
+
+def test_an_unsure_answer_is_flagged_for_the_uploader(monkeypatch):
+    _answering(monkeypatch, '{"kind": "declaration", "certain": false}')
+    assert received_files.read_kind("DECLARATION", 2) == received_files.KindReading(
+        "declaration", True, "model"
+    )
+
+
+@pytest.mark.parametrize(
+    "reply", ["not json", '{"kind": "letter", "certain": true}', "[]", '{"certain": true}']
+)
+def test_an_unusable_answer_leaves_the_rules_and_a_flag(monkeypatch, reply):
+    """GUARD: a reply outside the kinds is never trusted; the rules guess and the uploader looks."""
+    _answering(monkeypatch, reply)
+    assert received_files.read_kind("PROOF OF SERVICE\nI served", 1) == (
+        received_files.KindReading("proof_of_service", True, "rules")
+    )
+
+
+def test_with_the_model_off_the_rules_guess_and_the_file_is_flagged(monkeypatch, caplog):
+    """GUARD: our model's box with the pod off - the model server does not answer - still stages the
+    file; nothing about the page is logged."""
+
+    def off(stage):
+        raise ConnectionError("the model server is not running")
+
+    monkeypatch.setattr(received_files, "provider_for_stage", off)
+    with caplog.at_level(logging.WARNING):
+        reading = received_files.read_kind("Dear Dr. Sample:\nPlease find enclosed", 2)
+
+    assert reading == received_files.KindReading("advocacy_letter", True, "rules")
+    assert "Dear" not in caplog.text
+    assert "ConnectionError" in caplog.text
+
+
+def test_a_page_with_no_text_is_records_flagged_and_asks_no_model(monkeypatch):
+    model = _answering(monkeypatch, '{"kind": "email", "certain": true}')
+    assert received_files.read_kind("  \n ", 4) == received_files.KindReading(
+        "records", True, "none"
+    )
+    assert model.calls == []
+
+
+def test_a_long_page_is_cut_before_it_is_sent(monkeypatch):
+    model = _answering(monkeypatch, '{"kind": "records", "certain": true}')
+    received_files.read_kind("x" * 20000, 1)
+    sent = model.calls[0]["parts"][0].text
+    assert sent.count("x") == received_files._KIND_TEXT_CHARS
+
+
+async def test_staging_answers_the_models_kind_its_flag_and_the_files_fingerprint(
+    client, monkeypatch
+):
+    _answering(monkeypatch, '{"kind": "medical_index", "certain": true}')
+    _, email = _user()
+    await _login(client, email)
+    body = _text_pdf("INDEX OF RECORDS", pages=2)
+
+    resp = await _stage(client, body)
+
+    assert resp.status_code == 201
+    staged = resp.json()
+    assert (staged["kind"], staged["check"], staged["pages"]) == ("medical_index", False, 2)
+    assert staged["sha256"] == hashlib.sha256(body).hexdigest()
+
+
+# --- the same file twice, scanned images, password-protected PDFs, the preview ------------------
+
+
+async def test_the_same_file_twice_is_refused_and_nothing_is_stored(client):
+    """DEMONSTRATES: a file added twice would be joined - and reviewed - twice."""
+    user_id, email = _user()
+    await _login(client, email)
+    tokens = [(await _stage(client, body)).json()["token"] for body in (_pdf(1), _pdf(2), _pdf(1))]
+
+    resp = await client.post(
+        "/api/documents/combine",
+        data={**_FIELDS, "kinds": ["records"] * 3, "tokens": tokens},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "File 3 is the same file as file 1. Remove one of them."
+    assert _documents_of(user_id) == []
+
+
+async def test_one_token_sent_twice_is_refused_too(client):
+    user_id, email = _user()
+    await _login(client, email)
+    token = (await _stage(client, _pdf())).json()["token"]
+    resp = await client.post(
+        "/api/documents/combine",
+        data={**_FIELDS, "kinds": ["records", "records"], "tokens": [token, token]},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "File 2 is the same file as file 1. Remove one of them."
+    assert _documents_of(user_id) == []
+
+
+def _image(fmt: str, frames: int = 1) -> bytes:
+    from PIL import Image
+
+    frame = Image.new("RGB", (170, 220), "white")
+    buffer = io.BytesIO()
+    frame.save(buffer, fmt, save_all=frames > 1, append_images=[frame] * (frames - 1))
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(("fmt", "frames"), [("JPEG", 1), ("PNG", 1), ("TIFF", 3), ("BMP", 1)])
+async def test_a_scanned_image_is_taken_as_pdf_pages(client, tmp_path, fmt, frames):
+    """DEMONSTRATES: a scan sent as an image is part of the record, as in Acrobat's Combine - every
+    page of a multi-page TIFF."""
+    user_id, email = _user()
+    await _login(client, email)
+    resp = await client.post(
+        "/api/documents/combine/files",
+        files={"pdf": (f"scan.{fmt.lower()}", _image(fmt, frames), "image/" + fmt.lower())},
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["pages"] == frames
+    [staged] = _staged_files(tmp_path, user_id)
+    stored = Path(tmp_path) / str(user_id) / "staged" / staged
+    assert stored.read_bytes().startswith(b"%PDF-")
+
+
+async def test_a_record_joins_a_pdf_and_a_scanned_image(client):
+    _, email = _user()
+    await _login(client, email)
+    tokens = [
+        (await _stage(client, _pdf(2))).json()["token"],
+        (
+            await client.post(
+                "/api/documents/combine/files",
+                files={"pdf": ("scan.tif", _image("TIFF", 2), "image/tiff")},
+            )
+        ).json()["token"],
+    ]
+    resp = await client.post(
+        "/api/documents/combine",
+        data={**_FIELDS, "kinds": ["records", "records"], "tokens": tokens},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["page_count"] == 4
+
+
+def _protected_pdf() -> bytes:
+    doc = pymupdf.open()
+    doc.new_page()
+    data = doc.tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="secret", owner_pw="owner")
+    doc.close()
+    return data
+
+
+async def test_a_password_protected_pdf_is_named_as_such_and_not_kept(client, tmp_path):
+    user_id, email = _user()
+    await _login(client, email)
+    resp = await _stage(client, _protected_pdf())
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "This PDF needs a password to open. Save it without the password and add it again."
+    )
+    assert _staged_files(tmp_path, user_id) == []
+
+
+async def test_the_preview_is_a_small_picture_of_the_first_page(client):
+    _, email = _user()
+    await _login(client, email)
+    token = (await _stage(client, _text_pdf("PROOF OF SERVICE", pages=2))).json()["token"]
+
+    resp = await client.get(f"/api/documents/combine/files/{token}/preview")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.headers["cache-control"] == "no-store"
+    picture = pymupdf.Pixmap(resp.content)
+    assert picture.width == 600
+
+
+def test_a_page_declaring_a_huge_size_still_previews_small(tmp_path):
+    """GUARD: some scans declare pages of 150 inches; the preview is held to its pixel size."""
+    doc = pymupdf.open()
+    doc.new_page(width=154 * 72, height=200 * 72)
+    path = tmp_path / "huge.pdf"
+    doc.save(path)
+    picture = pymupdf.Pixmap(received_files.first_page_png(path))
+    assert picture.width <= 600
+    assert picture.height <= 1000
+
+
+async def test_another_accounts_file_has_no_preview(client):
+    _, owner_email = _user()
+    await _login(client, owner_email)
+    token = (await _stage(client, _pdf())).json()["token"]
+    _, other_email = _user()
+    await _login(client, other_email)
+
+    resp = await client.get(f"/api/documents/combine/files/{token}/preview")
+    assert resp.status_code == 404
+    unknown = await client.get("/api/documents/combine/files/" + "a" * 32 + "/preview")
+    assert unknown.status_code == 404
+
+
+def test_a_file_that_is_neither_pdf_nor_image_is_unreadable(tmp_path):
+    source = tmp_path / "upload.part"
+    source.write_bytes(b"PK\x03\x04 a word document")
+    with pytest.raises(received_files.UnreadableFile):
+        received_files.make_pdf(source, tmp_path / "out.pdf")
+    assert not (tmp_path / "out.pdf").exists()
