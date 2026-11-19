@@ -283,13 +283,21 @@ def test_old_staged_files_are_swept_from_every_account(tmp_path):
     assert new.exists()
 
 
-def test_a_token_of_another_shape_names_no_file(tmp_path):
+def test_a_staged_file_is_found_only_by_its_token_in_its_own_folder(tmp_path):
+    """GUARD: a token finds a file only in the caller's own staging folder, and only the file it
+    names exactly; a token of another shape names nothing."""
     assert received_files.staged_path(str(tmp_path), 1, "../../etc/passwd") is None
     assert received_files.staged_path(str(tmp_path), 1, "") is None
-    token = received_files.new_token()
-    assert received_files.staged_path(str(tmp_path), 1, token) == (
-        tmp_path / "1" / "staged" / f"{token}.pdf"
-    )
+    token, path = received_files.new_staged_path(str(tmp_path), 1)
+    assert len(token) == 32
+    assert path == tmp_path / "1" / "staged" / f"{token}.pdf"
+    # Nothing written yet: the token names no file.
+    assert received_files.staged_path(str(tmp_path), 1, token) is None
+    path.write_bytes(b"%PDF-")
+    assert received_files.staged_path(str(tmp_path), 1, token) == path
+    assert received_files.staged_path(str(tmp_path), 2, token) is None
+    other, _ = received_files.new_staged_path(str(tmp_path), 1)
+    assert received_files.staged_path(str(tmp_path), 1, other) is None
 
 
 def test_combine_joins_the_files_in_the_order_given(tmp_path):

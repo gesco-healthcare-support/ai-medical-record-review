@@ -707,10 +707,7 @@ def stage_received_file(
         raise HTTPException(status_code=400, detail=_COMBINE_NO_FILES_DETAIL)
     upload_folder = get_settings().upload_folder
     received_files.sweep(upload_folder)
-    token = received_files.new_token()
-    path = received_files.staged_path(upload_folder, user.id, token)
-    assert path is not None  # a token made here always has the right shape
-    path.parent.mkdir(parents=True, exist_ok=True)
+    token, path = received_files.new_staged_path(upload_folder, user.id)
     part = path.with_name(path.name + ".part")
     try:
         with open(part, "wb") as out:

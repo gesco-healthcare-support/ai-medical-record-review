@@ -8,12 +8,12 @@ letter or the depositions are apart.
 
 The web app now does that step. Each file is sent on its own as the uploader adds it
 (``POST /api/documents/combine/files``): it is kept for a while in the uploader's staging folder
-(``stage``), its pages are counted, and its first page is read - the text the PDF carries, else one
-OCR pass - to tell what kind of file it is (``guess_kind``). The list is then kept in the office's
-order whatever order the files were added in, so the order does not depend on the uploader. Once the
-patient's details are given, ``POST /api/documents/combine`` joins the staged files (``combine``)
-into the record's PDF. That joined file is the raw record: read and identified like any other
-upload, and downloadable as it is for the office's backup.
+(``new_staged_path``), its pages are counted, and its first page is read - the text the PDF
+carries, else one OCR pass - to tell what kind of file it is (``guess_kind``). The list is then kept
+in the office's order whatever order the files were added in, so the order does not depend on the
+uploader. Once the patient's details are given, ``POST /api/documents/combine`` joins the staged
+files (``combine``) into the record's PDF. That joined file is the raw record: read and identified
+like any other upload, and downloadable as it is for the office's backup.
 
 The order (``KINDS``) is the office's own guideline (2026-11-18, confirmed 2026-11-19): advocacy
 letter, declaration, medical index (the sender's list of the records in the file), medical records
@@ -160,17 +160,27 @@ def staging_folder(upload_folder: str, user_id: int) -> Path:
     return Path(upload_folder) / str(user_id) / "staged"
 
 
-def new_token() -> str:
-    return secrets.token_urlsafe(24)
+def new_staged_path(upload_folder: str, user_id: int) -> tuple[str, Path]:
+    """A new random token, and where ``user_id``'s file for it goes (the folder is created)."""
+    token = secrets.token_urlsafe(24)
+    folder = staging_folder(upload_folder, user_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    return token, folder / f"{token}.pdf"
 
 
 def staged_path(upload_folder: str, user_id: int, token: str) -> Path | None:
-    """Where ``user_id``'s staged file ``token`` lives, or None for a token that is not one of ours.
+    """``user_id``'s staged file named by ``token``, or None when there is no such file.
 
-    A file is only ever looked up in the caller's own folder, so no account can name another's."""
+    The file is FOUND by listing the caller's own staging folder, never built from the token, so
+    no token - whatever it holds - can reach outside that folder or into another account's."""
     if not _TOKEN.fullmatch(token or ""):
         return None
-    return staging_folder(upload_folder, user_id) / f"{token}.pdf"
+    name = f"{token}.pdf"
+    try:
+        entries = list(staging_folder(upload_folder, user_id).iterdir())
+    except OSError:  # no folder yet: nothing was ever staged here
+        return None
+    return next((entry for entry in entries if entry.name == name), None)
 
 
 def sweep(upload_folder: str, now: float | None = None) -> int:
