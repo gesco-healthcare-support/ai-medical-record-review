@@ -906,10 +906,14 @@ async def test_the_preview_is_a_small_picture_of_the_first_page(client):
     assert picture.width == 600
 
 
-def test_a_page_declaring_a_huge_size_still_previews_small(tmp_path):
+@pytest.mark.parametrize(
+    ("width_in", "height_in"),
+    [(154, 200), (8.5, 400)],  # a huge page; a narrow, very tall one the height cap must hold
+)
+def test_a_page_declaring_a_huge_size_still_previews_small(tmp_path, width_in, height_in):
     """GUARD: some scans declare pages of 150 inches; the preview is held to its pixel size."""
     doc = pymupdf.open()
-    doc.new_page(width=154 * 72, height=200 * 72)
+    doc.new_page(width=width_in * 72, height=height_in * 72)
     path = tmp_path / "huge.pdf"
     doc.save(path)
     picture = pymupdf.Pixmap(received_files.first_page_png(path))
