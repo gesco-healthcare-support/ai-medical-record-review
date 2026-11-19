@@ -765,11 +765,11 @@ def preview_received_file(token: str, user: User = Depends(current_active_user))
     what each file is before the record is put together. Not cached by the browser."""
     path = received_files.staged_path(get_settings().upload_folder, user.id, token)
     if path is None:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
     try:
         png = received_files.first_page_png(path)
     except received_files.UnreadableFile:
-        raise HTTPException(status_code=404, detail="not found") from None
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL) from None
     return Response(content=png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
@@ -1264,7 +1264,7 @@ def delete_document(
     # reviewer's record; deleting it is not fixing it, and a delete cannot be undone. Same 404 the
     # guard answers, so this reveals nothing the guard would not.
     if document.user_id != user.id:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_DETAIL)
     if document.active_job is not None:
         raise HTTPException(status_code=409, detail=_JOB_RUNNING_DETAIL)
     stored_path = document.stored_path

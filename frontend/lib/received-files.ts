@@ -81,14 +81,14 @@ export function shownKind(reading: FileReading, fromName: ReceivedKind): FileRea
 
 /** The files a record can be put together from: PDFs, and scans sent as images, which the server
  *  turns into PDF pages. Judged by type or by name, as browsers leave the type empty for some. */
-const ACCEPTED_TYPES = [
+const ACCEPTED_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
   "image/png",
   "image/tiff",
   "image/gif",
   "image/bmp",
-];
+]);
 const ACCEPTED_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".gif", ".bmp"];
 const ACCEPTED_NAME = /\.(pdf|jpe?g|png|tiff?|gif|bmp)$/i;
 
@@ -96,7 +96,7 @@ const ACCEPTED_NAME = /\.(pdf|jpe?g|png|tiff?|gif|bmp)$/i;
 export const ACCEPTED_FILES = [...ACCEPTED_TYPES, ...ACCEPTED_EXTENSIONS].join(",");
 
 export function isAcceptedFile(file: File): boolean {
-  return ACCEPTED_TYPES.includes(file.type) || ACCEPTED_NAME.test(file.name);
+  return ACCEPTED_TYPES.has(file.type) || ACCEPTED_NAME.test(file.name);
 }
 
 /** `items` in the order a record is put together: by kind, and within a kind in the order given. */
