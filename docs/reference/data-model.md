@@ -307,6 +307,8 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `downloaded_at` | DateTime | yes | none | When the review was last downloaded - the Word letter, the linked PDF or the ZIP (D20, D21, D23); NULL is never. Filled once from the audit log's past `export`, `export_pdf` and `export_zip` rows by the migration. | `f2c7a4e81b39` |
 | `received_on` | Date | yes | none | The day the records were received, as typed by whoever put the record together from the files it arrived in (HTTP API D2a). NULL for a record uploaded as one PDF. | `a3d8f5c27b14` |
 | `received_parts` | JSON | yes | none | The files a D2a record was put together from, in order: `[{kind, start, end}]` - the file's kind (`backend/app/services/received_files.py` `KINDS`) and its pages in the joined PDF. Never the files' names (they carry the patient's name). NULL for a record uploaded as one PDF. | `a3d8f5c27b14` |
+| `appointment_date` | Date | yes | none | The date of the evaluation appointment the records are for, typed by the uploader of a D2a record (not reliably on the letter). NULL for a record uploaded as one PDF. | `b5e1d9c4a7f2` |
+| `records_from` | String(32) | yes | none | Who sent a D2a record's files, picked by the uploader: `defense`, `applicant`, `insurance` or `copy_service` (`received_files.PARTIES`; one party per record, a row of the office's billing sheet). NULL for a record uploaded as one PDF. | `b5e1d9c4a7f2` |
 
 ORM helpers on `Document`: `active_job` (the job in `queued`, `running` or `paused`, else `None`)
 and `listing()` (the wire shape; see [HTTP API reference](http-api.md)).

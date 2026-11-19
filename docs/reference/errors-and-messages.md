@@ -56,6 +56,8 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 400 | `Enter the patient's last and first name.` | D2a |
 | 400 | `Enter the patient ID.` | D2a |
 | 400 | `Enter the date the records were received.` | D2a |
+| 400 | `Enter the appointment date.` | D2a |
+| 400 | `Choose who sent the records.` | D2a |
 | 400 | `File <n> is not a readable PDF. Nothing was uploaded.` | D2a |
 | 400 | `A patient ID is at most 32 letters and digits.` | D1, D2, D2a, D6b |
 | 400 | `primary_idx is not in this cluster` | D12 (`keep_one`) |

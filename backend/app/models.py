@@ -232,6 +232,11 @@ class Document(Base):
     # files' names, which carry the patient's name). Both NULL for a record uploaded as one PDF.
     received_on: Mapped[date | None] = mapped_column(Date)
     received_parts: Mapped[Any | None] = mapped_column(JSON)
+    # Typed by the same uploader: the date of the evaluation appointment the records are for, and
+    # who sent them (received_files.PARTIES: defense, applicant, insurance, copy_service). Neither
+    # is reliably on the letter. Both NULL for a record uploaded as one PDF.
+    appointment_date: Mapped[date | None] = mapped_column(Date)
+    records_from: Mapped[str | None] = mapped_column(String(32))
 
     jobs: Mapped[list["Job"]] = relationship(
         "Job", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Job.id"
@@ -311,6 +316,8 @@ class Document(Base):
             "downloaded_at": _utc_iso(self.downloaded_at),
             "received_on": self.received_on.isoformat() if self.received_on else "",
             "received_parts": self.received_parts or [],
+            "appointment_date": self.appointment_date.isoformat() if self.appointment_date else "",
+            "records_from": self.records_from or "",
         }
 
 

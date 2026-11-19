@@ -64,6 +64,8 @@ describe("uploading", () => {
       firstName: " Patient",
       patientId: "801234",
       dateReceived: "2026-11-03",
+      appointmentDate: "2026-12-01",
+      recordsFrom: "insurance",
       files: [
         { file: files[0], kind: "email" },
         { file: files[1], kind: "advocacy_letter" },
@@ -83,6 +85,8 @@ describe("uploading", () => {
     expect(body.get("first_name")).toBe("Patient");
     expect(body.get("patient_id")).toBe("801234");
     expect(body.get("date_received")).toBe("2026-11-03");
+    expect(body.get("appointment_date")).toBe("2026-12-01");
+    expect(body.get("records_from")).toBe("insurance");
     expect(new Headers(init.headers).has("Content-Type")).toBe(false);
   });
 });
@@ -156,6 +160,8 @@ describe("uploading into another reviewer's account", () => {
       firstName: "Patient",
       patientId: "801234",
       dateReceived: "2026-11-03",
+      appointmentDate: "2026-12-01",
+      recordsFrom: "defense" as const,
       files: [{ file: pdf("a.pdf"), kind: "records" as const }],
     };
     await combineReceivedFiles({ ...upload, owner: 7 });

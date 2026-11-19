@@ -94,6 +94,10 @@ export type DocumentListItem = {
    *  (`YYYY-MM-DD`, "" otherwise) and each file's kind and pages in the joined PDF. */
   received_on?: string;
   received_parts?: { kind: string; start: number; end: number }[];
+  /** Typed with it: the appointment date (`YYYY-MM-DD`, "" otherwise) and who sent the records
+   *  (`defense`, `applicant`, `insurance`, `copy_service`, "" otherwise). */
+  appointment_date?: string;
+  records_from?: string;
 };
 
 /** A sub-document row in the review editor (ReviewRow.as_row()). */

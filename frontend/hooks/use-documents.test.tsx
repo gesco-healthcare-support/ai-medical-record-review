@@ -106,6 +106,8 @@ describe("useDocuments mutations", () => {
       firstName: "Patient",
       patientId: "801234",
       dateReceived: "2026-11-03",
+      appointmentDate: "2026-12-01",
+      recordsFrom: "applicant" as const,
       files: [{ file, kind: "records" as const }],
       owner: 7,
     };

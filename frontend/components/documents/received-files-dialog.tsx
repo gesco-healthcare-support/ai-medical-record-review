@@ -24,7 +24,10 @@ import {
   inReceivedOrder,
   RECEIVED_KIND_LABELS,
   RECEIVED_KINDS,
+  RECORDS_FROM,
+  RECORDS_FROM_LABELS,
   type ReceivedKind,
+  type RecordsFrom,
 } from "@/lib/received-files";
 
 function isPdf(file: File) {
@@ -33,11 +36,12 @@ function isPdf(file: File) {
 
 type Item = { key: number; file: File; kind: ReceivedKind };
 
-/** Put one record together from the files it arrived in (POST /api/documents/combine), the step
- *  the office used to do in Adobe Acrobat. The uploader gives the patient's name, ID and the day
- *  the records were received, and adds the files; each gets a kind guessed from its name, and the
- *  list keeps them in the order a record is put together (`lib/received-files.ts`). A kind can be
- *  corrected and a file moved; the server joins them exactly as listed. Nothing starts Identify.
+/** Put one record together from the files it arrived in (POST /api/documents/combine), the step the
+ *  office used to do in Adobe Acrobat. The uploader gives the patient's name, ID, the day the
+ *  records were received, the appointment date and who sent them, and adds the files; each gets a
+ *  kind guessed from its name, and the list keeps them in the order a record is put together
+ *  (`lib/received-files.ts`). A kind can be corrected and a file moved; the server joins them
+ *  exactly as listed. Nothing starts Identify.
  *
  *  `owner` is set when an admin opens it on another reviewer's records: the record goes into THAT
  *  account, and the dialog says so in its title, its description and its button. */
@@ -54,6 +58,8 @@ export function ReceivedFilesDialog({
   const [lastName, setLastName] = useState("");
   const [firstName, setFirstName] = useState("");
   const [dateReceived, setDateReceived] = useState("");
+  const [appointmentDate, setAppointmentDate] = useState("");
+  const [recordsFrom, setRecordsFrom] = useState<RecordsFrom | "">("");
   const [items, setItems] = useState<Item[]>([]);
   // What the uploader typed in the Patient ID box, or null while they have not touched it - the box
   // then shows the ID the files' names agree on.
@@ -70,7 +76,9 @@ export function ReceivedFilesDialog({
     firstName.trim() !== "" &&
     patientId !== "" &&
     !idTooLong &&
-    dateReceived !== "";
+    dateReceived !== "" &&
+    appointmentDate !== "" &&
+    recordsFrom !== "";
 
   /** Dismissing clears everything staged, whichever control did it (one function, so Cancel and
    *  Escape cannot drift apart again - #264's shape). */
@@ -78,6 +86,8 @@ export function ReceivedFilesDialog({
     setLastName("");
     setFirstName("");
     setDateReceived("");
+    setAppointmentDate("");
+    setRecordsFrom("");
     setItems([]);
     setTypedId(null);
     onOpenChange(false);
@@ -128,6 +138,9 @@ export function ReceivedFilesDialog({
         firstName,
         patientId,
         dateReceived,
+        appointmentDate,
+        // Send is enabled only when `ready`, so a party has been chosen.
+        recordsFrom: recordsFrom as RecordsFrom,
         files: items.map(({ file, kind }) => ({ file, kind })),
         owner: owner?.id ?? null,
       });
@@ -162,8 +175,8 @@ export function ReceivedFilesDialog({
           </DialogTitle>
           <DialogDescription>
             Add the files the records came in. They are put together into one record in the order
-            listed: cover sheet, internal email, advocacy letter, declaration, proof of service,
-            then the medical records. Change a file&apos;s kind or move it if it belongs elsewhere.
+            listed: advocacy letter, declaration, medical index, medical records, proof of service,
+            internal email. Change a file&apos;s kind or move it if it belongs elsewhere.
             {owner ? ` The record goes into ${owner.name}'s records, not yours.` : null}
           </DialogDescription>
         </DialogHeader>
@@ -223,6 +236,36 @@ export function ReceivedFilesDialog({
                 value={dateReceived}
                 onChange={(e) => setDateReceived(e.target.value)}
               />
+            </div>
+            <div className="grid gap-1.5">
+              <label className="ev-lbl" htmlFor="receivedAppointment">
+                Appointment date
+              </label>
+              <input
+                id="receivedAppointment"
+                type="date"
+                className="ev-inp"
+                value={appointmentDate}
+                onChange={(e) => setAppointmentDate(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <label className="ev-lbl" htmlFor="receivedFrom">
+                Records from
+              </label>
+              <select
+                id="receivedFrom"
+                className="ev-inp"
+                value={recordsFrom}
+                onChange={(e) => setRecordsFrom(e.target.value as RecordsFrom | "")}
+              >
+                <option value="">Choose...</option>
+                {RECORDS_FROM.map((party) => (
+                  <option key={party} value={party}>
+                    {RECORDS_FROM_LABELS[party]}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
