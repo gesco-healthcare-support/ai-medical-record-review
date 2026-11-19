@@ -15,7 +15,7 @@ const listDocuments = vi.fn();
 vi.mock("@/lib/documents-api", () => ({
   listDocuments: (...args: unknown[]) => listDocuments(...args),
   uploadDocument: vi.fn().mockResolvedValue({ id: "d1", page_count: 2 }),
-  aggregateDocuments: vi.fn().mockResolvedValue({ id: "d2", page_count: 4 }),
+  combineReceivedFiles: vi.fn().mockResolvedValue({ id: "d2", page_count: 4 }),
   deleteDocument: vi.fn().mockResolvedValue({ ok: true }),
   startIdentification: vi.fn().mockResolvedValue({ ok: true }),
   setCompleted: vi.fn().mockResolvedValue({}),
@@ -26,15 +26,15 @@ vi.mock("@/lib/admin-api", () => ({
 
 import { assignDocument } from "@/lib/admin-api";
 import {
-  aggregateDocuments,
+  combineReceivedFiles,
   deleteDocument,
   setCompleted,
   startIdentification,
   uploadDocument,
 } from "@/lib/documents-api";
 import {
-  useAggregateDocuments,
   useAssignDocument,
+  useCombineReceivedFiles,
   useDeleteDocument,
   useDocuments,
   useSetCompleted,
@@ -101,15 +101,19 @@ describe("useDocuments mutations", () => {
     // wrong api function would refetch just as happily and delete a record the reviewer uploaded.
     listDocuments.mockResolvedValue([]);
     const file = new File(["x"], "record.pdf", { type: "application/pdf" });
+    const combined = {
+      lastName: "Synthetic",
+      firstName: "Patient",
+      patientId: "801234",
+      dateReceived: "2026-11-03",
+      files: [{ file, kind: "records" as const }],
+      owner: 7,
+    };
 
     const cases = [
       { hook: useUploadDocument, args: { file } as unknown },
       { hook: useUploadDocument, args: { file, owner: 7, allowDuplicate: true } },
-      { hook: useAggregateDocuments, args: { name: "Combined record", files: [file] } },
-      {
-        hook: useAggregateDocuments,
-        args: { name: "For Brian", files: [file], owner: 7, patientId: "801234" },
-      },
+      { hook: useCombineReceivedFiles, args: combined },
       { hook: useAssignDocument, args: { id: "d1", owner: 7, allowDuplicate: false } },
       { hook: useDeleteDocument, args: "d1" },
       { hook: useStartIdentification, args: "d1" },
@@ -126,13 +130,7 @@ describe("useDocuments mutations", () => {
     // and the confirmation for someone else's.
     expect(uploadDocument).toHaveBeenCalledWith(file, {});
     expect(uploadDocument).toHaveBeenCalledWith(file, { owner: 7, allowDuplicate: true });
-    expect(aggregateDocuments).toHaveBeenCalledWith(
-      "Combined record",
-      [file],
-      undefined,
-      undefined,
-    );
-    expect(aggregateDocuments).toHaveBeenCalledWith("For Brian", [file], 7, "801234");
+    expect(combineReceivedFiles).toHaveBeenCalledWith(combined);
     // Assigning moves a record OUT of the list on screen, so it must refetch like the rest.
     expect(assignDocument).toHaveBeenCalledWith("d1", 7, false);
     expect(deleteDocument).toHaveBeenCalledWith("d1");

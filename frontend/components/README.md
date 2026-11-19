@@ -10,7 +10,7 @@ that read server state through the hooks in `frontend/hooks/` and call the backe
 | `app/` | App chrome shared by signed-in pages: the navy app bar, brand, back link, user menu |
 | `auth/` | The `/login` flow: sign in, register, forgot password, reset password, and their shared card |
 | `bundle/` | The category bundle builder used by `/diagnostics` and `/depositions` |
-| `documents/` | My documents at `/`: upload, split upload, the records table, status pill, confirm dialog |
+| `documents/` | My documents at `/`: upload, the received-files upload, the records table, status pill, confirm dialog |
 | `review/` | The record workbench at `/records/[id]`: rows editor, duplicates, summaries, export, PDF viewer |
 | `ui/` | Primitives: shadcn/ui wrappers over Radix (dialog, alert dialog, dropdown menu, button), the toaster, the tooltip provider, segmented tabs |
 

@@ -295,7 +295,7 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `patient_first_name` | String(255) | yes | - | Report header, PHI. NULL = never set. | `b1f4a7c9d2e3` |
 | `patient_last_name` | String(255) | yes | - | Report header, PHI. NULL = never set. | `b1f4a7c9d2e3` |
 | `patient_dob` | String(32) | yes | - | Report header, PHI. Free text, not a date type. | `b1f4a7c9d2e3` |
-| `patient_id` | String(32) | yes | - | The patient's ID (the office's account number for the patient), PHI: from the upload's file name or typed by the uploader (HTTP API D1, D2, D6b; `backend/app/services/patient_ids.py`). Finds the patient's other records in any account. Letters and digits, upper-case. NULL = not given. | `b7e3c19a4d52` |
+| `patient_id` | String(32) | yes | - | The patient's ID (the office's account number for the patient), PHI: from the upload's file name or typed by the uploader (HTTP API D1, D2, D2a, D6b; `backend/app/services/patient_ids.py`). Finds the patient's other records in any account. Letters and digits, upper-case. NULL = not given. | `b7e3c19a4d52` |
 | `law_firm` | String(512) | yes | - | Report header: the firm the records came from. | `b1f4a7c9d2e3` |
 | `attorney_name` | String(255) | yes | - | Report header: the person the records came from (`law_firm` is the company). | `c2f1a7d94e63` |
 | `doctor` | String(255) | yes | - | Report header: the evaluator the report is for. Selects the Word font through `backend/app/services/reporting.py` `DOCTOR_FONTS`. | `c2f1a7d94e63` |
@@ -305,6 +305,8 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `one_entry_per_date` | Boolean | no | ORM `False`, server `false` | The reviewer chose "One entry per date" for this record (a Kaiser or hospital record): its neighbouring same-date rows were merged, and the export folds every same-date entry but a diagnostic study's, an operative report's and a lab's into one. Kept when the record is identified again; turned off on the workbench. | `d6a2f9c3e481` |
 | `completed_at` | DateTime | yes | none | When the reviewer marked the record Completed on the records list (HTTP API D6a); NULL is not marked. Only the reviewer sets or clears it. | `f2c7a4e81b39` |
 | `downloaded_at` | DateTime | yes | none | When the review was last downloaded - the Word letter, the linked PDF or the ZIP (D20, D21, D23); NULL is never. Filled once from the audit log's past `export`, `export_pdf` and `export_zip` rows by the migration. | `f2c7a4e81b39` |
+| `received_on` | Date | yes | none | The day the records were received, as typed by whoever put the record together from the files it arrived in (HTTP API D2a). NULL for a record uploaded as one PDF. | `a3d8f5c27b14` |
+| `received_parts` | JSON | yes | none | The files a D2a record was put together from, in order: `[{kind, start, end}]` - the file's kind (`backend/app/services/received_files.py` `KINDS`) and its pages in the joined PDF. Never the files' names (they carry the patient's name). NULL for a record uploaded as one PDF. | `a3d8f5c27b14` |
 
 ORM helpers on `Document`: `active_job` (the job in `queued`, `running` or `paused`, else `None`)
 and `listing()` (the wire shape; see [HTTP API reference](http-api.md)).
@@ -551,8 +553,10 @@ Every `action` value written by the repository:
 | --- | --- |
 | `upload` | `backend/app/api/documents.py` (upload) |
 | `aggregate_upload` | `backend/app/api/documents.py` (aggregate upload) |
+| `combine_upload` | `backend/app/api/documents.py` (a record put together from the files it arrived in; `detail` is the file count) |
 | `delete` | `backend/app/api/documents.py` `delete_document()` |
 | `view_pdf` | `backend/app/api/documents.py` (PDF view) |
+| `download_raw` | `backend/app/api/documents.py` (the record's PDF as received, downloaded) |
 | `view_record` | `backend/app/api/documents.py` (an admin opening another account's record) |
 | `header.edit`, `header.extract` | `backend/app/api/documents.py` (header save and detection; `detail` names the fields, never their values) |
 | `segment.start`, `dedup.start` | `backend/app/api/documents.py` (job start) |

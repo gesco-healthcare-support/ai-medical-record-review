@@ -29,6 +29,13 @@ backend keeps no copy of the bundle category lists; the zip route is handed them
 There is no CSV export. `reporting.py`'s module docstring records that the old CSV and on-disk
 export routes were dropped.
 
+Not a deliverable, and not prepared: "Download raw PDF" in a record's row menu on My documents
+(`GET /api/documents/{id}/raw`) saves the record's PDF exactly as it was uploaded - for a record put
+together from the files it arrived in, the joined file - under the record's file name, for the
+office's backup of the records as received. The file is already on disk, so it is served straight
+from there to a plain link (no Blob, as below) and nothing is parked; it does not stamp
+`downloaded_at`, which is about the review.
+
 ## How the letter entries are prepared
 
 The Word letter and the linked PDF are the same letter in two formats, so both are built from one

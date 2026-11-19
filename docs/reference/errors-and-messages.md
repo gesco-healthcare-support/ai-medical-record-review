@@ -50,9 +50,14 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | --- | --- | --- |
 | 400 | `no PDF uploaded` | D1 |
 | 400 | `file is not a readable PDF` | D1 |
-| 400 | `no PDFs uploaded` | D2 |
+| 400 | `no PDFs uploaded` | D2, D2a |
 | 400 | `no readable PDFs uploaded` | D2 |
-| 400 | `A patient ID is at most 32 letters and digits.` | D1, D2, D6b |
+| 400 | `Choose what each file is.` | D2a |
+| 400 | `Enter the patient's last and first name.` | D2a |
+| 400 | `Enter the patient ID.` | D2a |
+| 400 | `Enter the date the records were received.` | D2a |
+| 400 | `File <n> is not a readable PDF. Nothing was uploaded.` | D2a |
+| 400 | `A patient ID is at most 32 letters and digits.` | D1, D2, D2a, D6b |
 | 400 | `primary_idx is not in this cluster` | D12 (`keep_one`) |
 | 400 | `idx is not in this cluster` | D12 (`keep_another`, `remove_member`) |
 | 400 | `keep one copy first, then keep another` | D12 (`keep_another`) |
@@ -237,7 +242,7 @@ reach the reviewer as the call site's fallback.
 | `frontend/components/documents/documents-view.tsx` | Start identification | Could not start identification. |
 | `frontend/components/documents/documents-view.tsx` | Delete | Could not delete the record. |
 | `frontend/components/documents/documents-view.tsx` | Mark or clear Completed | Could not change the Completed mark. |
-| `frontend/components/documents/split-upload-dialog.tsx` | Combine several PDFs | Could not combine the records. |
+| `frontend/components/documents/received-files-dialog.tsx` | Put a record together from the files it arrived in | Could not combine the files. |
 | `frontend/components/admin/admin-view.tsx` | Update a category | Could not update the category. |
 | `frontend/components/admin/admin-view.tsx` | Reprocess | Could not reprocess that record. |
 | `frontend/components/admin/category-dialog.tsx` | Save a category | Could not save the category. |
