@@ -409,18 +409,43 @@ def _draw_top(page, sheet: Sheet) -> None:
         x = _text(page, x, 135, word, _BOLD) + 14
 
 
-def _draw_table(page, sheet: Sheet) -> None:
+def _number(value: int | None) -> str:
+    return "" if value is None else str(value)
+
+
+def _draw_grid(page) -> None:
+    """The party table's lines and its column headings."""
     bottom = _HEADER_BOTTOM + _ROW_H * len(_PARTY_ROWS)
     for x in _COLS:
         page.draw_line((x, _TABLE_TOP), (x, bottom), color=_BLACK, width=_LINE_W)
-    for y in [_TABLE_TOP, _HEADER_BOTTOM] + [
-        _HEADER_BOTTOM + _ROW_H * (i + 1) for i in range(len(_PARTY_ROWS))
-    ]:
+    rows = [_HEADER_BOTTOM + _ROW_H * (i + 1) for i in range(len(_PARTY_ROWS))]
+    for y in [_TABLE_TOP, _HEADER_BOTTOM, *rows]:
         page.draw_line((_COLS[0], y), (_COLS[-1], y), color=_BLACK, width=_LINE_W)
     for column, lines in enumerate(_HEADERS, start=1):
         for line_no, line in enumerate(lines):
             _text(page, _COLS[column] + 4, _TABLE_TOP + 12.5 + 14.2 * line_no, line, _BOLD, 10)
 
+
+def _fill_row(page, y: float, sheet: Sheet) -> None:
+    """The sender's row: the declared count, the deposition pages, Sub-rosa (none comes with the
+    records), the office count, the reason the counts differ and the date received. Whether the
+    declaration is valid is left for a person to circle."""
+    values = (
+        _number(sheet.declared_pages),
+        _number(sheet.depo_pages),
+        "None",
+        _number(sheet.office_count),
+        sheet.discrepancy_reason,
+    )
+    for column, value in enumerate(values, start=1):
+        room = _COLS[column + 1] - _COLS[column] - 8
+        shown, size = _fitted(value, _REGULAR, 11, room)
+        _text(page, _COLS[column] + 4, y, shown, _REGULAR, size)
+    _text(page, _COLS[7] + 4, y, sheet.date_received, _REGULAR, 11)
+
+
+def _draw_table(page, sheet: Sheet) -> None:
+    _draw_grid(page)
     for index, (party, label) in enumerate(_PARTY_ROWS):
         y = _HEADER_BOTTOM + _ROW_H * index + 11.5
         mine = party == sheet.records_from
@@ -428,20 +453,8 @@ def _draw_table(page, sheet: Sheet) -> None:
         _text(page, _COLS[0] + 16, y, label, _BOLD, 10.5)
         _text(page, _COLS[6] + 8, y, "YES", _BOLD, 11)
         _text(page, _COLS[6] + 46, y, "NO", _BOLD, 11)
-        if not mine:
-            continue
-        values = (
-            "" if sheet.declared_pages is None else str(sheet.declared_pages),
-            "" if sheet.depo_pages is None else str(sheet.depo_pages),
-            "None",
-            "" if sheet.office_count is None else str(sheet.office_count),
-            sheet.discrepancy_reason,
-        )
-        for column, value in enumerate(values, start=1):
-            room = _COLS[column + 1] - _COLS[column] - 8
-            shown, size = _fitted(value, _REGULAR, 11, room)
-            _text(page, _COLS[column] + 4, y, shown, _REGULAR, size)
-        _text(page, _COLS[7] + 4, y, sheet.date_received, _REGULAR, 11)
+        if mine:
+            _fill_row(page, y, sheet)
 
 
 def _draw_billing(page) -> None:
