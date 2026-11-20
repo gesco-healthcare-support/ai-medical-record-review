@@ -41,6 +41,7 @@ from app.errors import (
 )
 from app.models import AuditLog, Document, Job, ReviewRow, SegmentRow, Summary, User
 from app.schemas.documents import (
+    BillingPayload,
     BundlePayload,
     CancelPayload,
     CompletedPayload,
@@ -57,6 +58,7 @@ from app.schemas.documents import (
     SummaryEditPayload,
 )
 from app.services import (
+    billing_sheet,
     bundles,
     catalog,
     downloads,
@@ -629,6 +631,23 @@ _COMBINE_ID_DETAIL = "Enter the patient ID."
 _COMBINE_DATE_DETAIL = "Enter the date the records were received."
 _COMBINE_APPOINTMENT_DETAIL = "Enter the appointment date."
 _COMBINE_PARTY_DETAIL = "Choose who sent the records."
+_BILLING_VISIT_DETAIL = "Choose the type of visit."
+_BILLING_SOURCE_DETAIL = "Choose E-DATA, IN-HOUSE or LEONARDO."
+_BILLING_INTERPRETER_DETAIL = "Choose whether an interpreter is needed."
+_BILLING_DOCTOR_DETAIL = "Choose the doctor from the list."
+_BILLING_CLAIM_DETAIL = "The claim numbers are at most 255 characters."
+_BILLING_PREVIOUS_DETAIL = "Enter the previous office visit as a date."
+_BILLING_DECLARED_DETAIL = "Enter the pages the declaration states as a whole number."
+_BILLING_REASON_DETAIL = "The reason for the discrepancy is at most 255 characters."
+_BILLING_OFFICE_DETAIL = "Enter the office count as a whole number."
+_BILLING_DEPO_DETAIL = "Enter the deposition pages as a whole number."
+_BILLING_UNREAD_DETAIL = (
+    "The record's pages are still being read. The billing sheet can be downloaded once they are."
+)
+# The longest a typed text on the billing sheet may be (the columns are String(255)).
+_BILLING_TEXT_MAX = 255
+# A typed page count above this is a typing slip, not a record.
+_BILLING_COUNT_MAX = 1_000_000
 
 
 def _received_kinds(tokens: list[str], kinds: list[str]) -> list[str]:
@@ -654,6 +673,79 @@ def _records_from(value: str) -> str:
     if party not in received_files.PARTIES:
         raise HTTPException(status_code=400, detail=_COMBINE_PARTY_DETAIL)
     return party
+
+
+def _choice(value: str, choices: tuple[str, ...], detail: str, *, required: bool) -> str | None:
+    """One of ``choices``, or None for a blank one that is not ``required``; a 400 otherwise."""
+    value = value.strip()
+    if not value and not required:
+        return None
+    if value not in choices:
+        raise HTTPException(status_code=400, detail=detail)
+    return value
+
+
+def _yes_no(value: str, *, required: bool) -> bool | None:
+    """``yes`` or ``no`` as True or False, or None for a blank one that is not ``required``."""
+    answer = _choice(value, ("yes", "no"), _BILLING_INTERPRETER_DETAIL, required=required)
+    return None if answer is None else answer == "yes"
+
+
+def _optional_date(value: str, detail: str) -> date | None:
+    """A ``YYYY-MM-DD`` date, or None when blank; a 400 with ``detail`` otherwise."""
+    return _form_date(value, detail) if value.strip() else None
+
+
+def _whole_number(value: str, detail: str) -> int | None:
+    """A typed count: a whole number from 0, or None when blank; a 400 with ``detail`` otherwise."""
+    value = value.strip()
+    if not value:
+        return None
+    if not value.isdigit() or int(value) > _BILLING_COUNT_MAX:
+        raise HTTPException(status_code=400, detail=detail)
+    return int(value)
+
+
+def _short_text(value: str, detail: str) -> str | None:
+    """Typed text of at most ``_BILLING_TEXT_MAX`` characters, or None when blank."""
+    value = value.strip()
+    if len(value) > _BILLING_TEXT_MAX:
+        raise HTTPException(status_code=400, detail=detail)
+    return value or None
+
+
+def _billing_at_upload(
+    *,
+    visit_type: str,
+    appointment_date: str,
+    doctor: str,
+    review_source: str,
+    interpreter: str,
+    claim_numbers: str,
+    previous_visit: str,
+    declared_pages: str,
+) -> dict:
+    """The billing sheet's fields as the uploader typed them on ``POST .../combine``, checked:
+    the type of visit, who reviews the records and whether an interpreter is needed are required,
+    and so is the appointment date unless the visit is a supplemental report, which has none. The
+    doctor, the claim numbers, the previous office visit and the declared page count may be blank.
+    """
+    visit = _choice(visit_type, billing_sheet.VISIT_TYPES, _BILLING_VISIT_DETAIL, required=True)
+    appointment = None
+    if visit != billing_sheet.SUPPLEMENTAL:
+        appointment = _form_date(appointment_date, _COMBINE_APPOINTMENT_DETAIL)
+    return {
+        "visit_type": visit,
+        "appointment_date": appointment,
+        "doctor": _choice(doctor, DOCTORS, _BILLING_DOCTOR_DETAIL, required=False),
+        "review_source": _choice(
+            review_source, billing_sheet.REVIEW_SOURCES, _BILLING_SOURCE_DETAIL, required=True
+        ),
+        "interpreter": _yes_no(interpreter, required=True),
+        "claim_numbers": _short_text(claim_numbers, _BILLING_CLAIM_DETAIL),
+        "previous_visit": _optional_date(previous_visit, _BILLING_PREVIOUS_DETAIL),
+        "declared_pages": _whole_number(declared_pages, _BILLING_DECLARED_DETAIL),
+    }
 
 
 def _staged_files(user: User, tokens: list[str]) -> list[Path]:
@@ -783,14 +875,21 @@ def unstage_received_file(token: str, user: User = Depends(current_active_user))
     return {"ok": True}
 
 
+@router.get("/combine/doctors")
+def combine_doctors():
+    """The doctors the upload dialog offers - the header's own list (``reporting.DOCTORS``), so the
+    two can never differ. The dialog has no record yet to read it from."""
+    return {"doctors": list(DOCTORS)}
+
+
 @router.post(
     "/combine",
     status_code=status.HTTP_201_CREATED,
     responses={
         400: {
             "description": "No files, a file without its kind or no longer staged, a file that "
-            "is not a readable PDF, or the patient's name, ID, the date received, the appointment "
-            "date or who sent the records missing."
+            "is not a readable PDF, the patient's name, ID, the date received or who sent the "
+            "records missing, or a billing sheet field missing or not one the sheet can hold."
         },
         403: {"description": "A non-admin named another reviewer's account."},
         404: {"description": "The reviewer named is not an active account."},
@@ -805,6 +904,13 @@ def combine_received_files(
     date_received: str = Form(default=""),
     appointment_date: str = Form(default=""),
     records_from: str = Form(default=""),
+    visit_type: str = Form(default=""),
+    doctor: str = Form(default=""),
+    review_source: str = Form(default=""),
+    interpreter: str = Form(default=""),
+    claim_numbers: str = Form(default=""),
+    previous_visit: str = Form(default=""),
+    declared_pages: str = Form(default=""),
     owner: int | None = Form(default=None),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
@@ -814,11 +920,14 @@ def combine_received_files(
     ``tokens`` name files the caller staged with ``POST .../combine/files``; they are joined in
     the order sent - the order the uploader confirmed - and ``kinds`` says what each one is, one per
     file. The staged files are deleted once the record is stored. The patient's last and first
-    name, the patient ID, the date the records were received, the appointment date and who sent
-    the records are required: the first four name the record the way the office names its files
-    (``Last_First-ID-MMDDYYYY``) and fill its header, and all of them feed the office's billing
-    sheet. ``owner`` (admins only) puts the record in another reviewer's account, as on the single
-    upload.
+    name, the patient ID, the date the records were received and who sent the records are
+    required: the first four name the record the way the office names its files
+    (``Last_First-ID-MMDDYYYY``) and fill its header. The rest is the office's billing sheet
+    (``services/billing_sheet.py``; ``_billing_at_upload`` says which fields are required): the
+    type of visit, the appointment date (none for a supplemental report), the doctor - which is
+    also the header's -, who reviews the records, the interpreter, the claim numbers, the previous
+    office visit and the page count the sender's declaration states. ``owner`` (admins only) puts
+    the record in another reviewer's account, as on the single upload.
 
     The joined file is the record as received: it is read like any other upload, identified when
     the reviewer starts Identify, and ``GET .../raw`` downloads it as it is. No duplicate check: the
@@ -831,7 +940,16 @@ def combine_received_files(
     if not typed_id:
         raise HTTPException(status_code=400, detail=_COMBINE_ID_DETAIL)
     received = _form_date(date_received, _COMBINE_DATE_DETAIL)
-    appointment = _form_date(appointment_date, _COMBINE_APPOINTMENT_DETAIL)
+    billing = _billing_at_upload(
+        visit_type=visit_type,
+        appointment_date=appointment_date,
+        doctor=doctor,
+        review_source=review_source,
+        interpreter=interpreter,
+        claim_numbers=claim_numbers,
+        previous_visit=previous_visit,
+        declared_pages=declared_pages,
+    )
     party = _records_from(records_from)
     reviewer = upload_owner(session, user, owner)
     staged = _staged_files(user, tokens)
@@ -858,8 +976,8 @@ def combine_received_files(
         patient_last_name=last,
         received_on=received,
         received_parts=[part.as_dict() for part in parts],
-        appointment_date=appointment,
         records_from=party,
+        **billing,
     )
     session.add(document)
     session.commit()
