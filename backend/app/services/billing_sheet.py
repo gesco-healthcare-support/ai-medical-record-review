@@ -2,7 +2,8 @@
 
 Each evaluation's paperwork starts with a one-page billing sheet. Its TOP part says what came in;
 its bottom part (billing codes and the total) is billing's and is printed blank. The office filled
-the top by hand: the doctor, the appointment date (DOS), the patient, the type of visit, and one
+the top by hand: the doctor (named in full at the top, ``reporting.DOCTOR_NAMES``; one form for
+every doctor, printed in black), the appointment date (DOS), the patient, the type of visit, and one
 row of the party who sent the records - the page count the sender's declaration states, the
 deposition pages, the office's own page count, and why the two counts differ.
 
@@ -41,6 +42,7 @@ from sqlalchemy import select
 
 from app.models import Document, PageText
 from app.services.ocr import has_condensed_sheets
+from app.services.reporting import DOCTOR_NAMES
 
 # The type of visit, in the office's order. A supplemental report has no appointment: its DOS is
 # printed as SUPP too (the office's answer, 2026-11-19).
@@ -218,6 +220,15 @@ def dos(visit_type: str | None, appointment: date | None) -> str:
     return SUPPLEMENTAL if visit_type == SUPPLEMENTAL else us_date(appointment)
 
 
+def doctor_name(doctor: str | None) -> str:
+    """The sheet's header: the doctor's full name from the office's list. A doctor still stored on
+    a record but no longer on the list prints as stored, after "Dr."; no doctor prints nothing."""
+    doctor = (doctor or "").strip()
+    if not doctor:
+        return ""
+    return DOCTOR_NAMES.get(doctor, f"Dr. {doctor}")
+
+
 def patient_name(last: str | None, first: str | None) -> str:
     """``Last, First`` - or whichever part is known."""
     return ", ".join(part for part in ((last or "").strip(), (first or "").strip()) if part)
@@ -257,8 +268,10 @@ def sheet_for(document: Document, counts: Counts | None) -> Sheet:
 # a value too long for its space is set smaller, and cut only if it still does not fit.
 
 _PAGE_W, _PAGE_H = 612, 792
-_BOLD, _REGULAR, _BOLD_ITALIC = "hebo", "helv", "hebi"
+_BOLD, _REGULAR, _BOLD_ITALIC, _ITALIC = "hebo", "helv", "hebi", "heit"
 _LINE_W = 0.6
+# The doctor's name may run from the left margin to just before "DOS:" on the same line.
+_DOCTOR_ROOM = 400
 _BLACK = (0, 0, 0)
 
 # The party table: its column edges, the header's top and bottom, and one row's height.
@@ -391,8 +404,8 @@ def _draw_top(page, sheet: Sheet) -> None:
     chosen = REVIEW_SOURCE_LABELS.get(sheet.review_source or "")
     _choices(page, (_PAGE_W - _width(title, _BOLD, 16)) / 2, 26, sources, chosen, 16)
 
-    doctor = f"Dr. {sheet.doctor}" if sheet.doctor else ""
-    _text(page, 20.8, 58, _fitted(doctor, _BOLD, 22, 300)[0], _BOLD, 22)
+    doctor, size = _fitted(doctor_name(sheet.doctor), _BOLD, 22, _DOCTOR_ROOM)
+    _text(page, 20.8, 58, doctor, _BOLD, size)
     _field(page, 448, 56, "DOS:", sheet.dos, 592)
     _field(page, 356, 76, "PREVIOUS OFFICE VISIT:", sheet.previous_visit, 592)
 
@@ -457,6 +470,15 @@ def _draw_table(page, sheet: Sheet) -> None:
             _fill_row(page, y, sheet)
 
 
+def _price(page, x: float, y: float, price: str) -> None:
+    """A billing code's price as the form prints it: the amount in bold, what it includes
+    ("-includes 200 pages of records") in italics."""
+    amount, dash, includes = price.partition("-")
+    x = _text(page, x, y, amount, _BOLD, 9)
+    if dash:
+        _text(page, x, y, dash + includes, _ITALIC, 9)
+
+
 def _draw_billing(page) -> None:
     y = 285.0
     _text(page, 90, y, "Billing Code:", _BOLD, 11)
@@ -472,7 +494,7 @@ def _draw_billing(page) -> None:
             _radio(page, 90, y, False)
             _text(page, 101, y, code, _BOLD, 10)
             _text(page, 198, y, description, _REGULAR, 9)
-            _text(page, 378, y, price, _BOLD, 9)
+            _price(page, 378, y, price)
             y += 13.4
     _text(
         page, 36, 648, "TOTAL BILL: ________________________________   Plus Xray if Any:", _BOLD, 11

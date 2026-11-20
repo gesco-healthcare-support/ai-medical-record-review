@@ -17,7 +17,7 @@ from app.config import get_settings
 from app.db import get_sessionmaker
 from app.models import AuditLog, Document, PageText
 from app.services import billing_sheet, received_files
-from app.services.reporting import DOCTORS
+from app.services.reporting import DOCTOR_FONTS, DOCTOR_NAMES, DOCTORS
 from app.worker.queues import OCR_QUEUE, get_redis
 from tests.conftest import lanes
 from tests.test_received_files import _FIELDS, _combine, _document, _login, _user
@@ -242,7 +242,7 @@ def test_the_sheet_is_one_page_with_its_fields_written_on_it():
 
     assert pages == 1
     for written in (
-        f"Dr. {DOCTORS[0]}",
+        DOCTOR_NAMES[DOCTORS[0]],
         "12/03/2026",
         "Sample, Pat",
         "A1D5",
@@ -260,6 +260,54 @@ def test_the_sheet_is_one_page_with_its_fields_written_on_it():
         "Billing Code:",
     ):
         assert written in text, written
+
+
+def test_every_doctor_on_the_list_has_the_name_the_sheet_prints():
+    # GUARD: one list, two halves - a doctor added for the header's font must not print a blank
+    # (or a surname) at the top of the billing sheet, nor a name be kept for a doctor removed.
+    assert set(DOCTOR_NAMES) == set(DOCTOR_FONTS)
+    for surname, name in DOCTOR_NAMES.items():
+        assert surname.upper() in name, surname
+        assert name == name.upper(), surname
+
+
+@pytest.mark.parametrize("surname", DOCTORS)
+def test_the_sheet_is_headed_by_the_doctors_full_name_at_full_size(surname):
+    # DEMONSTRATES: the office's form names its doctor in full at the top (2026-11-20).
+    sheet = billing_sheet.Sheet(doctor=surname)
+
+    with pymupdf.open(stream=billing_sheet.render(sheet), filetype="pdf") as pdf:
+        spans = [
+            span
+            for block in pdf[0].get_text("dict")["blocks"]
+            for line in block.get("lines", [])
+            for span in line["spans"]
+            if span["text"].strip() == DOCTOR_NAMES[surname]
+        ]
+
+    assert len(spans) == 1
+    assert round(spans[0]["size"]) == 22
+
+
+def test_a_doctor_no_longer_on_the_list_prints_as_stored():
+    assert billing_sheet.doctor_name("Retired") == "Dr. Retired"
+    assert billing_sheet.doctor_name("  ") == ""
+    assert billing_sheet.doctor_name(None) == ""
+
+
+def test_a_price_prints_its_amount_in_bold_and_what_it_includes_in_italics():
+    # The office's form: "$2,015.00" bold, "-includes 200 pages of records" in italics.
+    with pymupdf.open(stream=billing_sheet.render(billing_sheet.Sheet()), filetype="pdf") as pdf:
+        fonts = {
+            span["text"].strip(): span["font"]
+            for block in pdf[0].get_text("dict")["blocks"]
+            for line in block.get("lines", [])
+            for span in line["spans"]
+        }
+
+    assert "Bold" in fonts["$2,015.00"]
+    assert "Oblique" in fonts["-includes 200 pages of records"]
+    assert "Bold" in fonts["$503.75"]
 
 
 def test_a_long_value_is_made_to_fit_its_space():
