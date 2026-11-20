@@ -72,6 +72,24 @@ DOCTOR_FONTS: dict[str, str] = {
 
 DOCTORS: tuple[str, ...] = tuple(DOCTOR_FONTS)
 
+# Each doctor's name as the office prints it at the top of its billing sheet
+# (`services/billing_sheet.py`) - the office's own list, 2026-11-20. Keyed like `DOCTOR_FONTS`,
+# the value stored in `documents.doctor`; a test keeps the two lists' keys equal, so a doctor added
+# to one cannot be missing from the other.
+DOCTOR_NAMES: dict[str, str] = {
+    "Falkinstein": "YURI FALKINSTEIN, MD",
+    "Pelton": "KEVIN PELTON, MD",
+    "Longacre": "MATTHEW LONGACRE, MD",
+    "Mikhael": "MARK MIKHAEL, MD",
+    "Hekmat": "FARSHID HEKMAT, MD",
+    "Andersen": "JARON ANDERSEN, MD",
+    "Nguyen": "JAMES NGUYEN, MD",
+    "Ziv": "ELI ZIV, MD",
+    "Grossman": "BRIAN S GROSSMAN, MD",
+    "Perez": "MARGARET E PEREZ, DC",
+    "Ahdoot": "ELI AHDOOT, DO",
+}
+
 
 def report_font(doctor: str | None) -> str:
     """The typeface for ``doctor``, or the house default for an unknown or absent one.
