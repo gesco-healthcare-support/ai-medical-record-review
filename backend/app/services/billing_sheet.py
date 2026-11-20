@@ -88,7 +88,8 @@ _CONDENSED_PAGES = 4
 @dataclass(frozen=True)
 class Counts:
     """The two counts the sheet carries. ``office`` is every page received but the internal email
-    and the envelope, a condensed deposition sheet counting four; ``depo`` the pages of testimony."""
+    and the envelope, a condensed deposition sheet counting four; ``depo`` the pages of
+    testimony."""
 
     office: int
     depo: int
@@ -331,9 +332,12 @@ def _fitted(text: str, font: str, size: float, width: float) -> tuple[str, float
     """``text`` and a font size at which it fits ``width``: smaller down to 6 points, then cut."""
     while size > 6 and _width(text, font, size) > width:
         size -= 0.5
-    while text and _width(text, font, size) > width:
-        text = text[:-2] + "…" if len(text) > 1 else ""
-    return text, size
+    if _width(text, font, size) <= width:
+        return text, size
+    kept = text
+    while kept and _width(kept + "...", font, size) > width:
+        kept = kept[:-1]
+    return (kept.rstrip() + "..." if kept else ""), size
 
 
 def _text(page, x: float, y: float, text: str, font: str = _REGULAR, size: float = 12) -> float:

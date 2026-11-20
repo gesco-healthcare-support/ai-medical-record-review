@@ -18,6 +18,7 @@ import uuid
 import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -41,6 +42,7 @@ from app.errors import (
 )
 from app.models import AuditLog, Document, Job, ReviewRow, SegmentRow, Summary, User
 from app.schemas.documents import (
+    BillingPayload,
     BundlePayload,
     CancelPayload,
     CompletedPayload,
@@ -1339,6 +1341,122 @@ def _remark_reviewed_before(session: Session, document: Document) -> None:
         )
 
 
+def _iso(value: date | None) -> str:
+    """A date as ``YYYY-MM-DD`` (the browser's date box), or empty."""
+    return value.isoformat() if value else ""
+
+
+def _count_text(value: int | None) -> int | str:
+    """A stored count, or empty for none: the box is blank, never a real answer of zero."""
+    return "" if value is None else value
+
+
+def _yes_no_text(value: bool | None) -> str:
+    """``yes`` / ``no`` for a stored answer, or empty for none."""
+    if value is None:
+        return ""
+    return "yes" if value else "no"
+
+
+def _billing_response(session: Session, document: Document) -> dict:
+    """The record's billing sheet as the billing sheet dialog shows and edits it (D6c, D6d): the
+    typed fields as strings, empty for unset; the two counts worked out from the record
+    (``counted``, null while ``pages_unread`` of its ``pages_counted`` pages wait to be read); the
+    counts typed over them; and the doctors the dropdown offers."""
+    read = billing_sheet.reading(session, document)
+    counts = read.counts
+    return {
+        "visit_type": document.visit_type or "",
+        "appointment_date": _iso(document.appointment_date),
+        "doctor": document.doctor or "",
+        "review_source": document.review_source or "",
+        "interpreter": _yes_no_text(document.interpreter),
+        "claim_numbers": document.claim_numbers or "",
+        "previous_visit": _iso(document.previous_visit),
+        "declared_pages": _count_text(document.declared_pages),
+        "discrepancy_reason": document.discrepancy_reason or "",
+        "records_from": document.records_from or "",
+        "received_on": _iso(document.received_on),
+        "office_count": _count_text(document.office_count),
+        "depo_pages": _count_text(document.depo_pages),
+        "counted": None if counts is None else {"office": counts.office, "depo": counts.depo},
+        "pages_counted": read.counted,
+        "pages_unread": read.unread,
+        "doctors": list(DOCTORS),
+    }
+
+
+def _billing_fields(payload: BillingPayload, document: Document) -> dict:
+    """The sheet's fields as typed on D6d, checked; a 400 for a value the sheet cannot hold. Every
+    field may be blank. A supplemental report has no appointment date, so its date is dropped. A
+    doctor already stored that is not on today's list is kept as it is."""
+    doctors = DOCTORS + ((document.doctor,) if document.doctor else ())
+    visit = _choice(
+        payload.visit_type, billing_sheet.VISIT_TYPES, _BILLING_VISIT_DETAIL, required=False
+    )
+    appointment = _optional_date(payload.appointment_date, _COMBINE_APPOINTMENT_DETAIL)
+    return {
+        "visit_type": visit,
+        "appointment_date": None if visit == billing_sheet.SUPPLEMENTAL else appointment,
+        "doctor": _choice(payload.doctor, doctors, _BILLING_DOCTOR_DETAIL, required=False),
+        "review_source": _choice(
+            payload.review_source,
+            billing_sheet.REVIEW_SOURCES,
+            _BILLING_SOURCE_DETAIL,
+            required=False,
+        ),
+        "interpreter": _yes_no(payload.interpreter, required=False),
+        "claim_numbers": _short_text(payload.claim_numbers, _BILLING_CLAIM_DETAIL),
+        "previous_visit": _optional_date(payload.previous_visit, _BILLING_PREVIOUS_DETAIL),
+        "declared_pages": _whole_number(payload.declared_pages, _BILLING_DECLARED_DETAIL),
+        "discrepancy_reason": _short_text(payload.discrepancy_reason, _BILLING_REASON_DETAIL),
+        "records_from": _choice(
+            payload.records_from, received_files.PARTIES, _COMBINE_PARTY_DETAIL, required=False
+        ),
+        "office_count": _whole_number(payload.office_count, _BILLING_OFFICE_DETAIL),
+        "depo_pages": _whole_number(payload.depo_pages, _BILLING_DEPO_DETAIL),
+    }
+
+
+def _store_billing(session: Session, document: Document, user: User, fields: dict) -> None:
+    """Store the sheet's fields and audit which changed - by name, never the values, which are the
+    patient's. An unset field and a blank one are the same nothing. `audit` commits both."""
+    changed = sorted(
+        name for name, value in fields.items() if (getattr(document, name) or None) != value
+    )
+    for name, value in fields.items():
+        setattr(document, name, value)
+    audit(session, "billing.edit", user.id, document.id, detail="changed=" + ",".join(changed))
+
+
+@router.get("/{document_id}/billing")
+def get_billing_sheet(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+):
+    """The record's billing sheet (``services/billing_sheet.py``), for the billing sheet dialog:
+    what the uploader typed, and the office count and deposition pages worked out from the record
+    once its pages are read."""
+    return _billing_response(session, document)
+
+
+@router.put(
+    "/{document_id}/billing",
+    responses={400: {"description": "A field holds a value the billing sheet cannot."}},
+)
+def set_billing_sheet(
+    payload: BillingPayload,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Edit the record's billing sheet: every field the uploader typed, the reason the counts
+    differ, and a count typed over a worked-out one (blank goes back to the worked-out count).
+    Allowed while a job runs - it touches no row. Answers as ``GET``."""
+    _store_billing(session, document, user, _billing_fields(payload, document))
+    return _billing_response(session, document)
+
+
 @router.put("/{document_id}/completed")
 def set_completed(
     payload: CompletedPayload,
@@ -1436,6 +1554,48 @@ def download_raw_pdf(
         filename=_raw_filename(document),
         content_disposition_type="attachment",
         headers={"Cache-Control": "no-store"},
+    )
+
+
+def _billing_filename(document: Document) -> str:
+    """``<record name> Billing Sheet.pdf``, after the record's own file name."""
+    return _raw_filename(document)[: -len(".pdf")] + " Billing Sheet.pdf"
+
+
+def _attachment(filename: str) -> str:
+    """A ``Content-Disposition`` for a download named ``filename``, as Starlette writes one: plain
+    when the name is plain, else the RFC 5987 form a browser decodes."""
+    quoted = quote(filename)
+    if quoted == filename:
+        return f'attachment; filename="{filename}"'
+    return f"attachment; filename*=utf-8''{quoted}"
+
+
+@router.get(
+    "/{document_id}/billing-sheet",
+    responses={409: {"description": "The record's pages are still being read."}},
+)
+def download_billing_sheet(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """The record's billing sheet as a one-page PDF (``billing_sheet.render``), named after the
+    record. Its counts need every counted page read, so while the record's pages are still being
+    read it is 409 - unless both counts were typed on the sheet. Not cached by the browser; it
+    leaves ``downloaded_at`` alone (nothing of the review is in it)."""
+    read = billing_sheet.reading(session, document)
+    if read.counts is None and (document.office_count is None or document.depo_pages is None):
+        raise HTTPException(status_code=409, detail=_BILLING_UNREAD_DETAIL)
+    pdf = billing_sheet.render(billing_sheet.sheet_for(document, read.counts))
+    audit(session, "download_billing", user.id, document.id)
+    return Response(
+        content=pdf,
+        media_type=_PDF_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": _attachment(_billing_filename(document)),
+            "Cache-Control": "no-store",
+        },
     )
 
 
