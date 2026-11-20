@@ -93,15 +93,19 @@ async function fillPatient(
   if (id) fireEvent.change(screen.getByLabelText("Patient ID"), { target: { value: "801234" } });
   fireEvent.change(screen.getByLabelText("Date received"), { target: { value: "2026-11-03" } });
   await user.selectOptions(screen.getByLabelText("Records from"), "applicant");
-  await fillBilling(user);
+  fillBilling();
 }
 
-/** The billing sheet's required fields: type of visit, appointment date, reviewed by, interpreter. */
-async function fillBilling(user: ReturnType<typeof userEvent.setup>) {
-  await user.selectOptions(screen.getByLabelText("Type of visit"), "QME");
-  fireEvent.change(screen.getByLabelText("Appointment date"), { target: { value: "2026-12-01" } });
-  await user.selectOptions(screen.getByLabelText("Reviewed by"), "in_house");
-  await user.selectOptions(screen.getByLabelText("Interpreter"), "no");
+/** The billing sheet's required fields: type of visit, appointment date, reviewed by, interpreter.
+ *  Set directly, like the boxes above: a click per option is what pushes these tests past their
+ *  time limit on a loaded machine. */
+function fillBilling() {
+  const set = (label: string, value: string) =>
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  set("Type of visit", "QME");
+  set("Appointment date", "2026-12-01");
+  set("Reviewed by", "in_house");
+  set("Interpreter", "no");
 }
 
 describe("ReceivedFilesDialog ordering", () => {
