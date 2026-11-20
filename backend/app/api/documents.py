@@ -41,7 +41,6 @@ from app.errors import (
 )
 from app.models import AuditLog, Document, Job, ReviewRow, SegmentRow, Summary, User
 from app.schemas.documents import (
-    BillingPayload,
     BundlePayload,
     CancelPayload,
     CompletedPayload,

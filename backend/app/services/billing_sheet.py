@@ -457,7 +457,9 @@ def _draw_billing(page) -> None:
             _text(page, 198, y, description, _REGULAR, 9)
             _text(page, 378, y, price, _BOLD, 9)
             y += 13.4
-    _text(page, 36, 648, "TOTAL BILL: ________________________________   Plus Xray if Any:", _BOLD, 11)
+    _text(
+        page, 36, 648, "TOTAL BILL: ________________________________   Plus Xray if Any:", _BOLD, 11
+    )
     x = _text(page, 36, 691, "APPROVED FOR REVIEW", _BOLD, 12) + 10
     for word in ("YES", "NO"):
         _radio(page, x, 691, False)
