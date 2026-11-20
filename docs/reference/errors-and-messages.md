@@ -56,8 +56,18 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 400 | `Enter the patient's last and first name.` | D2a |
 | 400 | `Enter the patient ID.` | D2a |
 | 400 | `Enter the date the records were received.` | D2a |
-| 400 | `Enter the appointment date.` | D2a |
-| 400 | `Choose who sent the records.` | D2a |
+| 400 | `Enter the appointment date.` | D2a (not for `SUPP`), D6d (a date that is not one) |
+| 400 | `Choose who sent the records.` | D2a, D6d |
+| 400 | `Choose the type of visit.` | D2a, D6d |
+| 400 | `Choose E-DATA, IN-HOUSE or LEONARDO.` | D2a, D6d |
+| 400 | `Choose whether an interpreter is needed.` | D2a, D6d |
+| 400 | `Choose the doctor from the list.` | D2a, D6d |
+| 400 | `The claim numbers are at most 255 characters.` | D2a, D6d |
+| 400 | `Enter the previous office visit as a date.` | D2a, D6d |
+| 400 | `Enter the pages the declaration states as a whole number.` | D2a, D6d |
+| 400 | `The reason for the discrepancy is at most 255 characters.` | D6d |
+| 400 | `Enter the office count as a whole number.` | D6d |
+| 400 | `Enter the deposition pages as a whole number.` | D6d |
 | 400 | `File <n> is not a readable PDF. Nothing was uploaded.` | D2a |
 | 400 | `File <n> is no longer on the server. Add it again.` | D2a |
 | 400 | `This file is not a readable PDF or image.` | D2b |
@@ -92,6 +102,7 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 404 | `Not Found` | `/api/users/{id}` routes; any unknown path |
 | 409 | `a job is running for this document; wait for it` | D7, D12, D13, D19 |
 | 409 | `a job is already running for this document` | D11, D15, D16, A8 |
+| 409 | `The record's pages are still being read. The billing sheet can be downloaded once they are.` | D8b, until every counted page is read, unless both counts were typed (D6d) |
 | 409 | `this record's summaries changed while the summary was being re-drafted (a summarize run, or another re-draft that found more or fewer visits); nothing was changed - reload the summaries and try again` | D19, after the model call: a job is active, or the summary moved or was removed meanwhile (a summarize run, or another re-draft of the record that changed its row's number of visits and so renumbered the summaries after it) |
 | 409 | `<reviewer> already has this record (uploaded <MM/DD/YYYY>, <N> pages).`, or `<reviewer> already has <N> copies of this record (the latest uploaded <MM/DD/YYYY>, <N> pages).`, with `code: "duplicate"` | D1 (`owner` sent), A10; not sent when `allow_duplicate` is true. `<reviewer>` is the account's name, or `This reviewer` when it has none |
 | 409 | `a job is running for this document; wait for it before assigning it` | A10 |

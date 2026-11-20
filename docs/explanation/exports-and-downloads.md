@@ -36,6 +36,23 @@ office's backup of the records as received. The file is already on disk, so it i
 from there to a plain link (no Blob, as below) and nothing is parked; it does not stamp
 `downloaded_at`, which is about the review.
 
+Not a deliverable either: "Download PDF" on a record's billing sheet
+(`GET /api/documents/{id}/billing-sheet`, `backend/app/services/billing_sheet.py`) saves the office's
+one-page billing sheet (the "super bill") for a record put together from received files, named
+`<record name> Billing Sheet.pdf`. It is drawn on request, small, and served straight to a plain link.
+Its top part is filled - the doctor, the date of service (`SUPP` for a supplemental report), the
+previous office visit, the patient, the account (patient ID), the claim numbers, the type of visit,
+the interpreter, and the sender's row: the page count its declaration states, the deposition pages,
+Sub-rosa "None", the office count, the reason the counts differ and the date received; Location and
+"Dec/Attest valid" are left for a person. The billing codes below are printed blank, for billing.
+The office count is every page received but the internal email and the envelope; the deposition
+pages are the testimony only, from a transcript's first page of questions and answers to its last,
+found from the stored page text before Identify has run; a condensed sheet (four transcript pages
+printed on one) counts four in both. Measured on the live box (2026-11-19) against the reviewers'
+deposition rows of 740 finished records: the count matched exactly on 732 and was off by more than
+5 pages on 6. The sheet waits until every counted page has been read (409 before), unless both
+counts were typed on it.
+
 ## How the letter entries are prepared
 
 The Word letter and the linked PDF are the same letter in two formats, so both are built from one
