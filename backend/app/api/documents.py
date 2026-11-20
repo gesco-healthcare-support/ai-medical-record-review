@@ -749,6 +749,31 @@ def _billing_at_upload(
     }
 
 
+def _billing_form(
+    visit_type: str = Form(default=""),
+    appointment_date: str = Form(default=""),
+    doctor: str = Form(default=""),
+    review_source: str = Form(default=""),
+    interpreter: str = Form(default=""),
+    claim_numbers: str = Form(default=""),
+    previous_visit: str = Form(default=""),
+    declared_pages: str = Form(default=""),
+) -> dict[str, str]:
+    """The billing sheet's form fields on ``POST .../combine``, as sent. Read here so the route
+    keeps a short signature; ``_billing_at_upload`` checks them inside the route, after the
+    record's own fields, so the order of the 400s is the route's."""
+    return {
+        "visit_type": visit_type,
+        "appointment_date": appointment_date,
+        "doctor": doctor,
+        "review_source": review_source,
+        "interpreter": interpreter,
+        "claim_numbers": claim_numbers,
+        "previous_visit": previous_visit,
+        "declared_pages": declared_pages,
+    }
+
+
 def _staged_files(user: User, tokens: list[str]) -> list[Path]:
     """The caller's staged file for each token, in order; a 400 naming the first one missing (never
     staged, staged by someone else, removed, or swept after ``received_files.STAGED_HOURS``)."""
@@ -903,15 +928,8 @@ def combine_received_files(
     first_name: str = Form(default=""),
     patient_id: str = Form(default=""),
     date_received: str = Form(default=""),
-    appointment_date: str = Form(default=""),
     records_from: str = Form(default=""),
-    visit_type: str = Form(default=""),
-    doctor: str = Form(default=""),
-    review_source: str = Form(default=""),
-    interpreter: str = Form(default=""),
-    claim_numbers: str = Form(default=""),
-    previous_visit: str = Form(default=""),
-    declared_pages: str = Form(default=""),
+    billing_form: dict[str, str] = Depends(_billing_form),
     owner: int | None = Form(default=None),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
@@ -924,7 +942,8 @@ def combine_received_files(
     name, the patient ID, the date the records were received and who sent the records are
     required: the first four name the record the way the office names its files
     (``Last_First-ID-MMDDYYYY``) and fill its header. The rest is the office's billing sheet
-    (``services/billing_sheet.py``; ``_billing_at_upload`` says which fields are required): the
+    (``services/billing_sheet.py``, read by ``_billing_form``; ``_billing_at_upload`` says which
+    fields are required): the
     type of visit, the appointment date (none for a supplemental report), the doctor - which is
     also the header's -, who reviews the records, the interpreter, the claim numbers, the previous
     office visit and the page count the sender's declaration states. ``owner`` (admins only) puts
@@ -941,16 +960,7 @@ def combine_received_files(
     if not typed_id:
         raise HTTPException(status_code=400, detail=_COMBINE_ID_DETAIL)
     received = _form_date(date_received, _COMBINE_DATE_DETAIL)
-    billing = _billing_at_upload(
-        visit_type=visit_type,
-        appointment_date=appointment_date,
-        doctor=doctor,
-        review_source=review_source,
-        interpreter=interpreter,
-        claim_numbers=claim_numbers,
-        previous_visit=previous_visit,
-        declared_pages=declared_pages,
-    )
+    billing = _billing_at_upload(**billing_form)
     party = _records_from(records_from)
     reviewer = upload_owner(session, user, owner)
     staged = _staged_files(user, tokens)

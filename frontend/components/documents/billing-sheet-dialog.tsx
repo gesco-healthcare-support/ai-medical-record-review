@@ -37,17 +37,17 @@ function CountsLine({ sheet }: Readonly<{ sheet: BillingSheet }>) {
   if (sheet.counted === null) {
     const read = sheet.pages_counted - sheet.pages_unread;
     return (
-      <p className="banner-info text-sm" role="status">
+      <output className="banner-info block text-sm">
         Reading the record&apos;s pages: {read} of {sheet.pages_counted} read. The office count and
         the deposition pages are worked out once every page is read.
-      </p>
+      </output>
     );
   }
   return (
-    <p className="text-sm text-muted-foreground" role="status">
+    <output className="block text-sm text-muted-foreground">
       Worked out from the record: office count {sheet.counted.office}, deposition pages{" "}
       {sheet.counted.depo}. Type a count only to change it.
-    </p>
+    </output>
   );
 }
 
