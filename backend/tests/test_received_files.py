@@ -118,6 +118,10 @@ _FIELDS = {
     "date_received": "2026-11-03",
     "appointment_date": "2026-12-01",
     "records_from": "applicant",
+    # The billing sheet's required fields (tests/test_billing_sheet.py covers them).
+    "visit_type": "QME",
+    "review_source": "in_house",
+    "interpreter": "no",
 }
 
 # Three files, as they arrived: the email (1 page), the letter (2 pages), the records (3 pages).

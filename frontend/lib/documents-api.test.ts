@@ -8,16 +8,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  billingSheetUrl,
   combineReceivedFiles,
   deleteDocument,
+  downloadBillingSheet,
   downloadRawPdf,
+  getBillingSheet,
+  listDoctors,
   listDocuments,
   rawPdfUrl,
+  saveBillingSheet,
   stageReceivedFile,
   unstageReceivedFile,
   startIdentification,
   uploadDocument,
 } from "@/lib/documents-api";
+import { type BillingDraft, type BillingSheetEdit, EMPTY_BILLING } from "@/lib/billing-sheet";
 
 const ok = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -41,6 +47,27 @@ function lastCall() {
 }
 
 const pdf = (name = "record.pdf") => new File(["%PDF-"], name, { type: "application/pdf" });
+
+const BILLING: BillingDraft = {
+  ...EMPTY_BILLING,
+  visit_type: "QME",
+  appointment_date: "2026-12-01",
+  review_source: "in_house",
+  interpreter: "no",
+};
+
+const UPLOAD = {
+  lastName: "Synthetic",
+  firstName: "Patient",
+  patientId: "801234",
+  dateReceived: "2026-11-03",
+  recordsFrom: "insurance" as const,
+  files: [{ token: "t1", kind: "records" as const }],
+};
+
+function toEditForTest(): BillingSheetEdit {
+  return { ...BILLING, discrepancy_reason: "", records_from: "", office_count: "", depo_pages: "" };
+}
 
 describe("uploading", () => {
   it("sends the file as multipart and lets the browser set the boundary", async () => {
@@ -82,8 +109,8 @@ describe("uploading", () => {
       firstName: " Patient",
       patientId: "801234",
       dateReceived: "2026-11-03",
-      appointmentDate: "2026-12-01",
       recordsFrom: "insurance",
+      billing: { ...BILLING, claim_numbers: " ADJ0000001 " },
       files: [
         { token: "t1", kind: "email" },
         { token: "t2", kind: "advocacy_letter" },
@@ -106,7 +133,75 @@ describe("uploading", () => {
     expect(body.get("date_received")).toBe("2026-11-03");
     expect(body.get("appointment_date")).toBe("2026-12-01");
     expect(body.get("records_from")).toBe("insurance");
+    expect(body.get("visit_type")).toBe("QME");
+    expect(body.get("review_source")).toBe("in_house");
+    expect(body.get("interpreter")).toBe("no");
+    expect(body.get("claim_numbers")).toBe("ADJ0000001");
     expect(new Headers(init.headers).has("Content-Type")).toBe(false);
+  });
+
+  it("leaves out the optional billing fields left blank", async () => {
+    await combineReceivedFiles({ ...UPLOAD, billing: BILLING });
+
+    const body = lastCall().init.body as FormData;
+    for (const name of ["doctor", "claim_numbers", "previous_visit", "declared_pages"]) {
+      expect(body.has(name)).toBe(false);
+    }
+  });
+
+  it("sends the optional billing fields when given", async () => {
+    await combineReceivedFiles({
+      ...UPLOAD,
+      billing: {
+        ...BILLING,
+        doctor: "Alpha",
+        previous_visit: "2026-06-14",
+        declared_pages: " 40 ",
+      },
+    });
+
+    const body = lastCall().init.body as FormData;
+    expect(body.get("doctor")).toBe("Alpha");
+    expect(body.get("previous_visit")).toBe("2026-06-14");
+    expect(body.get("declared_pages")).toBe("40");
+  });
+
+  it("sends no appointment date for a supplemental report", async () => {
+    // The office's answer: a supplemental report has no appointment; the sheet's DOS says SUPP.
+    await combineReceivedFiles({ ...UPLOAD, billing: { ...BILLING, visit_type: "SUPP" } });
+
+    const body = lastCall().init.body as FormData;
+    expect(body.get("visit_type")).toBe("SUPP");
+    expect(body.has("appointment_date")).toBe(false);
+  });
+});
+
+describe("the billing sheet", () => {
+  it("reads and saves the sheet, and lists the doctors", async () => {
+    await getBillingSheet("d 1");
+    expect(lastCall().url).toBe("/api/documents/d%201/billing");
+
+    await saveBillingSheet("d1", { ...toEditForTest(), visit_type: "AME" });
+    expect(lastCall().url).toBe("/api/documents/d1/billing");
+    expect(lastCall().init.method).toBe("PUT");
+    expect(JSON.parse(lastCall().init.body as string)).toMatchObject({ visit_type: "AME" });
+
+    await listDoctors();
+    expect(lastCall().url).toBe("/api/documents/combine/doctors");
+  });
+
+  it("is downloaded by an ordinary link the browser saves", () => {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      downloadBillingSheet("d 1");
+      const link = click.mock.contexts[0] as HTMLAnchorElement;
+      expect(link.getAttribute("href")).toBe("/api/documents/d%201/billing-sheet");
+      expect(billingSheetUrl("d1")).toBe("/api/documents/d1/billing-sheet");
+      expect(link.hasAttribute("download")).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      click.mockRestore();
+    }
   });
 });
 
@@ -179,8 +274,8 @@ describe("uploading into another reviewer's account", () => {
       firstName: "Patient",
       patientId: "801234",
       dateReceived: "2026-11-03",
-      appointmentDate: "2026-12-01",
       recordsFrom: "defense" as const,
+      billing: BILLING,
       files: [{ token: "t1", kind: "records" as const }],
     };
     await combineReceivedFiles({ ...upload, owner: 7 });

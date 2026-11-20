@@ -1,0 +1,497 @@
+"""The office's billing sheet (the "super bill") for a record put together from received files.
+
+Each evaluation's paperwork starts with a one-page billing sheet. Its TOP part says what came in;
+its bottom part (billing codes and the total) is billing's and is printed blank. The office filled
+the top by hand: the doctor, the appointment date (DOS), the patient, the type of visit, and one
+row of the party who sent the records - the page count the sender's declaration states, the
+deposition pages, the office's own page count, and why the two counts differ.
+
+What the uploader types at upload (``POST /api/documents/combine``) is stored on the document; the
+two counts are worked out here from the record itself:
+
+- the OFFICE COUNT is every page received except the office's own internal email (a guide for the
+  reviewer, not part of the records) and the envelope; a condensed deposition sheet, four
+  transcript pages printed on one, counts four (the office's answers of 2026-11-19);
+- the DEPOSITION PAGES are the pages of testimony only - from a transcript's first page of
+  questions and answers to its last, leaving out its cover, appearances and index before and the
+  reporter's certificate, errata and exhibits after (the office's answer, 2026-11-19).
+
+Testimony is found from the stored page text, before Identify has made any rows: a page with at
+least ``_MIN_QA_LINES`` lines that start with ``Q`` or ``A`` (after the transcript's own line
+number) is a page of questions and answers, and such pages close together are one transcript.
+Measured read-only on the live box (2026-11-19) against the reviewers' deposition rows of 740
+finished records - 131 of them holding testimony, 5,755 pages from first to last question: the
+count from the pages alone matched the count inside the reviewers' rows exactly on 732 records and
+was off by more than 5 pages on 6; 144 pages too many in all (127 of them in 3 transcripts the
+reviewers had not filed as depositions) and 16 too few.
+
+Nothing here logs page text, names or any field of the sheet.
+"""
+
+from __future__ import annotations
+
+import io
+import re
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date
+
+import pymupdf
+from sqlalchemy import select
+
+from app.models import Document, PageText
+from app.services.ocr import has_condensed_sheets
+
+# The type of visit, in the office's order. A supplemental report has no appointment: its DOS is
+# printed as SUPP too (the office's answer, 2026-11-19).
+VISIT_TYPES: tuple[str, ...] = ("AME", "QME", "PQME", "IME", "SUPP")
+SUPPLEMENTAL = "SUPP"
+
+# Who reviews the records - the title line of the sheet, one of three.
+REVIEW_SOURCES: tuple[str, ...] = ("edata", "in_house", "leonardo")
+REVIEW_SOURCE_LABELS: dict[str, str] = {
+    "edata": "E-DATA",
+    "in_house": "IN-HOUSE",
+    "leonardo": "LEONARDO",
+}
+
+# The rows of the party table, in the sheet's order (received_files.PARTIES).
+_PARTY_ROWS: tuple[tuple[str, str], ...] = (
+    ("defense", "Defense:"),
+    ("applicant", "Applicant:"),
+    ("insurance", "Insurance:"),
+    ("copy_service", "Copy Srvs:"),
+)
+
+# Received files that are not part of the records sent, so not in the office count
+# (received_files.KINDS).
+NOT_COUNTED_KINDS = frozenset({"email", "envelope"})
+
+# A line of questions and answers: an optional transcript line number, then Q or A and the words.
+_QA_LINE = re.compile(r"(?m)^\s*(?:\d{1,2}\s+)?[QA][\.:]?\s+\S")
+# A page with at least this many such lines is testimony. A transcript page holds 25 numbered
+# lines; on the 228 deposition rows of the live box a page of testimony reads 4 or more, while
+# outside them only 86 of 33,000 pages did (a report quoting a deposition, a page beside one).
+_MIN_QA_LINES = 4
+# Pages of testimony belong to one transcript when no more than this many pages without questions
+# and answers lie between them: colloquy, a break, an exhibit read into the record. Between two
+# transcripts lie the first one's certificate and errata and the next one's cover, appearances
+# and index - on the live box 4 and 5 pages at the median.
+_RUN_GAP = 6
+# A run needs this many pages of testimony to be a transcript; fewer is a report quoting one. With
+# 3 the live box counted 11 runs outside any deposition, with 5 only 3, and missed the same one row.
+_MIN_RUN_PAGES = 5
+# A condensed transcript prints this many of its pages on one sheet.
+_CONDENSED_PAGES = 4
+
+
+@dataclass(frozen=True)
+class Counts:
+    """The two counts the sheet carries. ``office`` is every page received but the internal email
+    and the envelope, a condensed deposition sheet counting four; ``depo`` the pages of
+    testimony."""
+
+    office: int
+    depo: int
+
+
+def counted_pages(parts: Sequence[Mapping[str, object]] | None, page_count: int) -> list[int]:
+    """The record's pages that the office counts: every page of a file that is part of the records
+    sent. A record uploaded as one PDF has no parts, and every page is counted."""
+    if not parts:
+        return list(range(1, page_count + 1))
+    pages: list[int] = []
+    for part in parts:
+        if part.get("kind") in NOT_COUNTED_KINDS:
+            continue
+        start, end = int(part["start"]), int(part["end"])  # type: ignore[arg-type]
+        pages.extend(range(start, end + 1))
+    return pages
+
+
+def is_testimony(text: str) -> bool:
+    """Whether a page's text is a page of a transcript's questions and answers."""
+    return len(_QA_LINE.findall(text or "")) >= _MIN_QA_LINES
+
+
+def testimony_runs(texts: Mapping[int, str], pages: Iterable[int]) -> list[tuple[int, int]]:
+    """``(first, last)`` page of each transcript's testimony among ``pages``, in page order."""
+    runs: list[list[int]] = []
+    for page in sorted(p for p in pages if is_testimony(texts.get(p, ""))):
+        if runs and page - runs[-1][1] - 1 <= _RUN_GAP:
+            runs[-1][1] = page
+            runs[-1][2] += 1
+        else:
+            runs.append([page, page, 1])
+    return [(first, last) for first, last, found in runs if found >= _MIN_RUN_PAGES]
+
+
+def unread_pages(pages: Iterable[int], texts: Mapping[int, str]) -> int:
+    """How many of ``pages`` have not been read yet (no stored page text at all)."""
+    return sum(1 for page in pages if page not in texts)
+
+
+def count_pages(
+    parts: Sequence[Mapping[str, object]] | None,
+    page_count: int,
+    texts: Mapping[int, str],
+    condensed: Callable[[int, int], bool],
+) -> Counts:
+    """The office count and the deposition pages of a record whose pages have been read.
+
+    ``texts`` is the stored text of each read page; ``condensed(first, last)`` says whether a
+    transcript's sheets are printed condensed, four pages to a sheet (``ocr.has_condensed_sheets``
+    looks for the grid on its first sheets). Its sheets then count four each, in both counts."""
+    counted = counted_pages(parts, page_count)
+    kept = set(counted)
+    depo = extra = 0
+    for first, last in testimony_runs(texts, counted):
+        sheets = sum(1 for page in range(first, last + 1) if page in kept)
+        per_sheet = _CONDENSED_PAGES if condensed(first, last) else 1
+        depo += sheets * per_sheet
+        extra += sheets * (per_sheet - 1)
+    return Counts(office=len(counted) + extra, depo=depo)
+
+
+@dataclass(frozen=True)
+class Reading:
+    """How far the record's counted pages have been read, and the counts once they all have.
+    ``counts`` is None while ``unread`` is above zero: a count made then would come out short."""
+
+    counted: int
+    unread: int
+    counts: Counts | None
+
+
+def stored_texts(session, document_id: str) -> dict[int, str]:
+    """The stored text of every page of the record read so far, by page number."""
+    rows = session.execute(
+        select(PageText.page, PageText.text).where(PageText.document_id == document_id)
+    ).all()
+    return {page: text or "" for page, text in rows}
+
+
+def reading(session, document: Document) -> Reading:
+    """Count the record's pages, if every page the office counts has been read (the upload's
+    reading queued by ``POST /api/documents/combine``, or Identify's)."""
+    texts = stored_texts(session, document.id)
+    counted = counted_pages(document.received_parts, document.page_count or 0)
+    unread = unread_pages(counted, texts)
+    if unread:
+        return Reading(len(counted), unread, None)
+
+    def condensed(first: int, last: int) -> bool:
+        return has_condensed_sheets(document.stored_path, first, last, max_sheets=2)
+
+    counts = count_pages(document.received_parts, document.page_count or 0, texts, condensed)
+    return Reading(len(counted), 0, counts)
+
+
+@dataclass(frozen=True)
+class Sheet:
+    """What goes on the sheet, as printed. Empty strings and None print as blanks."""
+
+    review_source: str | None = None
+    doctor: str = ""
+    dos: str = ""
+    previous_visit: str = ""
+    patient_name: str = ""
+    patient_id: str = ""
+    claim_numbers: str = ""
+    visit_type: str = ""
+    interpreter: bool | None = None
+    records_from: str | None = None
+    declared_pages: int | None = None
+    depo_pages: int | None = None
+    office_count: int | None = None
+    discrepancy_reason: str = ""
+    date_received: str = ""
+
+
+def us_date(value: date | None) -> str:
+    """``MM/DD/YYYY``, the way the office writes dates, or empty."""
+    return value.strftime("%m/%d/%Y") if value else ""
+
+
+def dos(visit_type: str | None, appointment: date | None) -> str:
+    """The sheet's DOS: SUPP for a supplemental report, else the appointment date."""
+    return SUPPLEMENTAL if visit_type == SUPPLEMENTAL else us_date(appointment)
+
+
+def patient_name(last: str | None, first: str | None) -> str:
+    """``Last, First`` - or whichever part is known."""
+    return ", ".join(part for part in ((last or "").strip(), (first or "").strip()) if part)
+
+
+def sheet_for(document: Document, counts: Counts | None) -> Sheet:
+    """What the record's billing sheet says. A count typed on the sheet wins over the worked-out
+    one; with neither (pages still being read) the count is left blank."""
+    office = document.office_count
+    if office is None and counts is not None:
+        office = counts.office
+    depo = document.depo_pages
+    if depo is None and counts is not None:
+        depo = counts.depo
+    return Sheet(
+        review_source=document.review_source,
+        doctor=document.doctor or "",
+        dos=dos(document.visit_type, document.appointment_date),
+        previous_visit=us_date(document.previous_visit),
+        patient_name=patient_name(document.patient_last_name, document.patient_first_name),
+        patient_id=document.patient_id or "",
+        claim_numbers=document.claim_numbers or "",
+        visit_type=document.visit_type or "",
+        interpreter=document.interpreter,
+        records_from=document.records_from,
+        declared_pages=document.declared_pages,
+        depo_pages=depo,
+        office_count=office,
+        discrepancy_reason=document.discrepancy_reason or "",
+        date_received=us_date(document.received_on),
+    )
+
+
+# --- drawing -------------------------------------------------------------------------------------
+#
+# Letter size, laid out after the office's own sheet. Built-in Helvetica (no font file to ship);
+# a value too long for its space is set smaller, and cut only if it still does not fit.
+
+_PAGE_W, _PAGE_H = 612, 792
+_BOLD, _REGULAR, _BOLD_ITALIC = "hebo", "helv", "hebi"
+_LINE_W = 0.6
+_BLACK = (0, 0, 0)
+
+# The party table: its column edges, the header's top and bottom, and one row's height.
+_COLS = (18.0, 94.5, 172.0, 234.2, 274.6, 321.5, 444.6, 522.3, 593.8)
+_TABLE_TOP, _HEADER_BOTTOM, _ROW_H = 154.4, 198.7, 15.2
+_HEADERS = (
+    ("DEC/ATTEST", "PAGE COUNT"),
+    ("DEPO", "PAGE", "INCLUDED"),
+    ("SUB-", "ROSA"),
+    ("OFFICE", "COUNT"),
+    ("REASON FOR", "DISCREPANCY"),
+    ("DEC/ATTEST", "VALID?"),
+    ("DATE", "RECEIVED"),
+)
+
+# The bottom half, billing's: code, description, price. Printed as the office's sheet has it, with
+# nothing marked. The prices are the California medical-legal fee schedule's.
+_BILLING: tuple[tuple[str | None, tuple[tuple[str, str, str], ...]], ...] = (
+    (None, (("ML200", "MISSED APPOINTMENT", "$503.75"),)),
+    (
+        "INITIAL VISITS",
+        (
+            ("ML201-95", "QME EVALUATION", "$2,015.00-includes 200 pages of records"),
+            (
+                "ML201-95-93",
+                "QME EVALUATION WITH INTERPRETER",
+                "$2,216.50-includes 200 pages of records",
+            ),
+            ("ML201-94", "AME EVALUATION", "$2,720.25-includes 200 pages of records"),
+            (
+                "ML201-94-93",
+                "AME EVALUATION WITH INTERPRETER",
+                "$2,921.75-includes 200 pages of records",
+            ),
+        ),
+    ),
+    (
+        "FOLLOW UP VISITS",
+        (
+            ("ML202-95", "QME FOLLOW UP", "$1,316.25-includes 200 pages of records"),
+            (
+                "ML202-95-93",
+                "QME FOLLOW UP WITH INTERPRETER",
+                "$1,447.87-includes 200 pages of records",
+            ),
+            ("ML202-94", "AME FOLLOW UP", "$1,776.93-includes 200 pages of records"),
+            (
+                "ML202-94-93",
+                "AME FOLLOW UP WITH INTERPRETER",
+                "$1,908.56-includes 200 pages of records",
+            ),
+        ),
+    ),
+    (
+        "SUPPLEMENTAL REPORT",
+        (
+            ("ML203-95", "QME SUPPLEMENTAL REPORT", "$650.00-includes 50 pages of records"),
+            ("ML203-94", "AME SUPPLEMENTAL REPORT", "$877.50-includes 50 pages of records"),
+        ),
+    ),
+    ("RECORD REVIEW", (("ML-PRR", "EXTRA PAGES OF RECORD", "$3.00 X ____________ EXTRA PAGES"),)),
+    ("SUBROSA-VIDEO", (("ML205", "SUBROSA RECORDING PER HOUR", "$325/HOUR __________ hrs"),)),
+)
+
+
+def _width(text: str, font: str, size: float) -> float:
+    return pymupdf.get_text_length(text, fontname=font, fontsize=size)
+
+
+def _fitted(text: str, font: str, size: float, width: float) -> tuple[str, float]:
+    """``text`` and a font size at which it fits ``width``: smaller down to 6 points, then cut."""
+    while size > 6 and _width(text, font, size) > width:
+        size -= 0.5
+    if _width(text, font, size) <= width:
+        return text, size
+    kept = text
+    while kept and _width(kept + "...", font, size) > width:
+        kept = kept[:-1]
+    return (kept.rstrip() + "..." if kept else ""), size
+
+
+def _text(page, x: float, y: float, text: str, font: str = _REGULAR, size: float = 12) -> float:
+    """Write ``text`` with its baseline at ``y``; returns the x where it ends."""
+    if text:
+        page.insert_text((x, y), text, fontname=font, fontsize=size, color=_BLACK)
+    return x + _width(text, font, size)
+
+
+def _field(page, x: float, y: float, label: str, value: str, end: float, size: float = 12) -> None:
+    """A bold label, then a line to ``end`` with the value written on it."""
+    start = _text(page, x, y, label, _BOLD, size) + 3
+    page.draw_line((start, y + 2), (end, y + 2), color=_BLACK, width=_LINE_W)
+    shown, shown_size = _fitted(value, _REGULAR, size, end - start - 4)
+    _text(page, start + 3, y, shown, _REGULAR, shown_size)
+
+
+def _ring(page, x: float, y: float, text: str, font: str, size: float) -> None:
+    """An oval around ``text`` written at ``(x, y)`` - the office circles the choice that holds."""
+    width = _width(text, font, size)
+    page.draw_oval(
+        pymupdf.Rect(x - 4, y - size * 0.95, x + width + 4, y + size * 0.35),
+        color=_BLACK,
+        width=_LINE_W,
+    )
+
+
+_SLASH = "   /   "
+
+
+def _choices(page, x: float, y: float, words: Sequence[str], chosen: str | None, size: float):
+    """Words in a row, separated by slashes, the chosen one circled."""
+    for index, word in enumerate(words):
+        if index:
+            x = _text(page, x, y, _SLASH, _BOLD, size)
+        if word == chosen:
+            _ring(page, x, y, word, _BOLD, size)
+        x = _text(page, x, y, word, _BOLD, size)
+
+
+def _radio(page, x: float, y: float, filled: bool) -> None:
+    """The small round box in front of a party or a billing code."""
+    page.draw_circle(
+        (x + 4.5, y - 3.8), 4.2, color=_BLACK, fill=_BLACK if filled else None, width=_LINE_W
+    )
+
+
+def _draw_top(page, sheet: Sheet) -> None:
+    sources = [REVIEW_SOURCE_LABELS[source] for source in REVIEW_SOURCES]
+    title = _SLASH.join(sources)
+    chosen = REVIEW_SOURCE_LABELS.get(sheet.review_source or "")
+    _choices(page, (_PAGE_W - _width(title, _BOLD, 16)) / 2, 26, sources, chosen, 16)
+
+    doctor = f"Dr. {sheet.doctor}" if sheet.doctor else ""
+    _text(page, 20.8, 58, _fitted(doctor, _BOLD, 22, 300)[0], _BOLD, 22)
+    _field(page, 448, 56, "DOS:", sheet.dos, 592)
+    _field(page, 356, 76, "PREVIOUS OFFICE VISIT:", sheet.previous_visit, 592)
+
+    _field(page, 18, 106, "Patient Name:", sheet.patient_name, 346)
+    _field(page, 352, 106, "Acct:", sheet.patient_id, 444)
+    _field(page, 449, 106, "Location:", "", 592)
+
+    _field(page, 18, 135, "Claim Number:", sheet.claim_numbers, 262)
+    _field(page, 266, 135, "Type of Visit:", sheet.visit_type, 404)
+    x = _text(page, 410, 135, "INTERPRETER:", _BOLD) + 8
+    for word, value in (("YES", True), ("NO", False)):
+        if sheet.interpreter is value:
+            _ring(page, x, 135, word, _BOLD, 12)
+        x = _text(page, x, 135, word, _BOLD) + 14
+
+
+def _number(value: int | None) -> str:
+    return "" if value is None else str(value)
+
+
+def _draw_grid(page) -> None:
+    """The party table's lines and its column headings."""
+    bottom = _HEADER_BOTTOM + _ROW_H * len(_PARTY_ROWS)
+    for x in _COLS:
+        page.draw_line((x, _TABLE_TOP), (x, bottom), color=_BLACK, width=_LINE_W)
+    rows = [_HEADER_BOTTOM + _ROW_H * (i + 1) for i in range(len(_PARTY_ROWS))]
+    for y in [_TABLE_TOP, _HEADER_BOTTOM, *rows]:
+        page.draw_line((_COLS[0], y), (_COLS[-1], y), color=_BLACK, width=_LINE_W)
+    for column, lines in enumerate(_HEADERS, start=1):
+        for line_no, line in enumerate(lines):
+            _text(page, _COLS[column] + 4, _TABLE_TOP + 12.5 + 14.2 * line_no, line, _BOLD, 10)
+
+
+def _fill_row(page, y: float, sheet: Sheet) -> None:
+    """The sender's row: the declared count, the deposition pages, Sub-rosa (none comes with the
+    records), the office count, the reason the counts differ and the date received. Whether the
+    declaration is valid is left for a person to circle."""
+    values = (
+        _number(sheet.declared_pages),
+        _number(sheet.depo_pages),
+        "None",
+        _number(sheet.office_count),
+        sheet.discrepancy_reason,
+    )
+    for column, value in enumerate(values, start=1):
+        room = _COLS[column + 1] - _COLS[column] - 8
+        shown, size = _fitted(value, _REGULAR, 11, room)
+        _text(page, _COLS[column] + 4, y, shown, _REGULAR, size)
+    _text(page, _COLS[7] + 4, y, sheet.date_received, _REGULAR, 11)
+
+
+def _draw_table(page, sheet: Sheet) -> None:
+    _draw_grid(page)
+    for index, (party, label) in enumerate(_PARTY_ROWS):
+        y = _HEADER_BOTTOM + _ROW_H * index + 11.5
+        mine = party == sheet.records_from
+        _radio(page, _COLS[0] + 5, y, mine)
+        _text(page, _COLS[0] + 16, y, label, _BOLD, 10.5)
+        _text(page, _COLS[6] + 8, y, "YES", _BOLD, 11)
+        _text(page, _COLS[6] + 46, y, "NO", _BOLD, 11)
+        if mine:
+            _fill_row(page, y, sheet)
+
+
+def _draw_billing(page) -> None:
+    y = 285.0
+    _text(page, 90, y, "Billing Code:", _BOLD, 11)
+    _text(page, 198, y, "Description:", _BOLD, 11)
+    _text(page, 378, y, "Price:", _BOLD, 11)
+    y += 14.7
+    for heading, codes in _BILLING:
+        if heading:
+            y += 13.4
+            _text(page, 90, y, heading, _BOLD_ITALIC, 10)
+            y += 13.4
+        for code, description, price in codes:
+            _radio(page, 90, y, False)
+            _text(page, 101, y, code, _BOLD, 10)
+            _text(page, 198, y, description, _REGULAR, 9)
+            _text(page, 378, y, price, _BOLD, 9)
+            y += 13.4
+    _text(
+        page, 36, 648, "TOTAL BILL: ________________________________   Plus Xray if Any:", _BOLD, 11
+    )
+    x = _text(page, 36, 691, "APPROVED FOR REVIEW", _BOLD, 12) + 10
+    for word in ("YES", "NO"):
+        _radio(page, x, 691, False)
+        x = _text(page, x + 11, 691, word, _BOLD, 11) + 10
+    _text(page, x + 6, 691, "BY: ______________________   Date: ______________", _BOLD, 11)
+    _text(page, 36, 720, "Note to Biller:", _BOLD, 12)
+
+
+def render(sheet: Sheet) -> bytes:
+    """The sheet as a one-page PDF."""
+    with pymupdf.open() as document:
+        page = document.new_page(width=_PAGE_W, height=_PAGE_H)
+        _draw_top(page, sheet)
+        _draw_table(page, sheet)
+        _draw_billing(page)
+        buffer = io.BytesIO()
+        document.save(buffer, garbage=3, deflate=True)
+        return buffer.getvalue()

@@ -83,7 +83,11 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | `stageReceivedFile()` | `POST /documents/combine/files` | multipart field `pdf` (one PDF or scanned image) | `{token, pages, kind, check, sha256}` | `ReceivedFilesDialog`, once per file as it is added, one file at a time |
 | `receivedFilePreviewUrl()` | `GET /documents/combine/files/{token}/preview` | - | a PNG of the file's first page, shown by a plain image tag | "Page 1" in `ReceivedFilesDialog` |
 | `unstageReceivedFile()` | `DELETE /documents/combine/files/{token}` | - | `{ok}` | `ReceivedFilesDialog`: a file removed from the list, and every staged file when the dialog closes without making a record (errors ignored) |
-| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `appointment_date`, `records_from`, `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. Every field is required and every file must have been read; the Patient ID box is filled from the ID the files' names agree on |
+| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `records_from`, the billing sheet's `visit_type`, `review_source`, `interpreter`, `appointment_date` (not for `SUPP`) and, when typed, `doctor`, `claim_numbers`, `previous_visit`, `declared_pages`; `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. The patient's details and the billing sheet's required fields (`billingReady` in `frontend/lib/billing-sheet.ts`) must be filled and every file read; the Patient ID box is filled from the ID the files' names agree on |
+| `listDoctors()` | `GET /documents/combine/doctors` | - | `{doctors}` | `useDoctors()` in `ReceivedFilesDialog` (the Doctor list), fetched once while the dialog is open |
+| `getBillingSheet()` | `GET /documents/{id}/billing` | - | the billing sheet | `useBillingSheet()` in `BillingSheetDialog`; read again every 5 seconds while `pages_unread` is above 0 |
+| `saveBillingSheet()` | `PUT /documents/{id}/billing` | `BillingSheetEdit` (every field as typed) | the billing sheet | `useSaveBillingSheet()` in `BillingSheetDialog` (the answer replaces the cached sheet) |
+| `downloadBillingSheet()` | `GET /documents/{id}/billing-sheet` (`billingSheetUrl()`) | - | the one-page PDF as an attachment, saved by the browser's download manager from a plain link | "Download PDF" in `BillingSheetDialog`, offered once both counts are known and nothing is unsaved |
 | `downloadRawPdf()` | `GET /documents/{id}/raw` (`rawPdfUrl()`) | - | the record's PDF as an attachment, saved by the browser's download manager from a plain link | "Download raw PDF" in each record's row menu (`DocumentsTable`) |
 | `setCompleted()` | `PUT /documents/{id}/completed` | `{completed}` | Document listing | `useSetCompleted()` in `DocumentsView` (the list is patched at once, then read again) |
 | `setPatientId()` | `PUT /documents/{id}/patient-id` | `{patient_id}` | Document listing plus `patient_records` | `PatientIdLine` on the workbench (saves on Enter or when the box loses focus) |
@@ -315,8 +319,11 @@ was last downloaded (`downloaded_at`).
 "Upload received files" (`ReceivedFilesDialog` in `received-files-dialog.tsx`) puts one record
 together from the files it arrived in, the step the office did in Adobe Acrobat. The uploader types
 the patient's last and first name, the patient ID (filled when the files' names agree on one), the
-date received and the appointment date, picks who sent the records (Defense, Applicant, Insurance or
-Copy service), and adds the files in any order - PDFs, or scans sent as images (JPG, PNG, TIFF),
+date received, picks who sent the records (Defense, Applicant, Insurance or Copy service), fills
+the billing sheet's fields (`BillingFields` in `billing-fields.tsx`: the type of visit, the
+appointment date - gone for a supplemental report, `SUPP` - who reviews the records (E-DATA,
+IN-HOUSE, LEONARDO) and the interpreter are required; the doctor, the claim numbers, the previous
+office visit and the pages the declaration states may stay blank), and adds the files in any order - PDFs, or scans sent as images (JPG, PNG, TIFF),
 which the server turns into PDF pages; anything else (a Word or Outlook file) is refused with a
 message saying to save it as PDF first (`isAcceptedFile` in `frontend/lib/received-files.ts`). Each
 file is sent on its own as soon as it is added (`stageReceivedFile`, one at a time, so the proxy's
@@ -337,6 +344,14 @@ listed. Removing a file, or closing the dialog without making a record, deletes 
 the server. "Download raw PDF" in a record's row menu
 saves the record's PDF as it was uploaded - for such a record, the joined file - for the office's
 backup.
+
+"Billing sheet" in the row menu of such a record (one with `received_on`) opens `BillingSheetDialog`
+(`billing-sheet-dialog.tsx`): the office's billing sheet - the fields typed at upload, editable,
+who sent the records, the office count and the deposition pages worked out from the record, a count
+typed over either (blank goes back to the worked-out one), and the reason the counts differ, with a
+note when the declared page count and the office count differ. While the record's pages are still
+being read it says how many are read and reads the sheet again every 5 seconds; "Download PDF"
+waits until both counts are known and nothing is left unsaved.
 
 Other My documents behaviour: search matches the filename or the patient name; sort columns are
 Document, Patient, Pages, Uploaded (the default, newest first), Documents found and Last activity; 20

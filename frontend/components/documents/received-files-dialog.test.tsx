@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }) }));
 
 const combine = { mutateAsync: vi.fn(), isPending: false };
-vi.mock("@/hooks/use-documents", () => ({ useCombineReceivedFiles: () => combine }));
+vi.mock("@/hooks/use-documents", () => ({
+  useCombineReceivedFiles: () => combine,
+  useDoctors: () => ({ data: ["Alpha", "Beta"] }),
+}));
 
 const stage = vi.fn();
 const unstage = vi.fn();
@@ -89,9 +92,20 @@ async function fillPatient(
   fireEvent.change(screen.getByLabelText("Patient first name"), { target: { value: "Patient" } });
   if (id) fireEvent.change(screen.getByLabelText("Patient ID"), { target: { value: "801234" } });
   fireEvent.change(screen.getByLabelText("Date received"), { target: { value: "2026-11-03" } });
-  const appointment = screen.getByLabelText("Appointment date");
-  fireEvent.change(appointment, { target: { value: "2026-12-01" } });
   await user.selectOptions(screen.getByLabelText("Records from"), "applicant");
+  fillBilling();
+}
+
+/** The billing sheet's required fields: type of visit, appointment date, reviewed by, interpreter.
+ *  Set directly, like the boxes above: a click per option is what pushes these tests past their
+ *  time limit on a loaded machine. */
+function fillBilling() {
+  const set = (label: string, value: string) =>
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  set("Type of visit", "QME");
+  set("Appointment date", "2026-12-01");
+  set("Reviewed by", "in_house");
+  set("Interpreter", "no");
 }
 
 describe("ReceivedFilesDialog ordering", () => {
@@ -255,8 +269,17 @@ describe("ReceivedFilesDialog sending", () => {
       firstName: "Patient",
       patientId: "801234",
       dateReceived: "2026-11-03",
-      appointmentDate: "2026-12-01",
       recordsFrom: "applicant",
+      billing: {
+        visit_type: "QME",
+        appointment_date: "2026-12-01",
+        doctor: "",
+        review_source: "in_house",
+        interpreter: "no",
+        claim_numbers: "",
+        previous_visit: "",
+        declared_pages: "",
+      },
       files: [
         { token: "tok-scan.pdf", kind: "advocacy_letter" },
         { token: "tok-records.pdf", kind: "records" },
@@ -306,10 +329,16 @@ describe("ReceivedFilesDialog sending", () => {
     set("Patient ID", "801234");
     set("Date received", "2026-11-03");
     expect(send()).toBeDisabled();
-    const appointment = screen.getByLabelText("Appointment date");
-    fireEvent.change(appointment, { target: { value: "2026-12-01" } });
-    expect(send()).toBeDisabled();
     await user.selectOptions(screen.getByLabelText("Records from"), "copy_service");
+    expect(send()).toBeDisabled();
+    // The billing sheet's required fields, one at a time.
+    await user.selectOptions(screen.getByLabelText("Type of visit"), "QME");
+    expect(send()).toBeDisabled();
+    set("Appointment date", "2026-12-01");
+    expect(send()).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Reviewed by"), "edata");
+    expect(send()).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Interpreter"), "yes");
     // Still reading the file.
     expect(send()).toBeDisabled();
     await act(async () =>
@@ -323,6 +352,76 @@ describe("ReceivedFilesDialog sending", () => {
     set("Patient ID", "x".repeat(40));
     expect(send()).toBeDisabled();
     expect(screen.getByText(/at most 32 letters and digits/)).toBeInTheDocument();
+    set("Patient ID", "801234");
+    expect(send()).toBeEnabled();
+
+    // A declared page count that is not a whole number holds the upload back, and says so.
+    set("Pages on the declaration", "six");
+    expect(send()).toBeDisabled();
+    expect(screen.getByText("Enter the page count as a whole number.")).toBeInTheDocument();
+    set("Pages on the declaration", "6");
+    expect(send()).toBeEnabled();
+  });
+
+  it("asks no appointment date for a supplemental report", async () => {
+    // The office's answer: a supplemental report has no appointment, so its box goes away and the
+    // record can be made without one.
+    const user = userEvent.setup();
+    combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 2, patient_records: 0 });
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("records.pdf")]);
+    await allRead(1);
+    await fillPatient(user);
+    fireEvent.change(screen.getByLabelText("Appointment date"), { target: { value: "" } });
+    await confirmAll(user);
+    const send = screen.getByRole("button", { name: "Combine & upload" });
+    expect(send).toBeDisabled();
+
+    await user.selectOptions(screen.getByLabelText("Type of visit"), "SUPP");
+
+    expect(screen.queryByLabelText("Appointment date")).toBeNull();
+    expect(send).toBeEnabled();
+    await user.click(send);
+    await waitFor(() =>
+      expect(combine.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          billing: expect.objectContaining({ visit_type: "SUPP" }),
+        }),
+      ),
+    );
+  });
+
+  it("offers the doctors and sends the optional billing fields typed", async () => {
+    const user = userEvent.setup();
+    combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 2, patient_records: 0 });
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("records.pdf")]);
+    await allRead(1);
+    await fillPatient(user);
+    await confirmAll(user);
+
+    await user.selectOptions(screen.getByLabelText("Doctor"), "Beta");
+    fireEvent.change(screen.getByLabelText("Claim numbers"), { target: { value: "ADJ1, ADJ2" } });
+    fireEvent.change(screen.getByLabelText("Previous office visit"), {
+      target: { value: "2026-06-14" },
+    });
+    fireEvent.change(screen.getByLabelText("Pages on the declaration"), {
+      target: { value: "40" },
+    });
+    await user.click(screen.getByRole("button", { name: "Combine & upload" }));
+
+    await waitFor(() =>
+      expect(combine.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          billing: expect.objectContaining({
+            doctor: "Beta",
+            claim_numbers: "ADJ1, ADJ2",
+            previous_visit: "2026-06-14",
+            declared_pages: "40",
+          }),
+        }),
+      ),
+    );
   });
 
   it("names the reviewer and sends the record to them when an admin uploads for one", async () => {

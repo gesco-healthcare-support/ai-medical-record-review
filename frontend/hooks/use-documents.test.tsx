@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
 const listDocuments = vi.fn();
+const getBillingSheet = vi.fn();
 vi.mock("@/lib/documents-api", () => ({
   listDocuments: (...args: unknown[]) => listDocuments(...args),
   uploadDocument: vi.fn().mockResolvedValue({ id: "d1", page_count: 2 }),
@@ -19,6 +20,9 @@ vi.mock("@/lib/documents-api", () => ({
   deleteDocument: vi.fn().mockResolvedValue({ ok: true }),
   startIdentification: vi.fn().mockResolvedValue({ ok: true }),
   setCompleted: vi.fn().mockResolvedValue({}),
+  listDoctors: vi.fn().mockResolvedValue({ doctors: ["Alpha", "Beta"] }),
+  getBillingSheet: (...args: unknown[]) => getBillingSheet(...args),
+  saveBillingSheet: vi.fn(),
 }));
 vi.mock("@/lib/admin-api", () => ({
   assignDocument: vi.fn().mockResolvedValue({ id: "d1", owner: { id: 7, name: "Brian" } }),
@@ -28,13 +32,19 @@ import { assignDocument } from "@/lib/admin-api";
 import {
   combineReceivedFiles,
   deleteDocument,
+  listDoctors,
+  saveBillingSheet,
   setCompleted,
   startIdentification,
   uploadDocument,
 } from "@/lib/documents-api";
 import {
+  BILLING_POLL_MS,
   useAssignDocument,
+  useBillingSheet,
   useCombineReceivedFiles,
+  useDoctors,
+  useSaveBillingSheet,
   useDeleteDocument,
   useDocuments,
   useSetCompleted,
@@ -188,5 +198,60 @@ describe("useSetCompleted", () => {
     expect(setCompleted).toHaveBeenCalledWith("d1", false);
     const mine = client.getQueryData<Array<Record<string, unknown>>>(["documents"]);
     expect(mine?.[0].completed_at).toBeNull();
+  });
+});
+
+describe("the billing sheet hooks", () => {
+  afterEach(() => getBillingSheet.mockReset());
+
+  it("reads the doctors only while asked to", async () => {
+    const { wrapper } = harness();
+    const off = renderHook(() => useDoctors(false), { wrapper });
+    expect(off.result.current.fetchStatus).toBe("idle");
+    expect(listDoctors).not.toHaveBeenCalled();
+
+    const on = renderHook(() => useDoctors(true), { wrapper });
+    await waitFor(() => expect(on.result.current.data).toEqual(["Alpha", "Beta"]));
+  });
+
+  it("reads no sheet without a record", () => {
+    const { wrapper } = harness();
+    const { result } = renderHook(() => useBillingSheet(null), { wrapper });
+
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(getBillingSheet).not.toHaveBeenCalled();
+  });
+
+  it("reads the sheet again while the record's pages are read, then stops", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    getBillingSheet
+      .mockResolvedValueOnce({ pages_unread: 4, counted: null })
+      .mockResolvedValue({ pages_unread: 0, counted: { office: 4, depo: 0 } });
+    const { wrapper } = harness();
+    const { result } = renderHook(() => useBillingSheet("d1"), { wrapper });
+    await waitFor(() => expect(result.current.data?.pages_unread).toBe(4));
+
+    await vi.advanceTimersByTimeAsync(BILLING_POLL_MS);
+    await waitFor(() => expect(result.current.data?.pages_unread).toBe(0));
+    const calls = getBillingSheet.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(BILLING_POLL_MS * 2);
+
+    expect(getBillingSheet.mock.calls.length).toBe(calls);
+    expect(getBillingSheet).toHaveBeenCalledWith("d1");
+  });
+
+  it("puts the saved sheet in place of the cached one", async () => {
+    const saved = { pages_unread: 0, discrepancy_reason: "Two pages missing" };
+    vi.mocked(saveBillingSheet).mockResolvedValueOnce(saved as never);
+    getBillingSheet.mockResolvedValue({ pages_unread: 0, discrepancy_reason: "" });
+    const { wrapper } = harness();
+    const sheet = renderHook(() => useBillingSheet("d1"), { wrapper });
+    await waitFor(() => expect(sheet.result.current.data).toBeDefined());
+    const save = renderHook(() => useSaveBillingSheet("d1"), { wrapper });
+
+    await save.result.current.mutateAsync({ discrepancy_reason: "Two pages missing" } as never);
+
+    expect(saveBillingSheet).toHaveBeenCalledWith("d1", { discrepancy_reason: "Two pages missing" });
+    await waitFor(() => expect(sheet.result.current.data).toEqual(saved));
   });
 });

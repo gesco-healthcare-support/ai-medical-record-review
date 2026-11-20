@@ -18,6 +18,7 @@ import uuid
 import zipfile
 from datetime import UTC, date, datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -41,6 +42,7 @@ from app.errors import (
 )
 from app.models import AuditLog, Document, Job, ReviewRow, SegmentRow, Summary, User
 from app.schemas.documents import (
+    BillingPayload,
     BundlePayload,
     CancelPayload,
     CompletedPayload,
@@ -57,6 +59,7 @@ from app.schemas.documents import (
     SummaryEditPayload,
 )
 from app.services import (
+    billing_sheet,
     bundles,
     catalog,
     downloads,
@@ -629,6 +632,23 @@ _COMBINE_ID_DETAIL = "Enter the patient ID."
 _COMBINE_DATE_DETAIL = "Enter the date the records were received."
 _COMBINE_APPOINTMENT_DETAIL = "Enter the appointment date."
 _COMBINE_PARTY_DETAIL = "Choose who sent the records."
+_BILLING_VISIT_DETAIL = "Choose the type of visit."
+_BILLING_SOURCE_DETAIL = "Choose E-DATA, IN-HOUSE or LEONARDO."
+_BILLING_INTERPRETER_DETAIL = "Choose whether an interpreter is needed."
+_BILLING_DOCTOR_DETAIL = "Choose the doctor from the list."
+_BILLING_CLAIM_DETAIL = "The claim numbers are at most 255 characters."
+_BILLING_PREVIOUS_DETAIL = "Enter the previous office visit as a date."
+_BILLING_DECLARED_DETAIL = "Enter the pages the declaration states as a whole number."
+_BILLING_REASON_DETAIL = "The reason for the discrepancy is at most 255 characters."
+_BILLING_OFFICE_DETAIL = "Enter the office count as a whole number."
+_BILLING_DEPO_DETAIL = "Enter the deposition pages as a whole number."
+_BILLING_UNREAD_DETAIL = (
+    "The record's pages are still being read. The billing sheet can be downloaded once they are."
+)
+# The longest a typed text on the billing sheet may be (the columns are String(255)).
+_BILLING_TEXT_MAX = 255
+# A typed page count above this is a typing slip, not a record.
+_BILLING_COUNT_MAX = 1_000_000
 
 
 def _received_kinds(tokens: list[str], kinds: list[str]) -> list[str]:
@@ -654,6 +674,104 @@ def _records_from(value: str) -> str:
     if party not in received_files.PARTIES:
         raise HTTPException(status_code=400, detail=_COMBINE_PARTY_DETAIL)
     return party
+
+
+def _choice(value: str, choices: tuple[str, ...], detail: str, *, required: bool) -> str | None:
+    """One of ``choices``, or None for a blank one that is not ``required``; a 400 otherwise."""
+    value = value.strip()
+    if not value and not required:
+        return None
+    if value not in choices:
+        raise HTTPException(status_code=400, detail=detail)
+    return value
+
+
+def _yes_no(value: str, *, required: bool) -> bool | None:
+    """``yes`` or ``no`` as True or False, or None for a blank one that is not ``required``."""
+    answer = _choice(value, ("yes", "no"), _BILLING_INTERPRETER_DETAIL, required=required)
+    return None if answer is None else answer == "yes"
+
+
+def _optional_date(value: str, detail: str) -> date | None:
+    """A ``YYYY-MM-DD`` date, or None when blank; a 400 with ``detail`` otherwise."""
+    return _form_date(value, detail) if value.strip() else None
+
+
+def _whole_number(value: str, detail: str) -> int | None:
+    """A typed count: a whole number from 0, or None when blank; a 400 with ``detail`` otherwise."""
+    value = value.strip()
+    if not value:
+        return None
+    if not value.isdigit() or int(value) > _BILLING_COUNT_MAX:
+        raise HTTPException(status_code=400, detail=detail)
+    return int(value)
+
+
+def _short_text(value: str, detail: str) -> str | None:
+    """Typed text of at most ``_BILLING_TEXT_MAX`` characters, or None when blank."""
+    value = value.strip()
+    if len(value) > _BILLING_TEXT_MAX:
+        raise HTTPException(status_code=400, detail=detail)
+    return value or None
+
+
+def _billing_at_upload(
+    *,
+    visit_type: str,
+    appointment_date: str,
+    doctor: str,
+    review_source: str,
+    interpreter: str,
+    claim_numbers: str,
+    previous_visit: str,
+    declared_pages: str,
+) -> dict:
+    """The billing sheet's fields as the uploader typed them on ``POST .../combine``, checked:
+    the type of visit, who reviews the records and whether an interpreter is needed are required,
+    and so is the appointment date unless the visit is a supplemental report, which has none. The
+    doctor, the claim numbers, the previous office visit and the declared page count may be blank.
+    """
+    visit = _choice(visit_type, billing_sheet.VISIT_TYPES, _BILLING_VISIT_DETAIL, required=True)
+    appointment = None
+    if visit != billing_sheet.SUPPLEMENTAL:
+        appointment = _form_date(appointment_date, _COMBINE_APPOINTMENT_DETAIL)
+    return {
+        "visit_type": visit,
+        "appointment_date": appointment,
+        "doctor": _choice(doctor, DOCTORS, _BILLING_DOCTOR_DETAIL, required=False),
+        "review_source": _choice(
+            review_source, billing_sheet.REVIEW_SOURCES, _BILLING_SOURCE_DETAIL, required=True
+        ),
+        "interpreter": _yes_no(interpreter, required=True),
+        "claim_numbers": _short_text(claim_numbers, _BILLING_CLAIM_DETAIL),
+        "previous_visit": _optional_date(previous_visit, _BILLING_PREVIOUS_DETAIL),
+        "declared_pages": _whole_number(declared_pages, _BILLING_DECLARED_DETAIL),
+    }
+
+
+def _billing_form(
+    visit_type: str = Form(default=""),
+    appointment_date: str = Form(default=""),
+    doctor: str = Form(default=""),
+    review_source: str = Form(default=""),
+    interpreter: str = Form(default=""),
+    claim_numbers: str = Form(default=""),
+    previous_visit: str = Form(default=""),
+    declared_pages: str = Form(default=""),
+) -> dict[str, str]:
+    """The billing sheet's form fields on ``POST .../combine``, as sent. Read here so the route
+    keeps a short signature; ``_billing_at_upload`` checks them inside the route, after the
+    record's own fields, so the order of the 400s is the route's."""
+    return {
+        "visit_type": visit_type,
+        "appointment_date": appointment_date,
+        "doctor": doctor,
+        "review_source": review_source,
+        "interpreter": interpreter,
+        "claim_numbers": claim_numbers,
+        "previous_visit": previous_visit,
+        "declared_pages": declared_pages,
+    }
 
 
 def _staged_files(user: User, tokens: list[str]) -> list[Path]:
@@ -783,14 +901,21 @@ def unstage_received_file(token: str, user: User = Depends(current_active_user))
     return {"ok": True}
 
 
+@router.get("/combine/doctors")
+def combine_doctors():
+    """The doctors the upload dialog offers - the header's own list (``reporting.DOCTORS``), so the
+    two can never differ. The dialog has no record yet to read it from."""
+    return {"doctors": list(DOCTORS)}
+
+
 @router.post(
     "/combine",
     status_code=status.HTTP_201_CREATED,
     responses={
         400: {
             "description": "No files, a file without its kind or no longer staged, a file that "
-            "is not a readable PDF, or the patient's name, ID, the date received, the appointment "
-            "date or who sent the records missing."
+            "is not a readable PDF, the patient's name, ID, the date received or who sent the "
+            "records missing, or a billing sheet field missing or not one the sheet can hold."
         },
         403: {"description": "A non-admin named another reviewer's account."},
         404: {"description": "The reviewer named is not an active account."},
@@ -803,8 +928,8 @@ def combine_received_files(
     first_name: str = Form(default=""),
     patient_id: str = Form(default=""),
     date_received: str = Form(default=""),
-    appointment_date: str = Form(default=""),
     records_from: str = Form(default=""),
+    billing_form: dict[str, str] = Depends(_billing_form),
     owner: int | None = Form(default=None),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
@@ -814,11 +939,15 @@ def combine_received_files(
     ``tokens`` name files the caller staged with ``POST .../combine/files``; they are joined in
     the order sent - the order the uploader confirmed - and ``kinds`` says what each one is, one per
     file. The staged files are deleted once the record is stored. The patient's last and first
-    name, the patient ID, the date the records were received, the appointment date and who sent
-    the records are required: the first four name the record the way the office names its files
-    (``Last_First-ID-MMDDYYYY``) and fill its header, and all of them feed the office's billing
-    sheet. ``owner`` (admins only) puts the record in another reviewer's account, as on the single
-    upload.
+    name, the patient ID, the date the records were received and who sent the records are
+    required: the first four name the record the way the office names its files
+    (``Last_First-ID-MMDDYYYY``) and fill its header. The rest is the office's billing sheet
+    (``services/billing_sheet.py``, read by ``_billing_form``; ``_billing_at_upload`` says which
+    fields are required): the
+    type of visit, the appointment date (none for a supplemental report), the doctor - which is
+    also the header's -, who reviews the records, the interpreter, the claim numbers, the previous
+    office visit and the page count the sender's declaration states. ``owner`` (admins only) puts
+    the record in another reviewer's account, as on the single upload.
 
     The joined file is the record as received: it is read like any other upload, identified when
     the reviewer starts Identify, and ``GET .../raw`` downloads it as it is. No duplicate check: the
@@ -831,7 +960,7 @@ def combine_received_files(
     if not typed_id:
         raise HTTPException(status_code=400, detail=_COMBINE_ID_DETAIL)
     received = _form_date(date_received, _COMBINE_DATE_DETAIL)
-    appointment = _form_date(appointment_date, _COMBINE_APPOINTMENT_DETAIL)
+    billing = _billing_at_upload(**billing_form)
     party = _records_from(records_from)
     reviewer = upload_owner(session, user, owner)
     staged = _staged_files(user, tokens)
@@ -858,8 +987,8 @@ def combine_received_files(
         patient_last_name=last,
         received_on=received,
         received_parts=[part.as_dict() for part in parts],
-        appointment_date=appointment,
         records_from=party,
+        **billing,
     )
     session.add(document)
     session.commit()
@@ -1222,6 +1351,122 @@ def _remark_reviewed_before(session: Session, document: Document) -> None:
         )
 
 
+def _iso(value: date | None) -> str:
+    """A date as ``YYYY-MM-DD`` (the browser's date box), or empty."""
+    return value.isoformat() if value else ""
+
+
+def _count_text(value: int | None) -> int | str:
+    """A stored count, or empty for none: the box is blank, never a real answer of zero."""
+    return "" if value is None else value
+
+
+def _yes_no_text(value: bool | None) -> str:
+    """``yes`` / ``no`` for a stored answer, or empty for none."""
+    if value is None:
+        return ""
+    return "yes" if value else "no"
+
+
+def _billing_response(session: Session, document: Document) -> dict:
+    """The record's billing sheet as the billing sheet dialog shows and edits it (D6c, D6d): the
+    typed fields as strings, empty for unset; the two counts worked out from the record
+    (``counted``, null while ``pages_unread`` of its ``pages_counted`` pages wait to be read); the
+    counts typed over them; and the doctors the dropdown offers."""
+    read = billing_sheet.reading(session, document)
+    counts = read.counts
+    return {
+        "visit_type": document.visit_type or "",
+        "appointment_date": _iso(document.appointment_date),
+        "doctor": document.doctor or "",
+        "review_source": document.review_source or "",
+        "interpreter": _yes_no_text(document.interpreter),
+        "claim_numbers": document.claim_numbers or "",
+        "previous_visit": _iso(document.previous_visit),
+        "declared_pages": _count_text(document.declared_pages),
+        "discrepancy_reason": document.discrepancy_reason or "",
+        "records_from": document.records_from or "",
+        "received_on": _iso(document.received_on),
+        "office_count": _count_text(document.office_count),
+        "depo_pages": _count_text(document.depo_pages),
+        "counted": None if counts is None else {"office": counts.office, "depo": counts.depo},
+        "pages_counted": read.counted,
+        "pages_unread": read.unread,
+        "doctors": list(DOCTORS),
+    }
+
+
+def _billing_fields(payload: BillingPayload, document: Document) -> dict:
+    """The sheet's fields as typed on D6d, checked; a 400 for a value the sheet cannot hold. Every
+    field may be blank. A supplemental report has no appointment date, so its date is dropped. A
+    doctor already stored that is not on today's list is kept as it is."""
+    doctors = DOCTORS + ((document.doctor,) if document.doctor else ())
+    visit = _choice(
+        payload.visit_type, billing_sheet.VISIT_TYPES, _BILLING_VISIT_DETAIL, required=False
+    )
+    appointment = _optional_date(payload.appointment_date, _COMBINE_APPOINTMENT_DETAIL)
+    return {
+        "visit_type": visit,
+        "appointment_date": None if visit == billing_sheet.SUPPLEMENTAL else appointment,
+        "doctor": _choice(payload.doctor, doctors, _BILLING_DOCTOR_DETAIL, required=False),
+        "review_source": _choice(
+            payload.review_source,
+            billing_sheet.REVIEW_SOURCES,
+            _BILLING_SOURCE_DETAIL,
+            required=False,
+        ),
+        "interpreter": _yes_no(payload.interpreter, required=False),
+        "claim_numbers": _short_text(payload.claim_numbers, _BILLING_CLAIM_DETAIL),
+        "previous_visit": _optional_date(payload.previous_visit, _BILLING_PREVIOUS_DETAIL),
+        "declared_pages": _whole_number(payload.declared_pages, _BILLING_DECLARED_DETAIL),
+        "discrepancy_reason": _short_text(payload.discrepancy_reason, _BILLING_REASON_DETAIL),
+        "records_from": _choice(
+            payload.records_from, received_files.PARTIES, _COMBINE_PARTY_DETAIL, required=False
+        ),
+        "office_count": _whole_number(payload.office_count, _BILLING_OFFICE_DETAIL),
+        "depo_pages": _whole_number(payload.depo_pages, _BILLING_DEPO_DETAIL),
+    }
+
+
+def _store_billing(session: Session, document: Document, user: User, fields: dict) -> None:
+    """Store the sheet's fields and audit which changed - by name, never the values, which are the
+    patient's. An unset field and a blank one are the same nothing. `audit` commits both."""
+    changed = sorted(
+        name for name, value in fields.items() if (getattr(document, name) or None) != value
+    )
+    for name, value in fields.items():
+        setattr(document, name, value)
+    audit(session, "billing.edit", user.id, document.id, detail="changed=" + ",".join(changed))
+
+
+@router.get("/{document_id}/billing")
+def get_billing_sheet(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+):
+    """The record's billing sheet (``services/billing_sheet.py``), for the billing sheet dialog:
+    what the uploader typed, and the office count and deposition pages worked out from the record
+    once its pages are read."""
+    return _billing_response(session, document)
+
+
+@router.put(
+    "/{document_id}/billing",
+    responses={400: {"description": "A field holds a value the billing sheet cannot."}},
+)
+def set_billing_sheet(
+    payload: BillingPayload,
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """Edit the record's billing sheet: every field the uploader typed, the reason the counts
+    differ, and a count typed over a worked-out one (blank goes back to the worked-out count).
+    Allowed while a job runs - it touches no row. Answers as ``GET``."""
+    _store_billing(session, document, user, _billing_fields(payload, document))
+    return _billing_response(session, document)
+
+
 @router.put("/{document_id}/completed")
 def set_completed(
     payload: CompletedPayload,
@@ -1319,6 +1564,48 @@ def download_raw_pdf(
         filename=_raw_filename(document),
         content_disposition_type="attachment",
         headers={"Cache-Control": "no-store"},
+    )
+
+
+def _billing_filename(document: Document) -> str:
+    """``<record name> Billing Sheet.pdf``, after the record's own file name."""
+    return _raw_filename(document)[: -len(".pdf")] + " Billing Sheet.pdf"
+
+
+def _attachment(filename: str) -> str:
+    """A ``Content-Disposition`` for a download named ``filename``, as Starlette writes one: plain
+    when the name is plain, else the RFC 5987 form a browser decodes."""
+    quoted = quote(filename)
+    if quoted == filename:
+        return f'attachment; filename="{filename}"'
+    return f"attachment; filename*=utf-8''{quoted}"
+
+
+@router.get(
+    "/{document_id}/billing-sheet",
+    responses={409: {"description": "The record's pages are still being read."}},
+)
+def download_billing_sheet(
+    document: Document = Depends(get_owned_document),
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """The record's billing sheet as a one-page PDF (``billing_sheet.render``), named after the
+    record. Its counts need every counted page read, so while the record's pages are still being
+    read it is 409 - unless both counts were typed on the sheet. Not cached by the browser; it
+    leaves ``downloaded_at`` alone (nothing of the review is in it)."""
+    read = billing_sheet.reading(session, document)
+    if read.counts is None and (document.office_count is None or document.depo_pages is None):
+        raise HTTPException(status_code=409, detail=_BILLING_UNREAD_DETAIL)
+    pdf = billing_sheet.render(billing_sheet.sheet_for(document, read.counts))
+    audit(session, "download_billing", user.id, document.id)
+    return Response(
+        content=pdf,
+        media_type=_PDF_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": _attachment(_billing_filename(document)),
+            "Cache-Control": "no-store",
+        },
     )
 
 

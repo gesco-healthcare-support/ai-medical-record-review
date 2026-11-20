@@ -16,6 +16,7 @@ import { humanizeError, isDuplicateRecord } from "@/lib/errors";
 import { otherRecordsLine, patientIdFromFilename } from "@/lib/patient-id";
 import type { AdminAccount, DocumentListItem } from "@/lib/types";
 import { AssignDialog } from "./assign-dialog";
+import { BillingSheetDialog } from "./billing-sheet-dialog";
 import { DocumentsTable } from "./documents-table";
 import { EmptyState, UPLOAD_INPUT_ID } from "./empty-state";
 import { PatientIdDialog } from "./patient-id-dialog";
@@ -381,6 +382,7 @@ export function DocumentsView() {
   const [deleteTarget, setDeleteTarget] = useState<DocumentListItem | null>(null);
   const [reidentifyTarget, setReidentifyTarget] = useState<DocumentListItem | null>(null);
   const [assignTarget, setAssignTarget] = useState<DocumentListItem | null>(null);
+  const [billingTarget, setBillingTarget] = useState<DocumentListItem | null>(null);
 
   function pickFile() {
     fileInput.current?.click();
@@ -489,6 +491,7 @@ export function DocumentsView() {
             onAssign={owner.isAdmin ? setAssignTarget : undefined}
             onDelete={viewingOther ? undefined : (doc) => setDeleteTarget(doc)}
             onToggleCompleted={toggleCompleted}
+            onBillingSheet={setBillingTarget}
           />
         </section>
       ) : null}
@@ -496,6 +499,8 @@ export function DocumentsView() {
       <ReceivedFilesDialog open={combineOpen} onOpenChange={setCombineOpen} owner={combineOwner} />
 
       <UploadDialogs uploads={uploads} />
+
+      <BillingSheetDialog doc={billingTarget} onClose={() => setBillingTarget(null)} />
 
       <AssignDialog
         doc={assignTarget}
