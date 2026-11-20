@@ -365,3 +365,27 @@ describe("the raw PDF", () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 });
+
+describe("the billing sheet", () => {
+  it("is offered for a record put together from received files, and opens its sheet", async () => {
+    const user = userEvent.setup();
+    const onBillingSheet = vi.fn();
+    const received = { ...DOCS[0], received_on: "2026-11-19" };
+    render(<DocumentsTable docs={[received]} onOpen={vi.fn()} onBillingSheet={onBillingSheet} />);
+
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Billing sheet" }));
+
+    expect(onBillingSheet).toHaveBeenCalledWith(received);
+  });
+
+  it("is not offered for a record uploaded as one PDF", async () => {
+    // The sheet needs what the uploader types with the received files; a plain upload has none.
+    const user = userEvent.setup();
+    render(<DocumentsTable docs={[DOCS[0]]} onOpen={vi.fn()} onBillingSheet={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+
+    expect(screen.queryByRole("menuitem", { name: "Billing sheet" })).toBeNull();
+  });
+});

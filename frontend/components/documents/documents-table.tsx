@@ -113,6 +113,7 @@ export function DocumentsTable({
   onAssign,
   onDelete,
   onToggleCompleted,
+  onBillingSheet,
 }: Readonly<{
   docs: DocumentListItem[];
   onOpen: (id: string) => void;
@@ -122,6 +123,8 @@ export function DocumentsTable({
   /** Admins only: move the record to another reviewer. Off while a job runs, as on the server. */
   onAssign?: (doc: DocumentListItem) => void;
   onDelete?: (doc: DocumentListItem) => void;
+  /** Open the office's billing sheet - offered for a record put together from received files. */
+  onBillingSheet?: (doc: DocumentListItem) => void;
 }>) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -268,6 +271,11 @@ export function DocumentsTable({
                         <DropdownMenuItem onSelect={() => downloadRawPdf(doc.id)}>
                           Download raw PDF
                         </DropdownMenuItem>
+                        {onBillingSheet && doc.received_on ? (
+                          <DropdownMenuItem onSelect={() => onBillingSheet(doc)}>
+                            Billing sheet
+                          </DropdownMenuItem>
+                        ) : null}
                         {onToggleCompleted ? (
                           <DropdownMenuItem onSelect={() => onToggleCompleted(doc)}>
                             {doc.completed_at ? "Clear Completed" : "Mark as completed"}

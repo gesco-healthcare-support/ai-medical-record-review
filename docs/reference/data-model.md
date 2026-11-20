@@ -309,6 +309,14 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `received_parts` | JSON | yes | none | The files a D2a record was put together from, in order: `[{kind, start, end}]` - the file's kind (`backend/app/services/received_files.py` `KINDS`) and its pages in the joined PDF. Never the files' names (they carry the patient's name). NULL for a record uploaded as one PDF. | `a3d8f5c27b14` |
 | `appointment_date` | Date | yes | none | The date of the evaluation appointment the records are for, typed by the uploader of a D2a record (not reliably on the letter). NULL for a record uploaded as one PDF. | `b5e1d9c4a7f2` |
 | `records_from` | String(32) | yes | none | Who sent a D2a record's files, picked by the uploader: `defense`, `applicant`, `insurance` or `copy_service` (`received_files.PARTIES`; one party per record, a row of the office's billing sheet). NULL for a record uploaded as one PDF. | `b5e1d9c4a7f2` |
+| `visit_type` | String(8) | yes | none | The office's billing sheet (`backend/app/services/billing_sheet.py`), typed at D2a and edited at D6d: `AME`, `QME`, `PQME`, `IME` or `SUPP` (a supplemental report, which has no `appointment_date`). | `c7f3a9e2d5b1` |
+| `review_source` | String(16) | yes | none | Billing sheet: who reviews the records - `edata`, `in_house` or `leonardo`. | `c7f3a9e2d5b1` |
+| `interpreter` | Boolean | yes | none | Billing sheet: whether the evaluation needs an interpreter. | `c7f3a9e2d5b1` |
+| `claim_numbers` | String(255) | yes | none | Billing sheet: the claim numbers as typed (a case can have several). Patient data. | `c7f3a9e2d5b1` |
+| `previous_visit` | Date | yes | none | Billing sheet: the patient's previous office visit, when there was one. | `c7f3a9e2d5b1` |
+| `declared_pages` | Integer | yes | none | Billing sheet: the page count the sender's declaration states. | `c7f3a9e2d5b1` |
+| `discrepancy_reason` | String(255) | yes | none | Billing sheet: why the declared count and the office count differ, typed at D6d. | `c7f3a9e2d5b1` |
+| `office_count`, `depo_pages` | Integer | yes | none | Billing sheet: counts typed over the ones worked out from the record (`billing_sheet.reading`); NULL uses the worked-out count. | `c7f3a9e2d5b1` |
 
 ORM helpers on `Document`: `active_job` (the job in `queued`, `running` or `paused`, else `None`)
 and `listing()` (the wire shape; see [HTTP API reference](http-api.md)).

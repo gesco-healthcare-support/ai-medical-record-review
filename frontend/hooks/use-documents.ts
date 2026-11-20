@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { assignDocument } from "@/lib/admin-api";
 import * as api from "@/lib/documents-api";
+import type { BillingSheetEdit } from "@/lib/billing-sheet";
 import type { DocumentListItem } from "@/lib/types";
 
 const DOCS_KEY = ["documents"] as const;
@@ -64,3 +65,40 @@ export function useSetCompleted() {
 }
 export const useStartIdentification = () =>
   useDocsMutation((id: string) => api.startIdentification(id));
+
+/** The doctors the upload dialog offers. Fetched once while the dialog is open; the list changes
+ *  only with a release. */
+export function useDoctors(enabled = true) {
+  return useQuery({
+    queryKey: ["doctors"],
+    queryFn: api.listDoctors,
+    enabled,
+    staleTime: Infinity,
+    select: (answer) => answer.doctors,
+  });
+}
+
+/** How often the billing sheet is read again while the record's pages are still being read. */
+export const BILLING_POLL_MS = 5000;
+
+const billingKey = (id: string) => ["billing", id] as const;
+
+/** A record's billing sheet. While its pages are still being read (`pages_unread` above 0) it is
+ *  read again every few seconds, so the counts appear once they are known. `id` null reads nothing. */
+export function useBillingSheet(id: string | null) {
+  return useQuery({
+    queryKey: billingKey(id ?? ""),
+    queryFn: () => api.getBillingSheet(id as string),
+    enabled: id !== null,
+    refetchInterval: (query) => ((query.state.data?.pages_unread ?? 0) > 0 ? BILLING_POLL_MS : false),
+  });
+}
+
+/** Save the billing sheet; the answer replaces the cached sheet. */
+export function useSaveBillingSheet(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (edit: BillingSheetEdit) => api.saveBillingSheet(id, edit),
+    onSuccess: (sheet) => queryClient.setQueryData(billingKey(id), sheet),
+  });
+}

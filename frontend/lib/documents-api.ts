@@ -1,4 +1,10 @@
 import { apiFetch } from "@/lib/api";
+import {
+  type BillingDraft,
+  type BillingSheet,
+  type BillingSheetEdit,
+  SUPPLEMENTAL,
+} from "@/lib/billing-sheet";
 import type { ReceivedKind, RecordsFrom } from "@/lib/received-files";
 import type { DocumentListItem } from "@/lib/types";
 
@@ -73,20 +79,38 @@ export function unstageReceivedFile(token: string) {
 }
 
 /** What a record is put together from: the patient's name and ID, the day the records were
- *  received, the appointment date, who sent the records, and the staged files in the order to
- *  join them, each with its kind. `owner` (admins only) puts the record in another reviewer's
- *  account. */
+ *  received, who sent the records, the billing sheet's fields (`lib/billing-sheet.ts`), and the
+ *  staged files in the order to join them, each with its kind. `owner` (admins only) puts the
+ *  record in another reviewer's account. */
 export type ReceivedFilesUpload = {
   lastName: string;
   firstName: string;
   patientId: string;
-  /** `YYYY-MM-DD`, as the browser's date box gives it - this one and the appointment date. */
+  /** `YYYY-MM-DD`, as the browser's date box gives it. */
   dateReceived: string;
-  appointmentDate: string;
   recordsFrom: RecordsFrom;
+  billing: BillingDraft;
   files: { token: string; kind: ReceivedKind }[];
   owner?: number | null;
 };
+
+/** The billing fields as the server takes them. A supplemental report sends no appointment date;
+ *  an optional field left empty is not sent. */
+function appendBilling(form: FormData, billing: BillingDraft) {
+  form.append("visit_type", billing.visit_type);
+  if (billing.visit_type !== SUPPLEMENTAL) form.append("appointment_date", billing.appointment_date);
+  form.append("review_source", billing.review_source);
+  form.append("interpreter", billing.interpreter);
+  const optional: [string, string][] = [
+    ["doctor", billing.doctor],
+    ["claim_numbers", billing.claim_numbers.trim()],
+    ["previous_visit", billing.previous_visit],
+    ["declared_pages", billing.declared_pages.trim()],
+  ];
+  for (const [name, value] of optional) {
+    if (value) form.append(name, value);
+  }
+}
 
 /** POST /api/documents/combine - one record from the staged files, joined in the order sent
  *  (repeated fields "tokens" and "kinds", one kind per file). Does NOT start identification. */
@@ -96,8 +120,8 @@ export function combineReceivedFiles(upload: ReceivedFilesUpload) {
   form.append("first_name", upload.firstName.trim());
   form.append("patient_id", upload.patientId);
   form.append("date_received", upload.dateReceived);
-  form.append("appointment_date", upload.appointmentDate);
   form.append("records_from", upload.recordsFrom);
+  appendBilling(form, upload.billing);
   if (upload.owner != null) form.append("owner", String(upload.owner));
   for (const { token, kind } of upload.files) {
     form.append("tokens", token);
@@ -119,12 +143,45 @@ export function rawPdfUrl(id: string) {
   return `/api/documents/${encodeURIComponent(id)}/raw`;
 }
 
-export function downloadRawPdf(id: string) {
-  // A detached anchor, as for a prepared download: same-origin, so the session cookie goes with it.
+/** Hand a same-origin download URL to the browser's download manager: a detached anchor, as for a
+ *  prepared download, so the session cookie goes with it. */
+function saveFrom(url: string) {
   const link = document.createElement("a");
-  link.href = rawPdfUrl(id);
+  link.href = url;
   link.download = "";
   link.click();
+}
+
+export function downloadRawPdf(id: string) {
+  saveFrom(rawPdfUrl(id));
+}
+
+/** GET /api/documents/combine/doctors - the doctors the upload dialog offers (the header's list). */
+export function listDoctors() {
+  return apiFetch<{ doctors: string[] }>("/documents/combine/doctors");
+}
+
+/** GET /api/documents/{id}/billing - the record's billing sheet, for the billing sheet dialog. */
+export function getBillingSheet(id: string) {
+  return apiFetch<BillingSheet>(`/documents/${encodeURIComponent(id)}/billing`);
+}
+
+/** PUT /api/documents/{id}/billing - edit the billing sheet. Answers as GET. */
+export function saveBillingSheet(id: string, edit: BillingSheetEdit) {
+  return apiFetch<BillingSheet>(`/documents/${encodeURIComponent(id)}/billing`, {
+    method: "PUT",
+    body: JSON.stringify(edit),
+  });
+}
+
+/** GET /api/documents/{id}/billing-sheet - the billing sheet as a one-page PDF, named after the
+ *  record. The dialog offers it only once both counts are known (the server answers 409 before). */
+export function billingSheetUrl(id: string) {
+  return `/api/documents/${encodeURIComponent(id)}/billing-sheet`;
+}
+
+export function downloadBillingSheet(id: string) {
+  saveFrom(billingSheetUrl(id));
 }
 
 /** PUT /api/documents/{id}/patient-id - set the record's patient ID by hand ("" clears it).

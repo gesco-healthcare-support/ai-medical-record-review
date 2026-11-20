@@ -11,8 +11,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useCombineReceivedFiles } from "@/hooks/use-documents";
+import { BillingFields } from "@/components/documents/billing-fields";
+import { useCombineReceivedFiles, useDoctors } from "@/hooks/use-documents";
 import { ApiError } from "@/lib/api";
+import { type BillingDraft, billingReady, EMPTY_BILLING } from "@/lib/billing-sheet";
 import {
   receivedFilePreviewUrl,
   stageReceivedFile,
@@ -347,7 +349,7 @@ function FileRow({
  *  server counts its pages and reads its first page to tell what it is, and the list keeps the
  *  files in the office's order (`lib/received-files.ts`) whatever order they were added in. A kind
  *  can still be changed and a file moved. The uploader gives the patient's name, ID, the day the
- *  records were received, the appointment date and who sent them; Combine & upload then joins the
+ *  records were received, who sent them and the billing sheet's fields; Combine & upload joins the
  *  files exactly as listed (POST /api/documents/combine). Nothing starts Identify.
  *
  *  `owner` is set when an admin opens it on another reviewer's records: the record goes into THAT
@@ -362,13 +364,14 @@ export function ReceivedFilesDialog({
   owner?: { id: number; name: string } | null;
 }>) {
   const combine = useCombineReceivedFiles();
+  const doctors = useDoctors(open).data ?? [];
   const files = useReceivedFiles();
   const { items } = files;
   const [lastName, setLastName] = useState("");
   const [firstName, setFirstName] = useState("");
   const [dateReceived, setDateReceived] = useState("");
-  const [appointmentDate, setAppointmentDate] = useState("");
   const [recordsFrom, setRecordsFrom] = useState<RecordsFrom | "">("");
+  const [billing, setBilling] = useState<BillingDraft>(EMPTY_BILLING);
   // What the uploader typed in the Patient ID box, or null while they have not touched it - the box
   // then shows the ID the files' names agree on.
   const [typedId, setTypedId] = useState<string | null>(null);
@@ -392,8 +395,8 @@ export function ReceivedFilesDialog({
     patientId !== "" &&
     !idTooLong &&
     dateReceived !== "" &&
-    appointmentDate !== "" &&
-    recordsFrom !== "";
+    recordsFrom !== "" &&
+    billingReady(billing);
 
   /** Dismissing clears everything, whichever control did it (one function, so Cancel and Escape
    *  cannot drift apart again - #264's shape). The files already sent are dropped on the server,
@@ -402,8 +405,8 @@ export function ReceivedFilesDialog({
     setLastName("");
     setFirstName("");
     setDateReceived("");
-    setAppointmentDate("");
     setRecordsFrom("");
+    setBilling(EMPTY_BILLING);
     files.clear(recordMade);
     setTypedId(null);
     onOpenChange(false);
@@ -436,9 +439,10 @@ export function ReceivedFilesDialog({
         firstName,
         patientId,
         dateReceived,
-        appointmentDate,
-        // Send is enabled only when `ready`, so a party has been chosen.
+        // Send is enabled only when `ready`, so a party has been chosen and the billing sheet's
+        // required fields are filled.
         recordsFrom: recordsFrom as RecordsFrom,
+        billing,
         // ...and every file has been read, so every file has its token.
         files: items.map(({ token, kind }) => ({ token: token as string, kind })),
         owner: owner?.id ?? null,
@@ -538,18 +542,6 @@ export function ReceivedFilesDialog({
               />
             </div>
             <div className="grid gap-1.5">
-              <label className="ev-lbl" htmlFor="receivedAppointment">
-                Appointment date
-              </label>
-              <input
-                id="receivedAppointment"
-                type="date"
-                className="ev-inp"
-                value={appointmentDate}
-                onChange={(e) => setAppointmentDate(e.target.value)}
-              />
-            </div>
-            <div className="grid gap-1.5">
               <label className="ev-lbl" htmlFor="receivedFrom">
                 Records from
               </label>
@@ -568,6 +560,16 @@ export function ReceivedFilesDialog({
               </select>
             </div>
           </div>
+
+          <fieldset className="grid gap-3 sm:grid-cols-2">
+            <legend className="ev-lbl mb-1">For the billing sheet</legend>
+            <BillingFields
+              value={billing}
+              onChange={(patch) => setBilling((prev) => ({ ...prev, ...patch }))}
+              doctors={doctors}
+              idPrefix="received"
+            />
+          </fieldset>
 
           <div className="grid gap-1.5">
             <span className="ev-lbl">Files, in the order they are put together</span>

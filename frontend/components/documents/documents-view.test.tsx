@@ -36,6 +36,9 @@ vi.mock("@/hooks/use-documents", () => ({
   useCombineReceivedFiles: () => combine,
   useAssignDocument: () => assign,
   useSetCompleted: () => complete,
+  useDoctors: () => ({ data: [] }),
+  useBillingSheet: (id: string | null) => ({ data: undefined, isError: false, error: null, id }),
+  useSaveBillingSheet: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 // A plain reviewer unless a test says otherwise, so every test written before admins could pick a
@@ -323,6 +326,18 @@ describe("DocumentsView navigation", () => {
     // The id in the path is the whole point: routing to the wrong record shows another patient's
     // documents to a reviewer who thinks they opened their own.
     expect(push).toHaveBeenCalledWith("/records/abc123");
+  });
+
+  it("opens the billing sheet of a record put together from received files", async () => {
+    const user = userEvent.setup();
+    docsState.data = [doc({ id: "abc123", received_on: "2026-11-19" })];
+    render(<DocumentsView />);
+
+    await user.click(await menuItem(user, /^Billing sheet$/));
+
+    expect(screen.getByRole("heading", { name: "Billing sheet" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("heading", { name: "Billing sheet" })).toBeNull();
   });
 
   it("marks a record completed from its bar, and clears a marked one", async () => {

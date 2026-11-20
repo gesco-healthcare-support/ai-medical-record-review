@@ -234,9 +234,26 @@ class Document(Base):
     received_parts: Mapped[Any | None] = mapped_column(JSON)
     # Typed by the same uploader: the date of the evaluation appointment the records are for, and
     # who sent them (received_files.PARTIES: defense, applicant, insurance, copy_service). Neither
-    # is reliably on the letter. Both NULL for a record uploaded as one PDF.
+    # is reliably on the letter. Both NULL for a record uploaded as one PDF, and the appointment
+    # date NULL for a supplemental report, which has none.
     appointment_date: Mapped[date | None] = mapped_column(Date)
     records_from: Mapped[str | None] = mapped_column(String(32))
+    # The rest of the office's billing sheet (services/billing_sheet.py), typed at upload and
+    # editable on the sheet: the type of visit (billing_sheet.VISIT_TYPES; SUPP has no
+    # appointment), who reviews the records (REVIEW_SOURCES), whether an interpreter is needed, the
+    # claim numbers as typed, the previous office visit, the page count the sender's declaration
+    # states and why the office's count differs. `office_count` and `depo_pages` are typed over the
+    # counts worked out from the record; NULL uses the worked-out count. All NULL for a record
+    # uploaded as one PDF. The claim numbers and the reason are patient data: never log them.
+    visit_type: Mapped[str | None] = mapped_column(String(8))
+    review_source: Mapped[str | None] = mapped_column(String(16))
+    interpreter: Mapped[bool | None] = mapped_column(Boolean)
+    claim_numbers: Mapped[str | None] = mapped_column(String(255))
+    previous_visit: Mapped[date | None] = mapped_column(Date)
+    declared_pages: Mapped[int | None] = mapped_column(Integer)
+    discrepancy_reason: Mapped[str | None] = mapped_column(String(255))
+    office_count: Mapped[int | None] = mapped_column(Integer)
+    depo_pages: Mapped[int | None] = mapped_column(Integer)
 
     jobs: Mapped[list["Job"]] = relationship(
         "Job", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Job.id"

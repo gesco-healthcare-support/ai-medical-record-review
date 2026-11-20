@@ -41,6 +41,7 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 | Exports | `reporting.py` | The Word review letter and memo (python-docx). |
 | | `linked_pdf.py` | The letter followed by the source record, with links to each entry's pages. |
 | | `bundles.py` | Category-filtered bundle PDF with a cover page, and the bundle summary. |
+| | `billing_sheet.py` | The office's billing sheet (the "super bill") for a record put together from received files: the choices it offers (`VISIT_TYPES`, `REVIEW_SOURCES`), the office count (every page received but the internal email and the envelope) and the deposition pages (testimony only, found from the stored page text before Identify - `testimony_runs`; a condensed sheet counts four), counted once every counted page is read (`reading`); a count typed on the sheet wins (`sheet_for`); the one-page PDF, drawn after the office's own form (`render`). |
 | | `downloads.py` | Parks a built export behind a short-lived token and tracks how its download ended. |
 | Jobs | `jobs.py` | Creates jobs, enforces one active job per record, enqueues on the owner's lane, owns the status maps. |
 | | `provenance.py` | Fingerprints the prompt text that produced a stored row or job. |

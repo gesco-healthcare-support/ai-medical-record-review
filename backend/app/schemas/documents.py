@@ -140,6 +140,30 @@ class CompletedPayload(BaseModel):
     completed: bool
 
 
+class BillingPayload(BaseModel):
+    """The office's billing sheet, edited (PUT /documents/{id}/billing;
+    services/billing_sheet.py).
+
+    Every field is a STRING, as the form sends it, and an empty string clears the field: the route
+    checks each one and answers a plain 400 for a value it cannot store, which a 422 would not
+    show the uploader. `interpreter` is `yes` or `no`; the dates are `YYYY-MM-DD`; `office_count`
+    and `depo_pages` are typed over the counts worked out from the record, and empty means "use
+    the worked-out count"."""
+
+    visit_type: str = ""
+    appointment_date: str = ""
+    doctor: str = ""
+    review_source: str = ""
+    interpreter: str = ""
+    claim_numbers: str = ""
+    previous_visit: str = ""
+    declared_pages: str = ""
+    discrepancy_reason: str = ""
+    records_from: str = ""
+    office_count: str = ""
+    depo_pages: str = ""
+
+
 class ZipBundle(BaseModel):
     """One category bundle to include in the export zip.
 
