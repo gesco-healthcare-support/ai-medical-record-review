@@ -234,7 +234,12 @@ def _rendered_text(sheet) -> tuple[int, str]:
 
 def test_the_sheet_is_one_page_with_its_fields_written_on_it():
     sheet = billing_sheet.sheet_for(
-        _doc(claim_numbers="ADJ0000001", declared_pages=40, discrepancy_reason="Two missing"),
+        _doc(
+            claim_numbers="ADJ0000001",
+            location="Main office",
+            declared_pages=40,
+            discrepancy_reason="Two missing",
+        ),
         billing_sheet.Counts(42, 7),
     )
 
@@ -247,6 +252,7 @@ def test_the_sheet_is_one_page_with_its_fields_written_on_it():
         "Sample, Pat",
         "A1D5",
         "ADJ0000001",
+        "Main office",
         "QME",
         "40",
         "42",
@@ -310,6 +316,14 @@ def test_a_price_prints_its_amount_in_bold_and_what_it_includes_in_italics():
     assert "Bold" in fonts["$503.75"]
 
 
+def test_the_location_box_is_blank_when_none_was_typed():
+    """GUARD: a record from before the location was asked for keeps an empty box."""
+    sheet = billing_sheet.sheet_for(_doc(), None)
+
+    assert sheet.location == ""
+    assert "Location:" in _rendered_text(sheet)[1]
+
+
 def test_a_long_value_is_made_to_fit_its_space():
     sheet = billing_sheet.sheet_for(_doc(claim_numbers="ADJ0000001, " * 30), None)
 
@@ -335,6 +349,7 @@ _BILLING = {
     "review_source": "leonardo",
     "interpreter": "yes",
     "claim_numbers": "ADJ0000001, ADJ0000002",
+    "location": "Main office",
     "previous_visit": "2026-06-14",
     "declared_pages": "6",
 }
@@ -353,6 +368,7 @@ async def test_the_billing_fields_typed_at_upload_are_stored(client):
     assert document.review_source == "leonardo"
     assert document.interpreter is True
     assert document.claim_numbers == "ADJ0000001, ADJ0000002"
+    assert document.location == "Main office"
     assert document.previous_visit == date(2026, 6, 14)
     assert document.declared_pages == 6
     assert document.appointment_date == date(2026, 12, 1)
@@ -382,6 +398,7 @@ async def test_the_optional_billing_fields_may_be_left_blank(client):
     document = _document(resp.json()["id"])
     assert document.doctor is None
     assert document.claim_numbers is None
+    assert document.location is None
     assert document.previous_visit is None
     assert document.declared_pages is None
     assert document.interpreter is False
@@ -401,6 +418,7 @@ async def test_the_optional_billing_fields_may_be_left_blank(client):
         ({"declared_pages": "six"}, "Enter the pages the declaration states as a whole number."),
         ({"declared_pages": "-3"}, "Enter the pages the declaration states as a whole number."),
         ({"claim_numbers": "A" * 256}, "The claim numbers are at most 255 characters."),
+        ({"location": "A" * 256}, "The location is at most 255 characters."),
     ],
 )
 async def test_a_billing_field_the_sheet_cannot_hold_is_refused(client, overrides, detail):
@@ -475,6 +493,7 @@ async def test_once_read_the_sheet_has_its_counts(client):
     assert got["appointment_date"] == "2026-12-01"
     assert got["interpreter"] == "yes"
     assert got["declared_pages"] == 6
+    assert got["location"] == "Main office"
     assert got["office_count"] == ""
     assert got["records_from"] == "applicant"
     assert got["received_on"] == "2026-11-03"
@@ -484,6 +503,7 @@ async def test_the_sheet_is_edited_and_the_change_audited_by_name(client):
     doc_id = await _record(client)
     payload = {
         **{key: "" for key in ("doctor", "claim_numbers", "previous_visit")},
+        "location": "Second office",
         "visit_type": "QME",
         "appointment_date": "2026-12-09",
         "review_source": "in_house",
@@ -505,6 +525,7 @@ async def test_the_sheet_is_edited_and_the_change_audited_by_name(client):
     assert document.interpreter is False
     assert document.discrepancy_reason == "One page more than declared"
     assert document.records_from == "defense"
+    assert document.location == "Second office"
     assert (document.office_count, document.depo_pages) == (None, 3)
     assert resp.json()["depo_pages"] == 3
     with get_sessionmaker()() as session:
@@ -515,7 +536,7 @@ async def test_the_sheet_is_edited_and_the_change_audited_by_name(client):
         ).all()
     assert details == [
         "changed=appointment_date,claim_numbers,declared_pages,depo_pages,discrepancy_reason,"
-        "doctor,interpreter,previous_visit,records_from,review_source,visit_type"
+        "doctor,interpreter,location,previous_visit,records_from,review_source,visit_type"
     ]
 
 
@@ -557,6 +578,7 @@ async def test_a_doctor_stored_before_the_list_changed_is_kept(client):
             "The reason for the discrepancy is at most 255 characters.",
         ),
         ("records_from", "attorney", "Choose who sent the records."),
+        ("location", "x" * 256, "The location is at most 255 characters."),
         ("appointment_date", "12/01/2026", "Enter the appointment date."),
     ],
 )

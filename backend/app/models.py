@@ -241,14 +241,16 @@ class Document(Base):
     # The rest of the office's billing sheet (services/billing_sheet.py), typed at upload and
     # editable on the sheet: the type of visit (billing_sheet.VISIT_TYPES; SUPP has no
     # appointment), who reviews the records (REVIEW_SOURCES), whether an interpreter is needed, the
-    # claim numbers as typed, the previous office visit, the page count the sender's declaration
-    # states and why the office's count differs. `office_count` and `depo_pages` are typed over the
+    # claim numbers as typed, the previous office visit, where the evaluation takes place
+    # (`location`, as typed), the page count the sender's declaration states and why the office's
+    # count differs. `office_count` and `depo_pages` are typed over the
     # counts worked out from the record; NULL uses the worked-out count. All NULL for a record
     # uploaded as one PDF. The claim numbers and the reason are patient data: never log them.
     visit_type: Mapped[str | None] = mapped_column(String(8))
     review_source: Mapped[str | None] = mapped_column(String(16))
     interpreter: Mapped[bool | None] = mapped_column(Boolean)
     claim_numbers: Mapped[str | None] = mapped_column(String(255))
+    location: Mapped[str | None] = mapped_column(String(255))
     previous_visit: Mapped[date | None] = mapped_column(Date)
     declared_pages: Mapped[int | None] = mapped_column(Integer)
     discrepancy_reason: Mapped[str | None] = mapped_column(String(255))

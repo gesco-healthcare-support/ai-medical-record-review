@@ -63,6 +63,7 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 400 | `Choose whether an interpreter is needed.` | D2a, D6d |
 | 400 | `Choose the doctor from the list.` | D2a, D6d |
 | 400 | `The claim numbers are at most 255 characters.` | D2a, D6d |
+| 400 | `The location is at most 255 characters.` | D2a, D6d |
 | 400 | `Enter the previous office visit as a date.` | D2a, D6d |
 | 400 | `Enter the pages the declaration states as a whole number.` | D2a, D6d |
 | 400 | `The reason for the discrepancy is at most 255 characters.` | D6d |

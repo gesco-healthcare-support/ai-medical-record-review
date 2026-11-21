@@ -104,6 +104,7 @@ function appendBilling(form: FormData, billing: BillingDraft) {
   const optional: [string, string][] = [
     ["doctor", billing.doctor],
     ["claim_numbers", billing.claim_numbers.trim()],
+    ["location", billing.location.trim()],
     ["previous_visit", billing.previous_visit],
     ["declared_pages", billing.declared_pages.trim()],
   ];

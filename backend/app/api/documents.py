@@ -637,6 +637,7 @@ _BILLING_SOURCE_DETAIL = "Choose E-DATA, IN-HOUSE or LEONARDO."
 _BILLING_INTERPRETER_DETAIL = "Choose whether an interpreter is needed."
 _BILLING_DOCTOR_DETAIL = "Choose the doctor from the list."
 _BILLING_CLAIM_DETAIL = "The claim numbers are at most 255 characters."
+_BILLING_LOCATION_DETAIL = "The location is at most 255 characters."
 _BILLING_PREVIOUS_DETAIL = "Enter the previous office visit as a date."
 _BILLING_DECLARED_DETAIL = "Enter the pages the declaration states as a whole number."
 _BILLING_REASON_DETAIL = "The reason for the discrepancy is at most 255 characters."
@@ -723,13 +724,15 @@ def _billing_at_upload(
     review_source: str,
     interpreter: str,
     claim_numbers: str,
+    location: str,
     previous_visit: str,
     declared_pages: str,
 ) -> dict:
     """The billing sheet's fields as the uploader typed them on ``POST .../combine``, checked:
     the type of visit, who reviews the records and whether an interpreter is needed are required,
     and so is the appointment date unless the visit is a supplemental report, which has none. The
-    doctor, the claim numbers, the previous office visit and the declared page count may be blank.
+    doctor, the claim numbers, the location, the previous office visit and the declared page count
+    may be blank.
     """
     visit = _choice(visit_type, billing_sheet.VISIT_TYPES, _BILLING_VISIT_DETAIL, required=True)
     appointment = None
@@ -744,6 +747,7 @@ def _billing_at_upload(
         ),
         "interpreter": _yes_no(interpreter, required=True),
         "claim_numbers": _short_text(claim_numbers, _BILLING_CLAIM_DETAIL),
+        "location": _short_text(location, _BILLING_LOCATION_DETAIL),
         "previous_visit": _optional_date(previous_visit, _BILLING_PREVIOUS_DETAIL),
         "declared_pages": _whole_number(declared_pages, _BILLING_DECLARED_DETAIL),
     }
@@ -756,6 +760,7 @@ def _billing_form(
     review_source: str = Form(default=""),
     interpreter: str = Form(default=""),
     claim_numbers: str = Form(default=""),
+    location: str = Form(default=""),
     previous_visit: str = Form(default=""),
     declared_pages: str = Form(default=""),
 ) -> dict[str, str]:
@@ -769,6 +774,7 @@ def _billing_form(
         "review_source": review_source,
         "interpreter": interpreter,
         "claim_numbers": claim_numbers,
+        "location": location,
         "previous_visit": previous_visit,
         "declared_pages": declared_pages,
     }
@@ -1382,6 +1388,7 @@ def _billing_response(session: Session, document: Document) -> dict:
         "review_source": document.review_source or "",
         "interpreter": _yes_no_text(document.interpreter),
         "claim_numbers": document.claim_numbers or "",
+        "location": document.location or "",
         "previous_visit": _iso(document.previous_visit),
         "declared_pages": _count_text(document.declared_pages),
         "discrepancy_reason": document.discrepancy_reason or "",
@@ -1417,6 +1424,7 @@ def _billing_fields(payload: BillingPayload, document: Document) -> dict:
         ),
         "interpreter": _yes_no(payload.interpreter, required=False),
         "claim_numbers": _short_text(payload.claim_numbers, _BILLING_CLAIM_DETAIL),
+        "location": _short_text(payload.location, _BILLING_LOCATION_DETAIL),
         "previous_visit": _optional_date(payload.previous_visit, _BILLING_PREVIOUS_DETAIL),
         "declared_pages": _whole_number(payload.declared_pages, _BILLING_DECLARED_DETAIL),
         "discrepancy_reason": _short_text(payload.discrepancy_reason, _BILLING_REASON_DETAIL),

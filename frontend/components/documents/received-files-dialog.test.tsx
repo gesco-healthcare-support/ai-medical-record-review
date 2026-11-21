@@ -60,6 +60,29 @@ function listed(): string[] {
     .map((li) => li.querySelector("[data-file-name]")!.textContent ?? "");
 }
 
+/** The card of the file named `name`. */
+function rowOf(name: string): HTMLElement {
+  const file = within(screen.getByRole("list"))
+    .getAllByRole("listitem")
+    .find((li) => li.querySelector("[data-file-name]")?.textContent === name);
+  if (!file) throw new Error(`no file ${name}`);
+  return file;
+}
+
+/** Whether the file named `name` shows its pages and that the uploader confirmed it. */
+function isConfirmed(name: string, pages: string): boolean {
+  const row = within(rowOf(name));
+  return row.queryByText(pages) !== null && row.queryByText("Confirmed") !== null;
+}
+
+/** No file listed yet: the list is gone and the drop zone asks for the files. */
+function noFiles(): boolean {
+  return (
+    screen.queryByRole("list") === null &&
+    screen.queryByText("Drag the files here, in any order, or") !== null
+  );
+}
+
 async function allRead(count: number) {
   await waitFor(() => expect(stage).toHaveBeenCalledTimes(count));
   await waitFor(() => expect(screen.queryByText("Reading...")).toBeNull());
@@ -153,7 +176,7 @@ describe("ReceivedFilesDialog ordering", () => {
     await act(async () => slow.answer({ token: "t1", pages: 3, kind: "email" }));
 
     expect(screen.getByLabelText("What scan.pdf is")).toHaveValue("declaration");
-    expect(screen.getByText("3 pages - confirmed")).toBeInTheDocument();
+    expect(isConfirmed("scan.pdf", "3 pages")).toBe(true);
   });
 
   it("moves a file into its place when its kind is changed", async () => {
@@ -245,7 +268,7 @@ describe("ReceivedFilesDialog reading the files", () => {
     await act(async () => slow.answer({ token: "late", pages: 2, kind: "records" }));
 
     expect(unstage).toHaveBeenCalledWith("late");
-    expect(screen.getByText("No files yet.")).toBeInTheDocument();
+    expect(noFiles()).toBe(true);
   });
 });
 
@@ -277,6 +300,7 @@ describe("ReceivedFilesDialog sending", () => {
         review_source: "in_house",
         interpreter: "no",
         claim_numbers: "",
+        location: "",
         previous_visit: "",
         declared_pages: "",
       },
@@ -402,6 +426,7 @@ describe("ReceivedFilesDialog sending", () => {
 
     await user.selectOptions(screen.getByLabelText("Doctor"), "Beta");
     fireEvent.change(screen.getByLabelText("Claim numbers"), { target: { value: "ADJ1, ADJ2" } });
+    fireEvent.change(screen.getByLabelText("Location"), { target: { value: "Main office" } });
     fireEvent.change(screen.getByLabelText("Previous office visit"), {
       target: { value: "2026-06-14" },
     });
@@ -416,6 +441,7 @@ describe("ReceivedFilesDialog sending", () => {
           billing: expect.objectContaining({
             doctor: "Beta",
             claim_numbers: "ADJ1, ADJ2",
+            location: "Main office",
             previous_visit: "2026-06-14",
             declared_pages: "40",
           }),
@@ -510,7 +536,7 @@ describe("ReceivedFilesDialog file handling", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(unstage.mock.calls.map(([token]) => token).sort()).toEqual(["tok-a.pdf", "tok-b.pdf"]);
     rerender(<ReceivedFilesDialog open onOpenChange={onOpenChange} />);
-    expect(screen.getByText("No files yet.")).toBeInTheDocument();
+    expect(noFiles()).toBe(true);
     expect(screen.getByLabelText("Patient last name")).toHaveValue("");
   });
 
@@ -526,7 +552,7 @@ describe("ReceivedFilesDialog file handling", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(unstage).toHaveBeenCalledWith("tok-a.pdf");
     rerender(<ReceivedFilesDialog open onOpenChange={onOpenChange} />);
-    expect(screen.getByText("No files yet.")).toBeInTheDocument();
+    expect(noFiles()).toBe(true);
   });
 });
 
@@ -573,7 +599,7 @@ describe("ReceivedFilesDialog checking", () => {
     await user.click(screen.getByRole("button", { name: "Confirm scan.pdf as Declaration" }));
 
     expect(screen.queryByText("Not sure - check the page")).toBeNull();
-    expect(screen.getByText("2 pages - confirmed")).toBeInTheDocument();
+    expect(isConfirmed("scan.pdf", "2 pages")).toBe(true);
     expect(screen.getByRole("button", { name: "Combine & upload" })).toBeEnabled();
   });
 
@@ -598,7 +624,7 @@ describe("ReceivedFilesDialog checking", () => {
     await user.selectOptions(screen.getByLabelText("What scan.pdf is"), "medical_index");
 
     expect(screen.queryByText("Not sure - check the page")).toBeNull();
-    expect(screen.getByText("2 pages - confirmed")).toBeInTheDocument();
+    expect(isConfirmed("scan.pdf", "2 pages")).toBe(true);
   });
 
   it("names a file added twice and cannot send until one is removed", async () => {
@@ -656,5 +682,102 @@ describe("ReceivedFilesDialog checking", () => {
     await allRead(1);
     expect(listed()).toEqual(["fax page.tif"]);
     expect(vi.mocked(toast).error).not.toHaveBeenCalled();
+  });
+});
+
+describe("ReceivedFilesDialog drag and drop", () => {
+  it("adds files dropped anywhere on it, and the page under it never gets the drop", async () => {
+    // DEMONSTRATES the office's first use (2026-11-20): files dropped on the dialog were taken by
+    // the records page it was opened from, which uploaded the first one alone as a record.
+    const pageDrop = vi.fn();
+    const pageOver = vi.fn();
+    render(
+      <div onDrop={pageDrop} onDragOver={pageOver}>
+        <ReceivedFilesDialog open onOpenChange={vi.fn()} />
+      </div>,
+    );
+    const dialog = screen.getByRole("dialog");
+
+    expect(fireEvent.dragOver(dialog)).toBe(false);
+    expect(
+      fireEvent.drop(screen.getByLabelText("Patient last name"), {
+        dataTransfer: { files: [pdf("letter.pdf"), pdf("records.pdf")] },
+      }),
+    ).toBe(false);
+
+    expect(listed()).toEqual(["letter.pdf", "records.pdf"]);
+    expect(pageDrop).not.toHaveBeenCalled();
+    expect(pageOver).not.toHaveBeenCalled();
+    await allRead(2);
+  });
+
+  it("says files can be dropped, and lights up while they are dragged over it", () => {
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    const dialog = screen.getByRole("dialog");
+
+    expect(screen.getByText("Drag the files here, in any order, or")).toBeInTheDocument();
+    fireEvent.dragEnter(dialog);
+    expect(screen.getByText("Drop the files to add them")).toBeInTheDocument();
+    fireEvent.dragLeave(dialog);
+    expect(screen.queryByText("Drop the files to add them")).toBeNull();
+  });
+
+  it("stays lit while files are dragged from one of its parts to another", () => {
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    const dialog = screen.getByRole("dialog");
+
+    fireEvent.dragEnter(dialog);
+    fireEvent.dragEnter(screen.getByLabelText("Patient ID"));
+    fireEvent.dragLeave(dialog);
+
+    expect(screen.getByText("Drop the files to add them")).toBeInTheDocument();
+  });
+
+  it("refuses a dropped file it cannot take, as it does a picked one", () => {
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+
+    fireEvent.drop(screen.getByRole("dialog"), { dataTransfer: { files: [other("note.doc")] } });
+
+    expect(vi.mocked(toast).error).toHaveBeenCalledWith(expect.stringContaining("not added"));
+    expect(stage).not.toHaveBeenCalled();
+  });
+
+  it("takes no files while the record is being made", () => {
+    combine.isPending = true;
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+
+    fireEvent.drop(screen.getByRole("dialog"), { dataTransfer: { files: [pdf("late.pdf")] } });
+
+    expect(stage).not.toHaveBeenCalled();
+    expect(noFiles()).toBe(true);
+  });
+});
+
+describe("ReceivedFilesDialog layout", () => {
+  it("keeps its buttons outside the part that scrolls, so zooming in never hides them", () => {
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    const body = screen.getByLabelText("Patient last name").closest(".overflow-y-auto");
+
+    expect(body).not.toBeNull();
+    expect(body).not.toContainElement(screen.getByRole("button", { name: "Combine & upload" }));
+    expect(body).not.toContainElement(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("dialog")).toHaveClass("max-h-[calc(100dvh-2rem)]");
+  });
+
+  it("marks a confirmed file, and a file it is not sure of", async () => {
+    const user = userEvent.setup();
+    readings = { "scan.pdf": { check: true } };
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("records.pdf"), pdf("scan.pdf")]);
+    await allRead(2);
+
+    expect(rowOf("scan.pdf")).toHaveClass("border-warning/60");
+    expect(rowOf("records.pdf")).not.toHaveClass("border-success/40");
+    await user.click(
+      screen.getByRole("button", { name: "Confirm records.pdf as Medical records" }),
+    );
+
+    expect(rowOf("records.pdf")).toHaveClass("border-success/40");
+    expect(isConfirmed("records.pdf", "2 pages")).toBe(true);
   });
 });

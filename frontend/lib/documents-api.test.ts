@@ -144,7 +144,13 @@ describe("uploading", () => {
     await combineReceivedFiles({ ...UPLOAD, billing: BILLING });
 
     const body = lastCall().init.body as FormData;
-    for (const name of ["doctor", "claim_numbers", "previous_visit", "declared_pages"]) {
+    for (const name of [
+      "doctor",
+      "claim_numbers",
+      "location",
+      "previous_visit",
+      "declared_pages",
+    ]) {
       expect(body.has(name)).toBe(false);
     }
   });
@@ -155,6 +161,7 @@ describe("uploading", () => {
       billing: {
         ...BILLING,
         doctor: "Alpha",
+        location: " Main office ",
         previous_visit: "2026-06-14",
         declared_pages: " 40 ",
       },
@@ -162,6 +169,7 @@ describe("uploading", () => {
 
     const body = lastCall().init.body as FormData;
     expect(body.get("doctor")).toBe("Alpha");
+    expect(body.get("location")).toBe("Main office");
     expect(body.get("previous_visit")).toBe("2026-06-14");
     expect(body.get("declared_pages")).toBe("40");
   });

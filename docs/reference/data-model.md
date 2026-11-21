@@ -313,6 +313,7 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `review_source` | String(16) | yes | none | Billing sheet: who reviews the records - `edata`, `in_house` or `leonardo`. | `c7f3a9e2d5b1` |
 | `interpreter` | Boolean | yes | none | Billing sheet: whether the evaluation needs an interpreter. | `c7f3a9e2d5b1` |
 | `claim_numbers` | String(255) | yes | none | Billing sheet: the claim numbers as typed (a case can have several). Patient data. | `c7f3a9e2d5b1` |
+| `location` | String(255) | yes | none | Billing sheet: where the evaluation takes place, as typed at D2a or D6d. | `e4a1c8f62b37` |
 | `previous_visit` | Date | yes | none | Billing sheet: the patient's previous office visit, when there was one. | `c7f3a9e2d5b1` |
 | `declared_pages` | Integer | yes | none | Billing sheet: the page count the sender's declaration states. | `c7f3a9e2d5b1` |
 | `discrepancy_reason` | String(255) | yes | none | Billing sheet: why the declared count and the office count differ, typed at D6d. | `c7f3a9e2d5b1` |

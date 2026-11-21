@@ -130,6 +130,19 @@ export function BillingFields({
         />
       </div>
       <div className="grid gap-1.5">
+        <label className="ev-lbl" htmlFor={id("location")}>
+          Location
+        </label>
+        <input
+          id={id("location")}
+          className="ev-inp"
+          autoComplete="off"
+          placeholder="Where the evaluation takes place"
+          value={value.location}
+          onChange={(e) => onChange({ location: e.target.value })}
+        />
+      </div>
+      <div className="grid gap-1.5">
         <label className="ev-lbl" htmlFor={id("previous")}>
           Previous office visit
         </label>

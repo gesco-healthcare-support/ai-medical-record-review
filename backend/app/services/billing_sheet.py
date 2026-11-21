@@ -199,6 +199,7 @@ class Sheet:
     previous_visit: str = ""
     patient_name: str = ""
     patient_id: str = ""
+    location: str = ""
     claim_numbers: str = ""
     visit_type: str = ""
     interpreter: bool | None = None
@@ -250,6 +251,7 @@ def sheet_for(document: Document, counts: Counts | None) -> Sheet:
         previous_visit=us_date(document.previous_visit),
         patient_name=patient_name(document.patient_last_name, document.patient_first_name),
         patient_id=document.patient_id or "",
+        location=document.location or "",
         claim_numbers=document.claim_numbers or "",
         visit_type=document.visit_type or "",
         interpreter=document.interpreter,
@@ -411,7 +413,7 @@ def _draw_top(page, sheet: Sheet) -> None:
 
     _field(page, 18, 106, "Patient Name:", sheet.patient_name, 346)
     _field(page, 352, 106, "Acct:", sheet.patient_id, 444)
-    _field(page, 449, 106, "Location:", "", 592)
+    _field(page, 449, 106, "Location:", sheet.location, 592)
 
     _field(page, 18, 135, "Claim Number:", sheet.claim_numbers, 262)
     _field(page, 266, 135, "Type of Visit:", sheet.visit_type, 404)

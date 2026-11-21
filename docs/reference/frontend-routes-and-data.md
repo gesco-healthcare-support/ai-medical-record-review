@@ -83,7 +83,7 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | `stageReceivedFile()` | `POST /documents/combine/files` | multipart field `pdf` (one PDF or scanned image) | `{token, pages, kind, check, sha256}` | `ReceivedFilesDialog`, once per file as it is added, one file at a time |
 | `receivedFilePreviewUrl()` | `GET /documents/combine/files/{token}/preview` | - | a PNG of the file's first page, shown by a plain image tag | "Page 1" in `ReceivedFilesDialog` |
 | `unstageReceivedFile()` | `DELETE /documents/combine/files/{token}` | - | `{ok}` | `ReceivedFilesDialog`: a file removed from the list, and every staged file when the dialog closes without making a record (errors ignored) |
-| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `records_from`, the billing sheet's `visit_type`, `review_source`, `interpreter`, `appointment_date` (not for `SUPP`) and, when typed, `doctor`, `claim_numbers`, `previous_visit`, `declared_pages`; `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. The patient's details and the billing sheet's required fields (`billingReady` in `frontend/lib/billing-sheet.ts`) must be filled and every file read; the Patient ID box is filled from the ID the files' names agree on |
+| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `records_from`, the billing sheet's `visit_type`, `review_source`, `interpreter`, `appointment_date` (not for `SUPP`) and, when typed, `doctor`, `claim_numbers`, `location`, `previous_visit`, `declared_pages`; `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. The patient's details and the billing sheet's required fields (`billingReady` in `frontend/lib/billing-sheet.ts`) must be filled and every file read; the Patient ID box is filled from the ID the files' names agree on |
 | `listDoctors()` | `GET /documents/combine/doctors` | - | `{doctors}` | `useDoctors()` in `ReceivedFilesDialog` (the Doctor list), fetched once while the dialog is open |
 | `getBillingSheet()` | `GET /documents/{id}/billing` | - | the billing sheet | `useBillingSheet()` in `BillingSheetDialog`; read again every 5 seconds while `pages_unread` is above 0 |
 | `saveBillingSheet()` | `PUT /documents/{id}/billing` | `BillingSheetEdit` (every field as typed) | the billing sheet | `useSaveBillingSheet()` in `BillingSheetDialog` (the answer replaces the cached sheet) |
@@ -322,10 +322,17 @@ the patient's last and first name, the patient ID (filled when the files' names 
 date received, picks who sent the records (Defense, Applicant, Insurance or Copy service), fills
 the billing sheet's fields (`BillingFields` in `billing-fields.tsx`: the type of visit, the
 appointment date - gone for a supplemental report, `SUPP` - who reviews the records (E-DATA,
-IN-HOUSE, LEONARDO) and the interpreter are required; the doctor, the claim numbers, the previous
-office visit and the pages the declaration states may stay blank), and adds the files in any order - PDFs, or scans sent as images (JPG, PNG, TIFF),
-which the server turns into PDF pages; anything else (a Word or Outlook file) is refused with a
-message saying to save it as PDF first (`isAcceptedFile` in `frontend/lib/received-files.ts`). Each
+IN-HOUSE, LEONARDO) and the interpreter are required; the doctor, the claim numbers, the location,
+the previous office visit and the pages the declaration states may stay blank), and adds the files
+in any order - dragged onto the dialog anywhere (a cover says "Drop the files to add them" while
+they are dragged; the drop never reaches the records page underneath, whose own drop handler would
+upload the first file alone) or picked with Add files. The files come first in the dialog, so a
+drop shows them at once and they are read while the rest is typed. Only the body scrolls: the
+dialog stays inside the window and its Cancel and Combine & upload buttons stay in view at any zoom
+(`dialog-layout.ts`, shared with the billing sheet dialog). Files may be PDFs, or scans sent as
+images (JPG, PNG, TIFF), which the server turns into PDF pages; anything else (a Word or Outlook
+file) is refused with a message saying to save it as PDF first (`isAcceptedFile` in
+`frontend/lib/received-files.ts`). Each
 file is sent on its own as soon as it is added (`stageReceivedFile`, one at a time, so the proxy's
 upload limit applies to each file rather than to the whole record); the server counts its pages and
 the model reads its first page to say what it is. Until it answers the file's row says
@@ -335,8 +342,10 @@ before the record can be sent. A file's kind is the server's reading; the name i
 unsure reading said no more than medical records (`shownKind`). "Page 1" shows the file's first page,
 and EVERY file must be confirmed - "Looks right", or a kind picked - before the record can be made,
 because the model alone recognised the case's own papers only about 3 times in 4 (measured on the
-live box, 2026-11-19). A reading the system is not sure of is marked "Not sure - check the page"; a
-kind the uploader confirmed is never overridden. The list keeps the files in the office's order -
+live box, 2026-11-19). A reading the system is not sure of is marked "Not sure - check the
+page" and its card is amber; a confirmed file's card is green, marked "Confirmed"; a refused or
+repeated one is red. A kind the uploader confirmed is never overridden. The list keeps the files in
+the office's order -
 advocacy letter, declaration, medical index, medical records (depositions included), proof of
 service, internal email, envelope - by kind, then in the order added. A kind can be changed (the
 file moves to its place) and a file moved up or down by hand; the server joins them exactly as
@@ -351,7 +360,9 @@ who sent the records, the office count and the deposition pages worked out from 
 typed over either (blank goes back to the worked-out one), and the reason the counts differ, with a
 note when the declared page count and the office count differ. While the record's pages are still
 being read it says how many are read and reads the sheet again every 5 seconds; "Download PDF"
-waits until both counts are known and nothing is left unsaved.
+waits until both counts are known and nothing is left unsaved. Its body scrolls under a fixed
+footer, like the upload's. While either dialog is open, a file dropped on the records page around
+it uploads nothing.
 
 Other My documents behaviour: search matches the filename or the patient name; sort columns are
 Document, Patient, Pages, Uploaded (the default, newest first), Documents found and Last activity; 20

@@ -43,10 +43,11 @@ one-page billing sheet (the "super bill") for a record put together from receive
 It follows the office's form, the same for every doctor and printed in black. Its top part is
 filled - the doctor, named in full at the top (`reporting.DOCTOR_NAMES`, the office's own list,
 keyed like the header's doctor), the date of service (`SUPP` for a supplemental report), the
-previous office visit, the patient, the account (patient ID), the claim numbers, the type of visit,
-the interpreter, and the sender's row: the page count its declaration states, the deposition pages,
-Sub-rosa "None", the office count, the reason the counts differ and the date received; Location and
-"Dec/Attest valid" are left for a person. The billing codes below are printed blank, for billing.
+previous office visit, the patient, the account (patient ID), the location as typed, the claim
+numbers, the type of visit, the interpreter, and the sender's row: the page count its declaration
+states, the deposition pages, Sub-rosa "None", the office count, the reason the counts differ and
+the date received; "Dec/Attest valid" is left for a person. The billing codes below are printed
+blank, for billing.
 The office count is every page received but the internal email and the envelope; the deposition
 pages are the testimony only, from a transcript's first page of questions and answers to its last,
 found from the stored page text before Identify has run; a condensed sheet (four transcript pages

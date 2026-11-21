@@ -156,6 +156,7 @@ class BillingPayload(BaseModel):
     review_source: str = ""
     interpreter: str = ""
     claim_numbers: str = ""
+    location: str = ""
     previous_visit: str = ""
     declared_pages: str = ""
     discrepancy_reason: str = ""

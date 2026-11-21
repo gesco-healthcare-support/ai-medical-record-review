@@ -28,6 +28,7 @@ const SHEET: BillingSheet = {
   review_source: "in_house",
   interpreter: "yes",
   claim_numbers: "ADJ1",
+  location: "Main office",
   previous_visit: "",
   declared_pages: 40,
   discrepancy_reason: "",
@@ -77,9 +78,11 @@ describe("billingReady", () => {
     expect(billingReady({ ...READY, visit_type: "SUPP", appointment_date: "" })).toBe(true);
   });
 
-  it("refuses a declared page count that is not a whole number, and overlong claim numbers", () => {
+  it("refuses a declared page count that is not a whole number, and overlong texts", () => {
     expect(billingReady({ ...READY, declared_pages: "six" })).toBe(false);
     expect(billingReady({ ...READY, claim_numbers: "x".repeat(256) })).toBe(false);
+    expect(billingReady({ ...READY, location: "x".repeat(256) })).toBe(false);
+    expect(billingReady({ ...READY, location: "x".repeat(255) })).toBe(true);
     expect(billingReady({ ...READY, declared_pages: "6", claim_numbers: "x".repeat(255) })).toBe(
       true,
     );
@@ -95,6 +98,7 @@ describe("the sheet's edit", () => {
       review_source: "in_house",
       interpreter: "yes",
       claim_numbers: "ADJ1",
+      location: "Main office",
       previous_visit: "",
       declared_pages: "40",
       discrepancy_reason: "",
@@ -111,6 +115,7 @@ describe("the sheet's edit", () => {
     expect(editValid({ ...edit, depo_pages: "1.5" })).toBe(false);
     expect(editValid({ ...edit, declared_pages: "x" })).toBe(false);
     expect(editValid({ ...edit, discrepancy_reason: "x".repeat(256) })).toBe(false);
+    expect(editValid({ ...edit, location: "x".repeat(256) })).toBe(false);
   });
 });
 

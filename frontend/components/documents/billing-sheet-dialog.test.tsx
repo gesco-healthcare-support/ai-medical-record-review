@@ -35,6 +35,7 @@ const SHEET: BillingSheet = {
   review_source: "in_house",
   interpreter: "yes",
   claim_numbers: "ADJ1",
+  location: "Main office",
   previous_visit: "",
   declared_pages: 42,
   discrepancy_reason: "",
@@ -75,6 +76,7 @@ describe("BillingSheetDialog", () => {
     expect(screen.getByLabelText("Doctor")).toHaveValue("Alpha");
     expect(screen.getByLabelText("Reviewed by")).toHaveValue("in_house");
     expect(screen.getByLabelText("Interpreter")).toHaveValue("yes");
+    expect(screen.getByLabelText("Location")).toHaveValue("Main office");
     expect(screen.getByLabelText("Records from")).toHaveValue("defense");
     expect(screen.getByLabelText("Office count")).toHaveAttribute("placeholder", "42");
     expect(screen.getByLabelText("Deposition pages")).toHaveAttribute("placeholder", "7");
@@ -131,6 +133,30 @@ describe("BillingSheetDialog", () => {
       expect.objectContaining({ discrepancy_reason: "Two pages missing", visit_type: "QME" }),
     );
     expect(vi.mocked(toast).success).toHaveBeenCalledWith("Billing sheet saved.");
+  });
+
+  it("saves a location typed on the sheet", async () => {
+    const user = userEvent.setup();
+    save.mutateAsync.mockResolvedValue({ ...SHEET, location: "Second office" });
+    show({ location: "" });
+
+    fireEvent.change(screen.getByLabelText("Location"), { target: { value: "Second office" } });
+    await user.click(button("Save"));
+
+    expect(save.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ location: "Second office" }),
+    );
+  });
+
+  it("keeps its buttons outside the part that scrolls, so zooming in never hides them", () => {
+    show();
+    const body = screen.getByLabelText("Type of visit").closest(".overflow-y-auto");
+
+    expect(body).not.toBeNull();
+    for (const name of ["Done", "Download PDF", "Save"]) {
+      expect(body).not.toContainElement(button(name));
+    }
+    expect(screen.getByRole("dialog")).toHaveClass("max-h-[calc(100dvh-2rem)]");
   });
 
   it("takes the server's answer as the saved state", async () => {
