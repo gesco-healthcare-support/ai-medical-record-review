@@ -457,6 +457,19 @@ function DropZone({
   );
 }
 
+/** Under the list once every file is read: the pages in all, and how many files are left to
+ *  confirm - in amber while any are. */
+function FilesTotal({ items, toCheck }: Readonly<{ items: readonly Item[]; toCheck: number }>) {
+  const pages = items.reduce((sum, item) => sum + (item.pages ?? 0), 0);
+  const left = toCheck > 0;
+  return (
+    <span className={cn("text-sm", left ? "font-medium text-warning" : "text-muted-foreground")}>
+      {pages === 1 ? "1 page in all" : `${pages} pages in all`}
+      {left ? `. ${toConfirmLine(toCheck)}` : null}
+    </span>
+  );
+}
+
 /** Over the whole dialog while files are dragged across it: the drop lands wherever it is let go,
  *  and the list may be scrolled out of sight. It lets the drag events through to the dialog. */
 function DropCover() {
@@ -514,7 +527,6 @@ export function ReceivedFilesDialog({
   const patientId = cleanPatientId(typedId ?? foundId);
   const idTooLong = patientId.length > PATIENT_ID_MAX_LENGTH;
   const allRead = items.length > 0 && items.every((item) => item.state === "ready");
-  const totalPages = items.reduce((sum, item) => sum + (item.pages ?? 0), 0);
   const sameAs = sameFileAs(items);
   // Files the uploader must still look at before the record can be made: every file's kind is
   // confirmed by a person, and a repeated file is removed.
@@ -640,17 +652,7 @@ export function ReceivedFilesDialog({
                 ))}
               </ol>
             )}
-            {allRead ? (
-              <span
-                className={cn(
-                  "text-sm",
-                  toCheck > 0 ? "font-medium text-warning" : "text-muted-foreground",
-                )}
-              >
-                {totalPages === 1 ? "1 page in all" : `${totalPages} pages in all`}
-                {toCheck > 0 ? `. ${toConfirmLine(toCheck)}` : null}
-              </span>
-            ) : null}
+            {allRead ? <FilesTotal items={items} toCheck={toCheck} /> : null}
             <DropZone
               dragging={drop.dragging}
               empty={items.length === 0}
