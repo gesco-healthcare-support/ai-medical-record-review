@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { BillingFields } from "@/components/documents/billing-fields";
+import { DIALOG_BODY, DIALOG_FRAME } from "@/components/documents/dialog-layout";
 import {
   Dialog,
   DialogContent,
@@ -91,7 +92,7 @@ function BillingForm({
 
   return (
     <>
-      <div className="grid gap-4">
+      <div className={DIALOG_BODY}>
         <CountsLine sheet={sheet} />
         <div className="grid gap-3 sm:grid-cols-2">
           <BillingFields value={edit} onChange={change} doctors={sheet.doctors} idPrefix="billing" />
@@ -157,11 +158,12 @@ function BillingForm({
         <Discrepancy sheet={sheet} edit={edit} />
         {valid ? null : (
           <output className="rc-hb-warn">
-            Counts are whole numbers, and the claim numbers and the reason at most 255 characters.
+            Counts are whole numbers, and the claim numbers, the location and the reason at most
+            255 characters.
           </output>
         )}
       </div>
-      <DialogFooter>
+      <DialogFooter className="shrink-0">
         <button type="button" className="ev-btn ev-btn-outline" onClick={onClose}>
           Done
         </button>
@@ -217,8 +219,8 @@ export function BillingSheetDialog({
         if (!open) onClose();
       }}
     >
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
+      <DialogContent className={DIALOG_FRAME}>
+        <DialogHeader className="shrink-0">
           <DialogTitle>Billing sheet</DialogTitle>
           <DialogDescription>
             The office&apos;s billing sheet for this record. Change anything typed at upload, and

@@ -3,16 +3,16 @@
 import {
   type BillingDraft,
   isPageCount,
-  REVIEW_SOURCE_LABELS,
-  REVIEW_SOURCES,
   SUPPLEMENTAL,
   VISIT_TYPES,
 } from "@/lib/billing-sheet";
 
 /** The billing sheet's fields (`lib/billing-sheet.ts`): what the office's sheet needs that the
- *  files cannot say. Shown in the received-files upload, where the type of visit, who reviews the
- *  records and the interpreter are required, and again on the billing sheet dialog. A supplemental
- *  report has no appointment, so its date box goes away - the sheet's date of service says SUPP.
+ *  files cannot say. Shown in the received-files upload, where the type of visit and the
+ *  interpreter are required, and again on the billing sheet dialog. Who reviews the records is not
+ *  asked: the office reviews every record in house, and the sheet always says IN-HOUSE. A
+ *  supplemental report has no appointment, so its date box goes away - the sheet's date of
+ *  service says SUPP.
  *
  *  `idPrefix` keeps the two forms' ids apart. A doctor already on the record that is not on
  *  today's list stays offered, so opening the sheet never blanks it. */
@@ -84,24 +84,6 @@ export function BillingFields({
         </select>
       </div>
       <div className="grid gap-1.5">
-        <label className="ev-lbl" htmlFor={id("source")}>
-          Reviewed by
-        </label>
-        <select
-          id={id("source")}
-          className="ev-inp"
-          value={value.review_source}
-          onChange={(e) => onChange({ review_source: e.target.value })}
-        >
-          <option value="">Choose...</option>
-          {REVIEW_SOURCES.map((source) => (
-            <option key={source} value={source}>
-              {REVIEW_SOURCE_LABELS[source]}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="grid gap-1.5">
         <label className="ev-lbl" htmlFor={id("interpreter")}>
           Interpreter
         </label>
@@ -127,6 +109,19 @@ export function BillingFields({
           placeholder="Separate several with commas"
           value={value.claim_numbers}
           onChange={(e) => onChange({ claim_numbers: e.target.value })}
+        />
+      </div>
+      <div className="grid gap-1.5">
+        <label className="ev-lbl" htmlFor={id("location")}>
+          Location
+        </label>
+        <input
+          id={id("location")}
+          className="ev-inp"
+          autoComplete="off"
+          placeholder="Where the evaluation takes place"
+          value={value.location}
+          onChange={(e) => onChange({ location: e.target.value })}
         />
       </div>
       <div className="grid gap-1.5">
