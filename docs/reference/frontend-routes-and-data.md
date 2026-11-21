@@ -322,8 +322,9 @@ the patient's last and first name, the patient ID (filled when the files' names 
 date received, picks who sent the records (Defense, Applicant, Insurance or Copy service), fills
 the billing sheet's fields (`BillingFields` in `billing-fields.tsx`: the type of visit, the
 appointment date - gone for a supplemental report, `SUPP` - and the interpreter are required;
-who reviews the records is not asked, since the sheet always says IN-HOUSE; the doctor, the claim numbers, the location,
-the previous office visit and the pages the declaration states may stay blank), and adds the files
+who reviews the records is not asked, since the sheet always says IN-HOUSE; the doctor, the
+claim numbers, the location, the previous office visit and the pages the declaration states may
+stay blank), and adds the files
 in any order - dragged onto the dialog anywhere (a cover says "Drop the files to add them" while
 they are dragged; the drop never reaches the records page underneath, whose own drop handler would
 upload the first file alone) or picked with Add files. The files come first in the dialog, so a

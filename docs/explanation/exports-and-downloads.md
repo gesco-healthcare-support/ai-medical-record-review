@@ -40,9 +40,10 @@ Not a deliverable either: "Download PDF" on a record's billing sheet
 (`GET /api/documents/{id}/billing-sheet`, `backend/app/services/billing_sheet.py`) saves the office's
 one-page billing sheet (the "super bill") for a record put together from received files, named
 `<record name> Billing Sheet.pdf`. It is drawn on request, small, and served straight to a plain link.
-It follows the office's form, the same for every doctor and printed in black; its title says IN-HOUSE alone, as every record is reviewed in house. Its top part is
-filled - the doctor, named in full at the top (`reporting.DOCTOR_NAMES`, the office's own list,
-keyed like the header's doctor), the date of service (`SUPP` for a supplemental report), the
+It follows the office's form, the same for every doctor and printed in black; its title says
+IN-HOUSE alone, as every record is reviewed in house. Its top part is filled - the doctor, named in
+full at the top (`reporting.DOCTOR_NAMES`, the office's own list, keyed like the header's doctor),
+the date of service (`SUPP` for a supplemental report), the
 previous office visit, the patient, the account (patient ID), the location as typed, the claim
 numbers, the type of visit, the interpreter, and the sender's row: the page count its declaration
 states, the deposition pages, Sub-rosa "None", the office count, the reason the counts differ and

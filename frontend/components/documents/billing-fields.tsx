@@ -10,8 +10,9 @@ import {
 /** The billing sheet's fields (`lib/billing-sheet.ts`): what the office's sheet needs that the
  *  files cannot say. Shown in the received-files upload, where the type of visit and the
  *  interpreter are required, and again on the billing sheet dialog. Who reviews the records is not
- *  asked: the office reviews every record in house, and the sheet always says IN-HOUSE. A supplemental
- *  report has no appointment, so its date box goes away - the sheet's date of service says SUPP.
+ *  asked: the office reviews every record in house, and the sheet always says IN-HOUSE. A
+ *  supplemental report has no appointment, so its date box goes away - the sheet's date of
+ *  service says SUPP.
  *
  *  `idPrefix` keeps the two forms' ids apart. A doctor already on the record that is not on
  *  today's list stays offered, so opening the sheet never blanks it. */
