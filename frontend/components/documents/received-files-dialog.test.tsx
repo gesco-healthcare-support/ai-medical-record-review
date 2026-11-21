@@ -127,7 +127,6 @@ function fillBilling() {
     fireEvent.change(screen.getByLabelText(label), { target: { value } });
   set("Type of visit", "QME");
   set("Appointment date", "2026-12-01");
-  set("Reviewed by", "in_house");
   set("Interpreter", "no");
 }
 
@@ -297,7 +296,6 @@ describe("ReceivedFilesDialog sending", () => {
         visit_type: "QME",
         appointment_date: "2026-12-01",
         doctor: "",
-        review_source: "in_house",
         interpreter: "no",
         claim_numbers: "",
         location: "",
@@ -360,8 +358,8 @@ describe("ReceivedFilesDialog sending", () => {
     expect(send()).toBeDisabled();
     set("Appointment date", "2026-12-01");
     expect(send()).toBeDisabled();
-    await user.selectOptions(screen.getByLabelText("Reviewed by"), "edata");
-    expect(send()).toBeDisabled();
+    // Who reviews the records is not asked (2026-11-20): the sheet always says IN-HOUSE.
+    expect(screen.queryByLabelText("Reviewed by")).toBeNull();
     await user.selectOptions(screen.getByLabelText("Interpreter"), "yes");
     // Still reading the file.
     expect(send()).toBeDisabled();

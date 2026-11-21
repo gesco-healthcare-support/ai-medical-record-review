@@ -3,15 +3,14 @@
 import {
   type BillingDraft,
   isPageCount,
-  REVIEW_SOURCE_LABELS,
-  REVIEW_SOURCES,
   SUPPLEMENTAL,
   VISIT_TYPES,
 } from "@/lib/billing-sheet";
 
 /** The billing sheet's fields (`lib/billing-sheet.ts`): what the office's sheet needs that the
- *  files cannot say. Shown in the received-files upload, where the type of visit, who reviews the
- *  records and the interpreter are required, and again on the billing sheet dialog. A supplemental
+ *  files cannot say. Shown in the received-files upload, where the type of visit and the
+ *  interpreter are required, and again on the billing sheet dialog. Who reviews the records is not
+ *  asked: the office reviews every record in house, and the sheet always says IN-HOUSE. A supplemental
  *  report has no appointment, so its date box goes away - the sheet's date of service says SUPP.
  *
  *  `idPrefix` keeps the two forms' ids apart. A doctor already on the record that is not on
@@ -79,24 +78,6 @@ export function BillingFields({
           {doctorOptions.map((doctor) => (
             <option key={doctor} value={doctor}>
               {doctor}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="grid gap-1.5">
-        <label className="ev-lbl" htmlFor={id("source")}>
-          Reviewed by
-        </label>
-        <select
-          id={id("source")}
-          className="ev-inp"
-          value={value.review_source}
-          onChange={(e) => onChange({ review_source: e.target.value })}
-        >
-          <option value="">Choose...</option>
-          {REVIEW_SOURCES.map((source) => (
-            <option key={source} value={source}>
-              {REVIEW_SOURCE_LABELS[source]}
             </option>
           ))}
         </select>

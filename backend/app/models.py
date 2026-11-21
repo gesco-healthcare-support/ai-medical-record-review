@@ -240,12 +240,14 @@ class Document(Base):
     records_from: Mapped[str | None] = mapped_column(String(32))
     # The rest of the office's billing sheet (services/billing_sheet.py), typed at upload and
     # editable on the sheet: the type of visit (billing_sheet.VISIT_TYPES; SUPP has no
-    # appointment), who reviews the records (REVIEW_SOURCES), whether an interpreter is needed, the
-    # claim numbers as typed, the previous office visit, where the evaluation takes place
-    # (`location`, as typed), the page count the sender's declaration states and why the office's
-    # count differs. `office_count` and `depo_pages` are typed over the
-    # counts worked out from the record; NULL uses the worked-out count. All NULL for a record
-    # uploaded as one PDF. The claim numbers and the reason are patient data: never log them.
+    # appointment), whether an interpreter is needed, the claim numbers as typed, the previous
+    # office visit, where the evaluation takes place (`location`, as typed), the page count the
+    # sender's declaration states and why the office's count differs. `office_count` and
+    # `depo_pages` are typed over the counts worked out from the record; NULL uses the worked-out
+    # count. All NULL for a record uploaded as one PDF. The claim numbers and the reason are patient
+    # data: never log them. `review_source` (E-DATA, IN-HOUSE or LEONARDO) was asked until
+    # 2026-11-20 and is no longer written or read: every record is reviewed in house, and the sheet
+    # always says IN-HOUSE. Kept for the records that hold it.
     visit_type: Mapped[str | None] = mapped_column(String(8))
     review_source: Mapped[str | None] = mapped_column(String(16))
     interpreter: Mapped[bool | None] = mapped_column(Boolean)

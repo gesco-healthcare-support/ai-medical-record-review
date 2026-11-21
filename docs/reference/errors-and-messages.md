@@ -59,7 +59,6 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 400 | `Enter the appointment date.` | D2a (not for `SUPP`), D6d (a date that is not one) |
 | 400 | `Choose who sent the records.` | D2a, D6d |
 | 400 | `Choose the type of visit.` | D2a, D6d |
-| 400 | `Choose E-DATA, IN-HOUSE or LEONARDO.` | D2a, D6d |
 | 400 | `Choose whether an interpreter is needed.` | D2a, D6d |
 | 400 | `Choose the doctor from the list.` | D2a, D6d |
 | 400 | `The claim numbers are at most 255 characters.` | D2a, D6d |

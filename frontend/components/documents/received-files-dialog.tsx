@@ -381,7 +381,51 @@ function FileRow({
   );
 }
 
-/** Where files are added: dragged onto the dialog (anywhere on it, `dropTarget`), or picked with
+/** Files dragged onto the dialog, anywhere on it, go to `onFiles` like picked ones (none while
+ *  `paused`). The events stop at the dialog: React passes a dialog's events up to the page it was
+ *  opened from, and the records page's own drop handler would otherwise upload the first file alone
+ *  as a record of its own - which is what a drop on this dialog did until the office's first use
+ *  (2026-11-20) found it. Dragging from one of the dialog's parts to another enters the new part
+ *  before it leaves the old one, so the parts entered are counted and `dragging` stays on until the
+ *  last is left. */
+function useFileDrop(onFiles: (list: FileList) => void, paused: boolean) {
+  const [dragging, setDragging] = useState(false);
+  const depth = useRef(0);
+
+  function reset() {
+    depth.current = 0;
+    setDragging(false);
+  }
+
+  const handlers = {
+    onDragEnter: (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      depth.current += 1;
+      setDragging(true);
+    },
+    onDragOver: (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragging(true);
+    },
+    onDragLeave: (e: DragEvent) => {
+      e.stopPropagation();
+      depth.current = Math.max(0, depth.current - 1);
+      if (depth.current === 0) setDragging(false);
+    },
+    onDrop: (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      reset();
+      if (!paused) onFiles(e.dataTransfer.files);
+    },
+  };
+
+  return { dragging, reset, handlers };
+}
+
+/** Where files are added: dragged onto the dialog (anywhere on it, `useFileDrop`), or picked with
  *  Add files. It lights up while files are dragged over the dialog, under `DropCover`. */
 function DropZone({
   dragging,
@@ -463,9 +507,8 @@ export function ReceivedFilesDialog({
   // What the uploader typed in the Patient ID box, or null while they have not touched it - the box
   // then shows the ID the files' names agree on.
   const [typedId, setTypedId] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const dragDepth = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
+  const drop = useFileDrop((list) => addFiles(list), combine.isPending);
 
   const foundId = agreedPatientId(items.map((item) => item.file.name)) ?? "";
   const patientId = cleanPatientId(typedId ?? foundId);
@@ -499,42 +542,9 @@ export function ReceivedFilesDialog({
     setBilling(EMPTY_BILLING);
     files.clear(recordMade);
     setTypedId(null);
-    dragDepth.current = 0;
-    setDragging(false);
+    drop.reset();
     onOpenChange(false);
   }
-
-  /** Files dragged onto the dialog, anywhere on it, are added like picked ones. The events stop
-   *  here: React passes a dialog's events up to the page it was opened from, and the records page's
-   *  own drop handler would otherwise upload the first file alone as a record of its own - which is
-   *  what a drop on this dialog did until the office's first use (2026-11-20) found it. Dragging
-   *  from one of the dialog's parts to another enters the new part before it leaves the old one, so
-   *  `dragDepth` counts the parts entered and the dialog stays lit until the last is left. */
-  const dropTarget = {
-    onDragEnter: (e: DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dragDepth.current += 1;
-      setDragging(true);
-    },
-    onDragOver: (e: DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setDragging(true);
-    },
-    onDragLeave: (e: DragEvent) => {
-      e.stopPropagation();
-      dragDepth.current = Math.max(0, dragDepth.current - 1);
-      if (dragDepth.current === 0) setDragging(false);
-    },
-    onDrop: (e: DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dragDepth.current = 0;
-      setDragging(false);
-      if (!combine.isPending) addFiles(e.dataTransfer.files);
-    },
-  };
 
   function addFiles(list: FileList | null) {
     if (!list) return;
@@ -595,7 +605,7 @@ export function ReceivedFilesDialog({
         else close();
       }}
     >
-      <DialogContent className={cn(DIALOG_FRAME, "sm:max-w-3xl")} {...dropTarget}>
+      <DialogContent className={cn(DIALOG_FRAME, "sm:max-w-3xl")} {...drop.handlers}>
         <DialogHeader className="shrink-0">
           <DialogTitle>
             {owner ? `Upload received files for ${owner.name}` : "Upload received files"}
@@ -642,7 +652,7 @@ export function ReceivedFilesDialog({
               </span>
             ) : null}
             <DropZone
-              dragging={dragging}
+              dragging={drop.dragging}
               empty={items.length === 0}
               onPick={() => fileInput.current?.click()}
             />
@@ -765,7 +775,7 @@ export function ReceivedFilesDialog({
             {submitLabel}
           </button>
         </DialogFooter>
-        {dragging ? <DropCover /> : null}
+        {drop.dragging ? <DropCover /> : null}
       </DialogContent>
     </Dialog>
   );

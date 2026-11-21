@@ -310,7 +310,7 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `appointment_date` | Date | yes | none | The date of the evaluation appointment the records are for, typed by the uploader of a D2a record (not reliably on the letter). NULL for a record uploaded as one PDF. | `b5e1d9c4a7f2` |
 | `records_from` | String(32) | yes | none | Who sent a D2a record's files, picked by the uploader: `defense`, `applicant`, `insurance` or `copy_service` (`received_files.PARTIES`; one party per record, a row of the office's billing sheet). NULL for a record uploaded as one PDF. | `b5e1d9c4a7f2` |
 | `visit_type` | String(8) | yes | none | The office's billing sheet (`backend/app/services/billing_sheet.py`), typed at D2a and edited at D6d: `AME`, `QME`, `PQME`, `IME` or `SUPP` (a supplemental report, which has no `appointment_date`). | `c7f3a9e2d5b1` |
-| `review_source` | String(16) | yes | none | Billing sheet: who reviews the records - `edata`, `in_house` or `leonardo`. | `c7f3a9e2d5b1` |
+| `review_source` | String(16) | yes | none | Billing sheet: who reviewed the records - `edata`, `in_house` or `leonardo`. Asked until 2026-11-20; no longer written or read, because every record is reviewed in house and the sheet always says IN-HOUSE. Kept for the records that hold it. | `c7f3a9e2d5b1` |
 | `interpreter` | Boolean | yes | none | Billing sheet: whether the evaluation needs an interpreter. | `c7f3a9e2d5b1` |
 | `claim_numbers` | String(255) | yes | none | Billing sheet: the claim numbers as typed (a case can have several). Patient data. | `c7f3a9e2d5b1` |
 | `location` | String(255) | yes | none | Billing sheet: where the evaluation takes place, as typed at D2a or D6d. | `e4a1c8f62b37` |

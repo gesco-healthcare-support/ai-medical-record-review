@@ -52,7 +52,6 @@ const BILLING: BillingDraft = {
   ...EMPTY_BILLING,
   visit_type: "QME",
   appointment_date: "2026-12-01",
-  review_source: "in_house",
   interpreter: "no",
 };
 
@@ -134,7 +133,7 @@ describe("uploading", () => {
     expect(body.get("appointment_date")).toBe("2026-12-01");
     expect(body.get("records_from")).toBe("insurance");
     expect(body.get("visit_type")).toBe("QME");
-    expect(body.get("review_source")).toBe("in_house");
+    expect(body.has("review_source")).toBe(false);
     expect(body.get("interpreter")).toBe("no");
     expect(body.get("claim_numbers")).toBe("ADJ0000001");
     expect(new Headers(init.headers).has("Content-Type")).toBe(false);

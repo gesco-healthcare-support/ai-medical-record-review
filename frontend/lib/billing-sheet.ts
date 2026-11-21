@@ -1,20 +1,12 @@
 /** The office's billing sheet ("super bill") for a record put together from received files. The
- *  choices mirror `backend/app/services/billing_sheet.py` (`VISIT_TYPES`, `REVIEW_SOURCES`), which
- *  the server checks every value against. */
+ *  choices mirror `backend/app/services/billing_sheet.py` (`VISIT_TYPES`), which the server checks
+ *  every value against. Who reviews the records is not asked: the office reviews every record in
+ *  house, and the sheet always says IN-HOUSE (2026-11-20). */
 
 /** The type of visit. A supplemental report (SUPP) has no appointment: the sheet's DOS says SUPP. */
 export const VISIT_TYPES = ["AME", "QME", "PQME", "IME", "SUPP"] as const;
 export type VisitType = (typeof VISIT_TYPES)[number];
 export const SUPPLEMENTAL: VisitType = "SUPP";
-
-/** Who reviews the records: the title line of the sheet. */
-export const REVIEW_SOURCES = ["edata", "in_house", "leonardo"] as const;
-export type ReviewSource = (typeof REVIEW_SOURCES)[number];
-export const REVIEW_SOURCE_LABELS: Record<ReviewSource, string> = {
-  edata: "E-DATA",
-  in_house: "IN-HOUSE",
-  leonardo: "LEONARDO",
-};
 
 /** The longest typed text the sheet keeps (the claim numbers, the location, the reason the counts
  *  differ). */
@@ -32,7 +24,6 @@ export type BillingSheet = {
   visit_type: string;
   appointment_date: string;
   doctor: string;
-  review_source: string;
   interpreter: "" | "yes" | "no";
   claim_numbers: string;
   location: string;
@@ -55,7 +46,6 @@ export type BillingSheetEdit = {
   visit_type: string;
   appointment_date: string;
   doctor: string;
-  review_source: string;
   interpreter: string;
   claim_numbers: string;
   location: string;
@@ -75,7 +65,6 @@ export type BillingDraft = Pick<
   | "visit_type"
   | "appointment_date"
   | "doctor"
-  | "review_source"
   | "interpreter"
   | "claim_numbers"
   | "location"
@@ -87,7 +76,6 @@ export const EMPTY_BILLING: BillingDraft = {
   visit_type: "",
   appointment_date: "",
   doctor: "",
-  review_source: "",
   interpreter: "",
   claim_numbers: "",
   location: "",
@@ -103,7 +91,6 @@ export function billingReady(draft: BillingDraft): boolean {
   return (
     draft.visit_type !== "" &&
     (draft.visit_type === SUPPLEMENTAL || draft.appointment_date !== "") &&
-    draft.review_source !== "" &&
     draft.interpreter !== "" &&
     isPageCount(draft.declared_pages) &&
     draft.claim_numbers.length <= BILLING_TEXT_MAX &&
@@ -117,7 +104,6 @@ export function toEdit(sheet: BillingSheet): BillingSheetEdit {
     visit_type: sheet.visit_type,
     appointment_date: sheet.appointment_date,
     doctor: sheet.doctor,
-    review_source: sheet.review_source,
     interpreter: sheet.interpreter,
     claim_numbers: sheet.claim_numbers,
     location: sheet.location,

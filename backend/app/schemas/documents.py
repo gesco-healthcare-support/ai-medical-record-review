@@ -153,7 +153,6 @@ class BillingPayload(BaseModel):
     visit_type: str = ""
     appointment_date: str = ""
     doctor: str = ""
-    review_source: str = ""
     interpreter: str = ""
     claim_numbers: str = ""
     location: str = ""

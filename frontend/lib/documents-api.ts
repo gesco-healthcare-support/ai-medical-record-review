@@ -99,7 +99,6 @@ export type ReceivedFilesUpload = {
 function appendBilling(form: FormData, billing: BillingDraft) {
   form.append("visit_type", billing.visit_type);
   if (billing.visit_type !== SUPPLEMENTAL) form.append("appointment_date", billing.appointment_date);
-  form.append("review_source", billing.review_source);
   form.append("interpreter", billing.interpreter);
   const optional: [string, string][] = [
     ["doctor", billing.doctor],
