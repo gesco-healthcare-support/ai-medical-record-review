@@ -382,6 +382,20 @@ describe("DocumentsView navigation", () => {
 
     expect(screen.getByRole("heading", { name: /Upload received files/ })).toBeInTheDocument();
   });
+
+  it("ignores a file dropped beside the open received-files dialog", async () => {
+    // The dialog takes the files dropped on it; one dropped beside it is not a record of its own.
+    const user = userEvent.setup();
+    docsState.data = [doc({})];
+    const { container } = render(<DocumentsView />);
+    await user.click(screen.getByRole("button", { name: /Upload received files/ }));
+    const main = container.querySelector("main") as HTMLElement;
+    const file = new File([new Uint8Array([1])], "letter 801234.pdf", { type: "application/pdf" });
+
+    expect(fireEvent.drop(main, { dataTransfer: { files: [file] } })).toBe(false);
+
+    expect(upload.mutateAsync).not.toHaveBeenCalled();
+  });
 });
 
 describe("DocumentsView for an admin", () => {

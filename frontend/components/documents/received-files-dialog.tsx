@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { type DragEvent, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowDown, ArrowUp, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, FileText, Upload, X } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { BillingFields } from "@/components/documents/billing-fields";
+import { DIALOG_BODY, DIALOG_FRAME } from "@/components/documents/dialog-layout";
 import { useCombineReceivedFiles, useDoctors } from "@/hooks/use-documents";
 import { ApiError } from "@/lib/api";
 import { type BillingDraft, billingReady, EMPTY_BILLING } from "@/lib/billing-sheet";
@@ -40,6 +41,7 @@ import {
   type RecordsFrom,
   shownKind,
 } from "@/lib/received-files";
+import { cn } from "@/lib/utils";
 
 /** One file in the list. It is sent to the server as soon as it is added ("reading"), which keeps
  *  it, counts its pages and reads its first page to say what it is ("ready"), or refuses it
@@ -235,7 +237,15 @@ function FileStatus({
   }
   const pages = item.pages === 1 ? "1 page" : `${item.pages} pages`;
   if (item.confirmed) {
-    return <span className="text-muted-foreground">{pages} - confirmed</span>;
+    return (
+      <span className="flex flex-wrap items-center gap-2">
+        <span className="text-muted-foreground">{pages}</span>
+        <span className="ev-chip ev-chip-ok">
+          <Check className="size-3" aria-hidden />
+          Confirmed
+        </span>
+      </span>
+    );
   }
   return (
     <span className="flex flex-wrap items-center gap-2">
@@ -245,15 +255,31 @@ function FileStatus({
       ) : null}
       <button
         type="button"
-        className="ev-btn ev-btn-ghost ev-btn-sm"
+        className="ev-btn ev-btn-outline ev-btn-sm"
         aria-label={`Confirm ${name} as ${RECEIVED_KIND_LABELS[item.kind]}`}
         onClick={() => files.confirm(item.key)}
       >
+        <Check className="size-3.5" aria-hidden />
         Looks right
       </button>
     </span>
   );
 }
+
+/** A file's card: red while it cannot be used as it is, green once confirmed, amber while the
+ *  system is not sure what it is, plain otherwise. */
+function rowTone(item: Item, sameAs: string | undefined): string {
+  if (item.state === "failed" || sameAs !== undefined) return "border-danger/40 bg-danger-soft/40";
+  if (item.state !== "ready") return "border-gray-200 bg-white";
+  if (item.confirmed) return "border-success/40 bg-success-soft/50";
+  return item.check ? "border-warning/60 bg-warning-soft/40" : "border-gray-200 bg-white";
+}
+
+const ICON_BUTTON =
+  "grid size-7 place-items-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900 " +
+  "disabled:opacity-30 disabled:hover:bg-transparent";
+
+const SECTION_HEADING = "text-xs font-semibold tracking-wide text-gray-500 uppercase";
 
 function FileRow({
   item,
@@ -271,66 +297,77 @@ function FileRow({
   const name = item.file.name;
   const [showPage, setShowPage] = useState(false);
   return (
-    <li className="grid gap-2 rounded-md border border-gray-200 px-3 py-2 text-sm">
-      <div className="flex items-center gap-2">
-        <span className="w-5 shrink-0 text-right text-muted-foreground">{index + 1}.</span>
-        <span className="grid min-w-0 flex-1">
-          <span className="truncate" data-file-name>
+    <li className={cn("grid gap-2 rounded-lg border px-3 py-2.5 text-sm", rowTone(item, sameAs))}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:flex-nowrap">
+        <span
+          className={cn(
+            "grid size-6 shrink-0 place-items-center rounded-full bg-navy-50",
+            "text-xs font-semibold text-navy-700",
+          )}
+          aria-hidden
+        >
+          {index + 1}
+        </span>
+        <FileText className="size-4 shrink-0 text-gray-400" aria-hidden />
+        <span className="grid min-w-0 flex-1 basis-48 gap-1">
+          <span className="truncate font-medium text-ink" title={name} data-file-name>
             {name}
           </span>
           <span className="text-xs">
             <FileStatus item={item} sameAs={sameAs} files={files} />
           </span>
         </span>
-        {item.token ? (
+        <span className="flex shrink-0 items-center gap-1">
+          <select
+            className="ev-inp w-44"
+            aria-label={`What ${name} is`}
+            value={item.kind}
+            onChange={(e) => files.setKind(item.key, e.target.value as ReceivedKind)}
+          >
+            {RECEIVED_KINDS.map((kind) => (
+              <option key={kind} value={kind}>
+                {RECEIVED_KIND_LABELS[kind]}
+              </option>
+            ))}
+          </select>
+          {item.token ? (
+            <button
+              type="button"
+              className="ev-btn ev-btn-ghost ev-btn-sm"
+              aria-expanded={showPage}
+              aria-label={`${showPage ? "Hide" : "Show"} the first page of ${name}`}
+              onClick={() => setShowPage((shown) => !shown)}
+            >
+              Page 1
+            </button>
+          ) : null}
           <button
             type="button"
-            className="ev-btn ev-btn-ghost ev-btn-sm shrink-0"
-            aria-expanded={showPage}
-            aria-label={`${showPage ? "Hide" : "Show"} the first page of ${name}`}
-            onClick={() => setShowPage((shown) => !shown)}
+            aria-label={`Move ${name} up`}
+            className={ICON_BUTTON}
+            disabled={index === 0}
+            onClick={() => files.move(index, -1)}
           >
-            Page 1
+            <ArrowUp className="size-4" aria-hidden />
           </button>
-        ) : null}
-        <select
-          className="ev-inp w-auto"
-          aria-label={`What ${name} is`}
-          value={item.kind}
-          onChange={(e) => files.setKind(item.key, e.target.value as ReceivedKind)}
-        >
-          {RECEIVED_KINDS.map((kind) => (
-            <option key={kind} value={kind}>
-              {RECEIVED_KIND_LABELS[kind]}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          aria-label={`Move ${name} up`}
-          className="text-gray-500 hover:text-gray-900 disabled:opacity-30"
-          disabled={index === 0}
-          onClick={() => files.move(index, -1)}
-        >
-          <ArrowUp className="size-4" aria-hidden />
-        </button>
-        <button
-          type="button"
-          aria-label={`Move ${name} down`}
-          className="text-gray-500 hover:text-gray-900 disabled:opacity-30"
-          disabled={index === count - 1}
-          onClick={() => files.move(index, 1)}
-        >
-          <ArrowDown className="size-4" aria-hidden />
-        </button>
-        <button
-          type="button"
-          aria-label={`Remove ${name}`}
-          className="text-gray-400 hover:text-danger"
-          onClick={() => files.remove(item.key)}
-        >
-          <X className="size-4" aria-hidden />
-        </button>
+          <button
+            type="button"
+            aria-label={`Move ${name} down`}
+            className={ICON_BUTTON}
+            disabled={index === count - 1}
+            onClick={() => files.move(index, 1)}
+          >
+            <ArrowDown className="size-4" aria-hidden />
+          </button>
+          <button
+            type="button"
+            aria-label={`Remove ${name}`}
+            className={cn(ICON_BUTTON, "hover:bg-danger-soft hover:text-danger")}
+            onClick={() => files.remove(item.key)}
+          >
+            <X className="size-4" aria-hidden />
+          </button>
+        </span>
       </div>
       {showPage && item.token ? (
         // eslint-disable-next-line @next/next/no-img-element -- a same-origin PNG, by cookie
@@ -341,6 +378,114 @@ function FileRow({
         />
       ) : null}
     </li>
+  );
+}
+
+/** Files dragged onto the dialog, anywhere on it, go to `onFiles` like picked ones (none while
+ *  `paused`). The events stop at the dialog: React passes a dialog's events up to the page it was
+ *  opened from, and the records page's own drop handler would otherwise upload the first file alone
+ *  as a record of its own - which is what a drop on this dialog did until the office's first use
+ *  (2026-11-20) found it. Dragging from one of the dialog's parts to another enters the new part
+ *  before it leaves the old one, so the parts entered are counted and `dragging` stays on until the
+ *  last is left. */
+function useFileDrop(onFiles: (list: FileList) => void, paused: boolean) {
+  const [dragging, setDragging] = useState(false);
+  const depth = useRef(0);
+
+  function reset() {
+    depth.current = 0;
+    setDragging(false);
+  }
+
+  const handlers = {
+    onDragEnter: (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      depth.current += 1;
+      setDragging(true);
+    },
+    onDragOver: (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragging(true);
+    },
+    onDragLeave: (e: DragEvent) => {
+      e.stopPropagation();
+      depth.current = Math.max(0, depth.current - 1);
+      if (depth.current === 0) setDragging(false);
+    },
+    onDrop: (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      reset();
+      if (!paused) onFiles(e.dataTransfer.files);
+    },
+  };
+
+  return { dragging, reset, handlers };
+}
+
+/** Where files are added: dragged onto the dialog (anywhere on it, `useFileDrop`), or picked with
+ *  Add files. It lights up while files are dragged over the dialog, under `DropCover`. */
+function DropZone({
+  dragging,
+  empty,
+  onPick,
+}: Readonly<{ dragging: boolean; empty: boolean; onPick: () => void }>) {
+  const line = empty ? "Drag the files here, in any order, or" : "Drag more files here, or";
+  return (
+    <div
+      data-dropzone
+      className={cn(
+        "flex flex-wrap items-center justify-center gap-x-3 gap-y-2 rounded-lg border-[1.5px]",
+        "border-dashed px-4 text-center text-sm transition-colors",
+        empty ? "py-6" : "py-3",
+        dragging ? "border-blue-500 bg-blue-100/60" : "border-gray-300 bg-gray-50/60",
+      )}
+    >
+      <Upload className="size-4 text-navy-600" aria-hidden />
+      <span className="text-gray-600">{line}</span>
+      <button type="button" className="ev-btn ev-btn-outline ev-btn-sm" onClick={onPick}>
+        Add files
+      </button>
+      {empty ? (
+        <span className="basis-full text-xs text-muted-foreground">
+          PDFs and scanned images (JPG, PNG, TIFF)
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** Under the list once every file is read: the pages in all, and how many files are left to
+ *  confirm - in amber while any are. */
+function FilesTotal({ items, toCheck }: Readonly<{ items: readonly Item[]; toCheck: number }>) {
+  const pages = items.reduce((sum, item) => sum + (item.pages ?? 0), 0);
+  const left = toCheck > 0;
+  return (
+    <span className={cn("text-sm", left ? "font-medium text-warning" : "text-muted-foreground")}>
+      {pages === 1 ? "1 page in all" : `${pages} pages in all`}
+      {left ? `. ${toConfirmLine(toCheck)}` : null}
+    </span>
+  );
+}
+
+/** Over the whole dialog while files are dragged across it: the drop lands wherever it is let go,
+ *  and the list may be scrolled out of sight. It lets the drag events through to the dialog. */
+function DropCover() {
+  return (
+    <div
+      aria-hidden
+      className={cn(
+        "pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl",
+        "border-2 border-dashed border-blue-500 bg-blue-100/95",
+      )}
+    >
+      <span className="flex items-center gap-2 text-base font-medium text-blue-600">
+        <Upload className="size-5" />
+        Drop the files to add them
+      </span>
+    </div>
   );
 }
 
@@ -376,12 +521,12 @@ export function ReceivedFilesDialog({
   // then shows the ID the files' names agree on.
   const [typedId, setTypedId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const drop = useFileDrop((list) => addFiles(list), combine.isPending);
 
   const foundId = agreedPatientId(items.map((item) => item.file.name)) ?? "";
   const patientId = cleanPatientId(typedId ?? foundId);
   const idTooLong = patientId.length > PATIENT_ID_MAX_LENGTH;
   const allRead = items.length > 0 && items.every((item) => item.state === "ready");
-  const totalPages = items.reduce((sum, item) => sum + (item.pages ?? 0), 0);
   const sameAs = sameFileAs(items);
   // Files the uploader must still look at before the record can be made: every file's kind is
   // confirmed by a person, and a repeated file is removed.
@@ -409,6 +554,7 @@ export function ReceivedFilesDialog({
     setBilling(EMPTY_BILLING);
     files.clear(recordMade);
     setTypedId(null);
+    drop.reset();
     onOpenChange(false);
   }
 
@@ -471,8 +617,8 @@ export function ReceivedFilesDialog({
         else close();
       }}
     >
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
+      <DialogContent className={cn(DIALOG_FRAME, "sm:max-w-3xl")} {...drop.handlers}>
+        <DialogHeader className="shrink-0">
           <DialogTitle>
             {owner ? `Upload received files for ${owner.name}` : "Upload received files"}
           </DialogTitle>
@@ -485,7 +631,46 @@ export function ReceivedFilesDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4">
+        <div className={DIALOG_BODY}>
+          {/* The files first: a drop shows them at once, and they are read while the rest is
+              typed - the patient ID box fills from their names. */}
+          <section className="grid gap-2" aria-labelledby="receivedFilesHeading">
+            <h3 id="receivedFilesHeading" className={SECTION_HEADING}>
+              Files, in the order they are put together
+            </h3>
+            {items.length === 0 ? null : (
+              <ol className="grid gap-2">
+                {items.map((item, index) => (
+                  <FileRow
+                    key={item.key}
+                    item={item}
+                    index={index}
+                    count={items.length}
+                    sameAs={sameAs.get(item.key)}
+                    files={files}
+                  />
+                ))}
+              </ol>
+            )}
+            {allRead ? <FilesTotal items={items} toCheck={toCheck} /> : null}
+            <DropZone
+              dragging={drop.dragging}
+              empty={items.length === 0}
+              onPick={() => fileInput.current?.click()}
+            />
+            <input
+              ref={fileInput}
+              type="file"
+              accept={ACCEPTED_FILES}
+              multiple
+              className="hidden"
+              onChange={(e) => addFiles(e.target.files)}
+            />
+          </section>
+
+          <h3 className={cn(SECTION_HEADING, "-mb-1 border-t border-gray-100 pt-4")}>
+            The patient and the records
+          </h3>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <label className="ev-lbl" htmlFor="receivedLastName">
@@ -561,63 +746,20 @@ export function ReceivedFilesDialog({
             </div>
           </div>
 
-          <fieldset className="grid gap-3 sm:grid-cols-2">
-            <legend className="ev-lbl mb-1">For the billing sheet</legend>
-            <BillingFields
-              value={billing}
-              onChange={(patch) => setBilling((prev) => ({ ...prev, ...patch }))}
-              doctors={doctors}
-              idPrefix="received"
-            />
-          </fieldset>
-
-          <div className="grid gap-1.5">
-            <span className="ev-lbl">Files, in the order they are put together</span>
-            {items.length === 0 ? (
-              <div className="rounded-md border-[1.5px] border-dashed border-gray-300 px-3 py-4 text-center text-sm text-muted-foreground">
-                No files yet.
-              </div>
-            ) : (
-              <ol className="grid gap-1.5">
-                {items.map((item, index) => (
-                  <FileRow
-                    key={item.key}
-                    item={item}
-                    index={index}
-                    count={items.length}
-                    sameAs={sameAs.get(item.key)}
-                    files={files}
-                  />
-                ))}
-              </ol>
-            )}
-            {allRead ? (
-              <span className="text-sm text-muted-foreground">
-                {totalPages === 1 ? "1 page in all" : `${totalPages} pages in all`}
-                {toCheck > 0 ? `. ${toConfirmLine(toCheck)}` : null}
-              </span>
-            ) : null}
-            <div>
-              <button
-                type="button"
-                className="ev-btn ev-btn-outline"
-                onClick={() => fileInput.current?.click()}
-              >
-                Add files
-              </button>
-            </div>
-            <input
-              ref={fileInput}
-              type="file"
-              accept={ACCEPTED_FILES}
-              multiple
-              className="hidden"
-              onChange={(e) => addFiles(e.target.files)}
-            />
+          <div className="border-t border-gray-100 pt-4">
+            <fieldset className="grid gap-3 sm:grid-cols-2">
+              <legend className={cn(SECTION_HEADING, "mb-3")}>For the billing sheet</legend>
+              <BillingFields
+                value={billing}
+                onChange={(patch) => setBilling((prev) => ({ ...prev, ...patch }))}
+                doctors={doctors}
+                idPrefix="received"
+              />
+            </fieldset>
           </div>
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           <button
             type="button"
             className="ev-btn ev-btn-outline"
@@ -635,6 +777,7 @@ export function ReceivedFilesDialog({
             {submitLabel}
           </button>
         </DialogFooter>
+        {drop.dragging ? <DropCover /> : null}
       </DialogContent>
     </Dialog>
   );

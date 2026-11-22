@@ -427,6 +427,11 @@ export function DocumentsView() {
     }
   }
 
+  // While the received-files upload or a billing sheet is open, a file dropped on the page around
+  // it is not an upload of its own: the received-files dialog takes the files dropped on it, and
+  // anything dropped beside a dialog is ignored rather than sent as a record.
+  const dialogOpen = combineOpen || billingTarget !== null;
+
   const combineOwner =
     viewingOther && owner.ownerId !== null
       ? { id: owner.ownerId, name: owner.ownerName ?? "this reviewer" }
@@ -437,13 +442,13 @@ export function DocumentsView() {
       className="flex flex-1 flex-col"
       onDragOver={(e) => {
         e.preventDefault();
-        setDragging(true);
+        if (!dialogOpen) setDragging(true);
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
-        onFile(e.dataTransfer.files[0]);
+        if (!dialogOpen) onFile(e.dataTransfer.files[0]);
       }}
     >
       <input
