@@ -49,13 +49,11 @@ from app.services.reporting import DOCTOR_NAMES
 VISIT_TYPES: tuple[str, ...] = ("AME", "QME", "PQME", "IME", "SUPP")
 SUPPLEMENTAL = "SUPP"
 
-# Who reviews the records - the title line of the sheet, one of three.
-REVIEW_SOURCES: tuple[str, ...] = ("edata", "in_house", "leonardo")
-REVIEW_SOURCE_LABELS: dict[str, str] = {
-    "edata": "E-DATA",
-    "in_house": "IN-HOUSE",
-    "leonardo": "LEONARDO",
-}
+# Who reviews the records - the title line of the sheet. The office's form offers E-DATA,
+# IN-HOUSE and LEONARDO, but the office reviews every record in house, so the sheet always says
+# IN-HOUSE and the uploader is not asked (2026-11-20). `documents.review_source`, asked before
+# that, is no longer read.
+REVIEWED_BY = "IN-HOUSE"
 
 # The rows of the party table, in the sheet's order (received_files.PARTIES).
 _PARTY_ROWS: tuple[tuple[str, str], ...] = (
@@ -193,12 +191,12 @@ def reading(session, document: Document) -> Reading:
 class Sheet:
     """What goes on the sheet, as printed. Empty strings and None print as blanks."""
 
-    review_source: str | None = None
     doctor: str = ""
     dos: str = ""
     previous_visit: str = ""
     patient_name: str = ""
     patient_id: str = ""
+    location: str = ""
     claim_numbers: str = ""
     visit_type: str = ""
     interpreter: bool | None = None
@@ -244,12 +242,12 @@ def sheet_for(document: Document, counts: Counts | None) -> Sheet:
     if depo is None and counts is not None:
         depo = counts.depo
     return Sheet(
-        review_source=document.review_source,
         doctor=document.doctor or "",
         dos=dos(document.visit_type, document.appointment_date),
         previous_visit=us_date(document.previous_visit),
         patient_name=patient_name(document.patient_last_name, document.patient_first_name),
         patient_id=document.patient_id or "",
+        location=document.location or "",
         claim_numbers=document.claim_numbers or "",
         visit_type=document.visit_type or "",
         interpreter=document.interpreter,
@@ -378,19 +376,6 @@ def _ring(page, x: float, y: float, text: str, font: str, size: float) -> None:
     )
 
 
-_SLASH = "   /   "
-
-
-def _choices(page, x: float, y: float, words: Sequence[str], chosen: str | None, size: float):
-    """Words in a row, separated by slashes, the chosen one circled."""
-    for index, word in enumerate(words):
-        if index:
-            x = _text(page, x, y, _SLASH, _BOLD, size)
-        if word == chosen:
-            _ring(page, x, y, word, _BOLD, size)
-        x = _text(page, x, y, word, _BOLD, size)
-
-
 def _radio(page, x: float, y: float, filled: bool) -> None:
     """The small round box in front of a party or a billing code."""
     page.draw_circle(
@@ -399,10 +384,7 @@ def _radio(page, x: float, y: float, filled: bool) -> None:
 
 
 def _draw_top(page, sheet: Sheet) -> None:
-    sources = [REVIEW_SOURCE_LABELS[source] for source in REVIEW_SOURCES]
-    title = _SLASH.join(sources)
-    chosen = REVIEW_SOURCE_LABELS.get(sheet.review_source or "")
-    _choices(page, (_PAGE_W - _width(title, _BOLD, 16)) / 2, 26, sources, chosen, 16)
+    _text(page, (_PAGE_W - _width(REVIEWED_BY, _BOLD, 16)) / 2, 26, REVIEWED_BY, _BOLD, 16)
 
     doctor, size = _fitted(doctor_name(sheet.doctor), _BOLD, 22, _DOCTOR_ROOM)
     _text(page, 20.8, 58, doctor, _BOLD, size)
@@ -411,7 +393,7 @@ def _draw_top(page, sheet: Sheet) -> None:
 
     _field(page, 18, 106, "Patient Name:", sheet.patient_name, 346)
     _field(page, 352, 106, "Acct:", sheet.patient_id, 444)
-    _field(page, 449, 106, "Location:", "", 592)
+    _field(page, 449, 106, "Location:", sheet.location, 592)
 
     _field(page, 18, 135, "Claim Number:", sheet.claim_numbers, 262)
     _field(page, 266, 135, "Type of Visit:", sheet.visit_type, 404)

@@ -6,7 +6,7 @@ carry catalog data.
 Source of truth: `backend/alembic/versions/` (one file per revision, named
 `<revision>_<slug>.py`), `backend/alembic/env.py` and `backend/alembic.ini`.
 
-**Current head: `c7f3a9e2d5b1`.** The chain has 40 revisions, one head and no branches. How to add
+**Current head: `e4a1c8f62b37`.** The chain has 41 revisions, one head and no branches. How to add
 a revision is in [How to create a database migration](../how-to/create-a-database-migration.md).
 
 ## Chain
@@ -56,7 +56,8 @@ columns or indexes; **data** changes rows only; **schema + data** does both.
 | 37 | `c4f8a2d61e97` | `b7e3c19a4d52` | 2026-11-12 | schema | Adds `summaries.reviewed_before` (nullable, no backfill): when an entry was already reviewed in the patient's earlier-finished record. Downgrade drops it; the marks come back the next time each record is summarized. |
 | 38 | `a3d8f5c27b14` | `c4f8a2d61e97` | 2026-11-18 | schema | Adds `documents.received_on` (Date) and `documents.received_parts` (JSON), both nullable, no backfill: the date received and the files of a record put together from the files it arrived in (`POST /api/documents/combine`). Downgrade drops both; the joined PDF is unaffected. |
 | 39 | `b5e1d9c4a7f2` | `a3d8f5c27b14` | 2026-11-19 | schema | Adds `documents.appointment_date` (Date) and `documents.records_from` (String(32)), both nullable, no backfill: typed by the uploader of a record put together from its received files. Downgrade drops both. |
-| 40 | `c7f3a9e2d5b1` | `b5e1d9c4a7f2` | 2026-11-20 | schema | Adds the office's billing sheet fields to `documents`: `visit_type` (String(8)), `review_source` (String(16)), `interpreter` (Boolean), `claim_numbers` (String(255)), `previous_visit` (Date), `declared_pages` (Integer), `discrepancy_reason` (String(255)), and `office_count` / `depo_pages` (Integer, counts typed over the worked-out ones). All nullable, no backfill. Downgrade drops them. **Current head.** |
+| 40 | `c7f3a9e2d5b1` | `b5e1d9c4a7f2` | 2026-11-20 | schema | Adds the office's billing sheet fields to `documents`: `visit_type` (String(8)), `review_source` (String(16)), `interpreter` (Boolean), `claim_numbers` (String(255)), `previous_visit` (Date), `declared_pages` (Integer), `discrepancy_reason` (String(255)), and `office_count` / `depo_pages` (Integer, counts typed over the worked-out ones). All nullable, no backfill. Downgrade drops them. |
+| 41 | `e4a1c8f62b37` | `c7f3a9e2d5b1` | 2026-11-20 | schema | Adds the billing sheet's `location` (String(255)) to `documents`: where the evaluation takes place, as typed at D2a and edited at D6d (the office's first use of the sheet asked for it). Nullable, no backfill. Downgrade drops it. **Current head.** |
 
 Totals: 27 schema, 9 data, 3 schema + data.
 

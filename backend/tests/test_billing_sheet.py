@@ -188,7 +188,6 @@ def _doc(**fields) -> Document:
         "doctor": DOCTORS[0],
         "visit_type": "QME",
         "appointment_date": date(2026, 12, 3),
-        "review_source": "edata",
         "interpreter": True,
         "records_from": "insurance",
         "received_on": date(2026, 11, 19),
@@ -234,7 +233,12 @@ def _rendered_text(sheet) -> tuple[int, str]:
 
 def test_the_sheet_is_one_page_with_its_fields_written_on_it():
     sheet = billing_sheet.sheet_for(
-        _doc(claim_numbers="ADJ0000001", declared_pages=40, discrepancy_reason="Two missing"),
+        _doc(
+            claim_numbers="ADJ0000001",
+            location="Main office",
+            declared_pages=40,
+            discrepancy_reason="Two missing",
+        ),
         billing_sheet.Counts(42, 7),
     )
 
@@ -247,6 +251,7 @@ def test_the_sheet_is_one_page_with_its_fields_written_on_it():
         "Sample, Pat",
         "A1D5",
         "ADJ0000001",
+        "Main office",
         "QME",
         "40",
         "42",
@@ -254,9 +259,7 @@ def test_the_sheet_is_one_page_with_its_fields_written_on_it():
         "None",
         "Two missing",
         "11/19/2026",
-        "E-DATA",
         "IN-HOUSE",
-        "LEONARDO",
         "Billing Code:",
     ):
         assert written in text, written
@@ -310,6 +313,25 @@ def test_a_price_prints_its_amount_in_bold_and_what_it_includes_in_italics():
     assert "Bold" in fonts["$503.75"]
 
 
+@pytest.mark.parametrize("stored", [None, "edata", "in_house", "leonardo"])
+def test_the_sheet_always_says_in_house_at_the_top(stored):
+    """DEMONSTRATES the office's answer of 2026-11-20: every record is reviewed in house, so the
+    title says IN-HOUSE alone - whatever a record from before the answer stored."""
+    _, text = _rendered_text(billing_sheet.sheet_for(_doc(review_source=stored), None))
+
+    assert "IN-HOUSE" in text
+    assert "E-DATA" not in text
+    assert "LEONARDO" not in text
+
+
+def test_the_location_box_is_blank_when_none_was_typed():
+    """GUARD: a record from before the location was asked for keeps an empty box."""
+    sheet = billing_sheet.sheet_for(_doc(), None)
+
+    assert sheet.location == ""
+    assert "Location:" in _rendered_text(sheet)[1]
+
+
 def test_a_long_value_is_made_to_fit_its_space():
     sheet = billing_sheet.sheet_for(_doc(claim_numbers="ADJ0000001, " * 30), None)
 
@@ -332,9 +354,9 @@ def test_a_blank_sheet_still_renders():
 _BILLING = {
     "visit_type": "AME",
     "doctor": DOCTORS[1],
-    "review_source": "leonardo",
     "interpreter": "yes",
     "claim_numbers": "ADJ0000001, ADJ0000002",
+    "location": "Main office",
     "previous_visit": "2026-06-14",
     "declared_pages": "6",
 }
@@ -350,9 +372,10 @@ async def test_the_billing_fields_typed_at_upload_are_stored(client):
     document = _document(resp.json()["id"])
     assert document.visit_type == "AME"
     assert document.doctor == DOCTORS[1]
-    assert document.review_source == "leonardo"
+    assert document.review_source is None
     assert document.interpreter is True
     assert document.claim_numbers == "ADJ0000001, ADJ0000002"
+    assert document.location == "Main office"
     assert document.previous_visit == date(2026, 6, 14)
     assert document.declared_pages == 6
     assert document.appointment_date == date(2026, 12, 1)
@@ -382,6 +405,7 @@ async def test_the_optional_billing_fields_may_be_left_blank(client):
     document = _document(resp.json()["id"])
     assert document.doctor is None
     assert document.claim_numbers is None
+    assert document.location is None
     assert document.previous_visit is None
     assert document.declared_pages is None
     assert document.interpreter is False
@@ -392,8 +416,6 @@ async def test_the_optional_billing_fields_may_be_left_blank(client):
     [
         ({"visit_type": None}, "Choose the type of visit."),
         ({"visit_type": "visit"}, "Choose the type of visit."),
-        ({"review_source": None}, "Choose E-DATA, IN-HOUSE or LEONARDO."),
-        ({"review_source": "outside"}, "Choose E-DATA, IN-HOUSE or LEONARDO."),
         ({"interpreter": None}, "Choose whether an interpreter is needed."),
         ({"interpreter": "maybe"}, "Choose whether an interpreter is needed."),
         ({"doctor": "Nobody"}, "Choose the doctor from the list."),
@@ -401,6 +423,7 @@ async def test_the_optional_billing_fields_may_be_left_blank(client):
         ({"declared_pages": "six"}, "Enter the pages the declaration states as a whole number."),
         ({"declared_pages": "-3"}, "Enter the pages the declaration states as a whole number."),
         ({"claim_numbers": "A" * 256}, "The claim numbers are at most 255 characters."),
+        ({"location": "A" * 256}, "The location is at most 255 characters."),
     ],
 )
 async def test_a_billing_field_the_sheet_cannot_hold_is_refused(client, overrides, detail):
@@ -413,6 +436,20 @@ async def test_a_billing_field_the_sheet_cannot_hold_is_refused(client, override
     assert resp.json()["detail"] == detail
     with get_sessionmaker()() as session:
         assert session.scalars(select(Document).where(Document.user_id == user_id)).all() == []
+
+
+async def test_who_reviews_the_records_is_not_asked(client):
+    """DEMONSTRATES: the upload needs no reviewer of the records, and a page left open from before
+    the change that still sends one is not refused for it."""
+    _, email = _user()
+    await _login(client, email)
+
+    resp = await _combine(client, review_source="outside")
+
+    assert resp.status_code == 201, resp.text
+    assert _document(resp.json()["id"]).review_source is None
+    got = (await client.get(f"/api/documents/{resp.json()['id']}/billing")).json()
+    assert "review_source" not in got
 
 
 async def test_the_upload_dialog_is_offered_the_headers_doctors(client):
@@ -475,6 +512,7 @@ async def test_once_read_the_sheet_has_its_counts(client):
     assert got["appointment_date"] == "2026-12-01"
     assert got["interpreter"] == "yes"
     assert got["declared_pages"] == 6
+    assert got["location"] == "Main office"
     assert got["office_count"] == ""
     assert got["records_from"] == "applicant"
     assert got["received_on"] == "2026-11-03"
@@ -484,9 +522,9 @@ async def test_the_sheet_is_edited_and_the_change_audited_by_name(client):
     doc_id = await _record(client)
     payload = {
         **{key: "" for key in ("doctor", "claim_numbers", "previous_visit")},
+        "location": "Second office",
         "visit_type": "QME",
         "appointment_date": "2026-12-09",
-        "review_source": "in_house",
         "interpreter": "no",
         "declared_pages": "5",
         "discrepancy_reason": "One page more than declared",
@@ -505,6 +543,7 @@ async def test_the_sheet_is_edited_and_the_change_audited_by_name(client):
     assert document.interpreter is False
     assert document.discrepancy_reason == "One page more than declared"
     assert document.records_from == "defense"
+    assert document.location == "Second office"
     assert (document.office_count, document.depo_pages) == (None, 3)
     assert resp.json()["depo_pages"] == 3
     with get_sessionmaker()() as session:
@@ -515,7 +554,7 @@ async def test_the_sheet_is_edited_and_the_change_audited_by_name(client):
         ).all()
     assert details == [
         "changed=appointment_date,claim_numbers,declared_pages,depo_pages,discrepancy_reason,"
-        "doctor,interpreter,previous_visit,records_from,review_source,visit_type"
+        "doctor,interpreter,location,previous_visit,records_from,visit_type"
     ]
 
 
@@ -557,6 +596,7 @@ async def test_a_doctor_stored_before_the_list_changed_is_kept(client):
             "The reason for the discrepancy is at most 255 characters.",
         ),
         ("records_from", "attorney", "Choose who sent the records."),
+        ("location", "x" * 256, "The location is at most 255 characters."),
         ("appointment_date", "12/01/2026", "Enter the appointment date."),
     ],
 )
@@ -636,5 +676,5 @@ async def test_another_account_cannot_read_or_change_the_sheet(client):
 
 def test_the_fields_the_upload_requires_are_in_the_helper():
     """GUARD for the other test module: its upload form carries every required billing field."""
-    for field in ("visit_type", "review_source", "interpreter"):
+    for field in ("visit_type", "interpreter"):
         assert _FIELDS[field]

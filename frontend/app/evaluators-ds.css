@@ -236,6 +236,8 @@ textarea:focus-visible, a:focus-visible {
 .ev-chip-review { background: var(--warning-100); color: var(--warning-500); }
 .ev-chip-edit { background: var(--blue-100); color: var(--blue-500); }
 .ev-chip-off { background: var(--danger-100); color: var(--danger-500); }
+/* Done and right: a received file the uploader confirmed. */
+.ev-chip-ok { background: var(--success-100); color: var(--success-500); }
 /* Manual check: violet, never amber - every other flag on a summary card is amber. */
 .ev-chip-manual { background: var(--violet-100); color: var(--violet-600); }
 /* Reviewed before: the downloads' yellow highlight, on the card. */

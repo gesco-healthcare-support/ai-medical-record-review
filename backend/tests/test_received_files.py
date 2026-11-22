@@ -120,7 +120,6 @@ _FIELDS = {
     "records_from": "applicant",
     # The billing sheet's required fields (tests/test_billing_sheet.py covers them).
     "visit_type": "QME",
-    "review_source": "in_house",
     "interpreter": "no",
 }
 
