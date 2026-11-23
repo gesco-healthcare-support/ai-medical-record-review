@@ -1731,15 +1731,29 @@ _STREET_SUFFIX = (
     "STREET|ST|AVENUE|AVE|BOULEVARD|BLVD|DRIVE|DR|ROAD|RD|WAY|LANE|LN|HIGHWAY|HWY|PARKWAY|PKWY"
     "|COURT|PLACE|CIRCLE|CIR|TERRACE|TER|PLAZA"
 )
+# What follows SUITE/STE/UNIT/#: a number (`510`, `2B`, `A-1`) or a single letter (`STE A`).
+# Anything else is a word, and a word straight after them is not a suite. The keyword was once
+# allowed to run into its "number", so `STEVE K` read as `STE` + `VE` + `K`: the first name came
+# out of every title by a STEVE, STEVEN, STEPHEN or STELLA (a short surname went with it), and
+# `UNITED HEALTH` read as `UNIT` + `ED` + `HEALTH`. The senior reviewer, 2026-11-23, on both models:
+# "the AI for some reason doesn't want to type the name Steve or Steven" - the export ran this rule
+# over titles a reviewer typed too, so even a hand-typed name was taken back out.
+_SUITE_NUMBER = r"(?:[A-Z]|[A-Z-]{0,3}\d[A-Z0-9-]{0,5})"
+_SUITE_KEYWORD = re.compile(r"SUITE|STE|UNIT|#", re.I)
 _ADDRESS_PIECES = (
     # 5300 CALIFORNIA AVE / 16530 VENTURA BLVD STE 510 / 9330 STOCKDALE HWY SUITE 100
     re.compile(
         rf"\d{{1,6}}[A-Z]?(?: [A-Z0-9'#/&-]{{1,20}}){{1,5}} (?:{_STREET_SUFFIX})"
-        r"(?: (?:SUITE|STE|UNIT|#)(?: ?[A-Z0-9-]{1,6})?)?",
+        rf"(?: (?:SUITE|STE|UNIT|#)(?: ?{_SUITE_NUMBER})?)?",
         re.I,
     ),
-    # the number optional: "STE. 100" splits on its own period, leaving a bare "STE" piece
-    re.compile(r"(?:SUITE|STE|UNIT|#)(?: ?[A-Z0-9-]{1,6}(?: [A-Z0-9-]{1,6})?)?", re.I),
+    # SUITE 105 B / STE 510 / UNIT 4 / #200, a word allowed after the number (SUITE 2ND FLOOR). A
+    # bare "STE" piece - "STE. 100" splits on its own period - is `_mark_bare_suite`'s.
+    re.compile(
+        rf"(?:SUITE|STE|UNIT) {_SUITE_NUMBER}(?: [A-Z0-9-]{{1,6}})?"
+        rf"|# ?{_SUITE_NUMBER}(?: [A-Z0-9-]{{1,6}})?",
+        re.I,
+    ),
     re.compile(r"(?:[A-Z][A-Z'-]{1,20} ){0,3}(?:CA|CALIFORNIA|[A-Z]{2}) \d{5}(?:-\d{4})?", re.I),
     re.compile(r"(?:PH|PHONE|TEL|FAX|F|T)?:? ?\(?\d{3}\)?[ -]?\d{3}-\d{4}", re.I),
 )
@@ -1768,6 +1782,17 @@ _ORGANISATION = re.compile(
 )
 
 
+def _mark_bare_suite(pieces: list[tuple[str, str]], drop: list[bool]) -> None:
+    """Mark a bare SUITE/STE/UNIT/# piece and its number as address, in place.
+
+    `STE. 100` splits on its own period into `STE` and `100`. The keyword alone is a suite only with
+    its number next to it: `STE. MARIE` is a saint's name (`_NAME_PREFIX` keeps it whole)."""
+    for i, (_, raw) in enumerate(pieces[:-1]):
+        nxt = pieces[i + 1][1].strip()
+        if _SUITE_KEYWORD.fullmatch(raw.strip()) and re.fullmatch(_SUITE_NUMBER, nxt, re.I):
+            drop[i] = drop[i + 1] = True
+
+
 def _mark_city_state(pieces: list[tuple[str, str]], drop: list[bool]) -> None:
     """Mark a city standing before a state (with or without its ZIP) as address, in place."""
     for i, (_, raw) in enumerate(pieces):
@@ -1792,6 +1817,7 @@ def without_address(title: str) -> str:
     # parts alternates piece, separator, piece, ... ; pair each piece with the separator before it.
     pieces = [(parts[i - 1] if i else "", parts[i]) for i in range(0, len(parts), 2)]
     drop = [any(p.fullmatch(piece.strip()) for p in _ADDRESS_PIECES) for _, piece in pieces]
+    _mark_bare_suite(pieces, drop)
     _mark_city_state(pieces, drop)
     for i in range(1, len(pieces)):
         if drop[i - 1] and _BARE_NUMBER.fullmatch(pieces[i][1].strip()):
