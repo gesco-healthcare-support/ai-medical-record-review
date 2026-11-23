@@ -2909,10 +2909,13 @@ _NAMES_THAT_START_LIKE_A_SUITE = [
     "STEVEN DOE, M.D. VALLEY CLINIC. PROGRESS NOTE",
     "STEPHEN ROE, D.C. VALLEY CHIROPRACTIC. PROGRESS NOTE",
     "STELLA ROE, P.T. ACME PHYSICAL THERAPY. PROGRESS NOTE",
+    # `STE` + `N` + `DOE`: a one-letter "number" needs the space in front of it
+    "STEN DOE, M.D. VALLEY CLINIC. PROGRESS NOTE",
     # `UNIT` + `ED` + `HEALTH`
     "JOHN DOE, M.D. UNITED HEALTH. PROGRESS NOTE",
-    # a bare `STE` is a suite only with its number after it
+    # a bare `STE` is a suite only with its number after it, and a word is not a number
     "JOHN DOE, M.D. STE. MARIE MEDICAL CENTER. PROGRESS NOTE",
+    "JOHN DOE, M.D. STE. MARIE. PROGRESS NOTE",
 ]
 
 

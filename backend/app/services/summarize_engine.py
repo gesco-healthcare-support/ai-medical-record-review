@@ -1731,10 +1731,10 @@ _STREET_SUFFIX = (
     "STREET|ST|AVENUE|AVE|BOULEVARD|BLVD|DRIVE|DR|ROAD|RD|WAY|LANE|LN|HIGHWAY|HWY|PARKWAY|PKWY"
     "|COURT|PLACE|CIRCLE|CIR|TERRACE|TER|PLAZA"
 )
-# What follows SUITE/STE/UNIT/#: a number (`510`, `2B`, `A-1`) or a single letter (`STE A`). Anything
-# else is a word, and a word straight after them is not a suite. The keyword was once allowed to run
-# into its "number", so `STEVE K` read as `STE` + `VE` + `K`: the author's first name came out of
-# every title by a STEVE, STEVEN, STEPHEN or STELLA (with a short surname, the whole name), and
+# What follows SUITE/STE/UNIT/#: a number (`510`, `2B`, `A-1`) or a single letter (`STE A`).
+# Anything else is a word, and a word straight after them is not a suite. The keyword was once
+# allowed to run into its "number", so `STEVE K` read as `STE` + `VE` + `K`: the first name came
+# out of every title by a STEVE, STEVEN, STEPHEN or STELLA (a short surname went with it), and
 # `UNITED HEALTH` read as `UNIT` + `ED` + `HEALTH`. The senior reviewer, 2026-11-23, on both models:
 # "the AI for some reason doesn't want to type the name Steve or Steven" - the export ran this rule
 # over titles a reviewer typed too, so even a hand-typed name was taken back out.
