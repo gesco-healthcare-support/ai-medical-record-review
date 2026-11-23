@@ -5,7 +5,7 @@
 # Debian 13 (trixie), as the Python images are. node:22-slim is Debian 12, and on 2026-10-19 it
 # still carried a perl-base missing four Critical security fixes; the trixie variant is the same
 # Node.
-FROM node:22-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa AS build
+FROM node:22-trixie-slim@sha256:68c76cfad89921b927eae28ba21407475e29d0ce450afcdbe70c1532db042b64 AS build
 WORKDIR /app
 RUN corepack enable
 # Lockfile first for a cacheable install layer.
@@ -14,7 +14,7 @@ RUN corepack pnpm install --frozen-lockfile
 COPY . .
 RUN corepack pnpm build
 
-FROM node:22-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa AS runtime
+FROM node:22-trixie-slim@sha256:68c76cfad89921b927eae28ba21407475e29d0ce450afcdbe70c1532db042b64 AS runtime
 # Links the image to this repository in ghcr.io (see backend/Dockerfile).
 LABEL org.opencontainers.image.source="https://github.com/gesco-healthcare-support/ai-medical-record-review"
 # The base image ships the package managers (npm, npx, corepack, yarn); the standalone server needs
