@@ -2900,6 +2900,69 @@ def test_the_export_cleans_a_title_stored_before_this_fix():
     assert se.presentable_title(stored) == "VALLEY RADIOLOGY GROUP. MRI OF THE CERVICAL SPINE"
 
 
+# The senior reviewer, 2026-11-23, on both models: "the AI for some reason doesn't want to type the
+# name Steve or Steven". The suite rule read `STEVE K` as `STE` + `VE` + `K` and took the piece out.
+_NAMES_THAT_START_LIKE_A_SUITE = [
+    "STEVE K. DOE, M.D. VALLEY ORTHOPEDICS. PROGRESS NOTES",
+    "STEVEN K. DOE, M.D. VALLEY ORTHOPEDICS. PROGRESS NOTES",
+    # with a short surname the whole name went, leaving the title opening on its credential
+    "STEVEN DOE, M.D. VALLEY CLINIC. PROGRESS NOTE",
+    "STEPHEN ROE, D.C. VALLEY CHIROPRACTIC. PROGRESS NOTE",
+    "STELLA ROE, P.T. ACME PHYSICAL THERAPY. PROGRESS NOTE",
+    # `UNIT` + `ED` + `HEALTH`
+    "JOHN DOE, M.D. UNITED HEALTH. PROGRESS NOTE",
+    # a bare `STE` is a suite only with its number after it
+    "JOHN DOE, M.D. STE. MARIE MEDICAL CENTER. PROGRESS NOTE",
+]
+
+
+@pytest.mark.parametrize("title", _NAMES_THAT_START_LIKE_A_SUITE)
+def test_a_name_that_starts_like_a_suite_stays_in_the_title(title):
+    """DEMONSTRATES the fix: no name is read as a suite, at generation or in a typed title."""
+    assert se.without_address(title) == title
+    assert se._usable_title(title, "ROW TITLE") == title
+    # the export runs the address rule over a reviewer's own title too, so a typed name went as well
+    assert se.presentable_title(title, reviewer_edited=True) == title
+
+
+@pytest.mark.parametrize(
+    ("generated", "expected"),
+    [
+        (
+            "JOHN DOE, M.D. ACME CLINIC, STE 2B. PROGRESS NOTE",
+            "JOHN DOE, M.D. ACME CLINIC. PROGRESS NOTE",
+        ),
+        (
+            "JOHN DOE, M.D. ACME CLINIC, #200. PROGRESS NOTE",
+            "JOHN DOE, M.D. ACME CLINIC. PROGRESS NOTE",
+        ),
+        (
+            "JOHN DOE, M.D. ACME CLINIC, UNIT 4. PROGRESS NOTE",
+            "JOHN DOE, M.D. ACME CLINIC. PROGRESS NOTE",
+        ),
+        (
+            "JOHN DOE, M.D. ACME CLINIC, SUITE A. PROGRESS NOTE",
+            "JOHN DOE, M.D. ACME CLINIC. PROGRESS NOTE",
+        ),
+        (
+            "JOHN DOE, M.D. ACME CLINIC, STE. A. PROGRESS NOTE",
+            "JOHN DOE, M.D. ACME CLINIC. PROGRESS NOTE",
+        ),
+        (
+            "JOHN DOE, M.D. ACME CLINIC, SUITE 2ND FLOOR. PROGRESS NOTE",
+            "JOHN DOE, M.D. ACME CLINIC. PROGRESS NOTE",
+        ),
+        (
+            "JOHN DOE, M.D. 9330 OAK HWY SUITE A-1. PROGRESS NOTE",
+            "JOHN DOE, M.D. PROGRESS NOTE",
+        ),
+    ],
+)
+def test_a_suite_still_comes_out_of_the_title(generated, expected):
+    """GUARD: every suite form - a number, a letter, split off by its own period - still goes."""
+    assert se.without_address(generated) == expected
+
+
 def test_the_title_prompt_asks_for_the_facility_name_only():
     """The prompt half: the model is told, not only filtered after."""
     assert "NAME only" in se.TITLE_PROMPT
