@@ -637,17 +637,22 @@ async def test_a_reviewer_cannot_combine_into_someone_elses_account(client):
 
 async def test_the_raw_record_downloads_as_it_was_put_together(client):
     """DEMONSTRATES: the joined file comes back byte for byte as a download under the record's
-    name, for the office's backup; it is not a download of the review."""
+    name, for the office's backup; it is not a download of the review. Its billing sheet goes on
+    top as an update after those bytes (tests/test_billing_sheet.py); both counts are typed here so
+    the download does not wait for the pages to be read."""
     user_id, email = _user()
     await _login(client, email)
     doc_id = (await _combine(client)).json()["id"]
     document = _document(doc_id)
+    await client.put(
+        f"/api/documents/{doc_id}/billing", json={"office_count": "5", "depo_pages": "0"}
+    )
 
     resp = await client.get(f"/api/documents/{doc_id}/raw")
 
     assert resp.status_code == 200
     with open(document.stored_path, "rb") as stored:
-        assert resp.content == stored.read()
+        assert resp.content.startswith(stored.read())
     assert resp.headers["content-type"] == "application/pdf"
     disposition = resp.headers["content-disposition"]
     assert disposition.startswith("attachment;")

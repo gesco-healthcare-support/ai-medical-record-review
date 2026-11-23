@@ -103,6 +103,7 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 409 | `a job is running for this document; wait for it` | D7, D12, D13, D19 |
 | 409 | `a job is already running for this document` | D11, D15, D16, A8 |
 | 409 | `The record's pages are still being read. The billing sheet can be downloaded once they are.` | D8b, until every counted page is read, unless both counts were typed (D6d) |
+| 409 | `The record's pages are still being read. Its raw PDF starts with the billing sheet, so it can be downloaded once they are.` | D8a on a record put together from received files (one with `received_on`), until every counted page is read, unless both counts were typed (D6d) |
 | 409 | `this record's summaries changed while the summary was being re-drafted (a summarize run, or another re-draft that found more or fewer visits); nothing was changed - reload the summaries and try again` | D19, after the model call: a job is active, or the summary moved or was removed meanwhile (a summarize run, or another re-draft of the record that changed its row's number of visits and so renumbered the summaries after it) |
 | 409 | `<reviewer> already has this record (uploaded <MM/DD/YYYY>, <N> pages).`, or `<reviewer> already has <N> copies of this record (the latest uploaded <MM/DD/YYYY>, <N> pages).`, with `code: "duplicate"` | D1 (`owner` sent), A10; not sent when `allow_duplicate` is true. `<reviewer>` is the account's name, or `This reviewer` when it has none |
 | 409 | `a job is running for this document; wait for it before assigning it` | A10 |
