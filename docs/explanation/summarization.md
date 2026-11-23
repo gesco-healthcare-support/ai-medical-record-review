@@ -362,7 +362,11 @@ does not enforce `maxLength`. `_usable_title()` is the enforcement:
   three decorations), because a long segmentation title is a real header that is merely long.
 - An accepted title passes through `tidy_title()`. Its `without_address()` step drops pieces of the
   title that are unmistakably an address (street, suite, city before a state or ZIP, `CA` after a
-  city, a phone number) and keeps everything else byte for byte. Its `tidy_author_and_facility()` step
+  city, a phone number) and keeps everything else byte for byte. A suite is `SUITE`, `STE`, `UNIT`
+  or `#` followed by a number or a single letter (`STE 510`, `SUITE A`, `STE. 100`); a word after
+  them is not one, so `STEVEN DOE`, `UNITED HEALTH` and `STE. MARIE` stay (until 2026-11-23 the
+  first name of every author called Steve, Steven, Stephen or Stella was taken out as a suite, on
+  both models and in titles a reviewer typed). Its `tidy_author_and_facility()` step
   turns a `SURNAME, GIVEN NAMES, CREDENTIAL` author into `GIVEN NAMES SURNAME, CREDENTIAL`, and cuts a
   listed health system (`_HEALTH_SYSTEMS`, today Kaiser Permanente and Concentra) down to its name,
   dropping the branch, department or place after it, and drops a facility that is only the author's
