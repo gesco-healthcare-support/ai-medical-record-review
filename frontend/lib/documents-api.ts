@@ -3,6 +3,7 @@ import {
   type BillingDraft,
   type BillingSheet,
   type BillingSheetEdit,
+  canDownload,
   SUPPLEMENTAL,
 } from "@/lib/billing-sheet";
 import type { ReceivedKind, RecordsFrom } from "@/lib/received-files";
@@ -154,6 +155,19 @@ function saveFrom(url: string) {
 
 export function downloadRawPdf(id: string) {
   saveFrom(rawPdfUrl(id));
+}
+
+/** How far a record is from its raw download. A record put together from received files
+ *  downloads with its billing sheet as page 1, and the sheet's counts need every counted page
+ *  read (or both counts typed on the sheet) - the server answers 409 before. `null` when the
+ *  download can start now, which a record uploaded as one PDF always can. */
+export async function rawPdfWait(
+  doc: DocumentListItem,
+): Promise<{ read: number; total: number } | null> {
+  if (!doc.received_on) return null;
+  const sheet = await getBillingSheet(doc.id);
+  if (canDownload(sheet)) return null;
+  return { read: sheet.pages_counted - sheet.pages_unread, total: sheet.pages_counted };
 }
 
 /** GET /api/documents/combine/doctors - the doctors the upload dialog offers (the header's list). */

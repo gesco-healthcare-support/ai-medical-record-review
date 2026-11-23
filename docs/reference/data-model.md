@@ -567,7 +567,7 @@ Every `action` value written by the repository:
 | `combine_upload` | `backend/app/api/documents.py` (a record put together from the files it arrived in; `detail` is the file count) |
 | `delete` | `backend/app/api/documents.py` `delete_document()` |
 | `view_pdf` | `backend/app/api/documents.py` (PDF view) |
-| `download_raw` | `backend/app/api/documents.py` (the record's PDF as received, downloaded) |
+| `download_raw` | `backend/app/api/documents.py` (the record's PDF as received, downloaded; with its billing sheet on top for a record put together from received files) |
 | `view_record` | `backend/app/api/documents.py` (an admin opening another account's record) |
 | `header.edit`, `header.extract` | `backend/app/api/documents.py` (header save and detection; `detail` names the fields, never their values) |
 | `segment.start`, `dedup.start` | `backend/app/api/documents.py` (job start) |

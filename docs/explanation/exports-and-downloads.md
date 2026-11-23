@@ -32,9 +32,21 @@ export routes were dropped.
 Not a deliverable, and not prepared: "Download raw PDF" in a record's row menu on My documents
 (`GET /api/documents/{id}/raw`) saves the record's PDF exactly as it was uploaded - for a record put
 together from the files it arrived in, the joined file - under the record's file name, for the
-office's backup of the records as received. The file is already on disk, so it is served straight
-from there to a plain link (no Blob, as below) and nothing is parked; it does not stamp
+office's backup of the records as received. A record uploaded as one PDF is served straight from
+disk to a plain link (no Blob, as below) and nothing is parked; it does not stamp
 `downloaded_at`, which is about the review.
+
+A record put together from received files downloads with its billing sheet as page 1 (the
+office's ask, 2026-11-23). The stored record never holds the sheet - Identify, the summaries and
+their page numbers never see it. At each download the server copies the record into the user's
+download folder as `built-<random>.pdf`, adds the sheet as it stands then
+(`billing_sheet.put_on_top`) as an incremental update - so the copy keeps every byte of the record
+and nothing is held in memory (an 882 MB record: about 50 MB and 8 seconds on a laptop) - sends
+it, and deletes it; a copy a cut-short download leaves behind goes in the download sweep after
+`DOWNLOAD_TTL_SECONDS`. The sheet's counts need the record's pages read, so until they are the
+download is 409, as the sheet's own download is, unless both counts were typed on the sheet. The
+row menu asks first (`rawPdfWait()` reads `GET .../billing`) and says how far the reading is
+instead of handing the browser a download that would fail.
 
 Not a deliverable either: "Download PDF" on a record's billing sheet
 (`GET /api/documents/{id}/billing-sheet`, `backend/app/services/billing_sheet.py`) saves the office's

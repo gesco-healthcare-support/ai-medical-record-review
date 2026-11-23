@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.responses import FileResponse, JSONResponse, Response
 from rq.command import send_stop_job_command
 from sqlalchemy import delete, func, select, update
+from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.api.deps import get_owned_document
@@ -644,6 +645,10 @@ _BILLING_OFFICE_DETAIL = "Enter the office count as a whole number."
 _BILLING_DEPO_DETAIL = "Enter the deposition pages as a whole number."
 _BILLING_UNREAD_DETAIL = (
     "The record's pages are still being read. The billing sheet can be downloaded once they are."
+)
+_RAW_UNREAD_DETAIL = (
+    "The record's pages are still being read. Its raw PDF starts with the billing sheet, so it can"
+    + " be downloaded once they are."
 )
 # The longest a typed text on the billing sheet may be (the columns are String(255)).
 _BILLING_TEXT_MAX = 255
@@ -1541,24 +1546,61 @@ def _raw_filename(document: Document) -> str:
     return name if name.lower().endswith(".pdf") else name + ".pdf"
 
 
-@router.get("/{document_id}/raw")
+def _sheet_pdf(session: Session, document: Document, unread_detail: str) -> bytes:
+    """The record's billing sheet as a one-page PDF (``billing_sheet.render``). Its counts
+    need every counted page read, so while the record's pages are still being read it is 409
+    ``unread_detail`` - unless both counts were typed on the sheet."""
+    read = billing_sheet.reading(session, document)
+    if read.counts is None and (document.office_count is None or document.depo_pages is None):
+        raise HTTPException(status_code=409, detail=unread_detail)
+    return billing_sheet.render(billing_sheet.sheet_for(document, read.counts))
+
+
+def _raw_response(
+    path: str | Path, document: Document, background: BackgroundTask | None = None
+) -> FileResponse:
+    return FileResponse(
+        path,
+        media_type=_PDF_MEDIA_TYPE,
+        filename=_raw_filename(document),
+        content_disposition_type="attachment",
+        headers={"Cache-Control": "no-store"},
+        background=background,
+    )
+
+
+@router.get(
+    "/{document_id}/raw",
+    responses={409: {"description": "The record's billing sheet waits for its pages to be read."}},
+)
 def download_raw_pdf(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
-    """The record's PDF exactly as it was uploaded - for a record put together from several files,
-    the joined file - as a download under the record's file name, for the office's backup of the
+    """The record's PDF as it was uploaded - for a record put together from several files, the
+    joined file - as a download under the record's file name, for the office's backup of the
     records as received. Nothing of the review is in it, so it leaves ``downloaded_at`` (the date
-    the review was last downloaded) alone. Not cached, like the viewer's copy."""
+    the review was last downloaded) alone. Not cached, like the viewer's copy.
+
+    A record put together from received files has a billing sheet, and its download starts with
+    it (the office's ask, 2026-11-23): page 1 is the sheet as it stands now, then the record page
+    for page. The stored record never holds the sheet - it is built onto a copy for this download
+    and the copy deleted once sent - so Identify and the summaries never see it. Like the sheet's
+    own download, it is 409 while the record's pages are still being read, unless both counts were
+    typed on the sheet."""
+    if document.received_on is None:
+        audit(session, "download_raw", user.id, document.id)
+        return _raw_response(document.stored_path, document)
+    sheet = _sheet_pdf(session, document, _RAW_UNREAD_DETAIL)
+    path = downloads.built_path(user.id)
+    try:
+        billing_sheet.put_on_top(sheet, document.stored_path, path)
+    except BaseException:
+        downloads.discard_built(path)
+        raise
     audit(session, "download_raw", user.id, document.id)
-    return FileResponse(
-        document.stored_path,
-        media_type=_PDF_MEDIA_TYPE,
-        filename=_raw_filename(document),
-        content_disposition_type="attachment",
-        headers={"Cache-Control": "no-store"},
-    )
+    return _raw_response(path, document, BackgroundTask(downloads.discard_built, path))
 
 
 def _billing_filename(document: Document) -> str:
@@ -1588,10 +1630,7 @@ def download_billing_sheet(
     record. Its counts need every counted page read, so while the record's pages are still being
     read it is 409 - unless both counts were typed on the sheet. Not cached by the browser; it
     leaves ``downloaded_at`` alone (nothing of the review is in it)."""
-    read = billing_sheet.reading(session, document)
-    if read.counts is None and (document.office_count is None or document.depo_pages is None):
-        raise HTTPException(status_code=409, detail=_BILLING_UNREAD_DETAIL)
-    pdf = billing_sheet.render(billing_sheet.sheet_for(document, read.counts))
+    pdf = _sheet_pdf(session, document, _BILLING_UNREAD_DETAIL)
     audit(session, "download_billing", user.id, document.id)
     return Response(
         content=pdf,

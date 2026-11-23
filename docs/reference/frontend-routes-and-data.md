@@ -88,7 +88,8 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | `getBillingSheet()` | `GET /documents/{id}/billing` | - | the billing sheet | `useBillingSheet()` in `BillingSheetDialog`; read again every 5 seconds while `pages_unread` is above 0 |
 | `saveBillingSheet()` | `PUT /documents/{id}/billing` | `BillingSheetEdit` (every field as typed) | the billing sheet | `useSaveBillingSheet()` in `BillingSheetDialog` (the answer replaces the cached sheet) |
 | `downloadBillingSheet()` | `GET /documents/{id}/billing-sheet` (`billingSheetUrl()`) | - | the one-page PDF as an attachment, saved by the browser's download manager from a plain link | "Download PDF" in `BillingSheetDialog`, offered once both counts are known and nothing is unsaved |
-| `downloadRawPdf()` | `GET /documents/{id}/raw` (`rawPdfUrl()`) | - | the record's PDF as an attachment, saved by the browser's download manager from a plain link | "Download raw PDF" in each record's row menu (`DocumentsTable`) |
+| `downloadRawPdf()` | `GET /documents/{id}/raw` (`rawPdfUrl()`) | - | the record's PDF as an attachment - for a record put together from received files, with its billing sheet as page 1 - saved by the browser's download manager from a plain link | "Download raw PDF" in each record's row menu (`DocumentsTable`, through `DocumentsView`'s `downloadRaw`) |
+| `rawPdfWait()` | `GET /documents/{id}/billing` (`getBillingSheet()`), only for a record with `received_on` | - | `null` when the raw PDF can be downloaded now, else `{read, total}`: how many of the sheet's counted pages are read (`canDownload` in `frontend/lib/billing-sheet.ts`) | `DocumentsView` before "Download raw PDF": while pages are read it says so in a toast (`The record's pages are still being read (<read> of <total>). Its raw PDF starts with the billing sheet - try again in a few minutes, or type both counts on the billing sheet.`) and downloads nothing; a record uploaded as one PDF asks nothing |
 | `setCompleted()` | `PUT /documents/{id}/completed` | `{completed}` | Document listing | `useSetCompleted()` in `DocumentsView` (the list is patched at once, then read again) |
 | `setPatientId()` | `PUT /documents/{id}/patient-id` | `{patient_id}` | Document listing plus `patient_records` | `PatientIdLine` on the workbench (saves on Enter or when the box loses focus) |
 | `deleteDocument()` | `DELETE /documents/{id}` | - | `{ok}` | `useDeleteDocument()` in `DocumentsView` |
@@ -352,8 +353,9 @@ service, internal email, envelope - by kind, then in the order added. A kind can
 file moves to its place) and a file moved up or down by hand; the server joins them exactly as
 listed. Removing a file, or closing the dialog without making a record, deletes the staged file on
 the server. "Download raw PDF" in a record's row menu
-saves the record's PDF as it was uploaded - for such a record, the joined file - for the office's
-backup.
+saves the record's PDF as it was uploaded - for such a record, the joined file with its billing
+sheet on top as page 1 - for the office's backup. The sheet needs the record's pages read: until
+they are, the menu says how far the reading is and downloads nothing.
 
 "Billing sheet" in the row menu of such a record (one with `received_on`) opens `BillingSheetDialog`
 (`billing-sheet-dialog.tsx`): the office's billing sheet - the fields typed at upload, editable,
