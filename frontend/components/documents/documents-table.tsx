@@ -114,6 +114,7 @@ export function DocumentsTable({
   onDelete,
   onToggleCompleted,
   onBillingSheet,
+  onDownloadRaw,
 }: Readonly<{
   docs: DocumentListItem[];
   onOpen: (id: string) => void;
@@ -125,6 +126,9 @@ export function DocumentsTable({
   onDelete?: (doc: DocumentListItem) => void;
   /** Open the office's billing sheet - offered for a record put together from received files. */
   onBillingSheet?: (doc: DocumentListItem) => void;
+  /** Download the record's PDF as received - for a record put together from received files,
+   *  with its billing sheet on top. Without it the menu saves the file at once. */
+  onDownloadRaw?: (doc: DocumentListItem) => void;
 }>) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -268,7 +272,11 @@ export function DocumentsTable({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-52">
                         <DropdownMenuItem onSelect={() => onOpen(doc.id)}>Open</DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => downloadRawPdf(doc.id)}>
+                        <DropdownMenuItem
+                          onSelect={() =>
+                            onDownloadRaw ? onDownloadRaw(doc) : downloadRawPdf(doc.id)
+                          }
+                        >
                           Download raw PDF
                         </DropdownMenuItem>
                         {onBillingSheet && doc.received_on ? (

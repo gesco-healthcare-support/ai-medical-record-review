@@ -7,6 +7,7 @@ Uploads go to a per-test tmp dir; no model, no OCR.
 """
 
 from datetime import date
+from pathlib import Path
 
 import pymupdf
 import pytest
@@ -348,6 +349,80 @@ def test_a_blank_sheet_still_renders():
     assert "Patient Name:" in text
 
 
+# --- services/billing_sheet.py: the sheet on top of the raw download ------------------------------
+
+
+def _record_pdf(path, pages: int) -> bytes:
+    """A record of ``pages`` pages written to ``path``; returns its bytes."""
+    with pymupdf.open() as doc:
+        for number in range(pages):
+            doc.new_page(width=200, height=200).insert_text((20, 40), f"record page {number + 1}")
+        doc.save(path)
+    return path.read_bytes()
+
+
+def _a_sheet() -> bytes:
+    with pymupdf.open() as doc:
+        doc.new_page().insert_text((72, 72), "SYNTHETIC SHEET")
+        return doc.tobytes()
+
+
+def _page_texts(path) -> list[str]:
+    with pymupdf.open(path) as pdf:
+        return [page.get_text().strip() for page in pdf]
+
+
+_ON_TOP = ["SYNTHETIC SHEET", "record page 1", "record page 2", "record page 3"]
+
+
+def test_the_sheet_goes_on_top_of_a_copy_and_the_record_is_left_as_it_was(tmp_path):
+    """DEMONSTRATES: page 1 is the sheet, then the record page for page. The record's own file is
+    not touched, and the copy keeps every byte of it - the sheet is an update after them."""
+    record = tmp_path / "record.pdf"
+    original = _record_pdf(record, 3)
+    out = tmp_path / "out.pdf"
+
+    billing_sheet.put_on_top(_a_sheet(), record, out)
+
+    assert record.read_bytes() == original
+    assert out.read_bytes().startswith(original)
+    assert _page_texts(out) == _ON_TOP
+
+
+def test_the_copy_keeps_the_records_encryption_as_pymupdf_names_it():
+    """GUARD: the constant stands in for one the package's type stubs do not export."""
+    assert billing_sheet._KEEP_ENCRYPTION == pymupdf.PDF_ENCRYPT_KEEP
+
+
+def test_the_same_sheet_on_the_same_record_gives_the_same_bytes(tmp_path):
+    """GUARD: a second download of an unchanged sheet is the same file (a resumed download splices
+    two of them)."""
+    record = tmp_path / "record.pdf"
+    _record_pdf(record, 2)
+
+    billing_sheet.put_on_top(_a_sheet(), record, tmp_path / "a.pdf")
+    billing_sheet.put_on_top(_a_sheet(), record, tmp_path / "b.pdf")
+
+    assert (tmp_path / "a.pdf").read_bytes() == (tmp_path / "b.pdf").read_bytes()
+
+
+def test_a_record_a_reader_must_repair_is_written_whole_with_the_sheet_on_top(tmp_path):
+    """DEMONSTRATES the fallback: a file without its cross-reference table cannot take an update,
+    so the copy is written whole - still the sheet first, the record left as it was, no scrap
+    file."""
+    good = _record_pdf(tmp_path / "good.pdf", 3)
+    damaged = good[: good.rindex(b"endobj") + len(b"endobj")] + b"\n%%EOF\n"
+    record = tmp_path / "record.pdf"
+    record.write_bytes(damaged)
+    out = tmp_path / "out.pdf"
+
+    billing_sheet.put_on_top(_a_sheet(), record, out)
+
+    assert record.read_bytes() == damaged
+    assert _page_texts(out) == _ON_TOP
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["good.pdf", "out.pdf", "record.pdf"]
+
+
 # --- POST /api/documents/combine: the billing fields ----------------------------------------------
 
 
@@ -672,6 +747,101 @@ async def test_another_account_cannot_read_or_change_the_sheet(client):
         await client.put(f"/api/documents/{doc_id}/billing", json={"visit_type": "IME"})
     ).status_code == 404
     assert (await client.get(f"/api/documents/{doc_id}/billing-sheet")).status_code == 404
+
+
+# --- GET /api/documents/{id}/raw: the billing sheet on top ----------------------------------------
+
+
+def _built_files() -> list[str]:
+    return [p.name for p in Path(get_settings().upload_folder).glob("*/downloads/*")]
+
+
+def _actions(doc_id: str) -> list[str]:
+    with get_sessionmaker()() as session:
+        return list(
+            session.scalars(select(AuditLog.action).where(AuditLog.document_id == doc_id)).all()
+        )
+
+
+async def test_the_raw_download_starts_with_the_billing_sheet(client):
+    """DEMONSTRATES the office's ask (2026-11-23): page 1 of the raw download is the billing sheet,
+    then the record as received, byte for byte. The stored record never holds the sheet - Identify
+    and the summaries never see it - and the copy built for the download is gone once sent."""
+    doc_id = await _record(client)
+    _read_pages(doc_id, _SPEC)
+    stored_path = _document(doc_id).stored_path
+    with open(stored_path, "rb") as fh:
+        stored = fh.read()
+
+    resp = await client.get(f"/api/documents/{doc_id}/raw")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.content.startswith(stored)
+    with open(stored_path, "rb") as fh:
+        assert fh.read() == stored
+    with pymupdf.open(stream=resp.content, filetype="pdf") as pdf:
+        pages = pdf.page_count
+        sheet_text = pdf[0].get_text()
+    assert pages == len(_SPEC) + 1
+    assert "Synthetic, Patient" in sheet_text
+    assert "12/01/2026" in sheet_text
+    assert resp.headers["content-type"] == "application/pdf"
+    assert 'filename="Synthetic_Patient-801234-11032026.pdf"' in resp.headers["content-disposition"]
+    assert resp.headers["cache-control"] == "no-store"
+    assert _built_files() == []
+    assert "download_raw" in _actions(doc_id)
+    assert _document(doc_id).downloaded_at is None
+
+
+async def test_the_raw_download_carries_the_sheet_as_it_stands_now(client):
+    """DEMONSTRATES: the sheet on top is built at the download, so an edit made after the upload is
+    on it - as on the sheet's own download."""
+    doc_id = await _record(client)
+    _read_pages(doc_id, _SPEC)
+    await client.put(
+        f"/api/documents/{doc_id}/billing",
+        json={"visit_type": "IME", "location": "Synthetic Second Office"},
+    )
+
+    resp = await client.get(f"/api/documents/{doc_id}/raw")
+
+    with pymupdf.open(stream=resp.content, filetype="pdf") as pdf:
+        sheet_text = pdf[0].get_text()
+    assert "Synthetic Second Office" in sheet_text
+
+
+async def test_the_raw_download_waits_for_the_pages_to_be_read(client):
+    """DEMONSTRATES: while the sheet's counts wait for the reading, the download is refused with a
+    sentence the reviewer can act on - nothing built, nothing audited."""
+    doc_id = await _record(client)
+
+    resp = await client.get(f"/api/documents/{doc_id}/raw")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "The record's pages are still being read. Its raw PDF starts with the billing sheet, so it"
+        + " can be downloaded once they are."
+    )
+    assert _built_files() == []
+    assert "download_raw" not in _actions(doc_id)
+
+
+async def test_a_raw_download_that_fails_to_build_leaves_no_file(client, monkeypatch):
+    """GUARD: patient data at rest is not left behind by a build that fails part way."""
+    doc_id = await _record(client)
+    _read_pages(doc_id, _SPEC)
+
+    def half_written(sheet_pdf, record_path, out_path):
+        Path(out_path).write_bytes(b"%PDF-1.7 half")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(billing_sheet, "put_on_top", half_written)
+
+    with pytest.raises(OSError):
+        await client.get(f"/api/documents/{doc_id}/raw")
+
+    assert _built_files() == []
+    assert "download_raw" not in _actions(doc_id)
 
 
 def test_the_fields_the_upload_requires_are_in_the_helper():

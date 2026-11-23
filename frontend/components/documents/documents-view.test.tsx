@@ -52,6 +52,16 @@ const accountsState: { data: { id: number; name: string; email: string }[] | und
 vi.mock("@/hooks/use-current-user", () => ({ useCurrentUser: () => me }));
 vi.mock("@/hooks/use-admin", () => ({ useAccounts: () => accountsState }));
 
+// The raw download's check (is the billing sheet on top ready?) and the hand-off to the browser,
+// so a test can say what the check answers and see whether the browser was given the file.
+const rawPdfWait = vi.fn();
+const downloadRawPdf = vi.fn();
+vi.mock("@/lib/documents-api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/documents-api")>()),
+  rawPdfWait: (...args: unknown[]) => rawPdfWait(...args),
+  downloadRawPdf: (...args: unknown[]) => downloadRawPdf(...args),
+}));
+
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api";
 import { DocumentsView } from "@/components/documents/documents-view";
@@ -596,5 +606,67 @@ describe("DocumentsView for an admin", () => {
     await user.selectOptions(screen.getByLabelText("Show records for"), "7");
     expect(screen.getByText("Brian has no records.")).toBeInTheDocument();
     expect(screen.queryByText(/start your first review/i)).toBeNull();
+  });
+});
+
+describe("DocumentsView raw PDF", () => {
+  it("is handed to the browser at once for a record uploaded as one PDF", async () => {
+    const user = userEvent.setup();
+    docsState.data = [doc({ id: "d1" })];
+    rawPdfWait.mockResolvedValueOnce(null);
+    render(<DocumentsView />);
+
+    await user.click(await menuItem(user, /^Download raw PDF$/));
+
+    await waitFor(() => expect(downloadRawPdf).toHaveBeenCalledWith("d1"));
+    expect(vi.mocked(toast)).not.toHaveBeenCalled();
+    expect(vi.mocked(toast).error).not.toHaveBeenCalled();
+  });
+
+  it("says the billing sheet on top waits for the pages, and downloads nothing", async () => {
+    // The server would refuse it (409); a download the browser starts and then fails says nothing.
+    const user = userEvent.setup();
+    docsState.data = [doc({ id: "d1", received_on: "2026-11-19" })];
+    rawPdfWait.mockResolvedValueOnce({ read: 75, total: 120 });
+    render(<DocumentsView />);
+
+    await user.click(await menuItem(user, /^Download raw PDF$/));
+
+    await waitFor(() =>
+      expect(vi.mocked(toast).error).toHaveBeenCalledWith(
+        "The record's pages are still being read (75 of 120). Its raw PDF starts with the " +
+          "billing sheet - try again in a few minutes, or type both counts on the billing " +
+          "sheet.",
+      ),
+    );
+    expect(downloadRawPdf).not.toHaveBeenCalled();
+  });
+
+  it("puts the billing sheet on top once it is ready", async () => {
+    const user = userEvent.setup();
+    docsState.data = [doc({ id: "d1", received_on: "2026-11-19" })];
+    rawPdfWait.mockResolvedValueOnce(null);
+    render(<DocumentsView />);
+
+    await user.click(await menuItem(user, /^Download raw PDF$/));
+
+    await waitFor(() => expect(downloadRawPdf).toHaveBeenCalledWith("d1"));
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(
+      "Putting the billing sheet on top of the raw PDF.",
+    );
+  });
+
+  it("reports a check that failed, and downloads nothing", async () => {
+    const user = userEvent.setup();
+    docsState.data = [doc({ id: "d1", received_on: "2026-11-19" })];
+    rawPdfWait.mockRejectedValueOnce(new Error("network"));
+    render(<DocumentsView />);
+
+    await user.click(await menuItem(user, /^Download raw PDF$/));
+
+    await waitFor(() =>
+      expect(vi.mocked(toast).error).toHaveBeenCalledWith("Could not download the raw PDF."),
+    );
+    expect(downloadRawPdf).not.toHaveBeenCalled();
   });
 });

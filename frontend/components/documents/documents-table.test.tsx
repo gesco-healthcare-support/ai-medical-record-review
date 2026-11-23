@@ -364,6 +364,20 @@ describe("the raw PDF", () => {
     expect(downloadRawPdf).toHaveBeenCalledWith("a");
     expect(onOpen).not.toHaveBeenCalled();
   });
+
+  it("hands the record to the page when the page decides how it downloads", async () => {
+    // The records page checks first whether the billing sheet on top is ready.
+    vi.mocked(downloadRawPdf).mockClear();
+    const user = userEvent.setup();
+    const onDownloadRaw = vi.fn();
+    render(<DocumentsTable docs={[DOCS[0]]} onOpen={vi.fn()} onDownloadRaw={onDownloadRaw} />);
+
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Download raw PDF" }));
+
+    expect(onDownloadRaw).toHaveBeenCalledWith(DOCS[0]);
+    expect(downloadRawPdf).not.toHaveBeenCalled();
+  });
 });
 
 describe("the billing sheet", () => {

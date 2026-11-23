@@ -26,13 +26,19 @@ count from the pages alone matched the count inside the reviewers' rows exactly 
 was off by more than 5 pages on 6; 144 pages too many in all (127 of them in 3 transcripts the
 reviewers had not filed as depositions) and 16 too few.
 
+The sheet is never part of the record: Identify, the summaries and their page numbers never see it.
+It is the first page of the record's raw download only (``put_on_top``, the office's ask of
+2026-11-23), built at the moment of the download from the sheet as it stands then.
+
 Nothing here logs page text, names or any field of the sheet.
 """
 
 from __future__ import annotations
 
 import io
+import os
 import re
+import shutil
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -499,3 +505,35 @@ def render(sheet: Sheet) -> bytes:
         buffer = io.BytesIO()
         document.save(buffer, garbage=3, deflate=True)
         return buffer.getvalue()
+
+
+# `pymupdf.PDF_ENCRYPT_KEEP`, missing from the package's type stubs; a test keeps the two equal.
+_KEEP_ENCRYPTION = 0
+
+
+def put_on_top(
+    sheet_pdf: bytes, record_path: str | os.PathLike, out_path: str | os.PathLike
+) -> None:
+    """Write ``out_path``: the billing sheet ``sheet_pdf`` as page 1, then every page of the record
+    at ``record_path``, which is left exactly as it is.
+
+    The record is copied and the sheet added to the copy as an incremental update, so the copy
+    keeps every byte of the record as received and nothing is held in memory: an 882 MB record took
+    about 50 MB and 8 seconds on a laptop (2026-11-23), half of it the copy. A file a PDF reader had
+    to repair cannot take an incremental update and is written whole instead, which needs more
+    memory; a record joined from received files is written by this app and never needs it."""
+    shutil.copyfile(record_path, out_path)
+    whole = f"{os.fspath(out_path)}.whole"
+    with pymupdf.open(stream=sheet_pdf, filetype="pdf") as sheet, pymupdf.open(out_path) as record:
+        record.insert_pdf(sheet, start_at=0)
+        if record.can_save_incrementally():
+            # The same bytes for the same sheet each time: no new file id.
+            record.save(
+                out_path,
+                incremental=True,
+                encryption=_KEEP_ENCRYPTION,
+                no_new_id=True,
+            )
+            return
+        record.save(whole)
+    os.replace(whole, out_path)

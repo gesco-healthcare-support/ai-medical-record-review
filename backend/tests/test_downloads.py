@@ -325,6 +325,38 @@ def test_preparing_a_download_sweeps_first():
     assert not os.path.exists(stale)
 
 
+def test_a_download_built_for_one_get_has_a_name_no_token_matches_and_sweeps_first():
+    """WHEN a download is built for one GET (the raw PDF with its billing sheet on top), THE SYSTEM
+    SHALL place it in the user's download folder under a new name no token matches, after sweeping
+    away what has expired - a download cut short leaves its copy behind."""
+    folder = Path(get_settings().upload_folder) / "7" / "downloads"
+    folder.mkdir(parents=True)
+    stale = folder / "built-left-behind.pdf"
+    stale.write_bytes(b"x")
+    old = time.time() - get_settings().download_ttl_seconds - 10
+    os.utime(stale, (old, old))
+
+    path = downloads.built_path(7)
+
+    assert not stale.exists()
+    assert path.parent == folder
+    assert path.name.startswith("built-")
+    assert downloads.lookup(path.name, user_id=7, document_id="doc-1") is None
+    assert downloads.built_path(7) != path
+
+
+def test_a_built_download_is_deleted_once_sent_and_a_missing_one_is_no_error():
+    folder = Path(get_settings().upload_folder) / "7" / "downloads"
+    folder.mkdir(parents=True)
+    built = folder / "built-sent.pdf"
+    built.write_bytes(b"x")
+
+    downloads.discard_built(built)
+    downloads.discard_built(built)
+
+    assert not built.exists()
+
+
 def test_the_sweep_skips_a_file_it_cannot_delete_and_removes_the_rest(monkeypatch, caplog):
     """IF a stale download cannot be deleted, THEN THE SYSTEM SHALL skip it, still delete the others, and log
     one warning giving the count and error type only (decided 2026-09-24, #389).

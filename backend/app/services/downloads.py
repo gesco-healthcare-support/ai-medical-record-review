@@ -16,6 +16,12 @@ without persistence, so that never reaches its disk. Nothing here logs a filenam
 
 The owner may fetch the file more than once until it expires, so Chrome's own Resume (a Range request on the
 same URL) and a second click both work.
+
+The same folder holds one more kind of file: a download BUILT for a single GET and sent at
+once - the raw PDF of a record with its billing sheet on top (`built_path`). It is named
+`built-<random>.pdf`, which no token matches, has no Redis entry, and is deleted by its GET
+once sent; one a cut-short download left behind goes in the same sweep after
+`download_ttl_seconds`.
 """
 
 import json
@@ -102,6 +108,31 @@ def _delete(path: Path) -> None:
         os.remove(path)
     except FileNotFoundError:
         pass
+
+
+def built_path(user_id: int) -> Path:
+    """A new place in `user_id`'s download folder for a download built for one GET (the
+    module's last paragraph). Sweeps old files first, as a new export does, so the copy a
+    cut-short download left behind goes."""
+    try:
+        sweep()
+    except OSError as exc:
+        # As for an export: tidying OLD files never blocks a download. The error type only.
+        logger.warning("download sweep before a built download failed (%s)", type(exc).__name__)
+    folder = _folder(user_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"built-{secrets.token_hex(16)}.pdf"
+
+
+def discard_built(path: Path) -> None:
+    """Delete a built download once it is sent (or failed); one that cannot go is left to the
+    sweep."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("could not delete a built download (%s)", type(exc).__name__)
 
 
 def prepare(
