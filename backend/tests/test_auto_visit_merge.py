@@ -55,10 +55,9 @@ def _spans(rows):
         [_row(1), _row(2)],  # one PR-2 cut in two
         [_row(1, "5", _THERAPY), _row(2, "5", _THERAPY)],  # one therapy visit cut in two
         [_row(1), _row(2, "10", _RFA)],  # the visit's RFA
-        [_row(1, "10", _RFA), _row(2)],  # the RFA first
         [_row(1), _row(2, "100", _WORK_STATUS)],  # the visit's work status, whatever its category
     ],
-    ids=["1+1", "5+5", "1+rfa", "rfa+1", "1+work status"],
+    ids=["1+1", "5+5", "1+rfa", "1+work status"],
 )
 def test_one_visits_pieces_are_merged_with_no_model_call(monkeypatch, rows):
     """DEMONSTRATES: the visit merge's candidates, merged without asking the model."""
@@ -76,12 +75,12 @@ def test_the_merged_row_is_the_visit_documents():
     """DEMONSTRATES the collapse: the visit's category, title and method, the first piece's start
     and hint, the last piece's end, flagged when any piece was."""
     rows = [
-        _row(1, "10", _RFA, method="llm+embedding", suggest_merge=True),
-        _row(2, title="PR-2 PROGRESS REPORT", method="rules", end=4, flag="x"),
-        _row(5, "100", _WORK_STATUS, method="rules"),
+        _row(1, title="PR-2 PROGRESS REPORT", method="rules", end=2, suggest_merge=True),
+        _row(3, "10", _RFA, method="llm+embedding", flag="x"),
+        _row(4, title="PR-2 PROGRESS REPORT", method="llm-disagree"),
     ]
     (merged,), _ = visit_merge.auto_merge_visit_pieces(rows)
-    assert (merged["start"], merged["end"]) == (1, 5)
+    assert (merged["start"], merged["end"]) == (1, 4)
     assert (merged["category"], merged["title"], merged["method"]) == (
         "1",
         "PR-2 PROGRESS REPORT",
@@ -89,7 +88,31 @@ def test_the_merged_row_is_the_visit_documents():
     )
     assert merged["suggest_merge"] is True
     assert merged["flag"] == "x"
-    assert rows[0]["end"] == 1, "the caller's rows must come back untouched"
+    assert rows[0]["end"] == 2, "the caller's rows must come back untouched"
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        # the RFA before the PR-2 stays its own row; the export fold joins the two
+        ([_row(1, "10", _RFA), _row(2)], [(1, 1, "10"), (2, 2, "1")]),
+        # a work status before the therapy note: the same
+        ([_row(1, "100", _WORK_STATUS), _row(2, "5", _THERAPY)], [(1, 1, "100"), (2, 2, "5")]),
+        # the RFA and the work status before the PR-2: each its own row
+        (
+            [_row(1, "10", _RFA), _row(2, "100", _WORK_STATUS), _row(3)],
+            [(1, 1, "10"), (2, 2, "100"), (3, 3, "1")],
+        ),
+        # the PR-2's own RFA after it, then the next PR-2 page: one row opening on the PR-2
+        ([_row(1), _row(2, "10", _RFA), _row(3)], [(1, 3, "1")]),
+    ],
+    ids=["rfa|1", "ws|5", "rfa|ws|1", "1|rfa|1"],
+)
+def test_a_merged_row_never_opens_on_an_rfa_or_a_work_status(rows, expected):
+    """DEMONSTRATES 2026-11-24: a row that opened on the RFA form was summarized as the form, so a
+    form BEFORE its visit is not merged into it; one inside the visit's pieces still is."""
+    out, _ = visit_merge.auto_merge_visit_pieces(rows)
+    assert _spans(out) == expected
 
 
 @pytest.mark.parametrize(
@@ -100,15 +123,16 @@ def test_the_merged_row_is_the_visit_documents():
             [_row(1), _row(2, "100", _WORK_STATUS), _row(3, "5", _THERAPY)],
             [(1, 2, "1"), (3, 3, "5")],
         ),
-        # 5 | work status | 1: the work status still goes with the PR-2, after it
+        # 5 | work status | 1: the work status stays off the therapy note, and cannot open the
+        # PR-2's row - it stays its own; the export fold puts it with the PR-2
         (
             [_row(1, "5", _THERAPY), _row(2, "100", _WORK_STATUS), _row(3)],
-            [(1, 1, "5"), (2, 3, "1")],
+            [(1, 1, "5"), (2, 2, "100"), (3, 3, "1")],
         ),
         # 5 | RFA | 1: the same for an RFA
         (
             [_row(1, "5", _THERAPY), _row(2, "10", _RFA), _row(3)],
-            [(1, 1, "5"), (2, 3, "1")],
+            [(1, 1, "5"), (2, 2, "10"), (3, 3, "1")],
         ),
         # 5 | work status | 5: one therapy visit, nothing to keep apart
         (
@@ -121,8 +145,8 @@ def test_the_merged_row_is_the_visit_documents():
 def test_a_run_never_joins_a_pr2_and_a_therapy_visit(rows, expected):
     """GUARD (the bridge): a category 1 visit and a category 5 visit never end up in one row
     through a work status or an RFA between them; that row goes with the category 1 side, the
-    export fold's order. On the live copy reviewers kept the therapy note apart in 5 of 10 such
-    runs."""
+    export fold's order, and only after it - before it, it stays its own row. On the live copy
+    reviewers kept the therapy note apart in 5 of 10 such runs."""
     out, _ = visit_merge.auto_merge_visit_pieces(rows)
     assert _spans(out) == expected
 

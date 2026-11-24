@@ -147,7 +147,8 @@ check is the TypeScript compiler (`pnpm typecheck`); SonarCloud analyses the cod
     `onField(i, { <field>: value })`, so every edit passes through `ReviewEditor`'s `field()`.
 4. Give it a value in the rows the editor creates, `splitConfirm()` and `confirmAdd()` in
     `frontend/components/review/review-editor.tsx`, and decide how `mergeRows()` in
-    `frontend/lib/review-rows.ts` combines it. By default a merge keeps the upper row's value.
+    `frontend/lib/review-rows.ts` combines it. By default a merge keeps the upper row's value;
+    an RFA or a work status merged with the visit below it takes the visit's identity fields.
 5. If editing it means the reviewer has dealt with the row, add it to `ADJUDICATING_FIELDS` in
     `frontend/lib/review-rows.ts` so the review flag clears.
 6. If another workbench tab can change it on the server, add it to `SERVER_WRITABLE_FIELDS` and also

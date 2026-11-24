@@ -3360,7 +3360,7 @@ def _combined_lab_title(titles: list[str]) -> str:
 
 
 def _date_heads(
-    entries: list[dict], categories: list[str]
+    entries: list[dict], categories: list[str], title_key: str
 ) -> dict[int, tuple[list[int], list[int]]]:
     """Each date's entries of two or more, but a diagnostic study's, an operative report's and a
     lab's, as `_visit_heads` shapes a group: keyed by the entry that heads it, ``(members,
@@ -3373,7 +3373,9 @@ def _date_heads(
     Reports (Category 8) and Diagnostics (Category 3)". Only on a record the reviewer marked
     (`Document.one_entry_per_date`); the rows' own merge (`services/date_entries.py`) joins the
     neighbours, and this joins the same-date entries a printout scattered through the record. A
-    progress note heads its date and leads the body when the date has one; otherwise the first
+    progress note heads its date and leads the body when the date has one - one that is not a work
+    status, when there is such a note: a work status filed as a progress note is still the form, and
+    the row merge keeps one that opens a date as its own entry (`date_entries`); otherwise the first
     entry. Dates are read the export's way (`reporting.parsed_date`), so "10/01/2025" and
     "10-01-2025" are one day."""
     groups: dict = {}
@@ -3387,7 +3389,9 @@ def _date_heads(
         if len(members) < 2:
             continue
         notes = [i for i in members if categories[i] == "1"]
-        heads[(notes or members)[0]] = (members, notes or members)
+        reports = [i for i in notes if _visit_role(entries[i], categories[i], title_key) != "join"]
+        documents = reports or notes or members
+        heads[documents[0]] = (members, documents)
     return heads
 
 
@@ -3408,7 +3412,7 @@ def fold_record_entries(
     a highlighted entry, and one new piece makes the whole entry new."""
     labs = _lab_heads(entries, categories)
     visits = (
-        _date_heads(entries, categories)
+        _date_heads(entries, categories, title_key)
         if by_date
         else _visit_heads(entries, categories, title_key)
     )

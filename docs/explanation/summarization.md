@@ -778,7 +778,9 @@ provider, a clinic and a PR-2 the way the letter will:
   (`_date_heads()`). A diagnostic study (category 3), an operative report (category 8) and a lab
   result (category 14) never join it; labs still fold by date among themselves. A discharge
   summary (category 16) joins its date like any other entry. A progress note (category 1) heads
-  the date and leads the body when the date has one, otherwise the date's first entry. Dates are
+  the date and leads the body when the date has one - one whose title is not a work status, when
+  the date has such a note, since a work status filed as a progress note is still the form -
+  otherwise the date's first entry. Dates are
   read with `reporting.parsed_date`. The senior reviewer, 2026-10-30: "keep everything from one
   date as one entry ... summarized as a progress note ... The exception would be for
   diagnostics"; and on 2026-11-04: "for discharge summaries, those can be merged together. I think
