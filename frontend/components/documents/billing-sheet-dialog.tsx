@@ -16,7 +16,7 @@ import { useBillingSheet, useSaveBillingSheet } from "@/hooks/use-documents";
 import {
   type BillingSheet,
   type BillingSheetEdit,
-  canDownload,
+  depoPending,
   editValid,
   isPageCount,
   shownCounts,
@@ -28,26 +28,32 @@ import { RECORDS_FROM, RECORDS_FROM_LABELS } from "@/lib/received-files";
 import type { DocumentListItem } from "@/lib/types";
 
 const NOT_FOUND = "This record no longer exists. Refresh the list.";
+const DEPO_BLANK_HINT = "The deposition pages print blank until they are known.";
 
 function same(a: BillingSheetEdit, b: BillingSheetEdit): boolean {
   return (Object.keys(a) as (keyof BillingSheetEdit)[]).every((key) => a[key] === b[key]);
 }
 
-/** Where the counts stand: still being read, or what was worked out from the record. */
+/** Where the counts stand: what was worked out from the record, and - while its pages are still
+ *  being read - that the deposition pages are not known yet. */
 function CountsLine({ sheet }: Readonly<{ sheet: BillingSheet }>) {
-  if (sheet.counted === null) {
+  const office = sheet.counted?.office;
+  const depo = sheet.counted?.depo ?? null;
+  if (depo === null) {
     const read = sheet.pages_counted - sheet.pages_unread;
     return (
       <output className="banner-info block text-sm">
-        Reading the record&apos;s pages: {read} of {sheet.pages_counted} read. The office count and
-        the deposition pages are worked out once every page is read.
+        {office === undefined ? "" : `Office count ${office}. `}
+        The deposition pages are worked out once the record&apos;s pages are read ({read} of{" "}
+        {sheet.pages_counted} read). Until then that box prints blank - type it, or download again
+        later.
       </output>
     );
   }
   return (
     <output className="block text-sm text-muted-foreground">
-      Worked out from the record: office count {sheet.counted.office}, deposition pages{" "}
-      {sheet.counted.depo}. Type a count only to change it.
+      Worked out from the record: office count {office}, deposition pages {depo}. Type a count only
+      to change it.
     </output>
   );
 }
@@ -74,7 +80,6 @@ function BillingForm({
   const change = (patch: Partial<BillingSheetEdit>) => setEdit((prev) => ({ ...prev, ...patch }));
   const dirty = !same(edit, toEdit(sheet));
   const valid = editValid(edit);
-  const downloadable = !dirty && canDownload(sheet);
 
   async function submit() {
     try {
@@ -88,7 +93,7 @@ function BillingForm({
 
   let downloadHint: string | undefined;
   if (dirty) downloadHint = "Save the changes first.";
-  else if (!canDownload(sheet)) downloadHint = "Ready once every page is read.";
+  else if (depoPending(sheet)) downloadHint = DEPO_BLANK_HINT;
 
   return (
     <>
@@ -123,7 +128,7 @@ function BillingForm({
               className="ev-inp"
               inputMode="numeric"
               autoComplete="off"
-              placeholder={sheet.counted ? String(sheet.counted.office) : "Worked out once read"}
+              placeholder={sheet.counted ? String(sheet.counted.office) : "Not worked out yet"}
               value={edit.office_count}
               onChange={(e) => change({ office_count: e.target.value })}
             />
@@ -137,7 +142,9 @@ function BillingForm({
               className="ev-inp"
               inputMode="numeric"
               autoComplete="off"
-              placeholder={sheet.counted ? String(sheet.counted.depo) : "Worked out once read"}
+              placeholder={
+                sheet.counted?.depo == null ? "Not known yet" : String(sheet.counted.depo)
+              }
               value={edit.depo_pages}
               onChange={(e) => change({ depo_pages: e.target.value })}
             />
@@ -171,7 +178,7 @@ function BillingForm({
           type="button"
           className="ev-btn ev-btn-outline"
           title={downloadHint}
-          disabled={!downloadable}
+          disabled={dirty}
           onClick={() => downloadBillingSheet(id)}
         >
           Download PDF
@@ -191,9 +198,10 @@ function BillingForm({
 
 /** The office's billing sheet for a record put together from received files (GET/PUT
  *  /api/documents/{id}/billing): what the uploader typed, editable, and the office count and the
- *  deposition pages worked out from the record once its pages are read - read again every few
- *  seconds until then. A count typed here replaces the worked-out one; a blank goes back to it.
- *  Download PDF gives the one-page sheet once both counts are known and nothing is left unsaved. */
+ *  deposition pages worked out from the record - the deposition pages once its pages are read,
+ *  the sheet read again every few seconds until then. A count typed here replaces the
+ *  worked-out one; a blank goes back to it. Download PDF gives the one-page sheet as it stands,
+ *  any time nothing is left unsaved; a count not known yet prints blank. */
 export function BillingSheetDialog({
   doc,
   onClose,

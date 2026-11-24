@@ -94,16 +94,40 @@ function forget(token: string | undefined) {
   if (token) unstageReceivedFile(token).catch(() => undefined);
 }
 
-/** The list of received files and their staging on the server. Files are sent one at a time, in
- *  the order added; a file removed (or the dialog closed) before its answer arrives is dropped on
- *  the server when the answer comes. */
+/** Files sent to the server at once. One at a time, each file also waiting for its first page to
+ *  be read, ten files added up to minutes before the record could be made. */
+const STAGE_AT_ONCE = 3;
+
+/** The list of received files and their staging on the server. Files are sent `STAGE_AT_ONCE` at
+ *  a time, in the order added; a file removed before its turn is never sent, and one removed (or
+ *  the dialog closed) before its answer arrives is dropped on the server when the answer comes. */
 function useReceivedFiles() {
   const [items, setItems] = useState<Item[]>([]);
   const nextKey = useRef(0);
   const live = useRef(new Set<number>());
   // Each file's token on the server, by key, so removing and clearing drop it there too.
   const tokens = useRef(new Map<number, string>());
-  const queue = useRef<Promise<void>>(Promise.resolve());
+  const waiting = useRef<Item[]>([]);
+  const sending = useRef(0);
+
+  /** Start the next waiting files while fewer than `STAGE_AT_ONCE` are being sent. */
+  function pump() {
+    while (sending.current < STAGE_AT_ONCE) {
+      const item = waiting.current.shift();
+      if (item === undefined) return;
+      if (!live.current.has(item.key)) continue;
+      sending.current += 1;
+      void stage(item).finally(() => {
+        sending.current -= 1;
+        pump();
+      });
+    }
+  }
+
+  function send(item: Item) {
+    waiting.current.push(item);
+    pump();
+  }
 
   function update(key: number, change: (item: Item) => Item) {
     setItems((prev) => {
@@ -152,11 +176,9 @@ function useReceivedFiles() {
       check: false,
       state: "reading",
     }));
-    for (const item of added) {
-      live.current.add(item.key);
-      queue.current = queue.current.then(() => stage(item));
-    }
+    for (const item of added) live.current.add(item.key);
     setItems((prev) => inReceivedOrder([...prev, ...added]));
+    for (const item of added) send(item);
   }
 
   function setKind(key: number, kind: ReceivedKind) {
@@ -173,7 +195,7 @@ function useReceivedFiles() {
     const item = items.find((candidate) => candidate.key === key);
     if (item?.state !== "failed") return;
     update(key, (current) => ({ ...current, state: "reading", error: undefined }));
-    queue.current = queue.current.then(() => stage(item));
+    send(item);
   }
 
   function move(index: number, step: -1 | 1) {
@@ -195,6 +217,7 @@ function useReceivedFiles() {
    *  already deleted them. */
   function clear(keepOnServer = false) {
     live.current.clear();
+    waiting.current = [];
     if (!keepOnServer) tokens.current.forEach((token) => forget(token));
     tokens.current.clear();
     setItems([]);

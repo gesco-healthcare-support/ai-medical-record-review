@@ -169,7 +169,7 @@ bundle export pass `verify=False`.
 | Max output tokens | Not set |
 | Schema | `received_files._KIND_SCHEMA`: object with `kind` (one of `received_files.KINDS`) and `certain` (boolean), both required |
 | Reply handling | `json.loads`; a `kind` outside the kinds is not used. `check` (the uploader should look) is set unless `certain` is true |
-| Failure | Never raises: any exception (the model server off, a refusal) or an unusable reply falls back to the keyword rules (`guess_kind`) with `check` set, logging only the exception's type. A page with no text asks no model and answers `records`, flagged |
+| Failure | Never raises and never waits more than `KIND_WAIT_SECONDS` (15): any exception (the model server off, a refusal), no answer in time (the call is left to end on its own thread) or an unusable reply falls back to the keyword rules (`guess_kind`) with `check` set, logging only the exception's type. At most `_KIND_CALLS` (4) such calls run at once; with all four still running a file goes to the rules at once. A page with no text asks no model and answers `records`, flagged |
 | Measured | Live box, 2026-11-19, the same 1,330 stored first pages of finished records with these instructions: medical records left as records 96%, subpoena paperwork 95%; the case's own advocacy letter 80%, proof of service 81%, declaration and email 74%, medical index 89% (the commonest slip: a letter or an email that lists the records read as the medical index). Keyword rules alone on 16,429 pages: 63-93% on the case's papers, 5% of medical documents and up to 28% of subpoena paperwork misplaced. The upload dialog therefore has every file confirmed by the uploader against its first page |
 
 ## dedup

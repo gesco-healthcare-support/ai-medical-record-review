@@ -17,7 +17,6 @@ import {
   listDoctors,
   listDocuments,
   rawPdfUrl,
-  rawPdfWait,
   saveBillingSheet,
   stageReceivedFile,
   unstageReceivedFile,
@@ -25,7 +24,6 @@ import {
   uploadDocument,
 } from "@/lib/documents-api";
 import { type BillingDraft, type BillingSheetEdit, EMPTY_BILLING } from "@/lib/billing-sheet";
-import type { DocumentListItem } from "@/lib/types";
 
 const ok = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -229,60 +227,6 @@ describe("the raw PDF", () => {
     } finally {
       click.mockRestore();
     }
-  });
-});
-
-describe("whether the raw PDF can be downloaded now", () => {
-  // A record put together from received files downloads with its billing sheet on top, and the
-  // sheet's counts need the pages read; the server would answer the download 409 before.
-  const sheet = (over: Record<string, unknown>) => ({
-    visit_type: "QME",
-    appointment_date: "2026-12-01",
-    doctor: "",
-    interpreter: "no",
-    claim_numbers: "",
-    location: "",
-    previous_visit: "",
-    declared_pages: "",
-    discrepancy_reason: "",
-    records_from: "defense",
-    received_on: "2026-11-19",
-    office_count: "",
-    depo_pages: "",
-    counted: null,
-    pages_counted: 120,
-    pages_unread: 45,
-    doctors: [],
-    ...over,
-  });
-  const record = (received_on: string | null) =>
-    ({ id: "d1", received_on }) as unknown as DocumentListItem;
-
-  it("never waits for a record uploaded as one PDF, and asks the server nothing", async () => {
-    expect(await rawPdfWait(record(null))).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("waits while the sheet's pages are read, saying how far the reading is", async () => {
-    fetchMock.mockResolvedValueOnce(ok(sheet({})));
-
-    expect(await rawPdfWait(record("2026-11-19"))).toEqual({ read: 75, total: 120 });
-    expect(lastCall().url).toBe("/api/documents/d1/billing");
-  });
-
-  it("is ready once the counts are worked out, or once both are typed", async () => {
-    fetchMock.mockResolvedValueOnce(
-      ok(sheet({ counted: { office: 120, depo: 0 }, pages_unread: 0 })),
-    );
-    expect(await rawPdfWait(record("2026-11-19"))).toBeNull();
-
-    fetchMock.mockResolvedValueOnce(ok(sheet({ office_count: 118, depo_pages: 0 })));
-    expect(await rawPdfWait(record("2026-11-19"))).toBeNull();
-  });
-
-  it("still waits with only one count typed", async () => {
-    fetchMock.mockResolvedValueOnce(ok(sheet({ office_count: 118 })));
-    expect(await rawPdfWait(record("2026-11-19"))).toEqual({ read: 75, total: 120 });
   });
 });
 
