@@ -48,12 +48,37 @@ export function sortRows<T extends Row>(rows: T[]): T[] {
   return [...rows].sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
+// The export fold's patterns (backend `summarize_engine._RFA_TITLE` and `_WORK_STATUS_TITLE`), so a
+// hand merge and the server's own merges (`visit_merge`, `date_entries`) read one rule.
+const RFA_TITLE = /\bREQUEST FOR AUTHORI[SZ]ATION\b|\bRFA\b/i;
+const WORK_STATUS_TITLE = /\bWORK (?:ACTIVITY )?STATUS\b|\bRETURN[- ]TO[- ]WORK\b/i;
+// The visit documents an RFA or a work status belongs to: a PR-2 (1), a PR-4 (2), a therapy
+// note (5).
+const VISIT_CATEGORIES = new Set(["1", "2", "5"]);
+
+/**
+ * Whether `row` joins a visit: an RFA (category 10 titled as one) or a work status (titled as one,
+ * whatever its category but a diagnostic study's). The backend's `visit_merge.joins_a_visit`.
+ */
+export function joinsAVisit(row: Row): boolean {
+  const category = String(row.category);
+  if (category === "3") return false;
+  const title = String(row.title ?? "");
+  return WORK_STATUS_TITLE.test(title) || (category === "10" && RFA_TITLE.test(title));
+}
+
 /**
  * Merge `lower` into `upper`, for "merge up" and "apply suggested merges".
  *
  * The merged row keeps the UPPER row's identity - title, date, category - which is deliberate:
  * merging means "this continues the document above". The reviewers were asked and said they would
  * rather the PR-2 gave the heading but will fix that by hand, so identity is not what this combines.
+ *
+ * ONE EXCEPTION: an RFA or a work status above the visit it belongs to (a PR-2, a PR-4 or a therapy
+ * note). The merged row is then the VISIT - its category, title, date, date of injury and method -
+ * because the summary is written for the row's category: an RFA's category 10 summarized the visit
+ * as the form and left the report out (8 such merged rows on the live box, 2026-11-24). The row's
+ * client key and its start stay the upper row's.
  *
  * `include` is NOT identity, it is the work item, and it is combined the same way `flag` is: if
  * either half was going to be summarized, the merged document is. Taking the upper row's value
@@ -64,8 +89,20 @@ export function sortRows<T extends Row>(rows: T[]): T[] {
  * reaches no deliverable is never surfaced again.
  */
 export function mergeRows<T extends Row>(upper: T, lower: T): T {
+  const visitBelow =
+    joinsAVisit(upper) && VISIT_CATEGORIES.has(String(lower.category)) && !joinsAVisit(lower);
   return {
     ...upper,
+    ...(visitBelow
+      ? {
+          category: lower.category,
+          title: lower.title,
+          date: lower.date,
+          injury_date: lower.injury_date,
+          method: lower.method,
+          ruled_paperwork: lower.ruled_paperwork,
+        }
+      : {}),
     end: Math.max(Number(upper.end), Number(lower.end)),
     flag: [upper.flag, lower.flag].includes("x") ? "x" : "-",
     include: upper.include !== false || lower.include !== false,

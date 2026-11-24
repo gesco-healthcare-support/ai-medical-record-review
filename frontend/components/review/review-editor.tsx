@@ -27,6 +27,7 @@ export const ONE_ENTRY_PER_DATE_CONFIRM = [
   "- merge neighbouring documents that share a date into one progress note (category 1)",
   "- leave diagnostic studies, operative reports, lab results and allergy or immunization " +
     "records as they are",
+  "- keep an RFA or a work status that comes before the date's other documents as its own row",
   "- untick every lab result",
   "- in the letter, also combine same-date entries that are not next to each other",
   "",

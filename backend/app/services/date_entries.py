@@ -22,8 +22,14 @@ What it does to the rows, in page order:
   (category 3), an operative report (category 8), a lab result (category 14) and an allergy or
   immunization row stay as they are and break a run, so a study or an operation never disappears
   into a visit. A discharge summary (category 16) merges like any other row;
+- a run never STARTS with an RFA or a work status (`visit_merge.joins_a_visit`): one that opens a
+  date stays its own row, and the letter's date fold still puts it into that date's entry with the
+  progress note leading (`summarize_engine.fold_record_entries`, ``by_date``). A summary reads the
+  row's pages in order, and a row that opened on the RFA form was summarized as the form (the
+  senior reviewer, 2026-11-24 - see `visit_merge`);
 - the merged row is category 1 (a progress note, the reviewer's first choice) with the run's date
-  and the title of its first ticked piece. A run of General (100) rows only stays General;
+  and the title of its first ticked piece that is not an RFA or a work status (else of its first
+  ticked piece). A run of General (100) rows only stays General;
 - it is ticked when any piece was, the rule a hand merge keeps (`mergeRows` in
   `frontend/lib/review-rows.ts`): on a fresh draft that is every run with a clinical piece, and a
   run the reviewer had unticked piece by piece stays unticked rather than being put back;
@@ -37,6 +43,7 @@ from dataclasses import dataclass
 
 from app.services.classification import is_allergy_or_immunization
 from app.services.reporting import parsed_date
+from app.services.visit_merge import joins_a_visit
 
 _GENERAL = "100"
 _PROGRESS_NOTE = "1"
@@ -69,7 +76,7 @@ def _date_of(row: dict):
 
 def _merged(run: list[dict]) -> dict:
     ticked = [row for row in run if row.get("include", True)]
-    lead = ticked[0] if ticked else run[0]
+    lead = next((row for row in ticked if not joins_a_visit(row)), ticked[0] if ticked else run[0])
     clinical = any(str(row.get("category")) != _GENERAL for row in run)
     return {
         **lead,
@@ -82,9 +89,25 @@ def _merged(run: list[dict]) -> dict:
     }
 
 
+def _without_a_leading_form(run: list[dict]):
+    """``run`` split so that no run of two or more rows starts with an RFA or a work status: each
+    one that opens it stands on its own (see the module)."""
+    opening = 0
+    while opening < len(run) - 1 and joins_a_visit(run[opening]):
+        yield [run[opening]]
+        opening += 1
+    yield run[opening:]
+
+
 def _runs(rows: list[dict]):
     """The rows in page order, grouped: each run of neighbours sharing a known date, and every row
     that keeps its own entry or has no date on its own."""
+    for run in _date_runs(rows):
+        yield from _without_a_leading_form(run)
+
+
+def _date_runs(rows: list[dict]):
+    """`_runs` before any RFA or work status that opens a run is split off."""
     run: list[dict] = []
     run_date = None
     for row in sorted(rows, key=lambda r: (int(r["start"]), int(r["end"]))):

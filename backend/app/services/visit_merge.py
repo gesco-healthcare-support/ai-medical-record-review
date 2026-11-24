@@ -35,6 +35,21 @@ starts.
 Off by default (``MERGE_VISIT_PIECES``): it changes what the model decides at segmentation, so it is
 turned on per box once it has been measured there.
 
+A MERGED ROW NEVER STARTS WITH AN RFA OR A WORK STATUS. The senior reviewer, 2026-11-24, on our
+model: an RFA and the History and Physical after it, one date, merged into one category 1 row,
+"would only summarize it as a Category 10" until he split them, while "Usually it would correctly
+summarize it as a Category 1" - when the visit comes first. A summary reads the row's pages in
+order, and the category 1 prompt lists a Request for Authorization among its document types, so a
+row that opens on the RFA form is summarized as the form. Gemini writes such a row's body as the
+visit, but its title call reads the first page: measured read-only on the live box the same day
+(795 records), the summary title named the work status or the RFA on 111 of 296 visit rows that
+open on one, against 41 of 547 that open on the visit, and reviewers retitled 44% against 22%. So a
+row that joins a visit joins only a run a visit has already started (`_runs_start_with_a_visit`):
+an RFA or a work status BEFORE its visit stays its own row, and the export fold still puts it into
+that visit's entry with the report leading (`summarize_engine.fold_record_entries`). The merge, the
+automatic merge and the hints keep the rule alike: a boundary after such a row is asked about,
+merged or hinted only when the row itself joins the visit before it.
+
 THE AUTOMATIC MERGE (``AUTO_MERGE_VISIT_PIECES``, `auto_merge_visit_pieces`) merges the same
 candidates with NO model call. The senior reviewer, 2026-11-05, asked whether the suggested merges
 for one visit's pieces may be applied automatically: "I would say yes, it is fairly rare that they
@@ -45,7 +60,8 @@ before the 2026-10-28 rule, when reviewers merged less. So a wrong merge must be
 undo: it is applied only to the reviewer's copy (`review_rows`), never to the machine's
 (`segment_rows`), and the editor offers "Split back" on a row whose pages still match a run of
 pieces (`auto_merge_pieces`). A run never holds a category 1 visit and a category 5 visit: a work
-status or an RFA between the two goes with the category 1 side, the export fold's order.
+status or an RFA after the category 1 visit goes with it; one after the category 5 visit and before
+the category 1 visit stays its own row, and the export fold puts it with the category 1 visit.
 """
 
 import logging
@@ -91,6 +107,12 @@ def _role(row, visits=_VISIT_CATEGORIES):
     return "visit" if category in visits else None
 
 
+def joins_a_visit(row) -> bool:
+    """Whether ``row`` is one that joins a visit - an RFA or a work status - and so must never open
+    a merged row (see the module)."""
+    return _role(row) == "join"
+
+
 def _is_candidate(prev, row, visits=_VISIT_CATEGORIES, mixed_pairs=frozenset()):
     """Whether the boundary between ``prev`` and ``row`` may be one visit's - see the module."""
     date = str(row.get("date") or "").strip()
@@ -103,19 +125,37 @@ def _is_candidate(prev, row, visits=_VISIT_CATEGORIES, mixed_pairs=frozenset()):
     return set(roles) == {"visit", "join"}
 
 
+def _runs_start_with_a_visit(rows, indices, visits=_VISIT_CATEGORIES):
+    """``indices`` (ascending) without a boundary whose upper row joins a visit - an RFA, a work
+    status - unless that row's own boundary with the row before it is kept: a row that joins a visit
+    is never the first piece of a merged row (see the module)."""
+    kept: list[int] = []
+    for i in indices:
+        if _role(rows[i - 1], visits) == "join" and (not kept or kept[-1] != i - 1):
+            continue
+        kept.append(i)
+    return kept
+
+
 def candidate_indices(rows):
     """Indices ``i`` whose boundary with row ``i - 1`` the visit MERGE asks about, ascending."""
-    return [i for i in range(1, len(rows)) if _is_candidate(rows[i - 1], rows[i])]
+    return _runs_start_with_a_visit(
+        rows, [i for i in range(1, len(rows)) if _is_candidate(rows[i - 1], rows[i])]
+    )
 
 
 def hint_candidate_indices(rows):
     """Indices ``i`` whose boundary with row ``i - 1`` gets a visit HINT: the merge's candidates,
     plus a PR-4 piece's (see the module), ascending."""
-    return [
-        i
-        for i in range(1, len(rows))
-        if _is_candidate(rows[i - 1], rows[i], _HINT_VISIT_CATEGORIES, _HINT_MIXED_PAIRS)
-    ]
+    return _runs_start_with_a_visit(
+        rows,
+        [
+            i
+            for i in range(1, len(rows))
+            if _is_candidate(rows[i - 1], rows[i], _HINT_VISIT_CATEGORIES, _HINT_MIXED_PAIRS)
+        ],
+        _HINT_VISIT_CATEGORIES,
+    )
 
 
 def hint_visit_pieces(rows):
@@ -239,7 +279,9 @@ def merge_visit_pieces(pdf_path, rows, progress=None, workers=None, pool_timeout
 
     out = []
     for row in rows:
-        if out and same.get(row["start"]) is True:
+        # Never into a lone RFA or work status: the check before it said no, so the row would
+        # open on the form (see the module).
+        if out and same.get(row["start"]) is True and _role(out[-1]) != "join":
             logger.info(
                 "visit merge: pages %s-%s joined pages %s-%s",
                 row["start"],
@@ -263,7 +305,9 @@ def _visit_category(row):
 
 def _goes_with_the_next_visit(rows, i, candidates, run_visit):
     """A join row (RFA, work status) after a category 5 run, followed by a category 1 visit it is
-    also a candidate with, goes with that category 1 visit - the export fold's order."""
+    also a candidate with, belongs to that category 1 visit - the export fold's order - so it is
+    kept off the category 5 run. It cannot open the category 1 visit's row either, so it stays its
+    own."""
     return (
         run_visit == "5"
         and i + 1 in candidates
@@ -277,13 +321,16 @@ def auto_merge_runs(rows):
 
     Consecutive candidate boundaries (`candidate_indices`) chain into one run, except that a run
     never holds visit documents of two categories: a category 1 visit and a category 5 visit stay
-    apart even when a work status or an RFA between them is a candidate with both."""
+    apart even when a work status or an RFA between them is a candidate with both. A run starts
+    with a visit document: the work status or RFA the bridge keeps off a category 5 run stays its
+    own row rather than open the category 1 visit's (see the module)."""
     candidates = set(candidate_indices(rows))
     runs, current, run_visit = [], [], None
     for i, row in enumerate(rows):
         visit = _visit_category(row)
         joins = (
             bool(current)
+            and run_visit is not None
             and i in candidates
             and not (visit and run_visit and visit != run_visit)
             and not _goes_with_the_next_visit(rows, i, candidates, run_visit)

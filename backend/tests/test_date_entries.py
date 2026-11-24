@@ -161,3 +161,44 @@ def test_rows_out_of_page_order_are_merged_in_page_order():
     """GUARD: neighbours are neighbours in the PDF, whatever order the rows arrive in."""
     result = merge_by_date([_row(2), _row(1)])
     assert [(r["start"], r["end"]) for r in result.rows] == [(1, 2)]
+
+
+def test_an_rfa_or_work_status_that_opens_a_date_stays_its_own_row():
+    """DEMONSTRATES 2026-11-24: a row that opened on the RFA form was summarized as the form, so a
+    run never starts with one; the letter's date fold still puts it into the date's entry."""
+    rows = [
+        _row(1, category="10", title="Request for Authorization"),
+        _row(2, category="100", title="Work Status Report"),
+        _row(3, 4, title="History and Physical"),
+        _row(5, category="16", title="Inpatient Daily Note"),
+    ]
+    result = merge_by_date(rows)
+    assert [(r["start"], r["end"], r["category"], r["title"]) for r in result.rows] == [
+        (1, 1, "10", "Request for Authorization"),
+        (2, 2, "100", "Work Status Report"),
+        (3, 5, "1", "History and Physical"),
+    ]
+    assert (result.runs, result.rows_folded) == (1, 1)
+
+
+def test_a_form_inside_a_date_still_merges_and_never_names_the_row():
+    """GUARD: only the run's FIRST piece is kept off; a form after the first note joins the date,
+    and the merged row is titled from its first ticked piece that is not the form."""
+    rows = [
+        _row(1, category="100", title="Facesheet", include=False),
+        _row(2, title="Work Status Report"),
+        _row(3, title="Progress Note"),
+    ]
+    result = merge_by_date(rows)
+    assert [(r["start"], r["end"], r["title"]) for r in result.rows] == [(1, 3, "Progress Note")]
+
+
+def test_a_date_of_forms_only_is_left_as_it_is():
+    """GUARD: an RFA and a work status of one date with no note have nothing to open a row with."""
+    rows = [
+        _row(1, category="10", title="Request for Authorization"),
+        _row(2, category="100", title="Work Status Report"),
+    ]
+    result = merge_by_date(rows)
+    assert result.rows == rows
+    assert result.runs == 0

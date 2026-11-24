@@ -30,7 +30,10 @@
 
 - `keySeq` is module-global and never reset, per document or otherwise. Keys are also touched-set
   identities.
-- `mergeRows()` keeps the UPPER row's identity; `include` is true if either half was included; `flag`
+- `mergeRows()` keeps the UPPER row's identity, except that an RFA or a work status above its
+  visit (`joinsAVisit()`, the backend's `visit_merge.joins_a_visit`) takes the visit's category,
+  title, date, date of injury and method - keep the two title patterns in step with
+  `summarize_engine`; `include` is true if either half was included; `flag`
   is `x` if either half was flagged.
 - `applyServerRowChanges()` matches rows by `start-end` span and copies only `include` and `category`,
   named explicitly. A new server-writable field goes in `SERVER_WRITABLE_FIELDS` AND in that function.
