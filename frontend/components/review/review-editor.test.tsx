@@ -363,6 +363,7 @@ describe("ReviewEditor one entry per date", () => {
 
     expect(confirm.mock.calls[0][0]).toContain("untick every lab result");
     expect(confirm.mock.calls[0][0]).toContain("leave diagnostic studies, operative reports");
+    expect(confirm.mock.calls[0][0]).toContain("keep an RFA or a work status");
     expect(apply).not.toHaveBeenCalled();
     confirm.mockRestore();
   });

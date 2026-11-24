@@ -5,6 +5,7 @@ import {
   categoryWasGuessed,
   clearFlagOnEdit,
   couldNotIdentify,
+  joinsAVisit,
   mergeRows,
   mergedPieces,
   moveSharedBoundary,
@@ -222,6 +223,66 @@ describe("mergeRows", () => {
 
   it("does not shrink the merged row when the lower half ends earlier", () => {
     expect(mergeRows(r({ start: 1, end: 9 }), r({ start: 4, end: 6 })).end).toBe(9);
+  });
+
+  it("makes an RFA or work status merged with the visit below it the VISIT", () => {
+    // 2026-11-24: an RFA merged above its History and Physical kept category 10, so the visit was
+    // summarized as the form. The merged row is now the visit; the key and start stay the upper's.
+    const merged = mergeRows(
+      {
+        ...r({ start: 1, end: 1, category: "10", title: "Dr. Roe Request for Authorization" }),
+        method: "rules",
+        _key: "r-upper",
+      },
+      {
+        ...r({
+          start: 2,
+          end: 5,
+          category: "1",
+          title: "Dr. Roe History and Physical",
+          date: "06/18/2026",
+          injury_date: "01/02/2026",
+        }),
+        method: "llm+embedding",
+        _key: "r-lower",
+      },
+    );
+    expect([merged.start, merged.end, merged._key]).toEqual([1, 5, "r-upper"]);
+    expect([merged.category, merged.title, merged.date, merged.injury_date, merged.method]).toEqual(
+      ["1", "Dr. Roe History and Physical", "06/18/2026", "01/02/2026", "llm+embedding"],
+    );
+    // A work status takes its visit's identity the same way, whatever category it was filed in.
+    const slip = mergeRows(
+      r({ category: "100", title: "Work Status Report" }),
+      r({ category: "5", title: "Physical Therapy Note" }),
+    );
+    expect([slip.category, slip.title]).toEqual(["5", "Physical Therapy Note"]);
+  });
+
+  it("keeps the upper row's identity for every other merge", () => {
+    // The visit above its own RFA, an RFA above another RFA, an RFA above a diagnostic study, and
+    // orders (category 10 not titled as an RFA) above a visit: "this continues the document above".
+    const rfa = r({ category: "10", title: "Request for Authorization" });
+    const visit = r({ category: "1", title: "PR-2 Progress Report" });
+    expect(mergeRows(visit, rfa).category).toBe("1");
+    expect(mergeRows(rfa, rfa).category).toBe("10");
+    expect(mergeRows(rfa, r({ category: "3", title: "MRI Lumbar Spine" })).category).toBe("10");
+    expect(mergeRows(r({ category: "10", title: "Orders" }), visit).category).toBe("10");
+    expect(mergeRows(r({ category: "3", title: "Work Status" }), visit).category).toBe("3");
+  });
+});
+
+describe("joinsAVisit", () => {
+  it("names an RFA titled as one in category 10 and a work status in any category", () => {
+    const at = (category: string, title: string) => joinsAVisit({ ...row(1, 1), category, title });
+    expect(at("10", "Dr. Roe REQUEST FOR AUTHORIZATION")).toBe(true);
+    expect(at("10", "RFA")).toBe(true);
+    expect(at("1", "Work Activity Status Report")).toBe(true);
+    expect(at("100", "Return to Work Slip")).toBe(true);
+    expect(at("1", "Request for Authorization")).toBe(false); // an RFA joins only in category 10
+    expect(at("10", "Orders")).toBe(false);
+    expect(at("3", "Work Status")).toBe(false); // a diagnostic study never joins
+    expect(at("1", "PR-2 Progress Report")).toBe(false);
   });
 });
 

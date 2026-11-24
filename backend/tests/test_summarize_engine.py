@@ -5549,6 +5549,20 @@ def test_on_a_marked_record_a_date_without_a_progress_note_is_headed_by_its_firs
     assert [e["summaryTitle"] for e in out] == [_KAISER_THERAPY]
 
 
+def test_on_a_marked_record_a_work_status_filed_1_does_not_head_its_date():
+    """DEMONSTRATES 2026-11-24: a work status filed as a progress note is still the form, so the
+    date's report heads the entry and leads its body even when the work status comes first."""
+    work_status = "JANE ROE, M.D. KAISER PERMANENTE. WORK STATUS REPORT"
+    entries = [
+        _entry(work_status, "**Work Status**: Modified duty."),
+        _entry(_KAISER_NOTE, "**Diagnoses**: strain. **Plan**: Rest and return in two weeks."),
+    ]
+    out = se.fold_record_entries(entries, ["1", "1"], "summaryTitle", by_date=True)
+    assert [e["summaryTitle"] for e in out] == [_KAISER_NOTE]
+    assert out[0]["summaryText"].startswith("**Diagnoses**: strain.")
+    assert "**Work Status**: Modified duty." in out[0]["summaryText"]
+
+
 def test_on_a_marked_record_diagnostics_and_labs_keep_their_own_entries():
     """GUARD: "The exception would be for diagnostics" - a study never joins the date's entry, and a
     lab joins only the date's other labs, as on every record."""

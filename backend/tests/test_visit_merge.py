@@ -52,10 +52,9 @@ _LAB = _row(3, 3, "14", "LABORATORY REPORT")
         (_THERAPY, _THERAPY_2),  # one therapy visit cut in two
         (_PR2, _RFA),  # the visit's RFA
         (_PR2, _SLIP_100),  # the visit's work status, whatever its category
-        (_row(1, 1, "10", "REQUEST FOR AUTHORIZATION"), _row(2, 3)),  # the RFA first
         (_THERAPY, _row(2, 2, "1", "WORK STATUS")),  # a work status filed 1 joins a therapy visit
     ],
-    ids=["pr2+pr2", "5+5", "pr2+rfa", "pr2+work status", "rfa+pr2", "5+work status"],
+    ids=["pr2+pr2", "5+5", "pr2+rfa", "pr2+work status", "5+work status"],
 )
 def test_a_same_date_visit_pair_is_a_candidate(prev, row):
     """DEMONSTRATES which boundaries are asked about: two visit documents of one category, or a
@@ -123,19 +122,53 @@ def test_a_confirmed_pair_becomes_one_row_with_the_visits_identity(monkeypatch):
     assert merged["flag"] == "x"
 
 
-def test_when_the_rfa_comes_first_the_visit_still_gives_the_row_its_identity(monkeypatch):
-    """DEMONSTRATES: the row starts where the RFA starts, but is the PR-2."""
-    same, _ = _answering(2)
+@pytest.mark.parametrize(
+    "form",
+    [_row(1, 1, "10", "REQUEST FOR AUTHORIZATION"), _row(1, 1, "100", "WORK STATUS REPORT")],
+    ids=["rfa", "work status"],
+)
+def test_an_rfa_or_work_status_before_its_visit_stays_its_own_row(monkeypatch, form):
+    """DEMONSTRATES 2026-11-24: a row that opened on the RFA form was summarized as the form, so a
+    form BEFORE its visit is never asked about and never merged; the export fold joins the two."""
+    same, asked = _answering(2)
     monkeypatch.setattr(visit_merge, "_same_author", same)
-    rows = [_row(1, 1, "10", "REQUEST FOR AUTHORIZATION", suggest_merge=True), _row(2, 3)]
+    rows = [form, _row(2, 3)]
+
+    out, stats = visit_merge.merge_visit_pieces("/x.pdf", rows)
+
+    assert asked == []
+    assert stats == {"candidates": 0, "merged": 0}
+    assert [(r["start"], r["end"], r["category"]) for r in out] == [
+        (1, 1, form["category"]),
+        (2, 3, "1"),
+    ]
+
+
+def test_a_form_between_two_pieces_of_one_visit_still_joins_them(monkeypatch):
+    """GUARD: the rule is about the row's FIRST piece - a PR-2 cut around its own RFA page is one
+    row again, opening on the PR-2."""
+    same, asked = _answering(3, 4)
+    monkeypatch.setattr(visit_merge, "_same_author", same)
+    rows = [_PR2, _row(3, 3, "10", "REQUEST FOR AUTHORIZATION"), _row(4, 5)]
 
     out, _ = visit_merge.merge_visit_pieces("/x.pdf", rows)
 
+    assert sorted(asked) == [3, 4]
     assert [(r["start"], r["end"], r["category"], r["title"]) for r in out] == [
-        (1, 3, "1", "PR-2 PROGRESS REPORT")
+        (1, 5, "1", "PR-2 PROGRESS REPORT")
     ]
-    # The first piece's hint is about the boundary ABOVE the merged row, so it is the one kept.
-    assert out[0]["suggest_merge"] is True
+
+
+def test_a_merge_never_lands_on_a_lone_form(monkeypatch):
+    """GUARD: the check above the form said no, so a yes below it would open the row on the form;
+    the boundary keeps its split."""
+    same, _ = _answering(4)
+    monkeypatch.setattr(visit_merge, "_same_author", same)
+    rows = [_PR2, _row(3, 3, "100", "WORK STATUS REPORT"), _row(4, 5)]
+
+    out, _ = visit_merge.merge_visit_pieces("/x.pdf", rows)
+
+    assert [(r["start"], r["end"]) for r in out] == [(1, 2), (3, 3), (4, 5)]
 
 
 def test_a_run_of_confirmed_pieces_collapses_into_one_row_and_the_rest_stay(monkeypatch):
@@ -387,6 +420,25 @@ def test_the_visit_merge_does_not_ask_about_a_pr4(prev, row):
     a PR-4, so the PR-4 pairs are hints only."""
     assert visit_merge.candidate_indices([dict(prev), dict(row)]) == []
     assert visit_merge.hint_candidate_indices([dict(prev), dict(row)]) == [1]
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        # the RFA before the PR-2: no hint, it would open the row on the form
+        ([_row(1, 1, "10", "REQUEST FOR AUTHORIZATION"), _row(2, 3)], [False, False]),
+        # a work status before the PR-4: the same
+        ([_row(1, 1, "100", "WORK STATUS REPORT"), _PR4_PAGE], [False, False]),
+        # a PR-2, its RFA page, the PR-2's next page: both boundaries, the row opens on the PR-2
+        ([_PR2, _RFA, _row(4, 5)], [False, True, True]),
+    ],
+    ids=["rfa+pr2", "work status+pr4", "pr2+rfa+pr2"],
+)
+def test_no_hint_opens_a_row_on_an_rfa_or_a_work_status(rows, expected):
+    """DEMONSTRATES 2026-11-24: a hint below a form is given only when the form is hinted into the
+    visit above it - applying the hints never makes a row that opens on the form."""
+    out, _ = visit_merge.hint_visit_pieces([dict(r) for r in rows])
+    assert [bool(r.get("suggest_merge")) for r in out] == expected
 
 
 def test_a_boundary_the_verify_pass_already_hinted_is_not_counted_twice():

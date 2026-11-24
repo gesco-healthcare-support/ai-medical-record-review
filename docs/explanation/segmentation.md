@@ -371,8 +371,11 @@ The engine logs `verify pass: {'suspects': n, 'suggested': k}` for every run.
   (`visit_merge.hint_visit_pieces()`, logged as `visit merge hints: m`). The pieces are the visit
   merge's candidates (described below) plus a PR-4's (`visit_merge.hint_candidate_indices()`): a
   category 2 row next to a 1 or another 2 of the same date, or next to an RFA or a work status.
-  Not 1 | 5 or 2 | 5, which reviewers join 9-26% of the time, and not two rows of category 8, 9,
-  10, 13, 14 or 15, where Gemini's drafts and ours disagree or the rate is low. Measured on the
+  A boundary below an RFA or a work status is hinted only when that row is itself hinted into the
+  visit above it, so applying the hints never makes a row that opens on the form (see "A merged row
+  never opens on an RFA or a work status" below). Not 1 | 5 or 2 | 5, which reviewers join
+  9-26% of the time, and not two rows of category 8, 9, 10, 13, 14 or 15, where Gemini's drafts
+  and ours disagree or the rate is low. Measured on the
   reviewers' finished records, the PR-4 pairs added 179 hints on Gemini's drafts (283 records),
   134 of them joined (75%, against 77% for the visit rule on the same records), and 29 on our
   model's (21 records), 19 joined (66%, against 93%). Not when `merge_visit_pieces` is on, which
@@ -465,6 +468,22 @@ names a work status, whatever its category. The title patterns are the export fo
 diagnostic study (category 3), never two dates, and never a category-1 row next to a category-5 row:
 the fold leaves that pair apart too, since nothing has measured how often it is one visit.
 
+**A merged row never opens on an RFA or a work status (`_runs_start_with_a_visit()`).** A boundary
+whose upper row is an RFA or a work status is a candidate only when that row is itself a candidate
+with the visit above it - a PR-2 cut around its own RFA page is still one row, opening on the PR-2.
+An RFA or a work status BEFORE its visit stays its own row; the export fold still puts it into that
+visit's entry with the report leading. The senior reviewer, 2026-11-24, on our model: an RFA and the
+History and Physical after it, one date, merged into one category-1 row, "would only summarize it as
+a Category 10" until he split them, and "Usually it would correctly summarize it as a Category 1".
+A summary reads the row's pages in order, and the category 1 prompt lists a Request for
+Authorization among its document types, so a row that opens on the form is summarized as the form.
+On Gemini the body was right, but the summary's title is read from the first page: measured
+read-only on the live box the same day (795 records), the title named the work status or the RFA on
+111 of 296 visit rows that open on one, against 41 of 547 that open on the visit, and reviewers
+retitled 44% against 22%. The same rule holds for the merge below, the automatic merge and the
+hints. A hand merge in the workbench makes such a pair the visit's row as well
+([The review workbench](frontend-workbench.md)).
+
 **The check (`_same_author()`).** One `verify`-stage call per candidate, through the provider seam:
 the first and last page of each row as images, then the rows' metadata and the question whether the
 same doctor or provider wrote or signed both. The same clinic, date or form is not enough. Only an
@@ -491,12 +510,14 @@ lot of time." It cannot be on together with `merge_visit_pieces`; the app refuse
 **What it merges (`auto_merge_runs()`).** The candidates above, chained into runs, never a PR-4
 pair or a deposition's paperwork (those stay hints). A run never holds a category-1 visit and a
 category-5 visit: a work status or an RFA between the two goes with the category-1 side, the export
-fold's order, so `1 | work status | 5` becomes `1+work status`, `5`, and `5 | work status | 1`
-becomes `5`, `work status+1`. On the live copy reviewers kept the therapy note apart in 5 of 10 such
-runs. The merged row is built like the model-checked merge's: the visit document's category, title
-and classification, the first piece's start and merge hint, the last piece's end, flag `x` when any
-piece had it. The worker logs `auto visit merge: {'runs': n, 'merged': k}` and one line per run
-with its pages and number of pieces.
+fold's order, and only after it, since a run starts with a visit document. So `1 | work status | 5`
+becomes `1+work status`, `5`, and `5 | work status | 1` becomes `5`, `work status`, `1`; the fold
+still puts that work status with the category-1 visit. On the live copy reviewers kept the therapy
+note apart in 5 of 10 such runs. The merged row is built like the model-checked merge's: the
+visit document's category, title and classification, the first piece's start and merge hint, the
+last piece's end, flag `x` when any piece had it. The worker logs
+`auto visit merge: {'runs': n, 'merged': k}` and one line per run with its pages and number of
+pieces.
 
 **Only the reviewer's copy.** `review_rows` get the merged rows; `segment_rows` keep every piece,
 so every measurement of the draft stays a measurement of the machine, and nothing has to be stored
