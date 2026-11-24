@@ -18,8 +18,10 @@ export function isPageCount(value: string): boolean {
 }
 
 /** The record's billing sheet, as GET/PUT /api/documents/{id}/billing answer it: what was typed
- *  (empty for unset), the counts worked out from the record (`counted`, null while `pages_unread`
- *  of its `pages_counted` pages wait to be read), the counts typed over them, and the doctors. */
+ *  (empty for unset), the counts worked out from the record (`counted`: the office count, and the
+ *  deposition pages - null while `pages_unread` of its `pages_counted` pages wait to be read; an
+ *  older server sent `counted: null` until every page was read), the counts typed over them, and
+ *  the doctors. */
 export type BillingSheet = {
   visit_type: string;
   appointment_date: string;
@@ -34,7 +36,7 @@ export type BillingSheet = {
   received_on: string;
   office_count: number | "";
   depo_pages: number | "";
-  counted: { office: number; depo: number } | null;
+  counted: { office: number; depo: number | null } | null;
   pages_counted: number;
   pages_unread: number;
   doctors: string[];
@@ -128,16 +130,16 @@ export function editValid(edit: BillingSheetEdit): boolean {
   );
 }
 
-/** The counts the sheet will print: a typed count, else the worked-out one, else none (pages are
- *  still being read). */
+/** The counts the sheet will print: a typed count, else the worked-out one, else none - printed
+ *  blank (the deposition pages while the record's pages are still being read). */
 export function shownCounts(sheet: BillingSheet): { office: number | null; depo: number | null } {
   const office = sheet.office_count === "" ? (sheet.counted?.office ?? null) : sheet.office_count;
   const depo = sheet.depo_pages === "" ? (sheet.counted?.depo ?? null) : sheet.depo_pages;
   return { office, depo };
 }
 
-/** Whether the sheet can be downloaded: both of its counts are known. */
-export function canDownload(sheet: BillingSheet): boolean {
-  const { office, depo } = shownCounts(sheet);
-  return office !== null && depo !== null;
+/** Whether the sheet as printed now would leave the deposition pages blank: neither typed nor
+ *  worked out yet. The sheet still downloads; this only says so. */
+export function depoPending(sheet: BillingSheet): boolean {
+  return shownCounts(sheet).depo === null;
 }

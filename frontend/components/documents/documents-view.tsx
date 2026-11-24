@@ -12,7 +12,8 @@ import {
 } from "@/hooks/use-documents";
 import { useAccounts } from "@/hooks/use-admin";
 import { useCurrentUser } from "@/hooks/use-current-user";
-import { downloadRawPdf, rawPdfWait } from "@/lib/documents-api";
+import { depoPending } from "@/lib/billing-sheet";
+import { downloadRawPdf, getBillingSheet } from "@/lib/documents-api";
 import { humanizeError, isDuplicateRecord } from "@/lib/errors";
 import { otherRecordsLine, patientIdFromFilename } from "@/lib/patient-id";
 import type { AdminAccount, DocumentListItem } from "@/lib/types";
@@ -413,27 +414,25 @@ export function DocumentsView() {
     }
   }
 
-  /** "Download raw PDF": a record put together from received files starts with its billing
-   *  sheet, which waits for the record's pages to be read - say so instead of handing the
-   *  browser a download that fails. */
+  /** "Download raw PDF", at once. A record put together from received files starts with its
+   *  billing sheet as it stands; when its deposition pages are not known yet (the record's pages
+   *  still being read), say that box prints blank. */
   async function downloadRaw(doc: DocumentListItem) {
-    let wait: { read: number; total: number } | null;
-    try {
-      wait = await rawPdfWait(doc);
-    } catch (err) {
-      toast.error(errMessage(err, "Could not download the raw PDF."));
-      return;
-    }
-    if (wait) {
-      toast.error(
-        `The record's pages are still being read (${wait.read} of ${wait.total}). Its raw PDF ` +
-          "starts with the billing sheet - try again in a few minutes, or type both counts on " +
-          "the billing sheet.",
-      );
-      return;
-    }
-    if (doc.received_on) toast("Putting the billing sheet on top of the raw PDF.");
     downloadRawPdf(doc.id);
+    if (!doc.received_on) return;
+    toast("Putting the billing sheet on top of the raw PDF.");
+    let pending: boolean;
+    try {
+      pending = depoPending(await getBillingSheet(doc.id));
+    } catch {
+      return; // the note only; the download goes on regardless
+    }
+    if (pending) {
+      toast(
+        "The deposition pages on its billing sheet are blank: the record's pages are still being " +
+          "read. Type them on the billing sheet, or download again later.",
+      );
+    }
   }
 
   function toggleCompleted(doc: DocumentListItem) {

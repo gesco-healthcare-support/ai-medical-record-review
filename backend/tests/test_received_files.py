@@ -11,6 +11,7 @@ import hashlib
 import io
 import logging
 import os
+import threading
 import time
 from datetime import date
 from pathlib import Path
@@ -784,6 +785,57 @@ def test_a_long_page_is_cut_before_it_is_sent(monkeypatch):
     received_files.read_kind("x" * 20000, 1)
     sent = model.calls[0]["parts"][0].text
     assert sent.count("x") == received_files._KIND_TEXT_CHARS
+
+
+def test_a_slow_model_leaves_the_rules_and_a_flag_without_holding_the_file(monkeypatch, caplog):
+    """DEMONSTRATES: a model server that is slow or out of reach no longer holds a file at
+    "Reading" - and the record from being put together - while its call retries. Past the wait the
+    keyword rules guess and the file is flagged; the call is left to end on its own thread."""
+    answered = threading.Event()
+
+    class Slow:
+        def generate_structured(self, **kwargs):
+            answered.wait(5)
+            return SimpleNamespace(text='{"kind": "email", "certain": true}')
+
+    monkeypatch.setattr(received_files, "provider_for_stage", lambda stage: Slow())
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING):
+        reading = received_files.read_kind("PROOF OF SERVICE\nI served", 1, wait=0.2)
+    took = time.monotonic() - started
+    answered.set()
+
+    assert reading == received_files.KindReading("proof_of_service", True, "rules")
+    assert took < 2
+    assert "within" in caplog.text
+    assert "PROOF" not in caplog.text
+
+
+def test_with_every_kind_call_still_running_the_rules_answer_at_once(monkeypatch):
+    """GUARD: with the model server stalled every place is held by a call still running; a new file
+    goes straight to the rules instead of waiting its full time too, and asks no model."""
+    model = _answering(monkeypatch, '{"kind": "email", "certain": true}')
+    monkeypatch.setattr(received_files, "_kind_places", threading.BoundedSemaphore(1))
+    received_files._kind_places.acquire()
+    started = time.monotonic()
+
+    reading = received_files.read_kind("PROOF OF SERVICE\nI served", 1, wait=5)
+
+    assert reading == received_files.KindReading("proof_of_service", True, "rules")
+    assert time.monotonic() - started < 1
+    assert model.calls == []
+
+
+def test_a_finished_kind_call_gives_its_place_back(monkeypatch):
+    """GUARD: places are given back as calls end, so a quiet hour never leaves the model unasked."""
+    _answering(monkeypatch, '{"kind": "email", "certain": true}')
+    monkeypatch.setattr(received_files, "_kind_places", threading.BoundedSemaphore(1))
+
+    first = received_files.read_kind("From: a\nSent: b\nSubject: c", 1)
+    time.sleep(0.05)  # the done callback runs on the pool's thread
+    second = received_files.read_kind("From: a\nSent: b\nSubject: c", 1)
+
+    assert first.source == second.source == "model"
 
 
 async def test_staging_answers_the_models_kind_its_flag_and_the_files_fingerprint(

@@ -257,6 +257,47 @@ describe("ReceivedFilesDialog reading the files", () => {
     ).toBeInTheDocument();
   });
 
+  it("sends three files at a time, the next as soon as one is read", async () => {
+    // One at a time, each file waiting for its first page to be read, ten files took minutes.
+    const waits = [deferredStage(), deferredStage(), deferredStage(), deferredStage()];
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf"), pdf("d.pdf"), pdf("e.pdf")]);
+
+    await waitFor(() => expect(stage).toHaveBeenCalledTimes(3));
+    const sent = () => stage.mock.calls.map(([file]) => (file as File).name);
+    expect(sent()).toEqual(["a.pdf", "b.pdf", "c.pdf"]);
+
+    await act(async () => waits[1].answer({ token: "tb", pages: 2, kind: "records" }));
+    await waitFor(() => expect(stage).toHaveBeenCalledTimes(4));
+    expect(sent()[3]).toBe("d.pdf");
+
+    await act(async () => {
+      waits[0].answer({ token: "ta", pages: 2, kind: "records" });
+      waits[2].answer({ token: "tc", pages: 2, kind: "records" });
+      waits[3].answer({ token: "td", pages: 2, kind: "records" });
+    });
+    await allRead(5);
+    expect(sent()).toEqual(["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf"]);
+  });
+
+  it("never sends a file removed before its turn", async () => {
+    const user = userEvent.setup();
+    const waits = [deferredStage(), deferredStage(), deferredStage()];
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf"), pdf("d.pdf")]);
+    await waitFor(() => expect(stage).toHaveBeenCalledTimes(3));
+
+    await user.click(screen.getByRole("button", { name: "Remove d.pdf" }));
+    await act(async () => waits[0].answer({ token: "ta", pages: 2, kind: "records" }));
+
+    expect(stage).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      waits[1].answer({ token: "tb", pages: 2, kind: "records" });
+      waits[2].answer({ token: "tc", pages: 2, kind: "records" });
+    });
+    expect(stage).toHaveBeenCalledTimes(3);
+  });
+
   it("drops on the server a file removed while it was still being read", async () => {
     const user = userEvent.setup();
     const slow = deferredStage();
