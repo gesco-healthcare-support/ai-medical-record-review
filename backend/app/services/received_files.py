@@ -43,7 +43,9 @@ import logging
 import os
 import re
 import secrets
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -419,6 +421,18 @@ _KIND_SCHEMA = {
 }
 # A first page rarely holds more; a page of OCR noise is cut here rather than sent whole.
 _KIND_TEXT_CHARS = 6000
+# The longest a file waits for the model to say what it is. A first page is read in a second or
+# two, but a model server that is slow or out of reach would hold the file at "Reading" while the
+# call retries (a Gemini call may retry for minutes, a vLLM read waits up to ten) - and the record
+# cannot be put together until every file is read. Past this the keyword rules guess and the file
+# is flagged; the uploader confirms every file anyway.
+KIND_WAIT_SECONDS = 15.0
+# At most this many such calls at once. A call still running past the wait keeps its place until it
+# ends, so with every place taken - the model server stalled - a file goes to the rules at once
+# instead of waiting its full time too.
+_KIND_CALLS = 4
+_kind_places = threading.BoundedSemaphore(_KIND_CALLS)
+_kind_pool = ThreadPoolExecutor(max_workers=_KIND_CALLS, thread_name_prefix="received-kind")
 
 
 @dataclass(frozen=True)
@@ -432,38 +446,62 @@ class KindReading:
     source: str
 
 
-def read_kind(page_text: str, pages: int) -> KindReading:
+def read_kind(page_text: str, pages: int, *, wait: float = KIND_WAIT_SECONDS) -> KindReading:
     """What kind of file a first page of ``page_text`` opens, read by the ``extract`` stage's model.
 
     The same seam, routing and model as the header read (``services/extraction.py``), which reads
-    these same front pages. Never raises: with no text, or no usable answer (the model server off,
-    a refusal, a reply outside the kinds), the keyword rules guess and the file is flagged."""
+    these same front pages. Never raises, and never waits longer than ``wait`` seconds: with no
+    text, or no usable answer in time (the model server off, slow or busy, a refusal, a reply
+    outside the kinds), the keyword rules guess and the file is flagged."""
     if not page_text.strip():
         return KindReading("records", True, "none")
-    try:
-        # BOTH halves resolve through `extract`, as in extraction.py: a bare get_provider() would
-        # take the transport from the summarize stage while the model came from this one.
-        response = provider_for_stage("extract").generate_structured(
-            model=get_settings().model_for_stage("extract"),
-            system=_KIND_SYSTEM,
-            parts=[
-                TextPart(
-                    f"This file has {pages} page(s). Its first page reads:\n\n"
-                    + page_text[:_KIND_TEXT_CHARS]
-                )
-            ],
-            schema=_KIND_SCHEMA,
-            temperature=0.0,
-            stage="extract",
-        )
-        answer = json.loads(response.text or "{}")
-    except Exception as exc:  # noqa: BLE001 - any failure leaves the rules and a flag
-        logger.warning("received file: the model gave no kind (%s)", type(exc).__name__)
-        answer = {}
-    kind = answer.get("kind") if isinstance(answer, dict) else None
+    answer = _model_kind(page_text, pages, wait)
+    kind = answer.get("kind")
     if kind in KINDS:
         return KindReading(kind, answer.get("certain") is not True, "model")
     return KindReading(guess_kind(page_text, pages), True, "rules")
+
+
+def _model_kind(page_text: str, pages: int, wait: float) -> dict:
+    """The model's answer as a dict, or an empty one when there is none within ``wait`` seconds.
+    The call runs on its own thread, so a slow one is left to finish there while the file moves
+    on; it keeps its place among ``_KIND_CALLS`` until it ends."""
+    if not _kind_places.acquire(blocking=False):
+        logger.warning("received file: every kind call is still running; the rules guess")
+        return {}
+    try:
+        future = _kind_pool.submit(_ask_model, page_text, pages)
+    except RuntimeError:
+        _kind_places.release()
+        return {}
+    future.add_done_callback(lambda _done: _kind_places.release())
+    try:
+        return future.result(timeout=wait)
+    except TimeoutError:
+        logger.warning("received file: the model gave no kind within %s s", wait)
+    except Exception as exc:  # noqa: BLE001 - any failure leaves the rules and a flag
+        logger.warning("received file: the model gave no kind (%s)", type(exc).__name__)
+    return {}
+
+
+def _ask_model(page_text: str, pages: int) -> dict:
+    # BOTH halves resolve through `extract`, as in extraction.py: a bare get_provider() would take
+    # the transport from the summarize stage while the model came from this one.
+    response = provider_for_stage("extract").generate_structured(
+        model=get_settings().model_for_stage("extract"),
+        system=_KIND_SYSTEM,
+        parts=[
+            TextPart(
+                f"This file has {pages} page(s). Its first page reads:\n\n"
+                + page_text[:_KIND_TEXT_CHARS]
+            )
+        ],
+        schema=_KIND_SCHEMA,
+        temperature=0.0,
+        stage="extract",
+    )
+    answer = json.loads(response.text or "{}")
+    return answer if isinstance(answer, dict) else {}
 
 
 # --- joining --------------------------------------------------------------------------------------

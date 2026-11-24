@@ -86,24 +86,43 @@ describe("BillingSheetDialog", () => {
     expect(button("Download PDF")).toBeEnabled();
   });
 
-  it("says the pages are still being read, and holds the download until they are", () => {
-    show({ counted: null, pages_unread: 10 });
+  it("downloads at once while the pages are read, saying the deposition pages are blank", async () => {
+    const user = userEvent.setup();
+    show({ counted: { office: 42, depo: null }, pages_unread: 10 });
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Reading the record's pages: 32 of 42 read.",
+      "Office count 42. The deposition pages are worked out once the record's pages are read " +
+        "(32 of 42 read). Until then that box prints blank",
     );
-    expect(screen.getByLabelText("Office count")).toHaveAttribute(
+    expect(screen.getByLabelText("Office count")).toHaveAttribute("placeholder", "42");
+    expect(screen.getByLabelText("Deposition pages")).toHaveAttribute(
       "placeholder",
-      "Worked out once read",
+      "Not known yet",
     );
-    expect(button("Download PDF")).toBeDisabled();
-    expect(button("Download PDF")).toHaveAttribute("title", "Ready once every page is read.");
+    expect(button("Download PDF")).toHaveAttribute(
+      "title",
+      "The deposition pages print blank until they are known.",
+    );
+    await user.click(button("Download PDF"));
+
+    expect(download).toHaveBeenCalledWith("d1");
   });
 
-  it("downloads once the counts are typed, even while the pages are read", () => {
-    show({ counted: null, pages_unread: 10, office_count: 40, depo_pages: 0 });
+  it("from an older server, still downloads while the pages are read", () => {
+    show({ counted: null, pages_unread: 10 });
+
+    expect(screen.getByLabelText("Office count")).toHaveAttribute(
+      "placeholder",
+      "Not worked out yet",
+    );
+    expect(button("Download PDF")).toBeEnabled();
+  });
+
+  it("has no note on the download once the deposition pages are typed", () => {
+    show({ counted: { office: 42, depo: null }, pages_unread: 10, depo_pages: 0 });
 
     expect(button("Download PDF")).toBeEnabled();
+    expect(button("Download PDF")).not.toHaveAttribute("title");
   });
 
   it("downloads the sheet's PDF", async () => {

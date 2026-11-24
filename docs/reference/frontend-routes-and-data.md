@@ -87,9 +87,8 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | `listDoctors()` | `GET /documents/combine/doctors` | - | `{doctors}` | `useDoctors()` in `ReceivedFilesDialog` (the Doctor list), fetched once while the dialog is open |
 | `getBillingSheet()` | `GET /documents/{id}/billing` | - | the billing sheet | `useBillingSheet()` in `BillingSheetDialog`; read again every 5 seconds while `pages_unread` is above 0 |
 | `saveBillingSheet()` | `PUT /documents/{id}/billing` | `BillingSheetEdit` (every field as typed) | the billing sheet | `useSaveBillingSheet()` in `BillingSheetDialog` (the answer replaces the cached sheet) |
-| `downloadBillingSheet()` | `GET /documents/{id}/billing-sheet` (`billingSheetUrl()`) | - | the one-page PDF as an attachment, saved by the browser's download manager from a plain link | "Download PDF" in `BillingSheetDialog`, offered once both counts are known and nothing is unsaved |
-| `downloadRawPdf()` | `GET /documents/{id}/raw` (`rawPdfUrl()`) | - | the record's PDF as an attachment - for a record put together from received files, with its billing sheet as page 1 - saved by the browser's download manager from a plain link | "Download raw PDF" in each record's row menu (`DocumentsTable`, through `DocumentsView`'s `downloadRaw`) |
-| `rawPdfWait()` | `GET /documents/{id}/billing` (`getBillingSheet()`), only for a record with `received_on` | - | `null` when the raw PDF can be downloaded now, else `{read, total}`: how many of the sheet's counted pages are read (`canDownload` in `frontend/lib/billing-sheet.ts`) | `DocumentsView` before "Download raw PDF": while pages are read it says so in a toast (`The record's pages are still being read (<read> of <total>). Its raw PDF starts with the billing sheet - try again in a few minutes, or type both counts on the billing sheet.`) and downloads nothing; a record uploaded as one PDF asks nothing |
+| `downloadBillingSheet()` | `GET /documents/{id}/billing-sheet` (`billingSheetUrl()`) | - | the one-page PDF as an attachment, saved by the browser's download manager from a plain link | "Download PDF" in `BillingSheetDialog`, offered whenever nothing is unsaved; a deposition count not known yet prints blank (`depoPending` in `frontend/lib/billing-sheet.ts`) |
+| `downloadRawPdf()` | `GET /documents/{id}/raw` (`rawPdfUrl()`) | - | the record's PDF as an attachment - for a record put together from received files, with its billing sheet as page 1 - saved by the browser's download manager from a plain link | "Download raw PDF" in each record's row menu (`DocumentsTable`, through `DocumentsView`'s `downloadRaw`), handed to the browser at once; for a record with `received_on`, `getBillingSheet()` follows and a toast says when the sheet's deposition pages print blank (`The deposition pages on its billing sheet are blank: the record's pages are still being read. Type them on the billing sheet, or download again later.`) |
 | `setCompleted()` | `PUT /documents/{id}/completed` | `{completed}` | Document listing | `useSetCompleted()` in `DocumentsView` (the list is patched at once, then read again) |
 | `setPatientId()` | `PUT /documents/{id}/patient-id` | `{patient_id}` | Document listing plus `patient_records` | `PatientIdLine` on the workbench (saves on Enter or when the box loses focus) |
 | `deleteDocument()` | `DELETE /documents/{id}` | - | `{ok}` | `useDeleteDocument()` in `DocumentsView` |
@@ -335,9 +334,10 @@ dialog stays inside the window and its Cancel and Combine & upload buttons stay 
 images (JPG, PNG, TIFF), which the server turns into PDF pages; anything else (a Word or Outlook
 file) is refused with a message saying to save it as PDF first (`isAcceptedFile` in
 `frontend/lib/received-files.ts`). Each
-file is sent on its own as soon as it is added (`stageReceivedFile`, one at a time, so the proxy's
-upload limit applies to each file rather than to the whole record); the server counts its pages and
-the model reads its first page to say what it is. Until it answers the file's row says
+file is sent on its own as soon as it is added (`stageReceivedFile`, three at a time -
+`STAGE_AT_ONCE` - so the proxy's upload limit applies to each file rather than to the whole
+record); the server counts its pages and the model reads its first page to say what it is,
+giving up after 15 seconds (the keyword rules then guess and the file is marked for a look). Until it answers the file's row says
 "Reading..."; then it shows the file's pages, or why the file was refused, with "Try again". A
 refused file, or a file that is the same file as one above it ("Same file as ..."), must be removed
 before the record can be sent. A file's kind is the server's reading; the name is used only when an
@@ -354,16 +354,17 @@ file moves to its place) and a file moved up or down by hand; the server joins t
 listed. Removing a file, or closing the dialog without making a record, deletes the staged file on
 the server. "Download raw PDF" in a record's row menu
 saves the record's PDF as it was uploaded - for such a record, the joined file with its billing
-sheet on top as page 1 - for the office's backup. The sheet needs the record's pages read: until
-they are, the menu says how far the reading is and downloads nothing.
+sheet on top as page 1 - for the office's backup. It downloads at once; while the record's pages
+are still being read the sheet's deposition pages print blank, and a toast says so.
 
 "Billing sheet" in the row menu of such a record (one with `received_on`) opens `BillingSheetDialog`
 (`billing-sheet-dialog.tsx`): the office's billing sheet - the fields typed at upload, editable,
 who sent the records, the office count and the deposition pages worked out from the record, a count
 typed over either (blank goes back to the worked-out one), and the reason the counts differ, with a
 note when the declared page count and the office count differ. While the record's pages are still
-being read it says how many are read and reads the sheet again every 5 seconds; "Download PDF"
-waits until both counts are known and nothing is left unsaved. Its body scrolls under a fixed
+being read it shows the office count, says the deposition pages are worked out once the pages
+are read and print blank until then, and reads the sheet again every 5 seconds; "Download PDF"
+works whenever nothing is left unsaved. Its body scrolls under a fixed
 footer, like the upload's. While either dialog is open, a file dropped on the records page around
 it uploads nothing.
 

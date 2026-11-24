@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pymupdf
 import pytest
+from redis.exceptions import RedisError
 from rq import Queue
 from sqlalchemy import select
 
@@ -21,7 +22,7 @@ from app.services import billing_sheet, received_files
 from app.services.reporting import DOCTOR_FONTS, DOCTOR_NAMES, DOCTORS
 from app.worker.queues import OCR_QUEUE, get_redis
 from tests.conftest import lanes
-from tests.test_received_files import _FIELDS, _combine, _document, _login, _user
+from tests.test_received_files import _FIELDS, _combine, _document, _login, _pdf, _user
 
 
 @pytest.fixture(autouse=True)
@@ -170,8 +171,14 @@ def test_testimony_inside_the_email_is_not_counted():
     assert counts == billing_sheet.Counts(office=3, depo=0)
 
 
-def test_unread_pages_are_counted():
-    assert billing_sheet.unread_pages([1, 2, 3], {1: "", 3: "x"}) == 1
+def test_while_a_page_could_still_be_testimony_the_deposition_pages_are_not_known():
+    """DEMONSTRATES: with scans not read yet the deposition pages are None - never a short count -
+    and the office count stands."""
+    counts = billing_sheet.counts_of(
+        list(range(1, 10)), [3, 4, 5, 6, 7], lambda first, last: False, complete=False
+    )
+
+    assert counts == billing_sheet.Counts(office=9, depo=None)
 
 
 # --- services/billing_sheet.py: what is printed ----------------------------------------------------
@@ -217,6 +224,12 @@ def test_while_the_pages_are_read_the_counts_are_blank():
     sheet = billing_sheet.sheet_for(_doc(), None)
 
     assert (sheet.office_count, sheet.depo_pages) == (None, None)
+
+
+def test_a_deposition_count_not_known_yet_prints_blank_beside_the_office_count():
+    sheet = billing_sheet.sheet_for(_doc(), billing_sheet.Counts(42, None))
+
+    assert (sheet.office_count, sheet.depo_pages) == (42, None)
 
 
 def test_a_supplemental_report_has_supp_for_its_date_of_service():
@@ -564,15 +577,89 @@ async def _record(client, **overrides) -> str:
     return resp.json()["id"]
 
 
-async def test_the_sheet_waits_for_the_pages_to_be_read(client):
+async def test_the_office_count_is_known_at_once_and_the_deposition_pages_when_read(client):
+    """DEMONSTRATES: right after the upload, before any page is read, the sheet has its office
+    count; only the deposition pages wait for the reading, known once the last page is read."""
     doc_id = await _record(client)
+
+    before = (await client.get(f"/api/documents/{doc_id}/billing")).json()
+    _read_pages(doc_id, _SPEC[:4])
+    partway = (await client.get(f"/api/documents/{doc_id}/billing")).json()
+    _read_pages_from(doc_id, 5, _SPEC[4:])
+    after = (await client.get(f"/api/documents/{doc_id}/billing")).json()
+
+    assert before["counted"] == {"office": 5, "depo": None}
+    assert (before["pages_counted"], before["pages_unread"]) == (5, 5)
+    assert before["doctors"] == list(DOCTORS)
+    assert partway["counted"] == {"office": 5, "depo": None}
+    assert partway["pages_unread"] == 2
+    assert after["counted"] == {"office": 5, "depo": 0}
+    assert after["pages_unread"] == 0
+
+
+def _read_pages_from(doc_id: str, first: int, spec: str) -> None:
+    """Store page text from page ``first`` on, as the reading goes on."""
+    with get_sessionmaker()() as session:
+        for page, char in enumerate(spec, start=first):
+            session.add(
+                PageText(
+                    document_id=doc_id, page=page, text=_testimony() if char == "Q" else _PROSE
+                )
+            )
+        session.commit()
+
+
+# Three received files: the email (1 page), the letter (2 pages), and records of 7 pages holding a
+# transcript of five pages of testimony after a cover page.
+_DEPO_FILES = [
+    ("email", _pdf(1, width=111)),
+    ("advocacy_letter", _pdf(2, width=112)),
+    ("records", _pdf(7, width=113)),
+]
+_DEPO_SPEC = "." + ".." + ".QQQQQ."
+
+
+async def test_a_transcripts_condensed_check_is_done_once(client, monkeypatch):
+    """GUARD: the condensed check draws the transcript's first sheets; the dialog reads the sheet
+    every few seconds, so the answer is kept rather than drawn again each time."""
+    _, email = _user()
+    await _login(client, email)
+    resp = await _combine(client, files=_DEPO_FILES, **_BILLING)
+    doc_id = resp.json()["id"]
+    _read_pages(doc_id, _DEPO_SPEC)
+    asked = []
+
+    def condensed(path, first, last, max_sheets=6):
+        asked.append((first, last))
+        return True
+
+    monkeypatch.setattr(billing_sheet, "has_condensed_sheets", condensed)
+
+    first = (await client.get(f"/api/documents/{doc_id}/billing")).json()
+    second = (await client.get(f"/api/documents/{doc_id}/billing")).json()
+
+    assert asked == [(5, 9)]
+    assert first["counted"] == second["counted"] == {"office": 9 + 5 * 3, "depo": 20}
+
+
+async def test_without_redis_the_sheet_is_still_counted(client, monkeypatch):
+    """GUARD: the kept condensed answer is a shortcut only; with Redis out of reach the sheet still
+    answers, checking again."""
+    _, email = _user()
+    await _login(client, email)
+    resp = await _combine(client, files=_DEPO_FILES, **_BILLING)
+    doc_id = resp.json()["id"]
+    _read_pages(doc_id, _DEPO_SPEC)
+
+    def no_redis():
+        raise RedisError("unreachable")
+
+    monkeypatch.setattr(billing_sheet, "get_redis", no_redis)
+    monkeypatch.setattr(billing_sheet, "has_condensed_sheets", lambda *a, **k: False)
 
     got = (await client.get(f"/api/documents/{doc_id}/billing")).json()
 
-    assert got["counted"] is None
-    assert got["pages_counted"] == 5
-    assert got["pages_unread"] == 5
-    assert got["doctors"] == list(DOCTORS)
+    assert got["counted"] == {"office": 9, "depo": 5}
 
 
 async def test_once_read_the_sheet_has_its_counts(client):
@@ -689,15 +776,27 @@ async def test_an_edit_the_sheet_cannot_hold_is_refused_and_nothing_changes(
     assert _document(doc_id).visit_type == "AME"
 
 
-async def test_the_sheet_cannot_be_downloaded_while_pages_are_read(client):
+def _printed(monkeypatch) -> list[billing_sheet.Sheet]:
+    """The sheets the routes draw, as handed to ``render``."""
+    drawn: list[billing_sheet.Sheet] = []
+    real = billing_sheet.render
+    monkeypatch.setattr(billing_sheet, "render", lambda sheet: drawn.append(sheet) or real(sheet))
+    return drawn
+
+
+async def test_the_sheet_downloads_at_once_with_a_deposition_count_not_known_left_blank(
+    client, monkeypatch
+):
+    """DEMONSTRATES: the sheet never waits for the record's pages to be read. While scans are still
+    being read the deposition pages print blank; the office count is printed."""
     doc_id = await _record(client)
+    drawn = _printed(monkeypatch)
 
     resp = await client.get(f"/api/documents/{doc_id}/billing-sheet")
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == (
-        "The record's pages are still being read. The billing sheet can be downloaded once they are."
-    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/pdf"
+    assert (drawn[0].office_count, drawn[0].depo_pages) == (5, None)
 
 
 async def test_both_counts_typed_let_the_sheet_download_before_the_reading_ends(client):
@@ -810,20 +909,22 @@ async def test_the_raw_download_carries_the_sheet_as_it_stands_now(client):
     assert "Synthetic Second Office" in sheet_text
 
 
-async def test_the_raw_download_waits_for_the_pages_to_be_read(client):
-    """DEMONSTRATES: while the sheet's counts wait for the reading, the download is refused with a
-    sentence the reviewer can act on - nothing built, nothing audited."""
+async def test_the_raw_download_never_waits_for_the_pages_to_be_read(client, monkeypatch):
+    """DEMONSTRATES the fix for the uploader's report (2026-11-24): right after the upload, with no
+    page read, the raw PDF downloads with the sheet on top - its deposition pages blank."""
     doc_id = await _record(client)
+    stored_path = _document(doc_id).stored_path
+    with open(stored_path, "rb") as fh:
+        stored = fh.read()
+    drawn = _printed(monkeypatch)
 
     resp = await client.get(f"/api/documents/{doc_id}/raw")
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == (
-        "The record's pages are still being read. Its raw PDF starts with the billing sheet, so it"
-        + " can be downloaded once they are."
-    )
+    assert resp.status_code == 200, resp.text
+    assert resp.content.startswith(stored)
+    assert (drawn[0].office_count, drawn[0].depo_pages) == (5, None)
     assert _built_files() == []
-    assert "download_raw" not in _actions(doc_id)
+    assert "download_raw" in _actions(doc_id)
 
 
 async def test_a_raw_download_that_fails_to_build_leaves_no_file(client, monkeypatch):

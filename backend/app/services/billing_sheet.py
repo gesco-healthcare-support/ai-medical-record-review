@@ -26,6 +26,10 @@ count from the pages alone matched the count inside the reviewers' rows exactly 
 was off by more than 5 pages on 6; 144 pages too many in all (127 of them in 3 transcripts the
 reviewers had not filed as depositions) and 16 too few.
 
+The sheet never waits for that reading (an uploader's report, 2026-11-24: ~10 minutes on 900
+pages). The office count is the pages received, known the moment the record is put together; the
+deposition pages print blank until every counted page has been read (``reading``).
+
 The sheet is never part of the record: Identify, the summaries and their page numbers never see it.
 It is the first page of the record's raw download only (``put_on_top``, the office's ask of
 2026-11-23), built at the moment of the download from the sheet as it stands then.
@@ -36,6 +40,7 @@ Nothing here logs page text, names or any field of the sheet.
 from __future__ import annotations
 
 import io
+import logging
 import os
 import re
 import shutil
@@ -44,11 +49,15 @@ from dataclasses import dataclass
 from datetime import date
 
 import pymupdf
+from redis.exceptions import RedisError
 from sqlalchemy import select
 
 from app.models import Document, PageText
 from app.services.ocr import has_condensed_sheets
 from app.services.reporting import DOCTOR_NAMES
+from app.worker.queues import get_redis
+
+logger = logging.getLogger(__name__)
 
 # The type of visit, in the office's order. A supplemental report has no appointment: its DOS is
 # printed as SUPP too (the office's answer, 2026-11-19).
@@ -94,11 +103,11 @@ _CONDENSED_PAGES = 4
 @dataclass(frozen=True)
 class Counts:
     """The two counts the sheet carries. ``office`` is every page received but the internal email
-    and the envelope, a condensed deposition sheet counting four; ``depo`` the pages of
-    testimony."""
+    and the envelope, a condensed deposition sheet counting four; ``depo`` the pages of testimony,
+    None while some page that could hold testimony has no text yet (a scan not read yet)."""
 
     office: int
-    depo: int
+    depo: int | None
 
 
 def counted_pages(parts: Sequence[Mapping[str, object]] | None, page_count: int) -> list[int]:
@@ -120,10 +129,10 @@ def is_testimony(text: str) -> bool:
     return len(_QA_LINE.findall(text or "")) >= _MIN_QA_LINES
 
 
-def testimony_runs(texts: Mapping[int, str], pages: Iterable[int]) -> list[tuple[int, int]]:
-    """``(first, last)`` page of each transcript's testimony among ``pages``, in page order."""
+def runs_of(testimony: Iterable[int]) -> list[tuple[int, int]]:
+    """``(first, last)`` page of each transcript's testimony, from its pages of testimony."""
     runs: list[list[int]] = []
-    for page in sorted(p for p in pages if is_testimony(texts.get(p, ""))):
+    for page in sorted(set(testimony)):
         if runs and page - runs[-1][1] - 1 <= _RUN_GAP:
             runs[-1][1] = page
             runs[-1][2] += 1
@@ -132,9 +141,31 @@ def testimony_runs(texts: Mapping[int, str], pages: Iterable[int]) -> list[tuple
     return [(first, last) for first, last, found in runs if found >= _MIN_RUN_PAGES]
 
 
-def unread_pages(pages: Iterable[int], texts: Mapping[int, str]) -> int:
-    """How many of ``pages`` have not been read yet (no stored page text at all)."""
-    return sum(1 for page in pages if page not in texts)
+def testimony_runs(texts: Mapping[int, str], pages: Iterable[int]) -> list[tuple[int, int]]:
+    """``(first, last)`` page of each transcript's testimony among ``pages``, in page order."""
+    return runs_of(p for p in pages if is_testimony(texts.get(p, "")))
+
+
+def counts_of(
+    counted: Sequence[int],
+    testimony: Iterable[int],
+    condensed: Callable[[int, int], bool],
+    *,
+    complete: bool = True,
+) -> Counts:
+    """The office count and the deposition pages of the ``counted`` pages, ``testimony`` the ones
+    known to be testimony. ``condensed(first, last)`` says whether a transcript's sheets are printed
+    condensed, four pages to a sheet (``ocr.has_condensed_sheets`` looks for the grid on its first
+    sheets); its sheets then count four each, in both counts. Not ``complete`` - some page could
+    still prove to be testimony - the deposition pages are None; the office count stands."""
+    kept = set(counted)
+    depo = extra = 0
+    for first, last in runs_of(p for p in testimony if p in kept):
+        sheets = sum(1 for page in range(first, last + 1) if page in kept)
+        per_sheet = _CONDENSED_PAGES if condensed(first, last) else 1
+        depo += sheets * per_sheet
+        extra += sheets * (per_sheet - 1)
+    return Counts(office=len(counted) + extra, depo=depo if complete else None)
 
 
 def count_pages(
@@ -143,30 +174,70 @@ def count_pages(
     texts: Mapping[int, str],
     condensed: Callable[[int, int], bool],
 ) -> Counts:
-    """The office count and the deposition pages of a record whose pages have been read.
-
-    ``texts`` is the stored text of each read page; ``condensed(first, last)`` says whether a
-    transcript's sheets are printed condensed, four pages to a sheet (``ocr.has_condensed_sheets``
-    looks for the grid on its first sheets). Its sheets then count four each, in both counts."""
+    """The office count and the deposition pages of a record whose every page's ``texts`` is
+    known (``counts_of``)."""
     counted = counted_pages(parts, page_count)
-    kept = set(counted)
-    depo = extra = 0
-    for first, last in testimony_runs(texts, counted):
-        sheets = sum(1 for page in range(first, last + 1) if page in kept)
-        per_sheet = _CONDENSED_PAGES if condensed(first, last) else 1
-        depo += sheets * per_sheet
-        extra += sheets * (per_sheet - 1)
-    return Counts(office=len(counted) + extra, depo=depo)
+    return counts_of(counted, (p for p in counted if is_testimony(texts.get(p, ""))), condensed)
+
+
+# --- the sheet never waits -----------------------------------------------------------------------
+#
+# The sheet - and the raw download it heads - waited for every page of the record to be read: ~10
+# minutes on a 900-page record (an uploader's report, 2026-11-24). Now it never waits. The office
+# count is the pages received, known the moment the record is put together; only the deposition
+# pages need the pages read, and print blank until they are.
+#
+# Reading the PDF's own text instead was measured and dropped (read-only on the live box,
+# 2026-11-24: 784 records, 136,293 pages): half the pages carry text of their own (73% on records
+# put together from received files), but only 3 of 28 such records - 11 of 756 others - carry it on
+# every page, so a scan was still to be read on nearly every record; and where both exist that text
+# missed 1,357 of the 5,058 pages of testimony our reading finds.
+#
+# A transcript printed condensed, four pages to a sheet, is rare: the check found none among the
+# 167 transcripts on those records. It draws pages, so its answer is kept in Redis rather than drawn
+# again on each look at the sheet - the dialog reads the sheet every few seconds.
+
+_CONDENSED_KEY = "billing:condensed:{}:{}:{}-{}"
+_CACHE_SECONDS = 30 * 24 * 3600
+
+
+def _cached(key: str) -> str | None:
+    try:
+        value = get_redis().get(key)
+    except RedisError as exc:
+        logger.warning("billing sheet: cache unavailable (%s)", type(exc).__name__)
+        return None
+    if value is None:
+        return None
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _keep(key: str, value: str) -> None:
+    try:
+        get_redis().set(key, value, ex=_CACHE_SECONDS)
+    except RedisError as exc:
+        logger.warning("billing sheet: cache unavailable (%s)", type(exc).__name__)
+
+
+def _condensed(document: Document, first: int, last: int) -> bool:
+    """``has_condensed_sheets`` for one transcript of the record, worked out once and kept."""
+    key = _CONDENSED_KEY.format(document.id, document.sha256, first, last)
+    cached = _cached(key)
+    if cached is not None:
+        return cached == "1"
+    found = has_condensed_sheets(document.stored_path, first, last, max_sheets=2)
+    _keep(key, "1" if found else "0")
+    return found
 
 
 @dataclass(frozen=True)
 class Reading:
-    """How far the record's counted pages have been read, and the counts once they all have.
-    ``counts`` is None while ``unread`` is above zero: a count made then would come out short."""
+    """Where the record's counted pages stand. While ``unread`` of them wait to be read the
+    deposition pages are not known (``counts.depo`` is None); the office count always is."""
 
     counted: int
     unread: int
-    counts: Counts | None
+    counts: Counts
 
 
 def stored_texts(session, document_id: str) -> dict[int, str]:
@@ -178,19 +249,18 @@ def stored_texts(session, document_id: str) -> dict[int, str]:
 
 
 def reading(session, document: Document) -> Reading:
-    """Count the record's pages, if every page the office counts has been read (the upload's
-    reading queued by ``POST /api/documents/combine``, or Identify's)."""
+    """Count the record's pages now, from what has been read so far (the upload's reading, queued by
+    ``POST /api/documents/combine``, or Identify's)."""
     texts = stored_texts(session, document.id)
     counted = counted_pages(document.received_parts, document.page_count or 0)
-    unread = unread_pages(counted, texts)
-    if unread:
-        return Reading(len(counted), unread, None)
+    unread = sum(1 for page in counted if page not in texts)
+    testimony = [page for page in counted if is_testimony(texts.get(page, ""))]
 
     def condensed(first: int, last: int) -> bool:
-        return has_condensed_sheets(document.stored_path, first, last, max_sheets=2)
+        return _condensed(document, first, last)
 
-    counts = count_pages(document.received_parts, document.page_count or 0, texts, condensed)
-    return Reading(len(counted), 0, counts)
+    counts = counts_of(counted, testimony, condensed, complete=not unread)
+    return Reading(len(counted), unread, counts)
 
 
 @dataclass(frozen=True)

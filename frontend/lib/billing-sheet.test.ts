@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type BillingSheet,
   billingReady,
-  canDownload,
+  depoPending,
   EMPTY_BILLING,
   editValid,
   isPageCount,
@@ -119,12 +119,17 @@ describe("the counts the sheet prints", () => {
     });
   });
 
-  it("are unknown while the pages are read, and the sheet cannot be downloaded", () => {
-    const reading = { ...SHEET, counted: null, pages_unread: 10 };
-    expect(shownCounts(reading)).toEqual({ office: null, depo: null });
-    expect(canDownload(reading)).toBe(false);
-    expect(canDownload({ ...reading, office_count: 9 })).toBe(false);
-    expect(canDownload({ ...reading, office_count: 9, depo_pages: 0 })).toBe(true);
-    expect(canDownload(SHEET)).toBe(true);
+  it("have the office count at once and the deposition pages once the pages are read", () => {
+    const reading = { ...SHEET, counted: { office: 42, depo: null }, pages_unread: 10 };
+    expect(shownCounts(reading)).toEqual({ office: 42, depo: null });
+    expect(depoPending(reading)).toBe(true);
+    expect(depoPending({ ...reading, depo_pages: 0 })).toBe(false);
+    expect(depoPending(SHEET)).toBe(false);
+  });
+
+  it("from an older server, are both unknown until every page is read", () => {
+    const older = { ...SHEET, counted: null, pages_unread: 10 };
+    expect(shownCounts(older)).toEqual({ office: null, depo: null });
+    expect(depoPending(older)).toBe(true);
   });
 });

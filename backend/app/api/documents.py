@@ -643,13 +643,6 @@ _BILLING_DECLARED_DETAIL = "Enter the pages the declaration states as a whole nu
 _BILLING_REASON_DETAIL = "The reason for the discrepancy is at most 255 characters."
 _BILLING_OFFICE_DETAIL = "Enter the office count as a whole number."
 _BILLING_DEPO_DETAIL = "Enter the deposition pages as a whole number."
-_BILLING_UNREAD_DETAIL = (
-    "The record's pages are still being read. The billing sheet can be downloaded once they are."
-)
-_RAW_UNREAD_DETAIL = (
-    "The record's pages are still being read. Its raw PDF starts with the billing sheet, so it can"
-    + " be downloaded once they are."
-)
 # The longest a typed text on the billing sheet may be (the columns are String(255)).
 _BILLING_TEXT_MAX = 255
 # A typed page count above this is a typing slip, not a record.
@@ -1375,8 +1368,9 @@ def _yes_no_text(value: bool | None) -> str:
 def _billing_response(session: Session, document: Document) -> dict:
     """The record's billing sheet as the billing sheet dialog shows and edits it (D6c, D6d): the
     typed fields as strings, empty for unset; the two counts worked out from the record
-    (``counted``, null while ``pages_unread`` of its ``pages_counted`` pages wait to be read); the
-    counts typed over them; and the doctors the dropdown offers."""
+    (``counted``: the office count always, the deposition pages null while ``pages_unread`` of its
+    ``pages_counted`` pages wait to be read); the counts typed over them; and the doctors the
+    dropdown offers."""
     read = billing_sheet.reading(session, document)
     counts = read.counts
     return {
@@ -1393,7 +1387,7 @@ def _billing_response(session: Session, document: Document) -> dict:
         "received_on": _iso(document.received_on),
         "office_count": _count_text(document.office_count),
         "depo_pages": _count_text(document.depo_pages),
-        "counted": None if counts is None else {"office": counts.office, "depo": counts.depo},
+        "counted": {"office": counts.office, "depo": counts.depo},
         "pages_counted": read.counted,
         "pages_unread": read.unread,
         "doctors": list(DOCTORS),
@@ -1546,13 +1540,11 @@ def _raw_filename(document: Document) -> str:
     return name if name.lower().endswith(".pdf") else name + ".pdf"
 
 
-def _sheet_pdf(session: Session, document: Document, unread_detail: str) -> bytes:
-    """The record's billing sheet as a one-page PDF (``billing_sheet.render``). Its counts
-    need every counted page read, so while the record's pages are still being read it is 409
-    ``unread_detail`` - unless both counts were typed on the sheet."""
+def _sheet_pdf(session: Session, document: Document) -> bytes:
+    """The record's billing sheet as a one-page PDF (``billing_sheet.render``), as it stands now:
+    never waiting for the record's pages to be read. A deposition count not known yet (pages still
+    to be read) and not typed prints blank."""
     read = billing_sheet.reading(session, document)
-    if read.counts is None and (document.office_count is None or document.depo_pages is None):
-        raise HTTPException(status_code=409, detail=unread_detail)
     return billing_sheet.render(billing_sheet.sheet_for(document, read.counts))
 
 
@@ -1569,10 +1561,7 @@ def _raw_response(
     )
 
 
-@router.get(
-    "/{document_id}/raw",
-    responses={409: {"description": "The record's billing sheet waits for its pages to be read."}},
-)
+@router.get("/{document_id}/raw")
 def download_raw_pdf(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
@@ -1586,13 +1575,12 @@ def download_raw_pdf(
     A record put together from received files has a billing sheet, and its download starts with
     it (the office's ask, 2026-11-23): page 1 is the sheet as it stands now, then the record page
     for page. The stored record never holds the sheet - it is built onto a copy for this download
-    and the copy deleted once sent - so Identify and the summaries never see it. Like the sheet's
-    own download, it is 409 while the record's pages are still being read, unless both counts were
-    typed on the sheet."""
+    and the copy deleted once sent - so Identify and the summaries never see it. It never waits for
+    the record's pages to be read: a deposition count not known yet prints blank."""
     if document.received_on is None:
         audit(session, "download_raw", user.id, document.id)
         return _raw_response(document.stored_path, document)
-    sheet = _sheet_pdf(session, document, _RAW_UNREAD_DETAIL)
+    sheet = _sheet_pdf(session, document)
     path = downloads.built_path(user.id)
     try:
         billing_sheet.put_on_top(sheet, document.stored_path, path)
@@ -1617,20 +1605,17 @@ def _attachment(filename: str) -> str:
     return f"attachment; filename*=utf-8''{quoted}"
 
 
-@router.get(
-    "/{document_id}/billing-sheet",
-    responses={409: {"description": "The record's pages are still being read."}},
-)
+@router.get("/{document_id}/billing-sheet")
 def download_billing_sheet(
     document: Document = Depends(get_owned_document),
     session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
     """The record's billing sheet as a one-page PDF (``billing_sheet.render``), named after the
-    record. Its counts need every counted page read, so while the record's pages are still being
-    read it is 409 - unless both counts were typed on the sheet. Not cached by the browser; it
-    leaves ``downloaded_at`` alone (nothing of the review is in it)."""
-    pdf = _sheet_pdf(session, document, _BILLING_UNREAD_DETAIL)
+    record, as it stands now: a deposition count not known yet (pages still to be read) and not
+    typed prints blank. Not cached by the browser; it leaves ``downloaded_at`` alone (nothing of the
+    review is in it)."""
+    pdf = _sheet_pdf(session, document)
     audit(session, "download_billing", user.id, document.id)
     return Response(
         content=pdf,

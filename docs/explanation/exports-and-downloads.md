@@ -43,10 +43,11 @@ download folder as `built-<random>.pdf`, adds the sheet as it stands then
 (`billing_sheet.put_on_top`) as an incremental update - so the copy keeps every byte of the record
 and nothing is held in memory (an 882 MB record: about 50 MB and 8 seconds on a laptop) - sends
 it, and deletes it; a copy a cut-short download leaves behind goes in the download sweep after
-`DOWNLOAD_TTL_SECONDS`. The sheet's counts need the record's pages read, so until they are the
-download is 409, as the sheet's own download is, unless both counts were typed on the sheet. The
-row menu asks first (`rawPdfWait()` reads `GET .../billing`) and says how far the reading is
-instead of handing the browser a download that would fail.
+`DOWNLOAD_TTL_SECONDS`. It never waits for the record's pages to be read (it did until an
+uploader's report of 2026-11-24: about 10 minutes on a 900-page record): the sheet's office count
+is known the moment the record is put together, and its deposition pages print blank until every
+counted page has been read. The row menu hands the browser the download at once, then looks at the
+sheet (`GET .../billing`) and says so in a toast when the deposition pages are not known yet.
 
 Not a deliverable either: "Download PDF" on a record's billing sheet
 (`GET /api/documents/{id}/billing-sheet`, `backend/app/services/billing_sheet.py`) saves the office's
@@ -66,8 +67,12 @@ pages are the testimony only, from a transcript's first page of questions and an
 found from the stored page text before Identify has run; a condensed sheet (four transcript pages
 printed on one) counts four in both. Measured on the live box (2026-11-19) against the reviewers'
 deposition rows of 740 finished records: the count matched exactly on 732 and was off by more than
-5 pages on 6. The sheet waits until every counted page has been read (409 before), unless both
-counts were typed on it.
+5 pages on 6. The sheet never waits for the reading: the office count is the pages received,
+known at once, and the deposition pages print blank until every counted page has been read
+(a count typed on the sheet prints instead). Reading the PDF's own text to count sooner was
+measured and dropped (2026-11-24, 784 records): only 3 of 28 records put together from received
+files carry such text on every page, and where it exists it missed about a quarter of the pages
+of testimony our reading finds.
 
 ## How the letter entries are prepared
 
