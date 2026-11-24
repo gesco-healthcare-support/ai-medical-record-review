@@ -257,6 +257,12 @@ describe("mergeRows", () => {
       r({ category: "5", title: "Physical Therapy Note" }),
     );
     expect([slip.category, slip.title]).toEqual(["5", "Physical Therapy Note"]);
+    // ...and a PR-4 below its RFA.
+    const pr4 = mergeRows(
+      r({ category: "10", title: "RFA" }),
+      r({ category: "2", title: "PR-4 Permanent and Stationary Report" }),
+    );
+    expect(pr4.category).toBe("2");
   });
 
   it("keeps the upper row's identity for every other merge", () => {
@@ -269,6 +275,9 @@ describe("mergeRows", () => {
     expect(mergeRows(rfa, r({ category: "3", title: "MRI Lumbar Spine" })).category).toBe("10");
     expect(mergeRows(r({ category: "10", title: "Orders" }), visit).category).toBe("10");
     expect(mergeRows(r({ category: "3", title: "Work Status" }), visit).category).toBe("3");
+    // A work status filed as a progress note below an RFA is a form too, not the visit.
+    const slip = r({ category: "1", title: "Work Status Report" });
+    expect(mergeRows(rfa, slip).title).toBe("Request for Authorization");
   });
 });
 
