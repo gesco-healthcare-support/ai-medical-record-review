@@ -227,6 +227,27 @@ describe("BillingSheetDialog", () => {
     expect(screen.getByText(/Counts are whole numbers/)).toBeInTheDocument();
   });
 
+  it("takes several deposition counts separated by commas, one per deposition", async () => {
+    // The office's answer (2026-11-25): the sheet prints them as typed.
+    const user = userEvent.setup();
+    save.mutateAsync.mockResolvedValue({ ...SHEET, depo_pages: "120, 85" });
+    show();
+    const depo = screen.getByLabelText("Deposition pages");
+    expect(depo).toHaveAccessibleDescription(
+      "Several depositions: one count each, separated by commas (120, 85).",
+    );
+
+    fireEvent.change(depo, { target: { value: "120 85" } });
+    expect(button("Save")).toBeDisabled();
+
+    fireEvent.change(depo, { target: { value: "120, 85" } });
+    await user.click(button("Save"));
+
+    expect(save.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ depo_pages: "120, 85" }),
+    );
+  });
+
   it("keeps a doctor that is no longer on the list", () => {
     show({ doctor: "Retired" });
 
