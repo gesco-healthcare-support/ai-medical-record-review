@@ -64,6 +64,10 @@ def test_a_visit_row_that_opens_on_a_form_is_titled_from_the_visit(pieces, row, 
             [_piece(1, 3), _piece(4, 4, "10", "REQUEST FOR AUTHORIZATION")],
             _row(1, 4),
         ),  # visit first
+        (
+            [_piece(1, 2), _piece(3, 5)],
+            _row(1, 5),
+        ),  # one visit in two pieces: it opens on the visit
         ([_RFA, _VISIT], _row(1, 1, "10")),  # the RFA alone
         ([_RFA, _VISIT], _row(1, 5, "10")),  # a row the reviewer kept as the RFA
         ([_RFA, _VISIT], _row(1, 5, "3")),  # a diagnostic study
@@ -74,6 +78,7 @@ def test_a_visit_row_that_opens_on_a_form_is_titled_from_the_visit(pieces, row, 
     ],
     ids=[
         "visit first",
+        "visit in two pieces",
         "rfa alone",
         "kept as rfa",
         "study",
