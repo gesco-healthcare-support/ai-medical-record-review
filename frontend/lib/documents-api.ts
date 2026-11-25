@@ -3,7 +3,7 @@ import {
   type BillingDraft,
   type BillingSheet,
   type BillingSheetEdit,
-  SUPPLEMENTAL,
+  takesAppointment,
 } from "@/lib/billing-sheet";
 import type { ReceivedKind, RecordsFrom } from "@/lib/received-files";
 import type { DocumentListItem } from "@/lib/types";
@@ -14,6 +14,13 @@ import type { DocumentListItem } from "@/lib/types";
 export function listDocuments(owner?: number | null) {
   const query = owner == null ? "" : `?owner=${encodeURIComponent(String(owner))}`;
   return apiFetch<DocumentListItem[]>(`/documents${query}`);
+}
+
+/** GET /api/documents/queue - the team queue: every record put together from received files that
+ *  nobody has taken yet, whoever uploaded it, for every reviewer. Starting identification on one
+ *  takes it into the caller's own records. */
+export function listTeamQueue() {
+  return apiFetch<DocumentListItem[]>("/documents/queue");
 }
 
 /** Where an upload goes. `owner` (admins only) is another reviewer's account; `allowDuplicate`
@@ -94,11 +101,13 @@ export type ReceivedFilesUpload = {
   owner?: number | null;
 };
 
-/** The billing fields as the server takes them. A supplemental report sends no appointment date;
- *  an optional field left empty is not sent. */
+/** The billing fields as the server takes them. A visit with no appointment (a supplemental
+ *  report, late meds) sends no appointment date; an optional field left empty is not sent. */
 function appendBilling(form: FormData, billing: BillingDraft) {
   form.append("visit_type", billing.visit_type);
-  if (billing.visit_type !== SUPPLEMENTAL) form.append("appointment_date", billing.appointment_date);
+  if (takesAppointment(billing.visit_type)) {
+    form.append("appointment_date", billing.appointment_date);
+  }
   form.append("interpreter", billing.interpreter);
   const optional: [string, string][] = [
     ["doctor", billing.doctor],
@@ -132,6 +141,8 @@ export function combineReceivedFiles(upload: ReceivedFilesUpload) {
       id: string;
       page_count: number;
       parts: { kind: ReceivedKind; start: number; end: number }[];
+      /** Put in the team queue (anyone may take it), rather than in a named reviewer's account. */
+      in_team_queue?: boolean;
     } & PatientFields
   >("/documents/combine", { method: "POST", body: form });
 }

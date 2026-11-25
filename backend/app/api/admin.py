@@ -468,7 +468,13 @@ def assign_document(
     """
     reviewer = reviewer_for(session, payload.owner)
     if reviewer.id == document.user_id:
-        return _owner_payload(document, reviewer)  # already theirs: nothing to move or record
+        # Already theirs - unless it waits in the team queue, where the uploader's id is only a
+        # placeholder: then it leaves the queue for their own records, and that is recorded.
+        if document.team_queue_since is not None:
+            document.team_queue_since = None
+            session.commit()
+            audit(session, "assign", user.id, document.id, detail=f"team queue -> {reviewer.id}")
+        return _owner_payload(document, reviewer)
     if document.active_job is not None:
         raise HTTPException(
             status_code=409,
@@ -477,8 +483,10 @@ def assign_document(
     copies = same_file(session, reviewer.id, document.sha256)
     if copies and not payload.allow_duplicate:
         return duplicate_conflict(reviewer, copies)
-    previous = document.user_id
+    previous = "team queue" if document.team_queue_since is not None else f"user {document.user_id}"
     document.user_id = reviewer.id
+    # Assigned is taken: a record waiting in the team queue leaves it for the reviewer named.
+    document.team_queue_since = None
     session.commit()
-    audit(session, "assign", user.id, document.id, detail=f"user {previous} -> {reviewer.id}")
+    audit(session, "assign", user.id, document.id, detail=f"{previous} -> {reviewer.id}")
     return _owner_payload(document, reviewer)

@@ -12,9 +12,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
 const listDocuments = vi.fn();
+const listTeamQueue = vi.fn();
 const getBillingSheet = vi.fn();
 vi.mock("@/lib/documents-api", () => ({
   listDocuments: (...args: unknown[]) => listDocuments(...args),
+  listTeamQueue: (...args: unknown[]) => listTeamQueue(...args),
   uploadDocument: vi.fn().mockResolvedValue({ id: "d1", page_count: 2 }),
   combineReceivedFiles: vi.fn().mockResolvedValue({ id: "d2", page_count: 4 }),
   deleteDocument: vi.fn().mockResolvedValue({ ok: true }),
@@ -49,6 +51,7 @@ import {
   useDocuments,
   useSetCompleted,
   useStartIdentification,
+  useTeamQueue,
   useUploadDocument,
 } from "@/hooks/use-documents";
 
@@ -75,6 +78,18 @@ const doc = (over: Record<string, unknown> = {}) => ({
 afterEach(() => {
   vi.useRealTimers();
   listDocuments.mockReset();
+  listTeamQueue.mockReset();
+});
+
+describe("useTeamQueue", () => {
+  it("reads the team queue, under the documents key every mutation refreshes", async () => {
+    listTeamQueue.mockResolvedValue([doc({ in_team_queue: true })]);
+    const { wrapper } = harness();
+    const { result } = renderHook(() => useTeamQueue(), { wrapper });
+
+    await waitFor(() => expect(result.current.data).toHaveLength(1));
+    expect(listTeamQueue).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("useDocuments polling", () => {

@@ -79,11 +79,12 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | Function | Method and path | Body | Response type | Used by |
 | --- | --- | --- | --- | --- |
 | `listDocuments(owner?)` | `GET /documents`, or `GET /documents?owner=<id>` | - | `DocumentListItem[]` (the caller's own records, newest first; for an admin with `owner`, that account's) | `useDocuments()` in `DocumentsView`, `BundlePageClient`, `AdminView`; `useDocuments(owner)` in `DocumentsView` for an admin who picked a reviewer |
+| `listTeamQueue()` | `GET /documents/queue` | - | `DocumentListItem[]` (the team queue: records nobody has taken yet, whoever uploaded them, with `in_team_queue`, `uploaded_by`, `uploaded_by_me`) | `useTeamQueue()` in `DocumentsView` |
 | `uploadDocument()` | `POST /documents` | multipart field `pdf`; `patient_id`; `owner` and `allow_duplicate` when an admin uploads into another reviewer's account | `{id, page_count, sha256_duplicate, patient_id, patient_records}` | `useUploadDocument()` in `DocumentsView`; does not start identification. The patient ID is read from the file name (`patientIdFromFilename` in `frontend/lib/patient-id.ts`, the backend's rule); a name with none, or two, opens `PatientIdDialog`, and nothing is sent until the uploader types one. The success message says how many other records the patient has. Into another reviewer's account it runs only after a confirmation, and a 409 with code `duplicate` asks a second time before sending `allow_duplicate` |
 | `stageReceivedFile()` | `POST /documents/combine/files` | multipart field `pdf` (one PDF or scanned image) | `{token, pages, kind, check, sha256}` | `ReceivedFilesDialog`, once per file as it is added, one file at a time |
 | `receivedFilePreviewUrl()` | `GET /documents/combine/files/{token}/preview` | - | a PNG of the file's first page, shown by a plain image tag | "Page 1" in `ReceivedFilesDialog` |
 | `unstageReceivedFile()` | `DELETE /documents/combine/files/{token}` | - | `{ok}` | `ReceivedFilesDialog`: a file removed from the list, and every staged file when the dialog closes without making a record (errors ignored) |
-| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `records_from`, the billing sheet's `visit_type`, `interpreter`, `appointment_date` (not for `SUPP`) and, when typed, `doctor`, `claim_numbers`, `location`, `previous_visit`, `declared_pages`; `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. The patient's details and the billing sheet's required fields (`billingReady` in `frontend/lib/billing-sheet.ts`) must be filled and every file read; the Patient ID box is filled from the ID the files' names agree on |
+| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `records_from`, the billing sheet's `visit_type`, `interpreter`, `appointment_date` (not for `SUPP` or `LATE`) and, when typed, `doctor`, `claim_numbers`, `location`, `previous_visit`, `declared_pages`; `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. The patient's details and the billing sheet's required fields (`billingReady` in `frontend/lib/billing-sheet.ts`) must be filled and every file read; the Patient ID box is filled from the ID the files' names agree on |
 | `listDoctors()` | `GET /documents/combine/doctors` | - | `{doctors}` | `useDoctors()` in `ReceivedFilesDialog` (the Doctor list), fetched once while the dialog is open |
 | `getBillingSheet()` | `GET /documents/{id}/billing` | - | the billing sheet | `useBillingSheet()` in `BillingSheetDialog`; read again every 5 seconds while `pages_unread` is above 0 |
 | `saveBillingSheet()` | `PUT /documents/{id}/billing` | `BillingSheetEdit` (every field as typed) | the billing sheet | `useSaveBillingSheet()` in `BillingSheetDialog` (the answer replaces the cached sheet) |
@@ -151,6 +152,7 @@ TanStack Query holds all server state that is not the workbench's row buffer.
 | `["current-user"]` | `useCurrentUser()` | `GET /users/me` | No retry, 5 minute stale time | `useLogin()` success invalidates; sign out clears the whole cache |
 | `["documents"]` | `useDocuments()` | `GET /documents` | Every 2000 ms while any record has an `active_job`, otherwise none | Upload, aggregate, assign, delete and start identification invalidate |
 | `["documents", "owner", <id>]` | `useDocuments(owner)` | `GET /documents?owner=<id>` | As above | The same mutations: they invalidate the `["documents"]` prefix |
+| `["documents", "queue"]` | `useTeamQueue()` | `GET /documents/queue` | Every 30 s | The same mutations; starting identification on a record there moves it to the caller's own list |
 | `["admin", "users"]` | `useAccounts(enabled)` | `GET /admin/users` | None | None |
 | `["duplicates", id]` | `useDuplicates()` (`duplicatesKey()`) | `GET /documents/{id}/duplicates` | Every 2000 ms while the latest dedup job is `queued` or `running`, otherwise none | Resolve and start dedup invalidate |
 | `["summaries", id]` | `useSummaries()` (`summariesKey()`) | `GET /documents/{id}/summaries` | None | Save and re-draft patch the item in place; every settled summarize run invalidates |
@@ -321,7 +323,7 @@ together from the files it arrived in, the step the office did in Adobe Acrobat.
 the patient's last and first name, the patient ID (filled when the files' names agree on one), the
 date received, picks who sent the records (Defense, Applicant, Insurance or Copy service), fills
 the billing sheet's fields (`BillingFields` in `billing-fields.tsx`: the type of visit, the
-appointment date - gone for a supplemental report, `SUPP` - and the interpreter are required;
+appointment date - gone for a supplemental report, `SUPP`, and for late meds, "Late Meds" (stored `LATE`) - and the interpreter are required;
 who reviews the records is not asked, since the sheet always says IN-HOUSE; the doctor, the
 claim numbers, the location, the previous office visit and the pages the declaration states may
 stay blank), and adds the files
@@ -369,8 +371,27 @@ footer, like the upload's. While either dialog is open, a file dropped on the re
 it uploads nothing.
 
 Other My documents behaviour: search matches the filename or the patient name; sort columns are
-Document, Patient, Pages, Uploaded (the default, newest first), Documents found and Last activity; 20
+Document, Due (the default), Patient, Pages, Uploaded, Documents found and Last activity; 20
 records per page.
+
+The team queue (`TeamQueue` in `documents-view.tsx`, the office's answer of 2026-11-25) sits above
+the reviewer's own records whenever records wait in it: the records put together from received
+files that nobody has taken yet, whoever uploaded them, in the same table (`DocumentsTable` with
+`queue`) without filter chips, search or Completed mark, each saying who uploaded it. Its menu offers
+Open, Download raw PDF, Billing sheet, "Take it and start identification" (no confirmation: the
+record has nothing to lose; the toast says it is now in the reviewer's records, and a record another
+reviewer has just taken says so), Assign to... for an admin, and Delete to its uploader alone. A
+record put together from received files goes there ("..., in the team queue."), unless an admin
+uploaded it for a named reviewer.
+
+Due (`frontend/lib/deadlines.ts`, the office's answer of 2026-11-25) lists the closest deadline
+first: the record's `due_on`, which is its appointment date, or 40 days after the records were
+received for a supplemental report and late meds. Records with no deadline (uploaded as one PDF)
+come after, newest upload first, and records marked Completed last. The cell shows the date
+(`MM/DD/YYYY`) and the days left ("5 days left", "Due today", "3 days late"), naming SUPP or
+Late Meds when the deadline is not an appointment. The row is highlighted yellow for a record due
+on its appointment date and light blue for late meds; a supplemental report, a record with no
+deadline and a Completed one keep the normal colour.
 
 For an admin viewing another reviewer's records ("Show records for"): both upload buttons stay,
 and the record goes into that reviewer's account. A single upload first asks "Upload to <name>'s

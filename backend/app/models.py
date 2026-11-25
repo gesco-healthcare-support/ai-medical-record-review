@@ -11,7 +11,7 @@ reserved-ish words; SQLAlchemy quotes them automatically, and the names are kept
 match the source schema.
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi_users_db_sqlalchemy.access_token import SQLAlchemyBaseAccessTokenTable
@@ -40,6 +40,18 @@ from app.db import Base
 _FK_USER_ID = "user.id"
 _FK_DOCUMENTS_ID = "documents.id"
 _CASCADE_DELETE_ORPHAN = "all, delete-orphan"
+
+# The types of visit with no appointment (services/billing_sheet.py `VISIT_TYPES`): a
+# supplemental report (SUPP), and records that came in too late for the evaluation (LATE, shown
+# as "Late Meds"). Their report is due REPORT_DAYS_AFTER_RECEIVED days after the records were
+# received; any other visit's is due on its appointment date (the office's answer, 2026-11-25).
+VISITS_WITHOUT_APPOINTMENT: tuple[str, ...] = ("SUPP", "LATE")
+REPORT_DAYS_AFTER_RECEIVED = 40
+
+
+def _iso_day(value: date | None) -> str:
+    """A stored day as ``YYYY-MM-DD``, or ``""`` when there is none - the list's date fields."""
+    return value.isoformat() if value else ""
 
 
 def _uuid() -> str:
@@ -226,6 +238,12 @@ class Document(Base):
     # exports that carry the summaries - or NULL for never. Set by those routes, so the records list
     # can say it without reading the audit log; the migration filled it from the log's past exports.
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # When the record went into the TEAM QUEUE, or NULL. The office's answer (2026-11-25): a record
+    # put together from received files belongs to nobody until someone starts working on it; every
+    # reviewer sees it in the queue (GET /api/documents/queue) and may open it, and the reviewer who
+    # starts Identify takes it (`user_id` becomes theirs, this goes back to NULL). While it waits,
+    # `user_id` is the uploader's: only they may delete it, and it is not in their own list.
+    team_queue_since: Mapped[datetime | None] = mapped_column(DateTime)
     # A record put together from the files it arrived in (POST /api/documents/combine,
     # services/received_files.py): the day the records were received, as the uploader typed it, and
     # each file's kind and pages in the joined PDF ({"kind", "start", "end"}, in order - never the
@@ -239,9 +257,10 @@ class Document(Base):
     appointment_date: Mapped[date | None] = mapped_column(Date)
     records_from: Mapped[str | None] = mapped_column(String(32))
     # The rest of the office's billing sheet (services/billing_sheet.py), typed at upload and
-    # editable on the sheet: the type of visit (billing_sheet.VISIT_TYPES; SUPP has no
-    # appointment), whether an interpreter is needed, the claim numbers as typed, the previous
-    # office visit, where the evaluation takes place (`location`, as typed), the page count the
+    # editable on the sheet: the type of visit (billing_sheet.VISIT_TYPES; SUPP and LATE have
+    # no appointment - VISITS_WITHOUT_APPOINTMENT), whether an interpreter is needed, the claim
+    # numbers as typed, the previous office visit, where the evaluation takes place (`location`,
+    # as typed), the page count the
     # sender's declaration states and why the office's count differs. `office_count` and
     # `depo_pages` are typed over the counts worked out from the record; NULL uses the worked-out
     # count. All NULL for a record uploaded as one PDF. The claim numbers and the reason are patient
@@ -306,6 +325,17 @@ class Document(Base):
             (job for job in self.jobs if job.state in ("queued", "running", "paused")), None
         )
 
+    def due_on(self) -> date | None:
+        """When the record's report is due: the appointment date, or - for a visit with no
+        appointment (a supplemental report, late meds) - REPORT_DAYS_AFTER_RECEIVED days after the
+        records were received. None when the dates it needs were never typed (every record
+        uploaded as one PDF). My documents lists records by it, closest first."""
+        if self.visit_type in VISITS_WITHOUT_APPOINTMENT:
+            if self.received_on is None:
+                return None
+            return self.received_on + timedelta(days=REPORT_DAYS_AFTER_RECEIVED)
+        return self.appointment_date
+
     def listing(self):
         """Landing-page shape; original_filename is shown to its owner only."""
         job = self.active_job
@@ -335,10 +365,13 @@ class Document(Base):
             "one_entry_per_date": bool(self.one_entry_per_date),
             "completed_at": _utc_iso(self.completed_at),
             "downloaded_at": _utc_iso(self.downloaded_at),
-            "received_on": self.received_on.isoformat() if self.received_on else "",
+            "received_on": _iso_day(self.received_on),
             "received_parts": self.received_parts or [],
-            "appointment_date": self.appointment_date.isoformat() if self.appointment_date else "",
+            "appointment_date": _iso_day(self.appointment_date),
             "records_from": self.records_from or "",
+            "visit_type": self.visit_type or "",
+            "due_on": _iso_day(self.due_on()),
+            "in_team_queue": self.team_queue_since is not None,
         }
 
 

@@ -51,7 +51,7 @@ function header(container: HTMLElement, label: string) {
 }
 
 describe("DocumentsTable sorting", () => {
-  it("defaults to newest upload first", () => {
+  it("with no deadline on any record, lists the newest upload first", () => {
     const { container } = renderTable();
     expect(names(container)).toEqual([
       "Charlie record.pdf",
@@ -401,5 +401,135 @@ describe("the billing sheet", () => {
     await user.click(screen.getByRole("button", { name: "Actions" }));
 
     expect(screen.queryByRole("menuitem", { name: "Billing sheet" })).toBeNull();
+  });
+});
+
+describe("deadlines (the office's answer, 2026-11-25)", () => {
+  const DATED = [
+    { ...DOCS[0], id: "x", original_filename: "Supplemental.pdf", visit_type: "SUPP", due_on: "2027-01-10" },
+    { ...DOCS[1], id: "y", original_filename: "No dates.pdf" },
+    { ...DOCS[2], id: "z", original_filename: "Late meds.pdf", visit_type: "LATE", due_on: "2026-12-30" },
+    {
+      ...DOCS[0],
+      id: "w",
+      original_filename: "Done.pdf",
+      visit_type: "QME",
+      due_on: "2026-12-02",
+      completed_at: "2026-12-01T00:00:00Z",
+    },
+    { ...DOCS[1], id: "v", original_filename: "Appointment.pdf", visit_type: "AME", due_on: "2026-12-24" },
+  ];
+
+  function rowOf(container: HTMLElement, name: string) {
+    return [...container.querySelectorAll("tbody tr")].find((tr) =>
+      tr.textContent?.includes(name),
+    ) as HTMLTableRowElement;
+  }
+
+  it("lists the closest deadline first; no deadline, then Completed, after", () => {
+    const { container } = render(<DocumentsTable docs={DATED} onOpen={vi.fn()} />);
+    expect(names(container)).toEqual([
+      "Appointment.pdf",
+      "Late meds.pdf",
+      "Supplemental.pdf",
+      "No dates.pdf",
+      "Done.pdf",
+    ]);
+    expect(header(container, "Due").getAttribute("aria-sort")).toBe("ascending");
+  });
+
+  it("reverses on a click and goes back to closest first on the next", () => {
+    const { container } = render(<DocumentsTable docs={DATED} onOpen={vi.fn()} />);
+    const due = header(container, "Due").querySelector("button")!;
+    fireEvent.click(due);
+    expect(names(container)[0]).toBe("Done.pdf");
+    fireEvent.click(due);
+    expect(names(container)[0]).toBe("Appointment.pdf");
+  });
+
+  it("colours an appointment yellow and late meds light blue; SUPP, undated and Completed stay plain", () => {
+    const { container } = render(<DocumentsTable docs={DATED} onOpen={vi.fn()} />);
+    expect(rowOf(container, "Appointment.pdf").className).toBe("hd-due-appointment");
+    expect(rowOf(container, "Late meds.pdf").className).toBe("hd-due-late-meds");
+    for (const name of ["Supplemental.pdf", "No dates.pdf", "Done.pdf"]) {
+      expect(rowOf(container, name).className).toBe("");
+    }
+  });
+
+  it("shows the due date the office's way, and the kind of deadline when it is not an appointment", () => {
+    const { container } = render(<DocumentsTable docs={DATED} onOpen={vi.fn()} />);
+    expect(rowOf(container, "Appointment.pdf").textContent).toContain("12/24/2026");
+    expect(rowOf(container, "Late meds.pdf").textContent).toContain("Late Meds - ");
+    expect(rowOf(container, "Supplemental.pdf").textContent).toContain("SUPP - ");
+  });
+});
+
+describe("the team queue (the office's answer, 2026-11-25)", () => {
+  const WAITING = [
+    {
+      ...DOCS[0],
+      id: "q1",
+      original_filename: "Mine.pdf",
+      in_team_queue: true,
+      uploaded_by: "Me",
+      uploaded_by_me: true,
+    },
+    {
+      ...DOCS[1],
+      id: "q2",
+      original_filename: "Theirs.pdf",
+      in_team_queue: true,
+      uploaded_by: "Reviewer B",
+      uploaded_by_me: false,
+    },
+  ];
+
+  function renderQueue() {
+    const actions = {
+      onOpen: vi.fn(),
+      onIdentify: vi.fn(),
+      onDelete: vi.fn(),
+      onToggleCompleted: vi.fn(),
+    };
+    const view = render(<DocumentsTable queue docs={WAITING} {...actions} />);
+    return { ...view, actions };
+  }
+
+  async function menuOf(user: ReturnType<typeof userEvent.setup>, name: string) {
+    const row = [...document.querySelectorAll("tbody tr")].find((tr) =>
+      tr.textContent?.includes(name),
+    ) as HTMLElement;
+    await user.click(row.querySelector('button[aria-label="Actions"]') as HTMLElement);
+  }
+
+  it("has no filter chips, search or Completed mark, and says who uploaded each record", () => {
+    const { container } = renderQueue();
+    expect(container.querySelector(".hd-toolbar")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mark as completed" })).toBeNull();
+    expect(screen.getByText("Uploaded by you")).toBeInTheDocument();
+    expect(screen.getByText("Uploaded by Reviewer B")).toBeInTheDocument();
+  });
+
+  it("says identification takes the record, and has no Completed mark in the menu", async () => {
+    const user = userEvent.setup();
+    const { actions } = renderQueue();
+    await menuOf(user, "Theirs.pdf");
+
+    expect(screen.queryByRole("menuitem", { name: /Mark as completed/ })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Take it and start identification" }));
+    expect(actions.onIdentify).toHaveBeenCalledWith(WAITING[1]);
+  });
+
+  it("offers Delete to the uploader alone", async () => {
+    const user = userEvent.setup();
+    const { actions } = renderQueue();
+
+    await menuOf(user, "Theirs.pdf");
+    expect(screen.queryByRole("menuitem", { name: "Delete..." })).toBeNull();
+    await user.keyboard("{Escape}");
+
+    await menuOf(user, "Mine.pdf");
+    await user.click(screen.getByRole("menuitem", { name: "Delete..." }));
+    expect(actions.onDelete).toHaveBeenCalledWith(WAITING[0]);
   });
 });

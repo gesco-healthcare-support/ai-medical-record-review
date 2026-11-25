@@ -357,6 +357,30 @@ describe("ReceivedFilesDialog sending", () => {
     expect(unstage).not.toHaveBeenCalled();
   });
 
+  it("says the record went to the team queue when the server put it there", async () => {
+    // The office's answer (2026-11-25): a record put together from received files belongs to
+    // nobody until someone starts working on it.
+    const user = userEvent.setup();
+    combine.mutateAsync.mockResolvedValue({
+      id: "d1",
+      page_count: 1,
+      patient_records: 0,
+      in_team_queue: true,
+    });
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("records.pdf")]);
+    await allRead(1);
+    await fillPatient(user);
+    await confirmAll(user);
+    await user.click(screen.getByRole("button", { name: "Combine & upload" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(toast).success).toHaveBeenCalledWith(
+        "One record made from 1 file, 1 pages, in the team queue.",
+      ),
+    );
+  });
+
   it("reads the patient ID from the files' names when they agree", async () => {
     const user = userEvent.setup();
     combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 2, patient_records: 0 });
@@ -426,9 +450,12 @@ describe("ReceivedFilesDialog sending", () => {
     expect(send()).toBeEnabled();
   });
 
-  it("asks no appointment date for a supplemental report", async () => {
-    // The office's answer: a supplemental report has no appointment, so its box goes away and the
-    // record can be made without one.
+  it.each([
+    ["a supplemental report", "SUPP"],
+    ["late meds", "LATE"],
+  ])("asks no appointment date for %s", async (_name, visit) => {
+    // The office's answers: a supplemental report (2026-11-19) and late meds (2026-11-25) have no
+    // appointment, so the box goes away and the record can be made without one.
     const user = userEvent.setup();
     combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 2, patient_records: 0 });
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
@@ -440,7 +467,7 @@ describe("ReceivedFilesDialog sending", () => {
     const send = screen.getByRole("button", { name: "Combine & upload" });
     expect(send).toBeDisabled();
 
-    await user.selectOptions(screen.getByLabelText("Type of visit"), "SUPP");
+    await user.selectOptions(screen.getByLabelText("Type of visit"), visit);
 
     expect(screen.queryByLabelText("Appointment date")).toBeNull();
     expect(send).toBeEnabled();
@@ -448,7 +475,7 @@ describe("ReceivedFilesDialog sending", () => {
     await waitFor(() =>
       expect(combine.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
-          billing: expect.objectContaining({ visit_type: "SUPP" }),
+          billing: expect.objectContaining({ visit_type: visit }),
         }),
       ),
     );

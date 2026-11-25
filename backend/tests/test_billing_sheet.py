@@ -22,7 +22,15 @@ from app.services import billing_sheet, received_files
 from app.services.reporting import DOCTOR_FONTS, DOCTOR_NAMES, DOCTORS
 from app.worker.queues import OCR_QUEUE, get_redis
 from tests.conftest import lanes
-from tests.test_received_files import _FIELDS, _combine, _document, _login, _pdf, _user
+from tests.test_received_files import (
+    _FIELDS,
+    _combine,
+    _document,
+    _login,
+    _pdf,
+    _taken,
+    _user,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -232,12 +240,36 @@ def test_a_deposition_count_not_known_yet_prints_blank_beside_the_office_count()
     assert (sheet.office_count, sheet.depo_pages) == (42, None)
 
 
-def test_a_supplemental_report_has_supp_for_its_date_of_service():
-    """DEMONSTRATES the office's answer: a supplemental report has no appointment; DOS says SUPP."""
-    sheet = billing_sheet.sheet_for(_doc(visit_type="SUPP", appointment_date=None), None)
+@pytest.mark.parametrize(("visit", "printed"), [("SUPP", "SUPP"), ("LATE", "LATE MEDS")])
+def test_a_visit_with_no_appointment_prints_its_kind_for_its_date_of_service(visit, printed):
+    """DEMONSTRATES the office's answers: a supplemental report (2026-11-19) and late meds
+    (2026-11-25) have no appointment; the DOS and the type of visit say SUPP or LATE MEDS, even
+    when a date was stored before the type of visit changed."""
+    sheet = billing_sheet.sheet_for(_doc(visit_type=visit), None)
 
-    assert sheet.dos == "SUPP"
-    assert sheet.visit_type == "SUPP"
+    assert sheet.dos == printed
+    assert sheet.visit_type == printed
+
+
+def test_late_meds_is_offered_last_and_takes_no_appointment():
+    """GUARD: the dropdown's order, and LATE is the stored code (the column holds 8 characters)."""
+    assert billing_sheet.VISIT_TYPES == ("AME", "QME", "PQME", "IME", "SUPP", "LATE")
+    assert billing_sheet.NO_APPOINTMENT == ("SUPP", "LATE")
+    assert all(len(visit) <= 8 for visit in billing_sheet.VISIT_TYPES)
+    assert billing_sheet.visit_label("LATE") == "LATE MEDS"
+    assert [billing_sheet.visit_label(v) for v in ("AME", "SUPP", "", None)] == [
+        "AME",
+        "SUPP",
+        "",
+        "",
+    ]
+
+
+def test_late_meds_is_written_on_the_sheet():
+    _, text = _rendered_text(billing_sheet.sheet_for(_doc(visit_type="LATE"), None))
+
+    assert text.count("LATE MEDS") == 2  # DOS and type of visit
+    assert "12/03/2026" not in text
 
 
 def _rendered_text(sheet) -> tuple[int, str]:
@@ -469,13 +501,15 @@ async def test_the_billing_fields_typed_at_upload_are_stored(client):
     assert document.appointment_date == date(2026, 12, 1)
 
 
-async def test_a_supplemental_report_needs_no_appointment_date(client):
-    """DEMONSTRATES: SUPP has no appointment - the date is not asked for, and one sent is dropped."""
+@pytest.mark.parametrize("visit", ["SUPP", "LATE"])
+async def test_a_visit_with_no_appointment_needs_no_appointment_date(client, visit):
+    """DEMONSTRATES: SUPP and late meds have no appointment - the date is not asked for, and one
+    sent is dropped."""
     _, email = _user()
     await _login(client, email)
 
-    without = await _combine(client, visit_type="SUPP", appointment_date=None)
-    with_one = await _combine(client, visit_type="SUPP")
+    without = await _combine(client, visit_type=visit, appointment_date=None)
+    with_one = await _combine(client, visit_type=visit)
 
     assert without.status_code == 201, without.text
     assert with_one.status_code == 201, with_one.text
@@ -720,12 +754,13 @@ async def test_the_sheet_is_edited_and_the_change_audited_by_name(client):
     ]
 
 
-async def test_supp_on_the_sheet_drops_the_appointment_date(client):
+@pytest.mark.parametrize("visit", ["SUPP", "LATE"])
+async def test_a_visit_with_no_appointment_on_the_sheet_drops_the_date(client, visit):
     doc_id = await _record(client)
 
     resp = await client.put(
         f"/api/documents/{doc_id}/billing",
-        json={"visit_type": "SUPP", "appointment_date": "2026-12-01"},
+        json={"visit_type": visit, "appointment_date": "2026-12-01"},
     )
 
     assert resp.status_code == 200, resp.text
@@ -837,7 +872,9 @@ async def test_the_sheet_downloads_as_a_pdf_named_after_the_record(client):
 
 
 async def test_another_account_cannot_read_or_change_the_sheet(client):
+    """GUARD: once its reviewer has taken it out of the team queue, the record is theirs."""
     doc_id = await _record(client)
+    _taken(doc_id)
     _, other = _user()
     await _login(client, other)
 

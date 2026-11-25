@@ -16,6 +16,7 @@ import {
   getBillingSheet,
   listDoctors,
   listDocuments,
+  listTeamQueue,
   rawPdfUrl,
   saveBillingSheet,
   stageReceivedFile,
@@ -181,6 +182,19 @@ describe("uploading", () => {
     expect(body.get("visit_type")).toBe("SUPP");
     expect(body.has("appointment_date")).toBe(false);
   });
+
+  it("sends no appointment date for late meds, even one typed before the choice", async () => {
+    // The office's answer (2026-11-25): late meds are picked as the type of visit and have no
+    // appointment date; the report is due 40 days after the records were received.
+    await combineReceivedFiles({
+      ...UPLOAD,
+      billing: { ...BILLING, visit_type: "LATE", appointment_date: "2026-12-01" },
+    });
+
+    const body = lastCall().init.body as FormData;
+    expect(body.get("visit_type")).toBe("LATE");
+    expect(body.has("appointment_date")).toBe(false);
+  });
 });
 
 describe("the billing sheet", () => {
@@ -237,6 +251,11 @@ describe("listing another reviewer's records", () => {
     expect(lastCall().url).toBe("/api/documents?owner=7");
     await listDocuments(null);
     expect(lastCall().url).toBe("/api/documents");
+  });
+
+  it("asks for the team queue on its own path", async () => {
+    await listTeamQueue();
+    expect(lastCall().url).toBe("/api/documents/queue");
   });
 });
 

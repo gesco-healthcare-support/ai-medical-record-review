@@ -23,7 +23,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from rq.command import send_stop_job_command
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import CursorResult, delete, func, select, update
 from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session, object_session, selectinload
 
@@ -638,6 +638,7 @@ _COMBINE_DATE_DETAIL = "Enter the date the records were received."
 _COMBINE_APPOINTMENT_DETAIL = "Enter the appointment date."
 _COMBINE_PARTY_DETAIL = "Choose who sent the records."
 _BILLING_VISIT_DETAIL = "Choose the type of visit."
+_TAKEN_DETAIL = "{name} has just taken this record from the team queue. Refresh the page."
 _BILLING_INTERPRETER_DETAIL = "Choose whether an interpreter is needed."
 _BILLING_DOCTOR_DETAIL = "Choose the doctor from the list."
 _BILLING_CLAIM_DETAIL = "The claim numbers are at most 255 characters."
@@ -729,14 +730,14 @@ def _billing_at_upload(
     declared_pages: str,
 ) -> dict:
     """The billing sheet's fields as the uploader typed them on ``POST .../combine``, checked:
-    the type of visit and whether an interpreter is needed are required, and so is the appointment
-    date unless the visit is a supplemental report, which has none. The doctor, the claim numbers,
-    the location, the previous office visit and the declared page count may be blank. Who reviews
-    the records is not asked: the sheet always says IN-HOUSE.
+    the type of visit and whether an interpreter is needed are required, and so is the
+    appointment date unless the visit has none (a supplemental report, late meds). The doctor, the
+    claim numbers, the location, the previous office visit and the declared page count may be
+    blank. Who reviews the records is not asked: the sheet always says IN-HOUSE.
     """
     visit = _choice(visit_type, billing_sheet.VISIT_TYPES, _BILLING_VISIT_DETAIL, required=True)
     appointment = None
-    if visit != billing_sheet.SUPPLEMENTAL:
+    if visit not in billing_sheet.NO_APPOINTMENT:
         appointment = _form_date(appointment_date, _COMBINE_APPOINTMENT_DETAIL)
     return {
         "visit_type": visit,
@@ -947,8 +948,12 @@ def combine_received_files(
     fields are required): the
     type of visit, the appointment date (none for a supplemental report), the doctor - which is
     also the header's -, the interpreter, the claim numbers, the location, the previous office
-    visit and the page count the sender's declaration states. ``owner`` (admins only) puts
-    the record in another reviewer's account, as on the single upload.
+    visit and the page count the sender's declaration states.
+
+    The record goes into the TEAM QUEUE (the office's answer, 2026-11-25): it belongs to nobody
+    until a reviewer starts Identify on it (``segment_start``), and every reviewer sees it,
+    listed by when it is due (``GET /api/documents/queue``). ``owner`` (admins only) puts it in a
+    named reviewer's account instead, as on the single upload.
 
     The joined file is the record as received: it is read like any other upload, identified when
     the reviewer starts Identify, and ``GET .../raw`` downloads it as it is. No duplicate check: the
@@ -989,6 +994,7 @@ def combine_received_files(
         received_on=received,
         received_parts=[part.as_dict() for part in parts],
         records_from=party,
+        team_queue_since=datetime.now(UTC) if owner is None else None,
         **billing,
     )
     session.add(document)
@@ -997,6 +1003,8 @@ def combine_received_files(
     detail = f"{len(parts)} files"
     if reviewer.id != user.id:
         detail += f", for user {reviewer.id}"
+    if document.team_queue_since is not None:
+        detail += ", to the team queue"
     audit(session, "combine_upload", user.id, document_id, detail=detail)
     for path in staged:
         received_files.remove_staged(path)
@@ -1006,6 +1014,7 @@ def combine_received_files(
         "id": document_id,
         "page_count": page_count,
         "parts": [part.as_dict() for part in parts],
+        "in_team_queue": document.team_queue_since is not None,
         **_patient_fields(session, document),
     }
 
@@ -1023,9 +1032,11 @@ def list_documents(
     anyone else `owner` is IGNORED rather than refused, so a non-admin sending it gets their own
     list and learns nothing about another account."""
     owner_id = owner if owner is not None and user.is_superuser else user.id
+    # A record waiting in the team queue is nobody's yet: it is listed by GET .../queue, not in
+    # its uploader's records.
     documents = session.scalars(
         select(Document)
-        .where(Document.user_id == owner_id)
+        .where(Document.user_id == owner_id, Document.team_queue_since.is_(None))
         .order_by(Document.created_at.desc())
         # `listing()` reads `active_job`, which iterates `self.jobs` - a lazy relationship, so
         # without this the comprehension below fires ONE query per document. Measured by counting
@@ -1057,6 +1068,55 @@ def list_documents(
         .all()
     )
     return [doc.listing() | {"rows_count": counts.get(doc.id, 0)} for doc in documents]
+
+
+@router.get("/queue")
+def list_team_queue(
+    session: Session = Depends(get_db),
+    user: User = Depends(current_active_user),
+):
+    """The TEAM QUEUE: every record that belongs to nobody yet, whoever uploaded it, for every
+    reviewer (the office's answer, 2026-11-25: whoever decides what to run next sees them all).
+    Listed like D1, oldest first; the page orders them by when they are due. The uploader's
+    file name is shown to everyone here: the records are the office's, not one reviewer's.
+
+    Declared before ``GET /{document_id}``, which would otherwise take "queue" for an id.
+    """
+    documents = session.scalars(
+        select(Document)
+        .where(Document.team_queue_since.is_not(None))
+        .order_by(Document.team_queue_since)
+        .options(selectinload(Document.jobs))
+    ).all()
+    uploaders = dict(
+        session.execute(
+            select(User.id, User.name).where(User.id.in_({doc.user_id for doc in documents}))
+        )
+        .tuples()
+        .all()
+    )
+    # A record in the queue has no rows (taking it starts Identify, which makes them); counted
+    # anyway, so the list answers in D1's shape.
+    counts = dict(
+        session.execute(
+            select(ReviewRow.document_id, func.count(ReviewRow.id))
+            .join(Document, Document.id == ReviewRow.document_id)
+            .where(Document.team_queue_since.is_not(None))
+            .group_by(ReviewRow.document_id)
+        )
+        .tuples()
+        .all()
+    )
+    return [
+        doc.listing()
+        | {
+            "rows_count": counts.get(doc.id, 0),
+            "uploaded_by": uploaders.get(doc.user_id) or "",
+            # Only the uploader may delete it (`delete_document`): the page offers Delete to them.
+            "uploaded_by_me": doc.user_id == user.id,
+        }
+        for doc in documents
+    ]
 
 
 def _editor_row(row: ReviewRow) -> dict:
@@ -1391,8 +1451,8 @@ def _billing_response(session: Session, document: Document) -> dict:
 
 def _billing_fields(payload: BillingPayload, document: Document) -> dict:
     """The sheet's fields as typed on D6d, checked; a 400 for a value the sheet cannot hold. Every
-    field may be blank. A supplemental report has no appointment date, so its date is dropped. A
-    doctor already stored that is not on today's list is kept as it is."""
+    field may be blank. A visit with no appointment (a supplemental report, late meds) drops its
+    date. A doctor already stored that is not on today's list is kept as it is."""
     doctors = DOCTORS + ((document.doctor,) if document.doctor else ())
     visit = _choice(
         payload.visit_type, billing_sheet.VISIT_TYPES, _BILLING_VISIT_DETAIL, required=False
@@ -1400,7 +1460,7 @@ def _billing_fields(payload: BillingPayload, document: Document) -> dict:
     appointment = _optional_date(payload.appointment_date, _COMBINE_APPOINTMENT_DETAIL)
     return {
         "visit_type": visit,
-        "appointment_date": None if visit == billing_sheet.SUPPLEMENTAL else appointment,
+        "appointment_date": None if visit in billing_sheet.NO_APPOINTMENT else appointment,
         "doctor": _choice(payload.doctor, doctors, _BILLING_DOCTOR_DETAIL, required=False),
         "interpreter": _yes_no(payload.interpreter, required=False),
         "claim_numbers": _short_text(payload.claim_numbers, _BILLING_CLAIM_DETAIL),
@@ -2229,9 +2289,45 @@ def cancel_job(
     return {**job.progress(), **grace}
 
 
+def _take_from_team_queue(session: Session, document: Document, user: User) -> None:
+    """Starting Identify on a record in the team queue takes it (the office's answer,
+    2026-11-25: "once someone started working on it then it goes under their files"): it
+    becomes the caller's, leaves the queue, and its Identify runs in the caller's lane.
+
+    The first press wins. The UPDATE takes the record only while it is still in the queue, so of
+    two reviewers pressing at once the second takes nothing and is told who has it (409). A
+    record outside the queue is left as it is. Opening a record in the queue, or its billing
+    sheet, takes nothing."""
+    if document.team_queue_since is None:
+        return
+    uploader = document.user_id
+    changed = session.execute(
+        update(Document)
+        .where(Document.id == document.id, Document.team_queue_since.is_not(None))
+        .values(user_id=user.id, team_queue_since=None)
+        .execution_options(synchronize_session=False)
+    )
+    # A CursorResult carries the row count (as in services/jobs.py); typed as a plain Result.
+    taken = isinstance(changed, CursorResult) and changed.rowcount == 1
+    session.commit()
+    session.refresh(document)
+    if not taken:
+        if document.user_id != user.id:
+            holder = session.get(User, document.user_id)
+            name = (holder.name if holder is not None else None) or "Another reviewer"
+            raise HTTPException(status_code=409, detail=_TAKEN_DETAIL.format(name=name))
+        return
+    audit(session, "team_queue.take", user.id, document.id, detail=f"uploaded by user {uploader}")
+
+
 @router.post(
     "/{document_id}/segment/start",
-    responses={409: {"description": "A job is already running for this document."}},
+    responses={
+        409: {
+            "description": "A job is already running for this document, or another reviewer "
+            "just took it from the team queue."
+        }
+    },
 )
 def segment_start(
     payload: SegmentStartPayload | None = None,
@@ -2244,7 +2340,11 @@ def segment_start(
     ``fresh`` is accepted now and is currently a no-op WITHOUT pretending otherwise: segmentation keeps
     no checkpoints yet, so every run already recomputes every window. It exists so the UI can offer
     the same Continue / Start over pair for all four kinds, and the checkpoint-clearing half arrives
-    with the checkpoint table itself."""
+    with the checkpoint table itself.
+
+    On a record waiting in the team queue it first takes the record (``_take_from_team_queue``),
+    so the job is queued in the lane of the reviewer who now has it."""
+    _take_from_team_queue(session, document, user)
     try:
         enqueue(
             session,
