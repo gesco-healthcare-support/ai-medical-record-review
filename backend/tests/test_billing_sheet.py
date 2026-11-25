@@ -217,27 +217,37 @@ def test_the_sheet_carries_the_typed_fields_and_the_counts():
     assert sheet.dos == "12/03/2026"
     assert sheet.patient_name == "Sample, Pat"
     assert sheet.date_received == "11/19/2026"
-    assert (sheet.declared_pages, sheet.office_count, sheet.depo_pages) == (40, 42, 7)
+    assert (sheet.declared_pages, sheet.office_count, sheet.depo_pages) == (40, 42, "7")
 
 
 def test_a_count_typed_on_the_sheet_wins_over_the_worked_out_one():
     sheet = billing_sheet.sheet_for(
-        _doc(office_count=50, depo_pages=0), billing_sheet.Counts(42, 7)
+        _doc(office_count=50, depo_pages="0"), billing_sheet.Counts(42, 7)
     )
 
-    assert (sheet.office_count, sheet.depo_pages) == (50, 0)
+    assert (sheet.office_count, sheet.depo_pages) == (50, "0")
+
+
+def test_several_deposition_counts_typed_are_printed_as_typed():
+    """DEMONSTRATES the office's answer (2026-11-25): one count per deposition, separated by
+    commas, printed on the sheet as typed instead of the worked-out total."""
+    sheet = billing_sheet.sheet_for(_doc(depo_pages="120, 85, 4"), billing_sheet.Counts(42, 7))
+
+    assert sheet.depo_pages == "120, 85, 4"
+    _, text = _rendered_text(sheet)
+    assert "120, 85, 4" in text
 
 
 def test_while_the_pages_are_read_the_counts_are_blank():
     sheet = billing_sheet.sheet_for(_doc(), None)
 
-    assert (sheet.office_count, sheet.depo_pages) == (None, None)
+    assert (sheet.office_count, sheet.depo_pages) == (None, "")
 
 
 def test_a_deposition_count_not_known_yet_prints_blank_beside_the_office_count():
     sheet = billing_sheet.sheet_for(_doc(), billing_sheet.Counts(42, None))
 
-    assert (sheet.office_count, sheet.depo_pages) == (42, None)
+    assert (sheet.office_count, sheet.depo_pages) == (42, "")
 
 
 @pytest.mark.parametrize(("visit", "printed"), [("SUPP", "SUPP"), ("LATE", "LATE MEDS")])
@@ -740,8 +750,8 @@ async def test_the_sheet_is_edited_and_the_change_audited_by_name(client):
     assert document.discrepancy_reason == "One page more than declared"
     assert document.records_from == "defense"
     assert document.location == "Second office"
-    assert (document.office_count, document.depo_pages) == (None, 3)
-    assert resp.json()["depo_pages"] == 3
+    assert (document.office_count, document.depo_pages) == (None, "3")
+    assert resp.json()["depo_pages"] == "3"
     with get_sessionmaker()() as session:
         details = session.scalars(
             select(AuditLog.detail).where(
@@ -782,11 +792,44 @@ async def test_a_doctor_stored_before_the_list_changed_is_kept(client):
     assert other.json()["detail"] == "Choose the doctor from the list."
 
 
+_DEPO_DETAIL = (
+    "Enter the deposition pages as whole numbers, separated by commas when there are several."
+)
+
+
+@pytest.mark.parametrize(
+    ("typed", "stored"),
+    [
+        ("120, 85", "120, 85"),
+        ("120,85", "120, 85"),
+        (" 120 ,  85 , ", "120, 85"),
+        ("007", "7"),
+        ("0", "0"),
+        (",", None),
+        ("", None),
+    ],
+)
+async def test_several_deposition_counts_are_kept_as_the_sheet_prints_them(client, typed, stored):
+    """DEMONSTRATES the office's answer (2026-11-25): one count per deposition, separated by
+    commas; stored and answered the way the sheet prints them. Blank goes back to the
+    worked-out count."""
+    doc_id = await _record(client)
+
+    resp = await client.put(f"/api/documents/{doc_id}/billing", json={"depo_pages": typed})
+
+    assert resp.status_code == 200, resp.text
+    assert _document(doc_id).depo_pages == stored
+    assert resp.json()["depo_pages"] == (stored or "")
+
+
 @pytest.mark.parametrize(
     ("field", "value", "detail"),
     [
         ("office_count", "many", "Enter the office count as a whole number."),
-        ("depo_pages", "1.5", "Enter the deposition pages as a whole number."),
+        ("depo_pages", "1.5", _DEPO_DETAIL),
+        ("depo_pages", "120 and 85", _DEPO_DETAIL),
+        ("depo_pages", "120, -5", _DEPO_DETAIL),
+        ("depo_pages", ", ".join(["100"] * 60), _DEPO_DETAIL),  # over the sheet's 255
         (
             "discrepancy_reason",
             "x" * 256,
@@ -831,7 +874,7 @@ async def test_the_sheet_downloads_at_once_with_a_deposition_count_not_known_lef
 
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "application/pdf"
-    assert (drawn[0].office_count, drawn[0].depo_pages) == (5, None)
+    assert (drawn[0].office_count, drawn[0].depo_pages) == (5, "")
 
 
 async def test_both_counts_typed_let_the_sheet_download_before_the_reading_ends(client):
@@ -959,7 +1002,7 @@ async def test_the_raw_download_never_waits_for_the_pages_to_be_read(client, mon
 
     assert resp.status_code == 200, resp.text
     assert resp.content.startswith(stored)
-    assert (drawn[0].office_count, drawn[0].depo_pages) == (5, None)
+    assert (drawn[0].office_count, drawn[0].depo_pages) == (5, "")
     assert _built_files() == []
     assert "download_raw" in _actions(doc_id)
 
@@ -986,3 +1029,50 @@ def test_the_fields_the_upload_requires_are_in_the_helper():
     """GUARD for the other test module: its upload form carries every required billing field."""
     for field in ("visit_type", "interpreter"):
         assert _FIELDS[field]
+
+
+# --- migration a9c4e7b2d815: a count typed before the list is kept ----------------------------------
+
+
+def test_the_migration_keeps_every_deposition_count_already_typed():
+    """DEMONSTRATES the copy in `a9c4e7b2d815`: a single count typed before 2026-11-25 is carried
+    into the new text column as it was, a record with none stays empty, and the sheet prints the
+    same number. Synthetic rows, rolled back."""
+    import importlib.util
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "a9c4e7b2d815_documents_depo_page_counts.py"
+    )
+    spec = importlib.util.spec_from_file_location("depo_counts_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    with get_sessionmaker()() as session:
+        owner_id, _ = _user()
+
+        def doc(n: int, typed: int | None) -> Document:
+            return Document(
+                id=f"depocopy{n}-{owner_id}",
+                user_id=owner_id,
+                original_filename="x.pdf",
+                stored_path="x.pdf",
+                sha256="0" * 64,
+                page_count=1,
+                depo_pages_number=typed,
+            )
+
+        typed, zero, untyped = doc(1, 120), doc(2, 0), doc(3, None)
+        session.add_all([typed, zero, untyped])
+        session.flush()
+
+        session.connection().exec_driver_sql(migration.COPY_TYPED_COUNTS)
+        session.expire_all()
+
+        assert session.get(Document, typed.id).depo_pages == "120"
+        assert session.get(Document, zero.id).depo_pages == "0"
+        assert session.get(Document, untyped.id).depo_pages is None
+        sheet = billing_sheet.sheet_for(session.get(Document, typed.id), billing_sheet.Counts(5, 7))
+        assert sheet.depo_pages == "120"
+        session.rollback()

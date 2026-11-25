@@ -59,7 +59,8 @@ full at the top (`reporting.DOCTOR_NAMES`, the office's own list, keyed like the
 the date of service (`SUPP` for a supplemental report, `LATE MEDS` for late meds), the
 previous office visit, the patient, the account (patient ID), the location as typed, the claim
 numbers, the type of visit (late meds print as `LATE MEDS`), the interpreter, and the sender's row: the page count its declaration
-states, the deposition pages, Sub-rosa "None", the office count, the reason the counts differ and
+states, the deposition pages (as typed when typed - several counts, one per deposition, separated
+by commas), Sub-rosa "None", the office count, the reason the counts differ and
 the date received; "Dec/Attest valid" is left for a person. The billing codes below are printed
 blank, for billing.
 The office count is every page received but the internal email and the envelope; the deposition

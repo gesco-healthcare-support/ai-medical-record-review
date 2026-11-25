@@ -318,7 +318,9 @@ One uploaded PDF and its report-header fields. The PDF itself is stored on disk 
 | `previous_visit` | Date | yes | none | Billing sheet: the patient's previous office visit, when there was one. | `c7f3a9e2d5b1` |
 | `declared_pages` | Integer | yes | none | Billing sheet: the page count the sender's declaration states. | `c7f3a9e2d5b1` |
 | `discrepancy_reason` | String(255) | yes | none | Billing sheet: why the declared count and the office count differ, typed at D6d. | `c7f3a9e2d5b1` |
-| `office_count`, `depo_pages` | Integer | yes | none | Billing sheet: counts typed over the ones worked out from the record (`billing_sheet.reading`); NULL uses the worked-out count. | `c7f3a9e2d5b1` |
+| `office_count` | Integer | yes | none | Billing sheet: the office count typed over the one worked out from the record (`billing_sheet.reading`); NULL uses the worked-out count. | `c7f3a9e2d5b1` |
+| `depo_page_counts` | String(255) | yes | none | Billing sheet: the deposition pages typed over the worked-out count - one count, or several separated by commas, one per deposition - as the sheet prints them, `120, 85` (the office's answer of 2026-11-25). The model's attribute is `Document.depo_pages`. NULL uses the worked-out count. | `a9c4e7b2d815` |
+| `depo_pages` | Integer | yes | none | The single deposition count typed before 2026-11-25; `a9c4e7b2d815` copied it into `depo_page_counts`. No longer written or read (`Document.depo_pages_number`); kept for the records that hold it. | `c7f3a9e2d5b1` |
 
 ORM helpers on `Document`: `active_job` (the job in `queued`, `running` or `paused`, else `None`)
 and `listing()` (the wire shape; see [HTTP API reference](http-api.md)).

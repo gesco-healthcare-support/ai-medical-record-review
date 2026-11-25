@@ -362,7 +362,9 @@ are still being read the sheet's deposition pages print blank, and a toast says 
 "Billing sheet" in the row menu of such a record (one with `received_on`) opens `BillingSheetDialog`
 (`billing-sheet-dialog.tsx`): the office's billing sheet - the fields typed at upload, editable,
 who sent the records, the office count and the deposition pages worked out from the record, a count
-typed over either (blank goes back to the worked-out one), and the reason the counts differ, with a
+typed over either (blank goes back to the worked-out one; the deposition pages may be several
+counts separated by commas, one per deposition, printed as typed - `isPageCountList`), and the
+reason the counts differ, with a
 note when the declared page count and the office count differ. While the record's pages are still
 being read it shows the office count, says the deposition pages are worked out once the pages
 are read and print blank until then, and reads the sheet again every 5 seconds; "Download PDF"

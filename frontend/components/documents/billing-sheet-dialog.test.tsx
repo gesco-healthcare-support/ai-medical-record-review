@@ -119,7 +119,7 @@ describe("BillingSheetDialog", () => {
   });
 
   it("has no note on the download once the deposition pages are typed", () => {
-    show({ counted: { office: 42, depo: null }, pages_unread: 10, depo_pages: 0 });
+    show({ counted: { office: 42, depo: null }, pages_unread: 10, depo_pages: "0" });
 
     expect(button("Download PDF")).toBeEnabled();
     expect(button("Download PDF")).not.toHaveAttribute("title");
