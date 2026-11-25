@@ -233,12 +233,15 @@ async def test_of_two_pressing_at_once_the_second_is_told_who_has_it(client):
 
     with get_sessionmaker()() as late:
         stale = late.get(Document, doc_id)  # read while it still waits
-        assert stale is not None and stale.team_queue_since is not None
+        assert stale is not None
+        assert stale.team_queue_since is not None
+        second = late.get(User, second_id)
+        assert second is not None
         await _login(client, first)
         assert (await client.post(f"/api/documents/{doc_id}/segment/start")).status_code == 200
 
         with pytest.raises(HTTPException) as refused:
-            _take_from_team_queue(late, stale, late.get(User, second_id))
+            _take_from_team_queue(late, stale, second)
 
     assert refused.value.status_code == 409
     assert refused.value.detail == (
