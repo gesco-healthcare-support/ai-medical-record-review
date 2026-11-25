@@ -49,6 +49,11 @@ VISITS_WITHOUT_APPOINTMENT: tuple[str, ...] = ("SUPP", "LATE")
 REPORT_DAYS_AFTER_RECEIVED = 40
 
 
+def _iso_day(value: date | None) -> str:
+    """A stored day as ``YYYY-MM-DD``, or ``""`` when there is none - the list's date fields."""
+    return value.isoformat() if value else ""
+
+
 def _uuid() -> str:
     import uuid
 
@@ -354,12 +359,12 @@ class Document(Base):
             "one_entry_per_date": bool(self.one_entry_per_date),
             "completed_at": _utc_iso(self.completed_at),
             "downloaded_at": _utc_iso(self.downloaded_at),
-            "received_on": self.received_on.isoformat() if self.received_on else "",
+            "received_on": _iso_day(self.received_on),
             "received_parts": self.received_parts or [],
-            "appointment_date": self.appointment_date.isoformat() if self.appointment_date else "",
+            "appointment_date": _iso_day(self.appointment_date),
             "records_from": self.records_from or "",
             "visit_type": self.visit_type or "",
-            "due_on": due.isoformat() if (due := self.due_on()) else "",
+            "due_on": _iso_day(self.due_on()),
         }
 
 
