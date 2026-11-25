@@ -90,7 +90,8 @@ async def test_the_list_says_when_each_record_is_due(client):
     for resp in (visit, late, supp):
         assert resp.status_code == 201, resp.text
 
-    listed = {doc["id"]: doc for doc in (await client.get("/api/documents")).json()}
+    # A record put together from received files waits in the team queue (test_team_queue.py).
+    listed = {doc["id"]: doc for doc in (await client.get("/api/documents/queue")).json()}
 
     # received 2026-11-03 (tests/test_received_files.py _FIELDS); + 40 days = 2026-12-13
     assert (listed[visit.json()["id"]]["visit_type"], listed[visit.json()["id"]]["due_on"]) == (

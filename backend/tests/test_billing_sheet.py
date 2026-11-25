@@ -22,7 +22,15 @@ from app.services import billing_sheet, received_files
 from app.services.reporting import DOCTOR_FONTS, DOCTOR_NAMES, DOCTORS
 from app.worker.queues import OCR_QUEUE, get_redis
 from tests.conftest import lanes
-from tests.test_received_files import _FIELDS, _combine, _document, _login, _pdf, _user
+from tests.test_received_files import (
+    _FIELDS,
+    _combine,
+    _document,
+    _login,
+    _pdf,
+    _taken,
+    _user,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -864,7 +872,9 @@ async def test_the_sheet_downloads_as_a_pdf_named_after_the_record(client):
 
 
 async def test_another_account_cannot_read_or_change_the_sheet(client):
+    """GUARD: once its reviewer has taken it out of the team queue, the record is theirs."""
     doc_id = await _record(client)
+    _taken(doc_id)
     _, other = _user()
     await _login(client, other)
 
