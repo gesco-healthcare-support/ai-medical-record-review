@@ -426,9 +426,12 @@ describe("ReceivedFilesDialog sending", () => {
     expect(send()).toBeEnabled();
   });
 
-  it("asks no appointment date for a supplemental report", async () => {
-    // The office's answer: a supplemental report has no appointment, so its box goes away and the
-    // record can be made without one.
+  it.each([
+    ["a supplemental report", "SUPP"],
+    ["late meds", "LATE"],
+  ])("asks no appointment date for %s", async (_name, visit) => {
+    // The office's answers: a supplemental report (2026-11-19) and late meds (2026-11-25) have no
+    // appointment, so the box goes away and the record can be made without one.
     const user = userEvent.setup();
     combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 2, patient_records: 0 });
     render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
@@ -440,7 +443,7 @@ describe("ReceivedFilesDialog sending", () => {
     const send = screen.getByRole("button", { name: "Combine & upload" });
     expect(send).toBeDisabled();
 
-    await user.selectOptions(screen.getByLabelText("Type of visit"), "SUPP");
+    await user.selectOptions(screen.getByLabelText("Type of visit"), visit);
 
     expect(screen.queryByLabelText("Appointment date")).toBeNull();
     expect(send).toBeEnabled();
@@ -448,7 +451,7 @@ describe("ReceivedFilesDialog sending", () => {
     await waitFor(() =>
       expect(combine.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
-          billing: expect.objectContaining({ visit_type: "SUPP" }),
+          billing: expect.objectContaining({ visit_type: visit }),
         }),
       ),
     );

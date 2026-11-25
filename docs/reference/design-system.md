@@ -61,6 +61,8 @@ All defined on `:root` in `frontend/app/evaluators-ds.css`.
 | `--danger-100` | `#FBE7E6` | Error background |
 | `--violet-600` | `#6D28D9` | The manual check only: "Manual check" chip text, the Review & correct table's review box |
 | `--violet-100` | `#EDE9FE` | "Manual check" chip background |
+| `--due-appointment-100` / `-200` | `#FEF9C3` / `#FDEFA1` | My documents row of a record due on its appointment date (`hd-due-appointment`), and its hover |
+| `--due-late-meds-100` / `-200` | `#E0F2FE` / `#C7E7FB` | My documents row of late meds (`hd-due-late-meds`), and its hover |
 
 ### Roles, shadows, shape, layout, type
 

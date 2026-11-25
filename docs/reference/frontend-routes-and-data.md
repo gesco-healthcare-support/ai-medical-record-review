@@ -83,7 +83,7 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | `stageReceivedFile()` | `POST /documents/combine/files` | multipart field `pdf` (one PDF or scanned image) | `{token, pages, kind, check, sha256}` | `ReceivedFilesDialog`, once per file as it is added, one file at a time |
 | `receivedFilePreviewUrl()` | `GET /documents/combine/files/{token}/preview` | - | a PNG of the file's first page, shown by a plain image tag | "Page 1" in `ReceivedFilesDialog` |
 | `unstageReceivedFile()` | `DELETE /documents/combine/files/{token}` | - | `{ok}` | `ReceivedFilesDialog`: a file removed from the list, and every staged file when the dialog closes without making a record (errors ignored) |
-| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `records_from`, the billing sheet's `visit_type`, `interpreter`, `appointment_date` (not for `SUPP`) and, when typed, `doctor`, `claim_numbers`, `location`, `previous_visit`, `declared_pages`; `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. The patient's details and the billing sheet's required fields (`billingReady` in `frontend/lib/billing-sheet.ts`) must be filled and every file read; the Patient ID box is filled from the ID the files' names agree on |
+| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `records_from`, the billing sheet's `visit_type`, `interpreter`, `appointment_date` (not for `SUPP` or `LATE`) and, when typed, `doctor`, `claim_numbers`, `location`, `previous_visit`, `declared_pages`; `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. The patient's details and the billing sheet's required fields (`billingReady` in `frontend/lib/billing-sheet.ts`) must be filled and every file read; the Patient ID box is filled from the ID the files' names agree on |
 | `listDoctors()` | `GET /documents/combine/doctors` | - | `{doctors}` | `useDoctors()` in `ReceivedFilesDialog` (the Doctor list), fetched once while the dialog is open |
 | `getBillingSheet()` | `GET /documents/{id}/billing` | - | the billing sheet | `useBillingSheet()` in `BillingSheetDialog`; read again every 5 seconds while `pages_unread` is above 0 |
 | `saveBillingSheet()` | `PUT /documents/{id}/billing` | `BillingSheetEdit` (every field as typed) | the billing sheet | `useSaveBillingSheet()` in `BillingSheetDialog` (the answer replaces the cached sheet) |
@@ -321,7 +321,7 @@ together from the files it arrived in, the step the office did in Adobe Acrobat.
 the patient's last and first name, the patient ID (filled when the files' names agree on one), the
 date received, picks who sent the records (Defense, Applicant, Insurance or Copy service), fills
 the billing sheet's fields (`BillingFields` in `billing-fields.tsx`: the type of visit, the
-appointment date - gone for a supplemental report, `SUPP` - and the interpreter are required;
+appointment date - gone for a supplemental report, `SUPP`, and for late meds, "Late Meds" (stored `LATE`) - and the interpreter are required;
 who reviews the records is not asked, since the sheet always says IN-HOUSE; the doctor, the
 claim numbers, the location, the previous office visit and the pages the declaration states may
 stay blank), and adds the files
@@ -369,8 +369,17 @@ footer, like the upload's. While either dialog is open, a file dropped on the re
 it uploads nothing.
 
 Other My documents behaviour: search matches the filename or the patient name; sort columns are
-Document, Patient, Pages, Uploaded (the default, newest first), Documents found and Last activity; 20
+Document, Due (the default), Patient, Pages, Uploaded, Documents found and Last activity; 20
 records per page.
+
+Due (`frontend/lib/deadlines.ts`, the office's answer of 2026-11-25) lists the closest deadline
+first: the record's `due_on`, which is its appointment date, or 40 days after the records were
+received for a supplemental report and late meds. Records with no deadline (uploaded as one PDF)
+come after, newest upload first, and records marked Completed last. The cell shows the date
+(`MM/DD/YYYY`) and the days left ("5 days left", "Due today", "3 days late"), naming SUPP or
+Late Meds when the deadline is not an appointment. The row is highlighted yellow for a record due
+on its appointment date and light blue for late meds; a supplemental report, a record with no
+deadline and a Completed one keep the normal colour.
 
 For an admin viewing another reviewer's records ("Show records for"): both upload buttons stay,
 and the record goes into that reviewer's account. A single upload first asks "Upload to <name>'s

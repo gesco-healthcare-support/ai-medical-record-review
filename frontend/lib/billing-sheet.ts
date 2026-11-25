@@ -3,10 +3,25 @@
  *  every value against. Who reviews the records is not asked: the office reviews every record in
  *  house, and the sheet always says IN-HOUSE (2026-11-20). */
 
-/** The type of visit. A supplemental report (SUPP) has no appointment: the sheet's DOS says SUPP. */
-export const VISIT_TYPES = ["AME", "QME", "PQME", "IME", "SUPP"] as const;
+/** The type of visit. A supplemental report (SUPP) has no appointment: the sheet's DOS says SUPP.
+ *  Records that came in too late for the evaluation (late meds) have none either: stored as LATE
+ *  (the server's column holds 8 characters), shown as "Late Meds", and the sheet's DOS and type of
+ *  visit say LATE MEDS. */
+export const VISIT_TYPES = ["AME", "QME", "PQME", "IME", "SUPP", "LATE"] as const;
 export type VisitType = (typeof VISIT_TYPES)[number];
 export const SUPPLEMENTAL: VisitType = "SUPP";
+export const LATE_MEDS: VisitType = "LATE";
+
+/** How a type of visit is shown in the dropdown. */
+export function visitLabel(visit: string): string {
+  return visit === LATE_MEDS ? "Late Meds" : visit;
+}
+
+/** Whether the type of visit has an appointment date: every one but a supplemental report and
+ *  late meds, whose report is due 40 days after the records were received. */
+export function takesAppointment(visit: string): boolean {
+  return visit !== SUPPLEMENTAL && visit !== LATE_MEDS;
+}
 
 /** The longest typed text the sheet keeps (the claim numbers, the location, the reason the counts
  *  differ). */
@@ -87,12 +102,12 @@ export const EMPTY_BILLING: BillingDraft = {
 
 /** Whether the billing fields typed at upload are enough to make the record: the type of visit,
  *  who reviews the records and the interpreter are required, and the appointment date unless the
- *  visit is a supplemental report; a declared page count, when given, is a whole number, and the
+ *  visit has none (a supplemental report, late meds); a declared page count, when given, is a whole number, and the
  *  claim numbers and the location fit the sheet. */
 export function billingReady(draft: BillingDraft): boolean {
   return (
     draft.visit_type !== "" &&
-    (draft.visit_type === SUPPLEMENTAL || draft.appointment_date !== "") &&
+    (!takesAppointment(draft.visit_type) || draft.appointment_date !== "") &&
     draft.interpreter !== "" &&
     isPageCount(draft.declared_pages) &&
     draft.claim_numbers.length <= BILLING_TEXT_MAX &&

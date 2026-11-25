@@ -52,7 +52,7 @@ import pymupdf
 from redis.exceptions import RedisError
 from sqlalchemy import select
 
-from app.models import Document, PageText
+from app.models import VISITS_WITHOUT_APPOINTMENT, Document, PageText
 from app.services.ocr import has_condensed_sheets
 from app.services.reporting import DOCTOR_NAMES
 from app.worker.queues import get_redis
@@ -60,9 +60,17 @@ from app.worker.queues import get_redis
 logger = logging.getLogger(__name__)
 
 # The type of visit, in the office's order. A supplemental report has no appointment: its DOS is
-# printed as SUPP too (the office's answer, 2026-11-19).
-VISIT_TYPES: tuple[str, ...] = ("AME", "QME", "PQME", "IME", "SUPP")
+# printed as SUPP too (the office's answer, 2026-11-19). Records that came in too late for the
+# evaluation ("late meds") are written up like a supplemental report: no appointment, the DOS
+# and the type of visit print LATE MEDS (2026-11-25). Stored as LATE - the column holds 8
+# characters - and shown as VISIT_LABELS says.
+VISIT_TYPES: tuple[str, ...] = ("AME", "QME", "PQME", "IME", "SUPP", "LATE")
 SUPPLEMENTAL = "SUPP"
+LATE_MEDS = "LATE"
+VISIT_LABELS: dict[str, str] = {LATE_MEDS: "LATE MEDS"}
+# The visits that take no appointment date: their report is due 40 days after the records were
+# received (models.Document.due_on).
+NO_APPOINTMENT: tuple[str, ...] = VISITS_WITHOUT_APPOINTMENT
 
 # Who reviews the records - the title line of the sheet. The office's form offers E-DATA,
 # IN-HOUSE and LEONARDO, but the office reviews every record in house, so the sheet always says
@@ -289,9 +297,17 @@ def us_date(value: date | None) -> str:
     return value.strftime("%m/%d/%Y") if value else ""
 
 
+def visit_label(visit_type: str | None) -> str:
+    """The type of visit as the sheet prints it: LATE MEDS for late meds, else as stored."""
+    return VISIT_LABELS.get(visit_type or "", visit_type or "")
+
+
 def dos(visit_type: str | None, appointment: date | None) -> str:
-    """The sheet's DOS: SUPP for a supplemental report, else the appointment date."""
-    return SUPPLEMENTAL if visit_type == SUPPLEMENTAL else us_date(appointment)
+    """The sheet's DOS: SUPP for a supplemental report, LATE MEDS for late meds, else the
+    appointment date."""
+    if visit_type in NO_APPOINTMENT:
+        return visit_label(visit_type)
+    return us_date(appointment)
 
 
 def doctor_name(doctor: str | None) -> str:
@@ -325,7 +341,7 @@ def sheet_for(document: Document, counts: Counts | None) -> Sheet:
         patient_id=document.patient_id or "",
         location=document.location or "",
         claim_numbers=document.claim_numbers or "",
-        visit_type=document.visit_type or "",
+        visit_type=visit_label(document.visit_type),
         interpreter=document.interpreter,
         records_from=document.records_from,
         declared_pages=document.declared_pages,

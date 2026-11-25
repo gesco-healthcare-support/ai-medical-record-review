@@ -3,7 +3,7 @@ import {
   type BillingDraft,
   type BillingSheet,
   type BillingSheetEdit,
-  SUPPLEMENTAL,
+  takesAppointment,
 } from "@/lib/billing-sheet";
 import type { ReceivedKind, RecordsFrom } from "@/lib/received-files";
 import type { DocumentListItem } from "@/lib/types";
@@ -94,11 +94,13 @@ export type ReceivedFilesUpload = {
   owner?: number | null;
 };
 
-/** The billing fields as the server takes them. A supplemental report sends no appointment date;
- *  an optional field left empty is not sent. */
+/** The billing fields as the server takes them. A visit with no appointment (a supplemental
+ *  report, late meds) sends no appointment date; an optional field left empty is not sent. */
 function appendBilling(form: FormData, billing: BillingDraft) {
   form.append("visit_type", billing.visit_type);
-  if (billing.visit_type !== SUPPLEMENTAL) form.append("appointment_date", billing.appointment_date);
+  if (takesAppointment(billing.visit_type)) {
+    form.append("appointment_date", billing.appointment_date);
+  }
   form.append("interpreter", billing.interpreter);
   const optional: [string, string][] = [
     ["doctor", billing.doctor],

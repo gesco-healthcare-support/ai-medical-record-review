@@ -3,16 +3,17 @@
 import {
   type BillingDraft,
   isPageCount,
-  SUPPLEMENTAL,
+  takesAppointment,
   VISIT_TYPES,
+  visitLabel,
 } from "@/lib/billing-sheet";
 
 /** The billing sheet's fields (`lib/billing-sheet.ts`): what the office's sheet needs that the
  *  files cannot say. Shown in the received-files upload, where the type of visit and the
  *  interpreter are required, and again on the billing sheet dialog. Who reviews the records is not
  *  asked: the office reviews every record in house, and the sheet always says IN-HOUSE. A
- *  supplemental report has no appointment, so its date box goes away - the sheet's date of
- *  service says SUPP.
+ *  supplemental report and late meds have no appointment, so the date box goes away - the sheet's
+ *  date of service says SUPP or LATE MEDS.
  *
  *  `idPrefix` keeps the two forms' ids apart. A doctor already on the record that is not on
  *  today's list stays offered, so opening the sheet never blanks it. */
@@ -28,7 +29,7 @@ export function BillingFields({
   idPrefix: string;
 }>) {
   const id = (name: string) => `${idPrefix}-${name}`;
-  const supplemental = value.visit_type === SUPPLEMENTAL;
+  const withAppointment = takesAppointment(value.visit_type);
   const doctorOptions =
     value.doctor && !doctors.includes(value.doctor) ? [...doctors, value.doctor] : doctors;
   return (
@@ -46,12 +47,12 @@ export function BillingFields({
           <option value="">Choose...</option>
           {VISIT_TYPES.map((visit) => (
             <option key={visit} value={visit}>
-              {visit}
+              {visitLabel(visit)}
             </option>
           ))}
         </select>
       </div>
-      {supplemental ? null : (
+      {withAppointment ? (
         <div className="grid gap-1.5">
           <label className="ev-lbl" htmlFor={id("appointment")}>
             Appointment date
@@ -64,7 +65,7 @@ export function BillingFields({
             onChange={(e) => onChange({ appointment_date: e.target.value })}
           />
         </div>
-      )}
+      ) : null}
       <div className="grid gap-1.5">
         <label className="ev-lbl" htmlFor={id("doctor")}>
           Doctor
