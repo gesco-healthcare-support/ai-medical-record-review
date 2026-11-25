@@ -67,7 +67,10 @@ the category 1 visit stays its own row, and the export fold puts it with the cat
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
+from sqlalchemy import select
+
 from app.config import get_settings
+from app.models import Job, SegmentRow
 from app.services.llm import Part, TextPart, provider_for_stage
 from app.services.pools import PoolTimeout, drain_pool
 from app.services.rasterise import page_image_parts
@@ -384,3 +387,64 @@ def auto_merge_pieces(rows):
         (int(rows[run[0]]["start"]), int(rows[run[-1]]["end"])): [dict(rows[j]) for j in run]
         for run in auto_merge_runs(rows)
     }
+
+
+# --- the summary title of a row that opens on a form ---------------------------------------------
+
+
+def newest_draft_pieces(session, document_id) -> list[dict]:
+    """The machine's pieces of a record - the newest done segment job's `segment_rows`, in page
+    order, each with its classification method - or ``[]`` when the record has none."""
+    job_id = session.scalar(
+        select(Job.id)
+        .where(Job.document_id == document_id, Job.kind == "segment", Job.state == "done")
+        .order_by(Job.id.desc())
+        .limit(1)
+    )
+    if job_id is None:
+        return []
+    pieces = session.scalars(
+        select(SegmentRow).where(SegmentRow.job_id == job_id).order_by(SegmentRow.idx)
+    ).all()
+    return [piece.as_row() | {"method": piece.method} for piece in pieces]
+
+
+def visit_page_after_a_form(row, pieces) -> int | None:
+    """The first page of the document a visit row goes on to, when the row OPENS on an RFA or a
+    work status piece of the machine's draft (``pieces``) - else ``None``.
+
+    The summary's title call reads the row's first page, so a visit row that opens on the form is
+    titled as the form. Merges no longer make such rows (see the module), but a reviewer's hand
+    merge still does, and on the live box reviewers made 275 of them from Gemini's drafts. Measured
+    read-only there on 2026-11-24 (281 such visit rows, the deployed title call, real Gemini
+    calls): the title named the work status or the RFA on 97 rows when it read the row's first
+    page, and on 12 when its first image was this page instead; the reviewers' own titles named the
+    form on 2 of the 127 they retyped, and agreed with the new title on 117 of them (62 before).
+    Putting the visit's text first as well changed nothing (14)."""
+    if str(row.get("category")) not in _HINT_VISIT_CATEGORIES:
+        return None
+    start, end = int(row["start"]), int(row["end"])
+    first = next((piece for piece in pieces if int(piece["start"]) == start), None)
+    if first is None or not joins_a_visit(first) or int(first["end"]) >= end:
+        return None
+    after = next(
+        (
+            piece
+            for piece in pieces
+            if start < int(piece["start"]) <= end and not joins_a_visit(piece)
+        ),
+        None,
+    )
+    return int(after["start"]) if after is not None else None
+
+
+def seed_title_pages(session, document_id, rows) -> None:
+    """Give each row that opens on a form piece its ``title_page`` (`visit_page_after_a_form`), as
+    row data for `summarize_engine`, which is database-free. Rows that do not are left alone."""
+    pieces = newest_draft_pieces(session, document_id)
+    if not pieces:
+        return
+    for row in rows:
+        page = visit_page_after_a_form(row, pieces)
+        if page is not None:
+            row["title_page"] = page
