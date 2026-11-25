@@ -41,7 +41,7 @@ from app.errors import (
     PipelineError,
     TranscriptPagesUnreadableError,
 )
-from app.models import AuditLog, Document, Job, ReviewRow, SegmentRow, Summary, User
+from app.models import AuditLog, Document, Job, ReviewRow, Summary, User
 from app.schemas.documents import (
     BillingPayload,
     BundlePayload,
@@ -113,7 +113,11 @@ from app.services.summarize_engine import (
     visit_outputs,
 )
 from app.services.summary_doi import doi_prefix
-from app.services.visit_merge import auto_merge_pieces
+from app.services.visit_merge import (
+    auto_merge_pieces,
+    newest_draft_pieces,
+    seed_title_pages,
+)
 from app.worker.cancel import request_cancel
 from app.worker.queues import enqueue_upload_ocr, get_redis
 from app.worker.recovery import worker_is_gone
@@ -1092,18 +1096,9 @@ def _auto_merged_pieces(session: Session, document: Document) -> dict[tuple[int,
     """
     if not get_settings().auto_merge_visit_pieces:
         return {}
-    job_id = session.scalar(
-        select(Job.id)
-        .where(Job.document_id == document.id, Job.kind == "segment", Job.state == "done")
-        .order_by(Job.id.desc())
-        .limit(1)
-    )
-    if job_id is None:
+    rows = newest_draft_pieces(session, document.id)
+    if not rows:
         return {}
-    pieces = session.scalars(
-        select(SegmentRow).where(SegmentRow.job_id == job_id).order_by(SegmentRow.idx)
-    ).all()
-    rows = [piece.as_row() | {"method": piece.method} for piece in pieces]
     return {
         span: [
             piece | {"include": catalog.summarize_default_for(session, piece["category"])}
@@ -2758,6 +2753,9 @@ def resummarize(
             "flag": flag,
         }
     )
+    # A visit row that opens on an RFA or a work status is titled from the visit's page, as in a
+    # summarize run (`visit_merge.seed_title_pages`).
+    seed_title_pages(session, document.id, [row])
 
     # Same resolver as the summarize route, and this path needs it MORE: it calls summarize_row
     # directly, so there is no Job carrying a model resolved at creation time.
@@ -3601,6 +3599,8 @@ def bundle_summarize(
     # Same resolver again. `bundle_summary_entries` defaults `model=None`, which summarize_row
     # would have resolved correctly on its own - passing `summary_model` is what defeated that.
     model = payload.model or get_settings().model_for("body")
+    # Titled from the visit's page where a row opens on an RFA or a work status, as in a run.
+    seed_title_pages(session, document.id, matched)
     try:
         entries = bundles.bundle_summary_entries(
             document.stored_path,

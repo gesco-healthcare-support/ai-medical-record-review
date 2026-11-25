@@ -99,7 +99,7 @@ sent and this call is not made
 | Model | Job's `title_model` (older jobs: `model`); config source `Settings.model_for("title")` = `SUMMARY_TITLE_MODEL`. Gemini default `gemini-2.5-flash`; vLLM default `VLLM_MODEL`; OpenAI: must be set |
 | Thinking | As the body |
 | System | `summarize_engine.TITLE_PROMPT` |
-| Parts | With `SUMMARY_MULTIMODAL` true: the row's FIRST and LAST page images (one when the row is one page), then `OCR TEXT:` plus the row's OCR text, then `_TITLE_IMAGE_INSTRUCTION`. If rasterising fails, or `SUMMARY_MULTIMODAL` is false: the OCR text only |
+| Parts | With `SUMMARY_MULTIMODAL` true: the row's FIRST and LAST page images (one when the row is one page; for a visit row that opens on an RFA or a work status piece, the visit's first page in place of the row's, `title_page`), then `OCR TEXT:` plus the row's OCR text, then `_TITLE_IMAGE_INSTRUCTION`. If rasterising fails, or `SUMMARY_MULTIMODAL` is false: the OCR text only |
 | Temperature | 0.0 |
 | Max output tokens | `SUMMARY_MAX_OUTPUT_TOKENS` |
 | Reply handling | `truncated` is ignored. `_usable_title()` upper-cases the reply, keeps it when it is 1 to 200 characters (`MAX_GENERATED_TITLE`) and otherwise falls back to the row's segmentation title, also upper-cased |

@@ -1689,6 +1689,7 @@ def _summarize_work(session, job, report) -> None:
         summarize_row,
         visit_outputs,
     )
+    from app.services.visit_merge import seed_title_pages
 
     settings = get_settings()
     document = session.get(Document, job.document_id)
@@ -1705,6 +1706,7 @@ def _summarize_work(session, job, report) -> None:
 
     _seed_row_text(session, job.document_id, rows)
     _seed_embedded_review_pages(session, job.document_id, rows)
+    seed_title_pages(session, job.document_id, rows)
 
     existing = _reconcile_summaries(session, job.document_id, wanted)
     session.commit()

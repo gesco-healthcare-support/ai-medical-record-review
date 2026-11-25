@@ -22,7 +22,7 @@ functions (`app/worker/tasks.py`) call into these modules; the modules never imp
 | | `verify_pass.py` | Checks suspect boundaries and marks merge suggestions for the reviewer. |
 | | `deposition_tail.py` | Suggests as a merge a deposition's closing paperwork cut off as a short row of its own (`VISIT_MERGE_HINTS`, off by default). |
 | | `evaluation_pieces.py` | Suggests as merges the rows that continue a QME/AME evaluation cut at its records review (`SUGGEST_EVALUATION_PIECES`, off by default). |
-| | `visit_merge.py` | One visit's same-date pieces: merged when the model confirms one provider (`MERGE_VISIT_PIECES`), merged with no model call for the reviewer's copy (`AUTO_MERGE_VISIT_PIECES`), or hinted (`VISIT_MERGE_HINTS`); all off by default. |
+| | `visit_merge.py` | One visit's same-date pieces: merged when the model confirms one provider (`MERGE_VISIT_PIECES`), merged with no model call for the reviewer's copy (`AUTO_MERGE_VISIT_PIECES`), or hinted (`VISIT_MERGE_HINTS`); all off by default. Also the page a summary title is read from when a visit row opens on an RFA or a work status (`seed_title_pages`). |
 | | `summary_doi.py` | Reads each row's date of injury; formats the DOI prefix for summaries. |
 | | `deposition_pages.py` | Finds a deposition transcript's own printed page numbers. |
 | Categorization | `classification.py` | The cascade: title rules, then an embedding model and a constrained LLM call that must agree. |
