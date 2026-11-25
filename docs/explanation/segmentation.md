@@ -482,7 +482,8 @@ read-only on the live box the same day (795 records), the title named the work s
 111 of 296 visit rows that open on one, against 41 of 547 that open on the visit, and reviewers
 retitled 44% against 22%. The same rule holds for the merge below, the automatic merge and the
 hints. A hand merge in the workbench makes such a pair the visit's row as well
-([The review workbench](frontend-workbench.md)).
+([The review workbench](frontend-workbench.md)), and the title call reads the visit's page of a
+row that still opens on a form ([Summarization](summarization.md)).
 
 **The check (`_same_author()`).** One `verify`-stage call per candidate, through the provider seam:
 the first and last page of each row as images, then the rows' metadata and the question whether the

@@ -1437,10 +1437,19 @@ def _title_contents(pdf_path, row, text):
     The first page carries the letterhead (the facility) and the last the signature block (the
     author). Two pages rather than the body's fifteen because a header line needs nothing between
     them, and every image is prefill the call pays for on both backends. Same switch and same
-    degrade-to-text rule as the body: a rasterize failure costs the images, never the title."""
+    degrade-to-text rule as the body: a rasterize failure costs the images, never the title.
+
+    A visit row that opens on an RFA or a work status form carries ``title_page``, the first page of
+    the visit document after the form (`visit_merge.visit_page_after_a_form`, seeded by the caller,
+    since this module is database-free): that page is the first image, so the title names the visit
+    rather than the form - 12 of 281 such rows named the form that way, against 97 from the row's
+    first page (live box, 2026-11-24)."""
     if not get_settings().summary_multimodal:
         return text
     start, end = int(row["start"]), int(row["end"])
+    title_page = row.get("title_page")
+    if isinstance(title_page, int) and start < title_page <= end:
+        start = title_page
     try:
         images = page_image_parts(pdf_path, start, start, 1)
         if end > start:

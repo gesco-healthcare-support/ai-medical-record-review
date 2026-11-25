@@ -338,6 +338,17 @@ the row's first and last page images (letterhead and signature block) with the O
 feedback on 2026-10-02 showed titles opening with OCR's fragment of such a name, and with the
 letters OCR made of a cursive signature.
 
+A visit row (category 1, 2 or 5) that OPENS on an RFA or a work status - a reviewer merged the form
+with the visit after it - is sent the visit's first page in place of the row's
+(`row["title_page"]`, found by `visit_merge.visit_page_after_a_form()` from the newest segment
+job's pieces and seeded by `visit_merge.seed_title_pages()` in the summarize run, a Re-draft and a
+bundle's on-demand summaries). Read from the form's page, the title named the form. Measured
+read-only on the live box on 2026-11-24 with the deployed title call (281 such rows, real Gemini
+calls): the title named the work status or the RFA on 97 rows from the row's first page and on 12
+from the visit's page; the reviewers' own titles named the form on 2 of the 127 they retyped, and
+agreed with the new title on 117 of them against 62. Putting the visit's text first as well made
+no difference (14). The body is unchanged.
+
 The facility is read the same way, from the image as well as the OCR, because a logo or stylised
 letterhead is where OCR garbles most; a facility that cannot be read in full as real words is left
 out rather than written as a fragment. Reviewer feedback on 2026-10-06 showed a title carrying
