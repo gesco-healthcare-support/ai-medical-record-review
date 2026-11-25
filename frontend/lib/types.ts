@@ -104,6 +104,12 @@ export type DocumentListItem = {
    *  report or late meds (`lib/deadlines.ts`). */
   visit_type?: string;
   due_on?: string;
+  /** The record waits in the team queue: nobody has taken it yet. The queue's own list
+   *  (`GET /api/documents/queue`) also says who uploaded it and whether that was the caller, who
+   *  alone may delete it. */
+  in_team_queue?: boolean;
+  uploaded_by?: string;
+  uploaded_by_me?: boolean;
 };
 
 /** A sub-document row in the review editor (ReviewRow.as_row()). */

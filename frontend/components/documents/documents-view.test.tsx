@@ -23,6 +23,9 @@ const identify = { mutateAsync: vi.fn(), isPending: false };
 const combine = { mutateAsync: vi.fn(), isPending: false };
 const assign = { mutateAsync: vi.fn(), isPending: false };
 const complete = { mutate: vi.fn(), isPending: false };
+// The team queue: empty unless a test fills it, so every test written before it sees the page
+// it always did.
+const queueState: { data: unknown[] | undefined } = { data: [] };
 // Who the list was asked for: `useDocuments(owner)` receives the reviewer an admin picked.
 const docsArgs: unknown[] = [];
 vi.mock("@/hooks/use-documents", () => ({
@@ -36,6 +39,7 @@ vi.mock("@/hooks/use-documents", () => ({
   useCombineReceivedFiles: () => combine,
   useAssignDocument: () => assign,
   useSetCompleted: () => complete,
+  useTeamQueue: () => queueState,
   useDoctors: () => ({ data: [] }),
   useBillingSheet: (id: string | null) => ({ data: undefined, isError: false, error: null, id }),
   useSaveBillingSheet: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -78,6 +82,7 @@ afterEach(() => {
   docsState.isError = false;
   docsState.refetch = undefined;
   docsArgs.length = 0;
+  queueState.data = [];
   me.data = { id: 1, is_superuser: false };
   accountsState.data = undefined;
   sessionStorage.clear();
@@ -680,5 +685,93 @@ describe("DocumentsView raw PDF", () => {
     await waitFor(() => expect(getBillingSheet).toHaveBeenCalled());
     expect(downloadRawPdf).toHaveBeenCalledWith("d1");
     expect(vi.mocked(toast).error).not.toHaveBeenCalled();
+  });
+});
+
+describe("the team queue (the office's answer, 2026-11-25)", () => {
+  const waiting = (over: Record<string, unknown> = {}) =>
+    doc({
+      id: "q1",
+      original_filename: "waiting.pdf",
+      in_team_queue: true,
+      uploaded_by: "Reviewer B",
+      uploaded_by_me: false,
+      ...over,
+    });
+
+  it("is not shown while nothing waits", () => {
+    docsState.data = [doc()];
+    render(<DocumentsView />);
+    expect(screen.queryByRole("region", { name: "Team queue" })).toBeNull();
+  });
+
+  it("is shown above one's own records while records wait", () => {
+    docsState.data = [doc()];
+    queueState.data = [waiting()];
+    render(<DocumentsView />);
+
+    const queue = screen.getByRole("region", { name: "Team queue" });
+    expect(queue).toHaveTextContent("waiting.pdf");
+    expect(queue).not.toHaveTextContent("record.pdf");
+    expect(queue.compareDocumentPosition(screen.getByText("record.pdf"))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("is shown even when one's own list is empty", () => {
+    queueState.data = [waiting()];
+    render(<DocumentsView />);
+    expect(screen.getByRole("region", { name: "Team queue" })).toHaveTextContent("waiting.pdf");
+  });
+
+  it("takes a record by starting identification, without asking, and says where", async () => {
+    const user = userEvent.setup();
+    queueState.data = [waiting({ rows_count: 3 })];
+    render(<DocumentsView />);
+
+    await user.click(await menuItem(user, /Take it and start identification/));
+
+    await waitFor(() => expect(identify.mutateAsync).toHaveBeenCalledWith("q1"));
+    expect(screen.queryByRole("heading", { name: /Re-run identification\?/ })).toBeNull();
+    expect(vi.mocked(toast).success).toHaveBeenCalledWith(
+      "Identification started. The record is now in your records.",
+    );
+  });
+
+  it("says who has it when another reviewer took it first", async () => {
+    const user = userEvent.setup();
+    identify.mutateAsync.mockRejectedValueOnce(
+      new ApiError(
+        "Reviewer B has just taken this record from the team queue. Refresh the page.",
+        409,
+      ),
+    );
+    queueState.data = [waiting()];
+    render(<DocumentsView />);
+
+    await user.click(await menuItem(user, /Take it and start identification/));
+
+    await waitFor(() =>
+      expect(vi.mocked(toast).error).toHaveBeenCalledWith(
+        "Reviewer B has just taken this record from the team queue. Refresh the page.",
+      ),
+    );
+  });
+});
+
+describe("the team queue: a record already taken", () => {
+  it("says another reviewer has it when the server no longer opens it to the caller", async () => {
+    const user = userEvent.setup();
+    identify.mutateAsync.mockRejectedValueOnce(new ApiError("not found", 404));
+    queueState.data = [doc({ id: "q1", in_team_queue: true, uploaded_by_me: false })];
+    render(<DocumentsView />);
+
+    await user.click(await menuItem(user, /Take it and start identification/));
+
+    await waitFor(() =>
+      expect(vi.mocked(toast).error).toHaveBeenCalledWith(
+        "Another reviewer has already taken this record. Refresh the list.",
+      ),
+    );
   });
 });

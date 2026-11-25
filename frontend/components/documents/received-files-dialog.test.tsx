@@ -357,6 +357,30 @@ describe("ReceivedFilesDialog sending", () => {
     expect(unstage).not.toHaveBeenCalled();
   });
 
+  it("says the record went to the team queue when the server put it there", async () => {
+    // The office's answer (2026-11-25): a record put together from received files belongs to
+    // nobody until someone starts working on it.
+    const user = userEvent.setup();
+    combine.mutateAsync.mockResolvedValue({
+      id: "d1",
+      page_count: 1,
+      patient_records: 0,
+      in_team_queue: true,
+    });
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("records.pdf")]);
+    await allRead(1);
+    await fillPatient(user);
+    await confirmAll(user);
+    await user.click(screen.getByRole("button", { name: "Combine & upload" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(toast).success).toHaveBeenCalledWith(
+        "One record made from 1 file, 1 pages, in the team queue.",
+      ),
+    );
+  });
+
   it("reads the patient ID from the files' names when they agree", async () => {
     const user = userEvent.setup();
     combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 2, patient_records: 0 });

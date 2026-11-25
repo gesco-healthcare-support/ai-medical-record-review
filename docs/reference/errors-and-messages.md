@@ -56,6 +56,7 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 400 | `Enter the patient's last and first name.` | D2a |
 | 400 | `Enter the patient ID.` | D2a |
 | 400 | `Enter the date the records were received.` | D2a |
+| 409 | `<name> has just taken this record from the team queue. Refresh the page.` | D15, a reviewer pressing Identify on a record in the team queue at the moment another took it |
 | 400 | `Enter the appointment date.` | D2a (not for `SUPP` or `LATE`), D6d (a date that is not one) |
 | 400 | `Choose who sent the records.` | D2a, D6d |
 | 400 | `Choose the type of visit.` | D2a, D6d |

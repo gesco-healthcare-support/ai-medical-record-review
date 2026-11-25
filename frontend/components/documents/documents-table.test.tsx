@@ -463,3 +463,73 @@ describe("deadlines (the office's answer, 2026-11-25)", () => {
     expect(rowOf(container, "Supplemental.pdf").textContent).toContain("SUPP - ");
   });
 });
+
+describe("the team queue (the office's answer, 2026-11-25)", () => {
+  const WAITING = [
+    {
+      ...DOCS[0],
+      id: "q1",
+      original_filename: "Mine.pdf",
+      in_team_queue: true,
+      uploaded_by: "Me",
+      uploaded_by_me: true,
+    },
+    {
+      ...DOCS[1],
+      id: "q2",
+      original_filename: "Theirs.pdf",
+      in_team_queue: true,
+      uploaded_by: "Reviewer B",
+      uploaded_by_me: false,
+    },
+  ];
+
+  function renderQueue() {
+    const actions = {
+      onOpen: vi.fn(),
+      onIdentify: vi.fn(),
+      onDelete: vi.fn(),
+      onToggleCompleted: vi.fn(),
+    };
+    const view = render(<DocumentsTable queue docs={WAITING} {...actions} />);
+    return { ...view, actions };
+  }
+
+  async function menuOf(user: ReturnType<typeof userEvent.setup>, name: string) {
+    const row = [...document.querySelectorAll("tbody tr")].find((tr) =>
+      tr.textContent?.includes(name),
+    ) as HTMLElement;
+    await user.click(row.querySelector('button[aria-label="Actions"]') as HTMLElement);
+  }
+
+  it("has no filter chips, search or Completed mark, and says who uploaded each record", () => {
+    const { container } = renderQueue();
+    expect(container.querySelector(".hd-toolbar")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mark as completed" })).toBeNull();
+    expect(screen.getByText("Uploaded by you")).toBeInTheDocument();
+    expect(screen.getByText("Uploaded by Reviewer B")).toBeInTheDocument();
+  });
+
+  it("says identification takes the record, and has no Completed mark in the menu", async () => {
+    const user = userEvent.setup();
+    const { actions } = renderQueue();
+    await menuOf(user, "Theirs.pdf");
+
+    expect(screen.queryByRole("menuitem", { name: /Mark as completed/ })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "Take it and start identification" }));
+    expect(actions.onIdentify).toHaveBeenCalledWith(WAITING[1]);
+  });
+
+  it("offers Delete to the uploader alone", async () => {
+    const user = userEvent.setup();
+    const { actions } = renderQueue();
+
+    await menuOf(user, "Theirs.pdf");
+    expect(screen.queryByRole("menuitem", { name: "Delete..." })).toBeNull();
+    await user.keyboard("{Escape}");
+
+    await menuOf(user, "Mine.pdf");
+    await user.click(screen.getByRole("menuitem", { name: "Delete..." }));
+    expect(actions.onDelete).toHaveBeenCalledWith(WAITING[0]);
+  });
+});

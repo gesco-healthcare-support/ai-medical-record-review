@@ -405,7 +405,7 @@ async def test_the_files_become_one_record_named_and_headed_as_typed(client):
     ]
     assert document.status == "uploaded"
     assert _widths(document.stored_path) == [101, 102, 102, 103, 103, 103]
-    assert _audit(document.id, "combine_upload") == [(user_id, "3 files")]
+    assert _audit(document.id, "combine_upload") == [(user_id, "3 files, to the team queue")]
 
 
 async def test_the_order_sent_is_the_order_kept(client):
@@ -680,10 +680,19 @@ async def test_a_record_uploaded_as_one_pdf_downloads_raw_too(client):
     assert 'filename="Synthetic_Patient-801234-11032026.pdf"' in got.headers["content-disposition"]
 
 
+def _taken(doc_id: str) -> None:
+    """Out of the team queue, as when its uploader starts Identify on it: from then on it is theirs
+    alone (tests/test_team_queue.py)."""
+    with get_sessionmaker()() as session:
+        session.get(Document, doc_id).team_queue_since = None
+        session.commit()
+
+
 async def test_someone_elses_raw_record_is_not_found(client):
     _, owner_email = _user()
     await _login(client, owner_email)
     doc_id = (await _combine(client)).json()["id"]
+    _taken(doc_id)
     _, stranger_email = _user()
     await _login(client, stranger_email)
 

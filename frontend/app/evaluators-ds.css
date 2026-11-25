@@ -410,6 +410,13 @@ textarea:focus-visible, a:focus-visible {
     font: 600 28px/1.2 var(--font-heading), sans-serif;
     letter-spacing: -0.02em; color: var(--ink); margin: 0;
 }
+/* The team queue, above the reviewer's own records: a smaller heading, and no gap at the bottom
+   so the two lists read as one page. */
+.hd-queue { padding-bottom: 0; }
+.hd-header h2 {
+    font: 600 20px/1.2 var(--font-heading), sans-serif;
+    letter-spacing: -0.01em; color: var(--ink); margin: 0 0 4px;
+}
 .hd-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; flex-wrap: wrap; margin-bottom: 14px;

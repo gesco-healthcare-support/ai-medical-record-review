@@ -238,6 +238,12 @@ class Document(Base):
     # exports that carry the summaries - or NULL for never. Set by those routes, so the records list
     # can say it without reading the audit log; the migration filled it from the log's past exports.
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # When the record went into the TEAM QUEUE, or NULL. The office's answer (2026-11-25): a record
+    # put together from received files belongs to nobody until someone starts working on it; every
+    # reviewer sees it in the queue (GET /api/documents/queue) and may open it, and the reviewer who
+    # starts Identify takes it (`user_id` becomes theirs, this goes back to NULL). While it waits,
+    # `user_id` is the uploader's: only they may delete it, and it is not in their own list.
+    team_queue_since: Mapped[datetime | None] = mapped_column(DateTime)
     # A record put together from the files it arrived in (POST /api/documents/combine,
     # services/received_files.py): the day the records were received, as the uploader typed it, and
     # each file's kind and pages in the joined PDF ({"kind", "start", "end"}, in order - never the
@@ -365,6 +371,7 @@ class Document(Base):
             "records_from": self.records_from or "",
             "visit_type": self.visit_type or "",
             "due_on": _iso_day(self.due_on()),
+            "in_team_queue": self.team_queue_since is not None,
         }
 
 

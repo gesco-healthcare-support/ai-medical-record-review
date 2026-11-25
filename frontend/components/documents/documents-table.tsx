@@ -109,17 +109,8 @@ function CompletedMark({
   );
 }
 
-export function DocumentsTable({
-  docs,
-  onOpen,
-  onIdentify,
-  onAssign,
-  onDelete,
-  onToggleCompleted,
-  onBillingSheet,
-  onDownloadRaw,
-}: Readonly<{
-  docs: DocumentListItem[];
+/** What a record's menu can do. */
+type RowActions = {
   onOpen: (id: string) => void;
   onIdentify?: (doc: DocumentListItem) => void;
   /** Set or clear the reviewer's Completed mark - the bar before the file name, or the menu. */
@@ -132,7 +123,100 @@ export function DocumentsTable({
   /** Download the record's PDF as received - for a record put together from received files,
    *  with its billing sheet on top. Without it the menu saves the file at once. */
   onDownloadRaw?: (doc: DocumentListItem) => void;
-}>) {
+};
+
+/** The "Start identification" line. In the team queue it says that it takes the record: starting
+ *  identification there moves the record into the reviewer's own records. */
+function identifyLabel(doc: DocumentListItem, queue: boolean): string {
+  if (queue) return "Take it and start identification";
+  return doc.rows_count ? "Re-run identification" : "Start identification";
+}
+
+/** A record's "..." menu. In the team queue, Delete is offered to the uploader alone (the server
+ *  refuses anyone else), and there is no Completed mark: nobody is working on the record yet. */
+function RowMenu({
+  doc,
+  queue,
+  onOpen,
+  onIdentify,
+  onAssign,
+  onDelete,
+  onToggleCompleted,
+  onBillingSheet,
+  onDownloadRaw,
+}: Readonly<{ doc: DocumentListItem; queue: boolean } & RowActions>) {
+  const deletable = onDelete && (!queue || doc.uploaded_by_me);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger className="hd-dots" aria-label="Actions">
+        &#8943;
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        <DropdownMenuItem onSelect={() => onOpen(doc.id)}>Open</DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => (onDownloadRaw ? onDownloadRaw(doc) : downloadRawPdf(doc.id))}
+        >
+          Download raw PDF
+        </DropdownMenuItem>
+        {onBillingSheet && doc.received_on ? (
+          <DropdownMenuItem onSelect={() => onBillingSheet(doc)}>Billing sheet</DropdownMenuItem>
+        ) : null}
+        {onToggleCompleted && !queue ? (
+          <DropdownMenuItem onSelect={() => onToggleCompleted(doc)}>
+            {doc.completed_at ? "Clear Completed" : "Mark as completed"}
+          </DropdownMenuItem>
+        ) : null}
+        {onIdentify ? (
+          <DropdownMenuItem disabled={Boolean(doc.active_job)} onSelect={() => onIdentify(doc)}>
+            {identifyLabel(doc, queue)}
+          </DropdownMenuItem>
+        ) : null}
+        {onAssign ? (
+          <DropdownMenuItem disabled={Boolean(doc.active_job)} onSelect={() => onAssign(doc)}>
+            Assign to...
+          </DropdownMenuItem>
+        ) : null}
+        {deletable ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+              onSelect={() => onDelete(doc)}
+            >
+              Delete...
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** Who put a record in the team queue, under its status. */
+function uploaderNote(doc: DocumentListItem): string {
+  if (doc.uploaded_by_me) return "Uploaded by you";
+  return doc.uploaded_by ? `Uploaded by ${doc.uploaded_by}` : "";
+}
+
+export function DocumentsTable({
+  docs,
+  queue = false,
+  onOpen,
+  onIdentify,
+  onAssign,
+  onDelete,
+  onToggleCompleted,
+  onBillingSheet,
+  onDownloadRaw,
+}: Readonly<
+  {
+    docs: DocumentListItem[];
+    /** The team queue: records nobody has taken yet. No filter chips or search (a short list),
+     *  no Completed mark, who uploaded each record under its status, and a menu whose
+     *  identification takes the record. */
+    queue?: boolean;
+  } & RowActions
+>) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   // Closest deadline first (lib/deadlines.ts): what to work on next is at the top.
@@ -184,34 +268,36 @@ export function DocumentsTable({
 
   return (
     <>
-      <div className="hd-toolbar">
-        <div className="hd-chips">
-          {FILTERS.map((f) => (
-            <button
-              key={f.key}
-              type="button"
-              className={cn("hd-chip", filter === f.key && "active")}
-              onClick={() => {
-                setFilter(f.key);
-                setPage(0);
-              }}
-            >
-              {f.label} · {docs.filter(f.match).length}
-            </button>
-          ))}
+      {queue ? null : (
+        <div className="hd-toolbar">
+          <div className="hd-chips">
+            {FILTERS.map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                className={cn("hd-chip", filter === f.key && "active")}
+                onClick={() => {
+                  setFilter(f.key);
+                  setPage(0);
+                }}
+              >
+                {f.label} · {docs.filter(f.match).length}
+              </button>
+            ))}
+          </div>
+          <input
+            className="ev-inp hd-search"
+            type="search"
+            placeholder="Search by filename..."
+            aria-label="Search by filename"
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(0);
+            }}
+          />
         </div>
-        <input
-          className="ev-inp hd-search"
-          type="search"
-          placeholder="Search by filename..."
-          aria-label="Search by filename"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(0);
-          }}
-        />
-      </div>
+      )}
 
       <div className="hd-card">
         <table className="hd-table">
@@ -259,7 +345,7 @@ export function DocumentsTable({
                   >
                     <td>
                       <span className="hd-doc">
-                        {onToggleCompleted ? (
+                        {onToggleCompleted && !queue ? (
                           <CompletedMark doc={doc} onToggle={onToggleCompleted} />
                         ) : null}
                         <FileText width={15} height={15} aria-hidden />
@@ -284,6 +370,7 @@ export function DocumentsTable({
                     <td className="hd-muted">{relTime(doc.updated_at)}</td>
                     <td>
                       <StatusPill doc={doc} />
+                      {queue ? <span className="hd-downloaded">{uploaderNote(doc)}</span> : null}
                       {doc.downloaded_at ? (
                         <span className="hd-downloaded">
                           Downloaded {new Date(doc.downloaded_at).toLocaleDateString()}
@@ -291,58 +378,17 @@ export function DocumentsTable({
                       ) : null}
                     </td>
                     <td className="hd-menu-cell" onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger className="hd-dots" aria-label="Actions">
-                          &#8943;
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-52">
-                          <DropdownMenuItem onSelect={() => onOpen(doc.id)}>Open</DropdownMenuItem>
-                          <DropdownMenuItem
-                            onSelect={() =>
-                              onDownloadRaw ? onDownloadRaw(doc) : downloadRawPdf(doc.id)
-                            }
-                          >
-                            Download raw PDF
-                          </DropdownMenuItem>
-                          {onBillingSheet && doc.received_on ? (
-                            <DropdownMenuItem onSelect={() => onBillingSheet(doc)}>
-                              Billing sheet
-                            </DropdownMenuItem>
-                          ) : null}
-                          {onToggleCompleted ? (
-                            <DropdownMenuItem onSelect={() => onToggleCompleted(doc)}>
-                              {doc.completed_at ? "Clear Completed" : "Mark as completed"}
-                            </DropdownMenuItem>
-                          ) : null}
-                          {onIdentify ? (
-                            <DropdownMenuItem
-                              disabled={Boolean(doc.active_job)}
-                              onSelect={() => onIdentify(doc)}
-                            >
-                              {doc.rows_count ? "Re-run identification" : "Start identification"}
-                            </DropdownMenuItem>
-                          ) : null}
-                          {onAssign ? (
-                            <DropdownMenuItem
-                              disabled={Boolean(doc.active_job)}
-                              onSelect={() => onAssign(doc)}
-                            >
-                              Assign to...
-                            </DropdownMenuItem>
-                          ) : null}
-                          {onDelete ? (
-                            <>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                                onSelect={() => onDelete(doc)}
-                              >
-                                Delete...
-                              </DropdownMenuItem>
-                            </>
-                          ) : null}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <RowMenu
+                        doc={doc}
+                        queue={queue}
+                        onOpen={onOpen}
+                        onIdentify={onIdentify}
+                        onAssign={onAssign}
+                        onDelete={onDelete}
+                        onToggleCompleted={onToggleCompleted}
+                        onBillingSheet={onBillingSheet}
+                        onDownloadRaw={onDownloadRaw}
+                      />
                     </td>
                   </tr>
                 );
