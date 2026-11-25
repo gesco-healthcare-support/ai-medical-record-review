@@ -49,6 +49,13 @@
        is 8.0:1. */
     --highlight-800: #713F12;
     --highlight-200: #FEF08A;
+    /* Deadlines on My documents (lib/deadlines.ts): a record due on its appointment date is
+       highlighted yellow, late meds light blue (the office's answer, 2026-11-25). Row
+       backgrounds behind ink-coloured text. */
+    --due-appointment-100: #FEF9C3;
+    --due-appointment-200: #FDEFA1;
+    --due-late-meds-100: #E0F2FE;
+    --due-late-meds-200: #C7E7FB;
     /* Roles */
     --color-border: var(--gray-200);
     --color-border-strong: var(--gray-300);
@@ -432,6 +439,7 @@ textarea:focus-visible, a:focus-visible {
 .hd-table thead th[data-sort] { cursor: pointer; user-select: none; }
 .hd-table thead th.sorted { color: var(--navy-600); font-weight: 600; }
 .hd-sortlabel { display: inline-flex; align-items: center; gap: 4px; }
+.hd-table th.hd-w-due { width: 150px; }
 .hd-table th.hd-w-patient { width: 200px; }
 .hd-table th.hd-w-pages { width: 70px; }
 .hd-table th.hd-w-uploaded { width: 110px; }
@@ -445,6 +453,12 @@ textarea:focus-visible, a:focus-visible {
 }
 .hd-table tbody tr[data-id] { cursor: pointer; }
 .hd-table tbody tr[data-id]:hover { background: var(--gray-50); }
+.hd-table tbody tr.hd-due-appointment { background: var(--due-appointment-100); }
+.hd-table tbody tr.hd-due-appointment:hover { background: var(--due-appointment-200); }
+.hd-table tbody tr.hd-due-late-meds { background: var(--due-late-meds-100); }
+.hd-table tbody tr.hd-due-late-meds:hover { background: var(--due-late-meds-200); }
+.hd-due-date { display: block; font-weight: 500; color: var(--ink); }
+.hd-due-note { display: block; margin-top: 3px; font-size: 11.5px; color: var(--gray-600); }
 .hd-open-cue { opacity: 0; color: var(--gray-400); transition: opacity .12s; }
 .hd-table tbody tr[data-id]:hover .hd-open-cue { opacity: 1; }
 .hd-norows td { color: var(--gray-500); text-align: center; padding: 28px 16px; }

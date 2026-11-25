@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { StatusPill } from "./status-pill";
+import { deadlineNote, deadlineSortKey, deadlineTone, usDate } from "@/lib/deadlines";
 import { downloadRawPdf } from "@/lib/documents-api";
 import { cn } from "@/lib/utils";
 import type { DocumentListItem } from "@/lib/types";
@@ -45,6 +46,7 @@ const FILTERS: ReadonlyArray<{
 ];
 
 const SORT_ACCESSORS = {
+  due: deadlineSortKey,
   name: (d: DocumentListItem) => (d.original_filename || "").toLowerCase(),
   patient: (d: DocumentListItem) => (d.patient_name || "").toLowerCase(),
   pages: (d: DocumentListItem) => d.page_count || 0,
@@ -56,6 +58,7 @@ type SortKey = keyof typeof SORT_ACCESSORS;
 
 const COLUMNS: { key: SortKey; label: string; cls: string }[] = [
   { key: "name", label: "Document", cls: "" },
+  { key: "due", label: "Due", cls: "hd-w-due" },
   { key: "patient", label: "Patient", cls: "hd-w-patient" },
   { key: "pages", label: "Pages", cls: "hd-w-pages" },
   { key: "uploaded", label: "Uploaded", cls: "hd-w-uploaded" },
@@ -132,9 +135,12 @@ export function DocumentsTable({
 }>) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("uploaded");
-  const [sortDir, setSortDir] = useState(-1);
+  // Closest deadline first (lib/deadlines.ts): what to work on next is at the top.
+  const [sortKey, setSortKey] = useState<SortKey>("due");
+  const [sortDir, setSortDir] = useState(1);
   const [page, setPage] = useState(0);
+  // One "today" per render, so every row counts its days from the same day.
+  const today = new Date();
 
   const visible = useMemo(() => {
     const active = FILTERS.find((f) => f.key === filter) ?? FILTERS[0];
@@ -152,7 +158,8 @@ export function DocumentsTable({
         const [va, vb] = [accessor(a), accessor(b)];
         if (va < vb) return -sortDir;
         if (va > vb) return sortDir;
-        return 0;
+        // Records due the same day - or with no deadline at all - newest upload first.
+        return sortKey === "due" ? (b.created_at || "").localeCompare(a.created_at || "") : 0;
       });
   }, [docs, filter, search, sortKey, sortDir]);
 
@@ -170,7 +177,7 @@ export function DocumentsTable({
       setSortDir((d) => d * -1);
     } else {
       setSortKey(key);
-      setSortDir(key === "name" ? 1 : -1);
+      setSortDir(key === "name" || key === "due" ? 1 : -1);
     }
     setPage(0);
   }
@@ -237,90 +244,109 @@ export function DocumentsTable({
           <tbody>
             {pageDocs.length === 0 ? (
               <tr className="hd-norows">
-                <td colSpan={8}>No documents match this view.</td>
+                <td colSpan={9}>No documents match this view.</td>
               </tr>
             ) : (
-              pageDocs.map((doc) => (
-                <tr key={doc.id} data-id={doc.id} onClick={() => onOpen(doc.id)}>
-                  <td>
-                    <span className="hd-doc">
-                      {onToggleCompleted ? (
-                        <CompletedMark doc={doc} onToggle={onToggleCompleted} />
-                      ) : null}
-                      <FileText width={15} height={15} aria-hidden />
-                      <span className="hd-name">{doc.original_filename}</span>
-                      <ChevronRight width={15} height={15} aria-hidden className="hd-open-cue" />
-                    </span>
-                  </td>
-                  <td className="hd-muted">{doc.patient_name || "—"}</td>
-                  <td className="hd-muted">{doc.page_count}</td>
-                  <td className="hd-muted">{new Date(doc.created_at).toLocaleDateString()}</td>
-                  <td className="hd-muted">{doc.rows_count || "—"}</td>
-                  <td className="hd-muted">{relTime(doc.updated_at)}</td>
-                  <td>
-                    <StatusPill doc={doc} />
-                    {doc.downloaded_at ? (
-                      <span className="hd-downloaded">
-                        Downloaded {new Date(doc.downloaded_at).toLocaleDateString()}
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className="hd-menu-cell" onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger className="hd-dots" aria-label="Actions">
-                        &#8943;
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-52">
-                        <DropdownMenuItem onSelect={() => onOpen(doc.id)}>Open</DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={() =>
-                            onDownloadRaw ? onDownloadRaw(doc) : downloadRawPdf(doc.id)
-                          }
-                        >
-                          Download raw PDF
-                        </DropdownMenuItem>
-                        {onBillingSheet && doc.received_on ? (
-                          <DropdownMenuItem onSelect={() => onBillingSheet(doc)}>
-                            Billing sheet
-                          </DropdownMenuItem>
-                        ) : null}
+              pageDocs.map((doc) => {
+                const tone = deadlineTone(doc);
+                return (
+                  <tr
+                    key={doc.id}
+                    data-id={doc.id}
+                    data-deadline={tone ?? undefined}
+                    className={tone ? `hd-due-${tone}` : undefined}
+                    onClick={() => onOpen(doc.id)}
+                  >
+                    <td>
+                      <span className="hd-doc">
                         {onToggleCompleted ? (
-                          <DropdownMenuItem onSelect={() => onToggleCompleted(doc)}>
-                            {doc.completed_at ? "Clear Completed" : "Mark as completed"}
-                          </DropdownMenuItem>
+                          <CompletedMark doc={doc} onToggle={onToggleCompleted} />
                         ) : null}
-                        {onIdentify ? (
+                        <FileText width={15} height={15} aria-hidden />
+                        <span className="hd-name">{doc.original_filename}</span>
+                        <ChevronRight width={15} height={15} aria-hidden className="hd-open-cue" />
+                      </span>
+                    </td>
+                    <td>
+                      {doc.due_on ? (
+                        <>
+                          <span className="hd-due-date">{usDate(doc.due_on)}</span>
+                          <span className="hd-due-note">{deadlineNote(doc, today)}</span>
+                        </>
+                      ) : (
+                        <span className="hd-muted">—</span>
+                      )}
+                    </td>
+                    <td className="hd-muted">{doc.patient_name || "—"}</td>
+                    <td className="hd-muted">{doc.page_count}</td>
+                    <td className="hd-muted">{new Date(doc.created_at).toLocaleDateString()}</td>
+                    <td className="hd-muted">{doc.rows_count || "—"}</td>
+                    <td className="hd-muted">{relTime(doc.updated_at)}</td>
+                    <td>
+                      <StatusPill doc={doc} />
+                      {doc.downloaded_at ? (
+                        <span className="hd-downloaded">
+                          Downloaded {new Date(doc.downloaded_at).toLocaleDateString()}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="hd-menu-cell" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger className="hd-dots" aria-label="Actions">
+                          &#8943;
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-52">
+                          <DropdownMenuItem onSelect={() => onOpen(doc.id)}>Open</DropdownMenuItem>
                           <DropdownMenuItem
-                            disabled={Boolean(doc.active_job)}
-                            onSelect={() => onIdentify(doc)}
+                            onSelect={() =>
+                              onDownloadRaw ? onDownloadRaw(doc) : downloadRawPdf(doc.id)
+                            }
                           >
-                            {doc.rows_count ? "Re-run identification" : "Start identification"}
+                            Download raw PDF
                           </DropdownMenuItem>
-                        ) : null}
-                        {onAssign ? (
-                          <DropdownMenuItem
-                            disabled={Boolean(doc.active_job)}
-                            onSelect={() => onAssign(doc)}
-                          >
-                            Assign to...
-                          </DropdownMenuItem>
-                        ) : null}
-                        {onDelete ? (
-                          <>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                              onSelect={() => onDelete(doc)}
-                            >
-                              Delete...
+                          {onBillingSheet && doc.received_on ? (
+                            <DropdownMenuItem onSelect={() => onBillingSheet(doc)}>
+                              Billing sheet
                             </DropdownMenuItem>
-                          </>
-                        ) : null}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </td>
-                </tr>
-              ))
+                          ) : null}
+                          {onToggleCompleted ? (
+                            <DropdownMenuItem onSelect={() => onToggleCompleted(doc)}>
+                              {doc.completed_at ? "Clear Completed" : "Mark as completed"}
+                            </DropdownMenuItem>
+                          ) : null}
+                          {onIdentify ? (
+                            <DropdownMenuItem
+                              disabled={Boolean(doc.active_job)}
+                              onSelect={() => onIdentify(doc)}
+                            >
+                              {doc.rows_count ? "Re-run identification" : "Start identification"}
+                            </DropdownMenuItem>
+                          ) : null}
+                          {onAssign ? (
+                            <DropdownMenuItem
+                              disabled={Boolean(doc.active_job)}
+                              onSelect={() => onAssign(doc)}
+                            >
+                              Assign to...
+                            </DropdownMenuItem>
+                          ) : null}
+                          {onDelete ? (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                onSelect={() => onDelete(doc)}
+                              >
+                                Delete...
+                              </DropdownMenuItem>
+                            </>
+                          ) : null}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

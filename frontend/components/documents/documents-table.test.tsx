@@ -51,7 +51,7 @@ function header(container: HTMLElement, label: string) {
 }
 
 describe("DocumentsTable sorting", () => {
-  it("defaults to newest upload first", () => {
+  it("with no deadline on any record, lists the newest upload first", () => {
     const { container } = renderTable();
     expect(names(container)).toEqual([
       "Charlie record.pdf",
@@ -401,5 +401,65 @@ describe("the billing sheet", () => {
     await user.click(screen.getByRole("button", { name: "Actions" }));
 
     expect(screen.queryByRole("menuitem", { name: "Billing sheet" })).toBeNull();
+  });
+});
+
+describe("deadlines (the office's answer, 2026-11-25)", () => {
+  const DATED = [
+    { ...DOCS[0], id: "x", original_filename: "Supplemental.pdf", visit_type: "SUPP", due_on: "2027-01-10" },
+    { ...DOCS[1], id: "y", original_filename: "No dates.pdf" },
+    { ...DOCS[2], id: "z", original_filename: "Late meds.pdf", visit_type: "LATE", due_on: "2026-12-30" },
+    {
+      ...DOCS[0],
+      id: "w",
+      original_filename: "Done.pdf",
+      visit_type: "QME",
+      due_on: "2026-12-02",
+      completed_at: "2026-12-01T00:00:00Z",
+    },
+    { ...DOCS[1], id: "v", original_filename: "Appointment.pdf", visit_type: "AME", due_on: "2026-12-24" },
+  ];
+
+  function rowOf(container: HTMLElement, name: string) {
+    return [...container.querySelectorAll("tbody tr")].find((tr) =>
+      tr.textContent?.includes(name),
+    ) as HTMLTableRowElement;
+  }
+
+  it("lists the closest deadline first; no deadline, then Completed, after", () => {
+    const { container } = render(<DocumentsTable docs={DATED} onOpen={vi.fn()} />);
+    expect(names(container)).toEqual([
+      "Appointment.pdf",
+      "Late meds.pdf",
+      "Supplemental.pdf",
+      "No dates.pdf",
+      "Done.pdf",
+    ]);
+    expect(header(container, "Due").getAttribute("aria-sort")).toBe("ascending");
+  });
+
+  it("reverses on a click and goes back to closest first on the next", () => {
+    const { container } = render(<DocumentsTable docs={DATED} onOpen={vi.fn()} />);
+    const due = header(container, "Due").querySelector("button")!;
+    fireEvent.click(due);
+    expect(names(container)[0]).toBe("Done.pdf");
+    fireEvent.click(due);
+    expect(names(container)[0]).toBe("Appointment.pdf");
+  });
+
+  it("colours an appointment yellow and late meds light blue; SUPP, undated and Completed stay plain", () => {
+    const { container } = render(<DocumentsTable docs={DATED} onOpen={vi.fn()} />);
+    expect(rowOf(container, "Appointment.pdf").className).toBe("hd-due-appointment");
+    expect(rowOf(container, "Late meds.pdf").className).toBe("hd-due-late-meds");
+    for (const name of ["Supplemental.pdf", "No dates.pdf", "Done.pdf"]) {
+      expect(rowOf(container, name).className).toBe("");
+    }
+  });
+
+  it("shows the due date the office's way, and the kind of deadline when it is not an appointment", () => {
+    const { container } = render(<DocumentsTable docs={DATED} onOpen={vi.fn()} />);
+    expect(rowOf(container, "Appointment.pdf").textContent).toContain("12/24/2026");
+    expect(rowOf(container, "Late meds.pdf").textContent).toContain("Late Meds - ");
+    expect(rowOf(container, "Supplemental.pdf").textContent).toContain("SUPP - ");
   });
 });

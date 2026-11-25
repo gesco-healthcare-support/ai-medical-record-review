@@ -7,8 +7,10 @@ import {
   editValid,
   isPageCount,
   shownCounts,
+  takesAppointment,
   toEdit,
   VISIT_TYPES,
+  visitLabel,
 } from "@/lib/billing-sheet";
 
 const READY = {
@@ -39,8 +41,16 @@ const SHEET: BillingSheet = {
 };
 
 describe("the choices", () => {
-  it("are the office's own, SUPP last", () => {
-    expect(VISIT_TYPES).toEqual(["AME", "QME", "PQME", "IME", "SUPP"]);
+  it("are the office's own, SUPP and Late Meds last", () => {
+    expect(VISIT_TYPES).toEqual(["AME", "QME", "PQME", "IME", "SUPP", "LATE"]);
+  });
+
+  it("show Late Meds by its name and every other visit as stored", () => {
+    expect(VISIT_TYPES.map(visitLabel)).toEqual(["AME", "QME", "PQME", "IME", "SUPP", "Late Meds"]);
+  });
+
+  it("take an appointment date except a supplemental report and late meds", () => {
+    expect(VISIT_TYPES.filter((visit) => !takesAppointment(visit))).toEqual(["SUPP", "LATE"]);
   });
 });
 
@@ -66,8 +76,9 @@ describe("billingReady", () => {
     }
   });
 
-  it("needs no appointment date for a supplemental report", () => {
+  it("needs no appointment date for a supplemental report or late meds", () => {
     expect(billingReady({ ...READY, visit_type: "SUPP", appointment_date: "" })).toBe(true);
+    expect(billingReady({ ...READY, visit_type: "LATE", appointment_date: "" })).toBe(true);
   });
 
   it("refuses a declared page count that is not a whole number, and overlong texts", () => {

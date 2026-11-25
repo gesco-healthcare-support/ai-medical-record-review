@@ -729,14 +729,14 @@ def _billing_at_upload(
     declared_pages: str,
 ) -> dict:
     """The billing sheet's fields as the uploader typed them on ``POST .../combine``, checked:
-    the type of visit and whether an interpreter is needed are required, and so is the appointment
-    date unless the visit is a supplemental report, which has none. The doctor, the claim numbers,
-    the location, the previous office visit and the declared page count may be blank. Who reviews
-    the records is not asked: the sheet always says IN-HOUSE.
+    the type of visit and whether an interpreter is needed are required, and so is the
+    appointment date unless the visit has none (a supplemental report, late meds). The doctor, the
+    claim numbers, the location, the previous office visit and the declared page count may be
+    blank. Who reviews the records is not asked: the sheet always says IN-HOUSE.
     """
     visit = _choice(visit_type, billing_sheet.VISIT_TYPES, _BILLING_VISIT_DETAIL, required=True)
     appointment = None
-    if visit != billing_sheet.SUPPLEMENTAL:
+    if visit not in billing_sheet.NO_APPOINTMENT:
         appointment = _form_date(appointment_date, _COMBINE_APPOINTMENT_DETAIL)
     return {
         "visit_type": visit,
@@ -1391,8 +1391,8 @@ def _billing_response(session: Session, document: Document) -> dict:
 
 def _billing_fields(payload: BillingPayload, document: Document) -> dict:
     """The sheet's fields as typed on D6d, checked; a 400 for a value the sheet cannot hold. Every
-    field may be blank. A supplemental report has no appointment date, so its date is dropped. A
-    doctor already stored that is not on today's list is kept as it is."""
+    field may be blank. A visit with no appointment (a supplemental report, late meds) drops its
+    date. A doctor already stored that is not on today's list is kept as it is."""
     doctors = DOCTORS + ((document.doctor,) if document.doctor else ())
     visit = _choice(
         payload.visit_type, billing_sheet.VISIT_TYPES, _BILLING_VISIT_DETAIL, required=False
@@ -1400,7 +1400,7 @@ def _billing_fields(payload: BillingPayload, document: Document) -> dict:
     appointment = _optional_date(payload.appointment_date, _COMBINE_APPOINTMENT_DETAIL)
     return {
         "visit_type": visit,
-        "appointment_date": None if visit == billing_sheet.SUPPLEMENTAL else appointment,
+        "appointment_date": None if visit in billing_sheet.NO_APPOINTMENT else appointment,
         "doctor": _choice(payload.doctor, doctors, _BILLING_DOCTOR_DETAIL, required=False),
         "interpreter": _yes_no(payload.interpreter, required=False),
         "claim_numbers": _short_text(payload.claim_numbers, _BILLING_CLAIM_DETAIL),

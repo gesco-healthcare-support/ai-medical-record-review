@@ -98,6 +98,12 @@ export type DocumentListItem = {
    *  (`defense`, `applicant`, `insurance`, `copy_service`, "" otherwise). */
   appointment_date?: string;
   records_from?: string;
+  /** The type of visit typed for the billing sheet (`lib/billing-sheet.ts` `VISIT_TYPES`), ""
+   *  otherwise, and when the record's report is due (`YYYY-MM-DD`, "" when no date says it):
+   *  the appointment date, or 40 days after the records were received for a supplemental
+   *  report or late meds (`lib/deadlines.ts`). */
+  visit_type?: string;
+  due_on?: string;
 };
 
 /** A sub-document row in the review editor (ReviewRow.as_row()). */
