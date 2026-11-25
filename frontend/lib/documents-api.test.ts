@@ -16,6 +16,7 @@ import {
   getBillingSheet,
   listDoctors,
   listDocuments,
+  listTeamQueue,
   rawPdfUrl,
   saveBillingSheet,
   stageReceivedFile,
@@ -250,6 +251,11 @@ describe("listing another reviewer's records", () => {
     expect(lastCall().url).toBe("/api/documents?owner=7");
     await listDocuments(null);
     expect(lastCall().url).toBe("/api/documents");
+  });
+
+  it("asks for the team queue on its own path", async () => {
+    await listTeamQueue();
+    expect(lastCall().url).toBe("/api/documents/queue");
   });
 });
 

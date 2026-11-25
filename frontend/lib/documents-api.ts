@@ -16,6 +16,13 @@ export function listDocuments(owner?: number | null) {
   return apiFetch<DocumentListItem[]>(`/documents${query}`);
 }
 
+/** GET /api/documents/queue - the team queue: every record put together from received files that
+ *  nobody has taken yet, whoever uploaded it, for every reviewer. Starting identification on one
+ *  takes it into the caller's own records. */
+export function listTeamQueue() {
+  return apiFetch<DocumentListItem[]>("/documents/queue");
+}
+
 /** Where an upload goes. `owner` (admins only) is another reviewer's account; `allowDuplicate`
  *  confirms it after the server said that reviewer already holds the same file. `patientId` is the
  *  patient's ID - read from the file name, or typed when the name has none. */
@@ -134,6 +141,8 @@ export function combineReceivedFiles(upload: ReceivedFilesUpload) {
       id: string;
       page_count: number;
       parts: { kind: ReceivedKind; start: number; end: number }[];
+      /** Put in the team queue (anyone may take it), rather than in a named reviewer's account. */
+      in_team_queue?: boolean;
     } & PatientFields
   >("/documents/combine", { method: "POST", body: form });
 }

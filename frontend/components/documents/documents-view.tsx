@@ -8,6 +8,7 @@ import {
   useDocuments,
   useSetCompleted,
   useStartIdentification,
+  useTeamQueue,
   useUploadDocument,
 } from "@/hooks/use-documents";
 import { useAccounts } from "@/hooks/use-admin";
@@ -219,6 +220,32 @@ function ListHeader({
   );
 }
 
+/** The team queue (the office's answer, 2026-11-25): records put together from received files
+ *  that nobody has taken yet, whoever uploaded them, closest deadline first. Every reviewer sees
+ *  it, so whoever decides what to run next sees what is waiting; starting identification on one
+ *  takes it into that reviewer's own records. Shown only while something waits. */
+function TeamQueue({
+  docs,
+  ...actions
+}: Readonly<
+  { docs: DocumentListItem[] } & Omit<Parameters<typeof DocumentsTable>[0], "docs" | "queue">
+>) {
+  if (docs.length === 0) return null;
+  return (
+    <section className="hd-column hd-queue" aria-label="Team queue">
+      <div className="hd-header">
+        <div>
+          <h2>Team queue</h2>
+          <p className="hd-muted">
+            Records nobody has taken yet. Starting identification on one moves it to your records.
+          </p>
+        </div>
+      </div>
+      <DocumentsTable queue docs={docs} {...actions} />
+    </section>
+  );
+}
+
 /** A file waiting on the admin's go-ahead to land in another reviewer's account. The reviewer is
  *  captured WITH the file, so what the confirmation names is what the upload targets. */
 type CrossUpload = { file: File; ownerId: number; ownerName: string; patientId: string };
@@ -373,6 +400,7 @@ export function DocumentsView() {
   const owner = useRecordsOwner();
   const viewingOther = owner.viewingOther;
   const { data: docs = [], isLoading, isError, refetch } = useDocuments(owner.ownerId);
+  const { data: queueDocs = [] } = useTeamQueue();
   const uploads = useUploads(owner);
   const del = useDeleteDocument();
   const identify = useStartIdentification();
@@ -396,12 +424,23 @@ export function DocumentsView() {
     if (file) uploads.take(file);
   }
 
-  async function runIdentify(id: string) {
+  async function runIdentify(id: string, fromQueue = false) {
     try {
       await identify.mutateAsync(id);
-      toast.success("Identification started.");
+      toast.success(
+        fromQueue
+          ? "Identification started. The record is now in your records."
+          : "Identification started.",
+      );
     } catch (err) {
-      toast.error(errMessage(err, "Could not start identification."));
+      // A record another reviewer took from the queue a moment ago is closed to the caller (404):
+      // say that, not that it may have been deleted.
+      const taken = "Another reviewer has already taken this record. Refresh the list.";
+      toast.error(
+        fromQueue
+          ? humanizeError(err, { fallback: "Could not start identification.", notFound: taken })
+          : errMessage(err, "Could not start identification."),
+      );
     }
   }
 
@@ -443,7 +482,9 @@ export function DocumentsView() {
   }
 
   function onIdentify(doc: DocumentListItem) {
-    if (doc.rows_count) {
+    if (doc.in_team_queue) {
+      void runIdentify(doc.id, true); // takes the record; it has no rows to lose
+    } else if (doc.rows_count) {
       setReidentifyTarget(doc); // re-run replaces corrections -> confirm first
     } else {
       void runIdentify(doc.id);
@@ -484,6 +525,16 @@ export function DocumentsView() {
       />
 
       <OwnerBar owner={owner} />
+
+      <TeamQueue
+        docs={queueDocs}
+        onOpen={(id) => router.push(`/records/${id}`)}
+        onIdentify={onIdentify}
+        onAssign={owner.isAdmin ? setAssignTarget : undefined}
+        onDelete={(doc) => setDeleteTarget(doc)}
+        onBillingSheet={setBillingTarget}
+        onDownloadRaw={downloadRaw}
+      />
 
       {/* A failed fetch leaves `docs` at its [] default, and the first-run screen below would then
           tell a reviewer with records that they have none. Say what happened instead. */}

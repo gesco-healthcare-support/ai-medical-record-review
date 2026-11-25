@@ -22,6 +22,18 @@ export function useDocuments(owner?: number | null) {
   });
 }
 
+/** The team queue (`GET /api/documents/queue`): records nobody has taken yet. Under the same
+ *  prefix, so every mutation below refreshes it too - taking a record (starting its
+ *  identification) moves it from here to the caller's own list. Polled every 30 seconds, so
+ *  a record another reviewer took or uploaded shows without a reload. */
+export function useTeamQueue() {
+  return useQuery({
+    queryKey: [...DOCS_KEY, "queue"],
+    queryFn: api.listTeamQueue,
+    refetchInterval: 30_000,
+  });
+}
+
 function useDocsMutation<TArgs, TResult>(mutationFn: (args: TArgs) => Promise<TResult>) {
   const queryClient = useQueryClient();
   return useMutation({

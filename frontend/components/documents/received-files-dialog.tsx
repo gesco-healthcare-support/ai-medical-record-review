@@ -619,10 +619,10 @@ export function ReceivedFilesDialog({
       const others = otherRecordsLine(created.patient_records);
       const count = items.length === 1 ? "1 file" : `${items.length} files`;
       const made = `One record made from ${count}, ${created.page_count} pages`;
-      toast.success(
-        (owner ? `${made}, in ${owner.name}'s records.` : `${made}.`) +
-          (others ? ` ${others}` : ""),
-      );
+      let where = `${made}.`;
+      if (owner) where = `${made}, in ${owner.name}'s records.`;
+      else if (created.in_team_queue) where = `${made}, in the team queue.`;
+      toast.success(where + (others ? ` ${others}` : ""));
       close(true);
     } catch (err) {
       toast.error(humanizeError(err, { fallback: "Could not combine the files." }));
