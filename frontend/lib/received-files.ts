@@ -99,6 +99,50 @@ export function isAcceptedFile(file: File): boolean {
   return ACCEPTED_TYPES.has(file.type) || ACCEPTED_NAME.test(file.name);
 }
 
+/** A record that already holds a file being added, as the server describes it when the file is
+ *  sent (`uploaded_before`, newest first, at most five): when it was uploaded, its pages, where it
+ *  is now, and whether the file is only one of several the record was put together from. Uploads
+ *  are the whole office's (the team queue), so the server looks in every account. */
+export type UploadedBefore = {
+  uploaded_at: string;
+  pages: number;
+  in_team_queue: boolean;
+  yours: boolean;
+  /** The reviewer who has it, when it is neither in the team queue nor the uploader's. */
+  reviewer: string;
+  part_of_record: boolean;
+};
+
+/** The server says at most this many earlier records (`_EARLIER_UPLOADS_SHOWN`). */
+const EARLIER_SHOWN = 5;
+
+/** `MM/DD/YYYY` of a timestamp, in the viewer's own time zone. */
+function localDay(iso: string): string {
+  const day = new Date(iso);
+  const two = (value: number) => String(value).padStart(2, "0");
+  return `${two(day.getMonth() + 1)}/${two(day.getDate())}/${day.getFullYear()}`;
+}
+
+function whereItIs(earlier: UploadedBefore): string {
+  if (earlier.in_team_queue) return "in the team queue";
+  if (earlier.yours) return "in your records";
+  return earlier.reviewer ? `in ${earlier.reviewer}'s records` : "in another reviewer's records";
+}
+
+/** The warning on a file the office already has, or "" for a new file: when, where and how big the
+ *  latest record holding it is, and how often the file was uploaded before. */
+export function uploadedBeforeLine(earlier: readonly UploadedBefore[]): string {
+  const latest = earlier[0];
+  if (latest === undefined) return "";
+  const pages = latest.pages === 1 ? "1 page" : `${latest.pages.toLocaleString("en-US")} pages`;
+  const part = latest.part_of_record ? " as part of a record" : "";
+  const where = whereItIs(latest);
+  const line = `Already uploaded on ${localDay(latest.uploaded_at)}${part}, ${where} (${pages}).`;
+  if (earlier.length === 1) return line;
+  const times = earlier.length >= EARLIER_SHOWN ? `${EARLIER_SHOWN} or more` : `${earlier.length}`;
+  return `${line} Uploaded ${times} times before; that is the latest.`;
+}
+
 /** `items` in the order a record is put together: by kind, and within a kind in the order given. */
 export function inReceivedOrder<T extends { kind: ReceivedKind }>(items: readonly T[]): T[] {
   const rank = (kind: ReceivedKind) => RECEIVED_KINDS.indexOf(kind);

@@ -22,7 +22,6 @@ import {
   stageReceivedFile,
   unstageReceivedFile,
   startIdentification,
-  uploadDocument,
 } from "@/lib/documents-api";
 import { type BillingDraft, type BillingSheetEdit, EMPTY_BILLING } from "@/lib/billing-sheet";
 
@@ -70,30 +69,18 @@ function toEditForTest(): BillingSheetEdit {
 }
 
 describe("uploading", () => {
-  it("sends the file as multipart and lets the browser set the boundary", async () => {
-    const file = pdf();
-    await uploadDocument(file);
-
-    const { url, init } = lastCall();
-    expect(url).toBe("/api/documents");
-    expect(init.method).toBe("POST");
-    expect(init.body).toBeInstanceOf(FormData);
-    expect((init.body as FormData).get("pdf")).toBe(file);
-
-    // Load-bearing ABSENCE. A multipart Content-Type is only valid with the boundary the browser
-    // generates; a hand-set `multipart/form-data` omits it and the server cannot parse the body.
-    // apiFetch skips its JSON default for FormData precisely so this header stays unset.
-    expect(new Headers(init.headers).has("Content-Type")).toBe(false);
-  });
-
-  it("sends one received file on its own, to be kept and read", async () => {
+  it("sends one received file on its own, as multipart, to be kept and read", async () => {
     const file = pdf("a.pdf");
     await stageReceivedFile(file);
 
     const { url, init } = lastCall();
     expect(url).toBe("/api/documents/combine/files");
     expect(init.method).toBe("POST");
+    expect(init.body).toBeInstanceOf(FormData);
     expect((init.body as FormData).get("pdf")).toBe(file);
+    // Load-bearing ABSENCE. A multipart Content-Type is only valid with the boundary the browser
+    // generates; a hand-set `multipart/form-data` omits it and the server cannot parse the body.
+    // apiFetch skips its JSON default for FormData precisely so this header stays unset.
     expect(new Headers(init.headers).has("Content-Type")).toBe(false);
   });
 
@@ -276,25 +263,7 @@ describe("the plain document calls", () => {
 });
 
 describe("uploading into another reviewer's account", () => {
-  it("sends the reviewer as `owner`, and confirms a duplicate only when asked", async () => {
-    await uploadDocument(pdf(), { owner: 7 });
-    let body = lastCall().init.body as FormData;
-    expect(body.get("owner")).toBe("7");
-    expect(body.has("allow_duplicate")).toBe(false);
-
-    await uploadDocument(pdf(), { owner: 7, allowDuplicate: true });
-    body = lastCall().init.body as FormData;
-    expect(body.get("allow_duplicate")).toBe("true");
-  });
-
-  it("sends neither field on an ordinary upload", async () => {
-    await uploadDocument(pdf());
-    const body = lastCall().init.body as FormData;
-    expect(body.has("owner")).toBe(false);
-    expect(body.has("allow_duplicate")).toBe(false);
-  });
-
-  it("sends the reviewer on a received-files upload too, and nothing when there is none", async () => {
+  it("sends the reviewer on an upload, and nothing when there is none", async () => {
     const upload = {
       lastName: "Synthetic",
       firstName: "Patient",

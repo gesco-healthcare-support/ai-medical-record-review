@@ -17,7 +17,6 @@ const getBillingSheet = vi.fn();
 vi.mock("@/lib/documents-api", () => ({
   listDocuments: (...args: unknown[]) => listDocuments(...args),
   listTeamQueue: (...args: unknown[]) => listTeamQueue(...args),
-  uploadDocument: vi.fn().mockResolvedValue({ id: "d1", page_count: 2 }),
   combineReceivedFiles: vi.fn().mockResolvedValue({ id: "d2", page_count: 4 }),
   deleteDocument: vi.fn().mockResolvedValue({ ok: true }),
   startIdentification: vi.fn().mockResolvedValue({ ok: true }),
@@ -38,7 +37,6 @@ import {
   saveBillingSheet,
   setCompleted,
   startIdentification,
-  uploadDocument,
 } from "@/lib/documents-api";
 import {
   BILLING_POLL_MS,
@@ -52,7 +50,6 @@ import {
   useSetCompleted,
   useStartIdentification,
   useTeamQueue,
-  useUploadDocument,
 } from "@/hooks/use-documents";
 
 function harness() {
@@ -125,7 +122,6 @@ describe("useDocuments mutations", () => {
     // that EACH of them refetches and that each reaches its own call - a wrapper pointed at the
     // wrong api function would refetch just as happily and delete a record the reviewer uploaded.
     listDocuments.mockResolvedValue([]);
-    const file = new File(["x"], "record.pdf", { type: "application/pdf" });
     const combined = {
       lastName: "Synthetic",
       firstName: "Patient",
@@ -138,8 +134,6 @@ describe("useDocuments mutations", () => {
     };
 
     const cases = [
-      { hook: useUploadDocument, args: { file } as unknown },
-      { hook: useUploadDocument, args: { file, owner: 7, allowDuplicate: true } },
       { hook: useCombineReceivedFiles, args: combined },
       { hook: useAssignDocument, args: { id: "d1", owner: 7, allowDuplicate: false } },
       { hook: useDeleteDocument, args: "d1" },
@@ -153,10 +147,6 @@ describe("useDocuments mutations", () => {
       await waitFor(() => expect(invalidated).toEqual([["documents"]]));
     }
 
-    // The upload passes its target through untouched: nothing for one's own account, the reviewer
-    // and the confirmation for someone else's.
-    expect(uploadDocument).toHaveBeenCalledWith(file, {});
-    expect(uploadDocument).toHaveBeenCalledWith(file, { owner: 7, allowDuplicate: true });
     expect(combineReceivedFiles).toHaveBeenCalledWith(combined);
     // Assigning moves a record OUT of the list on screen, so it must refetch like the rest.
     expect(assignDocument).toHaveBeenCalledWith("d1", 7, false);

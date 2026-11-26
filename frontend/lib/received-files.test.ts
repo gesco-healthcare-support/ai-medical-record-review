@@ -10,6 +10,8 @@ import {
   RECORDS_FROM,
   RECORDS_FROM_LABELS,
   shownKind,
+  type UploadedBefore,
+  uploadedBeforeLine,
 } from "@/lib/received-files";
 
 describe("guessKind", () => {
@@ -143,5 +145,57 @@ describe("inReceivedOrder", () => {
     // received_files.PARTIES - the server refuses any other.
     expect(RECORDS_FROM).toEqual(["defense", "applicant", "insurance", "copy_service"]);
     expect(Object.keys(RECORDS_FROM_LABELS).sort()).toEqual([...RECORDS_FROM].sort());
+  });
+});
+
+describe("uploadedBeforeLine", () => {
+  // Noon UTC: the same day in every US time zone.
+  const at = (overrides: Partial<UploadedBefore> = {}): UploadedBefore => ({
+    uploaded_at: "2026-11-24T12:00:00+00:00",
+    pages: 12,
+    in_team_queue: false,
+    yours: false,
+    reviewer: "Brian",
+    part_of_record: false,
+    ...overrides,
+  });
+
+  it("says nothing for a new file", () => {
+    expect(uploadedBeforeLine([])).toBe("");
+  });
+
+  it("says when, where and how big the record is", () => {
+    expect(uploadedBeforeLine([at()])).toBe(
+      "Already uploaded on 11/24/2026, in Brian's records (12 pages).",
+    );
+    expect(uploadedBeforeLine([at({ in_team_queue: true, reviewer: "Brian" })])).toBe(
+      "Already uploaded on 11/24/2026, in the team queue (12 pages).",
+    );
+    expect(uploadedBeforeLine([at({ yours: true })])).toBe(
+      "Already uploaded on 11/24/2026, in your records (12 pages).",
+    );
+    expect(uploadedBeforeLine([at({ reviewer: "" })])).toBe(
+      "Already uploaded on 11/24/2026, in another reviewer's records (12 pages).",
+    );
+  });
+
+  it("says when the file is only part of a record, and counts pages plainly", () => {
+    expect(uploadedBeforeLine([at({ part_of_record: true, pages: 1 })])).toBe(
+      "Already uploaded on 11/24/2026 as part of a record, in Brian's records (1 page).",
+    );
+    expect(uploadedBeforeLine([at({ pages: 4120 })])).toBe(
+      "Already uploaded on 11/24/2026, in Brian's records (4,120 pages).",
+    );
+  });
+
+  it("names the latest of several, and how often - five or more past the server's five", () => {
+    const older = at({ uploaded_at: "2026-11-02T12:00:00+00:00" });
+    expect(uploadedBeforeLine([at(), older])).toBe(
+      "Already uploaded on 11/24/2026, in Brian's records (12 pages). " +
+        "Uploaded 2 times before; that is the latest.",
+    );
+    expect(uploadedBeforeLine([at(), older, older, older, older])).toMatch(
+      / Uploaded 5 or more times before; that is the latest\.$/,
+    );
   });
 });

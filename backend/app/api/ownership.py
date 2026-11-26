@@ -14,11 +14,16 @@ A reviewer uploading into their OWN account keeps the old behaviour: a duplicate
 response, never a refusal. The confirmation exists for the cross-account case because the admin
 cannot see at a glance what the other reviewer already has, and a second copy in someone else's list
 is work they may do twice.
+
+"Upload records" (the one upload button since 2026-11-26) asks a wider question as each file is
+added: does ANY record already hold this file (`uploaded_anywhere`)? The dialog warns and lets the
+uploader go on; nothing is refused.
 """
 
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import cast, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.models import Document, User
@@ -61,6 +66,19 @@ def same_file(session: Session, owner_id: int, sha256: str) -> list[Document]:
     On an assignment the record being moved is never among them: it still belongs to its old owner
     when this is asked, and assigning a record to its own owner returns before asking."""
     query = select(Document).where(Document.user_id == owner_id, Document.sha256 == sha256)
+    return list(session.scalars(query.order_by(Document.created_at.desc())).all())
+
+
+def uploaded_anywhere(session: Session, sha256: str) -> list[Document]:
+    """Every record already holding this exact file, in ANY account or the team queue, newest first.
+
+    Uploads go to the team queue for the whole office (2026-11-25), so the question at upload is
+    whether the office already has the file, not whether the uploader does. A record holds the file
+    when it IS the file (`Document.sha256`), or when the file is one of those it was put together
+    from: each part of a combined record keeps its file's fingerprint (`received_parts[].sha256`),
+    from 2026-11-26 on - a record put together before that cannot be matched by its files."""
+    part = cast(Document.received_parts, JSONB).contains([{"sha256": sha256}])
+    query = select(Document).where(or_(Document.sha256 == sha256, part))
     return list(session.scalars(query.order_by(Document.created_at.desc())).all())
 
 

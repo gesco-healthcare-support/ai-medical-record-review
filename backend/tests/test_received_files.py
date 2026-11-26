@@ -13,7 +13,8 @@ import logging
 import os
 import threading
 import time
-from datetime import date
+import uuid
+from datetime import UTC, date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -173,6 +174,10 @@ def _audit(doc_id: str, action: str) -> list[tuple[int, str | None]]:
                 select(AuditLog).where(AuditLog.document_id == doc_id, AuditLog.action == action)
             ).all()
         ]
+
+
+def _sha(body: bytes) -> str:
+    return hashlib.sha256(body).hexdigest()
 
 
 def _documents_of(user_id: int) -> list[Document]:
@@ -338,6 +343,38 @@ def test_combine_joins_the_files_in_the_order_given(tmp_path):
     assert _widths(str(out)) == [101, 102, 102, 103, 103, 103]
 
 
+def test_one_file_is_copied_as_it_is_not_joined(tmp_path, monkeypatch):
+    """DEMONSTRATES: a record that came as one file is the file itself - byte for byte, so its
+    fingerprint is the file's - and PyMuPDF never joins it (no copy of it in memory)."""
+    body = _pdf(3, width=103)
+    source = tmp_path / "in.pdf"
+    source.write_bytes(body)
+    out = tmp_path / "out.pdf"
+
+    def no_join(*args, **kwargs):
+        raise AssertionError("one file must not be joined")
+
+    monkeypatch.setattr(received_files.pymupdf.Document, "insert_pdf", no_join)
+    parts = received_files.combine([(str(source), "records")], str(out))
+
+    assert [part.as_dict() for part in parts] == [{"kind": "records", "start": 1, "end": 3}]
+    assert out.read_bytes() == body
+
+
+@pytest.mark.parametrize("bad", [b"not a pdf", b""])
+def test_one_unreadable_file_is_refused_and_nothing_is_written(tmp_path, bad):
+    """GUARD: one file alone is checked like any other - refused as file 1, nothing written."""
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(bad)
+    out = tmp_path / "out.pdf"
+
+    with pytest.raises(received_files.UnreadableFile) as caught:
+        received_files.combine([(str(broken), "records")], str(out))
+
+    assert caught.value.position == 1
+    assert not out.exists()
+
+
 @pytest.mark.parametrize("bad", [b"not a pdf", b""])
 def test_an_unreadable_file_refuses_the_whole_record_and_names_its_place(tmp_path, bad):
     """GUARD: one unreadable file is never skipped quietly - the old split upload did that, so a
@@ -398,10 +435,11 @@ async def test_the_files_become_one_record_named_and_headed_as_typed(client):
     assert document.received_on == date(2026, 11, 3)
     assert document.appointment_date == date(2026, 12, 1)
     assert document.records_from == "applicant"
+    # Each part keeps its file's fingerprint, so a later upload of the same file is recognised.
     assert document.received_parts == [
-        {"kind": "email", "start": 1, "end": 1},
-        {"kind": "advocacy_letter", "start": 2, "end": 3},
-        {"kind": "records", "start": 4, "end": 6},
+        {"kind": "email", "start": 1, "end": 1, "sha256": _sha(_FILES[0][1])},
+        {"kind": "advocacy_letter", "start": 2, "end": 3, "sha256": _sha(_FILES[1][1])},
+        {"kind": "records", "start": 4, "end": 6, "sha256": _sha(_FILES[2][1])},
     ]
     assert document.status == "uploaded"
     assert _widths(document.stored_path) == [101, 102, 102, 103, 103, 103]
@@ -1009,3 +1047,185 @@ def test_a_file_that_is_neither_pdf_nor_image_is_unreadable(tmp_path):
     with pytest.raises(received_files.UnreadableFile):
         received_files.make_pdf(source, tmp_path / "out.pdf")
     assert not (tmp_path / "out.pdf").exists()
+
+
+# --- one upload button (2026-11-26): one file, and files the office already has -----------------
+
+
+def _unique_pdf(pages: int = 1) -> bytes:
+    """A PDF no other test makes: its first page carries a fresh made-up line."""
+    return _text_pdf(f"Synthetic page {uuid.uuid4().hex}", pages)
+
+
+async def _upload_single(client, body: bytes) -> str:
+    """The single-PDF upload scripts still use (POST /api/documents), into the caller's account."""
+    resp = await client.post(
+        "/api/documents",
+        files={"pdf": ("scan.pdf", body, "application/pdf")},
+        data={"patient_id": "801234"},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+async def test_a_record_that_came_as_one_file_is_stored_as_it_is(client):
+    """DEMONSTRATES the office's request: one file goes through the same form, nothing is joined
+    to it - the stored PDF is the file received - its pages are the medical records, and the
+    record goes to the team queue like every upload."""
+    user_id, email = _user()
+    await _login(client, email)
+    body = _unique_pdf(4)
+
+    resp = await _combine(client, files=[("records", body)])
+
+    assert resp.status_code == 201, resp.text
+    document = _document(resp.json()["id"])
+    assert Path(document.stored_path).read_bytes() == body
+    assert document.sha256 == _sha(body)
+    assert document.page_count == 4
+    assert document.received_parts == [
+        {"kind": "records", "start": 1, "end": 4, "sha256": _sha(body)}
+    ]
+    assert document.team_queue_since is not None
+    assert _audit(document.id, "combine_upload") == [(user_id, "1 file, to the team queue")]
+
+
+async def test_a_new_file_was_not_uploaded_before(client):
+    """GUARD: no warning for a file no record holds - an older record whose parts carry no
+    fingerprint (put together before 2026-11-26) neither matches nor breaks the lookup."""
+    user_id, email = _user()
+    await _login(client, email)
+    with get_sessionmaker()() as session:
+        session.add(
+            Document(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                original_filename="old.pdf",
+                stored_path="old.pdf",
+                sha256="0" * 64,
+                page_count=3,
+                received_parts=[{"kind": "records", "start": 1, "end": 3}],
+            )
+        )
+        session.commit()
+
+    resp = await _stage(client, _unique_pdf())
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["uploaded_before"] == []
+
+
+async def test_a_file_inside_another_reviewers_record_is_named_when_added(client):
+    """DEMONSTRATES: the office already has the file - one of several a record in the team queue
+    was put together from - and the answer says so, wherever the record is; nothing is refused."""
+    _, first_email = _user()
+    await _login(client, first_email)
+    letter, records = _unique_pdf(2), _unique_pdf(3)
+    made = await _combine(client, files=[("advocacy_letter", letter), ("records", records)])
+    assert made.status_code == 201, made.text
+    document = _document(made.json()["id"])
+
+    _, second_email = _user()
+    await _login(client, second_email)
+    resp = await _stage(client, records)
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["uploaded_before"] == [
+        {
+            "uploaded_at": document.created_at.replace(tzinfo=UTC).isoformat(),
+            "pages": 5,
+            "in_team_queue": True,
+            "yours": False,
+            "reviewer": "Synthetic",
+            "part_of_record": True,
+        }
+    ]
+
+
+async def test_a_single_upload_in_a_reviewers_records_is_named(client):
+    """DEMONSTRATES: a record uploaded as one PDF (by a script, or before 2026-11-26) is the file
+    itself, so it matches by its own fingerprint, in whichever reviewer's records it is."""
+    _, first_email = _user()
+    await _login(client, first_email)
+    body = _unique_pdf(2)
+    await _upload_single(client, body)
+
+    _, second_email = _user()
+    await _login(client, second_email)
+    [earlier] = (await _stage(client, body)).json()["uploaded_before"]
+
+    assert (earlier["in_team_queue"], earlier["yours"], earlier["part_of_record"]) == (
+        False,
+        False,
+        False,
+    )
+    assert (earlier["reviewer"], earlier["pages"]) == ("Synthetic", 2)
+
+
+async def test_the_uploaders_own_record_says_yours(client):
+    _, email = _user()
+    await _login(client, email)
+    body = _unique_pdf()
+    await _upload_single(client, body)
+
+    [earlier] = (await _stage(client, body)).json()["uploaded_before"]
+
+    assert earlier["yours"] is True
+
+
+async def test_the_same_file_again_is_warned_then_uploaded_anyway(client):
+    """DEMONSTRATES: a record that came as one file is the file, not a part of one; uploading the
+    same file again is the uploader's choice - made, and counted in the audit row."""
+    user_id, email = _user()
+    await _login(client, email)
+    body = _unique_pdf(2)
+    first = await _combine(client, files=[("records", body)])
+    assert first.status_code == 201, first.text
+
+    [earlier] = (await _stage(client, body)).json()["uploaded_before"]
+    again = await _combine(client, files=[("records", body)])
+
+    assert earlier["part_of_record"] is False
+    assert earlier["in_team_queue"] is True
+    assert again.status_code == 201, again.text
+    assert _audit(again.json()["id"], "combine_upload") == [
+        (user_id, "1 file, 1 uploaded before, to the team queue")
+    ]
+
+
+async def test_a_scanned_image_is_recognised_when_added_again(client):
+    """DEMONSTRATES: a record keeps a scanned image's PDF fingerprint, and the same image added
+    again is matched by it."""
+    _, email = _user()
+    await _login(client, email)
+    image = _image("PNG")
+    send = {"pdf": ("scan.png", image, "image/png")}
+    token = (await client.post("/api/documents/combine/files", files=send)).json()["token"]
+    made = await client.post(
+        "/api/documents/combine", data={**_FIELDS, "kinds": ["records"], "tokens": [token]}
+    )
+    assert made.status_code == 201, made.text
+
+    again = await client.post("/api/documents/combine/files", files=send)
+
+    assert [entry["pages"] for entry in again.json()["uploaded_before"]] == [1]
+
+
+async def test_the_records_named_are_the_newest_five(client):
+    """GUARD: newest first, and no more than five however often the file was uploaded."""
+    _, email = _user()
+    await _login(client, email)
+    body = _unique_pdf()
+    for _ in range(6):
+        await _upload_single(client, body)
+    with get_sessionmaker()() as session:
+        stamps = sorted(
+            session.scalars(select(Document.created_at).where(Document.sha256 == _sha(body))).all(),
+            reverse=True,
+        )
+
+    earlier = (await _stage(client, body)).json()["uploaded_before"]
+
+    assert [entry["uploaded_at"] for entry in earlier] == [
+        stamp.replace(tzinfo=UTC).isoformat() for stamp in stamps[:5]
+    ]

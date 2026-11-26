@@ -5,7 +5,7 @@ import {
   type BillingSheetEdit,
   takesAppointment,
 } from "@/lib/billing-sheet";
-import type { ReceivedKind, RecordsFrom } from "@/lib/received-files";
+import type { ReceivedKind, RecordsFrom, UploadedBefore } from "@/lib/received-files";
 import type { DocumentListItem } from "@/lib/types";
 
 /** GET /api/documents - the landing list (owner-scoped, newest first, with active_job + rows_count).
@@ -23,48 +23,29 @@ export function listTeamQueue() {
   return apiFetch<DocumentListItem[]>("/documents/queue");
 }
 
-/** Where an upload goes. `owner` (admins only) is another reviewer's account; `allowDuplicate`
- *  confirms it after the server said that reviewer already holds the same file. `patientId` is the
- *  patient's ID - read from the file name, or typed when the name has none. */
-export type UploadTarget = {
-  owner?: number | null;
-  allowDuplicate?: boolean;
-  patientId?: string | null;
-};
-
 /** What an upload answers with about the patient: the stored ID ("" for none) and how many OTHER
  *  records, in any reviewer's account, carry it. */
 export type PatientFields = { patient_id: string; patient_records: number };
 
-/** POST /api/documents - single-PDF upload (multipart field "pdf"). Does NOT start identification.
- *  Into another reviewer's account a file they already hold is a 409 with code "duplicate" until
- *  `allowDuplicate` is sent; into one's own it is only `sha256_duplicate` in the answer. */
-export function uploadDocument(file: File, target: UploadTarget = {}) {
-  const form = new FormData();
-  form.append("pdf", file);
-  if (target.owner != null) form.append("owner", String(target.owner));
-  if (target.allowDuplicate) form.append("allow_duplicate", "true");
-  if (target.patientId) form.append("patient_id", target.patientId);
-  return apiFetch<{ id: string; page_count: number; sha256_duplicate: boolean } & PatientFields>(
-    "/documents",
-    { method: "POST", body: form },
-  );
-}
-
 /** One of the files a record arrived in, kept on the server until the record is put together:
  *  its token, its page count, the kind its first page says it is, whether the uploader should look
- *  (`check`: the model was unsure, or off), and its fingerprint as received. */
+ *  (`check`: the model was unsure, or off), its fingerprint as received, and the records that
+ *  already hold the same file, in any account (`uploaded_before`, newest first; none for a new
+ *  file). */
 export type StagedFile = {
   token: string;
   pages: number;
   kind: ReceivedKind;
   check: boolean;
   sha256: string;
+  uploaded_before: UploadedBefore[];
 };
 
 /** POST /api/documents/combine/files - send one received file as soon as it is added. The server
- *  keeps it, counts its pages and reads its first page to say what it is. One file per request, so
- *  each file is held to the proxy's upload limit on its own. */
+ *  keeps it, counts its pages, reads its first page to say what it is, and names the records that
+ *  already hold it. One file per request, so each file is held to the proxy's upload limit on its
+ *  own. This is the web app's only upload (the single-PDF POST /api/documents stays for
+ *  scripts). */
 export function stageReceivedFile(file: File) {
   const form = new FormData();
   form.append("pdf", file);
@@ -122,7 +103,8 @@ function appendBilling(form: FormData, billing: BillingDraft) {
 }
 
 /** POST /api/documents/combine - one record from the staged files, joined in the order sent
- *  (repeated fields "tokens" and "kinds", one kind per file). Does NOT start identification. */
+ *  (repeated fields "tokens" and "kinds", one kind per file); one file is stored as it is. Does NOT
+ *  start identification. */
 export function combineReceivedFiles(upload: ReceivedFilesUpload) {
   const form = new FormData();
   form.append("last_name", upload.lastName.trim());

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }) }));
 
@@ -17,7 +17,6 @@ const docsState: {
   isError?: boolean;
   refetch?: () => void;
 } = { data: [], isLoading: false };
-const upload = { mutateAsync: vi.fn(), isPending: false };
 const del = { mutateAsync: vi.fn(), isPending: false };
 const identify = { mutateAsync: vi.fn(), isPending: false };
 const combine = { mutateAsync: vi.fn(), isPending: false };
@@ -33,7 +32,6 @@ vi.mock("@/hooks/use-documents", () => ({
     docsArgs.push(owner);
     return docsState;
   },
-  useUploadDocument: () => upload,
   useDeleteDocument: () => del,
   useStartIdentification: () => identify,
   useCombineReceivedFiles: () => combine,
@@ -57,13 +55,19 @@ vi.mock("@/hooks/use-current-user", () => ({ useCurrentUser: () => me }));
 vi.mock("@/hooks/use-admin", () => ({ useAccounts: () => accountsState }));
 
 // The raw download's hand-off to the browser, and the look at the billing sheet on top that
-// follows it, so a test can see the browser was given the file and say what the sheet holds.
+// follows it, so a test can see the browser was given the file and say what the sheet holds. The
+// upload form's own calls too: each file it is given is sent to be read (`stageReceivedFile`), and
+// dropped again when it closes.
 const getBillingSheet = vi.fn();
 const downloadRawPdf = vi.fn();
+const stageReceivedFile = vi.fn();
+const unstageReceivedFile = vi.fn();
 vi.mock("@/lib/documents-api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/documents-api")>()),
   getBillingSheet: (...args: unknown[]) => getBillingSheet(...args),
   downloadRawPdf: (...args: unknown[]) => downloadRawPdf(...args),
+  stageReceivedFile: (...args: unknown[]) => stageReceivedFile(...args),
+  unstageReceivedFile: (...args: unknown[]) => unstageReceivedFile(...args),
 }));
 
 import { toast } from "sonner";
@@ -86,6 +90,18 @@ afterEach(() => {
   me.data = { id: 1, is_superuser: false };
   accountsState.data = undefined;
   sessionStorage.clear();
+});
+
+beforeEach(() => {
+  stageReceivedFile.mockImplementation(async (file: File) => ({
+    token: `tok-${file.name}`,
+    pages: 2,
+    kind: "records",
+    check: false,
+    sha256: `sha-${file.name}`,
+    uploaded_before: [],
+  }));
+  unstageReceivedFile.mockResolvedValue({ ok: true });
 });
 
 describe("DocumentsView list failure", () => {
@@ -125,110 +141,6 @@ async function menuItem(user: ReturnType<typeof userEvent.setup>, name: RegExp) 
   await user.click(screen.getAllByRole("button", { name: "Actions" })[0]);
   return screen.getByRole("menuitem", { name });
 }
-
-describe("DocumentsView error handling", () => {
-  it("toasts a humanized message when an upload fails", async () => {
-    upload.mutateAsync.mockRejectedValueOnce(new ApiError("network", 0));
-    const { container } = render(<DocumentsView />);
-    const file = new File([new Uint8Array([1, 2, 3])], "rec 801234.pdf", {
-      type: "application/pdf",
-    });
-    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
-    await waitFor(() =>
-      expect(vi.mocked(toast).error).toHaveBeenCalledWith(
-        expect.stringMatching(/couldn't reach the server/i),
-      ),
-    );
-  });
-});
-
-describe("DocumentsView patient ID", () => {
-  // The office names record files after the patient, with the patient's ID in the name. Synthetic.
-  const choose = (container: HTMLElement, name: string) => {
-    const file = new File([new Uint8Array([1])], name, { type: "application/pdf" });
-    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
-    return file;
-  };
-
-  it("sends the ID the file name carries, without asking", async () => {
-    upload.mutateAsync.mockResolvedValueOnce({ id: "n1", sha256_duplicate: false });
-    const { container } = render(<DocumentsView />);
-    const file = choose(container, "Jane Example-AB1234-11032026.pdf");
-    await waitFor(() =>
-      expect(upload.mutateAsync).toHaveBeenCalledWith({ file, patientId: "AB1234" }),
-    );
-    expect(screen.queryByRole("dialog", { name: "Patient ID needed" })).toBeNull();
-  });
-
-  it("asks for the ID when the file name has none, and sends nothing until it is typed", async () => {
-    const user = userEvent.setup();
-    upload.mutateAsync.mockResolvedValueOnce({ id: "n1", sha256_duplicate: false });
-    const { container } = render(<DocumentsView />);
-    const file = choose(container, "scan.pdf");
-
-    const dialog = await screen.findByRole("dialog", { name: "Patient ID needed" });
-    expect(dialog).toHaveTextContent('"scan.pdf"');
-    const send = screen.getByRole("button", { name: "Upload" });
-    expect(send).toBeDisabled();
-    expect(upload.mutateAsync).not.toHaveBeenCalled();
-
-    await user.type(screen.getByLabelText("Patient ID"), " ab-1234");
-    await user.click(send);
-    await waitFor(() =>
-      expect(upload.mutateAsync).toHaveBeenCalledWith({ file, patientId: "AB1234" }),
-    );
-  });
-
-  it("uploads nothing when the uploader cancels the question", async () => {
-    const user = userEvent.setup();
-    const { container } = render(<DocumentsView />);
-    choose(container, "scan.pdf");
-    await screen.findByRole("dialog", { name: "Patient ID needed" });
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(upload.mutateAsync).not.toHaveBeenCalled();
-  });
-
-  it("says when the patient already has other records in the system", async () => {
-    upload.mutateAsync.mockResolvedValueOnce({
-      id: "n1",
-      sha256_duplicate: false,
-      patient_id: "801234",
-      patient_records: 2,
-    });
-    const { container } = render(<DocumentsView />);
-    choose(container, "Jane Example 801234.pdf");
-    await waitFor(() =>
-      expect(vi.mocked(toast).success).toHaveBeenCalledWith(
-        "Record uploaded. This patient has 2 other records in the system.",
-      ),
-    );
-  });
-});
-
-describe("DocumentsView upload affordances", () => {
-  it("binds the drop area to the file input and opens the picker once from each control", () => {
-    const { container, getByText } = render(<DocumentsView />);
-    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
-    const label = container.querySelector("label.hd-drop") as HTMLLabelElement;
-
-    // The binding itself: the drop area is a real <label> for the input, which is what lets the
-    // browser open the picker without a click handler on a non-interactive element.
-    expect(label).not.toBeNull();
-    expect(label.htmlFor).toBe(input.id);
-    expect(input.id).not.toBe("");
-
-    const clicks = vi.fn();
-    input.addEventListener("click", clicks);
-
-    fireEvent.click(label);
-    expect(clicks).toHaveBeenCalledTimes(1);
-
-    // "Browse files" is interactive content inside the label, so per the HTML spec clicking it does
-    // NOT also activate the label. It must open the picker exactly once more, never twice.
-    fireEvent.click(getByText("Browse files"));
-    expect(clicks).toHaveBeenCalledTimes(2);
-  });
-});
 
 describe("DocumentsView re-identification guard", () => {
   it("asks before re-identifying a record that already has documents, and does not start until confirmed", async () => {
@@ -310,26 +222,6 @@ describe("DocumentsView delete", () => {
   });
 });
 
-describe("DocumentsView drop target", () => {
-  it("uploads a dropped file, and stops the browser opening it instead", () => {
-    // Without preventDefault on BOTH dragover and drop, the browser navigates to the dropped PDF and
-    // the reviewer loses whatever they had open. fireEvent returns false when the event was
-    // cancelled, which is the only direct evidence preventDefault ran.
-    const { container } = render(<DocumentsView />);
-    const main = container.querySelector("main") as HTMLElement;
-    const file = new File([new Uint8Array([1])], "dropped 801234.pdf", {
-      type: "application/pdf",
-    });
-
-    expect(fireEvent.dragOver(main)).toBe(false);
-    fireEvent.dragLeave(main);
-    expect(fireEvent.drop(main, { dataTransfer: { files: [file] } })).toBe(false);
-
-    // Into one's own account: straight in, no confirmation, and no owner sent.
-    expect(upload.mutateAsync).toHaveBeenCalledWith({ file, patientId: "801234" });
-  });
-});
-
 describe("DocumentsView navigation", () => {
   it("opens the record that was clicked", async () => {
     const user = userEvent.setup();
@@ -387,29 +279,96 @@ describe("DocumentsView navigation", () => {
       expect.stringMatching(/couldn't reach the server/i),
     );
   });
+});
 
-  it("opens the received-files dialog from its own button", async () => {
+describe("DocumentsView upload (one button, the office's answer, 2026-11-26)", () => {
+  const pdf = (name: string) => new File([new Uint8Array([1])], name, { type: "application/pdf" });
+
+  function listedFiles(): string[] {
+    const names = document.querySelectorAll("[data-file-name]");
+    return Array.from(names).map((el) => el.textContent ?? "");
+  }
+
+  it("has one upload button, which opens the upload form", async () => {
     const user = userEvent.setup();
     docsState.data = [doc({})];
     render(<DocumentsView />);
 
-    await user.click(screen.getByRole("button", { name: /Upload received files/ }));
+    expect(screen.queryByRole("button", { name: /upload a record/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /upload received files/i })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Upload records" }));
 
-    expect(screen.getByRole("heading", { name: /Upload received files/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Upload records" })).toBeInTheDocument();
+    expect(listedFiles()).toEqual([]);
+    expect(stageReceivedFile).not.toHaveBeenCalled();
   });
 
-  it("ignores a file dropped beside the open received-files dialog", async () => {
-    // The dialog takes the files dropped on it; one dropped beside it is not a record of its own.
+  it("opens it from the first-run screen too", async () => {
+    const user = userEvent.setup();
+    render(<DocumentsView />);
+    expect(screen.getByText(/start your first review/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Upload records" }));
+
+    expect(screen.getByRole("heading", { name: "Upload records" })).toBeInTheDocument();
+  });
+
+  it("opens the upload form with every file dropped on the page, not the browser", async () => {
+    // Without preventDefault on BOTH dragover and drop, the browser navigates to the dropped PDF
+    // and the reviewer loses whatever they had open. fireEvent returns false when the event was
+    // cancelled, which is the only direct evidence preventDefault ran.
+    docsState.data = [doc({})];
+    const { container } = render(<DocumentsView />);
+    const main = container.querySelector("main") as HTMLElement;
+    const files = [pdf("letter.pdf"), pdf("records.pdf")];
+
+    expect(fireEvent.dragOver(main)).toBe(false);
+    fireEvent.dragLeave(main);
+    expect(fireEvent.drop(main, { dataTransfer: { files } })).toBe(false);
+
+    expect(screen.getByRole("heading", { name: "Upload records" })).toBeInTheDocument();
+    await waitFor(() => expect(stageReceivedFile).toHaveBeenCalledTimes(2));
+    expect(stageReceivedFile.mock.calls.map(([file]) => file)).toEqual(files);
+    expect(listedFiles()).toEqual(["letter.pdf", "records.pdf"]);
+  });
+
+  it("opens the form empty again after a drop was closed", async () => {
     const user = userEvent.setup();
     docsState.data = [doc({})];
     const { container } = render(<DocumentsView />);
-    await user.click(screen.getByRole("button", { name: /Upload received files/ }));
     const main = container.querySelector("main") as HTMLElement;
-    const file = new File([new Uint8Array([1])], "letter 801234.pdf", { type: "application/pdf" });
+    fireEvent.drop(main, { dataTransfer: { files: [pdf("records.pdf")] } });
+    await waitFor(() => expect(stageReceivedFile).toHaveBeenCalledTimes(1));
+    await user.keyboard("{Escape}");
 
-    expect(fireEvent.drop(main, { dataTransfer: { files: [file] } })).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Upload records" }));
 
-    expect(upload.mutateAsync).not.toHaveBeenCalled();
+    expect(listedFiles()).toEqual([]);
+    expect(stageReceivedFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a file dropped beside the open upload form", async () => {
+    // The form takes the files dropped on it; one dropped beside it is not an upload of its own.
+    const user = userEvent.setup();
+    docsState.data = [doc({})];
+    const { container } = render(<DocumentsView />);
+    await user.click(screen.getByRole("button", { name: "Upload records" }));
+    const main = container.querySelector("main") as HTMLElement;
+
+    expect(fireEvent.drop(main, { dataTransfer: { files: [pdf("letter.pdf")] } })).toBe(false);
+
+    expect(stageReceivedFile).not.toHaveBeenCalled();
+    expect(listedFiles()).toEqual([]);
+  });
+
+  it("ignores a drop that carries no file", () => {
+    docsState.data = [doc({})];
+    const { container } = render(<DocumentsView />);
+    const main = container.querySelector("main") as HTMLElement;
+
+    fireEvent.drop(main, { dataTransfer: { files: [] } });
+
+    expect(screen.queryByRole("heading", { name: "Upload records" })).toBeNull();
   });
 });
 
@@ -476,111 +435,26 @@ describe("DocumentsView for an admin", () => {
     return view;
   }
 
-  const pick = (container: HTMLElement, name = "rec 801234.pdf") => {
-    const file = new File([new Uint8Array([1])], name, { type: "application/pdf" });
-    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
-    return file;
-  };
-
-  it("offers both uploads while viewing another reviewer's records", async () => {
+  it("offers the upload while viewing another reviewer's records", async () => {
     // DEMONSTRATES the request: an admin can upload into the reviewer's page. This used to be
     // pinned the other way, when an upload could only land in the admin's own list.
     const user = userEvent.setup();
     await viewBrian(user);
-    expect(screen.getByRole("button", { name: /upload a record/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /upload received files/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload records" })).toBeInTheDocument();
   });
 
-  it("offers them on an empty list of another reviewer's too", async () => {
+  it("offers it on an empty list of another reviewer's too", async () => {
     const user = userEvent.setup();
     await viewBrian(user, []);
     expect(screen.getByText("Brian has no records.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /upload a record/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload records" })).toBeInTheDocument();
   });
 
-  it("asks before uploading into another reviewer's account, and sends it there once confirmed", async () => {
-    const user = userEvent.setup();
-    upload.mutateAsync.mockResolvedValueOnce({ id: "n1", sha256_duplicate: false });
-    const { container } = await viewBrian(user);
-    const file = pick(container, "brian 801234.pdf");
-
-    // Nothing is sent until the admin confirms the reviewer the confirmation names.
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Upload to Brian's records?");
-    expect(dialog).toHaveTextContent('"brian 801234.pdf" will be added');
-    expect(upload.mutateAsync).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole("button", { name: "Upload" }));
-    await waitFor(() =>
-      expect(upload.mutateAsync).toHaveBeenCalledWith({
-        file,
-        owner: 7,
-        allowDuplicate: false,
-        patientId: "801234",
-      }),
-    );
-    expect(vi.mocked(toast).success).toHaveBeenCalledWith("Record uploaded to Brian's records.");
-  });
-
-  it("uploads nothing when the admin cancels", async () => {
-    const user = userEvent.setup();
-    const { container } = await viewBrian(user);
-    pick(container);
-    await user.click(await screen.findByRole("button", { name: "Cancel" }));
-    expect(upload.mutateAsync).not.toHaveBeenCalled();
-  });
-
-  it("asks again when the reviewer already has the record, and sends a copy only if confirmed", async () => {
-    const user = userEvent.setup();
-    upload.mutateAsync
-      .mockRejectedValueOnce(
-        new ApiError(
-          "Brian already has this record (uploaded 10/01/2026, 3 pages).",
-          409,
-          "duplicate",
-        ),
-      )
-      .mockResolvedValueOnce({ id: "n2", sha256_duplicate: true });
-    const { container } = await viewBrian(user);
-    const file = pick(container);
-    await user.click(await screen.findByRole("button", { name: "Upload" }));
-
-    const dialog = await screen.findByRole("alertdialog", {
-      name: "Brian already has this record",
-    });
-    expect(dialog).toHaveTextContent("(uploaded 10/01/2026, 3 pages). Upload another copy anyway?");
-    expect(vi.mocked(toast).error).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole("button", { name: "Upload anyway" }));
-    await waitFor(() =>
-      expect(upload.mutateAsync).toHaveBeenLastCalledWith({
-        file,
-        owner: 7,
-        allowDuplicate: true,
-        patientId: "801234",
-      }),
-    );
-  });
-
-  it("reports any other refusal instead of offering to upload anyway", async () => {
-    const user = userEvent.setup();
-    upload.mutateAsync.mockRejectedValueOnce(new ApiError("the reviewer could not be reached", 409));
-    const { container } = await viewBrian(user);
-    pick(container);
-    await user.click(await screen.findByRole("button", { name: "Upload" }));
-    await waitFor(() =>
-      expect(vi.mocked(toast).error).toHaveBeenCalledWith("the reviewer could not be reached"),
-    );
-    expect(screen.queryByRole("alertdialog", { name: /already has/ })).toBeNull();
-  });
-
-  it("names the reviewer on the received-files upload too", async () => {
+  it("names the reviewer on the upload form, which sends the record to them", async () => {
     const user = userEvent.setup();
     await viewBrian(user);
-    await user.click(screen.getByRole("button", { name: /upload received files/i }));
-    expect(
-      screen.getByRole("heading", { name: "Upload received files for Brian" }),
-    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Upload records" }));
+    expect(screen.getByRole("heading", { name: "Upload records for Brian" })).toBeInTheDocument();
   });
 
   it("offers Assign to an admin, and opens it on the record picked", async () => {

@@ -42,11 +42,7 @@ function useDocsMutation<TArgs, TResult>(mutationFn: (args: TArgs) => Promise<TR
   });
 }
 
-/** One PDF, into the caller's own account or - for an admin - `owner`'s. */
-export const useUploadDocument = () =>
-  useDocsMutation(({ file, ...target }: { file: File } & api.UploadTarget) =>
-    api.uploadDocument(file, target),
-  );
+/** "Upload records": one record from the files staged in the upload dialog. */
 export const useCombineReceivedFiles = () =>
   useDocsMutation((upload: api.ReceivedFilesUpload) => api.combineReceivedFiles(upload));
 /** Admins: move a record to another reviewer. It leaves the list on screen, so the list refreshes. */
