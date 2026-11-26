@@ -16,6 +16,7 @@ import os
 import re
 import uuid
 import zipfile
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -29,7 +30,7 @@ from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.api.deps import get_owned_document
 from app.api.downloads import DOWNLOADS_UNAVAILABLE
-from app.api.ownership import duplicate_conflict, same_file, upload_owner
+from app.api.ownership import duplicate_conflict, same_file, upload_owner, uploaded_anywhere
 from app.auth.deps import current_active_user
 from app.config import HEADER_LETTER_FIELDS, get_settings
 from app.db import get_db
@@ -810,9 +811,11 @@ def _staged_files(user: User, tokens: list[str]) -> list[Path]:
     return paths
 
 
-def _refuse_repeated_files(staged: list[Path]) -> None:
-    """400 when two of the staged files are the same file: joined twice, its pages would be
-    reviewed twice. The dialog already names such a file; this holds whatever a client sends."""
+def _fingerprints(staged: list[Path]) -> list[str]:
+    """Each staged file's fingerprint, in order, kept with its part of the record.
+
+    400 when two of them are the same file: joined twice, its pages would be reviewed twice. The
+    dialog already names such a file; this holds whatever a client sends."""
     seen: dict[str, int] = {}
     for position, path in enumerate(staged, start=1):
         digest = received_files.sha256_of(path)
@@ -824,6 +827,42 @@ def _refuse_repeated_files(staged: list[Path]) -> None:
                 ),
             )
         seen[digest] = position
+    return list(seen)
+
+
+# The records an added file's answer describes when the office already has the file, newest first.
+_EARLIER_UPLOADS_SHOWN = 5
+
+
+def _uploaded_before(session: Session, user: User, fingerprint: str) -> list[dict]:
+    """The records that already hold the file whose fingerprint this is, newest first, for the
+    upload dialog's warning (``ownership.uploaded_anywhere``; any account, or the team queue).
+
+    Each says when it was uploaded, its pages, where it is - the team queue, the caller's own
+    records, or the reviewer who has it - and whether the file is only one of those it was put
+    together from. Never its file name: the warning is about the file, and the names carry the
+    patient's."""
+    earlier = uploaded_anywhere(session, fingerprint)[:_EARLIER_UPLOADS_SHOWN]
+    names = dict(
+        session.execute(
+            select(User.id, User.name).where(User.id.in_({doc.user_id for doc in earlier}))
+        )
+        .tuples()
+        .all()
+    )
+    return [
+        {
+            "uploaded_at": doc.created_at.replace(tzinfo=UTC).isoformat(),
+            "pages": doc.page_count,
+            "in_team_queue": doc.team_queue_since is not None,
+            "yours": doc.team_queue_since is None and doc.user_id == user.id,
+            "reviewer": names.get(doc.user_id) or "",
+            # Matched by one of its parts, not by its own file. A record that came as one file IS
+            # that file (stored as it is), so it never reads as a part.
+            "part_of_record": doc.sha256 != fingerprint,
+        }
+        for doc in earlier
+    ]
 
 
 def _combine_into(
@@ -851,6 +890,7 @@ def _combine_into(
 )
 def stage_received_file(
     pdf: UploadFile | None = File(default=None),
+    session: Session = Depends(get_db),
     user: User = Depends(current_active_user),
 ):
     """Keep one of the files a record arrived in until it is put together, and say what it is.
@@ -860,9 +900,11 @@ def stage_received_file(
     caller's staging folder under a random token (``services/received_files.py``); a scanned
     image becomes a PDF of its pages. Its pages are counted, and its first page is read (the PDF's
     own text, else one OCR pass) and the model says what kind of file it is
-    (``received_files.read_kind``). Answers ``{token, pages, kind, check, sha256}``: ``check``
-    asks the uploader to look (the model unsure, or off and the keyword rules guessing), and the
-    file's fingerprint as received lets the dialog name a file added twice. Staged files
+    (``received_files.read_kind``). Answers ``{token, pages, kind, check, sha256,
+    uploaded_before}``: ``check`` asks the uploader to look (the model unsure, or off and the
+    keyword rules guessing), the file's fingerprint as received lets the dialog name a file added
+    twice, and ``uploaded_before`` lists the records that already hold the file, in any account or
+    the team queue (``_uploaded_before``), for the dialog to warn - nothing is refused. Staged files
     older than ``received_files.STAGED_HOURS`` are swept first. Nothing is logged about the file
     but counts."""
     if pdf is None or not pdf.filename:
@@ -877,6 +919,7 @@ def stage_received_file(
             while chunk := pdf.file.read(1 << 20):
                 digest.update(chunk)
                 out.write(chunk)
+        converted = received_files.is_image(part)
         pages = received_files.make_pdf(part, path)
     except received_files.UnreadableFile as exc:
         received_files.remove_staged(path)
@@ -886,12 +929,16 @@ def stage_received_file(
     finally:
         received_files.remove_staged(part)
     reading = received_files.read_kind(received_files.first_page_text(path), pages)
+    # What a record keeps of this file is the staged PDF's fingerprint (``_fingerprints``): the file
+    # as received for a PDF, which is kept as it is; the PDF made of its pages for a scanned image.
+    fingerprint = received_files.sha256_of(path) if converted else digest.hexdigest()
     return {
         "token": token,
         "pages": pages,
         "kind": reading.kind,
         "check": reading.check,
         "sha256": digest.hexdigest(),
+        "uploaded_before": _uploaded_before(session, user, fingerprint),
     }
 
 
@@ -974,9 +1021,15 @@ def combine_received_files(
     listed by when it is due (``GET /api/documents/queue``). ``owner`` (admins only) puts it in a
     named reviewer's account instead, as on the single upload.
 
+    ONE file is not joined to anything (``received_files.combine``): the web app's only upload
+    since 2026-11-26 is this one, and a record that came as one file is stored as it is.
+
     The joined file is the record as received: it is read like any other upload, identified when
-    the reviewer starts Identify, and ``GET .../raw`` downloads it as it is. No duplicate check: the
-    joined file is new, so its hash says nothing about whether the same files came before."""
+    the reviewer starts Identify, and ``GET .../raw`` downloads it as it is. Nothing is refused for
+    a file the office already has: the dialog warned when the file was added
+    (``stage_received_file``), and the uploader chose to go on. Each part keeps its file's
+    fingerprint, so a later upload of the same file is recognised; the audit row counts the files
+    some record already held."""
     kinds = _received_kinds(tokens, kinds)
     last, first = last_name.strip(), first_name.strip()
     if not last or not first:
@@ -989,13 +1042,19 @@ def combine_received_files(
     party = _records_from(records_from)
     reviewer = upload_owner(session, user, owner)
     staged = _staged_files(user, tokens)
-    _refuse_repeated_files(staged)
+    fingerprints = _fingerprints(staged)
+    seen_before = sum(1 for fingerprint in fingerprints if uploaded_anywhere(session, fingerprint))
 
     document_id = str(uuid.uuid4())
     user_dir = os.path.join(get_settings().upload_folder, str(reviewer.id))
     os.makedirs(user_dir, exist_ok=True)
     stored_path = os.path.join(user_dir, document_id + ".pdf")
-    parts = _combine_into(stored_path, staged, kinds)
+    parts = [
+        replace(part, sha256=fingerprint)
+        for part, fingerprint in zip(
+            _combine_into(stored_path, staged, kinds), fingerprints, strict=True
+        )
+    ]
     page_count = parts[-1].end
 
     document = Document(
@@ -1019,7 +1078,9 @@ def combine_received_files(
     session.add(document)
     session.commit()
     # Counts and ids only: the files' names carry the patient's name.
-    detail = f"{len(parts)} files"
+    detail = "1 file" if len(parts) == 1 else f"{len(parts)} files"
+    if seen_before:
+        detail += f", {seen_before} uploaded before"
     if reviewer.id != user.id:
         detail += f", for user {reviewer.id}"
     if document.team_queue_since is not None:

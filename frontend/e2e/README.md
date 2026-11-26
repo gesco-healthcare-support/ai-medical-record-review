@@ -9,7 +9,7 @@ check that the pieces work together. There is deliberately no `webServer` in
 | --- | --- |
 | `support.ts` | Helpers: `uniqueEmail()` (a fresh address on the reserved `example.com` domain), `PASSWORD` (a synthetic password that meets the rules), `userMenuTrigger()`, `registerAndLogin()` |
 | `auth.spec.ts` | Register, sign out, and sign back in |
-| `documents.spec.ts` | Upload the sample PDF (its name carries no patient ID, so the upload asks for one), open it (the identify start panel and the typed patient ID show), then delete it |
+| `documents.spec.ts` | Upload the sample PDF with "Upload records" (the patient, dates and billing fields typed in the form), find it in the team queue under the office's file name, open it (the identify start panel and the typed patient ID show), then delete it from the queue |
 | `navigation.spec.ts` | A non-admin has no Admin menu item; both bundle pages are reachable |
 | `fixtures/sample.pdf` | A synthetic PDF with no patient data, committed through an exception in `frontend/.gitignore` |
 

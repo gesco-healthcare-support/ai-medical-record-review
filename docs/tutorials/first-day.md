@@ -152,10 +152,12 @@ The repository carries a small PDF used by the end-to-end tests:
 `frontend/e2e/fixtures/sample.pdf`. It is committed to this public repository and must stay
 synthetic. Use it for every exercise; never upload a real record to a development machine.
 
-1. On the "Start your first review" screen select Browse files and choose
-   `frontend/e2e/fixtures/sample.pdf`, or drag the file onto the page.
-2. Select the new row in the documents table. The record opens at `/records/<id>` with the heading
-   "Ready to identify documents".
+1. On the "Start your first review" screen select Upload records and add
+   `frontend/e2e/fixtures/sample.pdf` (Add files), or drag the file onto the page. Fill in a made-up
+   patient (any last and first name, a patient ID such as `AB1234`), the dates, who sent the
+   records, the type of visit and the interpreter, then select Upload.
+2. The record waits in the Team queue above your records. Select its row: the record opens at
+   `/records/<id>` with the heading "Ready to identify documents".
 3. Select Identify documents.
 
 Expected result: a progress panel follows the job while a segment worker splits the record into

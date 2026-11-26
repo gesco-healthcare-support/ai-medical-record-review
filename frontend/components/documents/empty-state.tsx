@@ -1,20 +1,15 @@
 import { UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-/** Id of the hidden file input in DocumentsView. Declared HERE and imported there, not the other
- *  way round: that file already imports this one, so the reverse would be a cycle. */
-export const UPLOAD_INPUT_ID = "record-file-input";
-
 /** First-run empty state (DS .hd-empty): dropzone + 3-step explainer. Drag-drop is handled by
- *  the parent (which wraps the whole area); this shows the visual dragging state and a browse CTA. */
+ *  the parent (which wraps the whole area and opens the upload form with the files dropped); this
+ *  shows the visual dragging state and the "Upload records" button. */
 export function EmptyState({
   dragging,
-  uploading,
-  onBrowse,
+  onUpload,
 }: Readonly<{
   dragging: boolean;
-  uploading: boolean;
-  onBrowse: () => void;
+  onUpload: () => void;
 }>) {
   return (
     <section className="hd-empty">
@@ -23,32 +18,18 @@ export function EmptyState({
         Upload a medical record and MRR identifies the documents inside it. You review and correct
         the result before anything is summarized.
       </p>
-      {/* A real <label> for the hidden file input, so the BROWSER opens the picker: clicking anywhere
-          in the area still works, with no click handler on a non-interactive element and no role or
-          tab stop of its own to duplicate the button below. Per the HTML spec a label is not
-          activated by clicks on its interactive content, so the "Browse files" button does not fire
-          this as well - it keeps its own handler and stays the one keyboard control. */}
-      <label
-        htmlFor={UPLOAD_INPUT_ID}
-        className={cn("hd-drop", dragging && "dragging")}
-      >
+      {/* Where files are dropped. The drop itself is the page's (it opens the upload form with the
+          files); the button is the one control, and opens the form empty. */}
+      <div className={cn("hd-drop", dragging && "dragging")}>
         <span className="hd-drop-icon">
           <UploadCloud width={26} height={26} aria-hidden />
         </span>
-        <div className="hd-drop-title">Drag a PDF here, or browse your files</div>
-        <div className="hd-drop-sub">One record per upload</div>
-        <button
-          className="ev-btn ev-btn-outline"
-          type="button"
-          disabled={uploading}
-          onClick={(e) => {
-            e.stopPropagation();
-            onBrowse();
-          }}
-        >
-          {uploading ? "Uploading..." : "Browse files"}
+        <div className="hd-drop-title">Drag the record&apos;s files here, or</div>
+        <div className="hd-drop-sub">One PDF, or every file the records came in</div>
+        <button className="ev-btn ev-btn-primary" type="button" onClick={onUpload}>
+          Upload records
         </button>
-      </label>
+      </div>
       <div className="hd-steps">
         <div className="hd-step">
           <span className="hd-step-num">1</span>

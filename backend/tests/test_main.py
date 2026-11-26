@@ -180,7 +180,7 @@ async def test_a_failing_download_sweep_does_not_stop_the_app_serving(monkeypatc
 async def test_old_staged_received_files_are_swept_at_startup_and_reported(monkeypatch, caplog):
     """WHEN the API starts, THE SYSTEM SHALL sweep old staged received files and report how many.
 
-    A file staged for "Upload received files" is patient data at rest. A dialog closed with its
+    A file staged for "Upload records" is patient data at rest. A dialog closed with its
     browser tab never deletes its own files, and the sweep before each new staged file runs only
     when someone stages again - which may be days later."""
     monkeypatch.setattr("app.services.llm.preflight.assert_backends_ready", lambda: None)

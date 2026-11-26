@@ -160,7 +160,7 @@ bundle export pass `verify=False`.
 
 | Item | Value |
 | --- | --- |
-| Entry point | `provider_for_stage("extract").generate_structured(stage="extract")` from `received_files.read_kind()`, called by `POST /api/documents/combine/files` (D2b) for each file a record arrives in |
+| Entry point | `provider_for_stage("extract").generate_structured(stage="extract")` from `received_files.read_kind()`, called by `POST /api/documents/combine/files` (D2b) for each file added to "Upload records" (the answer is used only when the record has several files: one file is the records as it came, but the uploader may still add another) |
 | Model | `Settings.model_for_stage("extract")`, as the header read: `GENAI_MODEL` on Gemini, `VLLM_MODEL` on vLLM |
 | Thinking | Gemini `GEMINI_THINKING_BUDGET` (0); vLLM on only if `extract` is in `VLLM_THINKING_STAGES` |
 | System | `received_files._KIND_SYSTEM`: the kinds of file a case arrives in, and what is NOT each (a subpoena's proof of service, a clinic's custodian declaration, an earlier QME report are records) |

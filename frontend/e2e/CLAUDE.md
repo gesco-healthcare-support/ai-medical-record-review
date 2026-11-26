@@ -15,7 +15,9 @@
   Assert the screens that do not need a model (the identify start panel, menus, uploads, deletes).
 - Locate by role and accessible name. The user-menu trigger's name changes with the viewport (the name
   is `hidden sm:block`), so use `userMenuTrigger(page)`.
-- Uploads: `page.locator('input[type="file"]').setInputFiles(...)` works on the hidden input.
+- Uploads: open "Upload records", then `form.locator('input[type="file"]').setInputFiles(...)`
+  works on the form's hidden input. Every upload lands in the TEAM QUEUE, which every spec's account
+  sees: give the patient a name no other run uses, and locate the record by it.
 
 ## Traps
 

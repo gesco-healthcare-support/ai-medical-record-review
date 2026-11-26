@@ -13,24 +13,26 @@
   `DocumentStatus` in `frontend/lib/types.ts`.
 - Paging: show `curPage` (clamped to the current list), and step Prev/Next from it, not from the stored
   `page`. The list can shrink under the reader (a delete, a poll).
-- Reject non-PDF files with a message; never drop them silently. The received-files dialog joins
-  files into ONE record, so a silent drop is missing content.
-- Dismissing the received-files dialog, by any control, clears the staged files. Route every close
-  through `close()`.
-- `UPLOAD_INPUT_ID` is declared in `empty-state.tsx` and imported by `documents-view.tsx`; the reverse
-  import would be a cycle.
+- Reject files the upload form cannot take with a message; never drop them silently. The form
+  joins files into ONE record, so a silent drop is missing content.
+- Dismissing the upload form (`received-files-dialog.tsx`), by any control, clears the staged
+  files. Route every close through `close()`.
+- "Upload records" is the ONE upload (the office's answer, 2026-11-26): every record is made through
+  the upload form, so it has its dates and billing sheet. Do not add another upload path; the
+  single-PDF `POST /api/documents` stays for scripts only.
 - Errors go through `humanizeError()` with a record-specific `notFound` sentence.
-- An upload into ANOTHER reviewer's account is confirmed first, naming the reviewer; the reviewer is
-  captured with the file so the upload goes where the confirmation said. Offer "anyway" only for
-  `isDuplicateRecord(err)` - every other 409 (a job running) is reported, never overridden. Uploads
-  into one's own account are not asked about.
+- An upload into ANOTHER reviewer's account names the reviewer in the form's title and button. A
+  file the office already has is warned about and asked about once before sending; nothing is
+  refused. In the assign dialog, offer "anyway" only for `isDuplicateRecord(err)` - every other 409
+  (a job running) is reported, never overridden.
 
 ## Traps
 
-- `isPdf()` is duplicated in `documents-view.tsx` and `received-files-dialog.tsx`; change both.
 - `RECEIVED_KINDS` in `frontend/lib/received-files.ts` mirrors `KINDS` in
   `backend/app/services/received_files.py`; the server refuses any other kind. Change both.
-- Drag and drop uploads only the first dropped file.
+- A drop on the page reaches the upload form through its `dropped` prop, added once per list (an
+  effect guarded by the list's identity; strict mode runs effects twice). Pass a NEW array for
+  every drop.
 - The search placeholder says "filename"; the filter also matches the patient name.
 
 ## Commands

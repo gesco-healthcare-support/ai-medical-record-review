@@ -147,7 +147,7 @@ The records are real patient medical records. This is where their content goes.
 | `page_texts` table | The extracted text of every page. | Until the document is deleted. |
 | `review_rows.source_text`, `summaries.text` and `summaries.source_text` | Sub-document text and the generated summaries. | Until the document is deleted. |
 | `<UPLOAD_FOLDER>/<user id>/downloads/<token>` | A prepared export, named by a random token. | Deleted after `DOWNLOAD_TTL_SECONDS` (300 s by default), and by sweeps at startup. |
-| `<UPLOAD_FOLDER>/<user id>/staged/<token>.pdf` | One of the files a record arrived in, held until "Upload received files" puts the record together; named by a random token. | Deleted when the record is made, when the uploader removes the file or closes the dialog, and otherwise once older than 6 hours, by a sweep before each new staged file and at API startup. |
+| `<UPLOAD_FOLDER>/<user id>/staged/<token>.pdf` | One of the files a record arrived in, held until "Upload records" makes the record from it; named by a random token. | Deleted when the record is made, when the uploader removes the file or closes the dialog, and otherwise once older than 6 hours, by a sweep before each new staged file and at API startup. |
 | Redis | Download metadata including the export's filename. | The same TTL; Redis never writes to disk. |
 | The model provider | Page images and text for each stage's call. | Governed by the provider agreement - see [Model providers](model-providers.md). |
 
