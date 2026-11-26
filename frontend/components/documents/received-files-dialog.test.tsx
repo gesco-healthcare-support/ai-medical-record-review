@@ -973,6 +973,33 @@ describe("ReceivedFilesDialog files uploaded before", () => {
     await waitFor(() => expect(combine.mutateAsync).toHaveBeenCalledTimes(1));
   });
 
+  it("asks again once the files it asked about change", async () => {
+    // The question is about the files as they stood: one more such file added meanwhile is not
+    // covered by it, so the question goes, and sending asks again about all of them.
+    const user = userEvent.setup();
+    combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 6, patient_records: 0 });
+    readings = {
+      "letter.pdf": { kind: "advocacy_letter", before: [BRIANS] },
+      "records.pdf": { before: [BRIANS] },
+    };
+    render(<ReceivedFilesDialog open onOpenChange={vi.fn()} />);
+    addFiles([pdf("letter.pdf"), pdf("email.pdf")]);
+    await allRead(2);
+    await fillPatient(user);
+    await confirmAll(user);
+    await user.click(screen.getByRole("button", { name: "Combine & upload" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("This file was uploaded before.");
+
+    addFiles([pdf("records.pdf")]);
+    await allRead(3);
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    await confirmAll(user);
+    await user.click(screen.getByRole("button", { name: "Combine & upload" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("These 2 files were uploaded before.");
+    expect(combine.mutateAsync).not.toHaveBeenCalled();
+  });
+
   it("asks nothing for files the office does not have", async () => {
     const user = userEvent.setup();
     combine.mutateAsync.mockResolvedValue({ id: "d1", page_count: 2, patient_records: 0 });

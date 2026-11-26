@@ -857,7 +857,9 @@ def _uploaded_before(session: Session, user: User, fingerprint: str) -> list[dic
             "in_team_queue": doc.team_queue_since is not None,
             "yours": doc.team_queue_since is None and doc.user_id == user.id,
             "reviewer": names.get(doc.user_id) or "",
-            "part_of_record": doc.sha256 != fingerprint and len(doc.received_parts or []) > 1,
+            # Matched by one of its parts, not by its own file. A record that came as one file IS
+            # that file (stored as it is), so it never reads as a part.
+            "part_of_record": doc.sha256 != fingerprint,
         }
         for doc in earlier
     ]
