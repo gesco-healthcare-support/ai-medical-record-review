@@ -260,13 +260,16 @@ class Document(Base):
     # editable on the sheet: the type of visit (billing_sheet.VISIT_TYPES; SUPP and LATE have
     # no appointment - VISITS_WITHOUT_APPOINTMENT), whether an interpreter is needed, the claim
     # numbers as typed, the previous office visit, where the evaluation takes place (`location`,
-    # as typed), the page count the
-    # sender's declaration states and why the office's count differs. `office_count` and
-    # `depo_pages` are typed over the counts worked out from the record; NULL uses the worked-out
-    # count. All NULL for a record uploaded as one PDF. The claim numbers and the reason are patient
-    # data: never log them. `review_source` (E-DATA, IN-HOUSE or LEONARDO) was asked until
-    # 2026-11-20 and is no longer written or read: every record is reviewed in house, and the sheet
-    # always says IN-HOUSE. Kept for the records that hold it.
+    # as typed), the page count the sender's declaration states and why the office's count
+    # differs. `office_count` and `depo_pages` are typed over the counts worked out from the
+    # record; NULL uses the worked-out count. `depo_pages` may hold several counts - one per
+    # deposition - stored as the sheet prints them, "120, 85" (the office's answer, 2026-11-25;
+    # column `depo_page_counts`). All NULL for a record uploaded as one PDF. The claim numbers and
+    # the reason are patient data: never log them. `review_source` (E-DATA, IN-HOUSE or LEONARDO)
+    # was asked until 2026-11-20 and is no longer written or read: every record is reviewed in
+    # house, and the sheet always says IN-HOUSE. Kept for the records that hold it. So is
+    # `depo_pages_number` (column `depo_pages`), the single count typed before 2026-11-25; the
+    # migration copied it into `depo_page_counts`.
     visit_type: Mapped[str | None] = mapped_column(String(8))
     review_source: Mapped[str | None] = mapped_column(String(16))
     interpreter: Mapped[bool | None] = mapped_column(Boolean)
@@ -276,7 +279,8 @@ class Document(Base):
     declared_pages: Mapped[int | None] = mapped_column(Integer)
     discrepancy_reason: Mapped[str | None] = mapped_column(String(255))
     office_count: Mapped[int | None] = mapped_column(Integer)
-    depo_pages: Mapped[int | None] = mapped_column(Integer)
+    depo_pages: Mapped[str | None] = mapped_column("depo_page_counts", String(255))
+    depo_pages_number: Mapped[int | None] = mapped_column("depo_pages", Integer)
 
     jobs: Mapped[list["Job"]] = relationship(
         "Job", backref="document", cascade=_CASCADE_DELETE_ORPHAN, order_by="Job.id"

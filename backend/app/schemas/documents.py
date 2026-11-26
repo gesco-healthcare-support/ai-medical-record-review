@@ -148,7 +148,8 @@ class BillingPayload(BaseModel):
     checks each one and answers a plain 400 for a value it cannot store, which a 422 would not
     show the uploader. `interpreter` is `yes` or `no`; the dates are `YYYY-MM-DD`; `office_count`
     and `depo_pages` are typed over the counts worked out from the record, and empty means "use
-    the worked-out count"."""
+    the worked-out count"; `depo_pages` may be several counts separated by commas, one per
+    deposition."""
 
     visit_type: str = ""
     appointment_date: str = ""

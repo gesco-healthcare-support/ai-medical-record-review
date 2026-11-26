@@ -6,6 +6,7 @@ import {
   EMPTY_BILLING,
   editValid,
   isPageCount,
+  isPageCountList,
   shownCounts,
   takesAppointment,
   toEdit,
@@ -115,26 +116,49 @@ describe("the sheet's edit", () => {
     expect(editValid(edit)).toBe(true);
     expect(editValid({ ...edit, office_count: "many" })).toBe(false);
     expect(editValid({ ...edit, depo_pages: "1.5" })).toBe(false);
+    expect(editValid({ ...edit, depo_pages: "120, 85" })).toBe(true);
+    expect(editValid({ ...edit, depo_pages: "120 and 85" })).toBe(false);
     expect(editValid({ ...edit, declared_pages: "x" })).toBe(false);
     expect(editValid({ ...edit, discrepancy_reason: "x".repeat(256) })).toBe(false);
     expect(editValid({ ...edit, location: "x".repeat(256) })).toBe(false);
   });
 });
 
+describe("isPageCountList", () => {
+  it.each([
+    ["", true],
+    ["120", true],
+    ["120, 85", true],
+    ["120,85,4", true],
+    [" 120 , 85 , ", true],
+    ["120 85", false],
+    ["120; 85", false],
+    ["1.5", false],
+    ["-3", false],
+    [Array(60).fill("100").join(", "), false],
+  ])("%j is %s", (value, ok) => {
+    expect(isPageCountList(value)).toBe(ok);
+  });
+});
+
 describe("the counts the sheet prints", () => {
   it("are the worked-out ones, unless typed over", () => {
-    expect(shownCounts(SHEET)).toEqual({ office: 42, depo: 7 });
-    expect(shownCounts({ ...SHEET, office_count: 50, depo_pages: 0 })).toEqual({
+    expect(shownCounts(SHEET)).toEqual({ office: 42, depo: "7" });
+    expect(shownCounts({ ...SHEET, office_count: 50, depo_pages: "0" })).toEqual({
       office: 50,
-      depo: 0,
+      depo: "0",
     });
+  });
+
+  it("print several typed deposition counts as typed", () => {
+    expect(shownCounts({ ...SHEET, depo_pages: "120, 85" }).depo).toBe("120, 85");
   });
 
   it("have the office count at once and the deposition pages once the pages are read", () => {
     const reading = { ...SHEET, counted: { office: 42, depo: null }, pages_unread: 10 };
     expect(shownCounts(reading)).toEqual({ office: 42, depo: null });
     expect(depoPending(reading)).toBe(true);
-    expect(depoPending({ ...reading, depo_pages: 0 })).toBe(false);
+    expect(depoPending({ ...reading, depo_pages: "0" })).toBe(false);
     expect(depoPending(SHEET)).toBe(false);
   });
 
