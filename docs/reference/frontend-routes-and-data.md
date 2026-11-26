@@ -15,7 +15,7 @@ route and no server-side data fetching.
 
 | Route | File | Renders | Purpose |
 | --- | --- | --- | --- |
-| `/` | `frontend/app/page.tsx` `HomePage()` | `AppBar`, `DocumentsView` | My documents: upload, list, open, re-run identification, delete |
+| `/` | `frontend/app/page.tsx` `HomePage()` | `AppBar`, `DocumentsView` | My documents: the team queue, upload ("Upload records"), list, open, re-run identification, delete |
 | `/login` | `frontend/app/login/page.tsx` `LoginPage()` | `LoginView` inside `Suspense` (required because it reads `useSearchParams`) | Sign in, register, request a reset link, set a new password |
 | `/records/[id]` | `frontend/app/records/[id]/page.tsx` `RecordPage()` | `AppBar`, `ReviewPageClient` with `documentId` from the awaited params | The record workbench: Review & correct, Duplicates, Summaries, export |
 | `/diagnostics` | `frontend/app/diagnostics/page.tsx` `DiagnosticsPage()` | `AppBar`, `BackLink`, `BundlePageClient` with `DIAGNOSTIC_OPERATIVE` | Diagnostic & Operative bundle builder |
@@ -80,11 +80,10 @@ behaviour is documented in the [HTTP API reference](http-api.md).
 | --- | --- | --- | --- | --- |
 | `listDocuments(owner?)` | `GET /documents`, or `GET /documents?owner=<id>` | - | `DocumentListItem[]` (the caller's own records, newest first; for an admin with `owner`, that account's) | `useDocuments()` in `DocumentsView`, `BundlePageClient`, `AdminView`; `useDocuments(owner)` in `DocumentsView` for an admin who picked a reviewer |
 | `listTeamQueue()` | `GET /documents/queue` | - | `DocumentListItem[]` (the team queue: records nobody has taken yet, whoever uploaded them, with `in_team_queue`, `uploaded_by`, `uploaded_by_me`) | `useTeamQueue()` in `DocumentsView` |
-| `uploadDocument()` | `POST /documents` | multipart field `pdf`; `patient_id`; `owner` and `allow_duplicate` when an admin uploads into another reviewer's account | `{id, page_count, sha256_duplicate, patient_id, patient_records}` | `useUploadDocument()` in `DocumentsView`; does not start identification. The patient ID is read from the file name (`patientIdFromFilename` in `frontend/lib/patient-id.ts`, the backend's rule); a name with none, or two, opens `PatientIdDialog`, and nothing is sent until the uploader types one. The success message says how many other records the patient has. Into another reviewer's account it runs only after a confirmation, and a 409 with code `duplicate` asks a second time before sending `allow_duplicate` |
-| `stageReceivedFile()` | `POST /documents/combine/files` | multipart field `pdf` (one PDF or scanned image) | `{token, pages, kind, check, sha256}` | `ReceivedFilesDialog`, once per file as it is added, one file at a time |
+| `stageReceivedFile()` | `POST /documents/combine/files` | multipart field `pdf` (one PDF or scanned image) | `{token, pages, kind, check, sha256, uploaded_before}` | `ReceivedFilesDialog`, once per file as it is added, three at a time; `uploaded_before` names the records that already hold the file |
 | `receivedFilePreviewUrl()` | `GET /documents/combine/files/{token}/preview` | - | a PNG of the file's first page, shown by a plain image tag | "Page 1" in `ReceivedFilesDialog` |
 | `unstageReceivedFile()` | `DELETE /documents/combine/files/{token}` | - | `{ok}` | `ReceivedFilesDialog`: a file removed from the list, and every staged file when the dialog closes without making a record (errors ignored) |
-| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `records_from`, the billing sheet's `visit_type`, `interpreter`, `appointment_date` (not for `SUPP` or `LATE`) and, when typed, `doctor`, `claim_numbers`, `location`, `previous_visit`, `declared_pages`; `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog`; does not start identification. The patient's details and the billing sheet's required fields (`billingReady` in `frontend/lib/billing-sheet.ts`) must be filled and every file read; the Patient ID box is filled from the ID the files' names agree on |
+| `combineReceivedFiles()` | `POST /documents/combine` | multipart `last_name`, `first_name`, `patient_id`, `date_received`, `records_from`, the billing sheet's `visit_type`, `interpreter`, `appointment_date` (not for `SUPP` or `LATE`) and, when typed, `doctor`, `claim_numbers`, `location`, `previous_visit`, `declared_pages`; `owner` when an admin opened the dialog on another reviewer's records, then one `tokens` and one `kinds` field per file in the order listed | `{id, page_count, parts, patient_id, patient_records}` | `useCombineReceivedFiles()` in `ReceivedFilesDialog` ("Upload records", the web app's one upload); does not start identification. The patient's details and the billing sheet's required fields (`billingReady` in `frontend/lib/billing-sheet.ts`) must be filled and every file read; the Patient ID box is filled from the ID the files' names agree on. One file is sent as `records` |
 | `listDoctors()` | `GET /documents/combine/doctors` | - | `{doctors}` | `useDoctors()` in `ReceivedFilesDialog` (the Doctor list), fetched once while the dialog is open |
 | `getBillingSheet()` | `GET /documents/{id}/billing` | - | the billing sheet | `useBillingSheet()` in `BillingSheetDialog`; read again every 5 seconds while `pages_unread` is above 0 |
 | `saveBillingSheet()` | `PUT /documents/{id}/billing` | `BillingSheetEdit` (every field as typed) | the billing sheet | `useSaveBillingSheet()` in `BillingSheetDialog` (the answer replaces the cached sheet) |
@@ -318,46 +317,65 @@ before each file name, outlined until the record is marked and filled blue after
 sets or clears it without opening the record. Under the status pill a record says when its review
 was last downloaded (`downloaded_at`).
 
-"Upload received files" (`ReceivedFilesDialog` in `received-files-dialog.tsx`) puts one record
-together from the files it arrived in, the step the office did in Adobe Acrobat. The uploader types
-the patient's last and first name, the patient ID (filled when the files' names agree on one), the
-date received, picks who sent the records (Defense, Applicant, Insurance or Copy service), fills
-the billing sheet's fields (`BillingFields` in `billing-fields.tsx`: the type of visit, the
-appointment date - gone for a supplemental report, `SUPP`, and for late meds, "Late Meds" (stored `LATE`) - and the interpreter are required;
-who reviews the records is not asked, since the sheet always says IN-HOUSE; the doctor, the
-claim numbers, the location, the previous office visit and the pages the declaration states may
-stay blank), and adds the files
-in any order - dragged onto the dialog anywhere (a cover says "Drop the files to add them" while
-they are dragged; the drop never reaches the records page underneath, whose own drop handler would
-upload the first file alone) or picked with Add files. The files come first in the dialog, so a
-drop shows them at once and they are read while the rest is typed. Only the body scrolls: the
-dialog stays inside the window and its Cancel and Combine & upload buttons stay in view at any zoom
-(`dialog-layout.ts`, shared with the billing sheet dialog). Files may be PDFs, or scans sent as
-images (JPG, PNG, TIFF), which the server turns into PDF pages; anything else (a Word or Outlook
-file) is refused with a message saying to save it as PDF first (`isAcceptedFile` in
-`frontend/lib/received-files.ts`). Each
-file is sent on its own as soon as it is added (`stageReceivedFile`, three at a time -
-`STAGE_AT_ONCE` - so the proxy's upload limit applies to each file rather than to the whole
-record); the server counts its pages and the model reads its first page to say what it is,
-giving up after 15 seconds (the keyword rules then guess and the file is marked for a look). Until it answers the file's row says
-"Reading..."; then it shows the file's pages, or why the file was refused, with "Try again". A
-refused file, or a file that is the same file as one above it ("Same file as ..."), must be removed
-before the record can be sent. A file's kind is the server's reading; the name is used only when an
-unsure reading said no more than medical records (`shownKind`). "Page 1" shows the file's first page,
-and EVERY file must be confirmed - "Looks right", or a kind picked - before the record can be made,
-because the model alone recognised the case's own papers only about 3 times in 4 (measured on the
-live box, 2026-11-19). A reading the system is not sure of is marked "Not sure - check the
-page" and its card is amber; a confirmed file's card is green, marked "Confirmed"; a refused or
-repeated one is red. A kind the uploader confirmed is never overridden. The list keeps the files in
-the office's order -
-advocacy letter, declaration, medical index, medical records (depositions included), proof of
-service, internal email, envelope - by kind, then in the order added. A kind can be changed (the
-file moves to its place) and a file moved up or down by hand; the server joins them exactly as
-listed. Removing a file, or closing the dialog without making a record, deletes the staged file on
-the server. "Download raw PDF" in a record's row menu
-saves the record's PDF as it was uploaded - for such a record, the joined file with its billing
-sheet on top as page 1 - for the office's backup. It downloads at once; while the record's pages
-are still being read the sheet's deposition pages print blank, and a toast says so.
+"Upload records" (`ReceivedFilesDialog` in `received-files-dialog.tsx`) is the one upload button
+(the office's answer of 2026-11-26), in the list's heading, on the first-run screen and, for an
+admin, on another reviewer's records. It uploads a record that came as one file, or puts one record
+together from the files it arrived in - the step the office did in Adobe Acrobat - so every record
+has its patient, its dates and its billing sheet. Files dropped anywhere on My documents open it
+with every file dropped (`dropped`); while it or a billing sheet is already open, a drop on the page
+around it is ignored. The uploader types the patient's last and first name, the patient ID (filled
+when the files' names agree on one), the date received, picks who sent the records (Defense,
+Applicant, Insurance or Copy service), fills the billing sheet's fields (`BillingFields` in
+`billing-fields.tsx`: the type of visit, the appointment date - gone for a supplemental report,
+`SUPP`, and for late meds, "Late Meds" (stored `LATE`) - and the interpreter are required; who
+reviews the records is not asked, since the sheet always says IN-HOUSE; the doctor, the claim
+numbers, the location, the previous office visit and the pages the declaration states may stay
+blank), and adds the file or files in any order - dragged onto the dialog anywhere (a cover says
+"Drop the files to add them" while they are dragged; the drop never reaches the records page
+underneath) or picked with Add files. The files come first in the dialog, so a drop shows them at
+once and they are read while the rest is typed. Only the body scrolls: the dialog stays inside the
+window and its buttons stay in view at any zoom (`dialog-layout.ts`, shared with the billing sheet
+dialog). Files may be PDFs, or scans sent as images (JPG, PNG, TIFF), which the server turns into
+PDF pages; anything else (a Word or Outlook file) is refused with a message saying to save it as PDF
+first (`isAcceptedFile` in `frontend/lib/received-files.ts`). Each file is sent on its own as soon
+as it is added (`stageReceivedFile`, three at a time - `STAGE_AT_ONCE` - so the proxy's upload limit
+applies to each file rather than to the whole record); the server counts its pages and the model
+reads its first page to say what it is, giving up after 15 seconds (the keyword rules then guess and
+the file is marked for a look). Until it answers the file's row says "Reading..."; then it shows the
+file's pages, or why the file was refused, with "Try again". A refused file must be removed before
+the record can be sent.
+
+ONE file is the record as it came: no kind is asked and nothing is confirmed, its card shows its
+pages only, it is sent as the medical records (so every page counts in the billing sheet's office
+count, which can be typed over there), the server stores it as it is, and the button says Upload
+("Uploading..." while it runs; the message says "Record uploaded, <n> pages, in the team queue.").
+With SEVERAL files, a file that is the same file as one above it ("Same file as ...") must be
+removed before the record can be sent. A file's kind is the server's reading; the name is used only
+when an unsure reading said no more than medical records (`shownKind`). "Page 1" shows the file's
+first page, and EVERY file must be confirmed - "Looks right", or a kind picked - before the record
+can be made, because the model alone recognised the case's own papers only about 3 times in 4
+(measured on the live box, 2026-11-19). A reading the system is not sure of is marked "Not sure -
+check the page" and its card is amber; a confirmed file's card is green, marked "Confirmed"; a
+refused or repeated one is red. A kind the uploader confirmed is never overridden. The list keeps
+the files in the office's order - advocacy letter, declaration, medical index, medical records
+(depositions included), proof of service, internal email, envelope - by kind, then in the order
+added. A kind can be changed (the file moves to its place) and a file moved up or down by hand;
+Combine & upload joins them exactly as listed. Adding a second file to one brings the kinds back.
+
+A file the office already has - the same file uploaded before, as a record of its own or as one of
+the files a record was put together from (recorded from 2026-11-26), in any account or the team
+queue (`uploaded_before`) - is named on its card in amber, for example "Already uploaded on
+11/24/2026, in Brian's records (1,271 pages)." (`uploadedBeforeLine` in
+`frontend/lib/received-files.ts`; "as part of a record" when it was one of several files, "in the
+team queue" or "in your records" where that is where it is, and how often when more than once).
+Upload or Combine & upload then first asks, above the buttons, "This file was uploaded before.
+Upload anyway?" listing each such file; Go back returns to the form, Upload anyway sends it. Nothing
+is refused: re-running a case is the uploader's choice. Removing a file, or closing the dialog
+without making a record, deletes the staged file on the server. "Download raw PDF" in a record's
+row menu saves the record's PDF as it was uploaded - for a record uploaded with "Upload records",
+the file or the joined files with its billing sheet on top as page 1 - for the office's backup.
+It downloads at once; while the record's pages are still being read the sheet's deposition pages
+print blank, and a toast says so.
 
 "Billing sheet" in the row menu of such a record (one with `received_on`) opens `BillingSheetDialog`
 (`billing-sheet-dialog.tsx`): the office's billing sheet - the fields typed at upload, editable,
@@ -370,38 +388,37 @@ being read it shows the office count, says the deposition pages are worked out o
 are read and print blank until then, and reads the sheet again every 5 seconds; "Download PDF"
 works whenever nothing is left unsaved. Its body scrolls under a fixed
 footer, like the upload's. While either dialog is open, a file dropped on the records page around
-it uploads nothing.
+it is ignored.
 
 Other My documents behaviour: search matches the filename or the patient name; sort columns are
 Document, Due (the default), Patient, Pages, Uploaded, Documents found and Last activity; 20
 records per page.
 
 The team queue (`TeamQueue` in `documents-view.tsx`, the office's answer of 2026-11-25) sits above
-the reviewer's own records whenever records wait in it: the records put together from received
-files that nobody has taken yet, whoever uploaded them, in the same table (`DocumentsTable` with
+the reviewer's own records whenever records wait in it: the records uploaded with "Upload
+records" that nobody has taken yet, whoever uploaded them, in the same table (`DocumentsTable` with
 `queue`) without filter chips, search or Completed mark, each saying who uploaded it. Its menu offers
 Open, Download raw PDF, Billing sheet, "Take it and start identification" (no confirmation: the
 record has nothing to lose; the toast says it is now in the reviewer's records, and a record another
 reviewer has just taken says so), Assign to... for an admin, and Delete to its uploader alone. A
-record put together from received files goes there ("..., in the team queue."), unless an admin
+record uploaded with "Upload records" goes there ("..., in the team queue."), unless an admin
 uploaded it for a named reviewer.
 
 Due (`frontend/lib/deadlines.ts`, the office's answer of 2026-11-25) lists the closest deadline
 first: the record's `due_on`, which is its appointment date, or 40 days after the records were
-received for a supplemental report and late meds. Records with no deadline (uploaded as one PDF)
-come after, newest upload first, and records marked Completed last. The cell shows the date
+received for a supplemental report and late meds. Records with no deadline (uploaded as one PDF
+before "Upload records" asked for the dates, or by a script) come after, newest upload first, and
+records marked Completed last. The cell shows the date
 (`MM/DD/YYYY`) and the days left ("5 days left", "Due today", "3 days late"), naming SUPP or
 Late Meds when the deadline is not an appointment. The row is highlighted yellow for a record due
 on its appointment date and light blue for late meds; a supplemental report, a record with no
 deadline and a Completed one keep the normal colour.
 
-For an admin viewing another reviewer's records ("Show records for"): both upload buttons stay,
-and the record goes into that reviewer's account. A single upload first asks "Upload to <name>'s
-records?"; if the server answers that the reviewer already has the file, a second confirmation
-shows its sentence and offers "Upload anyway". The received-files dialog names the reviewer in its
-title and button instead. Delete is not offered there. On any list an admin sees, each record's menu
-has "Assign to...", which moves the record to another reviewer and asks again in the same dialog
-when that reviewer already has the file.
+For an admin viewing another reviewer's records ("Show records for"): "Upload records" stays, and
+the record goes into that reviewer's account, not the team queue; the form names the reviewer in
+its title ("Upload records for <name>") and its button. Delete is not offered there. On any list
+an admin sees, each record's menu has "Assign to...", which moves the record to another reviewer
+and asks again in the same dialog when that reviewer already has the file.
 
 Workbench progress labels (`STAGE_LABELS` in `frontend/hooks/use-review-workflow.ts`):
 

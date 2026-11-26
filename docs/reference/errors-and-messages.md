@@ -36,7 +36,7 @@ There is no response envelope: errors, like successes, are bare bodies.
 | 404 | The document is missing or belongs to someone else; or the job, summary, duplicate group, category, custom prompt, user, reviewer account or download token is not found; or the path does not exist. |
 | 405 | The path exists but not for this method. |
 | 409 | A state conflict: a job is running, the duplicate check is missing or stale, nothing to export, no bundle match, bundle over the cap, category in use, summary boundaries changed, or the reviewer an admin is uploading or assigning to already holds the same file (`{"detail", "code": "duplicate", "duplicates"}`). |
-| 413 | Request body over 500 MB. Answered by nginx (`client_max_body_size 500m` in `deploy/nginx.conf`) before the API sees it. "Upload received files" sends each file on its own (D2b), so the limit applies to each file, and its dialog shows `This file is larger than the server accepts in one upload.` beside the file. |
+| 413 | Request body over 500 MB. Answered by nginx (`client_max_body_size 500m` in `deploy/nginx.conf`) before the API sees it. "Upload records" sends each file on its own (D2b), so the limit applies to each file, and its dialog shows `This file is larger than the server accepts in one upload.` beside the file. |
 | 422 | Request validation failed (`{"detail": [...]}`), or a pipeline error that is a property of the document (`{"error": ...}`). |
 | 500 | A pipeline error with no specific mapping (`{"error": ...}`), or an unhandled exception (plain text). |
 | 502, 504 | Answered by nginx when the API cannot be reached (for example while it restarts) or does not answer within `proxy_read_timeout 300s` (`deploy/nginx.conf`). |
@@ -255,10 +255,10 @@ reach the reviewer as the call site's fallback.
 
 | File | Action | Fallback |
 | --- | --- | --- |
-| `frontend/components/documents/documents-view.tsx` | Upload | Upload failed. |
 | `frontend/components/documents/documents-view.tsx` | Start identification | Could not start identification. |
 | `frontend/components/documents/documents-view.tsx` | Delete | Could not delete the record. |
 | `frontend/components/documents/documents-view.tsx` | Mark or clear Completed | Could not change the Completed mark. |
+| `frontend/components/documents/received-files-dialog.tsx` | Upload a record that came as one file | Could not upload the file. |
 | `frontend/components/documents/received-files-dialog.tsx` | Put a record together from the files it arrived in | Could not combine the files. |
 | `frontend/components/documents/received-files-dialog.tsx` | Send one received file as it is added (shown beside the file) | Could not read this file. |
 | `frontend/components/admin/admin-view.tsx` | Update a category | Could not update the category. |

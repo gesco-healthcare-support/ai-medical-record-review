@@ -15,6 +15,12 @@ uploader. Once the patient's details are given, ``POST /api/documents/combine`` 
 files (``combine``) into the record's PDF. That joined file is the raw record: read and identified
 like any other upload, and downloadable as it is for the office's backup.
 
+Since 2026-11-26 this is the web app's ONLY upload ("Upload records"; the office's answer): a record
+that came as one file goes through the same form, so the patient, the dates and the billing sheet
+are given for every record. One file is not joined to anything: it is stored as it is, and the web
+app sends it as the medical records, so every page is counted. Each file's fingerprint is kept
+with its part of the record (``Part.sha256``), so a later upload of the same file is recognised.
+
 The order (``KINDS``) is the office's own guideline (2026-11-18, confirmed 2026-11-19): advocacy
 letter, declaration, medical index (the sender's list of the records in the file), medical records
 with their depositions, proof of service, internal email; an envelope last. The finished records
@@ -43,6 +49,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -159,14 +166,20 @@ class ProtectedFile(UnreadableFile):
 
 @dataclass(frozen=True)
 class Part:
-    """One file of a combined record: what it is, and the pages it fills (from 1, inclusive)."""
+    """One file of a combined record: what it is, the pages it fills (from 1, inclusive) and, from
+    2026-11-26 on, the file's fingerprint (``sha256``), so a later upload of the same file is
+    recognised (``api/ownership.uploaded_anywhere``) even though the record's own file is new."""
 
     kind: str
     start: int
     end: int
+    sha256: str = ""
 
     def as_dict(self) -> dict:
-        return {"kind": self.kind, "start": self.start, "end": self.end}
+        part: dict = {"kind": self.kind, "start": self.start, "end": self.end}
+        if self.sha256:
+            part["sha256"] = self.sha256
+        return part
 
 
 def _name_part(value: str) -> str:
@@ -270,6 +283,12 @@ def _head(path: str | Path) -> bytes:
 
 def _is_image(head: bytes) -> bool:
     return head.startswith(_IMAGE_SIGNATURES)
+
+
+def is_image(path: str | Path) -> bool:
+    """Whether the received file is a scanned image, which ``make_pdf`` turns into a new PDF
+    (a PDF is kept as it is). ``UnreadableFile`` when it cannot be read at all."""
+    return _is_image(_head(path))
 
 
 def make_pdf(source: Path, target: Path) -> int:
@@ -514,7 +533,12 @@ def combine(sources: list[tuple[str | Path, str]], out_path: str) -> list[Part]:
     the first file that is not a readable PDF with at least one page: a record silently missing one
     of the files it arrived in is worse than an upload refused (the old split upload skipped
     them). PyMuPDF copies the pages as they are; measured on 2,000 scan-sized pages it needs about
-    the joined file's size in memory, half what pypdf needed."""
+    the joined file's size in memory, half what pypdf needed.
+
+    ONE file is not joined to anything: it is copied to ``out_path`` as it is - byte for byte the
+    file received, with none of the joining's memory - once its pages are counted."""
+    if len(sources) == 1:
+        return [_copy_alone(*sources[0], out_path)]
     out = pymupdf.open()
     parts: list[Part] = []
     page = 1
@@ -535,3 +559,10 @@ def combine(sources: list[tuple[str | Path, str]], out_path: str) -> list[Part]:
     finally:
         out.close()
     return parts
+
+
+def _copy_alone(path: str | Path, kind: str, out_path: str) -> Part:
+    """A record that came as one file: the file itself, copied to ``out_path``."""
+    count = page_count(path)  # ``UnreadableFile`` (position 1) before anything is written
+    shutil.copyfile(path, out_path)
+    return Part(kind, 1, count)
