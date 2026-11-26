@@ -32,6 +32,22 @@ export function isPageCount(value: string): boolean {
   return value.trim() === "" || /^\d+$/.test(value.trim());
 }
 
+/** The longest the deposition pages can be on the sheet, as the server stores them. */
+const COUNTS_MAX = BILLING_TEXT_MAX;
+
+/** Typed deposition pages: blank, or whole numbers separated by commas - one per deposition
+ *  (the office's answer, 2026-11-25). The sheet prints them as typed, "120, 85". */
+export function isPageCountList(value: string): boolean {
+  const pieces = value
+    .split(",")
+    .map((piece) => piece.trim())
+    .filter(Boolean);
+  return (
+    pieces.every((piece) => /^\d+$/.test(piece)) &&
+    pieces.map((piece) => String(Number(piece))).join(", ").length <= COUNTS_MAX
+  );
+}
+
 /** The record's billing sheet, as GET/PUT /api/documents/{id}/billing answer it: what was typed
  *  (empty for unset), the counts worked out from the record (`counted`: the office count, and the
  *  deposition pages - null while `pages_unread` of its `pages_counted` pages wait to be read; an
@@ -50,7 +66,8 @@ export type BillingSheet = {
   records_from: string;
   received_on: string;
   office_count: number | "";
-  depo_pages: number | "";
+  /** As typed and printed: one count, or several separated by commas ("120, 85"). */
+  depo_pages: string;
   counted: { office: number; depo: number | null } | null;
   pages_counted: number;
   pages_unread: number;
@@ -129,16 +146,17 @@ export function toEdit(sheet: BillingSheet): BillingSheetEdit {
     discrepancy_reason: sheet.discrepancy_reason,
     records_from: sheet.records_from,
     office_count: String(sheet.office_count),
-    depo_pages: String(sheet.depo_pages),
+    depo_pages: sheet.depo_pages,
   };
 }
 
-/** Whether an edit can be saved: counts are whole numbers, texts within the sheet's limit. */
+/** Whether an edit can be saved: counts are whole numbers (the deposition pages may be several,
+ *  separated by commas), texts within the sheet's limit. */
 export function editValid(edit: BillingSheetEdit): boolean {
   return (
     isPageCount(edit.declared_pages) &&
     isPageCount(edit.office_count) &&
-    isPageCount(edit.depo_pages) &&
+    isPageCountList(edit.depo_pages) &&
     edit.claim_numbers.length <= BILLING_TEXT_MAX &&
     edit.location.length <= BILLING_TEXT_MAX &&
     edit.discrepancy_reason.length <= BILLING_TEXT_MAX
@@ -147,9 +165,11 @@ export function editValid(edit: BillingSheetEdit): boolean {
 
 /** The counts the sheet will print: a typed count, else the worked-out one, else none - printed
  *  blank (the deposition pages while the record's pages are still being read). */
-export function shownCounts(sheet: BillingSheet): { office: number | null; depo: number | null } {
+export function shownCounts(sheet: BillingSheet): { office: number | null; depo: string | null } {
   const office = sheet.office_count === "" ? (sheet.counted?.office ?? null) : sheet.office_count;
-  const depo = sheet.depo_pages === "" ? (sheet.counted?.depo ?? null) : sheet.depo_pages;
+  const counted = sheet.counted?.depo ?? null;
+  let depo: string | null = sheet.depo_pages;
+  if (depo === "") depo = counted === null ? null : String(counted);
   return { office, depo };
 }
 

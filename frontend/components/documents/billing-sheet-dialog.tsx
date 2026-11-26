@@ -140,7 +140,7 @@ function BillingForm({
             <input
               id="billing-depo"
               className="ev-inp"
-              inputMode="numeric"
+              aria-describedby="billing-depo-hint"
               autoComplete="off"
               placeholder={
                 sheet.counted?.depo == null ? "Not known yet" : String(sheet.counted.depo)
@@ -148,6 +148,9 @@ function BillingForm({
               value={edit.depo_pages}
               onChange={(e) => change({ depo_pages: e.target.value })}
             />
+            <span id="billing-depo-hint" className="text-xs text-muted-foreground">
+              Several depositions: one count each, separated by commas (120, 85).
+            </span>
           </div>
         </div>
         <div className="grid gap-1.5">
@@ -165,8 +168,8 @@ function BillingForm({
         <Discrepancy sheet={sheet} edit={edit} />
         {valid ? null : (
           <output className="rc-hb-warn">
-            Counts are whole numbers, and the claim numbers, the location and the reason at most
-            255 characters.
+            Counts are whole numbers - the deposition pages may be several, separated by commas -
+            and the claim numbers, the location and the reason at most 255 characters.
           </output>
         )}
       </div>

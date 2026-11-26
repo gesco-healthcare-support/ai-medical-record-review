@@ -647,7 +647,9 @@ _BILLING_PREVIOUS_DETAIL = "Enter the previous office visit as a date."
 _BILLING_DECLARED_DETAIL = "Enter the pages the declaration states as a whole number."
 _BILLING_REASON_DETAIL = "The reason for the discrepancy is at most 255 characters."
 _BILLING_OFFICE_DETAIL = "Enter the office count as a whole number."
-_BILLING_DEPO_DETAIL = "Enter the deposition pages as a whole number."
+_BILLING_DEPO_DETAIL = (
+    "Enter the deposition pages as whole numbers, separated by commas when there are several."
+)
 # The longest a typed text on the billing sheet may be (the columns are String(255)).
 _BILLING_TEXT_MAX = 255
 # A typed page count above this is a typing slip, not a record.
@@ -708,6 +710,23 @@ def _whole_number(value: str, detail: str) -> int | None:
     if not value.isdigit() or int(value) > _BILLING_COUNT_MAX:
         raise HTTPException(status_code=400, detail=detail)
     return int(value)
+
+
+def _page_counts(value: str, detail: str) -> str | None:
+    """Typed page counts - one, or several separated by commas (one per deposition, the
+    office's answer of 2026-11-25) - as the billing sheet prints them, "120, 85"; None when
+    blank. Each count is a whole number from 0 (no sign, no decimal point); empty pieces between
+    commas are dropped. A 400 with ``detail`` for anything else or for more than the sheet's
+    255 characters."""
+    pieces = [piece.strip() for piece in value.split(",") if piece.strip()]
+    if not pieces:
+        return None
+    if any(not piece.isdigit() or int(piece) > _BILLING_COUNT_MAX for piece in pieces):
+        raise HTTPException(status_code=400, detail=detail)
+    shown = ", ".join(str(int(piece)) for piece in pieces)
+    if len(shown) > _BILLING_TEXT_MAX:
+        raise HTTPException(status_code=400, detail=detail)
+    return shown
 
 
 def _short_text(value: str, detail: str) -> str | None:
@@ -1441,7 +1460,7 @@ def _billing_response(session: Session, document: Document) -> dict:
         "records_from": document.records_from or "",
         "received_on": _iso(document.received_on),
         "office_count": _count_text(document.office_count),
-        "depo_pages": _count_text(document.depo_pages),
+        "depo_pages": document.depo_pages or "",
         "counted": {"office": counts.office, "depo": counts.depo},
         "pages_counted": read.counted,
         "pages_unread": read.unread,
@@ -1472,7 +1491,7 @@ def _billing_fields(payload: BillingPayload, document: Document) -> dict:
             payload.records_from, received_files.PARTIES, _COMBINE_PARTY_DETAIL, required=False
         ),
         "office_count": _whole_number(payload.office_count, _BILLING_OFFICE_DETAIL),
-        "depo_pages": _whole_number(payload.depo_pages, _BILLING_DEPO_DETAIL),
+        "depo_pages": _page_counts(payload.depo_pages, _BILLING_DEPO_DETAIL),
     }
 
 

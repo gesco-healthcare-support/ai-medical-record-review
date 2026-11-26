@@ -286,7 +286,9 @@ class Sheet:
     interpreter: bool | None = None
     records_from: str | None = None
     declared_pages: int | None = None
-    depo_pages: int | None = None
+    # As printed: the counts typed ("120, 85" - one per deposition), else the worked-out one,
+    # else blank.
+    depo_pages: str = ""
     office_count: int | None = None
     discrepancy_reason: str = ""
     date_received: str = ""
@@ -326,13 +328,15 @@ def patient_name(last: str | None, first: str | None) -> str:
 
 def sheet_for(document: Document, counts: Counts | None) -> Sheet:
     """What the record's billing sheet says. A count typed on the sheet wins over the worked-out
-    one; with neither (pages still being read) the count is left blank."""
+    one; with neither (pages still being read) the count is left blank. The deposition pages
+    typed may be several counts, one per deposition, printed as typed ("120, 85", the office's
+    answer of 2026-11-25); the worked-out count is one total."""
     office = document.office_count
     if office is None and counts is not None:
         office = counts.office
-    depo = document.depo_pages
-    if depo is None and counts is not None:
-        depo = counts.depo
+    depo = document.depo_pages or ""
+    if not depo and counts is not None and counts.depo is not None:
+        depo = str(counts.depo)
     return Sheet(
         doctor=document.doctor or "",
         dos=dos(document.visit_type, document.appointment_date),
@@ -519,7 +523,7 @@ def _fill_row(page, y: float, sheet: Sheet) -> None:
     declaration is valid is left for a person to circle."""
     values = (
         _number(sheet.declared_pages),
-        _number(sheet.depo_pages),
+        sheet.depo_pages,
         "None",
         _number(sheet.office_count),
         sheet.discrepancy_reason,

@@ -6,7 +6,7 @@ carry catalog data.
 Source of truth: `backend/alembic/versions/` (one file per revision, named
 `<revision>_<slug>.py`), `backend/alembic/env.py` and `backend/alembic.ini`.
 
-**Current head: `f6b2d8e41a93`.** The chain has 42 revisions, one head and no branches. How to add
+**Current head: `a9c4e7b2d815`.** The chain has 43 revisions, one head and no branches. How to add
 a revision is in [How to create a database migration](../how-to/create-a-database-migration.md).
 
 ## Chain
@@ -58,9 +58,10 @@ columns or indexes; **data** changes rows only; **schema + data** does both.
 | 39 | `b5e1d9c4a7f2` | `a3d8f5c27b14` | 2026-11-19 | schema | Adds `documents.appointment_date` (Date) and `documents.records_from` (String(32)), both nullable, no backfill: typed by the uploader of a record put together from its received files. Downgrade drops both. |
 | 40 | `c7f3a9e2d5b1` | `b5e1d9c4a7f2` | 2026-11-20 | schema | Adds the office's billing sheet fields to `documents`: `visit_type` (String(8)), `review_source` (String(16)), `interpreter` (Boolean), `claim_numbers` (String(255)), `previous_visit` (Date), `declared_pages` (Integer), `discrepancy_reason` (String(255)), and `office_count` / `depo_pages` (Integer, counts typed over the worked-out ones). All nullable, no backfill. Downgrade drops them. |
 | 41 | `e4a1c8f62b37` | `c7f3a9e2d5b1` | 2026-11-20 | schema | Adds the billing sheet's `location` (String(255)) to `documents`: where the evaluation takes place, as typed at D2a and edited at D6d (the office's first use of the sheet asked for it). Nullable, no backfill. Downgrade drops it. |
-| 42 | `f6b2d8e41a93` | `e4a1c8f62b37` | 2026-11-25 | schema | Adds `documents.team_queue_since` (DateTime, nullable, no backfill): when a record put together from received files went into the team queue, NULL once a reviewer took it (D15) or for a record never in it. Downgrade drops it; records waiting in the queue then stay with their uploader. **Current head.** |
+| 42 | `f6b2d8e41a93` | `e4a1c8f62b37` | 2026-11-25 | schema | Adds `documents.team_queue_since` (DateTime, nullable, no backfill): when a record put together from received files went into the team queue, NULL once a reviewer took it (D15) or for a record never in it. Downgrade drops it; records waiting in the queue then stay with their uploader. |
+| 43 | `a9c4e7b2d815` | `f6b2d8e41a93` | 2026-11-25 | schema + data | Adds `documents.depo_page_counts` (String(255), nullable): the billing sheet's deposition pages as typed, one count or several separated by commas. Copies every count already typed in `documents.depo_pages` across as text in one UPDATE, so no sheet changes; the old column is no longer written or read. Downgrade drops the new column (a list typed since is lost). **Current head.** |
 
-Totals: 28 schema, 9 data, 3 schema + data.
+Totals: 28 schema, 9 data, 4 schema + data.
 
 ## Revisions out of date order
 

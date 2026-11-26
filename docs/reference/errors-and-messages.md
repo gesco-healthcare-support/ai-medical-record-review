@@ -68,7 +68,7 @@ Route numbers (D1 to D27, A1 to A10) are those of the [HTTP API reference](http-
 | 400 | `Enter the pages the declaration states as a whole number.` | D2a, D6d |
 | 400 | `The reason for the discrepancy is at most 255 characters.` | D6d |
 | 400 | `Enter the office count as a whole number.` | D6d |
-| 400 | `Enter the deposition pages as a whole number.` | D6d |
+| 400 | `Enter the deposition pages as whole numbers, separated by commas when there are several.` | D6d (a count that is not a whole number, or more than 255 characters in all) |
 | 400 | `File <n> is not a readable PDF. Nothing was uploaded.` | D2a |
 | 400 | `File <n> is no longer on the server. Add it again.` | D2a |
 | 400 | `This file is not a readable PDF or image.` | D2b |

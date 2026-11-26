@@ -618,7 +618,7 @@ const BLANK_DEPO =
   "The deposition pages on its billing sheet are blank: the record's pages are still being " +
   "read. Type them on the billing sheet, or download again later.";
 
-function sheetWith(depo: number | null, typed: number | "" = "") {
+function sheetWith(depo: number | null, typed = "") {
   return {
     counted: { office: 120, depo },
     depo_pages: typed,
@@ -663,7 +663,7 @@ describe("DocumentsView raw PDF", () => {
   it("says nothing more once the deposition pages are known or typed", async () => {
     const user = userEvent.setup();
     docsState.data = [doc({ id: "d1", received_on: "2026-11-19" })];
-    getBillingSheet.mockResolvedValueOnce(sheetWith(0)).mockResolvedValueOnce(sheetWith(null, 3));
+    getBillingSheet.mockResolvedValueOnce(sheetWith(0)).mockResolvedValueOnce(sheetWith(null, "3"));
     render(<DocumentsView />);
 
     await user.click(await menuItem(user, /^Download raw PDF$/));
