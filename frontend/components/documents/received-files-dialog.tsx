@@ -562,6 +562,192 @@ function DropCover() {
   );
 }
 
+type Owner = { id: number; name: string };
+
+/** How many files the uploader must still look at before the record can be made: with several
+ *  files every file's kind is confirmed by a person, and a repeated file is removed. A file alone
+ *  has no kind to confirm. */
+function filesToCheck(items: readonly Item[], sameAs: Map<number, string>): number {
+  if (items.length === 1) return sameAs.size;
+  const unconfirmed = items.filter((item) => item.state === "ready" && !item.confirmed);
+  return unconfirmed.length + sameAs.size;
+}
+
+/** The send button's words: what it will do and for whom, or that it is doing it. */
+function sendLabel(count: number, owner: Owner | null, pending: boolean, asking: boolean): string {
+  if (pending) return count > 1 ? "Combining..." : "Uploading...";
+  if (asking) return "Upload anyway";
+  const action = count > 1 ? "Combine & upload" : "Upload";
+  return owner ? `${action} for ${owner.name}` : action;
+}
+
+/** The message once the record is made: one file uploaded, or several put together - its pages,
+ *  where it went, and the patient's other records. */
+function madeMessage(
+  count: number,
+  created: { page_count: number; in_team_queue?: boolean; patient_records: number },
+  owner: Owner | null,
+): string {
+  const pages = created.page_count === 1 ? "1 page" : `${created.page_count} pages`;
+  const made =
+    count === 1 ? `Record uploaded, ${pages}` : `One record made from ${count} files, ${pages}`;
+  let where = `${made}.`;
+  if (owner) where = `${made}, in ${owner.name}'s records.`;
+  else if (created.in_team_queue) where = `${made}, in the team queue.`;
+  const others = otherRecordsLine(created.patient_records);
+  return others ? `${where} ${others}` : where;
+}
+
+/** The question asked before uploading files the office already has. It is asked once for the
+ *  files as they stand: it goes away as soon as that set changes (one removed, another added), and
+ *  sending asks again. */
+function useUploadedBeforeQuestion(items: readonly Item[]) {
+  const [askedAbout, setAskedAbout] = useState<string | null>(null);
+  const seenBefore = items.filter(
+    (item) => item.state === "ready" && item.uploadedBefore.length > 0,
+  );
+  const key = seenBefore.map((item) => item.key).join(",");
+  const asking = seenBefore.length > 0 && askedAbout === key;
+  return {
+    seenBefore,
+    asking,
+    /** Sending must ask first: some file was uploaded before and the uploader was not asked. */
+    mustAsk: seenBefore.length > 0 && !asking,
+    ask: () => setAskedAbout(key),
+    dismiss: () => setAskedAbout(null),
+  };
+}
+
+/** Files dropped on the records page that opened the dialog: added once, as if picked. The same
+ *  list is never added twice - React's strict mode runs this effect twice - and a new drop is a new
+ *  list. Nothing is added while the dialog is closed. */
+function useDroppedFiles(open: boolean, dropped: File[] | null, add: (files: File[]) => void) {
+  const taken = useRef<File[] | null>(null);
+  const addLatest = useRef(add);
+  addLatest.current = add;
+  useEffect(() => {
+    if (!open || !dropped || taken.current === dropped) return;
+    taken.current = dropped;
+    addLatest.current(dropped);
+  }, [open, dropped]);
+}
+
+/** The files, first in the dialog: a drop shows them at once, and they are read while the rest is
+ *  typed - the patient ID box fills from their names. Then the totals, and where to add more. */
+function FilesSection({
+  files,
+  sameAs,
+  toCheck,
+  dragging,
+  onAdd,
+}: Readonly<{
+  files: Files;
+  sameAs: Map<number, string>;
+  toCheck: number;
+  dragging: boolean;
+  onAdd: (list: FileList | null) => void;
+}>) {
+  const { items } = files;
+  const fileInput = useRef<HTMLInputElement>(null);
+  const allRead = items.length > 0 && items.every((item) => item.state === "ready");
+  const several = items.length > 1;
+  return (
+    <section className="grid gap-2" aria-labelledby="receivedFilesHeading">
+      <h3 id="receivedFilesHeading" className={SECTION_HEADING}>
+        {several ? "Files, in the order they are put together" : "Files"}
+      </h3>
+      {items.length === 0 ? null : (
+        <ol className="grid gap-2">
+          {items.map((item, index) => (
+            <FileRow
+              key={item.key}
+              item={item}
+              index={index}
+              count={items.length}
+              sameAs={sameAs.get(item.key)}
+              files={files}
+            />
+          ))}
+        </ol>
+      )}
+      {allRead && several ? <FilesTotal items={items} toCheck={toCheck} /> : null}
+      <DropZone
+        dragging={dragging}
+        empty={items.length === 0}
+        onPick={() => fileInput.current?.click()}
+      />
+      <input
+        ref={fileInput}
+        type="file"
+        accept={ACCEPTED_FILES}
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          onAdd(e.target.files);
+          // Cleared so picking the same file again still fires `change`; the files were copied.
+          e.target.value = "";
+        }}
+      />
+    </section>
+  );
+}
+
+/** The dialog's title and what it does, naming the reviewer an admin uploads for. */
+function UploadHeader({ owner }: Readonly<{ owner: Owner | null }>) {
+  return (
+    <DialogHeader className="shrink-0">
+      <DialogTitle>{owner ? `Upload records for ${owner.name}` : "Upload records"}</DialogTitle>
+      <DialogDescription>
+        Add the record&apos;s file, or every file it came in, in any order. One file is uploaded as
+        it is. Several files are put together in their place: advocacy letter, declaration,
+        medical index, medical records, proof of service, internal email - look at each
+        file&apos;s first page and confirm its kind, or change it.
+        {owner ? ` The record goes into ${owner.name}'s records, not yours.` : null}
+      </DialogDescription>
+    </DialogHeader>
+  );
+}
+
+/** Cancel and send - or, while asking about files uploaded before, Go back and Upload anyway. */
+function UploadFooter({
+  asking,
+  pending,
+  ready,
+  label,
+  onBack,
+  onCancel,
+  onSend,
+}: Readonly<{
+  asking: boolean;
+  pending: boolean;
+  ready: boolean;
+  label: string;
+  onBack: () => void;
+  onCancel: () => void;
+  onSend: () => void;
+}>) {
+  return (
+    <DialogFooter className="shrink-0">
+      <button
+        type="button"
+        className="ev-btn ev-btn-outline"
+        onClick={asking ? onBack : onCancel}
+        disabled={pending}
+      >
+        {asking ? "Go back" : "Cancel"}
+      </button>
+      <button
+        type="button"
+        className="ev-btn ev-btn-primary"
+        onClick={onSend}
+        disabled={pending || !ready}
+      >
+        {label}
+      </button>
+    </DialogFooter>
+  );
+}
+
 /** "Upload records", the web app's one upload (the office's answer, 2026-11-26): a record that
  *  came as one file, or one put together from the files it arrived in - the step the office used
  *  to do in Adobe Acrobat. Either way the uploader gives the patient's name, ID, the day the
@@ -587,7 +773,7 @@ export function ReceivedFilesDialog({
 }: Readonly<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  owner?: { id: number; name: string } | null;
+  owner?: Owner | null;
   dropped?: File[] | null;
 }>) {
   const combine = useCombineReceivedFiles();
@@ -602,41 +788,16 @@ export function ReceivedFilesDialog({
   // What the uploader typed in the Patient ID box, or null while they have not touched it - the box
   // then shows the ID the files' names agree on.
   const [typedId, setTypedId] = useState<string | null>(null);
-  // The files the office already has, as they stood when the uploader was asked about them; the
-  // question goes away as soon as that set changes (one removed, another added).
-  const [askedAbout, setAskedAbout] = useState<string | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const question = useUploadedBeforeQuestion(items);
   const drop = useFileDrop((list) => addFiles(list), combine.isPending);
-
-  // Files dropped on the records page: added once. The same list is never added twice - a render
-  // in React's strict mode runs this effect twice - and a new drop is a new list.
-  const takenDrop = useRef<File[] | null>(null);
-  const addDropped = useRef(addFiles);
-  addDropped.current = addFiles;
-  useEffect(() => {
-    if (!open || !dropped || takenDrop.current === dropped) return;
-    takenDrop.current = dropped;
-    addDropped.current(dropped);
-  }, [open, dropped]);
+  useDroppedFiles(open, dropped, (list) => addFiles(list));
 
   const foundId = agreedPatientId(items.map((item) => item.file.name)) ?? "";
   const patientId = cleanPatientId(typedId ?? foundId);
   const idTooLong = patientId.length > PATIENT_ID_MAX_LENGTH;
   const allRead = items.length > 0 && items.every((item) => item.state === "ready");
-  const single = items.length === 1;
   const sameAs = sameFileAs(items);
-  // Files the uploader must still look at before the record can be made: with several files every
-  // file's kind is confirmed by a person, and a repeated file is removed. A file alone has no kind
-  // to confirm.
-  const unconfirmed = single
-    ? 0
-    : items.filter((item) => item.state === "ready" && !item.confirmed).length;
-  const toCheck = unconfirmed + sameAs.size;
-  const seenBefore = items.filter(
-    (item) => item.state === "ready" && item.uploadedBefore.length > 0,
-  );
-  const seenKey = seenBefore.map((item) => item.key).join(",");
-  const asking = seenBefore.length > 0 && askedAbout === seenKey;
+  const toCheck = filesToCheck(items, sameAs);
   const ready =
     allRead &&
     toCheck === 0 &&
@@ -659,7 +820,7 @@ export function ReceivedFilesDialog({
     setBilling(EMPTY_BILLING);
     files.clear(recordMade);
     setTypedId(null);
-    setAskedAbout(null);
+    question.dismiss();
     drop.reset();
     onOpenChange(false);
   }
@@ -681,16 +842,16 @@ export function ReceivedFilesDialog({
       );
     }
     files.add(accepted);
-    if (fileInput.current) fileInput.current.value = "";
   }
 
   /** Upload - but first ask, once, about any file the office already has. */
   function send() {
-    if (seenBefore.length > 0 && !asking) setAskedAbout(seenKey);
+    if (question.mustAsk) question.ask();
     else void submit();
   }
 
   async function submit() {
+    const single = items.length === 1;
     try {
       const created = await combine.mutateAsync({
         lastName,
@@ -709,26 +870,13 @@ export function ReceivedFilesDialog({
         })),
         owner: owner?.id ?? null,
       });
-      const others = otherRecordsLine(created.patient_records);
-      const pages = created.page_count === 1 ? "1 page" : `${created.page_count} pages`;
-      const made = single
-        ? `Record uploaded, ${pages}`
-        : `One record made from ${items.length} files, ${pages}`;
-      let where = `${made}.`;
-      if (owner) where = `${made}, in ${owner.name}'s records.`;
-      else if (created.in_team_queue) where = `${made}, in the team queue.`;
-      toast.success(where + (others ? ` ${others}` : ""));
+      toast.success(madeMessage(items.length, created, owner));
       close(true);
     } catch (err) {
       const fallback = single ? "Could not upload the file." : "Could not combine the files.";
       toast.error(humanizeError(err, { fallback }));
     }
   }
-
-  const action = items.length > 1 ? "Combine & upload" : "Upload";
-  let submitLabel = owner ? `${action} for ${owner.name}` : action;
-  if (combine.isPending) submitLabel = items.length > 1 ? "Combining..." : "Uploading...";
-  if (asking && !combine.isPending) submitLabel = "Upload anyway";
 
   return (
     <Dialog
@@ -739,53 +887,16 @@ export function ReceivedFilesDialog({
       }}
     >
       <DialogContent className={cn(DIALOG_FRAME, "sm:max-w-3xl")} {...drop.handlers}>
-        <DialogHeader className="shrink-0">
-          <DialogTitle>{owner ? `Upload records for ${owner.name}` : "Upload records"}</DialogTitle>
-          <DialogDescription>
-            Add the record&apos;s file, or every file it came in, in any order. One file is
-            uploaded as it is. Several files are put together in their place: advocacy letter,
-            declaration, medical index, medical records, proof of service, internal email - look
-            at each file&apos;s first page and confirm its kind, or change it.
-            {owner ? ` The record goes into ${owner.name}'s records, not yours.` : null}
-          </DialogDescription>
-        </DialogHeader>
+        <UploadHeader owner={owner} />
 
         <div className={DIALOG_BODY}>
-          {/* The files first: a drop shows them at once, and they are read while the rest is
-              typed - the patient ID box fills from their names. */}
-          <section className="grid gap-2" aria-labelledby="receivedFilesHeading">
-            <h3 id="receivedFilesHeading" className={SECTION_HEADING}>
-              {items.length > 1 ? "Files, in the order they are put together" : "Files"}
-            </h3>
-            {items.length === 0 ? null : (
-              <ol className="grid gap-2">
-                {items.map((item, index) => (
-                  <FileRow
-                    key={item.key}
-                    item={item}
-                    index={index}
-                    count={items.length}
-                    sameAs={sameAs.get(item.key)}
-                    files={files}
-                  />
-                ))}
-              </ol>
-            )}
-            {allRead && !single ? <FilesTotal items={items} toCheck={toCheck} /> : null}
-            <DropZone
-              dragging={drop.dragging}
-              empty={items.length === 0}
-              onPick={() => fileInput.current?.click()}
-            />
-            <input
-              ref={fileInput}
-              type="file"
-              accept={ACCEPTED_FILES}
-              multiple
-              className="hidden"
-              onChange={(e) => addFiles(e.target.files)}
-            />
-          </section>
+          <FilesSection
+            files={files}
+            sameAs={sameAs}
+            toCheck={toCheck}
+            dragging={drop.dragging}
+            onAdd={addFiles}
+          />
 
           <h3 className={cn(SECTION_HEADING, "-mb-1 border-t border-gray-100 pt-4")}>
             The patient and the records
@@ -878,25 +989,16 @@ export function ReceivedFilesDialog({
           </div>
         </div>
 
-        {asking ? <UploadedBeforeQuestion items={seenBefore} /> : null}
-        <DialogFooter className="shrink-0">
-          <button
-            type="button"
-            className="ev-btn ev-btn-outline"
-            onClick={() => (asking ? setAskedAbout(null) : close())}
-            disabled={combine.isPending}
-          >
-            {asking ? "Go back" : "Cancel"}
-          </button>
-          <button
-            type="button"
-            className="ev-btn ev-btn-primary"
-            onClick={send}
-            disabled={combine.isPending || !ready}
-          >
-            {submitLabel}
-          </button>
-        </DialogFooter>
+        {question.asking ? <UploadedBeforeQuestion items={question.seenBefore} /> : null}
+        <UploadFooter
+          asking={question.asking}
+          pending={combine.isPending}
+          ready={ready}
+          label={sendLabel(items.length, owner, combine.isPending, question.asking)}
+          onBack={question.dismiss}
+          onCancel={() => close()}
+          onSend={send}
+        />
         {drop.dragging ? <DropCover /> : null}
       </DialogContent>
     </Dialog>
