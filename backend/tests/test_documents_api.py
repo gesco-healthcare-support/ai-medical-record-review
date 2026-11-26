@@ -6670,9 +6670,14 @@ async def test_extract_header_without_letter_fields_replies_with_the_four(authed
 
 
 def _audit_rows(doc_id, action):
+    """The record's audit rows for `action`, in the order they were written. By id, not by time: two
+    rows written in the same instant come back in either order otherwise (the Completed test failed
+    on that in CI, 2026-11-25)."""
     with get_sessionmaker()() as session:
         return session.scalars(
-            select(AuditLog).where(AuditLog.document_id == doc_id, AuditLog.action == action)
+            select(AuditLog)
+            .where(AuditLog.document_id == doc_id, AuditLog.action == action)
+            .order_by(AuditLog.id)
         ).all()
 
 
